@@ -10,6 +10,7 @@ package v1alpha1
 
 import (
 	"github.com/c5c3/forge/internal/common/types"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
@@ -239,6 +240,24 @@ func (in *ControlPlaneSpec) DeepCopyInto(out *ControlPlaneSpec) {
 		in, out := &in.GlobalPolicyOverrides, &out.GlobalPolicyOverrides
 		*out = new(types.PolicySpec)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.GlobalExtraConfig != nil {
+		in, out := &in.GlobalExtraConfig, &out.GlobalExtraConfig
+		*out = make(map[string]map[string]string, len(*in))
+		for key, val := range *in {
+			var outVal map[string]string
+			if val == nil {
+				(*out)[key] = nil
+			} else {
+				inVal := (*in)[key]
+				in, out := &inVal, &outVal
+				*out = make(map[string]string, len(*in))
+				for key, val := range *in {
+					(*out)[key] = val
+				}
+			}
+			(*out)[key] = outVal
+		}
 	}
 	in.KORC.DeepCopyInto(&out.KORC)
 }
@@ -862,6 +881,24 @@ func (in *ServiceGlanceSpec) DeepCopyInto(out *ServiceGlanceSpec) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.ExtraConfig != nil {
+		in, out := &in.ExtraConfig, &out.ExtraConfig
+		*out = make(map[string]map[string]string, len(*in))
+		for key, val := range *in {
+			var outVal map[string]string
+			if val == nil {
+				(*out)[key] = nil
+			} else {
+				inVal := (*in)[key]
+				in, out := &inVal, &outVal
+				*out = make(map[string]string, len(*in))
+				for key, val := range *in {
+					(*out)[key] = val
+				}
+			}
+			(*out)[key] = outVal
+		}
+	}
 	if in.DedicatedBackingServices != nil {
 		in, out := &in.DedicatedBackingServices, &out.DedicatedBackingServices
 		*out = new(GlanceDedicatedBackingServicesSpec)
@@ -907,6 +944,13 @@ func (in *ServiceHorizonSpec) DeepCopyInto(out *ServiceHorizonSpec) {
 		*out = new(types.SecretRefSpec)
 		**out = **in
 	}
+	if in.ExtraConfig != nil {
+		in, out := &in.ExtraConfig, &out.ExtraConfig
+		*out = make(map[string]apiextensionsv1.JSON, len(*in))
+		for key, val := range *in {
+			(*out)[key] = *val.DeepCopy()
+		}
+	}
 	if in.DedicatedBackingServices != nil {
 		in, out := &in.DedicatedBackingServices, &out.DedicatedBackingServices
 		*out = new(HorizonDedicatedBackingServicesSpec)
@@ -951,6 +995,24 @@ func (in *ServiceKeystoneSpec) DeepCopyInto(out *ServiceKeystoneSpec) {
 		in, out := &in.PolicyOverrides, &out.PolicyOverrides
 		*out = new(types.PolicySpec)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.ExtraConfig != nil {
+		in, out := &in.ExtraConfig, &out.ExtraConfig
+		*out = make(map[string]map[string]string, len(*in))
+		for key, val := range *in {
+			var outVal map[string]string
+			if val == nil {
+				(*out)[key] = nil
+			} else {
+				inVal := (*in)[key]
+				in, out := &inVal, &outVal
+				*out = make(map[string]string, len(*in))
+				for key, val := range *in {
+					(*out)[key] = val
+				}
+			}
+			(*out)[key] = outVal
+		}
 	}
 	if in.RotationInterval != nil {
 		in, out := &in.RotationInterval, &out.RotationInterval

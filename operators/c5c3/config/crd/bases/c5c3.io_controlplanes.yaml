@@ -54,6 +54,22 @@ spec:
           spec:
             description: ControlPlaneSpec defines the desired state of a ControlPlane.
             properties:
+              globalExtraConfig:
+                additionalProperties:
+                  additionalProperties:
+                    type: string
+                  type: object
+                description: |-
+                  GlobalExtraConfig is a free-form INI block applied to every INI-configured
+                  service the ControlPlane declares (Keystone and Glance today). It is merged
+                  key by key with each service's own extraConfig — sections are unioned, the
+                  per-service value wins per key, and a global key with no per-service
+                  counterpart stays effective — before the merged result is projected onto
+                  the child CR. It NEVER applies to Horizon: the dashboard renders flat Django
+                  settings, not INI, so services.horizon.extraConfig stands alone. Legal but
+                  inert in External mode (no INI-configured workload is deployed), the same
+                  posture globalPolicyOverrides has.
+                type: object
               globalPolicyOverrides:
                 description: |-
                   GlobalPolicyOverrides defines oslo.policy overrides applied across every
@@ -1170,6 +1186,17 @@ spec:
                         - message: dedicatedBackingServices must declare at least
                             one backing-service class (database, cache)
                           rule: has(self.database) || has(self.cache)
+                      extraConfig:
+                        additionalProperties:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        description: |-
+                          ExtraConfig is a free-form INI block for the Glance service. It is merged
+                          key by key with spec.globalExtraConfig — sections unioned, this per-service
+                          value winning per key — and the merged result is projected onto the Glance
+                          child's spec.extraConfig.
+                        type: object
                       gateway:
                         description: |-
                           Gateway optionally exposes the projected Glance API externally via a
@@ -1400,6 +1427,17 @@ spec:
                         - message: dedicatedBackingServices must declare at least
                             one backing-service class (cache)
                           rule: has(self.cache)
+                      extraConfig:
+                        additionalProperties:
+                          x-kubernetes-preserve-unknown-fields: true
+                        description: |-
+                          ExtraConfig carries free-form flat Django settings, mirroring the Horizon
+                          child's spec.extraConfig (operators/horizon/api/v1alpha1/horizon_types.go).
+                          Keys are Django setting names and values are arbitrary JSON; the reconciler
+                          projects the block verbatim onto the Horizon child. It is NOT an INI block,
+                          so spec.globalExtraConfig — which is INI, applied only to the INI-configured
+                          services — never applies to it.
+                        type: object
                       gateway:
                         description: |-
                           Gateway optionally exposes the projected dashboard externally via a
@@ -2087,6 +2125,18 @@ spec:
                         required:
                         - authURL
                         type: object
+                      extraConfig:
+                        additionalProperties:
+                          additionalProperties:
+                            type: string
+                          type: object
+                        description: |-
+                          ExtraConfig is a free-form INI block for the Keystone service. It is merged
+                          key by key with spec.globalExtraConfig — sections unioned, this per-service
+                          value winning per key — and the merged result is projected onto the Keystone
+                          child's spec.extraConfig. Forbidden in External mode (CEL + webhook
+                          enforced): no Keystone workload is deployed, so there is no config to render.
+                        type: object
                       federationProxyImage:
                         description: |-
                           FederationProxyImage optionally overrides the mod_auth_openidc sidecar
@@ -2392,6 +2442,9 @@ spec:
                     - message: services.keystone.databaseCredentialsMode is forbidden
                         when services.keystone.mode is External
                       rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.databaseCredentialsMode)'
+                    - message: services.keystone.extraConfig is forbidden when services.keystone.mode
+                        is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.extraConfig)'
                 type: object
             required:
             - korc
