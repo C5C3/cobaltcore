@@ -61,6 +61,12 @@ demo/
 # the overlay root without a `../../` parent traversal (LoadRestrictionsRootOnly).
 deploy/kind/prometheus/keystone-operator.json
 
+# Build artifact: staged at deploy time by hack/dizzy.sh stage-dashboards from
+# the pinned dizzy release tarball (WITH_DIZZY=true) so the dizzy overlay's
+# configMapGenerator can reference the dashboard JSONs from the overlay root
+# without a `../../` parent traversal (LoadRestrictionsRootOnly).
+deploy/kind/dizzy/dashboards/
+
 # Vendored Helm subchart dependencies. The operator charts depend on the
 # operator-library library chart via a file:// path; `helm dependency build`
 # vendors it into charts/ from that local source. Chart.lock is committed; the

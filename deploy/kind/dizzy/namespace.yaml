@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# kind-only opt-in Namespace for the dizzy observability stack
+# (VictoriaMetrics + Grafana).
+#
+# DECISION Unlike the monitoring Namespace of the prometheus overlay, this
+# Namespace is declared ONLY here and must NOT be added to
+# deploy/flux-system/namespaces.yaml: production ships no dizzy stack at
+# all, so a `dizzy` Namespace under the production flux-system bundle would
+# be dead weight. The inline copy in this overlay is kept because:
+#   1. The overlay is applied STANDALONE via `kubectl apply -k
+#      deploy/kind/dizzy` (gated on WITH_DIZZY=true in
+#      hack/deploy-infra.sh); it is NOT a child of deploy/kind/base, so
+#      there is no parent overlay guaranteed to create the Namespace
+#      first.
+#   2. kubectl's embedded kustomize cannot pass --load-restrictor
+#      (kubernetes/kubectl#948), so the overlay MUST be self-contained
+#      under the default LoadRestrictionsRootOnly check — a `../../`
+#      reference into deploy/flux-system/namespaces.yaml would refuse to
+#      render (same constraint that drove the chaos-mesh and prometheus
+#      overlay layouts).
+#   3. `kubectl apply -k` is idempotent for Namespace resources, so a
+#      re-apply is a no-op rather than a conflict.
+#
+# The Namespace name doubles as the route-admission key: the
+# `https-dizzy` Gateway listener admits HTTPRoutes from namespaces
+# labelled `kubernetes.io/metadata.name: dizzy` (the automatic label
+# every Namespace carries), so no custom label is needed here.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dizzy

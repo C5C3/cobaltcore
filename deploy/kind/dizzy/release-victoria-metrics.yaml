@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# VictoriaMetrics-single HelmRelease — the OTLP metrics backend the dizzy
+# load/chaos tester exports into (NodePort 30428, bridged to the host's
+# TCP :8428 by hack/kind-config.yaml). Opt-in: reconciled only when the
+# dizzy overlay is applied (WITH_DIZZY=true make deploy-infra).
+#
+# SERVICE NAME the victoria-metrics-single chart appends `-server` to the
+# fullname, so with `fullnameOverride: dizzy-victoria-metrics` (top-level,
+# NOT under `server:` — see below) the rendered server Service is
+# `dizzy-victoria-metrics-server`. The Grafana datasource URL in
+# release-grafana.yaml
+# (http://dizzy-victoria-metrics-server.dizzy.svc:8428) MUST match this
+# name; verify with `kubectl get svc -n dizzy` after the first deploy.
+#
+# VALUES LAYOUT VERIFIED against victoria-metrics-single 0.43.0 with
+# `helm template`: the server Service renders as
+# `dizzy-victoria-metrics-server` (type NodePort, port 8428, nodePort
+# 30428), the extraArgs land as container args
+# (--opentelemetry.usePrometheusNaming, --opentelemetry.promoteAllResource
+# Attributes), and storage is an emptyDir. Correction from the initial
+# draft: `fullnameOverride` belongs at the TOP level, not under `server:` —
+# placed under `server:` the chart drops the `-server` suffix and renders
+# `dizzy-victoria-metrics`, which would break the datasource URL.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: dizzy-victoria-metrics
+  namespace: dizzy
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: victoria-metrics-single
+      # Pin to a single 0.x minor: SemVer permits breaking changes on every
+      # 0.x minor bump, and this chart's fullname/extraArgs/nodePort shape is
+      # what the hard-coded Grafana datasource URL and the container args
+      # depend on (VERIFIED against 0.43.0, see the header note). A wider
+      # range (e.g. `<1.0.0`) would let Flux auto-pull a breaking minor and
+      # silently render the server Service under a different name.
+      version: ">=0.43.0 <0.44.0"
+      sourceRef:
+        kind: HelmRepository
+        name: victoria-metrics
+        namespace: flux-system
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    # Top-level so the chart's fullname helper renders the server Service
+    # as `dizzy-victoria-metrics-server` (adding fullnameOverride under
+    # `server:` drops the `-server` suffix — see the header note).
+    fullnameOverride: dizzy-victoria-metrics
+    server:
+      replicaCount: 1
+      persistentVolume:
+        # emptyDir storage with a 30d retention window: kind-only,
+        # throwaway posture — metrics evaporate when the pod restarts,
+        # which is fine for a local load/chaos soak.
+        enabled: false
+      retentionPeriod: 30d
+      extraArgs:
+        # Render OTLP metrics with Prometheus-style names so the
+        # provisioned dashboards' PromQL matches (flag since
+        # VictoriaMetrics v1.145.0).
+        opentelemetry.usePrometheusNaming: "true"
+        # Promote every OTEL resource attribute to a label so the
+        # dashboards can group by the dizzy `cloud`/`scenario`/`service`
+        # attributes (flag since VictoriaMetrics v1.145.0).
+        opentelemetry.promoteAllResourceAttributes: "true"
+      service:
+        type: NodePort
+        nodePort: 30428
