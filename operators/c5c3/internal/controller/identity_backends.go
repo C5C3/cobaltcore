@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"sort"
-	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -148,28 +147,6 @@ func webSSOChoiceID(b *keystonev1alpha1.KeystoneIdentityBackend) string {
 	sum := sha256.Sum256([]byte(id))
 	suffix := "_" + hex.EncodeToString(sum[:4])
 	return id[:maxWebSSOChoiceIDLen-len(suffix)] + suffix
-}
-
-// horizonPublicEndpoint returns the BROWSER-observed dashboard base URL, with
-// any trailing slash trimmed so the derived WebSSO origin carries exactly one.
-// An explicit publicEndpoint wins; otherwise, when a gateway is set, it is
-// derived as "https://{gateway.hostname}" (the default-443 form). When neither
-// is set it returns "" — no dashboard is externally reachable, so there is no
-// origin to trust.
-//
-// It mirrors keystonePublicEndpoint and takes the *ServiceHorizonSpec for the
-// same reason: a nil pointer (services.horizon unset) yields "".
-func horizonPublicEndpoint(hz *c5c3v1alpha1.ServiceHorizonSpec) string {
-	if hz == nil {
-		return ""
-	}
-	if hz.PublicEndpoint != "" {
-		return strings.TrimRight(hz.PublicEndpoint, "/")
-	}
-	if hz.Gateway != nil && hz.Gateway.Hostname != "" {
-		return "https://" + hz.Gateway.Hostname
-	}
-	return ""
 }
 
 // identityBackendToControlPlaneMapper maps a KeystoneIdentityBackend event onto

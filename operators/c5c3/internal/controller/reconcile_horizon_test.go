@@ -12,6 +12,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -458,6 +459,61 @@ func TestReconcileHorizon_ReplicasRevertsToDefaultWhenCleared(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	h = getProjectedHorizon(t, r.Client, cp)
 	g.Expect(h.Spec.Deployment.Replicas).To(Equal(commonv1.DefaultReplicas))
+}
+
+// TestReconcileHorizon_ExtraConfigProjectedVerbatim proves the dashboard's flat
+// Django extraConfig block is projected onto the child verbatim, and that the
+// child never aliases cp.Spec: mutating the projected map (a new key, and a
+// value's Raw bytes) leaves the ControlPlane spec untouched.
+func TestReconcileHorizon_ExtraConfigProjectedVerbatim(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	cp.Spec.Services.Horizon.ExtraConfig = map[string]apiextensionsv1.JSON{
+		"SESSION_TIMEOUT": {Raw: []byte("3600")},
+	}
+	r := newHorizonTestReconciler(t, cp)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	h := getProjectedHorizon(t, r.Client, cp)
+	g.Expect(h.Spec.ExtraConfig).To(HaveKeyWithValue(
+		"SESSION_TIMEOUT", apiextensionsv1.JSON{Raw: []byte("3600")},
+	),
+		"the Django setting must be projected verbatim")
+
+	// No aliasing: mutating the projected child's map and a value's Raw bytes must
+	// not reach back into the ControlPlane spec.
+	entry := h.Spec.ExtraConfig["SESSION_TIMEOUT"]
+	entry.Raw[0] = '9'
+	h.Spec.ExtraConfig["INJECTED"] = apiextensionsv1.JSON{Raw: []byte("true")}
+	g.Expect(cp.Spec.Services.Horizon.ExtraConfig).To(Equal(map[string]apiextensionsv1.JSON{
+		"SESSION_TIMEOUT": {Raw: []byte("3600")},
+	}), "the child must not alias cp.Spec.Services.Horizon.ExtraConfig")
+}
+
+// TestReconcileHorizon_ExtraConfigClearedProjectsNil proves the field is
+// assigned unconditionally: clearing the extraConfig block reverts the child to
+// an absent spec.extraConfig rather than leaving the previously-projected value
+// pinned.
+func TestReconcileHorizon_ExtraConfigClearedProjectsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := horizonControlPlane()
+	cp.Spec.Services.Horizon.ExtraConfig = map[string]apiextensionsv1.JSON{
+		"SESSION_TIMEOUT": {Raw: []byte("3600")},
+	}
+	r := newHorizonTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.ExtraConfig).NotTo(BeEmpty())
+
+	cp.Spec.Services.Horizon.ExtraConfig = nil
+	_, err = r.reconcileHorizon(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedHorizon(t, r.Client, cp).Spec.ExtraConfig).To(BeNil(),
+		"clearing the extraConfig block must revert the child")
 }
 
 func TestReconcileHorizon_MirrorsChildReady(t *testing.T) {

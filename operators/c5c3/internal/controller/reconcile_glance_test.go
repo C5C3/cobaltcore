@@ -624,6 +624,65 @@ func TestReconcileGlance_ImageOverrideWins(t *testing.T) {
 	g.Expect(gl.Spec.Image.Tag).To(Equal("custom"))
 }
 
+// TestReconcileGlance_ExtraConfigMerge proves the projected child's
+// spec.extraConfig is the key-by-key merge of globalExtraConfig and the
+// per-service block: the per-service value wins on an overlapping key, a
+// global-only key in the same section survives, and a global-only section is
+// carried over.
+func TestReconcileGlance_ExtraConfigMerge(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{
+		"database": {
+			"connection_recycle_time": "280",
+			"max_pool_size":           "5",
+		},
+		"DEFAULT": {"debug": "true"},
+	}
+	cp.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{
+		"database": {"connection_recycle_time": "600"}, // overrides global
+	}
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	gl := getProjectedGlance(t, r.Client, cp)
+	g.Expect(gl.Spec.ExtraConfig).To(Equal(map[string]map[string]string{
+		"database": {
+			"connection_recycle_time": "600", // per-service wins
+			"max_pool_size":           "5",   // global-only key in the same section
+		},
+		"DEFAULT": {"debug": "true"}, // global-only section
+	}), "per-service extraConfig must win, global keys/sections merged in")
+}
+
+// TestReconcileGlance_ExtraConfigClearedProjectsNil proves the field is assigned
+// unconditionally: clearing both extraConfig blocks reverts the child to an
+// absent spec.extraConfig rather than leaving the previously-projected value
+// pinned.
+func TestReconcileGlance_ExtraConfigClearedProjectsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{"DEFAULT": {"debug": "true"}}
+	cp.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{
+		"database": {"connection_recycle_time": "600"},
+	}
+	r := newGlanceTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.ExtraConfig).NotTo(BeEmpty())
+
+	cp.Spec.GlobalExtraConfig = nil
+	cp.Spec.Services.Glance.ExtraConfig = nil
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.ExtraConfig).To(BeNil(),
+		"clearing both extraConfig blocks must revert the child")
+}
+
 // TestReconcileGlance_DatabaseManagedProjection verifies the managed-mode DB
 // wiring: the logical schema is always "glance", the secretRef points at the
 // operator-owned DB-credential Secret, and credentialsMode is Dynamic by default

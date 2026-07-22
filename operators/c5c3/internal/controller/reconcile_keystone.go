@@ -306,6 +306,14 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 
 	keystone.Spec.PolicyOverrides = merged
 
+	// Project the merged extraConfig (globalExtraConfig unioned with the
+	// per-service block, per-service winning key by key). Assigned
+	// unconditionally, following the revert-on-clear convention: a nil merge keeps
+	// the SSA-applied intent free of spec.extraConfig, so a direct edit on the
+	// child stays unowned until a ControlPlane block is set — and clearing the
+	// ControlPlane block reverts the child rather than pinning the last value.
+	keystone.Spec.ExtraConfig = c5c3v1alpha1.MergedExtraConfig(cp.Spec.GlobalExtraConfig, cp.Spec.Services.Keystone.ExtraConfig)
+
 	// Project the ControlPlane's RESOLVED store selection onto the Keystone child:
 	// the ControlPlane's explicit spec.secretStoreRef when set, otherwise the
 	// operator-provisioned per-tenant store the child shares the namespace with.
@@ -370,7 +378,7 @@ func federationProxyImage(cp *c5c3v1alpha1.ControlPlane) *commonv1.ImageSpec {
 // carries no ordering dependency on reconcileHorizon — which is gated on
 // KeystoneReady and therefore runs strictly after this projection.
 func trustedDashboards(cp *c5c3v1alpha1.ControlPlane) []string {
-	base := horizonPublicEndpoint(cp.Spec.Services.Horizon)
+	base := cp.Spec.Services.Horizon.DerivedPublicEndpoint()
 	if base == "" {
 		return nil
 	}
