@@ -23,12 +23,12 @@ import (
 	"github.com/c5c3/forge/internal/common/validation"
 )
 
-// pythonSettingName matches a valid Python identifier. extraConfig keys are
+// PythonSettingName matches a valid Python identifier. extraConfig keys are
 // rendered verbatim as the left-hand side of a `NAME = <literal>` assignment
 // in local_settings.py, so a key that is not an identifier could inject
 // arbitrary statements (an embedded newline) or evade the exact-match
 // SECRET_KEY guard (a trailing space). Anything outside this set is rejected.
-var pythonSettingName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var PythonSettingName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // HorizonWebhook implements defaulting and validation webhooks for the
 // Horizon CRD. Client is injected at startup for cluster-scoped resource
@@ -247,7 +247,7 @@ func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon) error {
 			))
 			continue
 		}
-		if !pythonSettingName.MatchString(name) {
+		if !PythonSettingName.MatchString(name) {
 			allErrs = append(allErrs, field.Invalid(
 				specPath.Child("extraConfig").Key(name),
 				name,
