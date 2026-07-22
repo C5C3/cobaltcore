@@ -5,6 +5,7 @@
 package v1alpha1
 
 import (
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -109,6 +110,18 @@ type ControlPlaneSpec struct {
 	// +optional
 	GlobalPolicyOverrides *commonv1.PolicySpec `json:"globalPolicyOverrides,omitempty"`
 
+	// GlobalExtraConfig is a free-form INI block applied to every INI-configured
+	// service the ControlPlane declares (Keystone and Glance today). It is merged
+	// key by key with each service's own extraConfig — sections are unioned, the
+	// per-service value wins per key, and a global key with no per-service
+	// counterpart stays effective — before the merged result is projected onto
+	// the child CR. It NEVER applies to Horizon: the dashboard renders flat Django
+	// settings, not INI, so services.horizon.extraConfig stands alone. Legal but
+	// inert in External mode (no INI-configured workload is deployed), the same
+	// posture globalPolicyOverrides has.
+	// +optional
+	GlobalExtraConfig map[string]map[string]string `json:"globalExtraConfig,omitempty"`
+
 	// KORC configures the K-ORC (OpenStack Resource Controller) integration used
 	// to bootstrap and rotate the admin application credential and any declared
 	// bootstrap resources.
@@ -180,17 +193,29 @@ type ServicesSpec struct {
 // dependency coordinates below).
 //
 // DECISION (plan decision #3 — L2 dependency coordinates): the L1 api
-// package imports ONLY commonv1, k8s.io/apimachinery/*, k8s.io/api/core/v1, and
-// sigs.k8s.io/controller-runtime/* (all already in go.mod). `go mod tidy`
-// therefore prunes any service-module require because nothing here imports
-// them. The L2 reconciler will need these coordinates (recorded here so the
-// orchestrator does not have to re-resolve them):
+// package originally imported ONLY commonv1, k8s.io/apimachinery/*,
+// k8s.io/api/core/v1, and sigs.k8s.io/controller-runtime/* (all already in
+// go.mod). `go mod tidy` therefore pruned any service-module require because
+// nothing here imported them. The L2 reconciler will need these coordinates
+// (recorded here so the orchestrator does not have to re-resolve them):
 //   - keystone           => ../keystone (local replace directive)
 //   - mariadb-operator    => github.com/mariadb-operator/mariadb-operator v0.38.1
 //   - external-secrets    => github.com/external-secrets/external-secrets/apis
 //     (match the pin in operators/keystone/go.mod)
 //   - K-ORC               => github.com/k-orc/openstack-resource-controller/v2 v2.5.0
 //   - memcached.c5c3.io   => NO public Go module; L2 uses unstructured.Unstructured
+//
+// DECISION AMENDED (admission-time extraConfig validation): the api package now
+// ADDITIONALLY imports the three service api packages —
+// operators/keystone/api/v1alpha1, operators/glance/api/v1alpha1, and
+// operators/horizon/api/v1alpha1 — to reach their embedded option catalogs and
+// ownership registries, so the merged extraConfig is validated at admission
+// against the same catalogs the reconciler projects. This gives up only
+// package-level import purity, not a new module dependency: all three modules
+// have been direct requires in operators/c5c3/go.mod since the L2 reconciler
+// landed, so `go mod tidy` no longer prunes them. Reaching the catalogs in
+// place keeps them single-source rather than duplicating them into the api
+// package.
 //
 // Mode is the Managed|External discriminator (default Managed). In Managed mode
 // (or unset) the reconciler projects a full Keystone service exactly as before.
@@ -215,6 +240,7 @@ type ServicesSpec struct {
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.dedicatedBackingServices)",message="services.keystone.dedicatedBackingServices is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.namespace)",message="services.keystone.namespace is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.databaseCredentialsMode)",message="services.keystone.databaseCredentialsMode is forbidden when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.extraConfig)",message="services.keystone.extraConfig is forbidden when services.keystone.mode is External"
 type ServiceKeystoneSpec struct {
 	// Mode selects whether the Keystone service is Managed (the reconciler
 	// deploys and owns a full Keystone workload, today's behavior) or External
@@ -248,6 +274,14 @@ type ServiceKeystoneSpec struct {
 	// When set, these take precedence over spec.global for the Keystone service.
 	// +optional
 	PolicyOverrides *commonv1.PolicySpec `json:"policyOverrides,omitempty"`
+
+	// ExtraConfig is a free-form INI block for the Keystone service. It is merged
+	// key by key with spec.globalExtraConfig — sections unioned, this per-service
+	// value winning per key — and the merged result is projected onto the Keystone
+	// child's spec.extraConfig. Forbidden in External mode (CEL + webhook
+	// enforced): no Keystone workload is deployed, so there is no config to render.
+	// +optional
+	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
 
 	// RotationInterval optionally overrides the Fernet key rotation interval the
 	// reconciler derives for the projected Keystone CR. When nil the reconciler
@@ -727,6 +761,15 @@ type ServiceHorizonSpec struct {
 	// +kubebuilder:validation:Pattern=`^https?://`
 	PublicEndpoint string `json:"publicEndpoint,omitempty"`
 
+	// ExtraConfig carries free-form flat Django settings, mirroring the Horizon
+	// child's spec.extraConfig (operators/horizon/api/v1alpha1/horizon_types.go).
+	// Keys are Django setting names and values are arbitrary JSON; the reconciler
+	// projects the block verbatim onto the Horizon child. It is NOT an INI block,
+	// so spec.globalExtraConfig — which is INI, applied only to the INI-configured
+	// services — never applies to it.
+	// +optional
+	ExtraConfig map[string]apiextensionsv1.JSON `json:"extraConfig,omitempty"`
+
 	// DedicatedBackingServices opts the dashboard OUT of the ControlPlane-wide
 	// shared cache declared in spec.infrastructure and gives it a cache of its
 	// own. Omitting it (the default) keeps today's behavior — the dashboard shares
@@ -836,6 +879,13 @@ type ServiceGlanceSpec struct {
 	// +optional
 	// +kubebuilder:validation:Enum=Static;Dynamic
 	DatabaseCredentialsMode string `json:"databaseCredentialsMode,omitempty"`
+
+	// ExtraConfig is a free-form INI block for the Glance service. It is merged
+	// key by key with spec.globalExtraConfig — sections unioned, this per-service
+	// value winning per key — and the merged result is projected onto the Glance
+	// child's spec.extraConfig.
+	// +optional
+	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
 
 	// DedicatedBackingServices opts the Glance service out of the ControlPlane-wide
 	// shared instances declared in spec.infrastructure and gives it backing
