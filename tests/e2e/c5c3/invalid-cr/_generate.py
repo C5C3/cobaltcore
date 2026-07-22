@@ -48,11 +48,12 @@ LICENSE_HEADER = """\
 
 # Canonical ControlPlane scaffold. Any future required field on ControlPlaneSpec
 # must be added below AND verified against every fixture. Placeholders:
-#   {name}           metadata.name
-#   {infrastructure} the whole spec.infrastructure block (indent 2) or ""
-#   {keystone}       the spec.services.keystone body (indent 6) or "" for nil
-#   {horizon}        the spec.services.horizon entry (indent 4) or ""
-#   {glance}         the spec.services.glance entry (indent 4) or ""
+#   {name}                metadata.name
+#   {global_extra_config} the spec.globalExtraConfig block (indent 2) or ""
+#   {infrastructure}      the whole spec.infrastructure block (indent 2) or ""
+#   {keystone}            the spec.services.keystone body (indent 6) or "" for nil
+#   {horizon}             the spec.services.horizon entry (indent 4) or ""
+#   {glance}              the spec.services.glance entry (indent 4) or ""
 #
 # korc.adminCredential.applicationCredential is intentionally omitted: the
 # defaulting webhook materializes it (rotation.mode etc.) before the CRD's
@@ -64,7 +65,7 @@ metadata:
   name: {name}
 spec:
   openStackRelease: "2025.2"
-{infrastructure}  services:
+{global_extra_config}{infrastructure}  services:
     keystone:
 {keystone}{horizon}{glance}  korc:
     adminCredential:
@@ -145,12 +146,15 @@ class Fixture:
     infrastructure: str = ""
     horizon: str = ""
     glance: str = ""
+    # The spec.globalExtraConfig block (indent 2, trailing newline) or "".
+    global_extra_config: str = ""
     # The spec.korc.serviceAccounts block (indent 4, trailing newline) or "".
     service_accounts: str = ""
 
     def render(self) -> str:
         body = SCAFFOLD.format(
             name=self.name,
+            global_extra_config=self.global_extra_config,
             infrastructure=self.infrastructure,
             keystone=self.keystone,
             horizon=self.horizon,
@@ -1040,6 +1044,76 @@ FIXTURES: tuple[Fixture, ...] = (
             "      external: null\n"
         ),
         infrastructure=MANAGED_INFRA,
+    ),
+    # --- freeform extraConfig admission (issue #704, create-rejection matrix) ---
+    Fixture(
+        filename="58-global-extraconfig-unknown-option.yaml",
+        comment=(
+            "spec.globalExtraConfig sets an unknown option (providr, a typo of the\n"
+            "keystone [token] provider option) in a known section: rejected by the webhook\n"
+            "because it is absent from the keystone 2025.2 option catalog. The finding is\n"
+            "attributed back to the global block that carried it, so the message names\n"
+            "spec.globalExtraConfig[token][providr]."
+        ),
+        name="cp-global-extraconfig-unknown",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        global_extra_config=(
+            "  globalExtraConfig:\n"
+            "    token:\n"
+            "      providr: fernet\n"
+        ),
+    ),
+    Fixture(
+        filename="59-glance-extraconfig-unknown-option.yaml",
+        comment=(
+            "services.glance.extraConfig sets an unknown option (default_backend_typo) in\n"
+            "the known [glance_store] section: rejected by the webhook because it is absent\n"
+            "from the glance 2025.2 option catalog. The rest of the glance block is valid, so\n"
+            "the ONLY violation is the per-service catalog check."
+        ),
+        name="cp-glance-extraconfig-unknown",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            VALID_GLANCE
+            + "      extraConfig:\n"
+            + "        glance_store:\n"
+            + "          default_backend_typo: rbd\n"
+        ),
+    ),
+    Fixture(
+        filename="60-keystone-extraconfig-in-external.yaml",
+        comment=(
+            "services.keystone.extraConfig in External mode violates the CEL rule: no\n"
+            "Keystone workload is deployed, so there is no child config the merged block\n"
+            "would project. The value is otherwise a shape-valid INI block, so the ONLY\n"
+            "violation is the External-mode forbid."
+        ),
+        name="cp-external-extraconfig",
+        keystone=(
+            VALID_EXTERNAL_KEYSTONE
+            + "      extraConfig:\n"
+            + "        DEFAULT:\n"
+            + '          debug: "true"\n'
+        ),
+    ),
+    Fixture(
+        filename="61-horizon-extraconfig-secret-key.yaml",
+        comment=(
+            "SECRET_KEY in services.horizon.extraConfig is forbidden by the webhook\n"
+            "(Family A, unconditional): it is managed via services.horizon.secretKeyRef, and\n"
+            "an override in extraConfig would collide with the operator-projected Django\n"
+            "session key."
+        ),
+        name="cp-horizon-extraconfig-secret-key",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        horizon=(
+            "    horizon:\n"
+            "      extraConfig:\n"
+            "        SECRET_KEY: hunter2\n"
+        ),
     ),
 )
 

@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.globalExtraConfig sets an unknown option (providr, a typo of the
+# keystone [token] provider option) in a known section: rejected by the webhook
+# because it is absent from the keystone 2025.2 option catalog. The finding is
+# attributed back to the global block that carried it, so the message names
+# spec.globalExtraConfig[token][providr].
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-global-extraconfig-unknown
+spec:
+  openStackRelease: "2025.2"
+  globalExtraConfig:
+    token:
+      providr: fernet
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

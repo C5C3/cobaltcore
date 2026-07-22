@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.keystone.extraConfig in External mode violates the CEL rule: no
+# Keystone workload is deployed, so there is no child config the merged block
+# would project. The value is otherwise a shape-valid INI block, so the ONLY
+# violation is the External-mode forbid.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-external-extraconfig
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: https://keystone.example.com/v3
+      extraConfig:
+        DEFAULT:
+          debug: "true"
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
