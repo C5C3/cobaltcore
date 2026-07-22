@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Opt-in kind overlay for the dizzy observability stack — applied only when
+# the operator explicitly requests it (WITH_DIZZY=true make deploy-infra).
+#
+# Bundles everything needed to render a working VictoriaMetrics + Grafana
+# stack on a kind cluster:
+#   1. The dizzy Namespace (declared inline so the overlay is
+#      self-contained; unlike the prometheus overlay's Namespace it lives
+#      ONLY here — production ships no dizzy stack — see namespace.yaml).
+#   2. Two HelmRepository sources declared into `flux-system`
+#      (victoria-metrics, grafana) so deploy/flux-system/** stays untouched.
+#   3. Two HelmReleases (VictoriaMetrics-single, Grafana) with kind-tuned
+#      values baked directly into the release files.
+#   4. The static `dizzy-grafana` HTTPRoute attaching to the `https-dizzy`
+#      Gateway listener.
+#   5. A configMapGenerator-produced ConfigMap wrapping the three dizzy
+#      dashboard JSONs for the Grafana dashboard provider.
+#
+# All resource references are local to this overlay (no parent-directory
+# `../../` paths). The overlay therefore renders cleanly under kustomize's
+# default `LoadRestrictionsRootOnly` security check, which means
+# `kubectl apply -k deploy/kind/dizzy` works without `--load-restrictor`.
+# kubectl's embedded kustomize does NOT expose `--load-restrictor`
+# (kubernetes/kubectl#948), so keeping the overlay self-contained is the
+# only way to ship `kubectl apply -k` as the production caller in
+# hack/deploy-infra.sh — same constraint that drove the chaos-mesh and
+# prometheus overlays.
+#
+# STAGING CONTRACT the dashboards/ directory is git-ignored (see
+# .gitignore) and does NOT exist in a fresh checkout. hack/dizzy.sh
+# stage-dashboards populates it from the pinned dizzy release tarball
+# BEFORE `kustomize build` can resolve the configMapGenerator's `files:`
+# below (LoadRestrictionsRootOnly forbids reaching outside the overlay for
+# them). `WITH_DIZZY=true make deploy-infra` runs the staging
+# automatically; a raw `kustomize build deploy/kind/dizzy` on a fresh
+# checkout FAILS until stage-dashboards has run.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# NO top-level `namespace:` on purpose: the two HelmRepository sources live
+# in `flux-system` while everything else lives in `dizzy`. A global
+# namespace would clobber the HelmRepositories into `dizzy` and break the
+# HelmRelease sourceRefs, so each resource carries its own namespace.
+
+resources:
+  - namespace.yaml
+  - source-victoria-metrics.yaml
+  - source-grafana.yaml
+  - release-victoria-metrics.yaml
+  - release-grafana.yaml
+  - httproute.yaml
+
+configMapGenerator:
+  # Wraps the three dizzy dashboard JSONs so the Grafana dashboard provider
+  # (dashboardsConfigMaps.dizzy in release-grafana.yaml) mounts them. The
+  # files below are staged at deploy time by hack/dizzy.sh stage-dashboards
+  # and are NOT tracked in git (see .gitignore); the canonical source is the
+  # pinned dizzy release tarball.
+  - name: grafana-dashboards
+    namespace: dizzy
+    files:
+      - dashboards/overview.json
+      - dashboards/api-operations.json
+      - dashboards/time-to-ready.json
+    options:
+      # disableNameSuffixHash keeps the ConfigMap name stable
+      # (`grafana-dashboards`, no `-<hash>` suffix) because the grafana
+      # chart references it by fixed name via dashboardsConfigMaps. The
+      # trade-off is that Grafana does NOT auto-reload on a dashboard edit
+      # — acceptable here since the dashboards are a version-pinned asset
+      # that only changes on a dizzy bump + redeploy.
+      disableNameSuffixHash: true

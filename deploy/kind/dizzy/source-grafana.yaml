@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Grafana HelmRepository — chart source for the dizzy overlay's dashboard
+# frontend. Declared into the `flux-system` namespace (where Flux resolves
+# HelmRelease sourceRefs) even though this file lives inside the kind-only
+# dizzy overlay, so deploy/flux-system/** stays untouched and the overlay
+# remains self-contained (no `../../` parent traversal — same
+# LoadRestrictionsRootOnly constraint that drove the chaos-mesh source).
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: grafana
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://grafana.github.io/helm-charts

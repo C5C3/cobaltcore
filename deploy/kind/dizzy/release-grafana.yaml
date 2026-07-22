@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Grafana HelmRelease — anonymous read-only dashboard frontend for the
+# dizzy observability stack, reached at https://dizzy.127-0-0-1.nip.io via
+# the static HTTPRoute in httproute.yaml. Opt-in: reconciled only when the
+# dizzy overlay is applied (WITH_DIZZY=true make deploy-infra).
+#
+# SERVICE NAME the grafana chart's fullname helper collapses to the bare
+# release name when that name already contains "grafana", so release
+# `dizzy-grafana` renders Service `dizzy-grafana` (port 80 → container
+# 3000) — the name httproute.yaml's backendRef targets.
+#
+# VALUES LAYOUT VERIFIED against grafana 10.5.15 with `helm show values`
+# and `helm template`: the `grafana.ini`, `datasources`,
+# `dashboardProviders`, and `dashboardsConfigMaps` top-level keys exist
+# with these shapes, the Service defaults to port 80, and the rendered
+# Service is `dizzy-grafana`. No corrections were needed.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: dizzy-grafana
+  namespace: dizzy
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: grafana
+      version: ">=10.0.0 <11.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: grafana
+        namespace: flux-system
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    grafana.ini:
+      auth.anonymous:
+        # Anonymous Viewer access — kind-only localhost posture: the stack
+        # is reachable solely via the host's :443 bridge, so a login form
+        # would only get in the way of the local demo.
+        enabled: true
+        org_role: Viewer
+      auth:
+        disable_login_form: true
+      analytics:
+        reporting_enabled: false
+      dashboards:
+        default_home_dashboard_path: /var/lib/grafana/dashboards/dizzy/overview.json
+    datasources:
+      datasources.yaml:
+        apiVersion: 1
+        datasources:
+          - name: VictoriaMetrics
+            type: prometheus
+            # The three provisioned dashboards reference this datasource by
+            # the fixed uid `victoriametrics`, so it must stay verbatim.
+            uid: victoriametrics
+            access: proxy
+            # Matches the VictoriaMetrics server Service name from
+            # release-victoria-metrics.yaml.
+            url: http://dizzy-victoria-metrics-server.dizzy.svc:8428
+            isDefault: true
+            jsonData:
+              # Mirrors OTEL_METRIC_EXPORT_INTERVAL=15000 pinned in
+              # hack/dizzy.sh, so the graph step matches the ingest cadence.
+              timeInterval: "15s"
+    dashboardProviders:
+      dashboardproviders.yaml:
+        apiVersion: 1
+        providers:
+          - name: dizzy
+            folder: ""
+            type: file
+            disableDeletion: false
+            options:
+              path: /var/lib/grafana/dashboards/dizzy
+    dashboardsConfigMaps:
+      dizzy: grafana-dashboards
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi

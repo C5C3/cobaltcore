@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Static HTTPRoute exposing the dizzy Grafana UI at
+# https://dizzy.127-0-0-1.nip.io — the repo's FIRST hand-authored
+# HTTPRoute. Every other HTTPRoute in the tree is projected by a service
+# operator (keystone/horizon/glance); this one lives next to its backend
+# in the gated dizzy overlay because there is no operator projecting it.
+#
+# It attaches to the `https-dizzy` listener on Gateway `openstack-gw`
+# (namespace `openstack`). That listener admits cross-namespace routes via
+# `allowedRoutes.namespaces.from: Selector` matching the automatic
+# `kubernetes.io/metadata.name: dizzy` label — so NO ReferenceGrant is
+# needed: route→Gateway attachment is governed by the listener's
+# allowedRoutes, and the backend Service (dizzy-grafana) is same-namespace.
+#
+# The backendRef targets the grafana chart's Service (port 80 → container
+# 3000).
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: dizzy-grafana
+  namespace: dizzy
+spec:
+  parentRefs:
+    - name: openstack-gw
+      namespace: openstack
+      sectionName: https-dizzy
+  hostnames:
+    - dizzy.127-0-0-1.nip.io
+  rules:
+    - backendRefs:
+        - name: dizzy-grafana
+          port: 80
