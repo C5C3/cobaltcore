@@ -3,9 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Gateway API wiring for the kind Quick Start — `GatewayClass/envoy`
-# plus a three-listener HTTPS Gateway on port 443
-# (`keystone.127-0-0-1.nip.io`, `horizon.127-0-0-1.nip.io`, and
-# `glance.127-0-0-1.nip.io`, routed by SNI) terminating TLS with
+# plus a four-listener HTTPS Gateway on port 443
+# (`keystone.127-0-0-1.nip.io`, `horizon.127-0-0-1.nip.io`,
+# `glance.127-0-0-1.nip.io`, and `dizzy.127-0-0-1.nip.io`, routed by
+# SNI) terminating TLS with
 # self-signed certificates issued by the existing `selfsigned-cluster-issuer`
 # ClusterIssuer (the same issuer OpenBao uses; see
 # `deploy/flux-system/infrastructure/cluster-issuer.yaml`).
@@ -109,3 +110,37 @@ spec:
       allowedRoutes:
         namespaces:
           from: Same
+    # Fourth HTTPS listener for the Grafana UI of the opt-in dizzy
+    # observability overlay (`deploy/kind/dizzy/`, gated on
+    # WITH_DIZZY=true in hack/deploy-infra.sh). It shares port 443 with
+    # the listeners above, routed by SNI on its distinct `hostname` and
+    # terminating with its own certificate; the envoy-nodeport
+    # StrategicMerge patch keys by `port: 443` and is untouched by
+    # another listener on the same port.
+    #
+    # This is the repo's FIRST listener admitting routes from another
+    # namespace (`allowedRoutes.namespaces.from: Selector` instead of
+    # `Same`): the static `dizzy-grafana` HTTPRoute lives next to its
+    # backend in the gated `dizzy` overlay's namespace, selected via the
+    # automatic `kubernetes.io/metadata.name` namespace label (no custom
+    # label needed) — this avoids introducing the repo's first
+    # ReferenceGrant.
+    #
+    # The listener is unconditional: with WITH_DIZZY unset no route
+    # attaches and requests for this SNI get 404, mirroring how the
+    # glance listener exists without a Glance service.
+    - name: https-dizzy
+      protocol: HTTPS
+      port: 443
+      hostname: dizzy.127-0-0-1.nip.io
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: dizzy-nip-io-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: dizzy
