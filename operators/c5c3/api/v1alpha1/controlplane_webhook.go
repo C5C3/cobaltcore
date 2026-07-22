@@ -1198,7 +1198,20 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 // Reviewer: please verify boundary 6 = option (a).
 func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPlane) (admission.Warnings, error) {
 	warnings := insecurePublicEndpointWarnings(obj)
-	if err := newInvalidIfErrs(obj, w.validate(obj)); err != nil {
+
+	// extraConfig admission checks: the un-gated shape/ownership family (A) and
+	// the option-catalog family (B). Both fold their errors into the single
+	// Invalid response alongside validate()'s, mirroring how the keystone child
+	// folds its catalog errors in.
+	ownershipWarnings, ownershipErrs := validateExtraConfigOwnership(obj)
+	catalogWarnings, catalogErrs := validateExtraConfigCatalogs(obj)
+	warnings = append(warnings, ownershipWarnings...)
+	warnings = append(warnings, catalogWarnings...)
+
+	allErrs := w.validate(obj)
+	allErrs = append(allErrs, ownershipErrs...)
+	allErrs = append(allErrs, catalogErrs...)
+	if err := newInvalidIfErrs(obj, allErrs); err != nil {
 		return warnings, err
 	}
 	if err := w.validateUniqueInNamespace(ctx, obj); err != nil {
@@ -1221,10 +1234,30 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 // downgrade error are accumulated into a single Invalid response so a reviewer
 // sees all problems at once.
 func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *ControlPlane) (admission.Warnings, error) {
+	warnings := insecurePublicEndpointWarnings(newObj)
+
 	allErrs := w.validate(newObj)
 	allErrs = append(allErrs, validateImmutable(oldObj, newObj)...)
 	allErrs = append(allErrs, validateReleaseNotDowngraded(oldObj, newObj)...)
-	return insecurePublicEndpointWarnings(newObj), newInvalidIfErrs(newObj, allErrs)
+
+	// Family A (shape/ownership) always re-runs: it depends on nothing a
+	// regenerated catalog can invalidate, and a newly-derived Horizon endpoint
+	// can turn a previously-admitted trusted_dashboard override into a rejection.
+	ownershipWarnings, ownershipErrs := validateExtraConfigOwnership(newObj)
+	warnings = append(warnings, ownershipWarnings...)
+	allErrs = append(allErrs, ownershipErrs...)
+
+	// Family B (option catalog) re-runs only when one of its inputs changed, so
+	// an unrelated update (e.g. scaling replicas) never retroactively rejects a
+	// CR whose extraConfig was accepted at create time but has since been
+	// invalidated by a regenerated catalog.
+	if controlPlaneExtraConfigCatalogInputsChanged(oldObj, newObj) {
+		catalogWarnings, catalogErrs := validateExtraConfigCatalogs(newObj)
+		warnings = append(warnings, catalogWarnings...)
+		allErrs = append(allErrs, catalogErrs...)
+	}
+
+	return warnings, newInvalidIfErrs(newObj, allErrs)
 }
 
 // ValidateDelete implements admission.Validator[*ControlPlane]. The method is
@@ -1895,6 +1928,10 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 		if ks.DatabaseCredentialsMode != "" {
 			allErrs = append(allErrs, field.Forbidden(ksPath.Child("databaseCredentialsMode"),
 				"forbidden when services.keystone.mode is External (no managed database is provisioned, so there is no credentials mode to override)"))
+		}
+		if ks.ExtraConfig != nil {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("extraConfig"),
+				"forbidden when services.keystone.mode is External (no Keystone workload is deployed, so there is no config to render)"))
 		}
 
 		// Cross-field rules CEL cannot express.

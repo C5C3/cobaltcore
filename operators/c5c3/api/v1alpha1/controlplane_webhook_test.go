@@ -13,6 +13,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -4243,4 +4244,545 @@ func TestValidateCreate_AcceptsCredentialsModeOverridesOnManagedShared(t *testin
 				"a Static/Dynamic override on a managed shared database must be admitted for both services")
 		})
 	}
+}
+
+// --- extraConfig admission checks (Family A ownership/shape, Family B catalog) ---
+
+// jsonSetting is a small helper for a Horizon extraConfig JSON value.
+func jsonSetting(raw string) apiextensionsv1.JSON {
+	return apiextensionsv1.JSON{Raw: []byte(raw)}
+}
+
+// TestValidateCreate_RejectsUnknownGlobalExtraConfigOption pins that a global INI
+// option the Keystone catalog does not accept is rejected at the real
+// globalExtraConfig leaf, naming the keystone catalog and its release.
+func TestValidateCreate_RejectsUnknownGlobalExtraConfigOption(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{"token": {"providr": "fernet"}}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][providr]"))
+	g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+}
+
+// TestValidateCreate_RejectsGlobalKeystoneOptionUnknownToGlance pins the
+// cross-service reach of globalExtraConfig: [token] expiration is a valid
+// Keystone option but Glance has no [token] section, so declaring Glance rejects
+// the global block against the GLANCE catalog.
+func TestValidateCreate_RejectsGlobalKeystoneOptionUnknownToGlance(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{"token": {"expiration": "3600"}}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][expiration]"))
+	g.Expect(err.Error()).To(ContainSubstring("no such section in the glance 2025.2 option catalog"))
+}
+
+// TestValidateCreate_RejectsUnknownGlanceExtraConfigOption pins a per-service
+// Glance override the catalog does not accept.
+func TestValidateCreate_RejectsUnknownGlanceExtraConfigOption(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{"DEFAULT": {"workerz": "4"}}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[DEFAULT][workerz]"))
+	g.Expect(err.Error()).To(ContainSubstring("no such option in the glance 2025.2 option catalog"))
+}
+
+// TestValidateCreate_RejectsUnknownOptionInBothBlocks pins the by-membership
+// attribution: an unknown key present in both the global and the per-service
+// block yields exactly two errors, one per contributing path.
+func TestValidateCreate_RejectsUnknownOptionInBothBlocks(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{"token": {"providr": "x"}}
+	cp.Spec.Services.Keystone.ExtraConfig = map[string]map[string]string{"token": {"providr": "y"}}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][providr]"))
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.extraConfig[token][providr]"))
+	g.Expect(strings.Count(err.Error(), "no such option in the keystone 2025.2 option catalog")).
+		To(Equal(2), "one error per contributing block")
+}
+
+// TestValidateCreate_RejectsUnknownSection pins the unknown-section message: it
+// names the ControlPlane framing and never leaks the child webhook's
+// "declare via spec.plugins" hint.
+func TestValidateCreate_RejectsUnknownSection(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{"notasection": {"foo": "bar"}}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[notasection][foo]"))
+	g.Expect(err.Error()).To(ContainSubstring("plugin-registered sections are not configurable through the ControlPlane"))
+	g.Expect(err.Error()).NotTo(ContainSubstring("spec.plugins"))
+}
+
+// TestValidateCreate_ForbidsGlanceRejectedOwnedKey pins that [keystone_authtoken]
+// password is Forbidden regardless of which block carries it — rendering it would
+// leak the service password into the namespace-readable ConfigMap.
+func TestValidateCreate_ForbidsGlanceRejectedOwnedKey(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("in globalExtraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.GlobalExtraConfig = map[string]map[string]string{"keystone_authtoken": {"password": "s3cr3t"}}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[keystone_authtoken][password]"))
+		g.Expect(err.Error()).To(ContainSubstring("password is managed via spec.serviceUser.secretRef and must not be set in extraConfig"))
+	})
+
+	t.Run("in glance extraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{"keystone_authtoken": {"password": "s3cr3t"}}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[keystone_authtoken][password]"))
+		g.Expect(err.Error()).To(ContainSubstring("must not be set in extraConfig"))
+	})
+}
+
+// TestValidateCreate_TrustedDashboardOwnership pins the conditional gate on the
+// merged Keystone [federation] trusted_dashboard: Forbidden when the ControlPlane
+// derives a dashboard endpoint from services.horizon (publicEndpoint or a bare
+// gateway hostname), but admitted with an owned-key warning when no dashboard is
+// derived (an externally-run dashboard doing WebSSO is legitimate).
+func TestValidateCreate_TrustedDashboardOwnership(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	withTrustedDashboard := func() *ControlPlane {
+		cp := validControlPlane()
+		cp.Spec.GlobalExtraConfig = map[string]map[string]string{
+			"federation": {"trusted_dashboard": "https://dash.example.com/auth/websso/"},
+		}
+		return cp
+	}
+
+	t.Run("rejected with horizon publicEndpoint", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := withTrustedDashboard()
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{PublicEndpoint: "https://dash.example.com"}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[federation][trusted_dashboard]"))
+		g.Expect(err.Error()).To(ContainSubstring("Horizon-derived trusted-dashboards projection"))
+	})
+
+	t.Run("rejected with horizon gateway hostname only", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := withTrustedDashboard()
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{Gateway: &commonv1.GatewaySpec{Hostname: "dash.example.com"}}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[federation][trusted_dashboard]"))
+	})
+
+	t.Run("admitted with warning when horizon absent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := withTrustedDashboard()
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(ContainElement(ContainSubstring("[federation] trusted_dashboard")))
+	})
+}
+
+// TestValidateCreate_ForbidsHorizonRejectedSettings pins that SECRET_KEY and one
+// WebSSO and one multi-domain setting are Forbidden unconditionally at their real
+// leaves — the ControlPlane projects websso/multiDomain dynamically, so a collision
+// is not decidable at admission and the key would plant a runtime wedge.
+func TestValidateCreate_ForbidsHorizonRejectedSettings(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+		ExtraConfig: map[string]apiextensionsv1.JSON{
+			"SECRET_KEY":                             jsonSetting(`"x"`),
+			"WEBSSO_ENABLED":                         jsonSetting("true"),
+			"OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT": jsonSetting("true"),
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.extraConfig[SECRET_KEY]"))
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.extraConfig[WEBSSO_ENABLED]"))
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.extraConfig[OPENSTACK_KEYSTONE_MULTIDOMAIN_SUPPORT]"))
+}
+
+// TestValidateCreate_RejectsMalformedExtraConfigShape pins the shape checks on
+// every block: empty section, empty key, empty Horizon setting name, and a
+// Horizon setting that is not a Python identifier.
+func TestValidateCreate_RejectsMalformedExtraConfigShape(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("empty global section name", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.GlobalExtraConfig = map[string]map[string]string{"": {"k": "v"}}
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig"))
+		g.Expect(err.Error()).To(ContainSubstring("extraConfig section name must not be empty"))
+	})
+
+	t.Run("empty keystone option key", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.Services.Keystone.ExtraConfig = map[string]map[string]string{"token": {"": "v"}}
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.extraConfig[token]"))
+		g.Expect(err.Error()).To(ContainSubstring("extraConfig key must not be empty"))
+	})
+
+	t.Run("empty glance section name", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{"": {"k": "v"}}
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig"))
+		g.Expect(err.Error()).To(ContainSubstring("extraConfig section name must not be empty"))
+	})
+
+	t.Run("empty horizon setting name", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+			ExtraConfig: map[string]apiextensionsv1.JSON{"": jsonSetting(`"x"`)},
+		}
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.extraConfig"))
+		g.Expect(err.Error()).To(ContainSubstring("extraConfig setting name must not be empty"))
+	})
+
+	t.Run("non-identifier horizon setting name", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+			ExtraConfig: map[string]apiextensionsv1.JSON{"not-an-identifier": jsonSetting(`"x"`)},
+		}
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.extraConfig[not-an-identifier]"))
+		g.Expect(err.Error()).To(ContainSubstring("must be a valid Python identifier"))
+	})
+}
+
+// TestValidateCreate_RejectsExtraConfigINIInjection pins the value-side INI
+// injection guard: the ownership and catalog gates match by (section, key) name
+// only, so a newline smuggled into a value (or a section name / key) renders a
+// whole extra [section]/key the gates never inspected. The classic PoC smuggles
+// the operator-owned [federation] trusted_dashboard through a legitimate
+// [DEFAULT] debug value; without the shape guard it slips past every gate and
+// Keystone POSTs WebSSO tokens to the attacker origin.
+func TestValidateCreate_RejectsExtraConfigINIInjection(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("newline in global value smuggles a section", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.GlobalExtraConfig = map[string]map[string]string{
+			"DEFAULT": {"debug": "false\n[federation]\ntrusted_dashboard = https://attacker.example"},
+		}
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[DEFAULT][debug]"))
+		g.Expect(err.Error()).To(ContainSubstring("must not contain a newline or carriage return"))
+	})
+
+	t.Run("carriage return in keystone value", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.Services.Keystone.ExtraConfig = map[string]map[string]string{
+			"DEFAULT": {"debug": "false\r[database]\rconnection = mysql://attacker/x"},
+		}
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.extraConfig[DEFAULT][debug]"))
+		g.Expect(err.Error()).To(ContainSubstring("must not contain a newline or carriage return"))
+	})
+
+	t.Run("newline in glance key", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{
+			"DEFAULT": {"debug\n[keystone_authtoken]\npassword": "s3cr3t"},
+		}
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[DEFAULT]"))
+		g.Expect(err.Error()).To(ContainSubstring("must not contain a newline or carriage return"))
+	})
+
+	t.Run("newline in global section name", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Spec.GlobalExtraConfig = map[string]map[string]string{
+			"DEFAULT\n[federation]": {"k": "v"},
+		}
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig"))
+		g.Expect(err.Error()).To(ContainSubstring("section name must not contain a newline or carriage return"))
+	})
+}
+
+// TestValidateCreate_ForbidsKeystoneExtraConfigInExternalMode pins the webhook
+// mirror of the CEL rule: services.keystone.extraConfig is Forbidden in External
+// mode (no Keystone workload is deployed).
+func TestValidateCreate_ForbidsKeystoneExtraConfigInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Infrastructure = nil
+	cp.Spec.Services.Keystone = &ServiceKeystoneSpec{
+		Mode:        KeystoneModeExternal,
+		External:    &ExternalKeystoneSpec{AuthURL: "https://keystone.example.com/v3"},
+		ExtraConfig: map[string]map[string]string{"token": {"expiration": "3600"}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.extraConfig"))
+	g.Expect(err.Error()).To(ContainSubstring("forbidden when services.keystone.mode is External"))
+}
+
+// TestValidateCreate_AcceptsValidOptionInBothBlocks pins that a catalog-valid,
+// non-owned option present in both the global and the per-service block is
+// admitted (no double-count, no spurious rejection).
+func TestValidateCreate_AcceptsValidOptionInBothBlocks(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{"token": {"expiration": "3600"}}
+	cp.Spec.Services.Keystone.ExtraConfig = map[string]map[string]string{"token": {"expiration": "7200"}}
+
+	warnings, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(BeEmpty())
+}
+
+// TestValidateCreate_AcceptsAllFourExtraConfigBlocks is the acceptance base case:
+// a ControlPlane with all four blocks populated with catalog-valid, non-owned
+// content is admitted with no warnings.
+func TestValidateCreate_AcceptsAllFourExtraConfigBlocks(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{"DEFAULT": {"log_date_format": "%Y-%m-%d %H:%M:%S"}}
+	cp.Spec.Services.Keystone.ExtraConfig = map[string]map[string]string{"token": {"expiration": "3600"}}
+	cp.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{"cors": {"allowed_origin": "https://example.com"}}
+	cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+		ExtraConfig: map[string]apiextensionsv1.JSON{"CUSTOM_SETTING": jsonSetting("true")},
+	}
+
+	warnings, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(BeEmpty())
+}
+
+// TestValidateCreate_AcceptsAbsentExtraConfigBlocks pins that a CR with no
+// extraConfig at all raises no extraConfig warning and no extraConfig error.
+func TestValidateCreate_AcceptsAbsentExtraConfigBlocks(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	warnings, err := w.ValidateCreate(context.Background(), validControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(BeEmpty())
+}
+
+// TestValidateCreate_WarnsOnReportedOwnedKey pins that a Reported owned key is
+// honored but surfaced: the warning names the key, its OwnedBy source, and the
+// contributing block path, and the CR is admitted.
+func TestValidateCreate_WarnsOnReportedOwnedKey(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{"DEFAULT": {"debug": "true"}}
+
+	warnings, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(ContainElement(And(
+		ContainSubstring("[DEFAULT] debug"),
+		ContainSubstring("operator-computed"),
+		ContainSubstring("spec.globalExtraConfig[DEFAULT][debug]"),
+	)))
+}
+
+// TestValidateCreate_WarnsOnDeprecatedOption pins that a deprecated-but-accepted
+// option is admitted with a warning naming its replacement.
+func TestValidateCreate_WarnsOnDeprecatedOption(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{"DEFAULT": {"logfile": "/var/log/keystone.log"}}
+
+	warnings, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(ContainElement(And(
+		ContainSubstring("logfile"),
+		ContainSubstring("replaced by [DEFAULT] log_file"),
+	)))
+}
+
+// TestValidateCreate_FailsOpenOnDigestPinnedKeystoneImage pins the fail-open: a
+// digest-pinned Keystone image names no release, so the merged config is not
+// validated — exactly one warning, zero errors.
+func TestValidateCreate_FailsOpenOnDigestPinnedKeystoneImage(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Keystone.Image = &commonv1.ImageSpec{
+		Repository: "ghcr.io/c5c3/keystone",
+		Digest:     "sha256:" + strings.Repeat("a", 64),
+	}
+	cp.Spec.Services.Keystone.ExtraConfig = map[string]map[string]string{"token": {"expiration": "3600"}}
+
+	warnings, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(HaveLen(1))
+	g.Expect(warnings[0]).To(ContainSubstring("does not name an OpenStack release"))
+}
+
+// TestValidateCreate_FailsOpenOnCatalogLessRelease pins the fail-open for a
+// syntactically valid release the build ships no catalog for: exactly one warning
+// per declared INI service, zero errors.
+func TestValidateCreate_FailsOpenOnCatalogLessRelease(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.OpenStackRelease = "2027.1"
+	cp.Spec.Services.Keystone.ExtraConfig = map[string]map[string]string{"token": {"expiration": "3600"}}
+	cp.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{"cors": {"allowed_origin": "https://example.com"}}
+
+	warnings, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(warnings).To(HaveLen(2))
+	g.Expect(warnings).To(ContainElement(And(
+		ContainSubstring("keystone"),
+		ContainSubstring(`no catalog for release "2027.1"`),
+	)))
+	g.Expect(warnings).To(ContainElement(And(
+		ContainSubstring("glance"),
+		ContainSubstring(`no catalog for release "2027.1"`),
+	)))
+}
+
+// TestValidateUpdate_ExtraConfigCatalogGating pins the Family B update gate: a
+// stored CR whose extraConfig is no longer catalog-valid stays mutable by an
+// unrelated edit, but any edit that changes a catalog input re-validates and
+// rejects. The stored (old) object is built directly, bypassing admission.
+func TestValidateUpdate_ExtraConfigCatalogGating(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	staleInvalid := func() *ControlPlane {
+		cp := validControlPlane()
+		cp.Name = "cp"
+		cp.Spec.GlobalExtraConfig = map[string]map[string]string{"token": {"providr": "fernet"}}
+		return cp
+	}
+
+	t.Run("unrelated replicas bump is admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := staleInvalid()
+		newCP := staleInvalid()
+		replicas := int32(2)
+		newCP.Spec.Services.Keystone.Replicas = &replicas
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("editing the block re-validates and rejects", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := staleInvalid()
+		newCP := staleInvalid()
+		newCP.Spec.GlobalExtraConfig = map[string]map[string]string{"token": {"providr2": "fernet"}}
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+	})
+
+	t.Run("changing openStackRelease re-validates and rejects", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := staleInvalid()
+		newCP := staleInvalid()
+		newCP.Spec.OpenStackRelease = "2026.1"
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2026.1 option catalog"))
+	})
+
+	t.Run("changing keystone image re-validates and rejects", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := staleInvalid()
+		newCP := staleInvalid()
+		newCP.Spec.Services.Keystone.Image = &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone", Tag: "2025.2"}
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the keystone 2025.2 option catalog"))
+	})
+
+	t.Run("newly declaring glance re-validates and rejects", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := staleInvalid()
+		newCP := staleInvalid()
+		newCP.Spec.Services.Glance = validGlanceSpec()
+		newCP.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
+			Name:    "glance",
+			Project: ServiceAccountProjectSpec{Name: "service", Create: true},
+			Roles:   []string{"service"},
+		}}
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][providr]"))
+	})
+}
+
+// TestValidateUpdate_TrustedDashboardRejectedWhenHorizonAppears pins that Family A
+// is un-gated on update: newly declaring a Horizon dashboard endpoint turns a
+// stored, previously-admitted [federation] trusted_dashboard override into a
+// rejection.
+func TestValidateUpdate_TrustedDashboardRejectedWhenHorizonAppears(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := validControlPlane()
+	oldCP.Name = "cp"
+	oldCP.Spec.GlobalExtraConfig = map[string]map[string]string{
+		"federation": {"trusted_dashboard": "https://dash.example.com/auth/websso/"},
+	}
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Horizon = &ServiceHorizonSpec{PublicEndpoint: "https://dash.example.com"}
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[federation][trusted_dashboard]"))
+	g.Expect(err.Error()).To(ContainSubstring("Horizon-derived trusted-dashboards projection"))
 }
