@@ -594,6 +594,31 @@ stage-prometheus-dashboard:
 deploy-infra:
 	hack/deploy-infra.sh
 
+.PHONY: dizzy-keystone dizzy-glance
+# dizzy-keystone and dizzy-glance run dizzy's chaos churn soak (a 5-minute
+# small profile by default) against the quick-start ControlPlane, exporting
+# metrics to the dizzy VictoriaMetrics; watch them at
+# https://dizzy.127-0-0-1.nip.io.
+#
+# Variables:
+#   DIZZY_SCENARIO      alternate scenario file.
+#   DIZZY_ARGS          extra dizzy flags, space-separated (e.g. --duration 30m).
+#   DIZZY_VERSION       pin override; the pin itself lives only in hack/dizzy.sh
+#                       so Renovate has exactly one string to bump.
+#   DIZZY_SECRET        ControlPlane admin Secret name override.
+#   DIZZY_CP_NAMESPACE  ControlPlane admin Secret namespace override.
+#
+# The three preflights are kept separate so the failure modes stay
+# distinguishable — the kubectl/cluster-reachability failure is not conflated
+# with the dizzy-stack-not-installed failure nor with the missing
+# ControlPlane-admin-Secret failure — see review pattern
+# .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
+dizzy-keystone dizzy-glance: dizzy-%:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@kubectl get ns dizzy >/dev/null 2>&1 || { echo 'the dizzy stack is not installed; run `WITH_DIZZY=true make deploy-infra` first' >&2; exit 1; }
+	@kubectl get secret "$${DIZZY_SECRET:-controlplane-keystone-admin-credentials}" -n "$${DIZZY_CP_NAMESPACE:-openstack}" >/dev/null 2>&1 || { echo 'no ControlPlane admin Secret found; deploy the quick-start ControlPlane and wait for Ready first' >&2; exit 1; }
+	hack/dizzy.sh chaos $*
+
 .PHONY: refresh-operator-digests
 # refresh-operator-digests re-resolves the digest behind the self-built
 # operators' :latest images (keystone/c5c3/horizon), refreshes the
