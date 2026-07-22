@@ -1355,3 +1355,71 @@ WITH_METRICS_SERVER=true make deploy-infra
 omission is explicit, the opt-in flag has a single documented name
 (`WITH_METRICS_SERVER`), and the kind overlay is self-contained under
 `deploy/kind/metrics-server/` so the production kustomization root is untouched.
+
+### dizzy load/chaos stack (kind-only opt-in)
+
+**File:** `deploy/kind/dizzy/kustomization.yaml`
+
+[dizzy](https://github.com/B42Labs/dizzy) is a scenario-driven load and
+consistency tester for OpenStack control planes. Its VictoriaMetrics + Grafana
+observability stack ships as a separate **opt-in** kind overlay. The default
+`make deploy-infra` flow does **not** install it — the `dizzy` namespace stays
+absent, and neither VictoriaMetrics nor Grafana runs unless a contributor opts
+in. The production `deploy/flux-system/` overlay ships none of it.
+
+The overlay is self-contained, seven tracked files under `deploy/kind/dizzy/`:
+
+| File | Purpose |
+| --- | --- |
+| `namespace.yaml` | The `dizzy` Namespace, declared inline so the overlay is self-contained |
+| `source-victoria-metrics.yaml` | `victoria-metrics` HelmRepository |
+| `source-grafana.yaml` | `grafana` HelmRepository |
+| `release-victoria-metrics.yaml` | `dizzy-victoria-metrics` HelmRelease (chart `victoria-metrics-single`, NodePort 30428, emptyDir storage, 30d retention, OTLP ingest at `/opentelemetry/v1/metrics`) |
+| `release-grafana.yaml` | `dizzy-grafana` HelmRelease (anonymous Viewer access, provisioned `victoriametrics` datasource, dizzy Overview home dashboard) |
+| `httproute.yaml` | The static `dizzy-grafana` HTTPRoute attaching to the `https-dizzy` listener |
+| `kustomization.yaml` | Ties the resources together and generates the dashboard ConfigMap |
+
+Both HelmRepositories (`victoria-metrics`, `grafana`) are declared into the
+`flux-system` namespace, where Flux resolves HelmRelease sourceRefs, even though
+the two source files live inside the kind-only overlay. That keeps
+`deploy/flux-system/**` untouched while the overlay stays self-contained.
+
+**Dashboard staging (`hack/dizzy.sh stage-dashboards`).** The overlay's
+`configMapGenerator` wraps three dizzy dashboard JSONs, but
+`deploy/kind/dizzy/dashboards/` is git-ignored; the dashboards are a
+version-pinned dizzy asset staged from the release tarball, so the tree tracks
+none of them. `hack/dizzy.sh stage-dashboards` copies them out of that tarball
+(cached under `_output/dizzy/<version>/`) before `kubectl apply -k` runs.
+`WITH_DIZZY=true make deploy-infra` performs the staging automatically; a raw
+`kustomize build deploy/kind/dizzy` on a fresh checkout fails until
+`stage-dashboards` has populated the directory.
+
+**Gateway wiring.** Two pieces are present even without `WITH_DIZZY`: the
+`https-dizzy` listener on Gateway `openstack-gw`
+(`deploy/kind/base/openstack-gateway.yaml`) and the `dizzy-nip-io-tls`
+Certificate (`deploy/kind/infrastructure/dizzy-nip-io-tls-certificate.yaml`).
+The listener admits routes from the `dizzy` namespace through a namespace
+selector on the automatic `kubernetes.io/metadata.name` label, so no
+ReferenceGrant is required. This is the repo's first cross-namespace-admitting
+listener. The `dizzy-grafana` HTTPRoute itself ships only in the gated overlay;
+without it the `dizzy.127-0-0-1.nip.io` hostname answers 404.
+
+**Host port mapping.** `hack/kind-config.yaml` maps host `127.0.0.1:8428` to the
+node's containerPort 30428, bridging host-side OTLP export to the
+VictoriaMetrics NodePort. A cluster created before this mapping existed keeps
+working, but the tooling's port probe warns; recreate the cluster
+(`make teardown-infra && WITH_DIZZY=true make deploy-infra`) to pick it up.
+
+**Opt-in usage:**
+
+```bash
+WITH_DIZZY=true make deploy-infra
+```
+
+To drive the chaos soak against the ControlPlane, see
+[dizzy Chaos Testing](../testing/dizzy-chaos-testing.md).
+
+**Posture summary.** Same shape as the entries above: the production omission is
+explicit, the opt-in flag has a single documented name (`WITH_DIZZY`), and the
+kind overlay is self-contained under `deploy/kind/dizzy/` so the production
+kustomization root ships none of it.

@@ -159,6 +159,14 @@ differs from `443`). The Chainsaw E2E suites under
 override** — use the
 [`kubectl port-forward` fallback](#fallback-kubectl-port-forward) for those
 suites or run them in CI (Linux + rootful Docker).
+
+The same kind config also binds host loopback port `8428` (mapped to NodePort
+`30428`) unconditionally, so the opt-in dizzy load/chaos stack
+(`WITH_DIZZY=true`) can be enabled later without recreating the cluster. Port
+`8428` must therefore be free even for a plain `make deploy-infra`; if another
+process already holds it — a local VictoriaMetrics binds `8428` by default —
+`kind create cluster` fails with `port is already allocated`. Free the port (or
+stop that process) before creating the cluster.
 :::
 
 ---
@@ -242,6 +250,8 @@ monitoring            kube-prometheus-stack-prometheus-*   Ready (kind-only; WIT
 monitoring            kube-prometheus-stack-grafana-*      Ready (kind-only; WITH_PROMETHEUS=true; see Step 4c)
 monitoring            kube-prometheus-stack-operator-*     Ready (kind-only; WITH_PROMETHEUS=true; see Step 4c)
 kube-system           metrics-server-*                     Ready (kind-only; WITH_METRICS_SERVER=true)
+dizzy                 dizzy-victoria-metrics-server-*      Ready (kind-only; WITH_DIZZY=true)
+dizzy                 dizzy-grafana-*                      Ready (kind-only; WITH_DIZZY=true)
 ```
 
 Headlamp is deployed asynchronously and is **not** part of the `deploy-infra` wait list — a
@@ -337,6 +347,23 @@ for the `metrics-server` HelmRelease to become Ready. It is the prerequisite
 for the [Autoscaling (HPA) recipe](./guides/advanced-configuration.md#autoscaling-hpa):
 without it the generated HorizontalPodAutoscaler reports `unknown/80%` and never
 scales.
+:::
+
+::: tip Enabling the dizzy load/chaos stack
+The dizzy load/chaos stack is **not installed by default** in the kind Quick
+Start, and the production overlays (`deploy/flux-system/`) ship none of it.
+Opt in by setting `WITH_DIZZY=true` before `make deploy-infra`:
+
+```bash
+WITH_DIZZY=true make deploy-infra
+```
+
+This applies the kind-only overlay at `deploy/kind/dizzy/` and waits for the
+`dizzy-victoria-metrics` and `dizzy-grafana` HelmReleases to become Ready.
+Grafana serves the dizzy dashboards at `https://dizzy.127-0-0-1.nip.io`; append
+`:<KIND_HOST_PORT>` when that override is set to something other than 443. To
+drive a soak, run the `make dizzy-keystone` or `make dizzy-glance` targets
+documented in [dizzy Chaos Testing](./reference/testing/dizzy-chaos-testing.md).
 :::
 
 ::: tip Enabling the local registry pull-through cache
