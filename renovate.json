@@ -115,6 +115,19 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/hack/dizzy\\.sh$/"
+      ],
+      "matchStrings": [
+        "DIZZY_VERSION=\"\\$\\{DIZZY_VERSION:-(?<currentValue>v\\d+\\.\\d+\\.\\d+)\\}\""
+      ],
+      "depNameTemplate": "B42Labs/dizzy",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "B42Labs/dizzy",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/deploy/kind/base/flux-web\\.yaml$/"
       ],
       "matchStrings": [
@@ -383,6 +396,22 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "test tooling (install-test-deps)"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["hack/dizzy.sh"],
+      "matchPackageNames": ["B42Labs/dizzy"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["hack/dizzy.sh"],
+      "matchPackageNames": ["B42Labs/dizzy"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "dizzy"
     },
     {
       "matchManagers": ["custom.regex"],
