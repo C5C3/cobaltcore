@@ -108,6 +108,11 @@ WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 # WITH_METRICS_SERVER=true to install it.
 WITH_METRICS_SERVER="${WITH_METRICS_SERVER:-false}"
 
+# Gates the opt-in dizzy kind overlay (deploy/kind/dizzy) which installs
+# VictoriaMetrics + Grafana for dizzy load/chaos runs. Defaults to false so the
+# kind Quick Start stays minimal; set WITH_DIZZY=true to install.
+WITH_DIZZY="${WITH_DIZZY:-false}"
+
 # Gates the opt-in transparent registry pull-through cache (#564). When true,
 # deploy-infra brings up one small distribution-registry (registry:2/3) proxy
 # per upstream registry on the `kind` Docker network (start_registry_cache),
@@ -1622,6 +1627,7 @@ main() {
   log "Chaos Mesh         : ${WITH_CHAOS_MESH} (set WITH_CHAOS_MESH=true to install)"
   log "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)"
   log "metrics-server      : ${WITH_METRICS_SERVER} (set WITH_METRICS_SERVER=true to install)"
+  log "dizzy stack         : ${WITH_DIZZY} (VictoriaMetrics + Grafana for dizzy load/chaos runs; set WITH_DIZZY=true to install)"
   log "Registry cache      : ${WITH_REGISTRY_CACHE} (set WITH_REGISTRY_CACHE=true for a local pull-through cache; local-dev only)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
@@ -1766,6 +1772,39 @@ main() {
     log "metrics-server kind overlay applied (WITH_METRICS_SERVER=true)."
   fi
 
+  # Opt-in dizzy overlay (VictoriaMetrics + Grafana). Layered on top of the base
+  # so the default Quick Start stays minimal; enable with WITH_DIZZY=true. The
+  # overlay is self-contained (no `../../` parent-dir references), so kubectl's
+  # embedded kustomize renders it under the default LoadRestrictionsRootOnly
+  # security check — same contract as the chaos-mesh, prometheus, and
+  # metrics-server overlays (no `--load-restrictor` flag required,
+  # kubernetes/kubectl#948).
+  if [[ "${WITH_DIZZY}" == "true" ]]; then
+    # Stage the three Grafana dashboard JSONs from the pinned dizzy release into
+    # the git-ignored deploy/kind/dizzy/dashboards/ so the overlay's
+    # configMapGenerator can reference them without a parent-dir traversal (same
+    # LoadRestrictionsRootOnly contract as the prometheus overlay's staged JSON).
+    # This MUST run immediately before `kubectl apply -k` so the files exist when
+    # kustomize renders the ConfigMap.
+    "${SCRIPT_DIR}/dizzy.sh" stage-dashboards
+    kubectl apply -k "${REPO_ROOT}/deploy/kind/dizzy"
+    log "dizzy kind overlay applied (WITH_DIZZY=true)."
+    # VictoriaMetrics OTLP ingest is exposed on host 8428 → NodePort 30428 via
+    # the kind extraPortMapping in hack/kind-config.yaml. A cluster created
+    # before that mapping was added lacks the port, so host→VictoriaMetrics OTLP
+    # ingest will not work. Probe the control-plane node's published port and
+    # warn (but continue) so the operator knows to recreate the cluster.
+    local dizzy_metrics_port
+    dizzy_metrics_port="$(docker port "${CLUSTER_NAME}-control-plane" 30428/tcp 2>/dev/null || true)"
+    if [[ -z "${dizzy_metrics_port}" ]]; then
+      log "  WARNING: cluster '${CLUSTER_NAME}' predates the dizzy metrics port mapping"
+      log "           (host 8428 → NodePort 30428) in hack/kind-config.yaml. Host→"
+      log "           VictoriaMetrics OTLP ingest will NOT work. To activate it, recreate"
+      log "           the cluster with WITH_DIZZY=true (e.g."
+      log "           \`make teardown-infra && WITH_DIZZY=true make deploy-infra\`)."
+    fi
+  fi
+
   # the c5c3 ControlPlane stack (c5c3-operator + image and the K-ORC
   # GitRepository/Kustomization) is published and valid, so it would reconcile —
   # but running the full chain is opt-in. WITH_CONTROLPLANE=true deploys it; the
@@ -1895,7 +1934,21 @@ main() {
   if [[ "${WITH_METRICS_SERVER}" == "true" ]]; then
     helm_releases+=(metrics-server)
   fi
+  # dizzy-victoria-metrics and dizzy-grafana are appended last so the relative
+  # ordering of the base releases is preserved exactly. wait_for_helmreleases
+  # resolves each release's namespace dynamically, so the names suffice.
+  if [[ "${WITH_DIZZY}" == "true" ]]; then
+    helm_releases+=(dizzy-victoria-metrics dizzy-grafana)
+  fi
   wait_for_helmreleases "${release_wait_timeout}" "${helm_releases[@]}"
+
+  if [[ "${WITH_DIZZY}" == "true" ]]; then
+    local dizzy_grafana_url="https://dizzy.127-0-0-1.nip.io"
+    if [[ "${KIND_HOST_PORT}" != "443" ]]; then
+      dizzy_grafana_url="${dizzy_grafana_url}:${KIND_HOST_PORT}"
+    fi
+    log "dizzy Grafana: ${dizzy_grafana_url} (anonymous read-only; dashboards land once a dizzy soak exports metrics)"
+  fi
 
   # with kube-prometheus-stack Ready, flip the operator charts'
   # monitoring.serviceMonitor.enabled to true so Prometheus picks up the
