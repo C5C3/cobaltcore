@@ -24,6 +24,7 @@ import (
 	"github.com/c5c3/forge/internal/common/keystoneauth"
 	"github.com/c5c3/forge/internal/common/naming"
 	"github.com/c5c3/forge/internal/common/release"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
 
@@ -185,6 +186,43 @@ func (r *GlanceReconciler) reconcileDeployment(ctx context.Context, glance *glan
 		return ctrl.Result{RequeueAfter: RequeueDeploymentPolling}, nil
 	}
 
+	// Hold the RollingUpdate → Contracting flip until the Deployment has FULLY
+	// converged onto the target-release image. The `ready` signal above comes from
+	// deployment.IsDeploymentReady, which is surge-tolerant: under the default
+	// MaxSurge=1/MaxUnavailable=0 strategy a new pod is added before an old one is
+	// removed, so it turns true as soon as the first new-image pod is Ready while
+	// old-image pods still serve. The contract phase then drops the now-unused
+	// columns those old pods still read — so gate the flip on every replica being
+	// updated, ready, and counted (glanceDeploymentRolledOut), and requeue to wait
+	// otherwise. Only the RollingUpdate upgrade phase is stricter here; steady-state
+	// rollouts keep the surge-tolerant readiness above.
+	if glance.Status.UpgradePhase == commonv1.UpgradePhaseRollingUpdate && !glanceDeploymentRolledOut(deploy) {
+		conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
+			Type:               "DeploymentReady",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: glance.Generation,
+			Reason:             conditionReasonWaitingForDeployment,
+			Message:            "Waiting for the upgraded image to finish rolling out before contracting the database schema",
+		})
+		return ctrl.Result{RequeueAfter: RequeueDeploymentPolling}, nil
+	}
+
+	// Transition from RollingUpdate to Contracting when the Deployment is ready.
+	// The shared flow advances the phase, emits the DeploymentRolloutComplete
+	// event, and logs; glance stamps its own DeploymentReady condition and
+	// requeues so ReconcileUpgrade runs the contract phase on the next pass. The
+	// endpoint is deliberately NOT stamped on this flip pass (keystone parity).
+	if database.CompleteRollingUpdate(ctx, r.upgradeFlowParams(ctx, glance, art.configMapName)) {
+		conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
+			Type:               "DeploymentReady",
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: glance.Generation,
+			Reason:             conditionReasonDeploymentReady,
+			Message:            "Glance API deployment is available",
+		})
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	// Status.Endpoint derivation is delegated to glanceStatusEndpoint so the
 	// gateway-aware public URL is used when spec.gateway is set, and the
 	// cluster-local URL otherwise.
@@ -197,6 +235,27 @@ func (r *GlanceReconciler) reconcileDeployment(ctx context.Context, glance *glan
 		Message:            "Glance API deployment is available",
 	})
 	return ctrl.Result{}, nil
+}
+
+// glanceDeploymentRolledOut reports whether the Glance API Deployment has fully
+// converged onto its current pod template: the deployment controller has observed
+// the latest generation and every replica is updated, ready, and counted, with no
+// surge or old-template pod still present. It is stricter than the surge-tolerant
+// readiness deployment.EnsureDeployment reports (which turns true as soon as the
+// first new-image pod is Ready while old-image pods still serve), so the shared
+// upgrade flow's RollingUpdate → Contracting flip waits for the old image to drain
+// before the schema is contracted.
+func glanceDeploymentRolledOut(deploy *appsv1.Deployment) bool {
+	if deploy.Status.ObservedGeneration < deploy.Generation {
+		return false
+	}
+	desired := int32(1)
+	if deploy.Spec.Replicas != nil {
+		desired = *deploy.Spec.Replicas
+	}
+	return deploy.Status.UpdatedReplicas == desired &&
+		deploy.Status.ReadyReplicas == desired &&
+		deploy.Status.Replicas == desired
 }
 
 // buildGlanceDeployment constructs the desired Glance API Deployment. The

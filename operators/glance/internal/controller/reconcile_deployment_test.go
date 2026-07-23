@@ -14,7 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/keystoneauth"
@@ -46,6 +48,11 @@ func readyGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts) *
 	deploy.Generation = 1
 	deploy.Status.ObservedGeneration = 1
 	deploy.Status.ReadyReplicas = replicas
+	// A ready Deployment in these tests is also fully rolled out — every replica
+	// updated and counted, no surge pod left — so the RollingUpdate → Contracting
+	// flip (which gates on full convergence, not surge-tolerant readiness) fires.
+	deploy.Status.UpdatedReplicas = replicas
+	deploy.Status.Replicas = replicas
 	deploy.Status.Conditions = []appsv1.DeploymentCondition{
 		{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
 	}
@@ -389,4 +396,106 @@ func TestReconcileDeployment_InvalidProjectionLiveDeploymentReAppliesLastGood(t 
 	g.Expect(configVol).NotTo(BeNil())
 	g.Expect(configVol.ConfigMap.Name).To(Equal("glance-config-lastgood"),
 		"an invalid projection with a live Deployment keeps the last-good config pinned")
+}
+
+// TestReconcileDeployment_RollingUpdateFlipsToContracting verifies that when the
+// Deployment becomes ready during the RollingUpdate upgrade phase,
+// reconcileDeployment advances the phase to Contracting, emits
+// DeploymentRolloutComplete, sets DeploymentReady=True, and requeues immediately
+// without stamping the endpoint (keystone parity).
+func TestReconcileDeployment_RollingUpdateFlipsToContracting(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := upgradingGlance(commonv1.UpgradePhaseRollingUpdate)
+	glance.Spec.Deployment.Replicas = 2
+	art := testArtifacts()
+	r := newGlanceTestReconciler(glance, readyGlanceDeployment(glance, art))
+
+	res, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
+
+	g.Expect(glance.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseContracting))
+	// The endpoint is deliberately NOT stamped on the flip pass.
+	g.Expect(glance.Status.Endpoint).To(BeEmpty())
+
+	cond := meta.FindStatusCondition(glance.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDeploymentReady))
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
+		To(ContainElement(ContainSubstring("Normal DeploymentRolloutComplete")))
+}
+
+// TestReconcileDeployment_RollingUpdateSurgeReadyHoldsContract verifies the
+// rollout-convergence gate: during the RollingUpdate upgrade phase a merely
+// surge-ready Deployment — Available with ReadyReplicas at the desired count but
+// not every replica updated (an old-image pod still serving under the default
+// MaxSurge=1/MaxUnavailable=0 strategy) — MUST NOT advance to Contracting, because
+// the contract phase would drop columns that old pod still reads. The phase stays
+// RollingUpdate and the reconcile requeues to wait for full convergence. Regression
+// guard: with the surge-tolerant IsDeploymentReady gate this flipped prematurely.
+func TestReconcileDeployment_RollingUpdateSurgeReadyHoldsContract(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := upgradingGlance(commonv1.UpgradePhaseRollingUpdate)
+	glance.Spec.Deployment.Replicas = 2
+	art := testArtifacts()
+
+	// Surge-ready but not converged: Available=True and ReadyReplicas at the
+	// desired count (so IsDeploymentReady is true) while UpdatedReplicas lags and a
+	// surge pod is still counted — the exact window IsDeploymentReady tolerates.
+	deploy := buildGlanceDeployment(glance, art, "", "")
+	replicas := int32(glance.Spec.Deployment.Replicas)
+	deploy.Spec.Replicas = &replicas
+	deploy.Generation = 1
+	deploy.Status.ObservedGeneration = 1
+	deploy.Status.ReadyReplicas = replicas
+	deploy.Status.UpdatedReplicas = replicas - 1
+	deploy.Status.Replicas = replicas + 1
+	deploy.Status.Conditions = []appsv1.DeploymentCondition{
+		{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
+	}
+	r := newGlanceTestReconciler(glance, deploy)
+
+	res, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	// Holds in RollingUpdate and requeues to wait for the old image to drain.
+	g.Expect(res.RequeueAfter).To(Equal(RequeueDeploymentPolling))
+	g.Expect(glance.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseRollingUpdate),
+		"a surge-ready-but-not-converged Deployment must not flip to Contracting")
+
+	cond := meta.FindStatusCondition(glance.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForDeployment))
+
+	// No premature rollout-complete event while an old-image pod still serves.
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
+		NotTo(ContainElement(ContainSubstring("DeploymentRolloutComplete")))
+}
+
+// TestReconcileDeployment_EmptyPhaseNoFlipStampsEndpoint verifies that with no
+// active upgrade (empty phase) the ready path stamps the endpoint and does NOT
+// fire the RollingUpdate flip (no DeploymentRolloutComplete event).
+func TestReconcileDeployment_EmptyPhaseNoFlipStampsEndpoint(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := deployGlance("2026.1") // empty UpgradePhase
+	art := testArtifacts()
+	r := newGlanceTestReconciler(glance, readyGlanceDeployment(glance, art))
+
+	res, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+
+	g.Expect(glance.Status.UpgradePhase).To(BeEmpty())
+	g.Expect(glance.Status.Endpoint).To(Equal("http://test-glance.default.svc.cluster.local:9292/"))
+
+	cond := meta.FindStatusCondition(glance.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonDeploymentReady))
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
+		NotTo(ContainElement(ContainSubstring("DeploymentRolloutComplete")))
 }

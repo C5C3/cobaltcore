@@ -44,4 +44,10 @@ const (
 	// longer interval avoids unnecessary API churn. It mirrors keystone's
 	// RequeueDatabaseWait.
 	RequeueDatabaseWait = 30 * time.Second
+
+	// RequeueUpgradeWait is the interval for polling upgrade Job completion.
+	// Upgrade Jobs (expand, migrate, contract) may take several minutes depending
+	// on database size. A moderate interval balances responsiveness with API load.
+	// It mirrors keystone's RequeueUpgradeWait.
+	RequeueUpgradeWait = 30 * time.Second
 )
