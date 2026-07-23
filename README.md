@@ -24,3 +24,9 @@ Chainsaw E2E).
 Outstanding work is tracked in [GitHub Issues](https://github.com/c5c3/forge/issues) — the issue
 tracker is the single source of truth for planned features (`CC-NNNN` labels), production-hardening
 gaps, and release milestones.
+
+## Security
+
+Found a vulnerability? Please report it privately through GitHub Private Vulnerability
+Reporting rather than opening a public issue. See [SECURITY.md](SECURITY.md) for the
+reporting process, scope, and response expectations.
