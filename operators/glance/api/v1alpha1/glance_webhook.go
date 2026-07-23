@@ -43,6 +43,14 @@ const (
 	// DefaultUWSGIHTTPKeepAlive is the --http-keepalive default restored when
 	// spec.apiServer.uwsgi.httpKeepAlive is nil (unset).
 	DefaultUWSGIHTTPKeepAlive = true
+	// DefaultEventletWorkers is the eventlet [DEFAULT] workers count materialized
+	// when spec.apiServer.workers is nil below release 2026.1. It is the eventlet
+	// analog of DefaultUWSGIProcesses: without it the eventlet glance-api server
+	// falls back to its own default of one worker per host CPU, which ignores the
+	// pod's CPU limit and overruns the memory limit under load. Pinning it keeps
+	// the worker count — and thus the memory footprint — deterministic, matching
+	// keystone's bounded process count.
+	DefaultEventletWorkers int32 = 2
 )
 
 // GlanceWebhook implements defaulting and validation webhooks for the Glance

@@ -242,11 +242,17 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 		},
 	}
 
-	// workers is the eventlet API worker count; rendered when set. It is inert
-	// under the uWSGI launch mode (2026.1+), where uWSGI ignores it — the webhook
-	// warns on that combination.
+	// workers is the eventlet API worker count. Below release 2026.1 (eventlet
+	// launch mode) it is ALWAYS rendered so the count is deterministic: from
+	// spec.apiServer.workers when set, else DefaultEventletWorkers — never the
+	// eventlet server's own fallback of one worker per host CPU, which ignores the
+	// pod's CPU limit and OOMs the container under load. Under the uWSGI launch
+	// mode (2026.1+) the key is inert (uWSGI ignores it), so it is rendered only
+	// when explicitly set, for transparency; the webhook warns on that combination.
 	if s := glance.Spec.APIServer; s != nil && s.Workers != nil {
 		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", *s.Workers)
+	} else if !glanceUsesUWSGI(glance) {
+		defaults["DEFAULT"]["workers"] = fmt.Sprintf("%d", glancev1alpha1.DefaultEventletWorkers)
 	}
 	// PerLoggerLevels render into oslo.log's default_log_levels CSV; empty omits
 	// the key so oslo.log keeps its compiled-in defaults.
