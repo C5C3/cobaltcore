@@ -27,9 +27,6 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
-// Condition reason constants for DeploymentReady.
-const conditionReasonDeploymentRolloutComplete = "DeploymentRolloutComplete"
-
 // buildDBConnectionEnvVar returns the EnvVar that overrides
 // [database].connection in keystone.conf by sourcing the URL from the derived
 // <keystone.Name>-db-connection Secret produced by reconcileDBConnectionSecret.
@@ -130,10 +127,32 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 		return ctrl.Result{RequeueAfter: RequeueDeploymentPolling}, nil
 	}
 
-	// Transition from RollingUpdate to Contracting when Deployment is ready.
-	if keystone.Status.UpgradePhase == keystonev1alpha1.UpgradePhaseRollingUpdate {
-		keystone.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseContracting
-		r.Recorder.Eventf(keystone, corev1.EventTypeNormal, conditionReasonDeploymentRolloutComplete, "Deployment rollout complete during upgrade %s \u2192 %s", keystone.Status.InstalledRelease, keystone.Status.TargetRelease)
+	// Hold the RollingUpdate → Contracting flip until the Deployment has FULLY
+	// converged onto the target-release image. The `ready` signal above comes from
+	// deployment.IsDeploymentReady, which is surge-tolerant: under the default
+	// MaxSurge=1/MaxUnavailable=0 strategy a new pod is added before an old one is
+	// removed, so it turns true as soon as the first new-image pod is Ready while
+	// old-image pods still serve. The contract phase then drops the now-unused
+	// columns those old pods still read — so gate the flip on every replica being
+	// updated, ready, and counted (keystoneDeploymentRolledOut), and requeue to wait
+	// otherwise. Only the RollingUpdate upgrade phase is stricter here; steady-state
+	// rollouts keep the surge-tolerant readiness above.
+	if keystone.Status.UpgradePhase == keystonev1alpha1.UpgradePhaseRollingUpdate && !keystoneDeploymentRolledOut(deploy) {
+		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+			Type:               "DeploymentReady",
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: keystone.Generation,
+			Reason:             "WaitingForDeployment",
+			Message:            "Waiting for the upgraded image to finish rolling out before contracting the database schema",
+		})
+		return ctrl.Result{RequeueAfter: RequeueDeploymentPolling}, nil
+	}
+
+	// Transition from RollingUpdate to Contracting when the Deployment is ready.
+	// The shared flow advances the phase, emits the DeploymentRolloutComplete
+	// event, and logs; keystone stamps its own DeploymentReady condition and
+	// requeues so ReconcileUpgrade runs the contract phase on the next pass.
+	if database.CompleteRollingUpdate(ctx, r.upgradeFlowParams(ctx, keystone, configMapName, domainsSecretName)) {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "DeploymentReady",
 			Status:             metav1.ConditionTrue,
@@ -141,8 +160,6 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 			Reason:             "DeploymentReady",
 			Message:            "Keystone API deployment is available",
 		})
-		log.FromContext(ctx).Info("Deployment rollout complete, transitioning to contract phase",
-			"from", keystone.Status.InstalledRelease, "to", keystone.Status.TargetRelease)
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -158,6 +175,27 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 		Message:            "Keystone API deployment is available",
 	})
 	return ctrl.Result{}, nil
+}
+
+// keystoneDeploymentRolledOut reports whether the Keystone API Deployment has
+// fully converged onto its current pod template: the deployment controller has
+// observed the latest generation and every replica is updated, ready, and
+// counted, with no surge or old-template pod still present. It is stricter than
+// the surge-tolerant readiness deployment.EnsureDeployment reports (which turns
+// true as soon as the first new-image pod is Ready while old-image pods still
+// serve), so the shared upgrade flow's RollingUpdate → Contracting flip waits
+// for the old image to drain before the schema is contracted.
+func keystoneDeploymentRolledOut(deploy *appsv1.Deployment) bool {
+	if deploy.Status.ObservedGeneration < deploy.Generation {
+		return false
+	}
+	desired := int32(1)
+	if deploy.Spec.Replicas != nil {
+		desired = *deploy.Spec.Replicas
+	}
+	return deploy.Status.UpdatedReplicas == desired &&
+		deploy.Status.ReadyReplicas == desired &&
+		deploy.Status.Replicas == desired
 }
 
 // commonLabels returns the standard Kubernetes labels applied to all resources
