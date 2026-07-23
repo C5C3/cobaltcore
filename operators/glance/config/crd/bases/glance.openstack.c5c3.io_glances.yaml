@@ -1570,6 +1570,17 @@ spec:
                   TargetRelease is the spec.openStackRelease being converged to during an
                   active upgrade.
                 type: string
+              upgradePhase:
+                description: |-
+                  UpgradePhase is the current expand-migrate-contract phase during an active
+                  release upgrade (Expanding, Migrating, RollingUpdate, Contracting); empty
+                  when no upgrade is in flight.
+                enum:
+                - Expanding
+                - Migrating
+                - RollingUpdate
+                - Contracting
+                type: string
             type: object
         type: object
     served: true

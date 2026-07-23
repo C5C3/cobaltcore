@@ -342,6 +342,11 @@ type GlanceStatus struct {
 	// TargetRelease is the spec.openStackRelease being converged to during an
 	// active upgrade.
 	TargetRelease string `json:"targetRelease,omitempty"`
+
+	// UpgradePhase is the current expand-migrate-contract phase during an active
+	// release upgrade (Expanding, Migrating, RollingUpdate, Contracting); empty
+	// when no upgrade is in flight.
+	UpgradePhase commonv1.UpgradePhase `json:"upgradePhase,omitempty"`
 }
 
 // EffectiveKeystonePublicEndpoint resolves the [keystone_authtoken]
