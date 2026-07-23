@@ -56,10 +56,12 @@ The v1 operator resolves the onboarding decisions as follows:
 - **`/healthcheck` probes.** Readiness and liveness both GET `/healthcheck`,
   served by the oslo healthcheck middleware without touching the database or
   Keystone, identical in both launch modes.
-- **Plain `db sync`, no upgrade phases.** Glance's schema migrations run in a
-  single `glance-manage db sync` pass, so — unlike Keystone — there is no
-  expand-migrate-contract phase machine, no `spec`/`status` upgrade-phase field,
-  and no separate schema-check Job.
+- **Expand-migrate-contract upgrades.** When `spec.openStackRelease` advances
+  to a new OpenStack release (with the image in lockstep), the operator drives
+  phased database migrations while the API keeps serving. Sequential-only
+  upgrade paths; a fresh install or a same-release image bump stays on the
+  single-pass `glance-manage db sync`. See
+  [Upgrade Flow](./glance-upgrade-flow.md).
 - **No live S3 probing by the operator.** The operator never connects to an S3
   endpoint to validate a backend; it only resolves the credentials Secret and
   renders the store section. Bucket reachability is a runtime concern of the
@@ -90,3 +92,5 @@ For a Glance CR named `{name}` the operator manages:
   controller emits
 - [Reconciler Architecture](./glance-reconciler.md) — the sub-reconciler
   pipeline, conditions, and requeue semantics
+- [Upgrade Flow](./glance-upgrade-flow.md) — the expand-migrate-contract
+  release-upgrade machine

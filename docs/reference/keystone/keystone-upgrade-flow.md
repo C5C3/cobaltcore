@@ -30,7 +30,9 @@ coexist during the transition:
 
 The Keystone operator implements this as a state machine within the `reconcileDatabase`
 sub-reconciler, coordinated with `reconcileDeployment` for the rolling update phase
-between migrate and contract.
+between migrate and contract. The phase machine itself lives in
+`internal/common/database` and is shared with the Glance operator; Keystone
+supplies the image-tag seam and the `keystone-manage` phase commands.
 
 ---
 

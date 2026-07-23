@@ -84,13 +84,31 @@ All events follow these conventions:
 > schema-check Job, so — unlike Keystone — **`SchemaDriftDetected` never fires
 > for Glance**.
 
-### Release Validation
+### Upgrade
+
+A release transition (a `spec.openStackRelease` bump with the image in lockstep)
+walks the shared expand-migrate-contract flow, which emits these events on the
+Glance CR. For the phase machine see the
+[Glance Upgrade Flow](./glance-upgrade-flow.md).
 
 | Reason | Type | Trigger Condition | Example Message |
 | --- | --- | --- | --- |
-| `InvalidReleaseTransition` | Warning | The requested `spec.openStackRelease` is a downgrade, or a jump that is neither patch-only nor a single sequential step, relative to `status.installedRelease` | `downgrade from 2026.1 to 2025.2 is not supported` |
+| `UpgradeInitiated` | Normal | An accepted release bump starts the upgrade | `Upgrade initiated: 2025.2 → 2026.1` |
+| `ExpandComplete` | Normal | The expand phase Job succeeded | `Expand phase complete: 2025.2 → 2026.1` |
+| `MigrateComplete` | Normal | The migrate phase Job succeeded | `Migrate phase complete: 2025.2 → 2026.1` |
+| `DeploymentRolloutComplete` | Normal | The Deployment rolled out; the phase flips to Contracting | `Deployment rollout complete during upgrade 2025.2 → 2026.1` |
+| `UpgradeComplete` | Normal | The contract phase Job succeeded; the upgrade finished | `Upgrade complete: 2025.2 → 2026.1` |
+| `UpgradeAborted` | Normal | `spec.openStackRelease` reverted to the installed release, cancelling the upgrade | `Upgrade 2025.2 → 2026.1 aborted: spec release reverted to installed release 2025.2` |
+| `VersionParseError` | Warning | The installed or target release is not a valid `YYYY.N` string | `Failed to parse target release "latest": ...` |
+| `DowngradeNotSupported` | Warning | The target release is older than the installed release | `Downgrade from 2026.1 to 2025.2 is not supported` |
+| `UpgradePathInvalid` | Warning | The requested jump is not a single sequential step | `Upgrade from 2024.2 to 2026.1 is not sequential` |
+| `UpgradeTargetChanged` | Warning | `spec.openStackRelease` changed to a third value during an active upgrade | `Spec release changed to 2026.2 during active upgrade 2025.2 → 2026.1` |
+| `ExpandFailed` | Warning | The expand phase Job failed permanently | `Expand job glance-db-expand failed: ...` |
+| `MigrateFailed` | Warning | The migrate phase Job failed permanently | `Migrate job glance-db-migrate failed: ...` |
+| `ContractFailed` | Warning | The contract phase Job failed permanently | `Contract job glance-db-contract failed: ...` |
 
-**Source:** `rejectReleaseTransition` in `reconcile_database.go`
+**Source:** the shared expand-migrate-contract flow in
+`internal/common/database/upgrade.go`
 
 ### Finalization
 
@@ -116,8 +134,8 @@ Use `kubectl get events --field-selector` to filter by reason:
 # Watch for db-sync failures
 kubectl get events --field-selector reason=DBSyncFailed -w
 
-# Watch for a rejected release transition
-kubectl get events --field-selector reason=InvalidReleaseTransition -w
+# Watch for a rejected release upgrade path
+kubectl get events --field-selector reason=UpgradePathInvalid -w
 
 # Watch for a skipped image-store backend
 kubectl get events --field-selector reason=GlanceBackendSkipped -w
@@ -148,18 +166,18 @@ groups:
           summary: "Glance db-sync failed"
           description: "The Glance db-sync Job has failed. Check the Job logs for details."
 
-      - alert: GlanceInvalidReleaseTransition
+      - alert: GlanceUpgradePhaseFailed
         expr: |
           increase(kube_event_count{
-            reason="InvalidReleaseTransition",
+            reason=~"ExpandFailed|MigrateFailed|ContractFailed",
             involved_object_kind="Glance"
           }[5m]) > 0
         for: 0m
         labels:
-          severity: warning
+          severity: critical
         annotations:
-          summary: "Glance release transition rejected"
-          description: "spec.openStackRelease requests an unsupported transition from the installed release."
+          summary: "Glance database upgrade phase failed"
+          description: "An expand, migrate, or contract Job failed during a Glance release upgrade. Check the phase Job logs and consider aborting the upgrade."
 ```
 
 ---
@@ -180,9 +198,16 @@ GlanceReconciler.Reconcile()
   │     └─ spec.extraConfig overrides operator-owned keys → Warning ExtraConfigOwnedKeyOverride
   │       (gated on transition into ExtraConfigHealthy=False, Reason=OwnedKeysOverridden)
   │
-  └── reconcileDatabase()
-        ├─ Invalid release transition → Warning InvalidReleaseTransition
-        ├─ db_sync fails              → Warning DBSyncFailed
-        ├─ db_sync succeeds           → Normal  DatabaseSynced
-        └─ Job-UID patch fails        → Warning DBSyncMetricEmissionDeferred
+  ├── reconcileDatabase()
+  │     ├─ db_sync fails              → Warning DBSyncFailed
+  │     ├─ db_sync succeeds           → Normal  DatabaseSynced
+  │     ├─ Job-UID patch fails        → Warning DBSyncMetricEmissionDeferred
+  │     └─ release upgrade            → Normal  UpgradeInitiated / ExpandComplete /
+  │                                             MigrateComplete / UpgradeComplete / UpgradeAborted
+  │                                      Warning VersionParseError / DowngradeNotSupported /
+  │                                             UpgradePathInvalid / UpgradeTargetChanged /
+  │                                             ExpandFailed / MigrateFailed / ContractFailed
+  │
+  └── reconcileDeployment()
+        └─ rollout ready mid-upgrade  → Normal  DeploymentRolloutComplete
 ```

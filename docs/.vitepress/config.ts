@@ -114,6 +114,7 @@ export default defineConfig({
               { text: 'Backend CRD', link: '/reference/glance/glance-backend-crd' },
               { text: 'Controller Events', link: '/reference/glance/glance-events' },
               { text: 'Reconciler Architecture', link: '/reference/glance/glance-reconciler' },
+              { text: 'Upgrade Flow', link: '/reference/glance/glance-upgrade-flow' },
             ],
           },
           {
