@@ -12,7 +12,9 @@ import (
 	"sort"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
@@ -53,6 +55,18 @@ const (
 	DefaultEventletWorkers int32 = 2
 )
 
+// Glance-specific container memory defaults, replacing the shared 256Mi/512Mi
+// baseline that keystone and horizon fit in. The glance-api container carries
+// the S3 store driver (boto3/botocore), which raises both the per-process
+// import footprint and the per-request allocation churn: with the bounded two
+// workers the container already idles near 360Mi and, under concurrent image
+// traffic, overruns a 512Mi limit within a minute — an OOM-kill crash loop the
+// gateway surfaces as waves of 503s. CPU keeps the shared defaults.
+var (
+	defaultGlanceMemoryRequest = resource.MustParse("512Mi")
+	defaultGlanceMemoryLimit   = resource.MustParse("1Gi")
+)
+
 // GlanceWebhook implements defaulting and validation webhooks for the Glance
 // CRD. Client is injected at startup for cluster-scoped resource lookups (e.g.
 // PriorityClass validation). Production wiring injects mgr.GetAPIReader() — a
@@ -87,9 +101,27 @@ func (w *GlanceWebhook) SetupWebhookWithManager(mgr ctrl.Manager) error {
 // filled when explicitly present, except spec.logging which is materialized so
 // downstream reconciler code never sees a nil pointer.
 func (w *GlanceWebhook) Default(_ context.Context, obj *Glance) error {
-	// Shared-type defaults (replicas, container resources) are applied by the
-	// commonv1.DeploymentSpec Default method so they cannot drift across
-	// operators.
+	// Fill spec.deployment.resources with the glance-specific memory defaults
+	// before the shared DeploymentSpec defaults run — Deployment.Default()
+	// would otherwise inject the shared 256Mi/512Mi baseline, which the
+	// S3-backed glance-api overruns under load. Same nil-or-empty condition as
+	// the shared method so an explicit user value is never clobbered.
+	if obj.Spec.Deployment.Resources == nil ||
+		(len(obj.Spec.Deployment.Resources.Requests) == 0 && len(obj.Spec.Deployment.Resources.Limits) == 0) {
+		obj.Spec.Deployment.Resources = &corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceMemory: defaultGlanceMemoryRequest.DeepCopy(),
+				corev1.ResourceCPU:    commonv1.DefaultCPURequest(),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceMemory: defaultGlanceMemoryLimit.DeepCopy(),
+				corev1.ResourceCPU:    commonv1.DefaultCPULimit(),
+			},
+		}
+	}
+	// Shared-type defaults (replicas, remaining container resources) are
+	// applied by the commonv1.DeploymentSpec Default method so they cannot
+	// drift across operators.
 	obj.Spec.Deployment.Default()
 	if obj.Spec.Cache.Backend == "" {
 		obj.Spec.Cache.Backend = commonv1.DefaultCacheBackend

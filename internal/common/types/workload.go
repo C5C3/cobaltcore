@@ -86,9 +86,10 @@ type DeploymentSpec struct {
 	Replicas int32 `json:"replicas,omitempty"`
 
 	// Resources defines the CPU and memory requests and limits for the service API
-	// container. When unset, the defaulting webhook injects sensible defaults
-	// (256Mi/512Mi memory, 100m/500m CPU) to ensure Burstable QoS class and
-	// enable HPA utilization calculations.
+	// container. When unset, the defaulting webhook injects the operator's
+	// documented resource defaults (100m/500m CPU, with memory sized per
+	// service — see the operator's CRD reference) to ensure Burstable QoS class
+	// and enable HPA utilization calculations.
 	// +optional
 	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
 
