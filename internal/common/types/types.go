@@ -210,6 +210,17 @@ func (t *DatabaseTLSSpec) IsEnabled() bool {
 	return t != nil && t.Mode != "" && t.Mode != "disabled"
 }
 
+// UpgradePhase represents the current phase of a database upgrade.
+// +kubebuilder:validation:Enum=Expanding;Migrating;RollingUpdate;Contracting
+type UpgradePhase string
+
+const (
+	UpgradePhaseExpanding     UpgradePhase = "Expanding"
+	UpgradePhaseMigrating     UpgradePhase = "Migrating"
+	UpgradePhaseRollingUpdate UpgradePhase = "RollingUpdate"
+	UpgradePhaseContracting   UpgradePhase = "Contracting"
+)
+
 // CacheSpec supports managed (ClusterRef) and brownfield (explicit) modes.
 // Exactly one of ClusterRef or Servers must be set; the XValidation rule below
 // enforces that invariant at the schema layer for every operator that embeds a
