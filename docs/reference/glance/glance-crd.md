@@ -21,7 +21,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` ∈ {1,2}). Governs the API launch mode (eventlet below `2026.1`, uWSGI from `2026.1`) and install/upgrade schema tracking. Kept separate from the image tag so digest-pinned images still resolve a schema and launch mode |
-| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (Burstable defaults), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
+| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (defaults: 512Mi request / 1Gi limit memory, 100m/500m CPU), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
 | `image` | `ImageSpec` | yes | Container image; exactly one of `tag` or `digest` (shared CEL rule, re-checked by the webhook) |
 | `database` | `DatabaseSpec` | yes | MariaDB connection. Exactly one of `clusterRef` (managed) or `host` (brownfield); `credentialsMode` (`Static` \| `Dynamic`, where `Dynamic` requires `clusterRef`), `secretRef`, and optional `tls`. Mutual-exclusivity and the Dynamic-requires-clusterRef rule are inherited from `commonv1.DatabaseSpec` |
 | `cache` | `CacheSpec` | yes | Memcached backing the Glance image cache. Exactly one of `clusterRef` (managed) or `servers` (brownfield) |
@@ -81,11 +81,16 @@ is never emitted).
 
 ### Defaulting and validation
 
-The mutating webhook applies the shared `DeploymentSpec`/`LoggingSpec` defaults,
-materializes the `PyMemcacheCache` cache backend, fills the `ServiceUserSpec`
-identity defaults (`glance` / `service` / `Default` / `Default`, `secretRef.key`
-→ `password`), and — only when `spec.apiServer.uwsgi` is present — the uWSGI
-sub-field defaults (`processes` 2, `threads` 1, `httpKeepAlive` true).
+The mutating webhook applies the shared `DeploymentSpec`/`LoggingSpec` defaults
+— with one glance-specific deviation: an unset `spec.deployment.resources` is
+filled with 512Mi memory request / 1Gi memory limit (CPU keeps the shared
+100m/500m), because the glance-api container carries the boto3-weighted S3
+store driver and overruns the shared 512Mi baseline under concurrent image
+traffic. It also materializes the `PyMemcacheCache` cache backend, fills the
+`ServiceUserSpec` identity defaults (`glance` / `service` / `Default` /
+`Default`, `secretRef.key` → `password`), and — only when
+`spec.apiServer.uwsgi` is present — the uWSGI sub-field defaults (`processes`
+2, `threads` 1, `httpKeepAlive` true).
 
 The validating webhook accumulates every violation into one admission response,
 reusing the shared validators: replicas floor, image tag/digest XOR, the

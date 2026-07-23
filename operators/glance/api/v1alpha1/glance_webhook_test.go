@@ -10,6 +10,7 @@ import (
 
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
@@ -60,12 +61,38 @@ func TestGlanceDefault_MaterializesServiceUserAndLoggingDefaults(t *testing.T) {
 	g.Expect(obj.Spec.ServiceUser.ProjectDomainName).To(gomega.Equal("Default"))
 	g.Expect(obj.Spec.ServiceUser.SecretRef.Key).To(gomega.Equal("password"))
 
-	// Shared-block defaults come along too.
+	// Shared-block defaults come along too — with the glance-specific memory
+	// values (512Mi request / 1Gi limit for the boto3-weighted S3 path)
+	// replacing the shared 256Mi/512Mi baseline, while CPU keeps the shared
+	// defaults.
 	g.Expect(obj.Spec.Deployment.Resources).NotTo(gomega.BeNil())
+	g.Expect(obj.Spec.Deployment.Resources.Requests.Memory().String()).To(gomega.Equal("512Mi"))
+	g.Expect(obj.Spec.Deployment.Resources.Limits.Memory().String()).To(gomega.Equal("1Gi"))
+	g.Expect(obj.Spec.Deployment.Resources.Requests.Cpu().String()).To(gomega.Equal("100m"))
+	g.Expect(obj.Spec.Deployment.Resources.Limits.Cpu().String()).To(gomega.Equal("500m"))
 	g.Expect(obj.Spec.Cache.Backend).To(gomega.Equal(commonv1.DefaultCacheBackend))
 	g.Expect(obj.Spec.Logging).NotTo(gomega.BeNil())
 	g.Expect(obj.Spec.Logging.Format).To(gomega.Equal("text"))
 	g.Expect(obj.Spec.Logging.Level).To(gomega.Equal("INFO"))
+}
+
+func TestGlanceDefault_PreservesExplicitResources(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+
+	obj := validGlance()
+	obj.Spec.Deployment.Resources = &corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), obj)).To(gomega.Succeed())
+
+	// A non-empty resources block is left verbatim: neither the glance memory
+	// defaults nor the shared baseline overwrite an explicit value.
+	g.Expect(obj.Spec.Deployment.Resources.Limits.Memory().String()).To(gomega.Equal("256Mi"))
+	g.Expect(obj.Spec.Deployment.Resources.Requests).To(gomega.BeEmpty())
 }
 
 func TestGlanceDefault_PreservesExplicitServiceUserValues(t *testing.T) {

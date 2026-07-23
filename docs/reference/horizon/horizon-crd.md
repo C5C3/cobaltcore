@@ -13,7 +13,7 @@ chart ships a synced copy (`make sync-crds` / `make verify-crd-sync`).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (Burstable defaults), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
+| `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (defaults: 256Mi request / 512Mi limit memory, 100m/500m CPU), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
 | `image` | `ImageSpec` | yes | Container image; exactly one of `tag` or `digest` (shared CEL rule) |
 | `cache` | `CacheSpec` | yes | Memcached backing the Django cache. Exactly one of `clusterRef` (managed) or `servers` (brownfield); `backend` is a Django cache backend path, defaulted to `django.core.cache.backends.memcached.PyMemcacheCache` |
 | `keystoneEndpoint` | `string` | yes | The Keystone endpoint URL (`OPENSTACK_KEYSTONE_URL`); must match `^https?://` and parse with a host. Consumed server-side by the dashboard pods, so it must be reachable from inside the cluster — for a colocated control plane use the cluster-local Service URL, not an externally routable address |
