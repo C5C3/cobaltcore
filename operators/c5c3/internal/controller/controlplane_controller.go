@@ -23,10 +23,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -631,12 +633,52 @@ func storeToControlPlaneMapper(c client.Reader, watchedKind commonv1.SecretStore
 
 // SetupWithManager registers the ControlPlaneReconciler with the controller
 // manager. It Owns every child CR the sub-reconcilers project (MariaDB,
-// Keystone, the K-ORC ApplicationCredential/Service/Endpoint, the Memcached CR,
-// and the ESO ExternalSecret/PushSecret) so an upstream child status transition
-// retriggers reconcile, Watches Secrets so an admin-password rotation wakes the
-// owning ControlPlane via the field indexer, and Watches the OpenBao-backed
-// ClusterSecretStore so an ESO/OpenBao outage reflects in the credential
-// conditions promptly rather than after the next periodic resync (#476).
+// Keystone, Horizon, Glance/GlanceBackend, the eight K-ORC resources, the
+// Memcached CR, the mTLS Certificate, and the ESO ExternalSecret/PushSecret/
+// VaultDynamicSecret) so an upstream child status transition retriggers
+// reconcile, Watches Secrets so an admin-password rotation wakes the owning
+// ControlPlane via the field indexer, and Watches the OpenBao-backed secret
+// stores so an ESO/OpenBao outage reflects in the credential conditions
+// promptly rather than after the next periodic resync (#476).
+//
+// The legs for kinds a sibling operator owns (Keystone, Horizon, Glance,
+// GlanceBackend and KeystoneIdentityBackend) are registered only when a
+// discovery probe reports the CRD served. The eight K-ORC kinds are NOT among
+// them: like MariaDB, Memcached and the ESO kinds, K-ORC is a hard dependency
+// of every reconcile pass, so its watches stay unconditional (see the Owns
+// block below and the HARD CRD DEPENDENCY note in reconcile_korc.go).
+// Registering a watch for an absent CRD dead-locks manager start: its informer
+// never syncs, controller-runtime aborts on the CacheSyncTimeout, and the elected leader
+// crash-loops while still reporting Ready. When any optional CRD is missing, a
+// leader-gated runnable re-probes discovery and returns an error the moment one
+// appears, restarting the process so the now-served watch is registered on the
+// next pass — the only way to add a watch, since controller-runtime cannot
+// mount one on a running manager (see crd_presence.go). The wiring lives in
+// buildControlPlaneController so the production path and the integration test
+// drive identical leg registration.
+func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Shared controller options: MaxConcurrentReconciles lets independent
+	// CRs reconcile in parallel instead of serialising at the
+	// controller-runtime default of 1, and the tuned RateLimiter caps
+	// per-item failure backoff at 30s rather than the default 1000s (see
+	// bootstrap.ControllerOptions).
+	b := ctrl.NewControllerManagedBy(mgr).
+		WithOptions(bootstrap.ControllerOptions(r.MaxConcurrentReconciles))
+
+	b, err := r.buildControlPlaneController(mgr, b)
+	if err != nil {
+		return err
+	}
+	return b.Complete(r)
+}
+
+// buildControlPlaneController applies every watch leg to b and returns it ready
+// to Complete. SetupWithManager and the integration test both call it so the
+// production path and the test drive IDENTICAL leg registration. The legs for
+// optional sibling-operator kinds are gated on a discovery probe
+// (probeOptionalWatches); when the probe reports a kind missing its legs are
+// skipped and a leader-gated crdWatchGate is registered to restart the process
+// once the CRD appears (see crd_presence.go).
 //
 // DECISION (Memcached Owns): memcached.c5c3.io ships no Go module (see
 // memcachedGVK in reconcile_infrastructure.go), so the Memcached child is owned
@@ -651,11 +693,37 @@ func storeToControlPlaneMapper(c client.Reader, watchedKind commonv1.SecretStore
 // the goal of reflecting ESO sync/outage transitions in the credential
 // conditions promptly; a relevance predicate could be added later if the
 // reconcile volume becomes a concern.
-func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b *builder.Builder) (*builder.Builder, error) {
 	// Register the field indexer before Watches so secretToControlPlaneMapper
 	// can rely on it for its MatchingFields lookup.
 	if err := registerControlPlaneSecretNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
-		return err
+		return nil, err
+	}
+
+	disco, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	if err != nil {
+		return nil, fmt.Errorf("building discovery client for optional CRD probe: %w", err)
+	}
+
+	served, missing, err := probeOptionalWatches(disco, r.Scheme)
+	if err != nil {
+		// A non-NotFound discovery error (API server unreachable, RBAC
+		// forbidden) aborts setup so the pod restarts rather than silently
+		// dropping watches; NotFound is folded into the served map by the probe.
+		return nil, err
+	}
+
+	// isServed reports whether the API server serves obj's kind, reusing the
+	// discovery result the probe already computed. The GVKForObject error branch
+	// is unreachable in practice — the probe resolved these exact types against
+	// the same scheme — so treating a resolution failure as "not served" (skip
+	// the leg) is a safe degraded answer rather than a fatal setup error.
+	isServed := func(obj client.Object) bool {
+		gvk, err := apiutil.GVKForObject(obj, r.Scheme)
+		if err != nil {
+			return false
+		}
+		return served[gvk]
 	}
 
 	memcached := &unstructured.Unstructured{}
@@ -667,23 +735,24 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	certificate := &unstructured.Unstructured{}
 	certificate.SetGroupVersionKind(certificateGVK)
 
-	return ctrl.NewControllerManagedBy(mgr).
-		// Shared controller options: MaxConcurrentReconciles lets independent
-		// CRs reconcile in parallel instead of serialising at the
-		// controller-runtime default of 1, and the tuned RateLimiter caps
-		// per-item failure backoff at 30s rather than the default 1000s (see
-		// bootstrap.ControllerOptions).
-		WithOptions(bootstrap.ControllerOptions(r.MaxConcurrentReconciles)).
+	// Unconditional legs: the ControlPlane itself, the infrastructure children
+	// the c5c3 operator ships or hard-depends on, and the secret-store watches.
+	b = b.
 		// Filter the CR's own status-only updates so Status().Update does not
 		// re-wake the controller (see watch.CRUpdatePredicate). Together with
 		// the no-op status-write skip in updateStatus this closes the
 		// self-wake loop the bare For() previously allowed.
 		For(&c5c3v1alpha1.ControlPlane{}, builder.WithPredicates(watch.CRUpdatePredicate())).
 		Owns(&mariadbv1alpha1.MariaDB{}).
-		Owns(&keystonev1alpha1.Keystone{}).
-		Owns(&horizonv1alpha1.Horizon{}).
-		Owns(&glancev1alpha1.Glance{}).
-		Owns(&glancev1alpha1.GlanceBackend{}).
+		// The eight K-ORC kinds are a HARD dependency of every reconcile pass:
+		// reconcileKORC unconditionally mints the admin ApplicationCredential and
+		// projects the catalog/identity resources (and reconcileServiceAccounts the
+		// RoleAssignments), reading them through the cached client with no spec or
+		// condition gate. A missing K-ORC CRD would surface there as a no-match
+		// hard error, not a slimmable start-up state, so — like MariaDB, Memcached
+		// and the ESO kinds — these Owns legs stay unconditional rather than sitting
+		// behind the discovery guard below. The manager must fail fast at start if
+		// K-ORC is absent.
 		Owns(&orcv1alpha1.ApplicationCredential{}).
 		Owns(&orcv1alpha1.Service{}).
 		Owns(&orcv1alpha1.Endpoint{}).
@@ -697,14 +766,6 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&esov1.ExternalSecret{}).
 		Owns(&esov1alpha1.PushSecret{}).
 		Owns(&esgenv1alpha1.VaultDynamicSecret{}).
-		// KeystoneIdentityBackend CRs are authored by the operator, not projected
-		// by the ControlPlane, so they carry no owner reference an Owns() could
-		// match. Watch them by keystoneRef so attaching (or detaching, or the
-		// backend reaching Ready) re-projects the Horizon websso choices and the
-		// Keystone trusted_dashboard without waiting for a periodic resync.
-		Watches(&keystonev1alpha1.KeystoneIdentityBackend{}, handler.EnqueueRequestsFromMapFunc(
-			r.identityBackendToControlPlaneMapper,
-		)).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
 			secretToControlPlaneMapper(mgr.GetClient()),
 		)).
@@ -729,17 +790,57 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// keep flowing through Owns() alone and neither leg double-enqueues the
 		// other's objects. The Namespace leg installs a cluster-wide Namespace
 		// informer, so the predicate is what keeps that informer from waking the
-		// mapper on every namespace event in the cluster.
-		Watches(&keystonev1alpha1.Keystone{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
-		Watches(&horizonv1alpha1.Horizon{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
-		Watches(&glancev1alpha1.Glance{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
-		Watches(&glancev1alpha1.GlanceBackend{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
+		// mapper on every namespace event in the cluster. (The Keystone, Horizon,
+		// Glance and GlanceBackend cross-namespace legs belong to this group too but
+		// are registered under the discovery guard below, co-located with their Owns.)
 		Watches(&mariadbv1alpha1.MariaDB{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
 		Watches(memcached, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
 		Watches(&esov1.ExternalSecret{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
 		// The namespace itself: a Managed one being deleted out from under a live
 		// ControlPlane must re-drive NamespacesReady rather than wait for the next
 		// periodic resync.
-		Watches(&corev1.Namespace{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
-		Complete(r)
+		Watches(&corev1.Namespace{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate()))
+
+	// Guarded legs: kinds owned by a sibling operator whose CRD may be absent.
+	// For each service-operator kind both its Owns leg and its cross-namespace
+	// Watches leg (see the cross-namespace block above) are co-located under one
+	// guard because both informers target the same CRD and both would block
+	// manager start when it is not served.
+	for _, obj := range []client.Object{
+		&keystonev1alpha1.Keystone{},
+		&horizonv1alpha1.Horizon{},
+		&glancev1alpha1.Glance{},
+		&glancev1alpha1.GlanceBackend{},
+	} {
+		if isServed(obj) {
+			b = b.Owns(obj).
+				Watches(obj, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate()))
+		}
+	}
+	// KeystoneIdentityBackend CRs are authored by the operator, not projected
+	// by the ControlPlane, so they carry no owner reference an Owns() could
+	// match. Watch them by keystoneRef so attaching (or detaching, or the
+	// backend reaching Ready) re-projects the Horizon websso choices and the
+	// Keystone trusted_dashboard without waiting for a periodic resync.
+	if isServed(&keystonev1alpha1.KeystoneIdentityBackend{}) {
+		b = b.Watches(&keystonev1alpha1.KeystoneIdentityBackend{}, handler.EnqueueRequestsFromMapFunc(
+			r.identityBackendToControlPlaneMapper,
+		))
+	}
+
+	if len(missing) > 0 {
+		msgs := make([]string, 0, len(missing))
+		for _, gvk := range missing {
+			msgs = append(msgs, gvk.String())
+		}
+		ctrl.Log.WithName("setup").Info(
+			"skipping watches for optional CRDs not served by the API server; a leader-gated re-check will restart the operator when one appears",
+			"missingKinds", msgs,
+		)
+		if err := mgr.Add(&crdWatchGate{disco: disco, missing: missing, interval: crdRecheckInterval}); err != nil {
+			return nil, fmt.Errorf("registering crdWatchGate for missing optional CRDs: %w", err)
+		}
+	}
+
+	return b, nil
 }
