@@ -486,15 +486,19 @@ type (
 	GatewayParentRefSpec = commonv1.GatewayParentRefSpec
 )
 
-// UpgradePhase represents the current phase of a database upgrade.
-// +kubebuilder:validation:Enum=Expanding;Migrating;RollingUpdate;Contracting
-type UpgradePhase string
+// UpgradePhase is aliased to the shared commonv1 definition. The database
+// upgrade phase type was consolidated into internal/common/types so every
+// database-backed operator shares one source of truth; commonv1 carries the
+// canonical godoc and validation marker. This alias and the re-exported
+// constants keep existing references — keystonev1alpha1.UpgradePhase and the
+// bare UpgradePhase* constants alike — compiling unchanged.
+type UpgradePhase = commonv1.UpgradePhase
 
 const (
-	UpgradePhaseExpanding     UpgradePhase = "Expanding"
-	UpgradePhaseMigrating     UpgradePhase = "Migrating"
-	UpgradePhaseRollingUpdate UpgradePhase = "RollingUpdate"
-	UpgradePhaseContracting   UpgradePhase = "Contracting"
+	UpgradePhaseExpanding     UpgradePhase = commonv1.UpgradePhaseExpanding
+	UpgradePhaseMigrating     UpgradePhase = commonv1.UpgradePhaseMigrating
+	UpgradePhaseRollingUpdate UpgradePhase = commonv1.UpgradePhaseRollingUpdate
+	UpgradePhaseContracting   UpgradePhase = commonv1.UpgradePhaseContracting
 )
 
 // KeystoneStatus defines the observed state of Keystone.
