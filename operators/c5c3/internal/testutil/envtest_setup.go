@@ -60,10 +60,35 @@ func SetupC5c3EnvTestWithController(
 ) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 
+	return SetupC5c3EnvTestWithControllerAndCRDs(
+		t,
+		crdDirectoryPaths(),
+		addToScheme,
+		registerWebhooks,
+		registerController,
+	)
+}
+
+// SetupC5c3EnvTestWithControllerAndCRDs is the caller-supplied-dirs variant of
+// SetupC5c3EnvTestWithController: it is identical except the CRD directories
+// envtest loads come from crdDirs rather than the full built-in set.
+// SetupC5c3EnvTestWithController delegates here with crdDirectoryPaths() (the
+// full CRD set). Integration tests pass BaselineCRDDirectoryPaths() to model a
+// cluster missing the sibling service-operator CRDs (Keystone, Horizon, Glance),
+// proving the ControlPlane controller starts when those kinds are unserved.
+func SetupC5c3EnvTestWithControllerAndCRDs(
+	t testing.TB,
+	crdDirs []string,
+	addToScheme func(*k8sruntime.Scheme) error,
+	registerWebhooks func(ctrl.Manager) error,
+	registerController func(ctrl.Manager) error,
+) (client.Client, context.Context, context.CancelFunc) {
+	t.Helper()
+
 	return commonenvtest.StartManagedEnvTest(t, commonenvtest.ManagedEnvTestConfig{
 		Name:               "c5c3",
 		Scheme:             buildControllerScheme(addToScheme),
-		CRDDirectoryPaths:  crdDirectoryPaths(),
+		CRDDirectoryPaths:  crdDirs,
 		WebhookDir:         c5c3WebhookDir(),
 		RegisterWebhooks:   registerWebhooks,
 		RegisterController: registerController,
@@ -73,20 +98,42 @@ func SetupC5c3EnvTestWithController(
 // crdDirectoryPaths returns the absolute CRD directories envtest loads for a
 // ControlPlane integration test, resolved relative to this
 // source file via runtime.Caller(0):
-//   - c5c3 CRDs (controlplanes, credentialrotations, secretaggregates).
-//   - the Keystone CRD (the reconciler Owns a Keystone child).
-//   - every shared fake CRD dir under internal/common/testutil/fake_crds/*
+//   - the sibling service-operator CRDs (Keystone, Horizon, Glance — and with
+//     them GlanceBackend and KeystoneIdentityBackend) the reconciler Owns as
+//     children.
+//   - BaselineCRDDirectoryPaths(): the c5c3 CRDs plus every shared fake CRD dir
 //     (mariadb-operator, memcached-operator, external-secrets, cert-manager,
 //     k-orc, ...) so the external operator kinds the reconciler create-or-updates
 //     resolve in the apiserver RESTMapper.
 func crdDirectoryPaths() []string {
 	base := callerDir()
-	c5c3CRDDir := filepath.Join(base, "..", "..", "config", "crd", "bases")
 	keystoneCRDDir := filepath.Join(base, "..", "..", "..", "keystone", "config", "crd", "bases")
 	horizonCRDDir := filepath.Join(base, "..", "..", "..", "horizon", "config", "crd", "bases")
 	glanceCRDDir := filepath.Join(base, "..", "..", "..", "glance", "config", "crd", "bases")
 
-	dirs := []string{c5c3CRDDir, keystoneCRDDir, horizonCRDDir, glanceCRDDir}
+	dirs := []string{keystoneCRDDir, horizonCRDDir, glanceCRDDir}
+	return append(dirs, BaselineCRDDirectoryPaths()...)
+}
+
+// BaselineCRDDirectoryPaths returns the absolute CRD directories for an envtest
+// environment carrying only the c5c3 CRDs and the shared fake CRDs for the hard
+// infrastructure baseline (MariaDB, Memcached, external-secrets, cert-manager,
+// K-ORC), resolved relative to this source file via runtime.Caller(0):
+//   - c5c3 CRDs (controlplanes, credentialrotations, secretaggregates).
+//   - every shared fake CRD dir under internal/common/testutil/fake_crds/*.
+//
+// The sibling service-operator CRDs (Keystone, Horizon, Glance — and with them
+// GlanceBackend and KeystoneIdentityBackend) are DELIBERATELY absent, so tests
+// can prove the ControlPlane controller starts when those kinds are unserved.
+// K-ORC IS served — its fake CRDs are part of the common fake dirs — because the
+// K-ORC kinds are Owned unconditionally as hard dependencies (see optionalWatchObjects
+// in crd_presence.go): the manager would fail to start without them. Tests therefore
+// exercise the intended partial state — the guarded sibling service-operator legs are
+// skipped while every unconditional infrastructure leg, K-ORC included, stays wired.
+func BaselineCRDDirectoryPaths() []string {
+	c5c3CRDDir := filepath.Join(callerDir(), "..", "..", "config", "crd", "bases")
+
+	dirs := []string{c5c3CRDDir}
 	return append(dirs, commonenvtest.CommonFakeCRDDirs()...)
 }
 
