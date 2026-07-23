@@ -13,11 +13,17 @@ export default defineConfig({
   themeConfig: {
     nav: [
       { text: 'Home', link: '/' },
+      { text: 'Quick Start', link: '/quick-start' },
+      { text: 'Guides', link: '/guides/observability' },
+      { text: 'Reference', link: '/reference/keystone/' },
+      { text: 'Future', link: '/future/' },
+      { text: 'Contributing', link: '/contributing/adding-a-new-operator' },
     ],
     sidebar: [
       {
         text: 'Getting Started',
         items: [
+          { text: 'Overview', link: '/' },
           { text: 'Quick Start', link: '/quick-start' },
           { text: 'Quick Start (Extended)', link: '/quick-start-extended' },
           { text: 'Quick Start (ControlPlane)', link: '/quick-start-controlplane' },
@@ -182,6 +188,13 @@ export default defineConfig({
     ],
     socialLinks: [
       { icon: 'github', link: 'https://github.com/c5c3/forge' },
+      {
+        icon: {
+          svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M18 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zM6 4h5v8l-2.5-1.5L6 12V4z"/></svg>',
+        },
+        link: 'https://deepwiki.com/C5C3/forge',
+        ariaLabel: 'DeepWiki',
+      },
     ],
   },
 })
