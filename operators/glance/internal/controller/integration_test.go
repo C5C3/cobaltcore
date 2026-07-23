@@ -451,3 +451,231 @@ func TestIntegrationGlance_DeleteReleasesFinalizer(t *testing.T) {
 		return apierrors.IsNotFound(err)
 	}, eventuallyTimeout, pollInterval).Should(BeTrue(), "Glance should be fully removed after finalizer release")
 }
+
+// TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract drives a full glance
+// release upgrade (2025.2 → 2026.1) through the shared expand-migrate-contract
+// flow end to end against envtest, mirroring keystone's upgrade-cycle test. It
+// locks four properties no unit test observes together:
+//
+//   - the Expanding → Migrating → RollingUpdate → Contracting phase walk, with
+//     each glance-manage db expand|migrate|contract phase Job carrying the
+//     target-release image;
+//   - the rollout-gated contract flip: the phase stays RollingUpdate until the
+//     re-imaged Deployment reports ready, then advances to Contracting;
+//   - the eventlet → uWSGI launch-command switch the Deployment template takes on
+//     the release bump (glanceUsesUWSGI derives the mode from openStackRelease);
+//   - the post-upgrade steady-state db-sync Job re-running with the new image on
+//     pod-spec-hash drift, so its db load_metadefs step loads the new release's
+//     definitions.
+//
+// envtest runs no Job or Deployment controllers, so every Job completion and
+// Deployment readiness is simulated; the phase machine cannot advance on its own.
+func TestIntegrationGlance_UpgradeCycle_ExpandMigrateContract(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestWithController(t)
+	ns := createTestNamespace(t, ctx, c)
+	createGlancePrerequisites(t, ctx, c, ns)
+
+	// Brownfield glance at release 2025.2 with spec.openStackRelease and
+	// spec.image.tag in lockstep (the operator's existing bump contract).
+	glance := integrationGlance("glance", ns)
+	g.Expect(c.Create(ctx, glance)).To(Succeed(), "create Glance CR")
+	glanceKey := types.NamespacedName{Name: "glance", Namespace: ns}
+
+	// A default backend plus its credentials must exist before any config is
+	// rendered and the schema/Deployment can converge.
+	g.Expect(c.Create(ctx, integrationS3CredentialsSecret("store", ns))).To(Succeed(), "create S3 credentials Secret")
+	g.Expect(c.Create(ctx, integrationBackend("store", ns, "glance", true))).To(Succeed(), "create GlanceBackend CR")
+	waitForGlanceCondition(t, ctx, c, glanceKey, "BackendsReady", metav1.ConditionTrue, eventuallyTimeout)
+
+	deployKey := client.ObjectKey{Namespace: ns, Name: "glance"}
+	dbSyncKey := client.ObjectKey{Namespace: ns, Name: "glance-db-sync"}
+
+	// Drive the initial 2025.2 install to Ready: simulate the db-sync Job complete
+	// and the Deployment ready, exactly as the file's other tests do.
+	g.Eventually(func() error {
+		return c.Get(ctx, dbSyncKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-sync Job should appear")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate db-sync Job completion")
+
+	var deploy appsv1.Deployment
+	g.Eventually(func() error {
+		return c.Get(ctx, deployKey, &deploy)
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed(), "Glance Deployment should appear")
+	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(deploy.Spec.Replicas, 1))).
+		To(Succeed(), "simulate initial Deployment readiness")
+
+	waitForGlanceCondition(t, ctx, c, glanceKey, "DatabaseReady", metav1.ConditionTrue, eventuallyLongTimeout)
+	waitForGlanceCondition(t, ctx, c, glanceKey, "Ready", metav1.ConditionTrue, eventuallyLongTimeout)
+
+	// The initial release is tracked, no upgrade is in flight, and the Deployment
+	// runs the pre-2026.1 eventlet launch (glance-api server, no uWSGI).
+	initial := &glancev1alpha1.Glance{}
+	g.Expect(c.Get(ctx, glanceKey, initial)).To(Succeed())
+	g.Expect(initial.Status.InstalledRelease).To(Equal("2025.2"),
+		"installedRelease should be 2025.2 after the initial install")
+	g.Expect(string(initial.Status.UpgradePhase)).To(Equal(""),
+		"no upgrade should be in flight after a fresh install")
+	g.Expect(c.Get(ctx, deployKey, &deploy)).To(Succeed())
+	initialCmd := deploy.Spec.Template.Spec.Containers[0].Command
+	g.Expect(initialCmd).To(ContainElement("glance-api"),
+		"2025.2 Deployment should run the eventlet glance-api launch")
+	g.Expect(initialCmd).NotTo(ContainElement("uwsgi"),
+		"2025.2 Deployment must not run the uWSGI launch")
+
+	// --- Trigger the upgrade: bump spec.openStackRelease and spec.image.tag in
+	// lockstep. The Get→Update loop retries on the conflict a concurrent status
+	// write races in. ---
+	g.Eventually(func() error {
+		cur := &glancev1alpha1.Glance{}
+		if err := c.Get(ctx, glanceKey, cur); err != nil {
+			return err
+		}
+		cur.Spec.OpenStackRelease = "2026.1"
+		cur.Spec.Image.Tag = "2026.1"
+		return c.Update(ctx, cur)
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "bump glance to release 2026.1")
+
+	// Phase 1: Expanding — the db-expand Job carries the target-release image and
+	// the glance-manage db expand command.
+	g.Eventually(func() commonv1.UpgradePhase {
+		cur := &glancev1alpha1.Glance{}
+		if err := c.Get(ctx, glanceKey, cur); err != nil {
+			return ""
+		}
+		return cur.Status.UpgradePhase
+	}, eventuallyTimeout, pollInterval).Should(Equal(commonv1.UpgradePhaseExpanding),
+		"upgradePhase should transition to Expanding")
+
+	upgrading := &glancev1alpha1.Glance{}
+	g.Expect(c.Get(ctx, glanceKey, upgrading)).To(Succeed())
+	g.Expect(upgrading.Status.TargetRelease).To(Equal("2026.1"),
+		"targetRelease should record the in-flight upgrade")
+
+	expandKey := client.ObjectKey{Namespace: ns, Name: "glance-db-expand"}
+	g.Eventually(func() error {
+		return c.Get(ctx, expandKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-expand Job should appear")
+	expandJob := &batchv1.Job{}
+	g.Expect(c.Get(ctx, expandKey, expandJob)).To(Succeed())
+	g.Expect(expandJob.Spec.Template.Spec.Containers[0].Image).To(HaveSuffix(":2026.1"),
+		"db-expand Job should run the target-release image")
+	g.Expect(expandJob.Spec.Template.Spec.Containers[0].Command).To(ContainElements("glance-manage", "db", "expand"),
+		"db-expand Job should run glance-manage db expand")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, expandKey)).To(Succeed(), "simulate db-expand Job completion")
+
+	// Phase 2: Migrating — the db-migrate Job runs glance-manage db migrate.
+	g.Eventually(func() commonv1.UpgradePhase {
+		cur := &glancev1alpha1.Glance{}
+		if err := c.Get(ctx, glanceKey, cur); err != nil {
+			return ""
+		}
+		return cur.Status.UpgradePhase
+	}, eventuallyTimeout, pollInterval).Should(Equal(commonv1.UpgradePhaseMigrating),
+		"upgradePhase should transition to Migrating")
+
+	migrateKey := client.ObjectKey{Namespace: ns, Name: "glance-db-migrate"}
+	g.Eventually(func() error {
+		return c.Get(ctx, migrateKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-migrate Job should appear")
+	migrateJob := &batchv1.Job{}
+	g.Expect(c.Get(ctx, migrateKey, migrateJob)).To(Succeed())
+	g.Expect(migrateJob.Spec.Template.Spec.Containers[0].Command).To(ContainElements("glance-manage", "db", "migrate"),
+		"db-migrate Job should run glance-manage db migrate")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, migrateKey)).To(Succeed(), "simulate db-migrate Job completion")
+
+	// Phase 3: RollingUpdate — the Deployment template flips to the 2026.1 uWSGI
+	// launch, which resets its simulated readiness.
+	g.Eventually(func() commonv1.UpgradePhase {
+		cur := &glancev1alpha1.Glance{}
+		if err := c.Get(ctx, glanceKey, cur); err != nil {
+			return ""
+		}
+		return cur.Status.UpgradePhase
+	}, eventuallyTimeout, pollInterval).Should(Equal(commonv1.UpgradePhaseRollingUpdate),
+		"upgradePhase should transition to RollingUpdate")
+
+	g.Eventually(func(ig Gomega) {
+		d := &appsv1.Deployment{}
+		ig.Expect(c.Get(ctx, deployKey, d)).To(Succeed())
+		ig.Expect(d.Spec.Template.Spec.Containers[0].Image).To(HaveSuffix(":2026.1"),
+			"Deployment should carry the 2026.1 image during RollingUpdate")
+		ig.Expect(d.Spec.Template.Spec.Containers[0].Command).To(ContainElement("uwsgi"),
+			"Deployment should switch to the uWSGI launch on the release bump")
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"Deployment should flip to the 2026.1 uWSGI launch during RollingUpdate")
+
+	// Rollout-gated contract (Acceptance Criterion): while the re-imaged Deployment
+	// is not ready (the template bump reset its simulated readiness), the phase
+	// MUST NOT advance past RollingUpdate.
+	g.Consistently(func(ig Gomega) {
+		cur := &glancev1alpha1.Glance{}
+		ig.Expect(c.Get(ctx, glanceKey, cur)).To(Succeed())
+		ig.Expect(cur.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseRollingUpdate),
+			"upgradePhase must stay RollingUpdate until the Deployment reports ready")
+	}, 2*time.Second, pollInterval).Should(Succeed())
+
+	// Simulate the re-imaged rollout completing; the flow advances to Contracting.
+	var rollout appsv1.Deployment
+	g.Expect(c.Get(ctx, deployKey, &rollout)).To(Succeed())
+	g.Expect(simulators.SimulateDeploymentReady(ctx, c, deployKey, ptr.Deref(rollout.Spec.Replicas, 1))).
+		To(Succeed(), "simulate the re-imaged Deployment rollout completing")
+
+	// Phase 4: Contracting — the db-contract Job runs glance-manage db contract.
+	g.Eventually(func() commonv1.UpgradePhase {
+		cur := &glancev1alpha1.Glance{}
+		if err := c.Get(ctx, glanceKey, cur); err != nil {
+			return ""
+		}
+		return cur.Status.UpgradePhase
+	}, eventuallyTimeout, pollInterval).Should(Equal(commonv1.UpgradePhaseContracting),
+		"upgradePhase should transition to Contracting once the Deployment is ready")
+
+	contractKey := client.ObjectKey{Namespace: ns, Name: "glance-db-contract"}
+	g.Eventually(func() error {
+		return c.Get(ctx, contractKey, &batchv1.Job{})
+	}, eventuallyTimeout, pollInterval).Should(Succeed(), "db-contract Job should appear")
+	contractJob := &batchv1.Job{}
+	g.Expect(c.Get(ctx, contractKey, contractJob)).To(Succeed())
+	g.Expect(contractJob.Spec.Template.Spec.Containers[0].Command).To(ContainElements("glance-manage", "db", "contract"),
+		"db-contract Job should run glance-manage db contract")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, contractKey)).To(Succeed(), "simulate db-contract Job completion")
+
+	// Upgrade completes: installedRelease promoted, phase and target cleared.
+	g.Eventually(func() string {
+		cur := &glancev1alpha1.Glance{}
+		if err := c.Get(ctx, glanceKey, cur); err != nil {
+			return ""
+		}
+		return cur.Status.InstalledRelease
+	}, eventuallyTimeout, pollInterval).Should(Equal("2026.1"),
+		"installedRelease should advance to 2026.1 after the contract phase")
+
+	completed := &glancev1alpha1.Glance{}
+	g.Expect(c.Get(ctx, glanceKey, completed)).To(Succeed())
+	g.Expect(string(completed.Status.UpgradePhase)).To(Equal(""),
+		"upgradePhase should be cleared once the upgrade completes")
+	g.Expect(completed.Status.TargetRelease).To(Equal(""),
+		"targetRelease should be cleared once the upgrade completes")
+
+	// Post-upgrade steady state: the db-sync Job re-runs with the new image on
+	// pod-spec-hash drift (its db load_metadefs step then loads the 2026.1
+	// definitions). Its recreation is a delete-and-create, so the Get may miss it
+	// transiently — Eventually rides that out.
+	g.Eventually(func(ig Gomega) {
+		j := &batchv1.Job{}
+		ig.Expect(c.Get(ctx, dbSyncKey, j)).To(Succeed())
+		ig.Expect(j.Spec.Template.Spec.Containers[0].Image).To(HaveSuffix(":2026.1"),
+			"steady-state db-sync Job should be re-created with the 2026.1 image")
+	}, eventuallyLongTimeout, pollInterval).Should(Succeed(),
+		"steady-state db-sync Job should re-run with the new image")
+	g.Expect(simulators.SimulateJobComplete(ctx, c, dbSyncKey)).To(Succeed(), "simulate post-upgrade db-sync completion")
+
+	// The system returns to DatabaseReady/Ready after the full upgrade cycle. The
+	// re-imaged Deployment was already simulated ready during the contract flip, so
+	// no further Deployment simulation is required for the aggregate to converge.
+	waitForGlanceCondition(t, ctx, c, glanceKey, "DatabaseReady", metav1.ConditionTrue, eventuallyLongTimeout)
+	waitForGlanceCondition(t, ctx, c, glanceKey, "Ready", metav1.ConditionTrue, eventuallyLongTimeout)
+}
