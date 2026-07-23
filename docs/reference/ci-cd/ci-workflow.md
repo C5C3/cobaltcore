@@ -1130,8 +1130,9 @@ OPERATOR=keystone hack/ci-dump-diagnostics.sh   # + operator-specific diagnostic
 ### hack/ci-build-service-image.sh
 
 Builds an OpenStack service container image by resolving upstream source refs, cloning the
-project at the pinned ref, applying constraint overrides, and building the full image chain
-(`python-base` -> `venv-builder` -> service image).
+project at the pinned ref, applying patches from `patches/<service>/<release>/` (the same
+set the Build Images workflow applies), applying constraint overrides, and building the
+full image chain (`python-base` -> `venv-builder` -> service image).
 
 | Environment Variable | Required | Default | Description |
 | --- | --- | --- | --- |

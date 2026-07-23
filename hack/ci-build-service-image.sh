@@ -5,9 +5,9 @@
 
 # hack/ci-build-service-image.sh — Build an OpenStack service container image.
 #
-# Resolves upstream source refs, clones the project, applies constraint
-# overrides, and builds the full image chain: python-base -> venv-builder ->
-# service image.
+# Resolves upstream source refs, clones the project, applies patches and
+# constraint overrides, and builds the full image chain: python-base ->
+# venv-builder -> service image.
 #
 # Required env vars:
 #   OPERATOR      — OpenStack service name (e.g. keystone)
@@ -63,12 +63,22 @@ git clone --depth 1 --branch "${SERVICE_REF}" \
   "https://github.com/openstack/${OPERATOR}.git" "${SRC_DIR}"
 
 # ---------------------------------------------------------------------------
-# 4. Apply constraint overrides (idempotent, exits 0 if no overrides)
+# 4. Apply patches (mirrors .github/actions/checkout-service-source so the
+#    e2e-built images carry the same source as the published GHCR images)
+# ---------------------------------------------------------------------------
+PATCH_DIR="${REPO_ROOT}/patches/${OPERATOR}/${RELEASE}"
+if [ -d "${PATCH_DIR}" ] && compgen -G "${PATCH_DIR}/*.patch" > /dev/null; then
+  echo "Applying patches from ${PATCH_DIR}"
+  git -C "${SRC_DIR}" apply "${PATCH_DIR}"/*.patch
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Apply constraint overrides (idempotent, exits 0 if no overrides)
 # ---------------------------------------------------------------------------
 "${REPO_ROOT}/scripts/apply-constraint-overrides.sh" "${RELEASE}"
 
 # ---------------------------------------------------------------------------
-# 5. Build image chain: python-base -> venv-builder -> service
+# 6. Build image chain: python-base -> venv-builder -> service
 # ---------------------------------------------------------------------------
 # Reuse existing base images when available (e.g. when a prior invocation in
 # the same job or an artifact load already created them).  Saves ~30s per

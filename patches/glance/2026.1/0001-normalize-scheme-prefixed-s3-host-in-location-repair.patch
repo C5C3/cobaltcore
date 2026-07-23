@@ -1,0 +1,46 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Normalize the scheme-prefixed s3_store_host in _construct_s3_url
+
+s3_store_host must carry its http:// or https:// prefix for non-AWS
+endpoints (boto3 requires a scheme in endpoint_url), but the S3 location
+URLs stored per image embed only the bare authority — the store strips
+the prefix when it builds Store._url_prefix. _construct_s3_url
+concatenates the raw option value instead, so the expected URL never
+equals any stored location URL: every API request that touches image
+locations logs "S3 URL mismatch for image ..., updating URL" and
+rewrites the location row, and a genuine credential rotation is
+indistinguishable from the permanent false positive.
+
+Strip the scheme prefix exactly the way Store._url_prefix does before
+building the comparison URL.
+
+Applies to glance 31.1.0 (2025.2) and 32.0.0 (2026.1); the function is
+identical in both.
+
+Upstream status: not yet proposed.
+
+diff --git a/glance/common/store_utils.py b/glance/common/store_utils.py
+index 57f417d..036d705 100644
+--- a/glance/common/store_utils.py
++++ b/glance/common/store_utils.py
+@@ -283,6 +283,18 @@ def _construct_s3_url(store_instance, scheme, path):
+     s3_host = getattr(store_instance, 's3_host')
+     bucket = getattr(store_instance, 'bucket')
+ 
++    # The store keeps s3_store_host verbatim, and the option may carry an
++    # http:// or https:// prefix (boto3 requires a scheme in endpoint_url for
++    # non-AWS endpoints). Location URLs embed only the bare authority (see
++    # Store._url_prefix), so strip the prefix here as well — otherwise the
++    # comparison in _update_s3_location_and_store_id never converges and
++    # every API request logs a spurious "S3 URL mismatch" and rewrites the
++    # image location.
++    if s3_host.startswith('https://'):
++        s3_host = s3_host[len('https://'):]
++    elif s3_host.startswith('http://'):
++        s3_host = s3_host[len('http://'):]
++
+     # Construct the full URL with the object path
+     return "%s://%s:%s@%s/%s%s" % (
+         scheme, access_key, secret_key, s3_host, bucket, path)
