@@ -27,8 +27,8 @@ import (
 
 // Condition reason constants for the steady-state database-readiness condition,
 // shared so every database-backed operator's condition uses the same
-// vocabulary. The expand-migrate-contract upgrade reasons stay operator-private
-// because they are parameterised by the upgrade phase name.
+// vocabulary. The expand-migrate-contract upgrade reasons are shared too and
+// live alongside the upgrade flow in upgrade.go.
 const (
 	ReasonClusterNotReady       = "ClusterNotReady"
 	ReasonWaitingForDatabase    = "WaitingForDatabase"

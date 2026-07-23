@@ -16,6 +16,9 @@
 //   - ReconcileSyncJobs sequences the db-sync and schema-check migration Jobs
 //     (built from the parameterized JobSetParams table) and promotes the
 //     installed-release marker.
+//   - ReconcileUpgrade drives the expand-migrate-contract release upgrades
+//     shared by keystone and glance: it detects the upgrade, runs the phased
+//     migration Jobs, and aborts a reverted upgrade.
 //   - ReconcileConnectionSecret reads the ESO-synced credentials Secret,
 //     assembles the DSN, materialises the derived <name>-db-connection Secret,
 //     and returns the digest that rolls the pods on a credential rotation.
