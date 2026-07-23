@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -350,6 +351,49 @@ func TestReconcileConfig_ExtraConfigHealthyTrueOnDefaults(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(config.ConditionReasonNoOwnedKeysOverridden))
 	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).To(BeEmpty())
+}
+
+// TestOperatorDefaults_EventletWorkers pins the launch-mode-conditional worker
+// count: below 2026.1 (eventlet) an unset spec.apiServer.workers must still
+// render a bounded [DEFAULT] workers so the count never silently scales with the
+// node's CPU count and OOMs the container; an explicit value wins. From 2026.1
+// (uWSGI) the key is inert, so an unset workers renders nothing.
+func TestOperatorDefaults_EventletWorkers(t *testing.T) {
+	makeGlance := func(release string, workers *int32) *glancev1alpha1.Glance {
+		glance := testGlance()
+		glance.Spec.OpenStackRelease = release
+		if workers != nil {
+			glance.Spec.APIServer = &glancev1alpha1.APIServerSpec{Workers: workers}
+		}
+		return glance
+	}
+
+	expectedDefault := fmt.Sprintf("%d", glancev1alpha1.DefaultEventletWorkers)
+
+	tests := []struct {
+		name        string
+		release     string
+		workers     *int32
+		wantWorkers string // "" means the key must be absent
+	}{
+		{"eventlet unset renders bounded default", "2025.2", nil, expectedDefault},
+		{"eventlet explicit wins over default", "2025.2", ptr.To(int32(4)), "4"},
+		{"uwsgi unset renders nothing", "2026.1", nil, ""},
+		{"uwsgi explicit still rendered inert", "2026.1", ptr.To(int32(4)), "4"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			defaults := operatorDefaults(makeGlance(tc.release, tc.workers), validProjection())
+			got, present := defaults["DEFAULT"]["workers"]
+			if tc.wantWorkers == "" {
+				g.Expect(present).To(BeFalse(), "workers must not render under uWSGI when unset")
+				return
+			}
+			g.Expect(present).To(BeTrue(), "workers must render")
+			g.Expect(got).To(Equal(tc.wantWorkers))
+		})
+	}
 }
 
 // TestOperatorDefaults_RegistryDriftGuard is the completeness check tying

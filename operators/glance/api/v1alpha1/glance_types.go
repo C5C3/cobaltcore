@@ -251,7 +251,10 @@ type APIServerSpec struct {
 	// Workers is the number of eventlet API worker processes, rendered as
 	// [DEFAULT] workers in glance-api.conf. Effective only below release 2026.1,
 	// where Glance launches the eventlet glance-api server; ignored from 2026.1
-	// (uWSGI launch mode, where uwsgi applies instead).
+	// (uWSGI launch mode, where uwsgi applies instead). When nil below 2026.1 the
+	// operator renders DefaultEventletWorkers rather than letting the eventlet
+	// server fall back to one worker per host CPU, so the worker count — and thus
+	// the memory footprint — stays deterministic regardless of node size.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	Workers *int32 `json:"workers,omitempty"`
