@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch to trigger a cross-release upgrade from 2025.2 to 2026.1. Glance keys the
+# expand-migrate-contract flow off spec.openStackRelease, and the phase Jobs run
+# the release image, so both the release and the image tag are bumped together.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-release-upgrade
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    tag: "2026.1"

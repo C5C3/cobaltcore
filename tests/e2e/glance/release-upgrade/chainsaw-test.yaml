@@ -1,0 +1,225 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a cross-release Glance upgrade from 2025.2 to 2026.1.
+# Glance is the second consumer of the shared expand-migrate-contract database
+# upgrade flow. Verifies the full upgrade lifecycle:
+#   (1) Fresh deployment at 2025.2 reaches Ready=True/AllReady with
+#       installedRelease=2025.2 and the eventlet glance-api launch command
+#   (2) Patching spec.openStackRelease and spec.image.tag to 2026.1 walks
+#       status.upgradePhase Expanding -> Migrating -> RollingUpdate ->
+#       Contracting -> "" via the db-expand/-db-migrate/-db-contract phase Jobs
+#   (3) installedRelease is promoted to 2026.1 only after the contract phase, and
+#       status.upgradePhase is cleared
+#   (4) The three phase Jobs are left in place after the upgrade succeeds
+#   (5) The Deployment flips to the uWSGI launch command on the :2026.1 image and
+#       the rollout completes
+#   (6) The steady-state db-sync Job re-runs on the :2026.1 image (its
+#       db load_metadefs pass loads the 2026.1 metadata definitions)
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-release-upgrade
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Glance CR and its default S3 backend at 2025.2 ─────
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-glance-backend.yaml
+  # ── Step 2: Assert the pre-upgrade steady state and eventlet command ─────
+  - try:
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-release-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2025.2"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-release-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: glance-api
+                  command:
+                  - glance-api
+                  - --config-dir
+                  - /etc/glance/glance-api.conf.d/
+                  - --config-dir
+                  - /etc/glance/backends.conf.d/
+          status:
+            (availableReplicas > `0`): true
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-release-upgrade -n $NAMESPACE -o yaml 2>&1 | tail -60 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend glance-release-upgrade-s3 -n $NAMESPACE -o yaml 2>&1 | tail -40 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Patch release + image tag to trigger the cross-release upgrade ─
+  - try:
+    - patch:
+        file: 02-patch-upgrade.yaml
+  # ── Step 4: Assert the upgrade completes via expand-migrate-contract ─────
+  - try:
+    # Gate on the settled end state first: installedRelease is promoted to
+    # 2026.1 only after the contract phase, and the fresh post-upgrade db-sync
+    # flips DatabaseReady (and so Ready) back False until it completes, so a
+    # stable Ready=True/AllReady here means the whole flow has drained.
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-release-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        content: |
+          set -eu
+          echo "=== Verifying status.upgradePhase is cleared ==="
+          PHASE=$(kubectl get glance glance-release-upgrade -n openstack \
+            -o jsonpath='{.status.upgradePhase}')
+          if [ -z "$PHASE" ]; then
+            echo "OK: status.upgradePhase is empty"
+          else
+            echo "ERROR: status.upgradePhase still set to '$PHASE'"
+            exit 1
+          fi
+    - script:
+        content: |
+          set -eu
+          echo "=== Verifying the expand-migrate-contract phase Jobs remain ==="
+          for phase in expand migrate contract; do
+            JOB="glance-release-upgrade-db-${phase}"
+            if kubectl get job "$JOB" -n openstack >/dev/null 2>&1; then
+              echo "OK: Job $JOB exists"
+            else
+              echo "ERROR: Job $JOB not found"
+              exit 1
+            fi
+          done
+    # The Deployment now launches under uWSGI on the :2026.1 image and the
+    # single-replica rollout has fully converged (updatedReplicas == replicas).
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-release-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: glance-api
+                  image: ghcr.io/c5c3/glance:2026.1
+                  command:
+                  - uwsgi
+                  - "--http"
+                  - ":9292"
+                  - "--http-auto-chunked"
+                  - "--http-chunked-input"
+                  - "--http-keepalive"
+                  - "--log-master"
+                  - "--log-format"
+                  - "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
+                  - "--wsgi-file"
+                  - "/var/lib/openstack/bin/glance-wsgi-api"
+                  - "--master"
+                  - "--lazy-apps"
+                  - "--need-app"
+                  - "--processes"
+                  - "2"
+                  - "--threads"
+                  - "1"
+                  - "--pyargv"
+                  - "--config-dir /etc/glance/glance-api.conf.d/ --config-dir /etc/glance/backends.conf.d/"
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    - script:
+        timeout: 3m
+        content: |
+          set -eu
+          JOB=glance-release-upgrade-db-sync
+          echo "=== Verifying the steady-state db-sync Job re-ran on :2026.1 ==="
+          # job.RunJob deletes and re-creates a completed Job in place when its
+          # pod-spec-hash changes, so the same-named db-sync Job is replaced on
+          # the :2026.1 image after the contract phase promotes installedRelease.
+          # Its db load_metadefs pass loads the 2026.1 metadata definitions. Poll
+          # to ride out the brief delete/re-create window right after the upgrade
+          # settles, then assert the current Job carries :2026.1 and succeeded.
+          for _ in $(seq 1 30); do
+            IMG=$(kubectl get job "$JOB" -n openstack \
+              -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
+            SUCC=$(kubectl get job "$JOB" -n openstack \
+              -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
+            case "$IMG" in
+            *:2026.1)
+              if [ "$SUCC" = "1" ]; then
+                echo "OK: $JOB at $IMG succeeded=$SUCC"
+                exit 0
+              fi
+              ;;
+            esac
+            sleep 5
+          done
+          echo "ERROR: $JOB did not reach :2026.1 succeeded=1 (image=$IMG succeeded=$SUCC)"
+          exit 1
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-release-upgrade -n $NAMESPACE -o yaml 2>&1 | tail -60 || true
+          echo "=== Phase and db-sync Jobs ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
