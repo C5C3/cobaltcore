@@ -114,4 +114,15 @@ const (
 	// window mirrors remintStallTimeout: generous enough that a slow-but-
 	// progressing revoke is not cut short.
 	orcTeardownStallTimeout = 5 * time.Minute
+
+	// crdRecheckInterval is the cadence at which the crdWatchGate re-probes
+	// discovery for the optional sibling-operator CRDs that were missing when
+	// the operator started. When one of them appears the gate returns an error
+	// so mgr.Start unwinds and the Deployment restarts the process into a clean
+	// discovery pass; a restart is the only recovery path because
+	// controller-runtime cannot add a watch to a running manager. The cadence is
+	// deliberately unhurried: installing a sibling operator is a rare,
+	// human-driven event, so one extra wait of up to this interval is invisible
+	// next to the operator's own restart time.
+	crdRecheckInterval = 30 * time.Second
 )
