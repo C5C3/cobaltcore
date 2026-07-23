@@ -116,10 +116,11 @@ func buildDBSyncJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsS
 }
 
 // buildUpgradeJob creates a db_sync Job for one of the expand-migrate-contract
-// upgrade phases. The imageTag parameter allows callers to pin the
-// image independently of spec.Image.Tag (expand/migrate use the old release,
-// contract uses the new release). Upgrades only run in tag mode, so the "repo:tag"
-// reference is always well-formed here.
+// upgrade phases. The imageTag parameter pins the image independently of
+// spec.Image.Tag; all three phases run the NEW release image (spec.image.tag)
+// per the OpenStack rolling-upgrade procedure, because the N+1 migration tree
+// owns the schema deltas for the upgrade. Upgrades only run in tag mode, so the
+// "repo:tag" reference is always well-formed here.
 func buildUpgradeJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, imageTag, phase, flag string) *batchv1.Job {
 	image := keystone.Spec.Image.Repository + ":" + imageTag
 	return buildDBJob(keystone, configMapName, domainsSecretName, image, fmt.Sprintf("db-%s", phase),

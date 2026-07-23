@@ -101,6 +101,11 @@ func readyDeployment(ks *keystonev1alpha1.Keystone, configMapName string) *appsv
 	deploy.Generation = 1
 	deploy.Status.ObservedGeneration = 1
 	deploy.Status.ReadyReplicas = replicas
+	// A ready Deployment in these tests is also fully rolled out — every replica
+	// updated and counted, no surge pod left — so the RollingUpdate → Contracting
+	// flip (which gates on full convergence, not surge-tolerant readiness) fires.
+	deploy.Status.UpdatedReplicas = replicas
+	deploy.Status.Replicas = replicas
 	deploy.Status.Conditions = []appsv1.DeploymentCondition{
 		{
 			Type:   appsv1.DeploymentAvailable,
@@ -1268,6 +1273,56 @@ func TestReconcileDeployment_RollingUpdate_NotReady_Requeues(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("WaitingForDeployment"))
+}
+
+// TestReconcileDeployment_RollingUpdate_SurgeReady_HoldsContract verifies the
+// rollout-convergence gate: during the RollingUpdate upgrade phase a merely
+// surge-ready Deployment — Available with ReadyReplicas at the desired count but
+// not every replica updated (an old-image pod still serving under the default
+// MaxSurge=1/MaxUnavailable=0 strategy) — MUST NOT advance to Contracting, because
+// the contract phase would drop columns that old pod still reads. The phase stays
+// RollingUpdate and the reconcile requeues to wait for full convergence. Regression
+// guard: with the surge-tolerant IsDeploymentReady gate this flipped prematurely.
+func TestReconcileDeployment_RollingUpdate_SurgeReady_HoldsContract(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	ks.Status.InstalledRelease = "2025.2"
+	ks.Status.TargetRelease = "2026.1"
+	ks.Status.UpgradePhase = keystonev1alpha1.UpgradePhaseRollingUpdate
+
+	// Surge-ready but not converged: Available=True and ReadyReplicas at the
+	// desired count (so IsDeploymentReady is true) while UpdatedReplicas lags and a
+	// surge pod is still counted — the exact window IsDeploymentReady tolerates.
+	deploy := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "", nil)
+	replicas := int32(ks.Spec.Deployment.Replicas)
+	deploy.Spec.Replicas = &replicas
+	deploy.Generation = 1
+	deploy.Status.ObservedGeneration = 1
+	deploy.Status.ReadyReplicas = replicas
+	deploy.Status.UpdatedReplicas = replicas - 1
+	deploy.Status.Replicas = replicas + 1
+	deploy.Status.Conditions = []appsv1.DeploymentCondition{
+		{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
+	}
+	r := newDeployTestReconciler(s, ks, deploy)
+
+	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Holds in RollingUpdate and requeues to wait for the old image to drain.
+	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
+	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseRollingUpdate),
+		"a surge-ready-but-not-converged Deployment must not flip to Contracting")
+
+	// DeploymentReady condition must be False.
+	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForDeployment"))
+
+	// No premature rollout-complete event while an old-image pod still serves.
+	expectNoEvent(g, r)
 }
 
 // TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint verifies that when there is no active
