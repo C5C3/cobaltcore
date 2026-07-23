@@ -115,16 +115,16 @@ owns via `spec.serviceUser.secretRef`.
 | `conditions` | List-map keyed by `type`; see the [reconciler reference](./glance-reconciler.md#conditions) for the vocabulary |
 | `observedGeneration` | The `.metadata.generation` last reconciled |
 | `endpoint` | The Glance API URL: `https://{gateway.hostname}/` when a gateway is set, otherwise the cluster-local Service URL |
-| `installedRelease` | The OpenStack release whose schema is currently installed, promoted to `spec.openStackRelease` after a successful `db sync` |
-| `targetRelease` | The `spec.openStackRelease` being converged to during an active release transition |
+| `installedRelease` | The OpenStack release whose schema is currently installed, promoted to `spec.openStackRelease` after the upgrade completes (or after the first `db sync` on a fresh install) |
+| `targetRelease` | The `spec.openStackRelease` being upgraded to during an active release transition. Set when the upgrade initiates, cleared on completion or abort; empty in steady state |
+| `upgradePhase` | The current expand-migrate-contract phase during an active release upgrade (`Expanding`, `Migrating`, `RollingUpdate`, `Contracting`); empty when no upgrade is in flight |
 
 ::: info
-Unlike Keystone, Glance carries **no `upgradePhase` field**: its migrations run
-in a single `glance-manage db sync`, so a release transition is tracked only
-through `installedRelease`/`targetRelease`, with no expand-migrate-contract
-phase state. That is a trade-off, not only simpler status: without the phase
-split, the outgoing release's pods serve against the already-migrated schema for
-the duration of the roll — see [Database](./glance-reconciler.md#database).
+A release transition (a `spec.openStackRelease` bump with the image in lockstep)
+walks the shared expand-migrate-contract phase machine, tracked through
+`upgradePhase`/`targetRelease`. See the
+[Glance Upgrade Flow](./glance-upgrade-flow.md) for the phases, condition
+reasons, events, and abort semantics.
 :::
 
 ## Sub-Resource Naming Convention

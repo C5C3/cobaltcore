@@ -33,8 +33,8 @@ Secrets ──► DBConnectionSecret ──► Backends ──► Config ──�
 | DBConnectionSecret | Materializes the pymysql DSN into the derived `{name}-db-connection` Secret and digests it; **reports through `SecretsReady`** | `SecretsReady` |
 | Backends | Aggregates the attached, credential-ready `GlanceBackend`s into the content-hashed backends Secret. Waiting states never short-circuit the pipeline (first-install proceeds; a backend status flip re-enqueues via the watch) | `BackendsReady` |
 | Config | Renders `glance-api.conf` / `glance-api-paste.ini` (plus `policy.yaml` / `logging.conf` when applicable) into an immutable content-addressed ConfigMap. An invalid projection keeps the live Deployment's last-good names instead of re-rendering. **Reports through `SecretsReady`** (failure reason `ConfigError`) | `SecretsReady` |
-| Database | Provisions/migrates the schema (MariaDB gate, `Database`/`User`/`Grant`, one `glance-manage db sync` Job); promotes `installedRelease` | `DatabaseReady` |
-| Deployment | Ensures the API Deployment (both launch modes), Service (port 9292), and PDB; stamps `status.endpoint` | `DeploymentReady` |
+| Database | Provisions/migrates the schema (MariaDB gate, `Database`/`User`/`Grant`, one `glance-manage db sync` Job); a release bump instead runs the shared expand-migrate-contract flow; promotes `installedRelease` | `DatabaseReady` |
+| Deployment | Ensures the API Deployment (both launch modes), Service (port 9292), and PDB; stamps `status.endpoint`. Mid-upgrade it flips the `RollingUpdate` phase to `Contracting` once the rolled-out Deployment reports ready | `DeploymentReady` |
 | HTTPRoute | Full `spec.gateway` lifecycle; reflects the Gateway's Accepted condition | `HTTPRouteReady` |
 | HealthCheck | HTTP GET of the cluster-local `/healthcheck` through the shared TTL probe cache | `GlanceAPIReady` |
 | HPA | Creates/deletes the HorizontalPodAutoscaler | `HPAReady` |
@@ -55,7 +55,7 @@ eight sub-conditions are `True`; otherwise `False` (`NotAllReady`).
 | --- | --- | --- |
 | `SecretsReady` | `SecretsAvailable` | `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
 | `BackendsReady` | `AllBackendsProjected` | `WaitingForBackends`, `NoDefaultBackend` |
-| `DatabaseReady` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `DBSyncFailed`, `DBSyncInProgress`, `InvalidReleaseTransition`, `WaitingForBackends` |
+| `DatabaseReady` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `DBSyncFailed`, `DBSyncInProgress`, `WaitingForBackends`, `ImageReleaseMismatch`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `UpgradeTargetChanged`, `ExpandInProgress`, `MigrateInProgress`, `UpgradeRollingUpdate`, `ContractInProgress`, `ExpandFailed`, `MigrateFailed`, `ContractFailed` |
 | `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment`, `WaitingForBackends` |
 | `GlanceAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
@@ -116,27 +116,24 @@ The Database step runs the shared provisioning + sync flow: a MariaDB cluster
 gate and `Database`/`User`/`Grant` in managed mode (a no-op in brownfield),
 then a single `{name}-db-sync` Job running `glance-manage db sync` followed by
 `db load_metadefs`. Because Glance's migrations apply in one idempotent pass,
-there is **no schema-check Job** — so, unlike Keystone, `SchemaDriftDetected`
-never fires for Glance. On Job success `installedRelease` is promoted to
-`spec.openStackRelease`.
+there is **no schema-check Job**, so, unlike Keystone, `SchemaDriftDetected`
+never fires for Glance. On fresh installs and patch bumps `installedRelease` is
+promoted to `spec.openStackRelease` on Job success.
 
-A release transition is validated against `installedRelease`: a downgrade, or a
-jump that is neither patch-only nor a single sequential step, is rejected with
-`DatabaseReady=False / InvalidReleaseTransition` and an `InvalidReleaseTransition`
-Warning event. The rejection short-circuits the pipeline (non-zero requeue, no
-error) so the Deployment is never rolled to new code against an un-migrated
-schema; it stays rejected until the spec changes.
-
-**The reverse window is not closed.** `db sync` is a single pass with no
-expand/migrate/contract split, and the pipeline runs `Database ──► Deployment`,
-so on an accepted release bump the schema advances to the new release while the
-outgoing release's pods keep serving — for the whole rolling update, and
-`deployment.replicas` defaults to 3. Surviving pods therefore serve *old code
-against the migrated schema*. A release transition is consequently **not a
-zero-downtime operation**: drain or scale down before bumping
-`spec.openStackRelease` if request failures during the roll are unacceptable.
-There is no downgrade path to fall back to — `InvalidReleaseTransition` rejects
-it.
+A release transition (a `spec.openStackRelease` bump with the image in lockstep)
+instead dispatches to the shared expand-migrate-contract flow
+(`internal/common/database`), the same phase machine Keystone runs. The step
+validates the path against `installedRelease`, rejecting a downgrade or a
+non-sequential jump with `VersionParseError`, `DowngradeNotSupported`, or
+`UpgradePathInvalid`, then walks `Expanding → Migrating → RollingUpdate →
+Contracting` with `glance-manage db expand|migrate|contract` phase Jobs on the
+new image. The outgoing pods keep serving the expanded schema across the
+rollout, so the API stays available, and `installedRelease` is promoted only
+after contract completes. The Deployment step owns the `RollingUpdate →
+Contracting` flip: once `reconcileDeployment` sees the rolled-out Deployment
+ready, it advances the phase to `Contracting` and requeues so the contract Job
+runs. See the [Glance Upgrade Flow](./glance-upgrade-flow.md) for the phase
+table, condition reasons, events, and abort semantics.
 
 ## Requeue semantics
 

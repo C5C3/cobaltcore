@@ -48,7 +48,14 @@ applies and which decisions need a Phase-0 spike:
 
 - **Database?** Which migration tool (alembic `db_sync` vs Django
   `migrate` vs none)? No DB ⇒ drop the database/db-sync/upgrade
-  sub-reconcilers entirely. A DB service also inherits the **dynamic
+  sub-reconcilers entirely. Which zero-downtime upgrade mechanism does
+  the manage tool support (expand-migrate-contract, single-pass
+  `db sync`, online data migrations), and which phases must straddle the
+  workload rollout? A database-backed service adopts the shared
+  `database.ReconcileUpgrade` flow (`internal/common/database/upgrade.go`),
+  keying it off the image tag (keystone) or `spec.openStackRelease`
+  (glance), or documents in its reference set why single-pass is
+  acceptable. A DB service also inherits the **dynamic
   credential chain**: the shared `credentialsMode` on `DatabaseSpec`, a
   per-service `databaseCredentialsMode` override on its c5c3 service spec,
   a `provision_service_tenant` leg in
@@ -151,8 +158,8 @@ a second (or third) time?** Classify keystone internals into:
 1. thin wrappers over `internal/common` — copy as pattern, fine;
 2. generic logic living in keystone (pipeline/status machinery, workload
    builders, watch mappers, webhook validators) — **extraction candidates**;
-3. genuinely keystone-specific (fernet, bootstrap, trust-flush,
-   expand-migrate-contract) — leave alone, rule of three.
+3. genuinely keystone-specific (fernet, bootstrap, trust-flush) — leave
+   alone, rule of three.
 
 If category 2 is non-empty, file (or update) a **separate refactor issue**
 listing the candidates with file:line references, S/M/L effort, and a
