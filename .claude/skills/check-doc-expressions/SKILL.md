@@ -145,6 +145,30 @@ Group by severity:
 
 End with a short verdict for the page or doc set.
 
+### 6. Verification guardrails
+
+Before finalizing findings:
+
+- Quote the exact sentence, paragraph fragment, or command/context pair
+  that triggered the finding.
+- Cite concrete `file:line` locations.
+- If a readability claim is subjective and cannot be grounded in a
+  specific text defect, either rewrite it as a concrete defect or drop
+  it.
+- Re-check every **HIGH** finding to ensure the cited text still exists
+  in the current checkout.
+
+A zero-finding run is valid. If prose is clear for the selected audience
+and no comprehension-impacting defects are found, report a clean result.
+
+### 7. Suppressions (do not report)
+
+- Pure preference nits that do not change comprehension or actionability.
+- Repetition-only comments when the repeated text is intentional for
+  safety-critical visibility.
+- General statements like "too long" without a concrete place where
+  meaning is lost.
+
 ## Notes
 
 - This skill is read-only; do not rewrite the page until the wording

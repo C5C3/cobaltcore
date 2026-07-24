@@ -108,6 +108,22 @@ Group by severity:
 
 End with a verdict for the doc family or topic.
 
+### 5. Verification guardrails
+
+Before finalizing findings:
+
+- Quote the exact conflicting text from both sides when possible (doc vs
+  doc, or doc vs source).
+- Cite concrete `file:line` locations for both sides of the mismatch.
+- If you cannot ground one side with a concrete citation, keep the
+  finding but mark it **needs research** and do not classify it as
+  **HIGH**.
+- Re-check every **HIGH** finding against the current checkout just before
+  output to avoid stale or already-fixed claims.
+
+A zero-finding run is valid. If no contradictions are found, output an
+explicit clean verdict instead of inventing weak findings.
+
 ## Notes
 
 - This skill is read-only; hand findings to [[fix-docs]] to apply them.
