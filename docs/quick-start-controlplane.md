@@ -387,6 +387,32 @@ at `https://keystone.127-0-0-1.nip.io:8443/v3` — the same path as the per-serv
 curl -k https://keystone.127-0-0-1.nip.io:8443/v3
 ```
 
+::: tip If your host cannot resolve `*.nip.io`
+Some local resolvers (observed on macOS) fail to resolve `nip.io` hostnames,
+which surfaces as `curl: (6) Could not resolve host`. Force the hostname to
+resolve to the loopback address for a single request with `curl`'s
+`--resolve`:
+
+```bash
+curl -k --resolve keystone.127-0-0-1.nip.io:8443:127.0.0.1 \
+  https://keystone.127-0-0-1.nip.io:8443/v3
+```
+
+`--resolve <host>:<port>:<ip>` overrides DNS for that host/port pair only —
+`curl` still sends the original hostname in the request and TLS handshake, but
+connects directly to `127.0.0.1`. For a fix that also covers the `openstack`
+CLI commands below (which do not support `--resolve`), add loopback entries to
+`/etc/hosts` instead:
+
+```bash
+sudo sh -c 'cat >> /etc/hosts <<EOF
+127.0.0.1 keystone.127-0-0-1.nip.io
+127.0.0.1 horizon.127-0-0-1.nip.io
+127.0.0.1 glance.127-0-0-1.nip.io
+EOF'
+```
+:::
+
 Then issue a token with the admin password:
 
 ```bash
