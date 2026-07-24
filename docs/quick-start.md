@@ -20,7 +20,7 @@ the local-build path, the production HelmRelease, E2E and Tempest, see
 
 - Docker Desktop running
 - `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
-- OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/installation/index.html)) on `PATH` for the authenticated token check in Step 6
+- OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the authenticated token check in Step 6
 - Pinned `kind`, `kubectl`, `Helm`, `jq` on `PATH`:
 
   ```bash
