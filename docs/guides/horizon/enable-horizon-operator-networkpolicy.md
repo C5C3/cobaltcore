@@ -74,7 +74,7 @@ kubectl wait helmrelease/horizon-operator -n horizon-system \
   --for=condition=Ready --timeout=5m
 ```
 
-The chart-level policy allows exactly what the operator needs: egress to the
+The chart-level policy allows what the operator needs: egress to the
 kube-apiserver and DNS, ingress to the webhook and metrics ports. The
 horizon-operator's health check reaches the dashboard Service on TCP 8080 in
 the workload namespace; when the workload namespace itself runs a per-CR

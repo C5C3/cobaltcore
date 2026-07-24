@@ -241,7 +241,7 @@ unset BAO_TOKEN
 ```
 
 ::: warning If you skip it
-The chain stalls exactly as in the Quick Start, one namespace over: the
+The chain stalls as in the Quick Start, one namespace over: the
 ControlPlane reports `DBCredentialsReady=False`, the
 `controlplane-keystone-db-credentials` ExternalSecret — now in
 `openstack-internal` — sits in `SecretSyncedError`, and the external-secrets
@@ -290,7 +290,7 @@ kubectl get mariadb openstack-db -n openstack-internal \
   -o jsonpath='{.metadata.labels.c5c3\.io/controlplane-name}{" / "}{.metadata.ownerReferences}{"\n"}'
 ```
 
-**The API answers through the shared Gateway**, exactly as on the unsplit
+**The API answers through the shared Gateway**, as on the unsplit
 devstack — the route attaches across namespaces thanks to Step 1:
 
 ```bash

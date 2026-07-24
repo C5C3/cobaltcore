@@ -88,7 +88,7 @@ spec:
 
 The reconciler deep-copies the whole `infrastructure.database` and
 `infrastructure.cache` blocks onto the `controlplane-keystone` child, so the
-child connects to exactly the servers you declared here.
+child connects to the servers you declared here.
 
 ::: warning In brownfield mode you own schema setup
 In brownfield mode (no `clusterRef`) the operator leaves the `secretRef` you

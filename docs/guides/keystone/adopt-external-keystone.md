@@ -72,7 +72,7 @@ kubectl -n brownfield-keystone wait --for=condition=Complete \
   job/keystone-fixture-setup --timeout=5m
 ```
 
-The setup Job deliberately makes this look like a *real* installation rather than
+The setup Job makes this look like a real installation rather than
 a fresh bootstrap:
 
 - a **non-default admin identity** — user `brownfield-admin`, project
@@ -120,7 +120,7 @@ manifest here rather than a hand-kept copy of one — see [Tested by](#tested-by
 <<< @/../tests/e2e/c5c3/external-keystone/02-controlplane-external.yaml#controlplane-external
 
 That ControlPlane is the only thing in the file — the suite keeps its fixture
-admin-password Secret in a sibling file precisely so applying this one cannot
+admin-password Secret in a sibling file so applying this one cannot
 overwrite the Secret you filled in step 1 — so on the devstack apply it as it
 stands:
 
@@ -139,7 +139,7 @@ Field by field:
 | `external.authURL` | The identity endpoint the operator manages against. |
 | `external.endpointType` | Which catalog interface to authenticate against. Omitted here, so it defaults to `public` — the interface that is normally reachable from outside the installation. |
 | `external.caBundleSecretRef` | The private-CA bundle, when the endpoint needs one. Omitted here: the kind fixture is plain HTTP — devstack only, see the warning below. |
-| `external.catalog.identityServiceName` | Disambiguates the identity-service import. Only needed when your catalog holds **more than one** `identity`-type service — as the fixture deliberately does. |
+| `external.catalog.identityServiceName` | Disambiguates the identity-service import. Only needed when your catalog holds **more than one** `identity`-type service — as the fixture does. |
 | `korc.adminCredential.cloudCredentialsRef` | Where the minted credential is materialized — the `clouds.yaml` Secret and cloud entry read back in [step 4](#_4-verify). Spelled out here, but `k-orc-clouds-yaml` / `admin` are the defaults. |
 | `korc.adminCredential.passwordSecretRef` | The Secret from step 1. |
 | `userName` / `projectName` / `domainName` | The admin identity to authenticate as. They default to `admin` / `admin` / `Default`; the fixture uses a non-default identity, so all three are set. |
@@ -237,7 +237,7 @@ kubectl -n brownfield get secret k-orc-clouds-yaml \
 ```
 
 Use that `clouds.yaml` with an OpenStack client (`openstack token issue`,
-`openstack catalog list`). The e2e suite does exactly this in a Job; see
+`openstack catalog list`). The e2e suite does this in a Job; see
 [Tested by](#tested-by).
 
 ::: tip Read the credential from Kubernetes, not the OpenBao UI
@@ -422,6 +422,6 @@ adopts it with an External-mode ControlPlane, authenticates an OpenStack client
 with the minted credential, rotates it, and asserts the imports survive deletion.
 
 The suite runs in namespace `brownfield` with the ControlPlane
-`controlplane-external` — exactly the names this walkthrough uses — so
+`controlplane-external` — the names this walkthrough uses — so
 [step 2](#_2-apply-the-external-mode-controlplane) imports the suite's own
 manifest rather than restating it.

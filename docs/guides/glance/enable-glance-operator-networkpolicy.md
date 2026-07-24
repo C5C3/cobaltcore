@@ -88,7 +88,7 @@ kubectl wait helmrelease/glance-operator -n glance-system \
   --for=condition=Ready --timeout=5m
 ```
 
-The chart-level policy allows exactly what the operator needs: egress to the
+The chart-level policy allows what the operator needs: egress to the
 kube-apiserver and DNS, ingress to the webhook and metrics ports. The
 glance-operator's health check reaches the Glance Service on TCP 9292 in
 the workload namespace; when the workload namespace itself runs a per-CR

@@ -223,7 +223,7 @@ What the operator does with this:
 
 The mapping's `remote[].type` entries are **full WSGI environ keys**: the
 proxy passes claims as `OIDC-<claim>` headers, which uWSGI surfaces as
-`HTTP_OIDC_<CLAIM>`. The operator strips exactly these headers from inbound
+`HTTP_OIDC_<CLAIM>`. The operator strips these headers from inbound
 requests (in both dash and underscore spelling) so in-cluster clients cannot
 spoof claims past the module.
 
@@ -336,7 +336,7 @@ provider; use the per-IdP paths.
 configuration first (with the last OIDC backend the sidecar disappears and
 the Service returns to uWSGI), then removes the protocol, mapping, and
 identity provider — always — and finally applies
-`spec.domain.deletionPolicy` to the domain exactly like the LDAP flow.
+`spec.domain.deletionPolicy` to the domain like the LDAP flow.
 Declarative groups live inside the domain and follow it.
 
 ## Discovery against an in-cluster identity provider
@@ -475,7 +475,7 @@ chainsaw test --test-dir tests/e2e/keystone/oidc-federation
 ::: details The backend CR the suite applies
 The suite isolates its Keystone instance from the parallel suite pool, so its
 backend CR points `keystoneRef` at `keystone-oidc` (and enables
-`oauth2Introspection` for the CLI bearer flow) — deliberately differing from the
+`oauth2Introspection` for the CLI bearer flow) — differing from the
 `controlplane-keystone` reference used in the walkthrough above.
 
 <<< @/../tests/e2e/keystone/oidc-federation/02-backend-cr.yaml#backend-cr

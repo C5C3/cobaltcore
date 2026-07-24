@@ -40,7 +40,7 @@ resource name in the examples below is one that devstack produces.
 - The devstack's Garage object store and the ESO-synced `garage-s3-credentials`
   Secret are already running (Step 1 describes them). A second store needs a
   second bucket the credentials can read and write — the devstack pre-creates
-  `glance-images-2` for exactly this.
+  `glance-images-2` for this.
 
 ## Step 1 — The Garage devstack pieces
 

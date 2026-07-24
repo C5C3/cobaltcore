@@ -38,7 +38,7 @@ examples below is one that devstack produces.
 - **Service users stay SQL-backed.** The backend is read-only by default,
   so OpenStack service accounts (and the bootstrap admin) must remain in the
   SQL-backed `Default` domain — the CRD hard-rejects attaching a backend to
-  `Default` for exactly this reason. Plan for humans in the LDAP domain and
+  `Default` for this reason. Plan for humans in the LDAP domain and
   services in `Default`.
 
 ## Step 1 — Deploy the seeded OpenLDAP fixture (kind devstack)
@@ -203,7 +203,7 @@ chainsaw test --test-dir tests/e2e/keystone/ldap-domain-backend
 ::: details The backend CR the suite applies
 The suite isolates its Keystone instance from the parallel suite pool, so its
 backend CR name (`planetexpress-ldap`) and `keystoneRef` (`keystone-ldap`)
-deliberately differ from the `corp-ldap` / `keystone` names used in the
+differ from the `corp-ldap` / `keystone` names used in the
 walkthrough above.
 
 <<< @/../tests/e2e/keystone/ldap-domain-backend/02-backend-cr.yaml#backend-cr

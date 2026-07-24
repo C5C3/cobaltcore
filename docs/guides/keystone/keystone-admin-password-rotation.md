@@ -71,7 +71,7 @@ computes `hex(SHA-256(password))`, and stamps it onto the bootstrap Job's pod
 template as the `forge.c5c3.io/admin-password-hash` annotation. It passes that
 same digest to `job.RunJobWithRerunKey` as the bootstrap Job's **re-run key** —
 so the Job re-runs when, and only when, the admin password changes. The re-run
-gate is keyed on the password digest *alone*, deliberately **not** on the full
+gate is keyed on the password digest *alone*, not on the full
 pod template: an image-tag change must not re-run bootstrap, because re-running
 `keystone-manage bootstrap` after a cross-version DB migration fails on the
 already-migrated admin user. When the password digest changes, the operator
