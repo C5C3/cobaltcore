@@ -21,7 +21,9 @@ documentation itself — and report drift before it reaches a release.
 The suite also carries three **planners** (`prepare-new-service`,
 `prepare-new-release`, `prepare-new-guide`) that turn an onboarding or
 authoring task into a phased checklist, a **doc-fix driver**
-(`fix-docs`) that turns audit findings into actual edits, and a
+(`fix-docs`) that turns audit findings into actual edits, a
+**human-reader reviewer** (`review-docs-human-issue`) that produces a
+complete user-facing issue from a full end-to-end doc pass, and a
 **runbook** (`debug-e2e-failure`) for diagnosing failing chainsaw e2e
 jobs.
 
@@ -131,6 +133,7 @@ a companion Bash script (the deterministic part).
 | [`prepare-new-guide`](https://github.com/c5c3/forge/blob/main/.claude/skills/prepare-new-guide/SKILL.md) | Scaffolds a new how-to guide skeleton under `docs/guides/` for a chosen devstack anchor and validates draft guides against the guide conventions — placeholder names no tutorial produces, devstack↔flag consistency, raw-helm instructions against Flux-owned releases, projected-child edits without a revert warning. Defers to `tests/unit/docs/guide_devstack_and_tested_by_test.sh` as the authoritative gate. | When writing a new guide under `docs/guides/`; when checking a draft guide for convention violations. |
 | [`debug-e2e-failure`](https://github.com/c5c3/forge/blob/main/.claude/skills/debug-e2e-failure/SKILL.md) | Diagnoses a failing chainsaw e2e job — resolves the failed run, pulls the failed-step logs and JUnit/diagnostic evidence, maps the failure back to the suite directory under `tests/`, classifies it against the known flake patterns, and reproduces it locally against a kind cluster. | When any CI e2e job fails (`e2e-operator`, `e2e-chaos`, `e2e-controlplane`, …); when reproducing an e2e failure locally. |
 | [`fix-docs`](https://github.com/c5c3/forge/blob/main/.claude/skills/fix-docs/SKILL.md) | Applies fixes for findings produced by `check-doc-consistency`, `check-doc-expressions`, and `check-doc-structure` — or runs those audits first if no findings are supplied. Classifies each finding as mechanical (safe to apply directly), a judgment call (propose first, confirm before applying), or needs-research (establish the correct fact before writing anything), then edits the docs and re-verifies with the originating audit. | When asked to fix documentation issues; when actioning a docs audit report; when cleaning up findings from `check-doc-consistency`, `check-doc-expressions`, or `check-doc-structure`. |
+| [`review-docs-human-issue`](https://github.com/c5c3/forge/blob/main/.claude/skills/review-docs-human-issue/SKILL.md) | Reviews documentation end-to-end from a human reader's perspective — does not stop at technical correctness but finds anything that makes docs harder to use, trust, or follow — and produces a single issue listing all problems with clear evidence and severity. | When asked to audit docs quality from a human reader perspective; before release; after major doc edits. |
 
 ## What a skill is, structurally
 
