@@ -79,17 +79,20 @@ deployment there is no HPA knob — scale by setting
 
 ## Upgrade the OpenStack release
 
-Change `spec.openStackRelease` on the `ControlPlane` CR to a newer release. The
-operator projects the new image tag (`ghcr.io/c5c3/keystone:<release>`) onto the
-`controlplane-keystone` child, which triggers the keystone-operator's
-expand-migrate-contract pipeline. The API stays available throughout — old and
-new schemas coexist while data is migrated.
+Before you start this upgrade, take a database backup so you can recover if the
+upgrade goes bad.
 
 Before you patch, make the target-release images node-local. The devstack
 pre-loads only the `2025.2` Keystone image, and the projected Horizon child
 follows `spec.openStackRelease` too — so pull and `kind load` both the Keystone
 and Horizon images for the target release, or the rollout stalls on an image
 pull:
+
+Change `spec.openStackRelease` on the `ControlPlane` CR to a newer release. The
+operator projects the new image tag (`ghcr.io/c5c3/keystone:<release>`) onto the
+`controlplane-keystone` child, which triggers the keystone-operator's
+expand-migrate-contract pipeline. The API stays available throughout — old and
+new schemas coexist while data is migrated.
 
 ```bash
 docker pull ghcr.io/c5c3/keystone:2026.1
