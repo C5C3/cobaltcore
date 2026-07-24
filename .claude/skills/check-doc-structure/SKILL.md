@@ -120,6 +120,30 @@ Group by severity:
 
 End with a per-doc-family verdict.
 
+### 7. Verification guardrails
+
+Before finalizing findings:
+
+- Quote the exact structural defect trigger (missing heading, stale nav
+  entry, broken anchor, unresolved link).
+- Cite concrete `file:line` locations for source and target sides when
+  applicable.
+- If a target cannot be resolved from the checkout, mark the finding as
+  **blocked** or **needs judgment** rather than guessing.
+- Re-check every **HIGH** finding against current files before output.
+
+A zero-finding run is valid. If navigation and structure are sound,
+report a clean result.
+
+### 8. Suppressions (do not report)
+
+- Cosmetic heading-style preferences when hierarchy and navigation are
+  still correct.
+- Pure prose complaints with no structural impact (route to
+  [[check-doc-expressions]]).
+- "Could be organized differently" suggestions without a concrete
+  discoverability or integrity failure.
+
 ## Notes
 
 - This skill is read-only; hand findings to [[fix-docs]] to apply them.

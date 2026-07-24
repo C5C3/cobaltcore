@@ -116,6 +116,28 @@ For each finding give one line with a `file:line` reference for both
 the doc side and the source side. End with a two- to three-sentence
 health verdict per doc area.
 
+### 4. Verification guardrails
+
+Before finalizing findings:
+
+- Quote the exact doc text and the exact source-side text that disagree.
+- Include `file:line` for both sides of every finding.
+- If you cannot quote or locate one side precisely, downgrade the finding
+  to **MEDIUM** or **LOW** and mark it **needs research**.
+- Re-open and re-check every **HIGH** finding against the current
+  checkout before output.
+
+A zero-finding run is valid. If docs and source match for the audited
+scope, report a clean result.
+
+### 5. Suppressions (do not report)
+
+- Pure style or tone issues with no factual mismatch (hand those to
+  [[check-doc-expressions]]).
+- Naming preferences that are not contradictory and do not mislead the
+  reader.
+- Weak "might be stale" guesses without a concrete conflicting source.
+
 ## Drift patterns
 
 These recurring shapes are worth grepping for first:
