@@ -536,6 +536,15 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'SECRET_KEY is managed via')): true
+    # services.glance.importFiltering sets both allowedHosts and disallowedHosts:
+    # rejected by the CEL mutual-exclusivity rule, because glance evaluates the
+    # deny-list only while the allow-list is empty.
+    - apply:
+        file: 62-glance-importfiltering-allow-and-deny-hosts.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'allowedHosts and disallowedHosts are mutually exclusive')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

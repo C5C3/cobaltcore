@@ -1291,6 +1291,142 @@ spec:
                         - message: exactly one of image.tag or image.digest must be
                             set
                           rule: has(self.tag) != has(self.digest)
+                      importFiltering:
+                        description: |-
+                          ImportFiltering constrains the URIs the child Glance's web-download image
+                          import may fetch from. It is projected UNCONDITIONALLY onto the child's
+                          spec.importFiltering: clearing it here removes the field from the child, so
+                          the glance operator's restrictive defaults (HTTPS-only on port 443 plus a
+                          literal host denylist) apply again rather than the last projected value
+                          staying pinned. The URI filter is platform security policy, which is why it
+                          is projected at all — unlike spec.apiServer, whose child-side defaults stay
+                          authoritative.
+
+                          An explicitly EMPTY list does not survive the projection: the lists are
+                          serialized with omitempty, so an empty one reaches the child as nil and the
+                          child resolves it to the operator default. Glance's own opt-out semantics
+                          ("this restriction is deliberately empty") are therefore only expressible on
+                          the Glance CR directly. Projection thus always resolves MORE restrictively
+                          than the request, never less.
+
+                          The field is typed as the glance module's own ImportFilteringSpec rather
+                          than a curated local mirror: this api package already imports that module
+                          (see the DECISION AMENDED above), the ControlPlane exposes the filter
+                          unreduced, and reusing the type keeps the bounds and the CEL rules
+                          single-source in Go — the webhook validates through
+                          glancev1alpha1.ValidateImportFiltering, not a copy.
+
+                          controller-gen COPIES the resulting schema into this CRD; it is not resolved
+                          against the Glance CRD at runtime, and the two ship in separate Helm charts.
+                          So "admitted here, accepted by the Glance child" holds only while both charts
+                          come from the same release: upgrade the c5c3-operator chart ahead of the
+                          glance-operator chart and a newly added field is admitted here while the
+                          older Glance CRD still prunes or rejects it. Roll the two together.
+                        properties:
+                          allowedHosts:
+                            description: |-
+                              AllowedHosts lists the hosts web-download may fetch from
+                              ([import_filtering_opts] allowed_hosts). When non-empty, glance ignores
+                              disallowedHosts and every other host is refused — the tightest way to pin
+                              imports to a known image mirror. Empty by default, since the operator
+                              ships a host denylist instead.
+                            items:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            maxItems: 64
+                            type: array
+                          allowedPorts:
+                            description: |-
+                              AllowedPorts lists the ports web-download may connect to
+                              ([import_filtering_opts] allowed_ports). When non-empty, glance ignores
+                              disallowedPorts. Glance's own default is [80, 443]; when this field is nil
+                              the operator narrows it to DefaultImportAllowedPorts.
+                            items:
+                              format: int32
+                              maximum: 65535
+                              minimum: 1
+                              type: integer
+                            maxItems: 64
+                            type: array
+                          allowedSchemes:
+                            description: |-
+                              AllowedSchemes lists the URI schemes web-download may fetch from
+                              ([import_filtering_opts] allowed_schemes). When non-empty, glance ignores
+                              disallowedSchemes. Glance's own default is [http, https]; when this field
+                              is nil the operator narrows it to DefaultImportAllowedSchemes.
+                            items:
+                              enum:
+                              - http
+                              - https
+                              type: string
+                            maxItems: 64
+                            type: array
+                          disallowedHosts:
+                            description: |-
+                              DisallowedHosts lists the hosts web-download must refuse
+                              ([import_filtering_opts] disallowed_hosts). When this field is nil the
+                              operator renders DefaultImportDisallowedHosts, which blocks loopback, the
+                              link-local metadata endpoint, and the in-cluster API server; entries set
+                              here are unioned onto that denylist, so adding one extends the baseline
+                              instead of replacing it. Ignored by glance whenever allowedHosts is
+                              non-empty. An explicitly empty list drops the baseline — the opt-out.
+                            items:
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                            maxItems: 64
+                            type: array
+                          disallowedPorts:
+                            description: |-
+                              DisallowedPorts lists the ports web-download must refuse
+                              ([import_filtering_opts] disallowed_ports). Ignored by glance whenever
+                              allowedPorts is non-empty, which is why the two are mutually exclusive
+                              here — including when allowedPorts is nil and resolves to
+                              DefaultImportAllowedPorts, so this list only becomes authoritative once
+                              allowedPorts is set to an explicitly empty list.
+                            items:
+                              format: int32
+                              maximum: 65535
+                              minimum: 1
+                              type: integer
+                            maxItems: 64
+                            type: array
+                          disallowedSchemes:
+                            description: |-
+                              DisallowedSchemes lists the URI schemes web-download must refuse
+                              ([import_filtering_opts] disallowed_schemes). Ignored by glance whenever
+                              allowedSchemes is non-empty, which is why the two are mutually exclusive
+                              here — including when allowedSchemes is nil and resolves to
+                              DefaultImportAllowedSchemes, so this list only becomes authoritative once
+                              allowedSchemes is set to an explicitly empty list.
+                            items:
+                              enum:
+                              - http
+                              - https
+                              type: string
+                            maxItems: 64
+                            type: array
+                        type: object
+                        x-kubernetes-validations:
+                        - message: 'allowedSchemes and disallowedSchemes are mutually
+                            exclusive: glance ignores the deny-list when the allow-list
+                            is non-empty'
+                          rule: '!(has(self.allowedSchemes) && self.allowedSchemes.size()
+                            > 0 && has(self.disallowedSchemes) && self.disallowedSchemes.size()
+                            > 0)'
+                        - message: 'allowedHosts and disallowedHosts are mutually
+                            exclusive: glance ignores the deny-list when the allow-list
+                            is non-empty'
+                          rule: '!(has(self.allowedHosts) && self.allowedHosts.size()
+                            > 0 && has(self.disallowedHosts) && self.disallowedHosts.size()
+                            > 0)'
+                        - message: 'allowedPorts and disallowedPorts are mutually
+                            exclusive: glance ignores the deny-list when the allow-list
+                            is non-empty'
+                          rule: '!(has(self.allowedPorts) && self.allowedPorts.size()
+                            > 0 && has(self.disallowedPorts) && self.disallowedPorts.size()
+                            > 0)'
                       namespace:
                         description: |-
                           Namespace places the Glance service — and the backing services, secret

@@ -10,6 +10,7 @@ package v1alpha1
 
 import (
 	"github.com/c5c3/forge/internal/common/types"
+	apiv1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -880,6 +881,11 @@ func (in *ServiceGlanceSpec) DeepCopyInto(out *ServiceGlanceSpec) {
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
+	}
+	if in.ImportFiltering != nil {
+		in, out := &in.ImportFiltering, &out.ImportFiltering
+		*out = new(apiv1alpha1.ImportFilteringSpec)
+		(*in).DeepCopyInto(*out)
 	}
 	if in.ExtraConfig != nil {
 		in, out := &in.ExtraConfig, &out.ExtraConfig

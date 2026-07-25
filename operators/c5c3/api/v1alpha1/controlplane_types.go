@@ -9,6 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
+	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
 
 // +kubebuilder:object:root=true
@@ -863,6 +864,38 @@ type ServiceGlanceSpec struct {
 	// +listMapKey=name
 	// +kubebuilder:validation:XValidation:rule="self.filter(b, has(b.isDefault) && b.isDefault).size() == 1",message="exactly one backends entry must set isDefault"
 	Backends []GlanceBackendEntry `json:"backends"`
+
+	// ImportFiltering constrains the URIs the child Glance's web-download image
+	// import may fetch from. It is projected UNCONDITIONALLY onto the child's
+	// spec.importFiltering: clearing it here removes the field from the child, so
+	// the glance operator's restrictive defaults (HTTPS-only on port 443 plus a
+	// literal host denylist) apply again rather than the last projected value
+	// staying pinned. The URI filter is platform security policy, which is why it
+	// is projected at all — unlike spec.apiServer, whose child-side defaults stay
+	// authoritative.
+	//
+	// An explicitly EMPTY list does not survive the projection: the lists are
+	// serialized with omitempty, so an empty one reaches the child as nil and the
+	// child resolves it to the operator default. Glance's own opt-out semantics
+	// ("this restriction is deliberately empty") are therefore only expressible on
+	// the Glance CR directly. Projection thus always resolves MORE restrictively
+	// than the request, never less.
+	//
+	// The field is typed as the glance module's own ImportFilteringSpec rather
+	// than a curated local mirror: this api package already imports that module
+	// (see the DECISION AMENDED above), the ControlPlane exposes the filter
+	// unreduced, and reusing the type keeps the bounds and the CEL rules
+	// single-source in Go — the webhook validates through
+	// glancev1alpha1.ValidateImportFiltering, not a copy.
+	//
+	// controller-gen COPIES the resulting schema into this CRD; it is not resolved
+	// against the Glance CRD at runtime, and the two ship in separate Helm charts.
+	// So "admitted here, accepted by the Glance child" holds only while both charts
+	// come from the same release: upgrade the c5c3-operator chart ahead of the
+	// glance-operator chart and a newly added field is admitted here while the
+	// older Glance CRD still prunes or rejects it. Roll the two together.
+	// +optional
+	ImportFiltering *glancev1alpha1.ImportFilteringSpec `json:"importFiltering,omitempty"`
 
 	// DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
 	// for THIS service on the managed SHARED database, so a staged migration can run

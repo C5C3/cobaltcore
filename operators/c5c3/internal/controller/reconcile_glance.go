@@ -470,6 +470,15 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 	// down.
 	glance.Spec.Gateway = cp.Spec.Services.Glance.Gateway.DeepCopy()
 
+	// The web-download URI filter is platform security policy, so the ControlPlane
+	// projects it (unlike spec.apiServer below, whose child-side defaults stay
+	// authoritative). DeepCopied for the same aliasing reason as Gateway above and
+	// assigned unconditionally, following the replicas convention: clearing
+	// services.glance.importFiltering removes the field from the child, so the
+	// Glance operator's restrictive defaults apply again instead of the last
+	// projected value staying pinned on the fetched child.
+	glance.Spec.ImportFiltering = cp.Spec.Services.Glance.ImportFiltering.DeepCopy()
+
 	// Resolve replicas to the shared operator default, then let an override win.
 	// Assigning unconditionally means clearing services.glance.replicas reverts the
 	// child to the default instead of leaving the previously-projected value pinned
