@@ -121,6 +121,16 @@ type GlanceSpec struct {
 	// +optional
 	APIServer *APIServerSpec `json:"apiServer,omitempty"`
 
+	// ImportFiltering constrains the URIs the web-download image-import method
+	// may fetch from, rendered as the [import_filtering_opts] group in
+	// glance-api.conf. The operator resolves the effective lists at render time —
+	// HTTPS-only on port 443, plus a literal host denylist covering loopback, the
+	// link-local metadata endpoint, and the in-cluster API server — rather than
+	// materializing them into the CR, so a nil block resolves exactly like an
+	// empty struct and both keep tracking the operator defaults.
+	// +optional
+	ImportFiltering *ImportFilteringSpec `json:"importFiltering,omitempty"`
+
 	// Gateway configures external exposure of the Glance API via a Gateway API
 	// HTTPRoute. When set, the operator creates an HTTPRoute targeting the {name}
 	// Service and attaches it to the referenced pre-existing Gateway. When removed
@@ -312,6 +322,103 @@ type UWSGISpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	HTTPKeepAliveTimeout *int32 `json:"httpKeepAliveTimeout,omitempty"`
+}
+
+// ImportFilteringSpec constrains the URIs the web-download image-import method
+// may fetch from, rendered as the [import_filtering_opts] group in
+// glance-api.conf. Each attribute — scheme, host, port — carries an allow-list
+// and a deny-list, but glance only ever evaluates one of the two: a non-empty
+// allow-list makes it ignore the matching deny-list entirely. Setting both for
+// the same attribute would silently drop the deny-list, so the CEL rules below
+// reject the combination instead of letting it look effective. Host matching is
+// literal string membership; glance supports neither CIDR ranges nor wildcards,
+// so an entry must spell out the host exactly as an import URI would.
+//
+// The operator resolves the effective lists at render time rather than in the
+// defaulting webhook, so a field left unset keeps tracking the operator defaults
+// (DefaultImportAllowedSchemes, DefaultImportAllowedPorts and
+// DefaultImportDisallowedHosts in glance_webhook.go) across upgrades instead of
+// freezing today's values into the stored CR. Only a nil field is defaulted: an
+// explicitly empty list is honored as empty, which is how a deployment opts out
+// of a default restriction and falls back to glance's own behavior. Setting one
+// field never relaxes the default resolved for another — a deny-list entry keeps
+// the sibling allow-list default, and host entries are unioned onto the operator
+// denylist rather than replacing it — so no edit to this block can widen the
+// filter except the explicit opt-out.
+//
+// The three messages below are mirrored verbatim by the webhook constants
+// importFilteringSchemesExclusiveMsg, importFilteringHostsExclusiveMsg and
+// importFilteringPortsExclusiveMsg — markers cannot reference a Go constant, so
+// the literals must stay in sync.
+// +kubebuilder:validation:XValidation:rule="!(has(self.allowedSchemes) && self.allowedSchemes.size() > 0 && has(self.disallowedSchemes) && self.disallowedSchemes.size() > 0)",message="allowedSchemes and disallowedSchemes are mutually exclusive: glance ignores the deny-list when the allow-list is non-empty"
+// +kubebuilder:validation:XValidation:rule="!(has(self.allowedHosts) && self.allowedHosts.size() > 0 && has(self.disallowedHosts) && self.disallowedHosts.size() > 0)",message="allowedHosts and disallowedHosts are mutually exclusive: glance ignores the deny-list when the allow-list is non-empty"
+// +kubebuilder:validation:XValidation:rule="!(has(self.allowedPorts) && self.allowedPorts.size() > 0 && has(self.disallowedPorts) && self.disallowedPorts.size() > 0)",message="allowedPorts and disallowedPorts are mutually exclusive: glance ignores the deny-list when the allow-list is non-empty"
+type ImportFilteringSpec struct {
+	// AllowedSchemes lists the URI schemes web-download may fetch from
+	// ([import_filtering_opts] allowed_schemes). When non-empty, glance ignores
+	// disallowedSchemes. Glance's own default is [http, https]; when this field
+	// is nil the operator narrows it to DefaultImportAllowedSchemes.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:Enum=http;https
+	AllowedSchemes []string `json:"allowedSchemes,omitempty"`
+
+	// DisallowedSchemes lists the URI schemes web-download must refuse
+	// ([import_filtering_opts] disallowed_schemes). Ignored by glance whenever
+	// allowedSchemes is non-empty, which is why the two are mutually exclusive
+	// here — including when allowedSchemes is nil and resolves to
+	// DefaultImportAllowedSchemes, so this list only becomes authoritative once
+	// allowedSchemes is set to an explicitly empty list.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:Enum=http;https
+	DisallowedSchemes []string `json:"disallowedSchemes,omitempty"`
+
+	// AllowedHosts lists the hosts web-download may fetch from
+	// ([import_filtering_opts] allowed_hosts). When non-empty, glance ignores
+	// disallowedHosts and every other host is refused — the tightest way to pin
+	// imports to a known image mirror. Empty by default, since the operator
+	// ships a host denylist instead.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	AllowedHosts []string `json:"allowedHosts,omitempty"`
+
+	// DisallowedHosts lists the hosts web-download must refuse
+	// ([import_filtering_opts] disallowed_hosts). When this field is nil the
+	// operator renders DefaultImportDisallowedHosts, which blocks loopback, the
+	// link-local metadata endpoint, and the in-cluster API server; entries set
+	// here are unioned onto that denylist, so adding one extends the baseline
+	// instead of replacing it. Ignored by glance whenever allowedHosts is
+	// non-empty. An explicitly empty list drops the baseline — the opt-out.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=253
+	DisallowedHosts []string `json:"disallowedHosts,omitempty"`
+
+	// AllowedPorts lists the ports web-download may connect to
+	// ([import_filtering_opts] allowed_ports). When non-empty, glance ignores
+	// disallowedPorts. Glance's own default is [80, 443]; when this field is nil
+	// the operator narrows it to DefaultImportAllowedPorts.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:Minimum=1
+	// +kubebuilder:validation:items:Maximum=65535
+	AllowedPorts []int32 `json:"allowedPorts,omitempty"`
+
+	// DisallowedPorts lists the ports web-download must refuse
+	// ([import_filtering_opts] disallowed_ports). Ignored by glance whenever
+	// allowedPorts is non-empty, which is why the two are mutually exclusive
+	// here — including when allowedPorts is nil and resolves to
+	// DefaultImportAllowedPorts, so this list only becomes authoritative once
+	// allowedPorts is set to an explicitly empty list.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:Minimum=1
+	// +kubebuilder:validation:items:Maximum=65535
+	DisallowedPorts []int32 `json:"disallowedPorts,omitempty"`
 }
 
 // GlanceStatus defines the observed state of Glance.

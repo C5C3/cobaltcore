@@ -55,6 +55,72 @@ const (
 	DefaultEventletWorkers int32 = 2
 )
 
+// Import-filtering defaults for the web-download image-import method, narrowing
+// glance's own permissive defaults (schemes [http, https], ports [80, 443], no
+// host denylist). They are variables rather than constants only because Go has
+// no constant slices — treat them as read-only.
+//
+// They are consumed by the render-time resolver (effectiveImportFiltering in the
+// controller package) and deliberately NOT applied by the defaulting webhook: a
+// nil or partial spec.importFiltering block keeps tracking these operator
+// defaults across upgrades instead of freezing today's values into the stored
+// CR, the same reasoning as EffectiveKeystonePublicEndpoint.
+var (
+	// DefaultImportAllowedSchemes pins web-download imports to HTTPS, so an
+	// import URI cannot downgrade the transport to plaintext.
+	DefaultImportAllowedSchemes = []string{"https"}
+	// DefaultImportAllowedPorts pins web-download imports to the HTTPS port,
+	// so an import URI cannot reach an arbitrary service port.
+	DefaultImportAllowedPorts = []int32{443}
+	// DefaultImportDisallowedHosts blocks the hosts an import URI must never
+	// reach: loopback, the link-local cloud metadata endpoint, and the
+	// in-cluster API server. Glance matches hosts as literal strings — no CIDR
+	// ranges, no wildcards, no name resolution — so each spelling is a separate
+	// entry. A pod's resolv.conf carries the search list
+	// "<ns>.svc.cluster.local svc.cluster.local cluster.local" at ndots:5, which
+	// is why all four resolvable spellings of the API server Service are listed
+	// and not just the fully-qualified one.
+	//
+	// Literal matching cannot be exhaustive: a trailing-dot FQDN, an IPv6-mapped
+	// form, an integer-encoded address, or the Service's raw ClusterIP reaches the
+	// same endpoint under a name no denylist can enumerate — enumerating a few
+	// more spellings would only imply a completeness this list cannot have. The
+	// allow-side pin (DefaultImportAllowedSchemes and DefaultImportAllowedPorts)
+	// is the primary control, which is why a CR widening it is not silent:
+	// WarnImportFiltering flags the widening and names the two controls that can
+	// still hold — an allowedHosts pin to the deployment's mirrors, or an egress
+	// restriction via spec.networkPolicy.additionalEgress.
+	DefaultImportDisallowedHosts = []string{
+		"localhost",
+		"127.0.0.1",
+		// 0.0.0.0 routes to loopback on Linux, so it is a loopback spelling too.
+		"0.0.0.0",
+		"::1",
+		"169.254.169.254",
+		"kubernetes",
+		"kubernetes.default",
+		"kubernetes.default.svc",
+		"kubernetes.default.svc.cluster.local",
+	}
+)
+
+// Messages and bounds shared between the spec.importFiltering CRD schema and the
+// webhook mirror below. The markers on ImportFilteringSpec cannot reference a Go
+// constant, so the same literals appear there and must stay byte-identical —
+// both the webhook unit tests and the invalid-CR e2e corpus assert the text.
+const (
+	importFilteringSchemesExclusiveMsg = "allowedSchemes and disallowedSchemes are mutually exclusive: glance ignores the deny-list when the allow-list is non-empty"
+	importFilteringHostsExclusiveMsg   = "allowedHosts and disallowedHosts are mutually exclusive: glance ignores the deny-list when the allow-list is non-empty"
+	importFilteringPortsExclusiveMsg   = "allowedPorts and disallowedPorts are mutually exclusive: glance ignores the deny-list when the allow-list is non-empty"
+
+	// maxImportFilteringItems mirrors the MaxItems marker carried by every
+	// spec.importFiltering list.
+	maxImportFilteringItems = 64
+	// maxImportFilteringHostLength mirrors the items:MaxLength marker on the
+	// host lists (the DNS name length limit).
+	maxImportFilteringHostLength = 253
+)
+
 // Glance-specific container memory defaults, replacing the shared 256Mi/512Mi
 // baseline that keystone and horizon fit in. The glance-api container carries
 // the S3 store driver (boto3/botocore), which raises both the per-process
@@ -178,7 +244,11 @@ func (w *GlanceWebhook) Default(_ context.Context, obj *Glance) error {
 // ValidateCreate implements admission.Validator[*Glance].
 func (w *GlanceWebhook) ValidateCreate(ctx context.Context, obj *Glance) (admission.Warnings, error) {
 	catalogWarnings, catalogErrs := validateExtraConfigOptions(field.NewPath("spec"), obj)
-	return append(warnInertLaunchModeKnobs(obj), catalogWarnings...), w.validate(ctx, obj, catalogErrs)
+	warnings := append(warnInertLaunchModeKnobs(obj), catalogWarnings...)
+	warnings = append(warnings, WarnImportFiltering(
+		field.NewPath("spec", "importFiltering"), obj.Spec.ImportFiltering,
+	)...)
+	return warnings, w.validate(ctx, obj, catalogErrs)
 }
 
 // ValidateUpdate implements admission.Validator[*Glance].
@@ -194,7 +264,11 @@ func (w *GlanceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Glan
 	if extraConfigCatalogInputsChanged(oldObj, newObj) {
 		catalogWarnings, catalogErrs = validateExtraConfigOptions(field.NewPath("spec"), newObj)
 	}
-	return append(warnInertLaunchModeKnobs(newObj), catalogWarnings...), w.validate(ctx, newObj, catalogErrs)
+	warnings := append(warnInertLaunchModeKnobs(newObj), catalogWarnings...)
+	warnings = append(warnings, WarnImportFiltering(
+		field.NewPath("spec", "importFiltering"), newObj.Spec.ImportFiltering,
+	)...)
+	return warnings, w.validate(ctx, newObj, catalogErrs)
 }
 
 // ValidateDelete implements admission.Validator[*Glance]. The method is required
@@ -470,6 +544,10 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 		}
 	}
 
+	// Defense-in-depth importFiltering validation alongside the three
+	// XValidation CEL rules and the item markers on ImportFilteringSpec.
+	allErrs = append(allErrs, ValidateImportFiltering(specPath.Child("importFiltering"), g.Spec.ImportFiltering)...)
+
 	// extraConfig sanity: reject an empty section name or an empty option key so
 	// the rendered glance-api.conf never carries a nameless [<section>] or a
 	// bare "= value" line. extraConfig is a preserve-unknown-fields map, so CEL
@@ -579,6 +657,210 @@ func validateEndpointURL(fldPath *field.Path, endpoint string) field.ErrorList {
 	}
 	return errs
 }
+
+// ValidateImportFiltering mirrors the spec.importFiltering schema as defense in
+// depth behind the CRD layer: the three mutual-exclusivity CEL rules, the scheme
+// enum, the host length bounds, the port range, and the per-list item cap. It
+// additionally carries the one check with no schema counterpart — the host
+// INI-injection guard in validateImportFilteringHosts. It is nil-safe — an unset
+// block carries nothing to validate and is resolved to the operator defaults at
+// render time.
+//
+// It is exported for the ControlPlane webhook, which carries this very type on
+// services.glance.importFiltering and must admit exactly what the Glance CRD
+// admits: a hand-kept mirror there would let the two drift, and the ControlPlane
+// would start admitting values its projected Glance child then rejects. The
+// caller supplies its own field path, so the errors name the CR under admission.
+func ValidateImportFiltering(fldPath *field.Path, f *ImportFilteringSpec) field.ErrorList {
+	if f == nil {
+		return nil
+	}
+	var errs field.ErrorList
+
+	// Glance evaluates the deny-list only while the matching allow-list is
+	// empty, so accepting both would silently drop the deny-list. The error is
+	// reported on the deny-list, the half that would be ignored.
+	if len(f.AllowedSchemes) > 0 && len(f.DisallowedSchemes) > 0 {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("disallowedSchemes"), f.DisallowedSchemes, importFilteringSchemesExclusiveMsg,
+		))
+	}
+	if len(f.AllowedHosts) > 0 && len(f.DisallowedHosts) > 0 {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("disallowedHosts"), f.DisallowedHosts, importFilteringHostsExclusiveMsg,
+		))
+	}
+	if len(f.AllowedPorts) > 0 && len(f.DisallowedPorts) > 0 {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("disallowedPorts"), f.DisallowedPorts, importFilteringPortsExclusiveMsg,
+		))
+	}
+
+	errs = append(errs, validateImportFilteringSchemes(fldPath.Child("allowedSchemes"), f.AllowedSchemes)...)
+	errs = append(errs, validateImportFilteringSchemes(fldPath.Child("disallowedSchemes"), f.DisallowedSchemes)...)
+	errs = append(errs, validateImportFilteringHosts(fldPath.Child("allowedHosts"), f.AllowedHosts)...)
+	errs = append(errs, validateImportFilteringHosts(fldPath.Child("disallowedHosts"), f.DisallowedHosts)...)
+	errs = append(errs, validateImportFilteringPorts(fldPath.Child("allowedPorts"), f.AllowedPorts)...)
+	errs = append(errs, validateImportFilteringPorts(fldPath.Child("disallowedPorts"), f.DisallowedPorts)...)
+	return errs
+}
+
+// validateImportFilteringSchemes checks one scheme list against the item enum
+// and the item cap. Glance's URI filter only ever sees http and https imports,
+// so any other scheme would be a dead entry.
+func validateImportFilteringSchemes(fldPath *field.Path, schemes []string) field.ErrorList {
+	var errs field.ErrorList
+	if len(schemes) > maxImportFilteringItems {
+		errs = append(errs, field.TooMany(fldPath, len(schemes), maxImportFilteringItems))
+	}
+	for i, scheme := range schemes {
+		if scheme != "http" && scheme != "https" {
+			errs = append(errs, field.NotSupported(fldPath.Index(i), scheme, []string{"http", "https"}))
+		}
+	}
+	return errs
+}
+
+// validateImportFilteringHosts checks one host list against the item length
+// bounds, the item cap, and the INI-injection guard. An empty entry would match
+// nothing at all, and a host longer than a DNS name can never appear in an
+// import URI.
+//
+// The control-character rejection has no CRD-schema counterpart (the item
+// markers bound length only), so unlike the rest of this family it is not
+// defense in depth but the only gate. The host lists are the sole free-form
+// strings in ImportFilteringSpec — schemes are enum-bound and ports are numeric
+// — and they are comma-joined verbatim into the [import_filtering_opts] keys of
+// glance-api.conf. A newline or carriage return in a host would therefore render
+// additional config lines, smuggling a whole [section] past the extraConfig
+// ownership and catalog gates, which inspect map structure only and never look
+// inside a value. Same reasoning, same guard as GlanceBackend's extraOptions
+// values (hasControlChars) and the ControlPlane's extraConfig INI-shape check.
+func validateImportFilteringHosts(fldPath *field.Path, hosts []string) field.ErrorList {
+	var errs field.ErrorList
+	if len(hosts) > maxImportFilteringItems {
+		errs = append(errs, field.TooMany(fldPath, len(hosts), maxImportFilteringItems))
+	}
+	for i, host := range hosts {
+		switch {
+		case host == "":
+			errs = append(errs, field.Invalid(fldPath.Index(i), host, "host must not be empty"))
+		case hasControlChars(host):
+			errs = append(errs, field.Invalid(fldPath.Index(i), host,
+				"host must not contain newline or carriage-return characters: the rendered "+
+					"[import_filtering_opts] value is written verbatim, so a newline injects arbitrary config lines"))
+		case len(host) > maxImportFilteringHostLength:
+			errs = append(errs, field.Invalid(fldPath.Index(i), host,
+				fmt.Sprintf("host must be at most %d characters", maxImportFilteringHostLength)))
+		}
+	}
+	return errs
+}
+
+// validateImportFilteringPorts checks one port list against the TCP port range
+// and the item cap.
+func validateImportFilteringPorts(fldPath *field.Path, ports []int32) field.ErrorList {
+	var errs field.ErrorList
+	if len(ports) > maxImportFilteringItems {
+		errs = append(errs, field.TooMany(fldPath, len(ports), maxImportFilteringItems))
+	}
+	for i, port := range ports {
+		if port < 1 || port > 65535 {
+			errs = append(errs, field.Invalid(fldPath.Index(i), port, "port must be between 1 and 65535"))
+		}
+	}
+	return errs
+}
+
+// WarnImportFiltering surfaces the two spec.importFiltering shapes that are
+// admissible but do not mean what they look like. Both are warnings, not
+// rejections: each is a legitimate deployment choice, and the tempest legs rely
+// on the second one.
+//
+// It is exported and takes a caller-supplied field path for the same reason
+// ValidateImportFiltering is: the ControlPlane carries this very type on
+// services.glance.importFiltering, and a warning the Glance CR emits but the
+// ControlPlane — the primary authoring surface — stays silent about would be
+// exactly the drift that sharing the type is meant to prevent.
+func WarnImportFiltering(fldPath *field.Path, f *ImportFilteringSpec) admission.Warnings {
+	if f == nil {
+		return nil
+	}
+	var warnings admission.Warnings
+
+	// (1) A deny-list glance will never evaluate. It evaluates one only while
+	// the matching allow-list is empty, and a nil allowedSchemes/allowedPorts
+	// resolves to a non-empty operator default at render time — so the deny half
+	// renders into glance-api.conf and stays inert. ValidateImportFiltering
+	// rejects the both-non-empty shape; this covers the shape it cannot see.
+	// Hosts are exempt: allowedHosts has no default, so a host deny-list on its
+	// own is authoritative.
+	if len(f.DisallowedSchemes) > 0 && f.AllowedSchemes == nil {
+		warnings = append(warnings, fmt.Sprintf(inertDenyListWarningFmt,
+			fldPath.Child("disallowedSchemes"), fldPath.Child("allowedSchemes"),
+			DefaultImportAllowedSchemes, fldPath.Child("allowedSchemes")))
+	}
+	if len(f.DisallowedPorts) > 0 && f.AllowedPorts == nil {
+		warnings = append(warnings, fmt.Sprintf(inertDenyListWarningFmt,
+			fldPath.Child("disallowedPorts"), fldPath.Child("allowedPorts"),
+			DefaultImportAllowedPorts, fldPath.Child("allowedPorts")))
+	}
+
+	// (2) An allow-list widened past the operator default. The scheme and port
+	// pin is what keeps a web-download import off plaintext services and off the
+	// link-local metadata endpoint (which answers on http/80); DefaultImport-
+	// DisallowedHosts is belt-and-braces behind it, and on its own it is only a
+	// literal string match that alternate spellings of the same address evade.
+	if widensAllowList(f.AllowedSchemes, DefaultImportAllowedSchemes) {
+		warnings = append(warnings, fmt.Sprintf(widenedAllowListWarningFmt,
+			fldPath.Child("allowedSchemes"), f.AllowedSchemes, DefaultImportAllowedSchemes))
+	}
+	if widensAllowList(f.AllowedPorts, DefaultImportAllowedPorts) {
+		warnings = append(warnings, fmt.Sprintf(widenedAllowListWarningFmt,
+			fldPath.Child("allowedPorts"), f.AllowedPorts, DefaultImportAllowedPorts))
+	}
+	return warnings
+}
+
+// widensAllowList reports whether an explicitly set allow-list relaxes the
+// operator default it replaces. A nil list is not set at all — it resolves to
+// the default. An explicitly empty list drops the restriction entirely (glance
+// falls back to its own permissive default), and any entry the default does not
+// carry admits something the default refused.
+func widensAllowList[T comparable](set, defaults []T) bool {
+	if set == nil {
+		return false
+	}
+	if len(set) == 0 {
+		return true
+	}
+	byDefault := make(map[T]struct{}, len(defaults))
+	for _, d := range defaults {
+		byDefault[d] = struct{}{}
+	}
+	for _, v := range set {
+		if _, ok := byDefault[v]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// Warning texts for the two admissible-but-misleading importFiltering shapes.
+// Both take the field paths as arguments so the same text serves the Glance CR
+// and the ControlPlane's services.glance.importFiltering.
+const (
+	inertDenyListWarningFmt = "%s is set while %s is unset and therefore resolves to the operator default %v. " +
+		"Glance evaluates a deny-list only while the matching allow-list is empty, so this list is inert; " +
+		"set %s to an explicitly empty list ([]) to make the deny-list authoritative."
+
+	widenedAllowListWarningFmt = "%s is set to %v, widening the operator default %v. The scheme and port pin " +
+		"is the primary web-download control — the link-local metadata endpoint answers on http/80 — and once " +
+		"widened only the host denylist remains, which matches literally: alternate spellings of the same " +
+		"address (an integer or IPv4-mapped form, a raw ClusterIP, a trailing-dot FQDN) are not covered. " +
+		"Confine the reachable endpoints with spec.networkPolicy.additionalEgress, or pin allowedHosts to the " +
+		"mirrors imports are supposed to use."
+)
 
 // warnInertLaunchModeKnobs flags an apiServer knob that has no effect under the
 // active launch mode. Glance runs the eventlet glance-api server below release

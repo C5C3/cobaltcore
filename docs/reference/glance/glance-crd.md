@@ -30,6 +30,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `serviceUser` | [`ServiceUserSpec`](#serviceuserspec) | yes | The Keystone service account Glance authenticates as, and the Secret holding its password |
 | `region` | `string` | no | The Keystone region (`[keystone_authtoken] region_name`); when empty the option is omitted and Glance uses the catalog's default region |
 | `apiServer` | [`*APIServerSpec`](#apiserverspec) | no | Release-conditional API-process tuning; when nil the operator uses hardcoded defaults for the active launch mode |
+| `importFiltering` | [`*ImportFilteringSpec`](#importfilteringspec) | no | URI filtering for `web-download` image imports. The operator resolves the effective lists at render time, so a nil block and an empty struct behave alike |
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute on port 9292; requires `hostname` and `parentRef.name` |
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 9292 from the listed sources; egress auto-derived (DNS, database, cache, and the attached backends' S3 hosts). At least one ingress source is required (fail-closed) |
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds and CPU/memory utilization targets |
@@ -79,6 +80,36 @@ is never emitted).
 | `harakiri` | `*int32` (Minimum=1) | no | — | Per-request worker lifetime cap (`--harakiri`, seconds). Omitted entirely when nil (no hidden default). The webhook requires `harakiri < terminationGracePeriodSeconds − preStopSleepSeconds` |
 | `httpKeepAliveTimeout` | `*int32` (Minimum=1) | no | — | Idle timeout of keep-alive connections (`--http-keepalive-timeout`, seconds). Omitted when nil; zero is rejected to avoid the unbounded interpretation |
 
+### ImportFilteringSpec
+
+Constrains the URIs the `web-download` image-import method may fetch from,
+rendered as the `[import_filtering_opts]` group. Each attribute (scheme, host,
+port) has an allow-list and a deny-list, and Glance only evaluates one of the
+two: a non-empty allow-list makes it ignore the matching deny-list. Configuring
+both halves of a pair would silently drop the deny-list, so three CEL rules
+reject that combination, and the validating webhook mirrors them.
+
+Host matching is literal string membership. Glance supports no CIDR ranges and
+no wildcards, so every host has to be spelled out the way an import URI would
+spell it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `allowedSchemes` | `[]string` (MaxItems=64, items ∈ {`http`, `https`}) | no | Schemes `web-download` may fetch from (`allowed_schemes`). Glance's own default is `[http, https]`; the operator narrows an unset field to `[https]` |
+| `disallowedSchemes` | `[]string` (MaxItems=64, items ∈ {`http`, `https`}) | no | Schemes `web-download` must refuse (`disallowed_schemes`). Ignored by Glance whenever `allowedSchemes` is non-empty |
+| `allowedHosts` | `[]string` (MaxItems=64, item length 1–253) | no | Hosts `web-download` may fetch from (`allowed_hosts`). Non-empty pins imports to a known mirror and refuses every other host |
+| `disallowedHosts` | `[]string` (MaxItems=64, item length 1–253) | no | Hosts `web-download` must refuse (`disallowed_hosts`). An unset field resolves to the operator denylist covering loopback, the link-local metadata address `169.254.169.254`, and the in-cluster API server |
+| `allowedPorts` | `[]int32` (MaxItems=64, 1–65535) | no | Ports `web-download` may connect to (`allowed_ports`). Glance's own default is `[80, 443]`; the operator narrows an unset field to `[443]` |
+| `disallowedPorts` | `[]int32` (MaxItems=64, 1–65535) | no | Ports `web-download` must refuse (`disallowed_ports`). Ignored by Glance whenever `allowedPorts` is non-empty |
+
+The defaults are resolved at render time, not written into the CR by the
+mutating webhook, so a CR that leaves a field unset keeps tracking the operator
+default across upgrades. Only a nil field is defaulted: an explicit empty list
+is honored as empty, which is how a deployment opts out of a default
+restriction. Loosening the schemes and ports back to Glance's own values for an
+http mirror is a supported configuration, since both stay on the allow side of
+their pairs.
+
 ### Defaulting and validation
 
 The mutating webhook applies the shared `DeploymentSpec`/`LoggingSpec` defaults
@@ -101,7 +132,9 @@ counterpart), the graceful-termination cross-field arithmetic
 (`preStopSleepSeconds < terminationGracePeriodSeconds`, and `harakiri` strictly
 inside the drain window), the `Recreate`-vs-`rollingUpdate` sanity check,
 autoscaling bounds (including the implicit `minReplicas` default from
-`deployment.replicas`), network-policy ingress, gateway hostname/parentRef,
+`deployment.replicas`), network-policy ingress, gateway hostname/parentRef, the
+three `importFiltering` allow/deny pairings together with the scheme enum, host
+length, port range, and 64-item cap of each list,
 resource requests-vs-limits, PriorityClass existence, topology-spread selectors
 (matching the `glance` / instance labels), and the `extraConfig` guards (a
 preserve-unknown-fields map CEL cannot constrain): empty section/key names plus
