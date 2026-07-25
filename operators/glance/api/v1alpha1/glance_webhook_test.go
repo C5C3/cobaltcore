@@ -6,13 +6,18 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/onsi/gomega"
+	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
@@ -287,6 +292,108 @@ func TestGlanceValidateCreate_RejectionTable(t *testing.T) {
 			},
 			wantSub: "strictly less than terminationGracePeriodSeconds",
 		},
+		{
+			// Glance drops the deny-list whenever the matching allow-list is
+			// non-empty, so the two halves may never be configured together.
+			name: "importFiltering allow and deny hosts rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ImportFiltering = &ImportFilteringSpec{
+					AllowedHosts:    []string{"mirror.example.com"},
+					DisallowedHosts: []string{"169.254.169.254"},
+				}
+			},
+			wantSub: "allowedHosts and disallowedHosts are mutually exclusive",
+		},
+		{
+			name: "importFiltering allow and deny schemes rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ImportFiltering = &ImportFilteringSpec{
+					AllowedSchemes:    []string{"https"},
+					DisallowedSchemes: []string{"http"},
+				}
+			},
+			wantSub: "allowedSchemes and disallowedSchemes are mutually exclusive",
+		},
+		{
+			name: "importFiltering allow and deny ports rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ImportFiltering = &ImportFilteringSpec{
+					AllowedPorts:    []int32{443},
+					DisallowedPorts: []int32{80},
+				}
+			},
+			wantSub: "allowedPorts and disallowedPorts are mutually exclusive",
+		},
+		{
+			name: "importFiltering off-enum scheme rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ImportFiltering = &ImportFilteringSpec{AllowedSchemes: []string{"ftp"}}
+			},
+			wantSub: `Unsupported value: "ftp"`,
+		},
+		{
+			name: "importFiltering port zero rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ImportFiltering = &ImportFilteringSpec{AllowedPorts: []int32{0}}
+			},
+			wantSub: "port must be between 1 and 65535",
+		},
+		{
+			name: "importFiltering port above range rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ImportFiltering = &ImportFilteringSpec{AllowedPorts: []int32{70000}}
+			},
+			wantSub: "port must be between 1 and 65535",
+		},
+		{
+			name: "importFiltering empty host rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ImportFiltering = &ImportFilteringSpec{DisallowedHosts: []string{""}}
+			},
+			wantSub: "host must not be empty",
+		},
+		{
+			// The host lists are the only free-form strings in the block and are
+			// comma-joined verbatim into glance-api.conf, so a newline would
+			// render a whole [section] the extraConfig ownership and catalog
+			// gates never inspect — they look at map structure, not values.
+			name: "importFiltering denied host with newline rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ImportFiltering = &ImportFilteringSpec{
+					DisallowedHosts: []string{"evil.example.com\n[profiler]\nenabled = true"},
+				}
+			},
+			wantSub: "host must not contain newline or carriage-return characters",
+		},
+		{
+			name: "importFiltering allowed host with carriage return rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ImportFiltering = &ImportFilteringSpec{
+					AllowedHosts: []string{"mirror.example.com\r[profiler]\r"},
+				}
+			},
+			wantSub: "host must not contain newline or carriage-return characters",
+		},
+		{
+			name: "importFiltering overlong host rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ImportFiltering = &ImportFilteringSpec{
+					DisallowedHosts: []string{strings.Repeat("a", 254)},
+				}
+			},
+			wantSub: "host must be at most 253 characters",
+		},
+		{
+			name: "importFiltering list above item cap rejected",
+			mutate: func(o *Glance) {
+				hosts := make([]string, 65)
+				for i := range hosts {
+					hosts[i] = fmt.Sprintf("mirror-%d.example.com", i)
+				}
+				o.Spec.ImportFiltering = &ImportFilteringSpec{AllowedHosts: hosts}
+			},
+			wantSub: "must have at most 64 items",
+		},
 	}
 
 	for _, tc := range tests {
@@ -299,6 +406,211 @@ func TestGlanceValidateCreate_RejectionTable(t *testing.T) {
 			_, err := w.ValidateCreate(context.Background(), obj)
 			g.Expect(err).To(gomega.HaveOccurred())
 			g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantSub))
+		})
+	}
+}
+
+// TestGlanceValidate_ImportFilteringValidShapesAccepted pins the shapes the
+// mutual-exclusivity rules must NOT reject: an unset block, a present-but-empty
+// block, a loosening that stays on one side of every attribute pair, and
+// explicitly empty lists — the last being how a deployment opts out of a
+// render-time default without tripping the allow/deny pairing.
+func TestGlanceValidate_ImportFilteringValidShapesAccepted(t *testing.T) {
+	tests := []struct {
+		name      string
+		filtering *ImportFilteringSpec
+	}{
+		{
+			name:      "nil block accepted",
+			filtering: nil,
+		},
+		{
+			name:      "empty block accepted",
+			filtering: &ImportFilteringSpec{},
+		},
+		{
+			// Loosening back to glance's own defaults for an http image mirror:
+			// both attributes stay on the allow side, so no pair conflicts.
+			name: "http mirror loosening accepted",
+			filtering: &ImportFilteringSpec{
+				AllowedSchemes: []string{"http", "https"},
+				AllowedPorts:   []int32{80, 443},
+			},
+		},
+		{
+			name:      "deny-only schemes accepted",
+			filtering: &ImportFilteringSpec{DisallowedSchemes: []string{"http"}},
+		},
+		{
+			name:      "allow-only hosts accepted",
+			filtering: &ImportFilteringSpec{AllowedHosts: []string{"mirror.example.com"}},
+		},
+		{
+			// An explicit empty list opts out of the render-time default; it is
+			// not the non-empty allow-list the exclusivity rule guards against.
+			name: "explicit empty lists accepted",
+			filtering: &ImportFilteringSpec{
+				AllowedSchemes:  []string{},
+				DisallowedHosts: []string{"169.254.169.254"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &GlanceWebhook{}
+			obj := validGlance()
+			obj.Spec.ImportFiltering = tc.filtering
+
+			_, err := w.ValidateCreate(context.Background(), obj)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+	}
+}
+
+// TestGlanceDefault_EmptyImportFilteringListSurvivesAdmission pins the one thing
+// the explicitly-empty-list opt-out depends on and that no other test exercises:
+// the round-trip through the mutating webhook.
+//
+// The opt-out is a nil-versus-empty distinction, and every list on
+// ImportFilteringSpec carries `omitempty`, so json.Marshal of the defaulted
+// object drops an empty-but-present list. The defaulter builds its patch by
+// diffing that marshalled object against the raw request, which would turn the
+// drop into a `remove` op and silently unset the field — the CR would then
+// resolve back to the operator default it just opted out of. controller-runtime
+// prevents exactly that: it recomputes the raw-to-undefaulted patch and discards
+// every `remove` the marshal round-trip alone produces. This test asserts that
+// behavior through the real handler rather than trusting it, because a
+// controller-runtime bump that drops it would erase a documented opt-out with no
+// other failing test.
+func TestGlanceDefault_EmptyImportFilteringListSurvivesAdmission(t *testing.T) {
+	g := gomega.NewWithT(t)
+	scheme := runtime.NewScheme()
+	g.Expect(AddToScheme(scheme)).To(gomega.Succeed())
+
+	// allowedSchemes: [] is the documented way to make disallowedSchemes
+	// authoritative; the defaulter must leave it present and empty.
+	raw := []byte(`{
+		"apiVersion": "glance.openstack.c5c3.io/v1alpha1",
+		"kind": "Glance",
+		"metadata": {"name": "test-glance", "namespace": "openstack"},
+		"spec": {
+			"openStackRelease": "2025.2",
+			"image": {"repository": "ghcr.io/c5c3/glance", "tag": "2025.2"},
+			"keystoneEndpoint": "http://keystone.openstack.svc.cluster.local:5000/v3",
+			"importFiltering": {"allowedSchemes": [], "disallowedSchemes": ["http"]}
+		}
+	}`)
+
+	resp := admission.WithDefaulter[*Glance](scheme, &GlanceWebhook{}).Handle(
+		context.Background(),
+		admission.Request{AdmissionRequest: admissionv1.AdmissionRequest{
+			Operation: admissionv1.Create,
+			Object:    runtime.RawExtension{Raw: raw},
+		}},
+	)
+
+	g.Expect(resp.Allowed).To(gomega.BeTrue())
+	for _, p := range resp.Patches {
+		g.Expect(p.Operation).NotTo(gomega.Equal("remove"),
+			"the defaulting patch must not remove a field the request carried: %+v", p)
+	}
+}
+
+// TestGlanceValidateCreate_ImportFilteringWarnings pins the two shapes that are
+// admitted but do not mean what they look like, and — just as importantly — the
+// shapes that must stay silent. A deny-list is inert while its sibling allow-list
+// resolves to a non-empty operator default, and widening an allow-list removes
+// the scheme/port pin that the literal host denylist cannot stand in for.
+func TestGlanceValidateCreate_ImportFilteringWarnings(t *testing.T) {
+	tests := []struct {
+		name        string
+		filtering   *ImportFilteringSpec
+		wantSubs    []string
+		notWantSubs []string
+		wantNone    bool
+	}{
+		{
+			name:     "nil block is silent",
+			wantNone: true,
+		},
+		{
+			name:      "default-equal allow lists are silent",
+			filtering: &ImportFilteringSpec{AllowedSchemes: []string{"https"}, AllowedPorts: []int32{443}},
+			wantNone:  true,
+		},
+		{
+			// Tightening: a host deny-list is authoritative on its own, because
+			// allowedHosts has no operator default to keep it non-empty.
+			name:      "host deny-list alone is silent",
+			filtering: &ImportFilteringSpec{DisallowedHosts: []string{"mirror.example.com"}},
+			wantNone:  true,
+		},
+		{
+			name:      "deny-only schemes warn as inert",
+			filtering: &ImportFilteringSpec{DisallowedSchemes: []string{"http"}},
+			wantSubs: []string{
+				"spec.importFiltering.disallowedSchemes is set while spec.importFiltering.allowedSchemes is unset",
+				"this list is inert",
+			},
+		},
+		{
+			name:      "deny-only ports warn as inert",
+			filtering: &ImportFilteringSpec{DisallowedPorts: []int32{80}},
+			wantSubs: []string{
+				"spec.importFiltering.disallowedPorts is set while spec.importFiltering.allowedPorts is unset",
+				"this list is inert",
+			},
+		},
+		{
+			// The documented opt-out: the explicitly empty allow-list is what
+			// makes the deny-list authoritative, so no inertness warning — but
+			// emptying it drops the pin, which does warn.
+			name: "explicit empty allow list warns only about the widening",
+			filtering: &ImportFilteringSpec{
+				AllowedSchemes:    []string{},
+				DisallowedSchemes: []string{"http"},
+			},
+			wantSubs:    []string{"widening the operator default"},
+			notWantSubs: []string{"this list is inert"},
+		},
+		{
+			// The loosening the tempest legs and the CRD reference document.
+			name: "http mirror loosening warns on both attributes",
+			filtering: &ImportFilteringSpec{
+				AllowedSchemes: []string{"http", "https"},
+				AllowedPorts:   []int32{80, 443},
+			},
+			wantSubs: []string{
+				"spec.importFiltering.allowedSchemes is set to [http https], widening the operator default [https]",
+				"spec.importFiltering.allowedPorts is set to [80 443], widening the operator default [443]",
+				"spec.networkPolicy.additionalEgress",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &GlanceWebhook{}
+			obj := validGlance()
+			obj.Spec.ImportFiltering = tc.filtering
+
+			warnings, err := w.ValidateCreate(context.Background(), obj)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+
+			joined := strings.Join(warnings, "\n")
+			if tc.wantNone {
+				g.Expect(joined).NotTo(gomega.ContainSubstring("importFiltering"))
+				return
+			}
+			for _, sub := range tc.wantSubs {
+				g.Expect(joined).To(gomega.ContainSubstring(sub))
+			}
+			for _, sub := range tc.notWantSubs {
+				g.Expect(joined).NotTo(gomega.ContainSubstring(sub))
+			}
 		})
 	}
 }

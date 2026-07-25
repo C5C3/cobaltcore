@@ -870,6 +870,117 @@ spec:
                 x-kubernetes-validations:
                 - message: exactly one of image.tag or image.digest must be set
                   rule: has(self.tag) != has(self.digest)
+              importFiltering:
+                description: |-
+                  ImportFiltering constrains the URIs the web-download image-import method
+                  may fetch from, rendered as the [import_filtering_opts] group in
+                  glance-api.conf. The operator resolves the effective lists at render time —
+                  HTTPS-only on port 443, plus a literal host denylist covering loopback, the
+                  link-local metadata endpoint, and the in-cluster API server — rather than
+                  materializing them into the CR, so a nil block resolves exactly like an
+                  empty struct and both keep tracking the operator defaults.
+                properties:
+                  allowedHosts:
+                    description: |-
+                      AllowedHosts lists the hosts web-download may fetch from
+                      ([import_filtering_opts] allowed_hosts). When non-empty, glance ignores
+                      disallowedHosts and every other host is refused — the tightest way to pin
+                      imports to a known image mirror. Empty by default, since the operator
+                      ships a host denylist instead.
+                    items:
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    maxItems: 64
+                    type: array
+                  allowedPorts:
+                    description: |-
+                      AllowedPorts lists the ports web-download may connect to
+                      ([import_filtering_opts] allowed_ports). When non-empty, glance ignores
+                      disallowedPorts. Glance's own default is [80, 443]; when this field is nil
+                      the operator narrows it to DefaultImportAllowedPorts.
+                    items:
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    maxItems: 64
+                    type: array
+                  allowedSchemes:
+                    description: |-
+                      AllowedSchemes lists the URI schemes web-download may fetch from
+                      ([import_filtering_opts] allowed_schemes). When non-empty, glance ignores
+                      disallowedSchemes. Glance's own default is [http, https]; when this field
+                      is nil the operator narrows it to DefaultImportAllowedSchemes.
+                    items:
+                      enum:
+                      - http
+                      - https
+                      type: string
+                    maxItems: 64
+                    type: array
+                  disallowedHosts:
+                    description: |-
+                      DisallowedHosts lists the hosts web-download must refuse
+                      ([import_filtering_opts] disallowed_hosts). When this field is nil the
+                      operator renders DefaultImportDisallowedHosts, which blocks loopback, the
+                      link-local metadata endpoint, and the in-cluster API server; entries set
+                      here are unioned onto that denylist, so adding one extends the baseline
+                      instead of replacing it. Ignored by glance whenever allowedHosts is
+                      non-empty. An explicitly empty list drops the baseline — the opt-out.
+                    items:
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    maxItems: 64
+                    type: array
+                  disallowedPorts:
+                    description: |-
+                      DisallowedPorts lists the ports web-download must refuse
+                      ([import_filtering_opts] disallowed_ports). Ignored by glance whenever
+                      allowedPorts is non-empty, which is why the two are mutually exclusive
+                      here — including when allowedPorts is nil and resolves to
+                      DefaultImportAllowedPorts, so this list only becomes authoritative once
+                      allowedPorts is set to an explicitly empty list.
+                    items:
+                      format: int32
+                      maximum: 65535
+                      minimum: 1
+                      type: integer
+                    maxItems: 64
+                    type: array
+                  disallowedSchemes:
+                    description: |-
+                      DisallowedSchemes lists the URI schemes web-download must refuse
+                      ([import_filtering_opts] disallowed_schemes). Ignored by glance whenever
+                      allowedSchemes is non-empty, which is why the two are mutually exclusive
+                      here — including when allowedSchemes is nil and resolves to
+                      DefaultImportAllowedSchemes, so this list only becomes authoritative once
+                      allowedSchemes is set to an explicitly empty list.
+                    items:
+                      enum:
+                      - http
+                      - https
+                      type: string
+                    maxItems: 64
+                    type: array
+                type: object
+                x-kubernetes-validations:
+                - message: 'allowedSchemes and disallowedSchemes are mutually exclusive:
+                    glance ignores the deny-list when the allow-list is non-empty'
+                  rule: '!(has(self.allowedSchemes) && self.allowedSchemes.size()
+                    > 0 && has(self.disallowedSchemes) && self.disallowedSchemes.size()
+                    > 0)'
+                - message: 'allowedHosts and disallowedHosts are mutually exclusive:
+                    glance ignores the deny-list when the allow-list is non-empty'
+                  rule: '!(has(self.allowedHosts) && self.allowedHosts.size() > 0
+                    && has(self.disallowedHosts) && self.disallowedHosts.size() >
+                    0)'
+                - message: 'allowedPorts and disallowedPorts are mutually exclusive:
+                    glance ignores the deny-list when the allow-list is non-empty'
+                  rule: '!(has(self.allowedPorts) && self.allowedPorts.size() > 0
+                    && has(self.disallowedPorts) && self.disallowedPorts.size() >
+                    0)'
               keystoneEndpoint:
                 description: |-
                   KeystoneEndpoint is the Keystone endpoint URL Glance authenticates against.

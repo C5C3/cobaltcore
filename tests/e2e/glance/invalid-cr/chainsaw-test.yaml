@@ -136,3 +136,24 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'no such section in the glance 2025.2 option catalog')): true
+  # spec.importFiltering with both allowedHosts and disallowedHosts non-empty must
+  # be rejected (CEL rule on ImportFilteringSpec): glance ignores the deny-list
+  # whenever the matching allow-list is non-empty.
+  - try:
+    - apply:
+        file: 13-importfiltering-allow-and-deny-hosts.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'allowedHosts and disallowedHosts are mutually exclusive')): true
+  # A spec.importFiltering host carrying a newline must be rejected. The value is
+  # comma-joined verbatim into [import_filtering_opts], so it would otherwise
+  # render an INI section the ownership and catalog gates never inspect. The item
+  # markers bound length only — the webhook is the sole gate here.
+  - try:
+    - apply:
+        file: 14-importfiltering-host-control-char.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'must not contain newline or carriage-return characters')): true

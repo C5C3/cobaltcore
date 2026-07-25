@@ -303,6 +303,41 @@ FIXTURES: tuple[Fixture, ...] = (
             "      default_backend: s3\n"
         ),
     ),
+    Fixture(
+        filename="13-importfiltering-allow-and-deny-hosts.yaml",
+        comment=(
+            "spec.importFiltering with both allowedHosts and disallowedHosts non-empty\n"
+            "violates the ImportFilteringSpec CEL rule: glance ignores the deny-list\n"
+            "whenever the matching allow-list is non-empty, so accepting both would\n"
+            "silently drop the denied host. The webhook mirrors it via\n"
+            "validateImportFiltering."
+        ),
+        name="glance-invalid-importfiltering-hosts",
+        extra=(
+            "  importFiltering:\n"
+            "    allowedHosts:\n"
+            "    - mirror.example.com\n"
+            "    disallowedHosts:\n"
+            "    - 169.254.169.254\n"
+        ),
+    ),
+    Fixture(
+        filename="14-importfiltering-host-control-char.yaml",
+        comment=(
+            "spec.importFiltering.disallowedHosts carries a host with an embedded newline.\n"
+            "The host lists are the only free-form strings in the block and are joined\n"
+            "verbatim into the [import_filtering_opts] keys of glance-api.conf, so a\n"
+            "newline would render a whole [profiler] section the extraConfig ownership\n"
+            "and catalog gates never see — they inspect map structure, not values. Only\n"
+            "the webhook rejects this: the item markers bound length, not content."
+        ),
+        name="glance-invalid-importfiltering-control-char",
+        extra=(
+            "  importFiltering:\n"
+            "    disallowedHosts:\n"
+            '    - "evil.example.com\\n[profiler]\\nenabled = true"\n'
+        ),
+    ),
 )
 
 

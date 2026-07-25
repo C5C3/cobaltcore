@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.importFiltering.disallowedHosts carries a host with an embedded newline.
+# The host lists are the only free-form strings in the block and are joined
+# verbatim into the [import_filtering_opts] keys of glance-api.conf, so a
+# newline would render a whole [profiler] section the extraConfig ownership
+# and catalog gates never see — they inspect map structure, not values. Only
+# the webhook rejects this: the item markers bound length, not content.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-invalid-importfiltering-control-char
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: glance-service-password
+  importFiltering:
+    disallowedHosts:
+    - "evil.example.com\n[profiler]\nenabled = true"
