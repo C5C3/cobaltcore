@@ -908,6 +908,62 @@ func TestReconcileGlance_ReplicasDefaultAndOverride(t *testing.T) {
 		"clearing the override must revert the child to the operator default")
 }
 
+// TestReconcileGlance_ImportFilteringProjected proves every list of the
+// web-download URI filter reaches the child unchanged, and that the child does
+// not alias the ControlPlane spec. (A nil source projecting to nil is pinned by
+// TestReconcileGlance_ImportFilteringClearedProjectsNil.)
+func TestReconcileGlance_ImportFilteringProjected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.ImportFiltering = &glancev1alpha1.ImportFilteringSpec{
+		AllowedSchemes:    []string{"http", "https"},
+		DisallowedSchemes: nil,
+		AllowedHosts:      []string{"mirror.example.com"},
+		DisallowedHosts:   nil,
+		AllowedPorts:      []int32{80, 443},
+		DisallowedPorts:   nil,
+	}
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	gl := getProjectedGlance(t, r.Client, cp)
+	g.Expect(gl.Spec.ImportFiltering).To(Equal(&glancev1alpha1.ImportFilteringSpec{
+		AllowedSchemes: []string{"http", "https"},
+		AllowedHosts:   []string{"mirror.example.com"},
+		AllowedPorts:   []int32{80, 443},
+	}))
+
+	// DeepCopy: the child's pointer must not alias the ControlPlane's spec, or a
+	// later mutation there would reach through into the projected object.
+	g.Expect(gl.Spec.ImportFiltering).NotTo(BeIdenticalTo(cp.Spec.Services.Glance.ImportFiltering))
+}
+
+// TestReconcileGlance_ImportFilteringClearedProjectsNil proves the field is
+// assigned unconditionally: clearing services.glance.importFiltering removes the
+// block from the child so the Glance operator's restrictive defaults apply
+// again, rather than leaving the previously-projected policy pinned.
+func TestReconcileGlance_ImportFilteringClearedProjectsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.ImportFiltering = &glancev1alpha1.ImportFilteringSpec{
+		AllowedHosts: []string{"mirror.example.com"},
+	}
+	r := newGlanceTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.ImportFiltering).NotTo(BeNil())
+
+	cp.Spec.Services.Glance.ImportFiltering = nil
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.ImportFiltering).To(BeNil(),
+		"clearing the ControlPlane filter must revert the child to the operator defaults")
+}
+
 // TestReconcileGlance_DoesNotSetAPIServer pins the child-side defaults contract:
 // the projection must leave spec.apiServer unset so the release-conditional
 // glance defaults stay authoritative.

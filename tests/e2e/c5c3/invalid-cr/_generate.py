@@ -1115,6 +1115,26 @@ FIXTURES: tuple[Fixture, ...] = (
             "        SECRET_KEY: hunter2\n"
         ),
     ),
+    Fixture(
+        filename="62-glance-importfiltering-allow-and-deny-hosts.yaml",
+        comment=(
+            "services.glance.importFiltering sets allowedHosts AND disallowedHosts, which\n"
+            "violates the CEL mutual-exclusivity rule: glance evaluates the deny-list only\n"
+            "while the allow-list is empty, so the deny-list would be silently dropped. The\n"
+            "rest of the glance block is valid, so the ONLY violation is the host pair."
+        ),
+        name="cp-glance-importfiltering-hosts",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            VALID_GLANCE
+            + "      importFiltering:\n"
+            + "        allowedHosts:\n"
+            + "        - mirror.example.com\n"
+            + "        disallowedHosts:\n"
+            + "        - 169.254.169.254\n"
+        ),
+    ),
 )
 
 

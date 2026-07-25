@@ -26,6 +26,7 @@ import (
 	"github.com/c5c3/forge/internal/common/release"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/validation"
+	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
 
 // ControlPlane defaulting constants. These are the single source of
@@ -704,6 +705,15 @@ func validateGlance(cp *ControlPlane) field.ErrorList {
 	}
 
 	allErrs = append(allErrs, validateGlancePublicEndpoint(glPath, gl)...)
+	// services.glance.importFiltering carries the glance module's own
+	// ImportFilteringSpec, so its defense-in-depth checks come from that module's
+	// exported validator rather than a mirror maintained here: the bounds, the
+	// scheme enum, and the three mutual-exclusivity messages then have exactly one
+	// source, and this webhook cannot start admitting values the projected Glance
+	// child would reject.
+	allErrs = append(allErrs, glancev1alpha1.ValidateImportFiltering(
+		glPath.Child("importFiltering"), gl.ImportFiltering,
+	)...)
 	allErrs = append(allErrs, validateGlanceBackends(cp, glPath.Child("backends"))...)
 	allErrs = append(allErrs, validateGlanceServiceAccount(cp)...)
 
@@ -804,6 +814,23 @@ func warnInsecureGlancePublicEndpoint(cp *ControlPlane) admission.Warnings {
 // downgrading a bearer-token path silently.
 func insecurePublicEndpointWarnings(cp *ControlPlane) admission.Warnings {
 	return append(warnInsecureHorizonPublicEndpoint(cp), warnInsecureGlancePublicEndpoint(cp)...)
+}
+
+// glanceImportFilteringWarnings surfaces the two admissible-but-misleading
+// web-download filter shapes on services.glance.importFiltering: a deny-list
+// glance never evaluates, and an allow-list widened past the operator default.
+// They come from the glance module's exported helper for the same reason the
+// errors come from ValidateImportFiltering — the ControlPlane carries that
+// module's own type, and this is the surface most deployments author, so a
+// warning raised only on the projected Glance child would never reach anyone.
+func glanceImportFilteringWarnings(cp *ControlPlane) admission.Warnings {
+	gl := cp.Spec.Services.Glance
+	if gl == nil {
+		return nil
+	}
+	return glancev1alpha1.WarnImportFiltering(
+		field.NewPath("spec", "services", "glance", "importFiltering"), gl.ImportFiltering,
+	)
 }
 
 // validateGlanceBackends mirrors the declarative constraints on
@@ -1198,6 +1225,7 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 // Reviewer: please verify boundary 6 = option (a).
 func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPlane) (admission.Warnings, error) {
 	warnings := insecurePublicEndpointWarnings(obj)
+	warnings = append(warnings, glanceImportFilteringWarnings(obj)...)
 
 	// extraConfig admission checks: the un-gated shape/ownership family (A) and
 	// the option-catalog family (B). Both fold their errors into the single
@@ -1235,6 +1263,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 // sees all problems at once.
 func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *ControlPlane) (admission.Warnings, error) {
 	warnings := insecurePublicEndpointWarnings(newObj)
+	warnings = append(warnings, glanceImportFilteringWarnings(newObj)...)
 
 	allErrs := w.validate(newObj)
 	allErrs = append(allErrs, validateImmutable(oldObj, newObj)...)

@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
+	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
 
 // validControlPlane returns a ControlPlane with all required fields set to
@@ -3771,6 +3772,153 @@ func TestValidateCreate_RejectsGlanceMissingCredentialsSecretRefName(t *testing.
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("services.glance.backends[0].s3.credentialsSecretRef.name"))
+}
+
+// TestValidateCreate_RejectsGlanceImportFilteringConflicts mirrors the three
+// mutual-exclusivity CEL rules on services.glance.importFiltering: glance
+// evaluates a deny-list only while the matching allow-list is empty, so a CR
+// setting both would silently lose the deny-list half of the policy.
+func TestValidateCreate_RejectsGlanceImportFilteringConflicts(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	tests := []struct {
+		name       string
+		filtering  glancev1alpha1.ImportFilteringSpec
+		wantSubstr string
+	}{
+		{"schemes", glancev1alpha1.ImportFilteringSpec{
+			AllowedSchemes:    []string{"https"},
+			DisallowedSchemes: []string{"http"},
+		}, "allowedSchemes and disallowedSchemes are mutually exclusive"},
+		{"hosts", glancev1alpha1.ImportFilteringSpec{
+			AllowedHosts:    []string{"mirror.example.com"},
+			DisallowedHosts: []string{"169.254.169.254"},
+		}, "allowedHosts and disallowedHosts are mutually exclusive"},
+		{"ports", glancev1alpha1.ImportFilteringSpec{
+			AllowedPorts:    []int32{443},
+			DisallowedPorts: []int32{80},
+		}, "allowedPorts and disallowedPorts are mutually exclusive"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			cp.Spec.Services.Glance.ImportFiltering = &tc.filtering
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSubstr))
+			g.Expect(err.Error()).To(ContainSubstring("glance ignores the deny-list when the allow-list is non-empty"))
+			g.Expect(err.Error()).To(ContainSubstring("services.glance.importFiltering"))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsGlanceImportFilteringBounds mirrors the per-item
+// markers as defense in depth: a scheme outside the http/https enum, and a port
+// on either side of the TCP range.
+func TestValidateCreate_RejectsGlanceImportFilteringBounds(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	tests := []struct {
+		name       string
+		filtering  glancev1alpha1.ImportFilteringSpec
+		wantSubstr string
+	}{
+		{"scheme not in enum", glancev1alpha1.ImportFilteringSpec{
+			AllowedSchemes: []string{"ftp"},
+		}, "services.glance.importFiltering.allowedSchemes[0]"},
+		{"port zero", glancev1alpha1.ImportFilteringSpec{
+			AllowedPorts: []int32{0},
+		}, "services.glance.importFiltering.allowedPorts[0]"},
+		{"port above range", glancev1alpha1.ImportFilteringSpec{
+			AllowedPorts: []int32{70000},
+		}, "services.glance.importFiltering.allowedPorts[0]"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			cp.Spec.Services.Glance.ImportFiltering = &tc.filtering
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSubstr))
+		})
+	}
+}
+
+// TestValidateCreate_AcceptsGlanceImportFilteringLoosening pins the accepting
+// side: widening the operator's HTTPS-on-443 default to an http mirror is a
+// legitimate deployment choice, so allow-lists alone must be admitted.
+func TestValidateCreate_AcceptsGlanceImportFilteringLoosening(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.ImportFiltering = &glancev1alpha1.ImportFilteringSpec{
+		AllowedSchemes: []string{"http", "https"},
+		AllowedHosts:   []string{"mirror.example.com"},
+		AllowedPorts:   []int32{80, 443},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_WarnsGlanceImportFilteringPosture pins that the two
+// admissible-but-misleading filter shapes reach the ControlPlane author, not
+// only the projected Glance child: widening the scheme/port pin removes the
+// primary web-download control, and a deny-list whose sibling allow-list still
+// resolves to the operator default is never evaluated by glance.
+func TestValidateCreate_WarnsGlanceImportFilteringPosture(t *testing.T) {
+	tests := []struct {
+		name      string
+		filtering *glancev1alpha1.ImportFilteringSpec
+		wantSubs  []string
+		wantNone  bool
+	}{
+		{name: "unset block is silent", wantNone: true},
+		{
+			name: "http mirror loosening warns",
+			filtering: &glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes: []string{"http", "https"},
+				AllowedPorts:   []int32{80, 443},
+			},
+			wantSubs: []string{
+				"spec.services.glance.importFiltering.allowedSchemes is set to [http https]",
+				"spec.services.glance.importFiltering.allowedPorts is set to [80 443]",
+				"spec.networkPolicy.additionalEgress",
+			},
+		},
+		{
+			name:      "deny-only ports warn as inert",
+			filtering: &glancev1alpha1.ImportFilteringSpec{DisallowedPorts: []int32{80}},
+			wantSubs: []string{
+				"spec.services.glance.importFiltering.disallowedPorts is set while " +
+					"spec.services.glance.importFiltering.allowedPorts is unset",
+				"this list is inert",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			cp := glanceControlPlane()
+			cp.Spec.Services.Glance.ImportFiltering = tc.filtering
+
+			warnings, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			joined := strings.Join(warnings, "\n")
+			if tc.wantNone {
+				g.Expect(joined).NotTo(ContainSubstring("importFiltering"))
+				return
+			}
+			for _, sub := range tc.wantSubs {
+				g.Expect(joined).To(ContainSubstring(sub))
+			}
+		})
+	}
 }
 
 // TestValidateCreate_GlancePublicEndpointMustBeURL covers the defense-in-depth
