@@ -14,7 +14,14 @@ to the minimum required for correct reconciliation.
 > **Scope.** This guide covers the NetworkPolicy that protects the
 > **operator pod itself**. For the per-CR NetworkPolicy that protects the
 > Glance API pods (`spec.networkPolicy` on a Glance CR), see the
-> [Glance CRD API Reference](../../reference/glance/glance-crd.md).
+> [Glance CRD API Reference](../../reference/glance/glance-crd.md). That per-CR
+> policy is also the containment layer for `web-download` image imports: its
+> auto-derived egress covers DNS, the database, the cache, and the S3 backends
+> only, so an import needs an explicit `spec.networkPolicy.additionalEgress`
+> rule naming the mirrors — and nothing else stays reachable. Enable it whenever
+> `spec.importFiltering` widens the operator's HTTPS-on-443 default, because the
+> remaining `disallowedHosts` filter matches host strings literally and cannot
+> cover every spelling of an address.
 
 ---
 
