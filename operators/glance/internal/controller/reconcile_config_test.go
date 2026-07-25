@@ -109,6 +109,23 @@ func TestReconcileConfig_RendersGlanceAPIConf(t *testing.T) {
 	g.Expect(conf).To(ContainSubstring("default_backend = store"))
 	g.Expect(conf).To(ContainSubstring("[paste_deploy]"))
 	g.Expect(conf).To(ContainSubstring("flavor = keystone"))
+	// [import_filtering_opts]: spec.importFiltering is nil, so the restrictive
+	// operator defaults apply. The three keys that resolve to an empty list are
+	// still rendered — glance's own allowed_schemes/allowed_ports defaults are
+	// non-empty, so an absent key would mean "glance's permissive default", not
+	// "no restriction from this operator". The assertions are anchored on both
+	// sides because "allowed_ports" is a substring of "disallowed_ports".
+	g.Expect(conf).To(ContainSubstring("[import_filtering_opts]"))
+	g.Expect(conf).To(ContainSubstring("\nallowed_schemes = [https]\n"))
+	g.Expect(conf).To(ContainSubstring("\nallowed_ports = [443]\n"))
+	g.Expect(conf).To(ContainSubstring("\ndisallowed_hosts = [localhost,127.0.0.1,0.0.0.0,::1,169.254.169.254," +
+		"kubernetes,kubernetes.default,kubernetes.default.svc,kubernetes.default.svc.cluster.local]\n"))
+	// An empty list renders "[]" — every one of the six options is declared
+	// bounds=True upstream, so oslo.config parses "[]" as the empty list but
+	// rejects a bare empty value outright.
+	g.Expect(conf).To(ContainSubstring("\nallowed_hosts = []\n"))
+	g.Expect(conf).To(ContainSubstring("\ndisallowed_schemes = []\n"))
+	g.Expect(conf).To(ContainSubstring("\ndisallowed_ports = []\n"))
 	// No policy overrides configured, so no oslo_policy section.
 	g.Expect(conf).NotTo(ContainSubstring("[oslo_policy]"))
 }
@@ -305,6 +322,74 @@ func TestReconcileConfig_OwnedKeyOverrideReported(t *testing.T) {
 	g.Expect(conf).To(ContainSubstring("enabled_backends = rogue:file"))
 }
 
+// TestReconcileConfig_ImportFilteringOverrideReported verifies the controller's
+// half of the [import_filtering_opts] ownership contract. The six keys are
+// Rejected registry entries, so the validating webhook blocks this extraConfig
+// at admission and a CR carrying it can only exist behind a bypassed webhook or
+// from before the rule landed. The reconciler has no Rejected special case: it
+// renders the override and surfaces it through ExtraConfigHealthy=False, so a CR
+// that slipped past admission still reports a loosened filter rather than
+// silently running one.
+func TestReconcileConfig_ImportFilteringOverrideReported(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := glanceForConfig()
+	glance.Spec.ExtraConfig = map[string]map[string]string{
+		"import_filtering_opts": {"allowed_schemes": "[http,https]"},
+	}
+	r := newGlanceTestReconciler(glance)
+
+	_, art, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cond := meta.FindStatusCondition(glance.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(config.ConditionReasonOwnedKeysOverridden))
+	g.Expect(cond.Message).To(ContainSubstring("[import_filtering_opts] allowed_schemes"))
+
+	events := collectEvents(r.Recorder.(*record.FakeRecorder))
+	g.Expect(events).To(ContainElement(And(
+		ContainSubstring("Warning"),
+		ContainSubstring(config.EventReasonExtraConfigOwnedKeyOverride),
+		ContainSubstring("[import_filtering_opts] allowed_schemes"),
+	)))
+
+	// Honoured-but-reported: the user's value replaces the operator default and
+	// is written through verbatim — brackets and all are the user's problem once
+	// the webhook is bypassed — while the sibling keys keep their resolved
+	// defaults in the operator's own bracket-bounded form.
+	conf := renderedConfig(t, r, art)
+	g.Expect(conf).To(ContainSubstring("\nallowed_schemes = [http,https]\n"))
+	g.Expect(conf).To(ContainSubstring("\nallowed_ports = [443]\n"))
+}
+
+// TestReconcileConfig_ImportFilteringChangeRotatesConfigMap verifies that
+// tightening or loosening spec.importFiltering reaches the running pods: the
+// config ConfigMap is content-hashed, so a changed filter list must produce a new
+// name for the deployment step to roll.
+func TestReconcileConfig_ImportFilteringChangeRotatesConfigMap(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := glanceForConfig()
+	r := newGlanceTestReconciler(glance)
+
+	_, before, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(before.configMapName).NotTo(BeEmpty())
+
+	glance.Spec.ImportFiltering = &glancev1alpha1.ImportFilteringSpec{
+		AllowedSchemes: []string{"http", "https"},
+		AllowedPorts:   []int32{80, 443},
+	}
+	_, after, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(after.configMapName).NotTo(Equal(before.configMapName),
+		"an importFiltering change must rotate the content-hashed ConfigMap")
+
+	conf := renderedConfig(t, r, after)
+	g.Expect(conf).To(ContainSubstring("\nallowed_schemes = [http,https]\n"))
+	g.Expect(conf).To(ContainSubstring("\nallowed_ports = [80,443]\n"))
+}
+
 // TestReconcileConfig_InvalidProjectionStillUpsertsExtraConfigHealthy verifies
 // the guard runs before the invalid-projection short-circuit: an invalid
 // projection takes the last-good early return, yet ExtraConfigHealthy is still
@@ -392,6 +477,268 @@ func TestOperatorDefaults_EventletWorkers(t *testing.T) {
 			}
 			g.Expect(present).To(BeTrue(), "workers must render")
 			g.Expect(got).To(Equal(tc.wantWorkers))
+		})
+	}
+}
+
+// TestEffectiveImportFiltering pins the render-time resolution of
+// spec.importFiltering: which unset lists pick up an operator default, and the
+// one carve-out left — the host denylist glance would ignore anyway.
+//
+// The security-relevant half of the contract is that no value a CR sets can
+// widen a default resolved for another field: a deny-list entry keeps the
+// sibling allow-list default, and a host deny-list is unioned onto the baseline
+// instead of replacing it. Only an explicitly empty list opts out, so the
+// expectations below spell out nil and empty separately.
+func TestEffectiveImportFiltering(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *glancev1alpha1.ImportFilteringSpec
+		want glancev1alpha1.ImportFilteringSpec
+	}{
+		{
+			name: "nil block resolves to the operator defaults",
+			in:   nil,
+			want: glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes:  glancev1alpha1.DefaultImportAllowedSchemes,
+				AllowedPorts:    glancev1alpha1.DefaultImportAllowedPorts,
+				DisallowedHosts: glancev1alpha1.DefaultImportDisallowedHosts,
+			},
+		},
+		{
+			name: "empty block resolves to the operator defaults",
+			in:   &glancev1alpha1.ImportFilteringSpec{},
+			want: glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes:  glancev1alpha1.DefaultImportAllowedSchemes,
+				AllowedPorts:    glancev1alpha1.DefaultImportAllowedPorts,
+				DisallowedHosts: glancev1alpha1.DefaultImportDisallowedHosts,
+			},
+		},
+		{
+			name: "explicitly empty allowedSchemes opts out of the default",
+			in:   &glancev1alpha1.ImportFilteringSpec{AllowedSchemes: []string{}},
+			want: glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes:  []string{},
+				AllowedPorts:    glancev1alpha1.DefaultImportAllowedPorts,
+				DisallowedHosts: glancev1alpha1.DefaultImportDisallowedHosts,
+			},
+		},
+		{
+			// A deny-list is a tightening edit: it must not cost the sibling
+			// allow-list default (which would leave every other scheme reachable).
+			name: "disallowedSchemes keeps the allowedSchemes default",
+			in:   &glancev1alpha1.ImportFilteringSpec{DisallowedSchemes: []string{"http"}},
+			want: glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes:    glancev1alpha1.DefaultImportAllowedSchemes,
+				DisallowedSchemes: []string{"http"},
+				AllowedPorts:      glancev1alpha1.DefaultImportAllowedPorts,
+				DisallowedHosts:   glancev1alpha1.DefaultImportDisallowedHosts,
+			},
+		},
+		{
+			// The documented way to make a deny-list authoritative: empty the
+			// sibling allow-list explicitly, which glance needs anyway.
+			name: "explicitly empty allowedSchemes activates disallowedSchemes",
+			in: &glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes:    []string{},
+				DisallowedSchemes: []string{"http"},
+			},
+			want: glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes:    []string{},
+				DisallowedSchemes: []string{"http"},
+				AllowedPorts:      glancev1alpha1.DefaultImportAllowedPorts,
+				DisallowedHosts:   glancev1alpha1.DefaultImportDisallowedHosts,
+			},
+		},
+		{
+			name: "allowedHosts clears the disallowedHosts default",
+			in:   &glancev1alpha1.ImportFilteringSpec{AllowedHosts: []string{"mirror.example.com"}},
+			want: glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes: glancev1alpha1.DefaultImportAllowedSchemes,
+				AllowedHosts:   []string{"mirror.example.com"},
+				AllowedPorts:   glancev1alpha1.DefaultImportAllowedPorts,
+			},
+		},
+		{
+			name: "disallowedPorts keeps the allowedPorts default",
+			in:   &glancev1alpha1.ImportFilteringSpec{DisallowedPorts: []int32{22}},
+			want: glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes:  glancev1alpha1.DefaultImportAllowedSchemes,
+				AllowedPorts:    glancev1alpha1.DefaultImportAllowedPorts,
+				DisallowedPorts: []int32{22},
+				DisallowedHosts: glancev1alpha1.DefaultImportDisallowedHosts,
+			},
+		},
+		{
+			// The host denylist is a security floor: user entries extend it, they
+			// do not replace it, so loopback and the metadata address stay denied.
+			name: "disallowedHosts entries are unioned onto the baseline",
+			in:   &glancev1alpha1.ImportFilteringSpec{DisallowedHosts: []string{"metadata.example.com", "localhost"}},
+			want: glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes: glancev1alpha1.DefaultImportAllowedSchemes,
+				AllowedPorts:   glancev1alpha1.DefaultImportAllowedPorts,
+				// Baseline first in its own order, then the entries it does not
+				// already carry — "localhost" is deduplicated.
+				DisallowedHosts: append(append([]string{}, glancev1alpha1.DefaultImportDisallowedHosts...), "metadata.example.com"),
+			},
+		},
+		{
+			name: "explicitly empty disallowedHosts opts out of the baseline",
+			in:   &glancev1alpha1.ImportFilteringSpec{DisallowedHosts: []string{}},
+			want: glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes:  glancev1alpha1.DefaultImportAllowedSchemes,
+				AllowedPorts:    glancev1alpha1.DefaultImportAllowedPorts,
+				DisallowedHosts: []string{},
+			},
+		},
+		{
+			name: "explicitly empty allowedPorts opts out of the default",
+			in:   &glancev1alpha1.ImportFilteringSpec{AllowedPorts: []int32{}},
+			want: glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes:  glancev1alpha1.DefaultImportAllowedSchemes,
+				AllowedPorts:    []int32{},
+				DisallowedHosts: glancev1alpha1.DefaultImportDisallowedHosts,
+			},
+		},
+		{
+			name: "allow-lists set on every attribute pass through unchanged",
+			in: &glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes: []string{"https"},
+				AllowedHosts:   []string{"mirror.example.com"},
+				AllowedPorts:   []int32{443, 8443},
+			},
+			want: glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes: []string{"https"},
+				AllowedHosts:   []string{"mirror.example.com"},
+				AllowedPorts:   []int32{443, 8443},
+			},
+		},
+		{
+			// The exploit shape the resolver must refuse: three deny-list entries
+			// meant to tighten the filter must not empty the allow-lists (opening
+			// every port and scheme) nor drop the host baseline.
+			name: "deny-lists on every attribute keep every allow-side default",
+			in: &glancev1alpha1.ImportFilteringSpec{
+				DisallowedSchemes: []string{"http"},
+				DisallowedHosts:   []string{"metadata.example.com"},
+				DisallowedPorts:   []int32{22},
+			},
+			want: glancev1alpha1.ImportFilteringSpec{
+				AllowedSchemes:    glancev1alpha1.DefaultImportAllowedSchemes,
+				DisallowedSchemes: []string{"http"},
+				AllowedPorts:      glancev1alpha1.DefaultImportAllowedPorts,
+				DisallowedPorts:   []int32{22},
+				DisallowedHosts:   append(append([]string{}, glancev1alpha1.DefaultImportDisallowedHosts...), "metadata.example.com"),
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(effectiveImportFiltering(tc.in)).To(Equal(tc.want))
+		})
+	}
+
+	t.Run("nil block is indistinguishable from an empty one", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		g.Expect(effectiveImportFiltering(nil)).To(Equal(effectiveImportFiltering(&glancev1alpha1.ImportFilteringSpec{})))
+	})
+
+	// The baseline is a package-level slice shared by every reconcile, so the
+	// union must copy rather than append into it — otherwise one CR's entries
+	// would leak into the next CR's denylist.
+	t.Run("the union leaves the baseline slice untouched", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		baseline := append([]string{}, glancev1alpha1.DefaultImportDisallowedHosts...)
+		effectiveImportFiltering(&glancev1alpha1.ImportFilteringSpec{DisallowedHosts: []string{"metadata.example.com"}})
+		g.Expect(glancev1alpha1.DefaultImportDisallowedHosts).To(Equal(baseline))
+	})
+}
+
+// TestOperatorDefaults_ImportFilteringRendering pins the wire format of the
+// [import_filtering_opts] group: comma-joined oslo ListOpt values in spec order
+// (not sorted), each wrapped in the brackets every one of the six options
+// requires — they are all declared bounds=True upstream, and oslo.config
+// rejects an unbracketed value with `Value should start with "["`. Every one of
+// the six keys is present even when its resolved list is empty, as "[]".
+func TestOperatorDefaults_ImportFilteringRendering(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := glanceForConfig()
+	glance.Spec.ImportFiltering = &glancev1alpha1.ImportFilteringSpec{
+		AllowedHosts:      []string{"mirror.example.com", "images.example.org"},
+		AllowedPorts:      []int32{80, 443},
+		DisallowedSchemes: []string{"http"},
+	}
+
+	section := operatorDefaults(glance, validProjection())["import_filtering_opts"]
+	g.Expect(section).To(HaveKeyWithValue("allowed_hosts", "[mirror.example.com,images.example.org]"))
+	g.Expect(section).To(HaveKeyWithValue("allowed_ports", "[80,443]"))
+	g.Expect(section).To(HaveKeyWithValue("disallowed_schemes", "[http]"))
+	// allowedSchemes is unset, so it keeps the operator default even though a
+	// deny-list is set — which makes the deny-list above inert until the CR
+	// empties this list explicitly.
+	g.Expect(section).To(HaveKeyWithValue("allowed_schemes", "[https]"))
+	// The two lists the resolver leaves empty are still rendered, so the file
+	// never falls back to glance's own permissive default for them. "[]" is an
+	// empty oslo list; a bare "" does not parse at all.
+	g.Expect(section).To(HaveKeyWithValue("disallowed_hosts", "[]"))
+	g.Expect(section).To(HaveKeyWithValue("disallowed_ports", "[]"))
+}
+
+// TestOperatorDefaults_ImportFilteringIsBracketBounded is the regression test
+// for the unbracketed render that reached CI: glance reads these options lazily,
+// inside validate_import_uri, so an unparseable value passes every deployment
+// and readiness check and surfaces only as a 500 on the first web-download
+// import. No test above would have caught it, because they all compared against
+// the same wrong format the renderer produced. This one checks the property
+// oslo.config actually enforces, for all six keys and for every shape the
+// resolver can produce — defaults, explicit lists, and explicit opt-outs.
+func TestOperatorDefaults_ImportFilteringIsBracketBounded(t *testing.T) {
+	specs := map[string]*glancev1alpha1.ImportFilteringSpec{
+		"nil block (operator defaults)": nil,
+		"empty block":                   {},
+		"allow-lists set": {
+			AllowedSchemes: []string{"http", "https"},
+			AllowedHosts:   []string{"mirror.example.com"},
+			AllowedPorts:   []int32{80, 443},
+		},
+		"deny-lists set with the allow-side emptied": {
+			AllowedSchemes:    []string{},
+			AllowedPorts:      []int32{},
+			DisallowedSchemes: []string{"http"},
+			DisallowedHosts:   []string{"evil.example.com"},
+			DisallowedPorts:   []int32{22},
+		},
+		"every list explicitly empty": {
+			AllowedSchemes:    []string{},
+			DisallowedSchemes: []string{},
+			AllowedHosts:      []string{},
+			DisallowedHosts:   []string{},
+			AllowedPorts:      []int32{},
+			DisallowedPorts:   []int32{},
+		},
+	}
+	keys := []string{
+		"allowed_schemes", "disallowed_schemes",
+		"allowed_hosts", "disallowed_hosts",
+		"allowed_ports", "disallowed_ports",
+	}
+
+	for name, spec := range specs {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			glance := glanceForConfig()
+			glance.Spec.ImportFiltering = spec
+
+			section := operatorDefaults(glance, validProjection())["import_filtering_opts"]
+			for _, key := range keys {
+				value, ok := section[key]
+				g.Expect(ok).To(BeTrue(), "[import_filtering_opts] %s must always render", key)
+				g.Expect(value).To(HavePrefix("["), "%s = %q is not bracket-bounded; oslo.config "+
+					"rejects it with `Value should start with \"[\"`", key, value)
+				g.Expect(value).To(HaveSuffix("]"), "%s = %q is not bracket-bounded; oslo.config "+
+					"rejects it with `Value should end with \"]\"`", key, value)
+			}
 		})
 	}
 }

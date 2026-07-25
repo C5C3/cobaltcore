@@ -20,15 +20,20 @@ import "github.com/c5c3/forge/internal/common/config"
 //     operator owns whenever it renders it stays owned even in the CRs where
 //     that render is skipped.
 //
-//   - Every entry is Reported (honored-but-surfaced through the
-//     ExtraConfigHealthy condition) except [keystone_authtoken] password, the
-//     single Rejected entry: the validating webhook blocks it at admission so
-//     the service password never reaches the namespace-readable ConfigMap.
+//   - An entry is Reported (honored-but-surfaced through the ExtraConfigHealthy
+//     condition) unless honoring the override would already have done the damage
+//     by the time the condition surfaces it. Those are Rejected, and the
+//     validating webhook blocks them at admission: [keystone_authtoken] password,
+//     because the service password would land in the namespace-readable
+//     ConfigMap, and the six [import_filtering_opts] keys, because a silently
+//     loosened web-download filter is the very thing spec.importFiltering exists
+//     to make visible.
 
 // OwnedConfigKeys is the registry of glance-api.conf keys the operator owns.
 // Reported entries are honored-but-surfaced when overridden in spec.extraConfig;
-// the single Rejected entry ([keystone_authtoken] password) is blocked at
-// admission. The entries mirror the defaults map built by operatorDefaults (the
+// the Rejected entries ([keystone_authtoken] password and the six
+// [import_filtering_opts] keys) are blocked at admission instead. The entries
+// mirror the defaults map built by operatorDefaults (the
 // [keystone_authtoken] keys come from keystoneauth.Section) plus the oslo_policy
 // policy_file injected by config.InjectOsloPolicyConfig.
 var OwnedConfigKeys = []config.OwnedKey{
@@ -60,7 +65,7 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// deliberately omits it and the middleware reads it from the
 	// OS_KEYSTONE_AUTHTOKEN__PASSWORD env override, so a file value is inert at
 	// runtime and stays the drift-guard test's "extras" entry (registered but not
-	// rendered). It is the single Rejected entry: the validating webhook blocks an
+	// rendered). It is Rejected: the validating webhook blocks an
 	// extraConfig override at admission rather than merely reporting it, because
 	// rendering it would leak the service password into the namespace-readable
 	// ConfigMap before the ExtraConfigHealthy condition could surface it.
@@ -81,4 +86,27 @@ var OwnedConfigKeys = []config.OwnedKey{
 
 	// [oslo_policy]
 	{Section: "oslo_policy", Key: "policy_file", OwnedBy: "operator-computed"},
+
+	// [import_filtering_opts] — derived from spec.importFiltering. All six keys
+	// are always rendered (empty values included), so all six are owned, and all
+	// six are Rejected. spec.importFiltering expresses every one of them, so an
+	// extraConfig override buys no reach the typed field lacks; what it does buy
+	// is a way around every gate that makes a loosened filter visible — the three
+	// mutual-exclusivity rules, ValidateImportFiltering, the host INI guard, and
+	// WarnImportFiltering, the designated signal that a deployment dropped the
+	// web-download control. Reporting it after the fact would leave an audit
+	// reading spec.importFiltering seeing the restrictive default while the
+	// rendered config says otherwise.
+	{Section: "import_filtering_opts", Key: "allowed_schemes", Rejected: true, OwnedBy: "spec.importFiltering", Impact: importFilteringOverrideImpact},
+	{Section: "import_filtering_opts", Key: "disallowed_schemes", Rejected: true, OwnedBy: "spec.importFiltering", Impact: importFilteringOverrideImpact},
+	{Section: "import_filtering_opts", Key: "allowed_hosts", Rejected: true, OwnedBy: "spec.importFiltering", Impact: importFilteringOverrideImpact},
+	{Section: "import_filtering_opts", Key: "disallowed_hosts", Rejected: true, OwnedBy: "spec.importFiltering", Impact: importFilteringOverrideImpact},
+	{Section: "import_filtering_opts", Key: "allowed_ports", Rejected: true, OwnedBy: "spec.importFiltering", Impact: importFilteringOverrideImpact},
+	{Section: "import_filtering_opts", Key: "disallowed_ports", Rejected: true, OwnedBy: "spec.importFiltering", Impact: importFilteringOverrideImpact},
 }
+
+// importFilteringOverrideImpact is the shared consequence note for the six
+// Rejected [import_filtering_opts] keys, rendered into the admission error.
+const importFilteringOverrideImpact = "the web-download URI filter is platform security policy; setting it " +
+	"through extraConfig bypasses the exclusivity rules, the host INI guard, and the admission warning that " +
+	"flags a loosened filter"

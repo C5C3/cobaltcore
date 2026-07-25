@@ -2,16 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# spec.extraConfig setting [keystone_authtoken] password is rejected by
-# the validating webhook. The operator owns it via
-# spec.serviceUser.secretRef and the middleware reads it from the
-# OS_KEYSTONE_AUTHTOKEN__PASSWORD env override, so a file value is inert
-# at runtime but would leak the service password into the
-# namespace-readable ConfigMap — one of the registry's Rejected entries.
+# spec.extraConfig setting an [import_filtering_opts] key is rejected by
+# the validating webhook. All six keys are Rejected registry entries owned
+# by spec.importFiltering: the typed field expresses every one of them, so
+# an extraConfig override buys no reach — only a way around the exclusivity
+# rules, the host INI guard, and the warning that flags a loosened filter.
 apiVersion: glance.openstack.c5c3.io/v1alpha1
 kind: Glance
 metadata:
-  name: glance-invalid-extraconfig-password
+  name: glance-invalid-extraconfig-importfiltering
 spec:
   openStackRelease: "2025.2"
   deployment:
@@ -33,5 +32,5 @@ spec:
     secretRef:
       name: glance-service-password
   extraConfig:
-    keystone_authtoken:
-      password: s3cr3t
+    import_filtering_opts:
+      disallowed_hosts: ""

@@ -243,11 +243,41 @@ func TestGlanceValidateCreate_RejectionTable(t *testing.T) {
 			wantSub: "extraConfig key must not be empty",
 		},
 		{
+			name: "extraConfig section with newline rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ExtraConfig = map[string]map[string]string{
+					"glance_store]\n[profiler": {"enabled": "true"},
+				}
+			},
+			wantSub: "extraConfig section name must not contain a newline or carriage return",
+		},
+		{
+			name: "extraConfig key with newline rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ExtraConfig = map[string]map[string]string{
+					"glance_store": {"default_backend = s3\n[profiler]\nenabled": "true"},
+				}
+			},
+			wantSub: "extraConfig key and value must not contain a newline or carriage return",
+		},
+		{
+			// The rendered INI writes "%s = %s" verbatim, so a newline in a value
+			// smuggles a whole [section] past the ownership and catalog gates —
+			// they key on (section, key) names and never look inside a value.
+			name: "extraConfig value with newline rejected",
+			mutate: func(o *Glance) {
+				o.Spec.ExtraConfig = map[string]map[string]string{
+					"glance_store": {"default_backend": "s3\n[profiler]\nenabled = true"},
+				}
+			},
+			wantSub: "extraConfig key and value must not contain a newline or carriage return",
+		},
+		{
 			// The operator owns [keystone_authtoken] password via
 			// spec.serviceUser.secretRef and env-injects it at runtime, so a file
 			// override is inert but would leak the service password into the
-			// namespace-readable ConfigMap. It is the registry's single Rejected
-			// entry, blocked at admission rather than merely reported.
+			// namespace-readable ConfigMap. It is Rejected, blocked at admission
+			// rather than merely reported.
 			name: "extraConfig owned password rejected",
 			mutate: func(o *Glance) {
 				o.Spec.ExtraConfig = map[string]map[string]string{
@@ -834,6 +864,48 @@ func TestGlanceValidate_ExtraConfigOwnershipRegistryKeyExempt(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// TestGlanceValidate_ExtraConfigImportFilteringOwnedKeyRejected pins that a
+// [import_filtering_opts] key cannot be set through spec.extraConfig: all six are
+// Rejected registry entries, so the URI filter is only reachable through
+// spec.importFiltering and cannot be loosened past the exclusivity rules, the
+// host INI guard, and the WarnImportFiltering warning.
+//
+// It also pins the per-key registry exemption that gets it here: the section is
+// absent from every embedded catalog, but FindUnknownOptions consults the
+// exemptions before it decides the section is unknown, so a registered key
+// escapes the section verdict and reaches the precise ownership error instead.
+func TestGlanceValidate_ExtraConfigImportFilteringOwnedKeyRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	obj := validGlance()
+	obj.Spec.ExtraConfig = map[string]map[string]string{
+		"import_filtering_opts": {"allowed_schemes": "http,https"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("allowed_schemes is managed via spec.importFiltering"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("the web-download URI filter is platform security policy"))
+	g.Expect(err.Error()).NotTo(gomega.ContainSubstring("no such section"))
+}
+
+// TestGlanceValidate_ExtraConfigImportFilteringUnknownKeyRejected pins the other
+// half of that exemption: only the six registered keys are admitted under
+// [import_filtering_opts]. Any other key falls through to the unknown-section
+// verdict, because no catalog carries the section.
+func TestGlanceValidate_ExtraConfigImportFilteringUnknownKeyRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	obj := validGlance()
+	obj.Spec.ExtraConfig = map[string]map[string]string{
+		"import_filtering_opts": {"no_such_option": "x"},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the glance 2025.2 option catalog"))
 }
 
 // TestGlanceValidate_ExtraConfigPluginSectionExempt pins that a section declared

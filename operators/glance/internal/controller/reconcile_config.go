@@ -193,6 +193,7 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, glance *glancev1
 // glancev1alpha1.OwnedConfigKeys. It mirrors keystone's operatorDefaults.
 func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjection) map[string]map[string]string {
 	logging := effectiveLogging(glance.Spec.Logging)
+	filtering := effectiveImportFiltering(glance.Spec.ImportFiltering)
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
 			"enabled_backends": projection.enabledBackends,
@@ -239,6 +240,22 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 		"paste_deploy": {
 			"flavor":      "keystone",
 			"config_file": pasteFilePath,
+		},
+		// The web-download URI filter. All six oslo ListOpts are rendered
+		// unconditionally, the empty ones as "[]": glance's own allowed_schemes
+		// ([http, https]) and allowed_ports ([80, 443]) defaults are non-empty,
+		// and a non-empty allow-list makes glance ignore the matching deny-list —
+		// so a user deny-list only takes effect once the CR sets the sibling
+		// allow-list to an explicitly empty list (effectiveImportFiltering never
+		// empties one on its own). Every value is bracket-bounded, like the
+		// [DEFAULT] enabled_import_methods literal above; see renderBoundedList.
+		"import_filtering_opts": {
+			"allowed_schemes":    renderBoundedList(filtering.AllowedSchemes),
+			"disallowed_schemes": renderBoundedList(filtering.DisallowedSchemes),
+			"allowed_hosts":      renderBoundedList(filtering.AllowedHosts),
+			"disallowed_hosts":   renderBoundedList(filtering.DisallowedHosts),
+			"allowed_ports":      renderPortList(filtering.AllowedPorts),
+			"disallowed_ports":   renderPortList(filtering.DisallowedPorts),
 		},
 	}
 
@@ -424,6 +441,105 @@ func effectiveLogging(spec *glancev1alpha1.LoggingSpec) glancev1alpha1.LoggingSp
 		out.Level = "INFO"
 	}
 	return out
+}
+
+// effectiveImportFiltering returns the six [import_filtering_opts] lists to
+// render, materializing the operator defaults for the fields spec.importFiltering
+// leaves unset. A nil block behaves exactly like an empty one. It is pure and
+// total: no input can fail, so there is no error path.
+//
+// "Unset" means nil. An explicitly empty list is honored verbatim, which is the
+// only way to opt out of a default restriction. No field a user sets can widen
+// the default resolved for another one: adding a deny-list entry is a tightening
+// edit, and it must never be answered by dropping a baseline. The nil fields
+// resolve as:
+//
+//   - allowedSchemes → DefaultImportAllowedSchemes, allowedPorts →
+//     DefaultImportAllowedPorts, both independent of the sibling deny-list.
+//     Glance evaluates a deny-list only while the matching allow-list is empty,
+//     so a deployment whose deny-list must be authoritative renders the
+//     allow-list empty itself (allowedSchemes: []); resolving that carve-out here
+//     would trade the pinned scheme and port for every other scheme and port on
+//     an edit that asked for neither.
+//   - disallowedHosts → DefaultImportDisallowedHosts, and a non-empty user list
+//     is unioned onto that baseline rather than replacing it: the denied hosts
+//     are a security floor, so adding an entry must not un-deny loopback, the
+//     metadata address, or the API server. It resolves empty while allowedHosts
+//     is non-empty, because glance ignores the host deny-list in that case and
+//     the allow-list is the stricter half anyway.
+//   - allowedHosts, disallowedSchemes, disallowedPorts → empty, since glance's
+//     own defaults for those are already empty.
+//
+// The resolved lists may alias the package-level default slices, so callers must
+// treat the result as read-only.
+func effectiveImportFiltering(spec *glancev1alpha1.ImportFilteringSpec) glancev1alpha1.ImportFilteringSpec {
+	var out glancev1alpha1.ImportFilteringSpec
+	if spec != nil {
+		out = *spec
+	}
+	if out.AllowedSchemes == nil {
+		out.AllowedSchemes = glancev1alpha1.DefaultImportAllowedSchemes
+	}
+	if out.AllowedPorts == nil {
+		out.AllowedPorts = glancev1alpha1.DefaultImportAllowedPorts
+	}
+	if len(out.AllowedHosts) == 0 {
+		switch {
+		case out.DisallowedHosts == nil:
+			out.DisallowedHosts = glancev1alpha1.DefaultImportDisallowedHosts
+		case len(out.DisallowedHosts) > 0:
+			out.DisallowedHosts = unionHosts(glancev1alpha1.DefaultImportDisallowedHosts, out.DisallowedHosts)
+		}
+	}
+	return out
+}
+
+// unionHosts returns base followed by every entry of extra base does not already
+// carry. Order is deterministic — baseline first, user entries in spec order —
+// because the rendered value feeds the config ConfigMap's content hash, and a
+// reordering would rotate the ConfigMap and roll the Deployment for nothing. The
+// result is a fresh slice, so the package-level baseline is never appended to.
+func unionHosts(base, extra []string) []string {
+	seen := make(map[string]struct{}, len(base))
+	out := make([]string, 0, len(base)+len(extra))
+	for _, host := range base {
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
+	for _, host := range extra {
+		if _, dup := seen[host]; dup {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
+	return out
+}
+
+// renderBoundedList formats a list as the bracket-bounded value an oslo ListOpt
+// declared with bounds=True consumes. All six [import_filtering_opts] options
+// are (glance/async_/flows/_internal_plugins/__init__.py), so oslo.config
+// rejects a bare comma-joined value from them with `Value should start with
+// "["`. It rejects it lazily, on the first read inside validate_import_uri, so
+// an unbracketed value leaves the API healthy and fails only the web-download
+// import it was meant to filter — with a 500, not a refusal. An empty list
+// renders "[]", the empty value oslo parses, never "".
+//
+// Only for a bounded ListOpt: an unbounded one (oslo.log's default_log_levels,
+// see renderDefaultLogLevels) reads the brackets as part of the first and last
+// item.
+func renderBoundedList(items []string) string {
+	return "[" + strings.Join(items, ",") + "]"
+}
+
+// renderPortList formats a port list as the decimal, bracket-bounded value an
+// [import_filtering_opts] port option consumes. See renderBoundedList.
+func renderPortList(ports []int32) string {
+	items := make([]string, 0, len(ports))
+	for _, port := range ports {
+		items = append(items, fmt.Sprintf("%d", port))
+	}
+	return renderBoundedList(items)
 }
 
 // renderDefaultLogLevels formats PerLoggerLevels as oslo.log's

@@ -552,6 +552,15 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 	// the rendered glance-api.conf never carries a nameless [<section>] or a
 	// bare "= value" line. extraConfig is a preserve-unknown-fields map, so CEL
 	// cannot constrain its keys — the webhook is the sole admission-time gate.
+	//
+	// It also rejects a newline or carriage return in a section name, a key, OR a
+	// value. RenderINIMulti writes each verbatim ("[%s]" for the section, "%s = %s"
+	// per option), so such a character injects arbitrary additional config lines —
+	// smuggling a whole [section]/key past the (section, key)-name-keyed ownership
+	// (FindOwnedOverrides) and catalog (FindUnknownOptions) gates, which inspect
+	// map structure only and never look inside a value. Same guard, same reasoning
+	// as the ControlPlane's validateINIShape over services.glance.extraConfig and
+	// as GlanceBackend's extraOptions values.
 	for section, opts := range g.Spec.ExtraConfig {
 		if section == "" {
 			allErrs = append(allErrs, field.Invalid(
@@ -561,12 +570,29 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 			))
 			continue
 		}
-		for key := range opts {
+		if hasControlChars(section) {
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("extraConfig"),
+				section,
+				"extraConfig section name must not contain a newline or carriage return",
+			))
+			continue
+		}
+		for key, value := range opts {
 			if key == "" {
 				allErrs = append(allErrs, field.Invalid(
 					specPath.Child("extraConfig").Key(section),
 					key,
 					"extraConfig key must not be empty",
+				))
+				continue
+			}
+			if hasControlChars(key) || hasControlChars(value) {
+				allErrs = append(allErrs, field.Invalid(
+					specPath.Child("extraConfig").Key(section).Key(key),
+					key,
+					"extraConfig key and value must not contain a newline or carriage return: "+
+						"the rendered INI writes them verbatim, so a newline injects arbitrary config lines",
 				))
 			}
 		}

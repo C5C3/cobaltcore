@@ -264,7 +264,7 @@ FIXTURES: tuple[Fixture, ...] = (
             "spec.serviceUser.secretRef and the middleware reads it from the\n"
             "OS_KEYSTONE_AUTHTOKEN__PASSWORD env override, so a file value is inert\n"
             "at runtime but would leak the service password into the\n"
-            "namespace-readable ConfigMap — the registry's single Rejected entry."
+            "namespace-readable ConfigMap — one of the registry's Rejected entries."
         ),
         name="glance-invalid-extraconfig-password",
         extra=(
@@ -336,6 +336,39 @@ FIXTURES: tuple[Fixture, ...] = (
             "  importFiltering:\n"
             "    disallowedHosts:\n"
             '    - "evil.example.com\\n[profiler]\\nenabled = true"\n'
+        ),
+    ),
+    Fixture(
+        filename="15-extraconfig-owned-importfiltering.yaml",
+        comment=(
+            "spec.extraConfig setting an [import_filtering_opts] key is rejected by\n"
+            "the validating webhook. All six keys are Rejected registry entries owned\n"
+            "by spec.importFiltering: the typed field expresses every one of them, so\n"
+            "an extraConfig override buys no reach — only a way around the exclusivity\n"
+            "rules, the host INI guard, and the warning that flags a loosened filter."
+        ),
+        name="glance-invalid-extraconfig-importfiltering",
+        extra=(
+            "  extraConfig:\n"
+            "    import_filtering_opts:\n"
+            '      disallowed_hosts: ""\n'
+        ),
+    ),
+    Fixture(
+        filename="16-extraconfig-value-control-char.yaml",
+        comment=(
+            "spec.extraConfig carrying a newline in an option VALUE is rejected by the\n"
+            "validating webhook. The rendered INI writes `key = value` verbatim, so the\n"
+            "newline would inject a whole [profiler] section past the ownership and\n"
+            "catalog gates — they key on (section, key) names and never look inside a\n"
+            "value. The section and key here are both catalog-known and owned, which is\n"
+            "exactly the shape that would otherwise be admitted."
+        ),
+        name="glance-invalid-extraconfig-value-control-char",
+        extra=(
+            "  extraConfig:\n"
+            "    glance_store:\n"
+            '      default_backend: "s3\\n[profiler]\\nenabled = true"\n'
         ),
     ),
 )

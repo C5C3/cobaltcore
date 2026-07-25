@@ -110,6 +110,15 @@ restriction. Loosening the schemes and ports back to Glance's own values for an
 http mirror is a supported configuration, since both stay on the allow side of
 their pairs.
 
+All six keys are rendered on every reconcile, empty values included. Glance's
+own `allowed_schemes` and `allowed_ports` defaults are non-empty, so a key left
+out of the file would mean "Glance's permissive default", not "unrestricted by
+this operator". It also makes the deny-lists usable: setting `disallowedSchemes`
+or `disallowedPorts` renders the sibling allow-list explicitly empty, which is
+the only state in which Glance evaluates the deny-list at all. Setting
+`allowedHosts` likewise renders `disallowed_hosts` empty, since Glance would
+ignore the host denylist anyway.
+
 ### Defaulting and validation
 
 The mutating webhook applies the shared `DeploymentSpec`/`LoggingSpec` defaults

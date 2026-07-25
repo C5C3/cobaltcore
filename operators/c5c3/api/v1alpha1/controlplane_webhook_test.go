@@ -4332,9 +4332,12 @@ func TestValidateCreate_RejectsUnknownSection(t *testing.T) {
 	g.Expect(err.Error()).NotTo(ContainSubstring("spec.plugins"))
 }
 
-// TestValidateCreate_ForbidsGlanceRejectedOwnedKey pins that [keystone_authtoken]
-// password is Forbidden regardless of which block carries it — rendering it would
-// leak the service password into the namespace-readable ConfigMap.
+// TestValidateCreate_ForbidsGlanceRejectedOwnedKey pins that a Rejected glance
+// owned key is Forbidden regardless of which block carries it: [keystone_authtoken]
+// password, because rendering it would leak the service password into the
+// namespace-readable ConfigMap, and the [import_filtering_opts] keys, because
+// rendering one would loosen the web-download URI filter behind the back of
+// services.glance.importFiltering and its admission warnings.
 func TestValidateCreate_ForbidsGlanceRejectedOwnedKey(t *testing.T) {
 	w := &ControlPlaneWebhook{}
 
@@ -4358,6 +4361,19 @@ func TestValidateCreate_ForbidsGlanceRejectedOwnedKey(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[keystone_authtoken][password]"))
 		g.Expect(err.Error()).To(ContainSubstring("must not be set in extraConfig"))
+	})
+
+	t.Run("import filter in glance extraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{
+			"import_filtering_opts": {"disallowed_hosts": ""},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[import_filtering_opts][disallowed_hosts]"))
+		g.Expect(err.Error()).To(ContainSubstring("disallowed_hosts is managed via spec.importFiltering"))
 	})
 }
 
