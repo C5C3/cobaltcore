@@ -52,6 +52,15 @@ spec:
   cache:
     clusterRef:
       name: openstack-memcached
+  # The positive tempest.api.image web-download imports fetch tempest's built-in
+  # default CONF.image.http_image, an http:// URL on port 80, which the
+  # operator's HTTPS-only default filter would reject synchronously. This leg
+  # therefore opts back into http and port 80. disallowedHosts stays unset, so
+  # the default host denylist remains active, and the negative bad-URL test
+  # keeps its existing asynchronous-failure outcome under tempest 46.3.0.
+  importFiltering:
+    allowedSchemes: [http, https]
+    allowedPorts: [80, 443]
   keystoneEndpoint: http://keystone-glance-tempest-2026-1.openstack.svc.cluster.local:5000/v3
   serviceUser:
     username: admin

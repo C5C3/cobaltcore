@@ -10,6 +10,8 @@
 #     launch mode: `glance-api --config-dir ...`)
 #   - Owned resources exist (Deployment, Service on 9292, PDB, config ConfigMap,
 #     backends Secret)
+#   - A CR without spec.importFiltering renders the restrictive
+#     [import_filtering_opts] defaults into glance-api.conf
 #   - The attached default S3 backend reaches Ready=True
 #   - The Glance API answers /healthcheck over HTTP (200) — the oslo healthcheck
 #     middleware proves the WSGI app serves requests
@@ -154,11 +156,32 @@ spec:
             - status: "True"
               reason: AllReady
   # ── Step 5: Assert the rendered config ConfigMap and backends Secret ────
+  # The second script pins the default web-download filter posture: this CR
+  # carries no importFiltering block, so [import_filtering_opts] must render the
+  # operator's restrictive defaults. The greps are anchored on both sides
+  # because "allowed_ports" is a substring of "disallowed_ports", and they
+  # include the brackets: all six options are declared bounds=True upstream, so
+  # an unbracketed value is one oslo.config refuses to parse. It refuses lazily,
+  # on the first read inside validate_import_uri, which is why nothing in this
+  # suite goes unready when the format is wrong — only a web-download import
+  # fails, and only in the tempest legs.
   - try:
     - script:
         content: |
           kubectl get cm -n openstack -o name | grep glance-basic-config-
           kubectl get secret -n openstack -o name | grep glance-basic-backends-
+    - script:
+        content: |
+          set -eu
+          CM=$(kubectl get deploy glance-basic -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          test -n "$CM"
+          kubectl get cm "$CM" -n openstack -o 'jsonpath={.data.glance-api\.conf}' \
+            > /tmp/glance-basic-api.conf
+          grep -q '^allowed_schemes = \[https\]$' /tmp/glance-basic-api.conf
+          grep -q '^allowed_ports = \[443\]$' /tmp/glance-basic-api.conf
+          grep '^disallowed_hosts = \[' /tmp/glance-basic-api.conf | grep -q '169\.254\.169\.254'
+          echo "OK: $CM ships the default import filter posture (https/443, metadata host denied)"
   # ── Step 6: Assert the Glance API answers /healthcheck over HTTP ────────
   # HTTP-level API coverage: the oslo healthcheck middleware answers without
   # touching the database or Keystone, proving the WSGI app is serving requests.
