@@ -41,7 +41,11 @@ The v1 operator resolves the onboarding decisions as follows:
   — `glance-direct` is deliberately excluded because it stages the uploaded
   image on the API pod's local disk, and there is no staging volume shared
   across replicas, so an import begun on one pod could not be finished by
-  another.
+  another. Every deployment also renders an `[import_filtering_opts]` group, so
+  a `web-download` URI is filtered before glance fetches it: HTTPS on port 443,
+  plus a literal host denylist covering loopback, the link-local metadata
+  address, and the in-cluster API server. See
+  [ImportFilteringSpec](./glance-crd.md#importfilteringspec).
 - **`isDefault` lives on the backend CR.** Exactly one attached,
   credential-ready `GlanceBackend` must be marked `isDefault`; that backend
   becomes the `[glance_store] default_backend`. The glance-side sub-reconciler
