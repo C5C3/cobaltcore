@@ -2,16 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# spec.extraConfig setting [keystone_authtoken] password is rejected by
-# the validating webhook. The operator owns it via
-# spec.serviceUser.secretRef and the middleware reads it from the
-# OS_KEYSTONE_AUTHTOKEN__PASSWORD env override, so a file value is inert
-# at runtime but would leak the service password into the
-# namespace-readable ConfigMap — one of the registry's Rejected entries.
+# spec.extraConfig carrying a newline in an option VALUE is rejected by the
+# validating webhook. The rendered INI writes `key = value` verbatim, so the
+# newline would inject a whole [profiler] section past the ownership and
+# catalog gates — they key on (section, key) names and never look inside a
+# value. The section and key here are both catalog-known and owned, which is
+# exactly the shape that would otherwise be admitted.
 apiVersion: glance.openstack.c5c3.io/v1alpha1
 kind: Glance
 metadata:
-  name: glance-invalid-extraconfig-password
+  name: glance-invalid-extraconfig-value-control-char
 spec:
   openStackRelease: "2025.2"
   deployment:
@@ -33,5 +33,5 @@ spec:
     secretRef:
       name: glance-service-password
   extraConfig:
-    keystone_authtoken:
-      password: s3cr3t
+    glance_store:
+      default_backend: "s3\n[profiler]\nenabled = true"

@@ -157,3 +157,23 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'must not contain newline or carriage-return characters')): true
+  # spec.extraConfig setting an [import_filtering_opts] key must be rejected: all
+  # six are Rejected registry entries owned by spec.importFiltering, so the URI
+  # filter cannot be loosened behind the admission gates that make that visible.
+  - try:
+    - apply:
+        file: 15-extraconfig-owned-importfiltering.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'disallowed_hosts is managed via spec.importFiltering')): true
+  # A newline in a spec.extraConfig option VALUE must be rejected: the rendered
+  # INI writes `key = value` verbatim, so it would inject a whole section past the
+  # ownership and catalog gates, which key on names and never inspect values.
+  - try:
+    - apply:
+        file: 16-extraconfig-value-control-char.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'extraConfig key and value must not contain a newline or carriage return')): true

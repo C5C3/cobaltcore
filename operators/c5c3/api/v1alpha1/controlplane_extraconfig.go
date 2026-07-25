@@ -165,9 +165,11 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 		merged := MergedExtraConfig(cp.Spec.GlobalExtraConfig, gl.ExtraConfig)
 		for _, owned := range config.FindOwnedOverrides(merged, glancev1alpha1.OwnedConfigKeys) {
 			paths := contributingKeyPaths(owned.Section, owned.Key, blocks...)
-			// The sole Rejected glance key ([keystone_authtoken] password) is always
-			// forbidden: rendering it would leak the service password into the
-			// namespace-readable ConfigMap.
+			// Every Rejected glance key is always forbidden: rendering
+			// [keystone_authtoken] password would leak the service password into the
+			// namespace-readable ConfigMap, and rendering an [import_filtering_opts]
+			// key would loosen the web-download URI filter past every gate
+			// services.glance.importFiltering puts in front of it.
 			if owned.Rejected {
 				for _, p := range paths {
 					errs = append(errs, field.Forbidden(p, rejectedGlanceMessage(owned)))
