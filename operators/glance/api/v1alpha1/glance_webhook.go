@@ -55,6 +55,42 @@ const (
 	DefaultEventletWorkers int32 = 2
 )
 
+// Database-purge defaults for the recurring glance-manage purge CronJob, which
+// hard-deletes the soft-deleted image rows and the import-task rows glance
+// itself never removes.
+//
+// They are consumed by the reconcile-time resolver (effectiveDBPurge in the
+// controller package) and deliberately NOT applied by the defaulting webhook: a
+// nil or partial spec.dbPurge block keeps tracking these operator defaults
+// across upgrades instead of freezing today's values into the stored CR, the
+// same reasoning as the import-filtering defaults documented right below.
+const (
+	// DefaultDBPurgeRetentionDays is how long a soft-deleted row survives before
+	// the purge hard-deletes it, resolved when spec.dbPurge.retentionDays is
+	// unset. A month leaves room to notice and reverse an accidental image
+	// deletion at the storage layer before the row backing it disappears.
+	DefaultDBPurgeRetentionDays int32 = 30
+	// DefaultDBPurgeSchedule runs the purge daily at 00:01, resolved when
+	// spec.dbPurge.schedule is empty. The off-the-hour minute keeps it clear of
+	// the top-of-midnight slot the sibling rotation CronJobs occupy.
+	DefaultDBPurgeSchedule = "1 0 * * *"
+)
+
+// Name-length bounds enforced on metadata.name, driven by the purge CronJob —
+// the child object with the tightest name budget.
+const (
+	// MaxCronJobNameLength is the API server's own cap on a CronJob name:
+	// DNS1035LabelMaxLength (63) minus the 11-character "-<timestamp>" suffix its
+	// controller appends to every Job it spawns.
+	MaxCronJobNameLength = 52
+	// dbPurgeNameSuffix is appended to metadata.name to name the purge CronJob.
+	// It is duplicated from the controller package (which builds the object)
+	// because the api package cannot import the controller.
+	dbPurgeNameSuffix = "-db-purge"
+	// MaxGlanceNameLength is what those two leave for metadata.name.
+	MaxGlanceNameLength = MaxCronJobNameLength - len(dbPurgeNameSuffix)
+)
+
 // Import-filtering defaults for the web-download image-import method, narrowing
 // glance's own permissive defaults (schemes [http, https], ports [80, 443], no
 // host denylist). They are variables rather than constants only because Go has
@@ -242,13 +278,39 @@ func (w *GlanceWebhook) Default(_ context.Context, obj *Glance) error {
 }
 
 // ValidateCreate implements admission.Validator[*Glance].
+//
+// The metadata.name bound is enforced here rather than in validate(), which
+// update shares: the name is immutable, so on update the rule could only ever
+// fire against an object a pre-upgrade operator already admitted — and the
+// validating webhook also sees the finalizer-removal update reconcileDelete
+// issues, so rejecting it would wedge that CR in Terminating with no field left
+// to edit to repair it.
 func (w *GlanceWebhook) ValidateCreate(ctx context.Context, obj *Glance) (admission.Warnings, error) {
-	catalogWarnings, catalogErrs := validateExtraConfigOptions(field.NewPath("spec"), obj)
+	catalogWarnings, createErrs := validateExtraConfigOptions(field.NewPath("spec"), obj)
+	createErrs = append(createErrs, validateNameLength(obj.Name)...)
 	warnings := append(warnInertLaunchModeKnobs(obj), catalogWarnings...)
 	warnings = append(warnings, WarnImportFiltering(
 		field.NewPath("spec", "importFiltering"), obj.Spec.ImportFiltering,
 	)...)
-	return warnings, w.validate(ctx, obj, catalogErrs)
+	return warnings, w.validate(ctx, obj, createErrs)
+}
+
+// validateNameLength bounds metadata.name by the child object with the tightest
+// name budget, the "{name}-db-purge" CronJob: the API server rejects a CronJob
+// name longer than MaxCronJobNameLength. The controller stays total for a name
+// that predates this bound — it collapses the overflowing tail onto a hash — but
+// that form is opaque, so a CR being authored now is held to the plain one.
+//
+// It is called from ValidateCreate only, for the reason documented there.
+func validateNameLength(name string) field.ErrorList {
+	if len(name) <= MaxGlanceNameLength {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(
+		field.NewPath("metadata", "name"), name,
+		fmt.Sprintf("name must be at most %d characters: the db-purge CronJob appends %q and Kubernetes caps CronJob names at %d characters",
+			MaxGlanceNameLength, dbPurgeNameSuffix, MaxCronJobNameLength),
+	)}
 }
 
 // ValidateUpdate implements admission.Validator[*Glance].
@@ -268,6 +330,7 @@ func (w *GlanceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Glan
 	warnings = append(warnings, WarnImportFiltering(
 		field.NewPath("spec", "importFiltering"), newObj.Spec.ImportFiltering,
 	)...)
+	warnings = append(warnings, warnDBPurgeRetention(oldObj.Spec.DBPurge, newObj.Spec.DBPurge)...)
 	return warnings, w.validate(ctx, newObj, catalogErrs)
 }
 
@@ -283,7 +346,8 @@ func (w *GlanceWebhook) ValidateDelete(_ context.Context, _ *Glance) (admission.
 // every violation so users see the full list in one admission response.
 // ctx is required for cluster-scoped lookups (PriorityClass validation).
 // extra carries errors accumulated by the caller (the extraConfig option-catalog
-// check) so they aggregate into the single Invalid error alongside the rest.
+// check, and on create the metadata.name bound) so they aggregate into the
+// single Invalid error alongside the rest.
 func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.ErrorList) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
@@ -548,6 +612,11 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 	// XValidation CEL rules and the item markers on ImportFilteringSpec.
 	allErrs = append(allErrs, ValidateImportFiltering(specPath.Child("importFiltering"), g.Spec.ImportFiltering)...)
 
+	// Defense-in-depth dbPurge validation alongside the Minimum marker on
+	// DBPurgeSpec.RetentionDays, plus the cron-grammar check that has no schema
+	// counterpart.
+	allErrs = append(allErrs, validateDBPurge(specPath.Child("dbPurge"), g.Spec.DBPurge)...)
+
 	// extraConfig sanity: reject an empty section name or an empty option key so
 	// the rendered glance-api.conf never carries a nameless [<section>] or a
 	// bare "= value" line. extraConfig is a preserve-unknown-fields map, so CEL
@@ -796,6 +865,58 @@ func validateImportFilteringPorts(fldPath *field.Path, ports []int32) field.Erro
 		}
 	}
 	return errs
+}
+
+// validateDBPurge mirrors the spec.dbPurge schema as defense in depth behind the
+// CRD layer — the Minimum marker on retentionDays — and carries the one check
+// with no schema counterpart: the cron grammar, which DBPurgeSpec.Schedule
+// deliberately leaves to the webhook. It is nil-safe, and so is each half: an
+// unset field carries nothing to validate and is resolved to the operator
+// default at reconcile time.
+func validateDBPurge(fldPath *field.Path, p *DBPurgeSpec) field.ErrorList {
+	if p == nil {
+		return nil
+	}
+	var errs field.ErrorList
+
+	if p.RetentionDays != nil && *p.RetentionDays < 1 {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("retentionDays"), *p.RetentionDays, "retentionDays must be at least 1",
+		))
+	}
+	if p.Schedule != "" {
+		errs = append(errs, validation.CronSchedule(fldPath.Child("schedule"), p.Schedule)...)
+	}
+	return errs
+}
+
+// warnDBPurgeRetention surfaces a retention window that an update shortens.
+// Unlike every other knob on the CR, the effect is immediate and irreversible:
+// at the next firing the purge hard-deletes every row that fell out of the
+// window, and nothing brings those rows back. A typo (3 for 30) is
+// indistinguishable from an intended change at admission time, so the reduction
+// is echoed back to whoever made it. It stays a warning rather than a rejection
+// because shortening the window is a legitimate operational choice.
+func warnDBPurgeRetention(oldPurge, newPurge *DBPurgeSpec) admission.Warnings {
+	oldDays, newDays := effectiveRetentionDays(oldPurge), effectiveRetentionDays(newPurge)
+	if newDays >= oldDays {
+		return nil
+	}
+	return admission.Warnings{fmt.Sprintf(
+		"spec.dbPurge.retentionDays reduced %d → %d: the next purge run hard-deletes the rows soft-deleted between %d and %d days ago, which cannot be undone",
+		oldDays, newDays, newDays, oldDays,
+	)}
+}
+
+// effectiveRetentionDays resolves the retention a spec.dbPurge block runs with,
+// mirroring the reconcile-time resolver so a block that leaves the field unset
+// compares as the operator default rather than as zero — otherwise dropping
+// spec.dbPurge entirely would read as a reduction to nothing.
+func effectiveRetentionDays(p *DBPurgeSpec) int32 {
+	if p == nil || p.RetentionDays == nil {
+		return DefaultDBPurgeRetentionDays
+	}
+	return *p.RetentionDays
 }
 
 // WarnImportFiltering surfaces the two spec.importFiltering shapes that are

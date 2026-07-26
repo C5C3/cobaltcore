@@ -657,10 +657,47 @@ func validateServiceAccounts(cp *ControlPlane) field.ErrorList {
 // ControlPlane admission already accepted.
 const glanceBackendChildNameOverhead = len("-glance-")
 
+// glanceChildNameOverhead is the fixed part of the projected Glance child CR
+// name, "{cp}-glance". Unlike its siblings the budget it eats into is not the
+// apiserver's 253-byte cap but the far tighter one the Glance CRD's own
+// admission applies to metadata.name (glancev1alpha1.MaxGlanceNameLength): the
+// Glance operator appends a suffix of its own for the db-purge CronJob, and
+// Kubernetes caps CronJob names at 52 characters.
+const glanceChildNameOverhead = len("-glance")
+
 // GlanceServiceAccountName is the spec.korc.serviceAccounts entry the Glance
 // projection consumes; the defaulting webhook injects it and the reconciler
 // gates on it.
 const GlanceServiceAccountName = "glance"
+
+// validateGlanceChildName enforces that the Glance child this ControlPlane would
+// project carries a name the Glance CRD's own validating webhook admits.
+// Without it a longer ControlPlane admits cleanly and reconcileGlance then fails
+// to apply the child on every pass: GlanceReady never goes True, the
+// ControlPlane never reaches Ready, and metadata.name is immutable — so the only
+// recovery is deleting and recreating the whole control plane.
+//
+// It is a create-and-newly-enabled rule rather than part of validateGlance,
+// which every update re-runs: the ControlPlane name is immutable, so on a
+// routine update the rule could only ever fire against a CR a pre-upgrade
+// operator already admitted — including the finalizer-removal update that
+// completes its deletion.
+func validateGlanceChildName(cp *ControlPlane) field.ErrorList {
+	if cp.Spec.Services.Glance == nil {
+		return nil
+	}
+	n := len(cp.Name) + glanceChildNameOverhead
+	if n <= glancev1alpha1.MaxGlanceNameLength {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(field.NewPath("metadata", "name"), cp.Name, fmt.Sprintf(
+		"the projected Glance child CR name would be %d characters; the Glance CRD caps metadata.name at %d "+
+			"(its db-purge CronJob appends a suffix, and Kubernetes caps CronJob names at %d characters), so the "+
+			"ControlPlane name must be at most %d characters when spec.services.glance is set",
+		n, glancev1alpha1.MaxGlanceNameLength, glancev1alpha1.MaxCronJobNameLength,
+		glancev1alpha1.MaxGlanceNameLength-glanceChildNameOverhead,
+	))}
+}
 
 // validateGlance enforces the rules on the services.glance block. It mirrors the
 // declarative constraints as defense-in-depth for callers that bypass CRD schema
@@ -1239,6 +1276,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	allErrs := w.validate(obj)
 	allErrs = append(allErrs, ownershipErrs...)
 	allErrs = append(allErrs, catalogErrs...)
+	allErrs = append(allErrs, validateGlanceChildName(obj)...)
 	if err := newInvalidIfErrs(obj, allErrs); err != nil {
 		return warnings, err
 	}
@@ -1284,6 +1322,14 @@ func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *
 		catalogWarnings, catalogErrs := validateExtraConfigCatalogs(newObj)
 		warnings = append(warnings, catalogWarnings...)
 		allErrs = append(allErrs, catalogErrs...)
+	}
+
+	// The projected-Glance-name bound re-runs only when this update is what
+	// enables Glance: it is derived from the immutable ControlPlane name, so on
+	// any other update it could only reject a CR that was already admitted with
+	// Glance on — including the finalizer-removal update that deletes it.
+	if oldObj.Spec.Services.Glance == nil {
+		allErrs = append(allErrs, validateGlanceChildName(newObj)...)
 	}
 
 	return warnings, newInvalidIfErrs(newObj, allErrs)

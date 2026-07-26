@@ -420,6 +420,64 @@ spec:
                 - message: credentialsMode Dynamic requires clusterRef (managed mode)
                   rule: '!has(self.credentialsMode) || self.credentialsMode != ''Dynamic''
                     || has(self.clusterRef)'
+              dbPurge:
+                description: |-
+                  DBPurge tunes the recurring database purge that hard-deletes the rows
+                  glance only ever soft-deletes. The operator resolves the effective
+                  retention and schedule at reconcile time — DefaultDBPurgeRetentionDays and
+                  DefaultDBPurgeSchedule — rather than materializing them into the CR, so a
+                  nil block resolves exactly like an empty struct and both keep tracking the
+                  operator defaults. The task-row sweep is scheduled on every Glance; the
+                  destructive extras are opt-in (purgeImagesTable) or reversible (suspend).
+                properties:
+                  purgeImagesTable:
+                    description: |-
+                      PurgeImagesTable enables the second glance-manage db purge_images_table
+                      pass, which hard-deletes the images rows themselves. It defaults to false:
+                      the row is what keeps a deleted image's UUID reserved, and glance's v2
+                      image-create accepts a client-supplied id, so once the row is gone any
+                      project member can claim the freed UUID for an image of their own and every
+                      Heat template, Terraform state, or server image_ref still pinning it boots
+                      that image instead (OSSN-0075). Enable it only where policy denies
+                      client-supplied image IDs. The images table grows far more slowly than the
+                      tasks table db purge already covers.
+                    type: boolean
+                  retentionDays:
+                    description: |-
+                      RetentionDays is how long a soft-deleted row survives before the purge
+                      hard-deletes it — the --age_in_days argument both commands take. When unset
+                      the operator resolves DefaultDBPurgeRetentionDays; the lower bound of one
+                      day keeps the purge from racing the rows an in-flight import just wrote.
+                      Lowering it applies retroactively at the next firing, so the validating
+                      webhook warns on a reduction.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  schedule:
+                    description: |-
+                      Schedule is the standard cron expression the purge CronJob runs on. When
+                      empty the operator resolves DefaultDBPurgeSchedule. The value is checked by
+                      the validating webhook rather than by a CRD pattern — as with the keystone
+                      schedules, the accepted grammar includes descriptors such as @daily, which
+                      no regex expresses without also rejecting valid expressions.
+
+                      It is also the only lever over purge throughput: each run deletes at most a
+                      fixed number of rows per table (the operator-owned --max_rows cap), so a
+                      deployment whose daily soft-deletes outgrow one run's ceiling needs a more
+                      frequent schedule to keep up.
+                    type: string
+                  suspend:
+                    description: |-
+                      Suspend pauses the purge CronJob without deleting it, matching the keystone
+                      TrustFlushSpec.Suspend semantics. It is the escape hatch for a brownfield
+                      deployment onboarding onto this operator: the first run applies the
+                      retention window retroactively to a backlog that has never been purged, so
+                      an operator who wants to stage that can suspend the CronJob, raise
+                      RetentionDays to cover the deployment's full history, and step it down while
+                      watching glance_operator_db_purge_total. The condition stays True while
+                      suspended — a paused purge is a deliberate posture, not a failure.
+                    type: boolean
+                type: object
               deployment:
                 description: |-
                   Deployment groups the pod-level knobs for the Glance API Deployment

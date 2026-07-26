@@ -424,6 +424,23 @@ func TestGlanceValidateCreate_RejectionTable(t *testing.T) {
 			},
 			wantSub: "must have at most 64 items",
 		},
+		{
+			// The schedule carries no CRD pattern, so the webhook's
+			// cron.ParseStandard call is the only gate between a typo and a
+			// CronJob the API server refuses to create.
+			name: "dbPurge unparseable schedule rejected",
+			mutate: func(o *Glance) {
+				o.Spec.DBPurge = &DBPurgeSpec{Schedule: "totally-not-cron"}
+			},
+			wantSub: "invalid cron expression",
+		},
+		{
+			name: "dbPurge zero retentionDays rejected",
+			mutate: func(o *Glance) {
+				o.Spec.DBPurge = &DBPurgeSpec{RetentionDays: ptr.To(int32(0))}
+			},
+			wantSub: "retentionDays must be at least 1",
+		},
 	}
 
 	for _, tc := range tests {
@@ -495,6 +512,175 @@ func TestGlanceValidate_ImportFilteringValidShapesAccepted(t *testing.T) {
 
 			_, err := w.ValidateCreate(context.Background(), obj)
 			g.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+	}
+}
+
+// TestGlanceValidate_DBPurgeValidShapesAccepted pins the shapes the webhook must
+// NOT reject. Both knobs are optional and resolved at reconcile time, so every
+// partially-filled block is a legitimate way of saying "keep the operator
+// default for the other half" — including the descriptor form of a schedule,
+// which cron.ParseStandard accepts even though it is not five cron fields.
+func TestGlanceValidate_DBPurgeValidShapesAccepted(t *testing.T) {
+	tests := []struct {
+		name    string
+		dbPurge *DBPurgeSpec
+	}{
+		{
+			name:    "nil block accepted",
+			dbPurge: nil,
+		},
+		{
+			name:    "empty block accepted",
+			dbPurge: &DBPurgeSpec{},
+		},
+		{
+			name:    "schedule only accepted",
+			dbPurge: &DBPurgeSpec{Schedule: "30 2 * * 0"},
+		},
+		{
+			// The Minimum=1 bound is inclusive.
+			name:    "retentionDays only accepted",
+			dbPurge: &DBPurgeSpec{RetentionDays: ptr.To(int32(1))},
+		},
+		{
+			name:    "descriptor schedule accepted",
+			dbPurge: &DBPurgeSpec{Schedule: "@daily"},
+		},
+		{
+			name:    "images-table opt-in accepted",
+			dbPurge: &DBPurgeSpec{PurgeImagesTable: ptr.To(true)},
+		},
+		{
+			name:    "suspended purge accepted",
+			dbPurge: &DBPurgeSpec{Suspend: true},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &GlanceWebhook{}
+			obj := validGlance()
+			obj.Spec.DBPurge = tc.dbPurge
+
+			_, err := w.ValidateCreate(context.Background(), obj)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+		})
+	}
+}
+
+// metadata.name is bounded by the child object with the tightest name budget,
+// the "{name}-db-purge" CronJob. Nothing else in the CRD or the webhook bounds
+// it, so without this rule a name the API server would refuse as a CronJob
+// admits cleanly and the operator falls back to the opaque hashed form it keeps
+// only for CRs that predate the bound.
+func TestGlanceValidateCreate_NameLengthBoundedByPurgeCronJob(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+
+	atLimit := validGlance()
+	atLimit.Name = strings.Repeat("g", MaxGlanceNameLength)
+	_, err := w.ValidateCreate(context.Background(), atLimit)
+	g.Expect(err).NotTo(gomega.HaveOccurred(),
+		"a name that still fits the 52-character CronJob budget must be accepted")
+
+	tooLong := validGlance()
+	tooLong.Name = strings.Repeat("g", MaxGlanceNameLength+1)
+	_, err = w.ValidateCreate(context.Background(), tooLong)
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("metadata.name")))
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("db-purge")))
+}
+
+// The bound is create-only. metadata.name is immutable, so on update it could
+// only ever fire against a CR a pre-upgrade operator already admitted — and the
+// validating webhook registers the update verb, so it also sees the
+// finalizer-removal update reconcileDelete issues. Rejecting that would wedge the
+// grandfathered CR in Terminating forever, with no field left to edit to repair
+// it.
+func TestGlanceValidateUpdate_OverlongNameStaysUpdatable(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+
+	grandfathered := validGlance()
+	grandfathered.Name = strings.Repeat("g", MaxGlanceNameLength+1)
+	grandfathered.Finalizers = []string{"glance.openstack.c5c3.io/finalizer"}
+
+	deleting := grandfathered.DeepCopy()
+	deleting.Finalizers = nil
+
+	_, err := w.ValidateUpdate(context.Background(), grandfathered, deleting)
+	g.Expect(err).NotTo(gomega.HaveOccurred(),
+		"an over-long grandfathered CR must stay updatable, or its deletion never completes")
+}
+
+// Shortening the retention window is the one edit on this CR that destroys data
+// at the next firing with no undo, and a typo is indistinguishable from an
+// intended change at admission time. The warning is what echoes it back.
+func TestGlanceValidateUpdate_WarnsOnReducedDBPurgeRetention(t *testing.T) {
+	newObjWith := func(p *DBPurgeSpec) *Glance {
+		o := validGlance()
+		o.Spec.DBPurge = p
+		return o
+	}
+	tests := []struct {
+		name     string
+		old, new *DBPurgeSpec
+		wantWarn bool
+	}{
+		{
+			name: "explicit reduction warns",
+			old:  &DBPurgeSpec{RetentionDays: ptr.To(int32(30))},
+			new:  &DBPurgeSpec{RetentionDays: ptr.To(int32(1))},
+			// A month of rows becomes purgeable the moment the CronJob next fires.
+			wantWarn: true,
+		},
+		{
+			// An unset field resolves to the operator default, so setting a value
+			// below it is just as much a reduction as lowering an explicit one.
+			name:     "reduction below the resolved default warns",
+			old:      nil,
+			new:      &DBPurgeSpec{RetentionDays: ptr.To(int32(7))},
+			wantWarn: true,
+		},
+		{
+			name:     "raising the retention is silent",
+			old:      &DBPurgeSpec{RetentionDays: ptr.To(int32(7))},
+			new:      &DBPurgeSpec{RetentionDays: ptr.To(int32(90))},
+			wantWarn: false,
+		},
+		{
+			name:     "an unrelated edit is silent",
+			old:      &DBPurgeSpec{RetentionDays: ptr.To(int32(7))},
+			new:      &DBPurgeSpec{RetentionDays: ptr.To(int32(7)), Schedule: "@weekly"},
+			wantWarn: false,
+		},
+		{
+			// Dropping the block restores the default (30), which is a widening
+			// from 7 — not a reduction to zero.
+			name:     "dropping the block below the default is silent",
+			old:      &DBPurgeSpec{RetentionDays: ptr.To(int32(7))},
+			new:      nil,
+			wantWarn: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &GlanceWebhook{}
+
+			warnings, err := w.ValidateUpdate(context.Background(), newObjWith(tc.old), newObjWith(tc.new))
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			if tc.wantWarn {
+				g.Expect(warnings).To(gomega.ContainElement(
+					gomega.ContainSubstring("spec.dbPurge.retentionDays reduced"),
+				))
+			} else {
+				g.Expect(warnings).NotTo(gomega.ContainElement(
+					gomega.ContainSubstring("spec.dbPurge.retentionDays reduced"),
+				))
+			}
 		})
 	}
 }
