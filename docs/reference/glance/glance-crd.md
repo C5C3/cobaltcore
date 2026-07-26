@@ -32,6 +32,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `apiServer` | [`*APIServerSpec`](#apiserverspec) | no | Release-conditional API-process tuning; when nil the operator uses hardcoded defaults for the active launch mode |
 | `importFiltering` | [`*ImportFilteringSpec`](#importfilteringspec) | no | URI filtering for `web-download` image imports. The operator resolves the effective lists at render time, so a nil block and an empty struct behave alike: HTTPS on port 443, plus a literal host denylist |
 | `dbPurge` | [`*DBPurgeSpec`](#dbpurgespec) | no | Recurring database purge that hard-deletes rows Glance only ever soft-deletes. The operator resolves the effective settings at reconcile time, so a nil block and an empty struct behave alike: 30-day retention, daily at `1 0 * * *`, task rows only, not suspended |
+| `staging` | [`*StagingSpec`](#stagingspec) | no | Bounds the node-local scratch space an image import may consume. The operator resolves the effective limit at reconcile time, so a nil block, an empty struct, and a set block leaving `sizeLimit` unset all behave alike: `10Gi` on each of the two scratch volumes. `unbounded: true` opts out of the bound entirely |
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute on port 9292; requires `hostname` and `parentRef.name` |
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 9292 from the listed sources; egress auto-derived (DNS, database, cache, and the attached backends' S3 hosts). At least one ingress source is required (fail-closed) |
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds and CPU/memory utilization targets |
@@ -40,7 +41,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `policyOverrides` | `*PolicySpec` | no | Custom oslo.policy rules. A CEL rule requires at least one of `rules` or `configMapRef`; when set, the operator renders a `policy.yaml` and wires `oslo_policy.policy_file` |
 | `middleware` | `[]MiddlewareSpec` | no | WSGI middleware filters injected into the `api-paste.ini` pipeline |
 | `plugins` | `[]PluginSpec` | no | Service plugins/drivers, modeled as a list-map keyed by `configSection` so duplicate sections are rejected structurally |
-| `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for configuration not covered by explicit fields — the escape hatch for import/staging tuning. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so user values win over both. Overrides of operator-owned keys are honored but reported (report-only) via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event — except `[keystone_authtoken] password`, which the validating webhook rejects at admission so the env-injected service password never leaks into the namespace-readable ConfigMap, and the six `[import_filtering_opts]` keys, which it rejects so the `web-download` URI filter stays reachable only through [`spec.importFiltering`](#importfilteringspec) and its admission gates. Option names are validated at admission against a per-release option catalog embedded in the operator (release derived from `spec.openStackRelease`; a release with no embedded catalog skips the check with an admission warning). Sections declared by `spec.plugins`, operator-owned keys, and the reserved store sections `os_glance_staging_store` and `os_glance_tasks_store` are exempt. An unknown section or option is rejected with the section and key named, so an arbitrary backend-named section is refused; backend options belong to the [`GlanceBackend`](./glance-backend-crd.md) CR. A deprecated-but-accepted option is admitted with a warning naming its replacement. Values are checked for one thing only — a newline or carriage return in a section name, key, or value is rejected, because the rendered INI writes each verbatim and a newline would inject arbitrary config lines past the ownership and catalog gates. Every rule here is webhook-only with no CEL backstop |
+| `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for configuration not covered by explicit fields — the escape hatch for options with no dedicated knob of their own. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so user values win over both. Overrides of operator-owned keys are honored but reported (report-only) via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event — except `[keystone_authtoken] password`, which the validating webhook rejects at admission so the env-injected service password never leaks into the namespace-readable ConfigMap, and the six `[import_filtering_opts]` keys, which it rejects so the `web-download` URI filter stays reachable only through [`spec.importFiltering`](#importfilteringspec) and its admission gates. Option names are validated at admission against a per-release option catalog embedded in the operator (release derived from `spec.openStackRelease`; a release with no embedded catalog skips the check with an admission warning). Sections declared by `spec.plugins`, operator-owned keys, and the reserved store sections `os_glance_staging_store` and `os_glance_tasks_store` are exempt. An unknown section or option is rejected with the section and key named, so an arbitrary backend-named section is refused; backend options belong to the [`GlanceBackend`](./glance-backend-crd.md) CR. A deprecated-but-accepted option is admitted with a warning naming its replacement. Values are checked for one thing only — a newline or carriage return in a section name, key, or value is rejected, because the rendered INI writes each verbatim and a newline would inject arbitrary config lines past the ownership and catalog gates. Every rule here is webhook-only with no CEL backstop |
 
 ### ServiceUserSpec
 
@@ -294,6 +295,96 @@ retention window retroactively on the first firing. To stage that, set
 un-suspend, and step the retention down while watching
 `glance_operator_db_purge_total`.
 
+### StagingSpec
+
+Every image import lands on local disk before the data reaches the backing
+store. The reserved `os_glance_staging_store` takes the uploaded or downloaded
+image, the reserved `os_glance_tasks_store` the async task's working copy, and
+both are `emptyDir` volumes on the node filesystem. This block caps them.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `sizeLimit` | `*resource.Quantity` | no | `10Gi` | The `emptyDir.sizeLimit` stamped on each of the two scratch volumes, `staging` and `tasks-work`. Must be at least `1Mi` |
+| `unbounded` | `bool` | no | `false` | Renders both scratch volumes with no `sizeLimit` at all, the shape a `Glance` had before this block existed. Mutually exclusive with `sizeLimit` |
+
+The operator resolves the value at reconcile time, the contract
+[ImportFilteringSpec](#importfilteringspec) and [DBPurgeSpec](#dbpurgespec)
+already follow: a nil `spec.staging`, an empty struct, and a set block whose
+`sizeLimit` is unset all resolve to the operator default of `10Gi`, and the
+defaulting webhook writes nothing back into the CR. An unset field therefore
+keeps tracking that default across upgrades instead of freezing today's value
+into the stored spec.
+
+One value covers two volumes, so one glance-api pod is expected to occupy at
+most twice the configured limit: 20Gi at the default.
+
+Two caveats decide how much node disk that number really claims. The bound is an
+eviction threshold, not a filesystem quota — the kubelet evaluates it on its
+periodic local-storage housekeeping pass (~10 s), so a writer overshoots by
+whatever it appends within one pass, and a transfer shorter than one pass can
+finish before the kubelet ever looks. And the bound is not a scheduling
+reservation: the operator derives no `resources.requests.ephemeral-storage` from
+it, so co-scheduled replicas each get their own budget and the sum is bounded by
+the node's disk rather than by this field. Size nodes against `replicas × 2 ×
+sizeLimit` plus that overshoot. To make the scheduler account for it, add
+`ephemeral-storage` to `spec.deployment.resources.requests` — and spell out the
+CPU and memory values in the same block, because a `resources` block that is
+present at all suppresses the operator's resource defaults.
+
+The kubelet enforces the bound; Glance never sees it and keeps writing. Once an
+`emptyDir` grows past its `sizeLimit`, local-storage eviction evicts the
+glance-api pod. The in-flight import dies with the pod and its image never
+reaches `active`. The Deployment then replaces the pod and the API recovers
+without operator or human intervention.
+
+Within one pod the bound is a single shared budget, not per-import accounting.
+Concurrent imports draw from it together, nothing admits or queues an import
+against the remaining space, and breaching it evicts the pod rather than the
+offending import — so every in-flight transfer on that replica dies with it,
+including well-behaved ones started by other projects. Size the bound for the
+concurrency the deployment expects, and run more than one replica so an eviction
+does not take the API with it.
+
+`web-download` imports are what make the bound matter. Glance fetches the whole
+remote image onto the staging volume first and moves it into the backing store
+afterwards, so a remote image larger than the limit trips the bound long before
+it reaches the store. [ImportFilteringSpec](#importfilteringspec) governs which
+URIs may be fetched at all; this block governs how much disk one fetch may
+consume.
+
+`unbounded: true` is the opt-out, and the only way to say "no bound" — the
+operator then renders both `emptyDir`s without a `sizeLimit`, exactly as it did
+before this block existed. It is a separate field rather than a sentinel
+`sizeLimit` value so the `1Mi` floor keeps rejecting the sub-byte quantities it
+exists to catch, and setting both is rejected at admission. Prefer a `sizeLimit`
+large enough for the deployment: an unbounded volume puts nothing between one
+runaway `web-download` import and the node's disk, and the pods evicted when
+that disk fills are ranked across the whole node, not only Glance's.
+
+::: warning The bound applies retroactively on operator upgrade
+Before this block existed the two scratch volumes were unbounded. Upgrading the
+operator stamps the resolved `10Gi` onto every existing `Deployment`, which
+rolls the glance-api pods — killing any in-flight import — and then evicts the
+pod on an import that used to succeed above `10Gi`.
+
+Neither field can be set ahead of that upgrade. The block ships with the same
+chart version that introduces the behaviour, so against the older CRD a patch
+naming `spec.staging` is pruned as an unknown field: the request succeeds and
+stores nothing. The schema has to land before the value can, which leaves one
+working sequence — quiesce imports, upgrade, then set `sizeLimit` or
+`unbounded`, rolling the pods a second time.
+:::
+
+The limit lives in the pod template, not in `glance-api.conf`. Changing it
+re-stamps `emptyDir.sizeLimit` on both volumes and rolls the Deployment, leaving
+the rendered config untouched. The effective bound is readable from the live
+Deployment, and is empty when `unbounded` is set:
+
+```bash
+kubectl get deploy glance -n openstack \
+  -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="staging")].emptyDir.sizeLimit}{"\n"}'
+```
+
 ### Defaulting and validation
 
 The mutating webhook applies the shared `DeploymentSpec`/`LoggingSpec` defaults
@@ -320,6 +411,22 @@ expressive enough to accept a descriptor like `@daily` alongside standard
 5-field expressions would also accept invalid ones. On update it also warns
 when `retentionDays` is reduced: the shorter window applies retroactively at
 the next firing and the rows it removes do not come back.
+
+`spec.staging` is left alone by the defaulting webhook for the same reason. Its
+two rules split: `unbounded` and `sizeLimit` are mutually exclusive, enforced by
+a CEL rule on the block with the validating webhook repeating it, because
+`unbounded` is a plain boolean the schema can reason about. The floor has no
+schema counterpart at all: `sizeLimit` must be at least
+`1Mi`, and the validating webhook is the only gate on it. A `resource.Quantity`
+renders as `x-kubernetes-int-or-string` in the CRD schema, a type that carries
+no `Minimum` marker, and Kubernetes core validation rejects only a *negative*
+`emptyDir.sizeLimit` — so everything from `0` up to the sub-byte milli suffix
+reaches the kubelet verbatim. The floor is `1Mi` rather than mere positivity
+because the schema pattern accepts `100m`, a tenth of a byte and the most common
+typo for `100Mi`: admitted, it would evict the glance-api pod on its first
+staged byte and the replacement on the next import, with nothing in the CR
+status naming the cause. A `ControlPlane` calls the same exported validator on
+`spec.services.glance.staging`, so both CRs admit the same values.
 
 The validating webhook additionally bounds `metadata.name` at 43 characters.
 The `{name}-db-purge` CronJob is the child object with the tightest name

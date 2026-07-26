@@ -1423,3 +1423,25 @@ To drive the chaos soak against the ControlPlane, see
 explicit, the opt-in flag has a single documented name (`WITH_DIZZY`), and the
 kind overlay is self-contained under `deploy/kind/dizzy/` so the production
 kustomization root ships none of it.
+
+### Glance large-upload listener
+
+**Files:** `deploy/kind/base/openstack-gateway.yaml`,
+`deploy/kind/infrastructure/glance-upload-nip-io-tls-certificate.yaml`
+
+**Gateway wiring.** Gateway `openstack-gw` carries a fifth HTTPS listener,
+`https-glance-upload`, on the hostname `glance-upload.127-0-0-1.nip.io`. It
+shares port 443 with the keystone, horizon, glance, and dizzy listeners, routed
+by SNI, and terminates with its own `glance-upload-nip-io-tls` Certificate from
+the `selfsigned-cluster-issuer` ClusterIssuer — the per-listener pattern the
+four sibling nip.io certificates already follow. Unlike them it serves a test
+suite. `tests/e2e/glance/gateway-large-upload` streams 512 MiB through the
+public endpoint, while the Quick Start smoke suite already holds
+`glance.127-0-0-1.nip.io`; two HTTPRoutes on one hostname with the same `/` path
+prefix would race under chainsaw's parallelism, so the suite gets a hostname of
+its own.
+
+The listener and its Certificate are unconditional; the HTTPRoute is not. Like
+the `https-dizzy` listener above, the hostname answers 404 until a route is
+projected onto it. The Glance operator creates that route from `spec.gateway` on
+the Glance CR the suite applies, and deletes it again when the suite cleans up.

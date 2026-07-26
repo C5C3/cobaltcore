@@ -70,6 +70,7 @@ export default defineConfig({
               { text: 'Attach S3 Multi-Store Backends to Glance', link: '/guides/glance/glance-s3-multistore' },
               { text: 'Enable Glance Operator Metrics', link: '/guides/glance/enable-glance-operator-metrics' },
               { text: 'Enable Glance Operator NetworkPolicy', link: '/guides/glance/enable-glance-operator-networkpolicy' },
+              { text: 'Large Image Uploads through the Gateway', link: '/guides/glance/large-image-uploads' },
               { text: 'Migrate Glance DB to Dynamic Credentials', link: '/guides/glance/migrate-glance-db-to-dynamic-credentials' },
             ],
           },
