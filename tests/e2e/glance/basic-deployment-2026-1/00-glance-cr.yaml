@@ -10,6 +10,12 @@
 # cannot start without a default image store, so 01-glance-backend.yaml attaches
 # one before Ready can settle. From 2026.1 the API launches under uWSGI rather
 # than the eventlet glance-api server.
+#
+# spec.dbPurge is set here rather than left to the operator defaults so the
+# accept path through the CRD schema and the validating webhook is exercised
+# end-to-end, and so a real firing happens inside the suite: the every-minute
+# schedule is what lets step 7 observe the operator reacting to a run the
+# CronJob controller spawned, rather than only to hand-built Jobs.
 apiVersion: glance.openstack.c5c3.io/v1alpha1
 kind: Glance
 metadata:
@@ -31,6 +37,10 @@ spec:
   cache:
     clusterRef:
       name: openstack-memcached
+  dbPurge:
+    schedule: "*/1 * * * *"
+    retentionDays: 7
+    purgeImagesTable: true
   keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
   serviceUser:
     username: admin
