@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -258,17 +259,53 @@ func glanceDeploymentRolledOut(deploy *appsv1.Deployment) bool {
 		deploy.Status.Replicas == desired
 }
 
+// effectiveStagingSizeLimit returns the size limit stamped on both scratch
+// emptyDirs, resolving the operator default whenever spec.staging leaves it
+// unset — a nil block and an empty one behave identically. It returns nil for
+// spec.staging.unbounded, which is what a Deployment carrying no
+// emptyDir.sizeLimit at all needs: the deliberate opt-out back to the
+// pre-bound behaviour, distinct from "unset" precisely so the default keeps
+// applying to everyone who did not ask. It is pure and total: no input can
+// fail, so there is no error path.
+//
+// Resolving here rather than in the defaulting webhook keeps an unset field
+// tracking the operator default across upgrades instead of freezing today's
+// value into the stored CR — the same contract effectiveDBPurge and
+// effectiveImportFiltering follow.
+func effectiveStagingSizeLimit(glance *glancev1alpha1.Glance) *resource.Quantity {
+	if glance.Spec.Staging == nil {
+		return ptr.To(glancev1alpha1.DefaultStagingSizeLimit())
+	}
+	if glance.Spec.Staging.Unbounded {
+		return nil
+	}
+	if glance.Spec.Staging.SizeLimit == nil {
+		return ptr.To(glancev1alpha1.DefaultStagingSizeLimit())
+	}
+	return ptr.To(glance.Spec.Staging.SizeLimit.DeepCopy())
+}
+
 // buildGlanceDeployment constructs the desired Glance API Deployment. The
 // rendered config ConfigMap mounts at glanceConfigDir and the backends Secret at
 // glanceBackendsConfigDir (both oslo.config --config-dir roots). Reserved
 // staging/tasks stores get emptyDir volumes because import staging and async
-// task work always land on local disk regardless of the image store, and the
-// db-tls client keypair is projected only when database TLS is enabled. The
-// database URL and the service-user password are injected via env vars so no
-// credential material enters the ConfigMap.
+// task work always land on local disk regardless of the image store — both
+// bounded by effectiveStagingSizeLimit, the best-effort eviction threshold
+// described on StagingSpec — and the db-tls client keypair is projected only
+// when database TLS is enabled. The database URL and the service-user password
+// are injected via env vars so no credential material enters the ConfigMap.
 func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, dsnDigest, authtokenDigest string) *appsv1.Deployment {
 	selector := selectorLabels(glance)
 	labels := commonLabels(glance)
+
+	// Both scratch emptyDirs carry the same resolved bound, each with its own
+	// Quantity so the two volumes never share a pointer. Both stay nil when the
+	// bound is opted out of, leaving the emptyDirs unbounded.
+	stagingLimit := effectiveStagingSizeLimit(glance)
+	var tasksLimit *resource.Quantity
+	if stagingLimit != nil {
+		tasksLimit = ptr.To(stagingLimit.DeepCopy())
+	}
 
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -370,12 +407,16 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 							},
 						},
 						{
-							Name:         stagingVolumeName,
-							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+							Name: stagingVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: stagingLimit},
+							},
 						},
 						{
-							Name:         tasksVolumeName,
-							VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+							Name: tasksVolumeName,
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: tasksLimit},
+							},
 						},
 					},
 				},

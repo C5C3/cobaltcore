@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
@@ -441,6 +442,48 @@ func TestGlanceValidateCreate_RejectionTable(t *testing.T) {
 			},
 			wantSub: "retentionDays must be at least 1",
 		},
+		{
+			// A resource.Quantity is x-kubernetes-int-or-string in the schema and
+			// carries no Minimum marker, so the webhook is the only thing keeping a
+			// CR from reading as bounded on a value that bounds nothing.
+			name: "staging zero sizeLimit rejected",
+			mutate: func(o *Glance) {
+				o.Spec.Staging = &StagingSpec{SizeLimit: ptr.To(resource.MustParse("0"))}
+			},
+			wantSub: "must be at least 1Mi",
+		},
+		{
+			name: "staging negative sizeLimit rejected",
+			mutate: func(o *Glance) {
+				o.Spec.Staging = &StagingSpec{SizeLimit: ptr.To(resource.MustParse("-1Gi"))}
+			},
+			wantSub: "must be at least 1Mi",
+		},
+		{
+			// `100m` is the milli suffix — a tenth of a byte — and the single most
+			// common quantity typo for `100Mi`. It is positive and it matches the
+			// generated schema's int-or-string pattern, so only the floor catches
+			// it; admitted, it evicts the pod on the first staged byte and the
+			// replacement on the next import, forever.
+			name: "staging milli-suffix sizeLimit typo rejected",
+			mutate: func(o *Glance) {
+				o.Spec.Staging = &StagingSpec{SizeLimit: ptr.To(resource.MustParse("100m"))}
+			},
+			wantSub: "must be at least 1Mi",
+		},
+		{
+			// The two knobs contradict each other, and silently letting one win
+			// would leave a CR whose rendered Deployment does not match either
+			// reading of its spec.
+			name: "staging unbounded together with sizeLimit rejected",
+			mutate: func(o *Glance) {
+				o.Spec.Staging = &StagingSpec{
+					Unbounded: true,
+					SizeLimit: ptr.To(resource.MustParse("40Gi")),
+				}
+			},
+			wantSub: "mutually exclusive",
+		},
 	}
 
 	for _, tc := range tests {
@@ -568,6 +611,122 @@ func TestGlanceValidate_DBPurgeValidShapesAccepted(t *testing.T) {
 			g.Expect(err).NotTo(gomega.HaveOccurred())
 		})
 	}
+}
+
+// TestValidateStaging pins the shape of the exported validator directly, the way
+// the ControlPlane webhook would call it: nil-safe on both levels — an unset
+// block and an unset sizeLimit inside a set block are how a CR asks for the
+// operator default, not violations — reporting the 1Mi floor on the sizeLimit
+// leaf and the mutual exclusion on the unbounded leaf, so each message names the
+// field the caller has to fix. `unbounded` alone is the deliberate opt-out back
+// to the pre-bound behaviour and must be admitted.
+func TestValidateStaging(t *testing.T) {
+	tests := []struct {
+		name      string
+		staging   *StagingSpec
+		wantField string
+		wantMsg   string
+	}{
+		{
+			name:    "nil block accepted",
+			staging: nil,
+		},
+		{
+			name:    "nil sizeLimit accepted",
+			staging: &StagingSpec{},
+		},
+		{
+			name:    "positive sizeLimit accepted",
+			staging: &StagingSpec{SizeLimit: ptr.To(resource.MustParse("1Gi"))},
+		},
+		{
+			name:      "zero sizeLimit rejected",
+			staging:   &StagingSpec{SizeLimit: ptr.To(resource.MustParse("0"))},
+			wantField: "staging.sizeLimit",
+			wantMsg:   "must be at least 1Mi",
+		},
+		{
+			name:      "negative sizeLimit rejected",
+			staging:   &StagingSpec{SizeLimit: ptr.To(resource.MustParse("-500Mi"))},
+			wantField: "staging.sizeLimit",
+			wantMsg:   "must be at least 1Mi",
+		},
+		{
+			// Sub-byte but positive: `100m` is a tenth of a byte, the milli-suffix
+			// typo for `100Mi`. Only the floor separates it from a usable bound.
+			name:      "milli-suffix sizeLimit rejected",
+			staging:   &StagingSpec{SizeLimit: ptr.To(resource.MustParse("100m"))},
+			wantField: "staging.sizeLimit",
+			wantMsg:   "must be at least 1Mi",
+		},
+		{
+			name:    "sizeLimit exactly at the floor accepted",
+			staging: &StagingSpec{SizeLimit: ptr.To(resource.MustParse("1Mi"))},
+		},
+		{
+			name:      "sizeLimit just under the floor rejected",
+			staging:   &StagingSpec{SizeLimit: ptr.To(resource.MustParse("1048575"))},
+			wantField: "staging.sizeLimit",
+			wantMsg:   "must be at least 1Mi",
+		},
+		{
+			name:    "unbounded alone accepted",
+			staging: &StagingSpec{Unbounded: true},
+		},
+		{
+			name: "unbounded with sizeLimit rejected",
+			staging: &StagingSpec{
+				Unbounded: true,
+				SizeLimit: ptr.To(resource.MustParse("40Gi")),
+			},
+			wantField: "staging.unbounded",
+			wantMsg:   "unbounded and sizeLimit are mutually exclusive: an unbounded staging area has no size limit to configure",
+		},
+		{
+			// The contradiction is reported ahead of the floor, so a CR that also
+			// carries an unusable sizeLimit is told about the contradiction first
+			// rather than about a value it should not be setting at all.
+			name: "unbounded with a sub-floor sizeLimit reports the contradiction",
+			staging: &StagingSpec{
+				Unbounded: true,
+				SizeLimit: ptr.To(resource.MustParse("100m")),
+			},
+			wantField: "staging.unbounded",
+			wantMsg:   "unbounded and sizeLimit are mutually exclusive: an unbounded staging area has no size limit to configure",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			errs := ValidateStaging(field.NewPath("spec").Child("staging"), tc.staging)
+
+			if tc.wantField == "" {
+				g.Expect(errs).To(gomega.BeEmpty())
+				return
+			}
+			g.Expect(errs).To(gomega.HaveLen(1))
+			g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInvalid))
+			g.Expect(errs[0].Field).To(gomega.HaveSuffix(tc.wantField))
+			g.Expect(errs[0].Detail).To(gomega.Equal(tc.wantMsg))
+		})
+	}
+}
+
+// The operator default is resolved at reconcile time, never stamped into the
+// stored CR: an unset block must survive admission unset so it keeps tracking
+// the default across upgrades. Nothing else in the suite exercises the defaulter
+// against spec.staging, so a defaulting rule added later would freeze today's
+// value into every stored CR without a single test turning red.
+func TestGlanceDefault_LeavesStagingUnset(t *testing.T) {
+	g := gomega.NewWithT(t)
+	obj := validGlance()
+
+	g.Expect((&GlanceWebhook{}).Default(context.Background(), obj)).To(gomega.Succeed())
+
+	g.Expect(obj.Spec.Staging).To(gomega.BeNil(),
+		"spec.staging must not be materialized by the defaulting webhook")
 }
 
 // metadata.name is bounded by the child object with the tightest name budget,

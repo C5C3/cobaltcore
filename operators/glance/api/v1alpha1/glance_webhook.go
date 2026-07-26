@@ -76,6 +76,27 @@ const (
 	DefaultDBPurgeSchedule = "1 0 * * *"
 )
 
+// defaultStagingSizeLimit bounds each of the two node-local scratch emptyDirs
+// the API pod mounts for image imports (staging and tasks-work), so one
+// oversized import cannot fill the node's disk. Ten gibibytes leaves ample room
+// for the stock cloud images while staying well inside a normal node filesystem,
+// even with both emptyDirs at the cap.
+//
+// It is consumed by the reconcile-time resolver (effectiveStagingSizeLimit in
+// the controller package) and deliberately NOT applied by the defaulting
+// webhook: a nil spec.staging block, or one leaving sizeLimit unset, keeps
+// tracking this operator default across upgrades instead of freezing today's
+// value into the stored CR, the same reasoning as the db-purge defaults above.
+//
+// It is a var rather than a const because resource.Quantity is a struct, and it
+// is exposed only through the accessor below, which returns a copy so no caller
+// can mutate the shared default — the idiom of the commonv1 resource defaults.
+var defaultStagingSizeLimit = resource.MustParse("10Gi")
+
+// DefaultStagingSizeLimit returns a copy of the size limit stamped on the
+// staging and tasks-work emptyDirs when spec.staging.sizeLimit is unset.
+func DefaultStagingSizeLimit() resource.Quantity { return defaultStagingSizeLimit.DeepCopy() }
+
 // Name-length bounds enforced on metadata.name, driven by the purge CronJob —
 // the child object with the tightest name budget.
 const (
@@ -617,6 +638,10 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 	// counterpart.
 	allErrs = append(allErrs, validateDBPurge(specPath.Child("dbPurge"), g.Spec.DBPurge)...)
 
+	// staging validation. Unlike its neighbours this one has no schema
+	// counterpart at all — see ValidateStaging.
+	allErrs = append(allErrs, ValidateStaging(specPath.Child("staging"), g.Spec.Staging)...)
+
 	// extraConfig sanity: reject an empty section name or an empty option key so
 	// the rendered glance-api.conf never carries a nameless [<section>] or a
 	// bare "= value" line. extraConfig is a preserve-unknown-fields map, so CEL
@@ -888,6 +913,51 @@ func validateDBPurge(fldPath *field.Path, p *DBPurgeSpec) field.ErrorList {
 		errs = append(errs, validation.CronSchedule(fldPath.Child("schedule"), p.Schedule)...)
 	}
 	return errs
+}
+
+// minStagingSizeLimit is the floor spec.staging.sizeLimit must clear. A bound
+// below one mebibyte names no usable scratch budget: the kubelet evicts the
+// glance-api pod on the first staged byte, the Deployment replaces it, and the
+// next import evicts the replacement — an eviction loop nothing in the CR status
+// explains. It is also where the `100m`-for-`100Mi` suffix typo lands, since
+// `100m` is a perfectly well-formed Quantity worth a tenth of a byte.
+var minStagingSizeLimit = resource.MustParse("1Mi")
+
+// ValidateStaging enforces the floor on spec.staging.sizeLimit and the
+// mutual exclusion between it and spec.staging.unbounded. The floor is not
+// defense in depth: a resource.Quantity renders as x-kubernetes-int-or-string in
+// the CRD schema, and that type carries no Minimum marker, so the webhook is the
+// sole gate — Kubernetes core validation rejects only a NEGATIVE
+// emptyDir.sizeLimit, and everything from `0` through `100m` reaches the kubelet
+// verbatim. The mutual exclusion does have a CEL counterpart on StagingSpec,
+// since unbounded is a plain bool the schema can reason about; it is repeated
+// here so both gates keep the same wording. It is nil-safe — an unset block, and
+// an unset sizeLimit inside a set block, carry nothing to validate and are
+// resolved to the operator default at reconcile time.
+//
+// It is exported for the ControlPlane webhook, which carries this type on
+// services.glance.staging and must admit exactly what the Glance CRD admits. The
+// caller supplies its own field path, so the errors name the CR under admission.
+func ValidateStaging(fldPath *field.Path, s *StagingSpec) field.ErrorList {
+	if s == nil {
+		return nil
+	}
+	if s.Unbounded && s.SizeLimit != nil {
+		return field.ErrorList{field.Invalid(
+			fldPath.Child("unbounded"), s.Unbounded,
+			"unbounded and sizeLimit are mutually exclusive: an unbounded staging area has no size limit to configure",
+		)}
+	}
+	if s.SizeLimit == nil {
+		return nil
+	}
+	if s.SizeLimit.Cmp(minStagingSizeLimit) < 0 {
+		return field.ErrorList{field.Invalid(
+			fldPath.Child("sizeLimit"), s.SizeLimit.String(),
+			fmt.Sprintf("must be at least %s", minStagingSizeLimit.String()),
+		)}
+	}
+	return nil
 }
 
 // warnDBPurgeRetention surfaces a retention window that an update shortens.
