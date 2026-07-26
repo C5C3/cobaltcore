@@ -215,7 +215,7 @@ tests:
               - create
               - patch
 
-  - it: should grant full CRUD on batch jobs
+  - it: should grant full CRUD on batch jobs and cronjobs
     set:
       rbac:
         namespaceScoped: true
@@ -229,6 +229,7 @@ tests:
               - batch
             resources:
               - jobs
+              - cronjobs
             verbs:
               - get
               - list

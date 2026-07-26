@@ -44,9 +44,11 @@ func JobUIDAnnotationKey(jobSuffix string) string {
 // function does not re-Get it; a nil observed (a just-created Job with no
 // terminal condition) is a no-op.
 //
-// Ordering: the dedupe annotation is patched BEFORE record is called. If the
-// patch fails (transient apiserver error, stale-RV conflict), record is NOT
-// invoked this pass — the caller re-evaluates next reconcile — preserving the
+// Ordering: the dedupe annotation is patched BEFORE record is called. The patch
+// is optimistically locked on the version owner was read at, so it fails rather
+// than landing blindly on a concurrently-updated object. If the patch fails
+// (transient apiserver error, stale-RV conflict), record is NOT invoked this
+// pass — the caller re-evaluates next reconcile — preserving the
 // at-most-once-per-UID guarantee against transient failures. On a patch failure
 // the function logs at Info and, when recorder is non-nil, records a Warning
 // event with deferEventReason on owner so persistent failures are visible via
@@ -68,33 +70,25 @@ func RecordJobTerminalState(
 	}
 	annotationKey := JobUIDAnnotationKey(jobSuffix)
 
-	var (
-		result       string
-		transitionAt metav1.Time
-	)
+	// Which condition types count as terminal — and which of JobSuspended,
+	// JobFailureTarget, JobSuccessCriteriaMet do not — is TerminalCondition's
+	// single answer for the whole package. Classifying again here would let this
+	// counter and the callers' status conditions disagree the day upstream adds a
+	// terminal type, with no compile error to catch it.
+	terminal := TerminalCondition(observed)
+	if terminal == "" {
+		return
+	}
+	result := "succeeded"
+	if terminal == batchv1.JobFailed {
+		result = "failed"
+	}
+	var transitionAt metav1.Time
 	for _, cond := range observed.Status.Conditions {
-		if cond.Status != corev1.ConditionTrue {
-			continue
-		}
-		switch cond.Type {
-		case batchv1.JobComplete:
-			result = "succeeded"
+		if cond.Type == terminal && cond.Status == corev1.ConditionTrue {
 			transitionAt = cond.LastTransitionTime
-		case batchv1.JobFailed:
-			result = "failed"
-			transitionAt = cond.LastTransitionTime
-		case batchv1.JobSuspended, batchv1.JobFailureTarget, batchv1.JobSuccessCriteriaMet:
-			// Non-terminal transitions: a Suspended Job may be resumed and
-			// FailureTarget/SuccessCriteriaMet flip briefly before the terminal
-			// JobFailed/JobComplete is set. Ignore — emit only on terminal
-			// transitions.
-		}
-		if result != "" {
 			break
 		}
-	}
-	if result == "" {
-		return
 	}
 
 	uid := string(observed.UID)
@@ -109,6 +103,14 @@ func RecordJobTerminalState(
 	// the annotation and post-patch ResourceVersion are mirrored back onto the
 	// caller's object so a later Status().Update does not hit a stale-RV
 	// conflict.
+	//
+	// The patch carries the read version as a precondition. Without it the merge
+	// patch would land on whatever the API server currently holds — not
+	// necessarily the version this reconcile read — and mirroring the response
+	// version back would launder the caller's stale snapshot into a status write
+	// the API server then accepts, silently overwriting whatever landed in
+	// between. With the precondition a moved-on object fails the patch, which is
+	// the deferral path below, and the caller's own conflict check still stands.
 	patchTarget, ok := owner.DeepCopyObject().(client.Object)
 	if !ok {
 		return
@@ -117,7 +119,7 @@ func RecordJobTerminalState(
 	if !ok {
 		return
 	}
-	patch := client.MergeFrom(patchBase)
+	patch := client.MergeFromWithOptions(patchBase, client.MergeFromWithOptimisticLock{})
 	anns := patchTarget.GetAnnotations()
 	if anns == nil {
 		anns = make(map[string]string)

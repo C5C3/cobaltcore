@@ -146,6 +146,41 @@ func TestRecordJobTerminalState_AtMostOncePerUID(t *testing.T) {
 	g.Expect(results).To(gomega.HaveLen(2))
 }
 
+// The dedupe patch must not land blindly on an object that moved on since the
+// caller read it: the caller mirrors the response version back and hands it to a
+// trailing Status().Update, so a blind patch would launder its stale snapshot
+// into a write the API server accepts, silently overwriting whatever landed in
+// between. The optimistic lock turns that into a deferral instead.
+func TestRecordJobTerminalState_StaleOwnerVersionDefersInsteadOfPatchingBlindly(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := terminalScheme(t)
+	stored := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "o", Namespace: "ns"}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(stored).Build()
+
+	// A concurrent write the reconcile never saw: the stored object advances
+	// while the caller still holds the version it read.
+	stale := stored.DeepCopy()
+	stored.Data = map[string]string{"written": "concurrently"}
+	g.Expect(c.Update(context.Background(), stored)).To(gomega.Succeed())
+	g.Expect(stored.GetResourceVersion()).NotTo(gomega.Equal(stale.GetResourceVersion()))
+
+	rec := record.NewFakeRecorder(4)
+	called := false
+	RecordJobTerminalState(context.Background(), c, rec, stale, "db-sync", completedJob("uid-1"), "DeferReason",
+		func(string, time.Duration) { called = true })
+
+	g.Expect(called).To(gomega.BeFalse(), "a stale snapshot must defer, not overwrite")
+	g.Expect(stale.Annotations).NotTo(gomega.HaveKey(JobUIDAnnotationKey("db-sync")))
+	g.Expect(stale.GetResourceVersion()).NotTo(gomega.Equal(stored.GetResourceVersion()),
+		"the caller must not adopt a version its status was not computed from")
+
+	// The concurrent write survives — the deferred patch never reached the object.
+	var live corev1.ConfigMap
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(stored), &live)).To(gomega.Succeed())
+	g.Expect(live.Data).To(gomega.HaveKeyWithValue("written", "concurrently"))
+	g.Expect(live.Annotations).NotTo(gomega.HaveKey(JobUIDAnnotationKey("db-sync")))
+}
+
 func TestRecordJobTerminalState_PatchFailureDefersAndEvents(t *testing.T) {
 	g := gomega.NewWithT(t)
 	s := terminalScheme(t)

@@ -13,20 +13,26 @@ import (
 	"github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-// fakeCR is a minimal CR stand-in carrying only status conditions, satisfying
-// the DeepCopy constraint of RunParallelGroup.
+// fakeCR is a minimal CR stand-in carrying status conditions plus the object
+// metadata RunParallelGroup reads back from each member's copy.
 type fakeCR struct {
+	metav1.TypeMeta
+	metav1.ObjectMeta
 	conditions []metav1.Condition
 }
 
 func (f *fakeCR) DeepCopy() *fakeCR {
-	out := &fakeCR{conditions: make([]metav1.Condition, len(f.conditions))}
+	out := &fakeCR{TypeMeta: f.TypeMeta, conditions: make([]metav1.Condition, len(f.conditions))}
+	f.DeepCopyInto(&out.ObjectMeta)
 	copy(out.conditions, f.conditions)
 	return out
 }
+
+func (f *fakeCR) DeepCopyObject() runtime.Object { return f.DeepCopy() }
 
 func fakeConditions(f *fakeCR) *[]metav1.Condition { return &f.conditions }
 
@@ -113,6 +119,44 @@ func TestRunParallelGroup_DeepCopyIsolation(t *testing.T) {
 	g.Expect(meta.FindStatusCondition(cr.conditions, "DeclaredReady")).NotTo(gomega.BeNil())
 	g.Expect(meta.FindStatusCondition(cr.conditions, "UndeclaredReady")).To(gomega.BeNil(),
 		"only the declared condition type is merged back from the member's copy")
+}
+
+// A member that patches the CR itself — job.RecordJobTerminalState stamping its
+// once-per-UID dedupe annotation is the live case — sees the post-patch
+// resourceVersion mirrored onto its copy. Without adopting it, the primary CR
+// keeps the pre-patch version and the caller's trailing Status().Update fails
+// with a 409, dropping the condition transition this very group merged.
+func TestRunParallelGroup_AdoptsMemberMetadataWrites(t *testing.T) {
+	g := gomega.NewWithT(t)
+	cr := &fakeCR{}
+	cr.SetResourceVersion("1")
+	cr.SetAnnotations(map[string]string{"pre-existing": "kept"})
+
+	steps := []ParallelStep[*fakeCR]{
+		{Name: "patcher", ConditionType: "PatcherReady", Fn: func(_ context.Context, c *fakeCR) (ctrl.Result, error) {
+			setCond(c, "PatcherReady")
+			// Stand-in for a client.Patch on the CR plus the helper mirroring the
+			// server's response back onto the object it was handed.
+			anns := c.GetAnnotations()
+			anns["last-job-uid"] = "job-uid-1"
+			c.SetAnnotations(anns)
+			c.SetResourceVersion("2")
+			return ctrl.Result{}, nil
+		}},
+		{Name: "reader", ConditionType: "ReaderReady", Fn: func(_ context.Context, c *fakeCR) (ctrl.Result, error) {
+			setCond(c, "ReaderReady")
+			return ctrl.Result{}, nil
+		}},
+	}
+
+	_, err := RunParallelGroup(context.Background(), cr, fakeConditions, noopInstrument, steps)
+
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(cr.GetResourceVersion()).To(gomega.Equal("2"),
+		"the primary CR must adopt the resourceVersion the member's patch advanced to")
+	g.Expect(cr.GetAnnotations()).To(gomega.HaveKeyWithValue("last-job-uid", "job-uid-1"))
+	g.Expect(cr.GetAnnotations()).To(gomega.HaveKeyWithValue("pre-existing", "kept"),
+		"adoption merges the member's keys rather than replacing the annotation map")
 }
 
 // Errgroup cancels the derived context when a member fails; a peer blocking

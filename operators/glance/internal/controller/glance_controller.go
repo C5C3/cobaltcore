@@ -153,10 +153,10 @@ func registerGlanceBackendIndexes(ctx context.Context, indexer client.FieldIndex
 // subConditionTypes lists the condition types set by the individual Glance
 // sub-reconcilers. The aggregate Ready condition is True only when all of these
 // are True. Every parallel-group member (HTTPRoute, HealthCheck, HPA,
-// NetworkPolicy) always sets its condition — configured-ready, NotRequired, or
-// waiting — so a gateway-less or autoscaling-less cluster still resolves the
-// aggregate (the NotRequired paths report True), exactly as keystone/horizon
-// aggregate their optional conditions.
+// NetworkPolicy, DBPurge) always sets its condition — configured-ready,
+// NotRequired, or waiting — so a gateway-less or autoscaling-less cluster still
+// resolves the aggregate (the NotRequired paths report True), exactly as
+// keystone/horizon aggregate their optional conditions.
 var subConditionTypes = []string{
 	"SecretsReady",
 	"BackendsReady",
@@ -166,6 +166,7 @@ var subConditionTypes = []string{
 	"HPAReady",
 	conditionTypeNetworkPolicyReady,
 	conditionTypeHTTPRouteReady,
+	conditionTypeDBPurgeReady,
 }
 
 // GlanceReconciler reconciles a Glance object. Its fields mirror
@@ -259,7 +260,7 @@ func markConfigFailed(glance *glancev1alpha1.Glance, err error) {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
-// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch
@@ -389,8 +390,8 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return r.reconcileDeployment(ctx, &glance, art, dsnDigest, authTokenDigest)
 		}},
 		// Once the Deployment/Service/Config outputs are in place, HTTPRoute,
-		// HealthCheck, HPA, and NetworkPolicy have no inter-dependency and run
-		// concurrently. Each member sets exactly one condition type; the group
+		// HealthCheck, HPA, NetworkPolicy, and DBPurge have no inter-dependency and
+		// run concurrently. Each member sets exactly one condition type; the group
 		// self-instruments its members, so this step carries no sub_reconciler
 		// name.
 		{Fn: func(ctx context.Context) (ctrl.Result, error) {
@@ -421,6 +422,16 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 					ConditionType: conditionTypeNetworkPolicyReady,
 					Fn: func(ctx context.Context, g *glancev1alpha1.Glance) (ctrl.Result, error) {
 						return r.reconcileNetworkPolicy(ctx, g, projection)
+					},
+				},
+				// The purge CronJob mounts the rendered config, so it belongs after
+				// the Database step — which the group already runs behind, leaving
+				// art.configMapName non-empty here.
+				{
+					Name:          "DBPurge",
+					ConditionType: conditionTypeDBPurgeReady,
+					Fn: func(ctx context.Context, g *glancev1alpha1.Glance) (ctrl.Result, error) {
+						return r.reconcileDBPurge(ctx, g, art.configMapName)
 					},
 				},
 			})
@@ -557,7 +568,8 @@ func (r *GlanceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&policyv1.PodDisruptionBudget{}).
 		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
 		Owns(&networkingv1.NetworkPolicy{}).
-		Owns(&batchv1.Job{})
+		Owns(&batchv1.Job{}).
+		Owns(&batchv1.CronJob{})
 
 	if r.gatewayAPIAvailable {
 		b = b.Owns(&gatewayv1.HTTPRoute{})

@@ -96,11 +96,12 @@ are glance-specific, so they stay in this chart rather than the library.
   verbs:
     - create
     - patch
-# batch - jobs
+# batch - jobs, cronjobs
 - apiGroups:
     - batch
   resources:
     - jobs
+    - cronjobs
   verbs:
     - get
     - list

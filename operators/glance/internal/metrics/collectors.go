@@ -17,6 +17,9 @@ import (
 // glance_operator_db_sync_duration_seconds. DB sync jobs are measured in
 // seconds-to-minutes, so the range 1 s – 10 min captures the realistic
 // distribution. Mirrors keystone's buckets.
+// glance_operator_db_purge_duration_seconds shares them: the purge caps each
+// delete transaction at a bounded row count, so a run lands in the same
+// seconds-to-minutes band.
 var dbSyncDurationBuckets = []float64{1, 5, 10, 30, 60, 120, 300, 600}
 
 // collectors bundles the per-CR metric vectors the operator exposes. The struct
@@ -24,11 +27,13 @@ var dbSyncDurationBuckets = []float64{1, 5, 10, 30, 60, 120, 300, 600}
 // production code uses the package-level globalColls registered on
 // ctrlmetrics.Registry exactly once. The sub-reconciler duration/error pair
 // lives in the shared instrumentation package and is registered by the
-// operator's RegisterMetrics (next commit); only the per-CR db-sync collectors
-// stay here.
+// operator's RegisterMetrics (internal/controller/instrumentation.go); only the
+// per-CR db-sync and db-purge collectors stay here.
 type collectors struct {
-	dbSyncTotal    *prometheus.CounterVec
-	dbSyncDuration *prometheus.HistogramVec
+	dbSyncTotal     *prometheus.CounterVec
+	dbSyncDuration  *prometheus.HistogramVec
+	dbPurgeTotal    *prometheus.CounterVec
+	dbPurgeDuration *prometheus.HistogramVec
 }
 
 // newCollectors builds a fresh set of collector vectors. It does NOT register
@@ -44,6 +49,15 @@ func newCollectors() *collectors {
 			Help:    "Duration in seconds of terminated db-sync jobs.",
 			Buckets: dbSyncDurationBuckets,
 		}, []string{"glance", "namespace"}),
+		dbPurgeTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "glance_operator_db_purge_total",
+			Help: "Count of db-purge jobs terminated per Glance CR, labelled by the terminal state.",
+		}, []string{"glance", "namespace", "result"}),
+		dbPurgeDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "glance_operator_db_purge_duration_seconds",
+			Help:    "Duration in seconds of terminated db-purge jobs.",
+			Buckets: dbSyncDurationBuckets,
+		}, []string{"glance", "namespace"}),
 	}
 }
 
@@ -54,6 +68,8 @@ func (c *collectors) register(reg prometheus.Registerer) error {
 	for _, coll := range []prometheus.Collector{
 		c.dbSyncTotal,
 		c.dbSyncDuration,
+		c.dbPurgeTotal,
+		c.dbPurgeDuration,
 	} {
 		if err := reg.Register(coll); err != nil {
 			return err
@@ -92,6 +108,14 @@ func RecordDBSync(glance, namespace, result string, duration time.Duration) {
 	globalColls.recordDBSync(glance, namespace, result, duration)
 }
 
+// RecordDBPurge increments the db-purge terminal-state counter and records one
+// observation in the db-purge duration histogram. result is expected to be
+// "succeeded" or "failed". In-progress jobs MUST NOT call it: the counter
+// represents terminal transitions only.
+func RecordDBPurge(glance, namespace, result string, duration time.Duration) {
+	globalColls.recordDBPurge(glance, namespace, result, duration)
+}
+
 // DeleteForGlance drops every series tagged with the given Glance name and
 // namespace from the per-CR collectors. The sub-reconciler metrics intentionally
 // carry no CR labels, so there is nothing to delete there.
@@ -101,18 +125,25 @@ func DeleteForGlance(name, namespace string) {
 
 // --- internal methods (bound to an instance) -------------------------------
 //
-// The public package-level helpers above (RecordDBSync, DeleteForGlance) are
-// thin wrappers that forward to the matching method below on globalColls. The
-// methods are also exercised directly by collectors_test.go against an isolated
-// registry.
+// The public package-level helpers above (RecordDBSync, RecordDBPurge,
+// DeleteForGlance) are thin wrappers that forward to the matching method below
+// on globalColls. The methods are also exercised directly by collectors_test.go
+// against an isolated registry.
 
 func (c *collectors) recordDBSync(glance, namespace, result string, duration time.Duration) {
 	c.dbSyncTotal.WithLabelValues(glance, namespace, result).Inc()
 	c.dbSyncDuration.WithLabelValues(glance, namespace).Observe(duration.Seconds())
 }
 
+func (c *collectors) recordDBPurge(glance, namespace, result string, duration time.Duration) {
+	c.dbPurgeTotal.WithLabelValues(glance, namespace, result).Inc()
+	c.dbPurgeDuration.WithLabelValues(glance, namespace).Observe(duration.Seconds())
+}
+
 func (c *collectors) deleteForGlance(name, namespace string) {
 	labels := prometheus.Labels{"glance": name, "namespace": namespace}
 	c.dbSyncTotal.DeletePartialMatch(labels)
 	c.dbSyncDuration.DeletePartialMatch(labels)
+	c.dbPurgeTotal.DeletePartialMatch(labels)
+	c.dbPurgeDuration.DeletePartialMatch(labels)
 }

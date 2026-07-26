@@ -132,7 +132,7 @@ tests:
               - create
               - patch
 
-  - it: should grant full CRUD on batch jobs
+  - it: should grant full CRUD on batch jobs and cronjobs
     asserts:
       - contains:
           path: rules
@@ -141,6 +141,7 @@ tests:
               - batch
             resources:
               - jobs
+              - cronjobs
             verbs:
               - get
               - list

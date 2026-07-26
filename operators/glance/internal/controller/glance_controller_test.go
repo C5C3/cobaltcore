@@ -103,7 +103,7 @@ func TestSetReadyCondition_TrueOnlyWhenAllSubConditionsTrue(t *testing.T) {
 	g := NewGomegaWithT(t)
 	glance := testGlance()
 
-	// All eight sub-conditions True → aggregate Ready True.
+	// Every sub-condition True → aggregate Ready True.
 	for _, ct := range subConditionTypes {
 		conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
 			Type:   ct,
