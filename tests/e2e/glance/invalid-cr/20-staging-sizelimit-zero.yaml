@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.staging.sizeLimit of 0 is rejected by the validating webhook —
+# a resource.Quantity renders as x-kubernetes-int-or-string in the CRD
+# schema, which carries no Minimum marker, so ValidateStaging is the
+# sole gate against an unusable scratch-volume bound. It enforces a 1Mi
+# floor rather than mere positivity, because the schema pattern also
+# admits the sub-byte milli suffix (`100m` for `100Mi`).
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-invalid-staging-sizelimit
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: glance-service-password
+  staging:
+    sizeLimit: 0
