@@ -104,11 +104,26 @@ Step 2 ── Install flux-operator + apply FluxInstance
      │         kubectl apply --server-side -f <upstream standard-install.yaml>
      │         Required by the keystone-operator HTTPRoute watch; version
      │         pinned via GATEWAY_API_VERSION, default matches go.mod.
-     │         Skipped when all five standard-channel CRDs already exist
-     │         (gatewayclasses, gateways, grpcroutes, httproutes,
-     │         referencegrants): on a provisioned cluster the envoy-gateway
-     │         chart (helm-controller) may field-manage them, so re-asserting
-     │         would SSA-conflict. The skip never upgrades present CRDs.
+     │         Skipped when all ten standard-channel CRDs of the pinned
+     │         bundle already exist at that bundle version, or at a newer
+     │         or unversioned one (this step never downgrades); a complete
+     │         live set OLDER than the pin is upgraded in place with the
+     │         same server-side apply. The bundle also ships the
+     │         safe-upgrades ValidatingAdmissionPolicy, which denies
+     │         applying experimental-channel CRDs over the standard
+     │         channel.
+     │
+     ├── Install Envoy Gateway CRDs (gateway.envoyproxy.io)
+     │         kubectl apply --server-side -f <upstream envoy-gateway-crds.yaml>
+     │         Version pinned via ENVOY_GATEWAY_VERSION, kept inside the
+     │         envoy-gateway chart's SemVer range. The `envoy-gateway`
+     │         HelmRelease runs with `crds.enabled: false` — its bundled
+     │         CRD copy carries the experimental Gateway API channel,
+     │         which the safe-upgrades policy above refuses over the
+     │         standard pin — so this step is the only owner of the
+     │         gateway.envoyproxy.io group. Skipped when all eight CRDs
+     │         already exist (they carry no comparable version
+     │         annotation, so present sets are never re-asserted).
      │
      ├── Install Envoy Gateway + Gateway/openstack-gw (kind-only)
      │         Installed as part of the deploy/kind/base/ overlay applied

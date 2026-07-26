@@ -62,7 +62,31 @@
 # the 1.x track, mirroring `cert-manager.yaml`. Renovate extracts the
 # lower bound and auto-PRs minor/patch bumps with a 3-day cooldown and
 # majors disabled (see `renovate.json` customManager for
-# `deploy/kind/base/envoy-gateway.yaml`).
+# `deploy/kind/base/envoy-gateway.yaml`). The ENVOY_GATEWAY_VERSION CRD
+# pin in hack/deploy-infra.sh tracks the same upstream release through
+# the same Renovate group, so one bump moves the control plane and its
+# CRDs in lockstep.
+#
+# DECISION: CRD ownership
+# The gateway-helm chart bundles its own copy of the Gateway API CRDs
+# (experimental channel) in a `crds` subchart, next to the
+# gateway.envoyproxy.io CRDs the controller needs. hack/deploy-infra.sh
+# pins the standard-channel Gateway API bundle (GATEWAY_API_VERSION)
+# before Flux runs, and that bundle ships the safe-upgrades
+# ValidatingAdmissionPolicy, which denies applying experimental-channel
+# CRDs over the standard channel — helm-controller's CRD apply for this
+# chart can then never succeed and parks the HelmRelease in
+# InstallFailed.
+# Chose: `crds.enabled: false` below, with the gateway.envoyproxy.io
+# CRDs applied by hack/deploy-infra.sh from the upstream release asset
+# envoy-gateway-crds.yaml (ENVOY_GATEWAY_VERSION) right after the
+# Gateway API bundle. The upstream gateway-crds-helm chart was rejected
+# as the delivery vehicle: it renders the CRDs as templates and embeds
+# the full 4.5Mi chart in the Helm release Secret, which exceeds the
+# 1Mi Secret size limit no matter which of its values are enabled. The
+# deploy-infra pin remains the only owner of the
+# gateway.networking.k8s.io CRDs; the asset carries only the
+# gateway.envoyproxy.io group, which the policy does not cover.
 #
 ---
 apiVersion: v1
@@ -120,6 +144,13 @@ spec:
     # Minimal kind-only footprint — single replica, no metrics sidecar.
     # The production overlay installs no Envoy Gateway, so these values
     # intentionally do not attempt to be production-tunable.
+    crds:
+      # Disables the chart's bundled `crds` subchart entirely: its
+      # experimental-channel Gateway API CRD copy would be denied by the
+      # standard bundle's safe-upgrades ValidatingAdmissionPolicy — see
+      # the CRD-ownership decision above. The gateway.envoyproxy.io CRDs
+      # come from hack/deploy-infra.sh (ENVOY_GATEWAY_VERSION) instead.
+      enabled: false
     config:
       envoyGateway:
         logging:
