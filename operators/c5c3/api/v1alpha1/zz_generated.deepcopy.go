@@ -887,6 +887,11 @@ func (in *ServiceGlanceSpec) DeepCopyInto(out *ServiceGlanceSpec) {
 		*out = new(apiv1alpha1.ImportFilteringSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.Staging != nil {
+		in, out := &in.Staging, &out.Staging
+		*out = new(apiv1alpha1.StagingSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.ExtraConfig != nil {
 		in, out := &in.ExtraConfig, &out.ExtraConfig
 		*out = make(map[string]map[string]string, len(*in))

@@ -14,8 +14,10 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -3919,6 +3921,69 @@ func TestValidateCreate_WarnsGlanceImportFilteringPosture(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateCreate_RejectsGlanceStagingSizeLimit mirrors the 1Mi floor on
+// services.glance.staging.sizeLimit. The value is a resource.Quantity, which
+// renders as x-kubernetes-int-or-string and carries no Minimum marker, so the
+// glance module's exported validator is the only gate an unusable scratch bound
+// ever meets on this CR — including the `100m`-for-`100Mi` suffix typo, which is
+// positive and schema-legal.
+func TestValidateCreate_RejectsGlanceStagingSizeLimit(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	tests := []struct {
+		name      string
+		sizeLimit string
+	}{
+		{"zero", "0"},
+		{"negative", "-1Gi"},
+		{"milli suffix typo", "100m"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			cp.Spec.Services.Glance.Staging = &glancev1alpha1.StagingSpec{
+				SizeLimit: ptr.To(resource.MustParse(tc.sizeLimit)),
+			}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.glance.staging.sizeLimit"))
+			g.Expect(err.Error()).To(ContainSubstring("must be at least 1Mi"))
+		})
+	}
+}
+
+// TestValidateCreate_GlanceStagingUnbounded covers the other half of the shared
+// validator on this CR: the deliberate opt-out back to unbounded scratch volumes
+// is admitted on its own, and rejected when paired with a sizeLimit that the
+// opt-out leaves nothing to bound.
+func TestValidateCreate_GlanceStagingUnbounded(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("alone accepted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.Staging = &glancev1alpha1.StagingSpec{Unbounded: true}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("with sizeLimit rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glanceControlPlane()
+		cp.Spec.Services.Glance.Staging = &glancev1alpha1.StagingSpec{
+			Unbounded: true,
+			SizeLimit: ptr.To(resource.MustParse("40Gi")),
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.glance.staging.unbounded"))
+		g.Expect(err.Error()).To(ContainSubstring("mutually exclusive"))
+	})
 }
 
 // TestValidateCreate_GlancePublicEndpointMustBeURL covers the defense-in-depth

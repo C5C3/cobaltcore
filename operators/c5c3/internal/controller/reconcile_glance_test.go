@@ -14,6 +14,7 @@ import (
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -962,6 +963,55 @@ func TestReconcileGlance_ImportFilteringClearedProjectsNil(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.ImportFiltering).To(BeNil(),
 		"clearing the ControlPlane filter must revert the child to the operator defaults")
+}
+
+// TestReconcileGlance_StagingProjected proves the scratch-space bound reaches
+// the child unchanged, and that the child does not alias the ControlPlane spec.
+// (A nil source projecting to nil is pinned by
+// TestReconcileGlance_StagingClearedProjectsNil.)
+func TestReconcileGlance_StagingProjected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Staging = &glancev1alpha1.StagingSpec{
+		SizeLimit: ptr.To(resource.MustParse("50Gi")),
+	}
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	gl := getProjectedGlance(t, r.Client, cp)
+	g.Expect(gl.Spec.Staging).NotTo(BeNil())
+	g.Expect(gl.Spec.Staging.SizeLimit).NotTo(BeNil())
+	g.Expect(gl.Spec.Staging.SizeLimit.Cmp(resource.MustParse("50Gi"))).To(Equal(0))
+
+	// DeepCopy: the child's pointer must not alias the ControlPlane's spec, or a
+	// later mutation there would reach through into the projected object.
+	g.Expect(gl.Spec.Staging).NotTo(BeIdenticalTo(cp.Spec.Services.Glance.Staging))
+}
+
+// TestReconcileGlance_StagingClearedProjectsNil proves the field is assigned
+// unconditionally: clearing services.glance.staging removes the block from the
+// child so the Glance operator's default size limit applies again, rather than
+// leaving the previously-projected bound pinned.
+func TestReconcileGlance_StagingClearedProjectsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Staging = &glancev1alpha1.StagingSpec{
+		SizeLimit: ptr.To(resource.MustParse("50Gi")),
+	}
+	r := newGlanceTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Staging).NotTo(BeNil())
+
+	cp.Spec.Services.Glance.Staging = nil
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Staging).To(BeNil(),
+		"clearing the ControlPlane bound must revert the child to the operator default")
 }
 
 // TestReconcileGlance_DoesNotSetAPIServer pins the child-side defaults contract:

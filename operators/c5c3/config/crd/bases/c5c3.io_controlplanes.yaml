@@ -1491,6 +1491,54 @@ spec:
                         format: int32
                         minimum: 1
                         type: integer
+                      staging:
+                        description: |-
+                          Staging bounds the node-local scratch space an image import may consume on
+                          the child Glance. The glance operator stamps the resolved sizeLimit on BOTH
+                          scratch emptyDirs — the staging store and the tasks-work store — so one
+                          glance-api pod is expected to occupy at most twice the configured value on
+                          its node; see glancev1alpha1.StagingSpec for the limits of that guarantee.
+                          It is projected UNCONDITIONALLY onto the child's spec.staging: clearing it here
+                          removes the field from the child, so the glance operator's 10Gi default
+                          applies again rather than the last projected value staying pinned.
+
+                          Like ImportFiltering above, the field is typed as the glance module's own
+                          StagingSpec so the bound stays single-source in Go — the webhook validates
+                          through glancev1alpha1.ValidateStaging, not a copy — and the chart-skew
+                          caveat documented there applies to this copied schema too.
+                        properties:
+                          sizeLimit:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            description: |-
+                              SizeLimit caps each of the two scratch emptyDirs, staging and tasks-work.
+                              It must be at least 1Mi. When unset the operator resolves
+                              DefaultStagingSizeLimit (10Gi) at reconcile time.
+                            pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                            x-kubernetes-int-or-string: true
+                          unbounded:
+                            description: |-
+                              Unbounded removes the bound entirely: the operator renders both scratch
+                              emptyDirs without a sizeLimit, so an import may consume node disk until
+                              the node itself runs out. It is the escape hatch for a deployment whose
+                              largest import cannot be expressed as a number worth committing to —
+                              notably one that ran before this field existed, since an operator upgrade
+                              otherwise stamps DefaultStagingSizeLimit onto its Deployment and starts
+                              evicting on imports that used to succeed. Prefer raising SizeLimit; reach
+                              for this only to deliberately restore the pre-bound behaviour, and size
+                              the node accordingly, because nothing then stops one import from filling
+                              the disk out from under every other pod on it.
+
+                              It is a separate field rather than a sentinel SizeLimit so the 1Mi floor
+                              keeps rejecting the sub-byte quantities it exists to catch. Setting both
+                              is a contradiction and rejected at admission.
+                            type: boolean
+                        type: object
+                        x-kubernetes-validations:
+                        - message: 'unbounded and sizeLimit are mutually exclusive:
+                            an unbounded staging area has no size limit to configure'
+                          rule: '!(has(self.unbounded) && self.unbounded && has(self.sizeLimit))'
                     required:
                     - backends
                     type: object

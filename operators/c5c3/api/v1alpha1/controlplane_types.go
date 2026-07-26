@@ -897,6 +897,22 @@ type ServiceGlanceSpec struct {
 	// +optional
 	ImportFiltering *glancev1alpha1.ImportFilteringSpec `json:"importFiltering,omitempty"`
 
+	// Staging bounds the node-local scratch space an image import may consume on
+	// the child Glance. The glance operator stamps the resolved sizeLimit on BOTH
+	// scratch emptyDirs — the staging store and the tasks-work store — so one
+	// glance-api pod is expected to occupy at most twice the configured value on
+	// its node; see glancev1alpha1.StagingSpec for the limits of that guarantee.
+	// It is projected UNCONDITIONALLY onto the child's spec.staging: clearing it here
+	// removes the field from the child, so the glance operator's 10Gi default
+	// applies again rather than the last projected value staying pinned.
+	//
+	// Like ImportFiltering above, the field is typed as the glance module's own
+	// StagingSpec so the bound stays single-source in Go — the webhook validates
+	// through glancev1alpha1.ValidateStaging, not a copy — and the chart-skew
+	// caveat documented there applies to this copied schema too.
+	// +optional
+	Staging *glancev1alpha1.StagingSpec `json:"staging,omitempty"`
+
 	// DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
 	// for THIS service on the managed SHARED database, so a staged migration can run
 	// Glance on one mode while another service stays on the other. Empty (the

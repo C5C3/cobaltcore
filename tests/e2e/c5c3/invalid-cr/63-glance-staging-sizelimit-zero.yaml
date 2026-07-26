@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.glance.staging.sizeLimit of 0 is rejected by the validating webhook,
+# which reuses the glance module's exported validator: a resource.Quantity
+# renders as x-kubernetes-int-or-string in the CRD schema, which carries no
+# Minimum marker, so admission is the sole gate against an unusable
+# scratch-volume bound — a 1Mi floor, since the schema pattern also admits
+# the sub-byte milli suffix (`100m` for `100Mi`). The rest of the glance
+# block is valid, so the ONLY violation is the size limit.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-glance-staging-sizelimit
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+      staging:
+        sizeLimit: 0
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

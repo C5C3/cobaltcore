@@ -1135,6 +1135,26 @@ FIXTURES: tuple[Fixture, ...] = (
             + "        - 169.254.169.254\n"
         ),
     ),
+    Fixture(
+        filename="63-glance-staging-sizelimit-zero.yaml",
+        comment=(
+            "services.glance.staging.sizeLimit of 0 is rejected by the validating webhook,\n"
+            "which reuses the glance module's exported validator: a resource.Quantity\n"
+            "renders as x-kubernetes-int-or-string in the CRD schema, which carries no\n"
+            "Minimum marker, so admission is the sole gate against an unusable\n"
+            "scratch-volume bound — a 1Mi floor, since the schema pattern also admits\n"
+            "the sub-byte milli suffix (`100m` for `100Mi`). The rest of the glance\n"
+            "block is valid, so the ONLY violation is the size limit."
+        ),
+        name="cp-glance-staging-sizelimit",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            VALID_GLANCE
+            + "      staging:\n"
+            + "        sizeLimit: 0\n"
+        ),
+    ),
 )
 
 
