@@ -97,6 +97,27 @@ func TestBuildGlanceHTTPRoute_TargetsAPIService(t *testing.T) {
 	g.Expect(backend.Port).To(HaveValue(Equal(gatewayv1.PortNumber(9292))))
 }
 
+// Image uploads and imports stream for minutes to hours, far past the gateway
+// implementation's default route timeout (15s on Envoy Gateway), so the route
+// raises it. It must not DISABLE it: the rule matches a bare "/" prefix, so the
+// timeout is the only request-duration cap in front of the two concurrent
+// request slots a glance-api pod serves, and "0s" would let two trickling
+// clients pin them forever.
+func TestBuildGlanceHTTPRoute_RaisesRequestTimeoutWithoutDisablingIt(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance()
+	glance.Spec.Gateway = glanceGatewaySpec()
+
+	route := buildGlanceHTTPRoute(glance)
+
+	g.Expect(route.Spec.Rules).NotTo(BeEmpty())
+	timeouts := route.Spec.Rules[0].Timeouts
+	g.Expect(timeouts).NotTo(BeNil())
+	g.Expect(timeouts.Request).To(HaveValue(Equal(gatewayv1.Duration("4h"))))
+	g.Expect(timeouts.Request).NotTo(HaveValue(Equal(gatewayv1.Duration("0s"))),
+		"0s disables the timeout and removes the only cap on a trickling request")
+}
+
 func TestGlanceStatusEndpoint(t *testing.T) {
 	g := NewGomegaWithT(t)
 	glance := testGlance()

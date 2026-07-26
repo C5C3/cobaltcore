@@ -337,6 +337,20 @@ func TestBuildKeystoneHTTPRoute_NoAnnotations(t *testing.T) {
 	g.Expect(route.Annotations).To(BeEmpty())
 }
 
+// The identity API is fine on the gateway implementation's default route
+// timeout; pin the absence of a timeouts stanza so the route stays
+// byte-identical when another service opts into an operator-managed timeout.
+func TestBuildKeystoneHTTPRoute_NoRequestTimeout(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := hrTestKeystone()
+	ks.Spec.Gateway = hrTestGateway()
+
+	route := buildKeystoneHTTPRoute(ks)
+
+	g.Expect(route.Spec.Rules).NotTo(BeEmpty())
+	g.Expect(route.Spec.Rules[0].Timeouts).To(BeNil())
+}
+
 // --- reconcileHTTPRoute lifecycle unit tests ---
 
 // --- Path 1: gateway set — create HTTPRoute ---

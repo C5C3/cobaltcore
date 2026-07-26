@@ -56,6 +56,15 @@ type RouteParams struct {
 	Labels         map[string]string
 	BackendService string
 	BackendPort    int32
+
+	// RequestTimeout is the per-request route timeout. When nil, no timeouts
+	// stanza is rendered and the gateway implementation's default applies. A
+	// data plane whose legitimate requests outlive that default raises it here.
+	// "0s" carries the Gateway API "timeout disabled" semantics; since the rule
+	// this lands on matches a bare path prefix, that removes the last
+	// request-duration cap in front of the whole backend, so callers should
+	// raise the bound rather than remove it.
+	RequestTimeout *gatewayv1.Duration
 }
 
 // BuildHTTPRoute constructs the desired HTTPRoute for a service API. It
@@ -119,6 +128,10 @@ func BuildHTTPRoute(gw *commonv1.GatewaySpec, p RouteParams) *gatewayv1.HTTPRout
 				},
 			},
 		},
+	}
+
+	if p.RequestTimeout != nil {
+		route.Spec.Rules[0].Timeouts = &gatewayv1.HTTPRouteTimeouts{Request: p.RequestTimeout}
 	}
 
 	if len(gw.Annotations) > 0 {

@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -28,6 +29,11 @@ const (
 // requeueHTTPRouteAccepted is the interval for requeuing while waiting for a
 // Gateway controller to report Accepted=True on the HTTPRoute's parent status.
 const requeueHTTPRouteAccepted = RequeueDeploymentPolling
+
+// glanceRouteRequestTimeout is the per-request route timeout rendered on the
+// Glance HTTPRoute. See buildGlanceHTTPRoute for why it is neither the
+// implementation default nor disabled.
+const glanceRouteRequestTimeout = "4h"
 
 // glanceStatusEndpoint returns the externally reachable Glance API URL. When
 // spec.gateway is set, https://{hostname}/ (implicit port 443, the Gateway
@@ -86,5 +92,32 @@ func buildGlanceHTTPRoute(glance *glancev1alpha1.Glance) *gatewayv1.HTTPRoute {
 		Labels:         commonLabels(glance),
 		BackendService: subResourceName(glance),
 		BackendPort:    glanceAPIPort,
+		// Raised far above the implementation's default (15s on Envoy
+		// Gateway) but NOT disabled. The image data plane legitimately
+		// streams for hours, so the default truncates multi-GiB uploads and
+		// imports; "0s" — the Gateway API spelling of no timeout — would
+		// remove the only request-duration cap on the public edge instead.
+		// Four hours clears any legitimate transfer while still capping how
+		// long one stalled request holds what it holds. Deliberately not a
+		// spec knob — no CR should be able to truncate an in-flight image
+		// transfer.
+		//
+		// It bounds duration, not concurrency, and is NOT what keeps the
+		// Glance API from wedging. The rule matches a single "/" prefix, so
+		// it covers every Glance path, while a glance-api pod serves
+		// DefaultUWSGIProcesses x DefaultUWSGIThreads = 2 concurrent requests
+		// with --harakiri opt-in and off by default — at DefaultReplicas,
+		// six slots for the whole service. Nothing in front of them caps
+		// concurrent requests: this operator renders no BackendTrafficPolicy,
+		// circuit breaker, or rate limit, and Envoy's stream idle timeout
+		// resets on every byte, so it never fires for a client trickling one.
+		// Six requests that stay barely alive therefore occupy every slot for
+		// the full window — six honest uploads over slow links do it as
+		// readily as an abusive client. Lowering the deadline truncates
+		// legitimate transfers and raising it lengthens the window, so the
+		// levers are sizing (spec.deployment.replicas,
+		// spec.apiServer.uwsgi.processes/threads) and a concurrency policy on
+		// the Gateway, which is infrastructure outside this operator.
+		RequestTimeout: ptr.To(gatewayv1.Duration(glanceRouteRequestTimeout)),
 	})
 }
