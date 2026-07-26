@@ -259,9 +259,21 @@ spec:
         timeout: 3m
         content: |
           set -eu
-          OUT="$(kubectl run glance-garage-failclosed-verify -n $NAMESPACE \
-            --image=ghcr.io/c5c3/glance:2025.2 --rm -i --restart=Never \
-            --pod-running-timeout=2m --command -- python3 -c '
+          # The verdict is read from the pod log, not from an attached stream.
+          # `kubectl run -i` carries only what the container writes after the
+          # attach is established, and this probe issues a single GET and exits
+          # in well under a second — fast enough to finish first, which leaves
+          # the captured output holding nothing but the deletion notice and
+          # fails the sentinel grep on a run where the assertion itself held.
+          # The kubelet writes the container log to disk as it is produced, so
+          # reading it after termination cannot race. That costs --rm: the pod
+          # has to outlive the run to stay readable, and the trap removes it.
+          POD=glance-garage-failclosed-verify
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/glance:2025.2 --restart=Never \
+            --command -- python3 -c '
           import json, sys, time, urllib.request, urllib.error
 
           BASE = "http://glance-chaos-garage.openstack.svc:9292"
@@ -303,8 +315,23 @@ spec:
               if status == "active":
                   fail("fail-closed image went active after recovery -- glance persisted a write the client was never confirmed on")
           print("STAYED-FAILED-OK")
-          ')"
+          '
+          # Poll for a terminal phase instead of waiting for Succeeded alone: a
+          # probe that fails its assertion ends in Failed, and waiting only for
+          # Succeeded would burn the step timeout and then throw away the log
+          # that says why. The sentinel below, not the phase, is the verdict.
+          phase=""
+          for _ in $(seq 1 60); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          # || true so a log read that fails is echoed and grepped like any
+          # other output rather than aborting the step under set -e with the
+          # diagnosis unprinted — the failure mode this step just had.
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
           echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
           echo "${OUT}" | grep -q 'STAYED-FAILED-OK'
           echo "OK: the failed-closed image never became active"
     catch:
