@@ -4078,6 +4078,67 @@ func TestValidateCreate_RejectsOverlongGlanceBackendChildName(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("child GlanceBackend CR name would be"))
 }
 
+// The projected Glance child is bounded far below the 253-byte object-name cap:
+// the Glance CRD's own webhook caps metadata.name because its db-purge CronJob
+// appends a suffix Kubernetes counts against the 52-character CronJob limit.
+// Without this guard the ControlPlane admits, reconcileGlance then fails to apply
+// the child on every pass, and metadata.name is immutable — recovery means
+// recreating the whole control plane.
+func TestValidateCreate_RejectsOverlongProjectedGlanceChildName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	maxCPName := glancev1alpha1.MaxGlanceNameLength - glanceChildNameOverhead
+
+	atLimit := glanceControlPlane()
+	atLimit.Name = strings.Repeat("c", maxCPName)
+	_, err := w.ValidateCreate(context.Background(), atLimit)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a name whose projected Glance child still fits must be accepted")
+
+	tooLong := glanceControlPlane()
+	tooLong.Name = strings.Repeat("c", maxCPName+1)
+	_, err = w.ValidateCreate(context.Background(), tooLong)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("projected Glance child CR name would be"))
+
+	// Without services.glance no Glance child is projected, so the bound does not
+	// apply — the ControlPlane keeps the full 253-byte budget.
+	noGlance := validControlPlane()
+	noGlance.Name = strings.Repeat("c", maxCPName+1)
+	_, err = w.ValidateCreate(context.Background(), noGlance)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// Enabling Glance on an existing over-long ControlPlane is the one update that
+// can newly violate the bound, so it is rejected; every other update on a CR that
+// already carried Glance — including the finalizer removal that completes its
+// deletion — must still pass, because metadata.name is immutable and a rejection
+// would wedge it in Terminating.
+func TestValidateUpdate_ProjectedGlanceChildNameBoundIsNewlyEnabledOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	overlong := strings.Repeat("c", glancev1alpha1.MaxGlanceNameLength-glanceChildNameOverhead+1)
+
+	withoutGlance := validControlPlane()
+	withoutGlance.Name = overlong
+	enabling := glanceControlPlane()
+	enabling.Name = overlong
+
+	_, err := w.ValidateUpdate(context.Background(), withoutGlance, enabling)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("projected Glance child CR name would be"))
+
+	grandfathered := glanceControlPlane()
+	grandfathered.Name = overlong
+	grandfathered.Finalizers = []string{"c5c3.io/finalizer"}
+	deleting := grandfathered.DeepCopy()
+	deleting.Finalizers = nil
+
+	_, err = w.ValidateUpdate(context.Background(), grandfathered, deleting)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"an over-long grandfathered ControlPlane must stay updatable, or its deletion never completes")
+}
+
 // TestValidateCreate_RejectsGlanceInExternalMode verifies the webhook cross-field
 // forbid, mirroring services.horizon: no Keystone workload is deployed.
 func TestValidateCreate_RejectsGlanceInExternalMode(t *testing.T) {

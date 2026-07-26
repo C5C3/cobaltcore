@@ -131,6 +131,16 @@ type GlanceSpec struct {
 	// +optional
 	ImportFiltering *ImportFilteringSpec `json:"importFiltering,omitempty"`
 
+	// DBPurge tunes the recurring database purge that hard-deletes the rows
+	// glance only ever soft-deletes. The operator resolves the effective
+	// retention and schedule at reconcile time — DefaultDBPurgeRetentionDays and
+	// DefaultDBPurgeSchedule — rather than materializing them into the CR, so a
+	// nil block resolves exactly like an empty struct and both keep tracking the
+	// operator defaults. The task-row sweep is scheduled on every Glance; the
+	// destructive extras are opt-in (purgeImagesTable) or reversible (suspend).
+	// +optional
+	DBPurge *DBPurgeSpec `json:"dbPurge,omitempty"`
+
 	// Gateway configures external exposure of the Glance API via a Gateway API
 	// HTTPRoute. When set, the operator creates an HTTPRoute targeting the {name}
 	// Service and attaches it to the referenced pre-existing Gateway. When removed
@@ -419,6 +429,71 @@ type ImportFilteringSpec struct {
 	// +kubebuilder:validation:items:Minimum=1
 	// +kubebuilder:validation:items:Maximum=65535
 	DisallowedPorts []int32 `json:"disallowedPorts,omitempty"`
+}
+
+// DBPurgeSpec tunes the recurring database purge. Glance never hard-deletes on
+// its own: deleting an image only flips its row to deleted, and every image
+// import leaves a task row behind, so both grow for the lifetime of the
+// deployment. The operator projects a CronJob running glance-manage db purge,
+// which sweeps the tasks table and the image child tables — the unbounded growth
+// this block exists to bound. The images table itself is a separate, opt-in pass
+// (PurgeImagesTable) because db purge deliberately skips it: while the row
+// survives, a deleted image's UUID can never be handed out again to a different
+// image (OSSN-0075).
+//
+// The operator resolves the knobs at reconcile time rather than in the
+// defaulting webhook, so a field left unset keeps tracking the operator defaults
+// (DefaultDBPurgeRetentionDays and DefaultDBPurgeSchedule in glance_webhook.go)
+// across upgrades instead of freezing today's values into the stored CR. A nil
+// block therefore resolves exactly like an empty struct: the task sweep runs
+// daily on every Glance, since an unbounded soft-delete backlog is a deferred
+// outage rather than a posture worth offering.
+type DBPurgeSpec struct {
+	// RetentionDays is how long a soft-deleted row survives before the purge
+	// hard-deletes it — the --age_in_days argument both commands take. When unset
+	// the operator resolves DefaultDBPurgeRetentionDays; the lower bound of one
+	// day keeps the purge from racing the rows an in-flight import just wrote.
+	// Lowering it applies retroactively at the next firing, so the validating
+	// webhook warns on a reduction.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	RetentionDays *int32 `json:"retentionDays,omitempty"`
+
+	// Schedule is the standard cron expression the purge CronJob runs on. When
+	// empty the operator resolves DefaultDBPurgeSchedule. The value is checked by
+	// the validating webhook rather than by a CRD pattern — as with the keystone
+	// schedules, the accepted grammar includes descriptors such as @daily, which
+	// no regex expresses without also rejecting valid expressions.
+	//
+	// It is also the only lever over purge throughput: each run deletes at most a
+	// fixed number of rows per table (the operator-owned --max_rows cap), so a
+	// deployment whose daily soft-deletes outgrow one run's ceiling needs a more
+	// frequent schedule to keep up.
+	// +optional
+	Schedule string `json:"schedule,omitempty"`
+
+	// PurgeImagesTable enables the second glance-manage db purge_images_table
+	// pass, which hard-deletes the images rows themselves. It defaults to false:
+	// the row is what keeps a deleted image's UUID reserved, and glance's v2
+	// image-create accepts a client-supplied id, so once the row is gone any
+	// project member can claim the freed UUID for an image of their own and every
+	// Heat template, Terraform state, or server image_ref still pinning it boots
+	// that image instead (OSSN-0075). Enable it only where policy denies
+	// client-supplied image IDs. The images table grows far more slowly than the
+	// tasks table db purge already covers.
+	// +optional
+	PurgeImagesTable *bool `json:"purgeImagesTable,omitempty"`
+
+	// Suspend pauses the purge CronJob without deleting it, matching the keystone
+	// TrustFlushSpec.Suspend semantics. It is the escape hatch for a brownfield
+	// deployment onboarding onto this operator: the first run applies the
+	// retention window retroactively to a backlog that has never been purged, so
+	// an operator who wants to stage that can suspend the CronJob, raise
+	// RetentionDays to cover the deployment's full history, and step it down while
+	// watching glance_operator_db_purge_total. The condition stays True while
+	// suspended — a paused purge is a deliberate posture, not a failure.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
 }
 
 // GlanceStatus defines the observed state of Glance.
