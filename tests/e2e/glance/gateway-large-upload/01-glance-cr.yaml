@@ -1,0 +1,103 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR fixture for the large-upload gateway E2E test (2026.1 release).
+#
+# The suite streams a 512 MiB object through the public gateway hostname
+# `glance-upload.127-0-0-1.nip.io` twice — once as a client PUT to /file, once
+# as a staged (glance-direct) upload to /stage — and then lowers
+# spec.staging.sizeLimit to prove the bound contains a runaway staged upload.
+# 2026.1 is picked because that is the release where glance-api launches under
+# uWSGI, the launch path that carries the chunked-body flags a streaming
+# upload depends on; the
+# `ghcr.io/c5c3/glance:2026.1` image is already kind-loaded on the glance
+# e2e-operator leg (the basic-deployment-2026-1 suite uses it).
+#
+# Name-collision avoidance: chainsaw-config.yaml sets `execution.parallel: 4`,
+# so every object this suite owns carries the `glance-upload` prefix and the
+# database schema is `glance_upload` — nothing here can collide with the
+# gateway-quick-start-smoke suite that shares the `openstack` namespace, the
+# backing services and the same Gateway.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-upload
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    # A single pod hosts the staging emptyDir, so the leg-3 eviction is
+    # deterministic: there is exactly one pod that can breach the bound.
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_upload
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: glance-upload.127-0-0-1.nip.io
+    path: /
+  # No Keystone is deployed in the glance e2e leg, so API access is opened
+  # without a live token. This is the same three-knob combination
+  # tests/e2e/glance/s3-multistore/00-glance-cr.yaml documents:
+  #   - [DEFAULT] allow_anonymous_access=true (via extraConfig, which overrides
+  #     everything) lets keystonemiddleware's delay_auth_decision pipeline admit
+  #     the tokenless request instead of returning 401 from ContextMiddleware;
+  #   - the injected unauthenticated-context filter replaces the anonymous
+  #     read_only context glance's @mutating decorator 403s before any policy
+  #     check, so no policyOverride alone can open the upload path;
+  #   - policyOverrides opens the image API rules for the resulting role-less
+  #     context ("@" is oslo.policy's always-allow token; the CRD's CEL rule
+  #     forbids an empty rule value).
+  extraConfig:
+    DEFAULT:
+      allow_anonymous_access: "true"
+      # Legs 2+3 stage through PUT /v2/images/{id}/stage, which glance only
+      # serves while glance-direct is an enabled import method. The operator
+      # deliberately renders [web-download,copy-image] — glance-direct staging
+      # is not shared across replicas — but this CR pins replicas: 1, so that
+      # concern is moot here. A task-based import method cannot be exercised
+      # in this suite at all: POST /v2/images/{id}/import records a task row
+      # whose owner column is NOT NULL, and the tokenless context below has no
+      # project to own it. The key is operator-owned but Reported rather than
+      # Rejected, so the override is honored and surfaced as
+      # ExtraConfigHealthy=False (OwnedKeysOverridden) — which does not gate
+      # the aggregate Ready the suite waits on.
+      enabled_import_methods: "[glance-direct]"
+  middleware:
+    - name: unauthenticated-context
+      filterFactory: glance.api.middleware.context:UnauthenticatedContextMiddleware.factory
+      position: after
+  # DOCUMENTED ASSUMPTION: these are the upstream-default rule names the
+  # upload, stage and delete paths enforce under anonymous access (the /stage
+  # endpoint has no rule of its own — it checks get_image and modify_image).
+  # If a call answers 403 in CI, its response body names the rule that was
+  # actually denied — add that rule with "@" here.
+  policyOverrides:
+    rules:
+      add_image: "@"
+      get_image: "@"
+      get_images: "@"
+      upload_image: "@"
+      download_image: "@"
+      delete_image: "@"
+      modify_image: "@"

@@ -1,0 +1,657 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for large image transfers through the public Gateway and
+# for the staging bound that contains a runaway one. Until now CI never pushed
+# more than a healthcheck GET through the gateway (see the sibling
+# gateway-quick-start-smoke suite) and never wrote to the staging volume at
+# all, so neither the raised route timeout nor spec.staging.sizeLimit had an
+# end-to-end proof. This suite provides all three:
+#
+#   Leg 1 — a throttled 512 MiB client PUT over
+#     https://glance-upload.127-0-0-1.nip.io reaches HTTP 204 and the image goes
+#     active at exactly 536870912 bytes. The transfer is rate-limited to 8 MiB/s
+#     so it runs ~64 s — four times the 15 s route timeout that truncated it
+#     before the HTTPRoute started rendering `timeouts.request: "4h"`.
+#   Leg 2 — a throttled 512 MiB staged upload (PUT /v2/images/{id}/stage, the
+#     glance-direct method's first half) lands on the `staging` emptyDir at
+#     exactly 536870912 bytes, and deleting the image releases them.
+#   Leg 3 — with spec.staging.sizeLimit lowered to 64Mi, the same staged upload
+#     breaches the bound, kubelet evicts the glance-api pod, the image never
+#     reaches active, and the Deployment recovers on its own. That is the
+#     containment contract the bound exists for: the blast radius is one
+#     upload, not one node.
+#
+# The full chain under test:
+#   kind host :443 → kindnode :31443 (NodePort) → Envoy Gateway proxy
+#   → the `https-glance-upload` HTTPS listener on `openstack/openstack-gw`
+#   (self-signed cert `glance-upload-nip-io-tls`, SNI
+#   `glance-upload.127-0-0-1.nip.io`) → HTTPRoute managed by the Glance Operator
+#   → Service → glance-api pod.
+#
+# ── DECISION: curl from the chainsaw host ────────────────────────────
+# Every leg uploads from the CI host, not from an in-cluster pod: the point is
+# that the externally reachable URL survives a minute-long request body, and
+# only a host-side client traverses the whole NodePort → Envoy → HTTPRoute
+# chain the route timeout lives on. Mirrors the sibling
+# gateway-quick-start-smoke suites.
+#
+# ── DECISION: its own hostname, not `https-glance` ───────────────────
+# The quick-start smoke suite already claims `glance.127-0-0-1.nip.io`; two
+# HTTPRoutes on one hostname with the same `/` prefix would race under
+# chainsaw's `parallel: 4`. deploy/kind/base/openstack-gateway.yaml therefore
+# carries a dedicated `https-glance-upload` listener for this suite.
+#
+# ── DECISION: staged upload, not web-download ────────────────────────
+# Legs 2+3 originally used a server-side web-download import. That can never
+# pass here: POST /v2/images/{id}/import records a task row whose `owner`
+# column is NOT NULL, and this suite's tokenless context
+# (UnauthenticatedContextMiddleware) hard-codes project_id=None, so the API
+# answers 500 on any URI. PUT /stage is the one path onto the staging volume
+# that involves no task and no owner, which is why the CR enables
+# glance-direct via extraConfig (see 01-glance-cr.yaml). The positive
+# web-download contract is proven by the tempest suite, which runs against a
+# real Keystone.
+#
+# ── Scope gating — runtime presence checks ──────────────────────────
+# The preflight probes for `GatewayClass/envoy`, `Gateway/openstack-gw`, and the
+# `glances.glance.openstack.c5c3.io` CRD. If any is absent it exits 0 with a
+# SKIP line, so production overlays (no Envoy Gateway, operator suspended)
+# default-skip the suite off any non-kind cluster with no `--selector` needed.
+# Each leg repeats a one-line guard on the Glance CR, because a skipped
+# preflight applies nothing for the legs to work with.
+#
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-gateway-large-upload
+spec:
+  # Two 512 MiB transfers at 8 MiB/s plus a rollout and an eviction window make
+  # the envelope generous. The inner `kubectl wait` and poll bounds stay below
+  # the per-step caps so a failure surfaces as a targeted diagnostic rather than
+  # chainsaw's generic script-timeout kill.
+  timeouts:
+    assert: 8m
+    exec: 10m
+  steps:
+  # ── Step 1: Apply namespace ───────────────────────────────────────
+  # The Glance CR is NOT applied here — its CRD is registered by the
+  # glance-operator, which is suspended in some overlays. Applying it
+  # unconditionally would abort chainsaw with `no matches for kind "Glance"` on
+  # those clusters, so the apply lives in the step 2 script body behind a CRD
+  # presence guard to keep this test default-safe.
+  - try:
+    - apply:
+        file: 00-namespace.yaml
+  # ── Step 2: Preflight and fixtures ────────────────────────────────
+  - try:
+    - script:
+        timeout: 8m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; all other
+        # infra/keystone e2e scripts pin bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Presence guard ──────────────────────────────
+          # The kind overlay alone applies
+          # `deploy/kind/base/openstack-gateway.yaml`, which materialises
+          # GatewayClass/envoy and Gateway/openstack-gw (with the
+          # `https-glance-upload` listener). Their absence unambiguously
+          # signals a non-kind cluster — exit 0 with a SKIP line.
+          if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then
+            echo "SKIP: GatewayClass/envoy not present (non-kind overlay)."
+            exit 0
+          fi
+          if ! kubectl get gateway openstack-gw -n openstack >/dev/null 2>&1; then
+            echo "SKIP: Gateway/openstack-gw not present in openstack namespace"
+            echo "      (non-kind overlay)."
+            exit 0
+          fi
+          if ! kubectl get crd glances.glance.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Glance CRD not present (operator not deployed)."
+            exit 0
+          fi
+          echo "OK: Gateway + Glance CRD present — running the large-upload legs"
+
+          # ── Preflight (a): the Gateway API CRDs carry rules[].timeouts ──
+          # `timeouts.request: "4h"` is what keeps leg 1's minute-long PUT from
+          # being truncated at Envoy's 15 s default. A Gateway API bundle older
+          # than v1.4 has no such field in the HTTPRoute schema and the API
+          # server prunes it silently, which would surface as an unexplained
+          # leg-1 failure. hack/deploy-infra.sh pins v1.6.1 (standard channel).
+          #
+          # The escape hatch is not optional: the sibling
+          # tests/e2e/glance/httproute suite applies a stub HTTPRoute CRD whose
+          # spec is `x-kubernetes-preserve-unknown-fields`, and under
+          # `parallel: 4` that stub can land over the real bundle for the rest
+          # of the run. The stub round-trips `timeouts` unchanged, so the field
+          # still reaches Envoy — only the schema pin degrades. Leg 1 remains
+          # the end-to-end backstop either way.
+          if kubectl explain httproute.spec.rules.timeouts >/dev/null 2>&1; then
+            echo "OK: the installed Gateway API CRDs carry spec.rules[].timeouts"
+          else
+            LOOSE="$(kubectl get crd httproutes.gateway.networking.k8s.io \
+              -o 'jsonpath={.spec.versions[?(@.name=="v1")].schema.openAPIV3Schema.properties.spec.x-kubernetes-preserve-unknown-fields}' \
+              2>/dev/null || true)"
+            if [ "$LOOSE" = "true" ]; then
+              echo "NOTE: the HTTPRoute CRD is the e2e stub (preserve-unknown-fields);"
+              echo "      skipping the schema pin — the field still round-trips."
+            else
+              echo "ERROR: the installed Gateway API CRDs have no"
+              echo "       httproute.spec.rules.timeouts — the route timeout"
+              echo "       would be pruned and leg 1 truncated at 15s."
+              kubectl get crd httproutes.gateway.networking.k8s.io \
+                -o 'jsonpath={.metadata.annotations}' 2>&1 || true
+              echo
+              exit 1
+            fi
+          fi
+
+          # ── Preflight (b): the upload listener is Programmed ────────
+          # Envoy Gateway sets Programmed=True once the listeners have usable
+          # TLS Secrets and the xDS data-plane is ready. The Gateway-level
+          # condition is not enough here: four other listeners share this
+          # Gateway, so it can be Programmed while `https-glance-upload` alone
+          # is stuck on a missing `glance-upload-nip-io-tls` Secret.
+          kubectl wait --for=condition=Programmed \
+            gateway/openstack-gw -n openstack --timeout=5m
+          LISTENER="$(kubectl get gateway openstack-gw -n openstack \
+            -o 'jsonpath={.status.listeners[?(@.name=="https-glance-upload")].conditions[?(@.type=="Programmed")].status}')"
+          if [ "$LISTENER" != "True" ]; then
+            echo "ERROR: listener https-glance-upload is not Programmed (got '${LISTENER:-<absent>}')"
+            kubectl get gateway openstack-gw -n openstack -o yaml 2>&1 || true
+            exit 1
+          fi
+          echo "OK: listener https-glance-upload is Programmed"
+
+          # Apply the CR and its default store now that the guards have
+          # passed. Chainsaw runs scripts with the test directory as CWD, so
+          # the relative paths resolve.
+          kubectl apply -f 01-glance-cr.yaml
+          kubectl apply -f 02-glance-backend.yaml
+
+          # Glance's aggregate Ready includes HTTPRouteReady (only True once
+          # Envoy publishes Accepted=True on the route's parent) AND the
+          # deployment/health sub-conditions, so this one wait gates the legs on
+          # both the route being attached and the backend serving.
+          kubectl wait --for=condition=Ready \
+            glance/glance-upload -n openstack --timeout=5m
+          echo "OK: Glance/glance-upload Ready=True"
+    catch:
+    - describe:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        name: openstack-gw
+        namespace: openstack
+    - script:
+        shell: bash
+        content: |
+          echo "=== Certificate glance-upload-nip-io-tls ==="
+          kubectl describe certificate glance-upload-nip-io-tls -n openstack 2>&1 || true
+          echo
+          echo "=== Glance glance-upload ==="
+          kubectl get glance glance-upload -n openstack -o yaml 2>&1 || true
+          echo
+          echo "=== GlanceBackend glance-upload-s3 ==="
+          kubectl get glancebackend glance-upload-s3 -n openstack -o yaml 2>&1 || true
+          echo
+          echo "=== HTTPRoutes in openstack ==="
+          kubectl get httproute -n openstack -o wide 2>&1 || true
+          echo
+          echo "=== glance-operator logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          echo
+          echo "=== events (last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    - podLogs:
+        namespace: envoy-gateway-system
+        selector: app.kubernetes.io/name=gateway-helm
+        tail: 200
+  # ── Step 3 (leg 1): a throttled 512 MiB PUT through the Gateway ───
+  - try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          if ! kubectl get glance glance-upload -n openstack >/dev/null 2>&1; then
+            echo "SKIP: Glance/glance-upload absent (the preflight skipped this suite)."
+            exit 0
+          fi
+
+          BASE="https://glance-upload.127-0-0-1.nip.io"
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+
+          # jq is not guaranteed on every runner image; python3 is (the CI
+          # workflow relies on it elsewhere for the same reason). A missing or
+          # malformed body yields an empty string instead of an exception, so
+          # the caller's own diagnostic is the one that surfaces.
+          jfield() {
+            python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' \
+              "$1" "$2" 2>/dev/null || true
+          }
+
+          # Envoy's xDS push can trail the pod's readiness by a second or two,
+          # so warm the path before the first API call — the same retry the
+          # sibling gateway-quick-start-smoke suite uses.
+          CODE=""
+          for attempt in $(seq 1 15); do
+            CODE="$(curl -sk -o /dev/null -w '%{http_code}' "$BASE/healthcheck" || true)"
+            [ "$CODE" = "200" ] && break
+            echo "healthcheck attempt $attempt: HTTP $CODE (retrying in 2s)"
+            sleep 2
+          done
+          [ "$CODE" = "200" ] || { echo "ERROR: $BASE/healthcheck never answered 200 (last $CODE)"; exit 1; }
+
+          dd if=/dev/urandom of="$TMP/upload.img" bs=1M count=512 status=none
+
+          CODE="$(curl -sk -o "$TMP/create.json" -w '%{http_code}' \
+            -X POST "$BASE/v2/images" -H 'Content-Type: application/json' \
+            -d '{"name":"upload-leg","disk_format":"raw","container_format":"bare"}' || true)"
+          if [ "$CODE" != "201" ]; then
+            echo "ERROR: POST /v2/images returned HTTP $CODE (expected 201)"
+            echo "--- response body (first 2KB) ---"
+            head -c 2048 "$TMP/create.json" 2>/dev/null || true
+            echo
+            exit 1
+          fi
+          ID="$(jfield "$TMP/create.json" id)"
+          [ -n "$ID" ] || { echo "ERROR: image create response carries no id"; cat "$TMP/create.json"; exit 1; }
+          echo "OK: created image $ID"
+
+          # --limit-rate 8M stretches the request body across ~64 s. Before the
+          # HTTPRoute carried `timeouts.request: "4h"` this died at 15 s with a
+          # 504 from Envoy, so the elapsed-time assertion below is part of the
+          # contract, not decoration: a fast transfer would prove nothing.
+          START="$(date +%s)"
+          CODE="$(curl -sk -o "$TMP/put.body" -w '%{http_code}' \
+            -X PUT --limit-rate 8M -T "$TMP/upload.img" \
+            -H 'Content-Type: application/octet-stream' \
+            "$BASE/v2/images/$ID/file" || true)"
+          ELAPSED=$(( $(date +%s) - START ))
+          echo "PUT /v2/images/$ID/file -> HTTP $CODE after ${ELAPSED}s"
+          if [ "$CODE" != "204" ]; then
+            echo "ERROR: upload returned HTTP $CODE (expected 204)"
+            echo "--- response body (first 2KB) ---"
+            head -c 2048 "$TMP/put.body" 2>/dev/null || true
+            echo
+            exit 1
+          fi
+          if [ "$ELAPSED" -lt 30 ]; then
+            echo "ERROR: upload finished in ${ELAPSED}s — the 8 MiB/s throttle did"
+            echo "       not engage, so this run never crossed the 15s default"
+            echo "       route timeout and proves nothing."
+            exit 1
+          fi
+
+          # 60 polls x 5s = 5m: the S3 store still has to absorb 512 MiB after
+          # the last byte arrives.
+          STATUS=""
+          for _ in $(seq 1 60); do
+            curl -sk -o "$TMP/img.json" "$BASE/v2/images/$ID" || true
+            STATUS="$(jfield "$TMP/img.json" status)"
+            [ "$STATUS" = "active" ] && break
+            sleep 5
+          done
+          if [ "$STATUS" != "active" ]; then
+            echo "ERROR: image $ID is '${STATUS:-<unknown>}', want active"
+            echo "--- last image body (first 2KB) ---"
+            head -c 2048 "$TMP/img.json" 2>/dev/null || true
+            echo
+            exit 1
+          fi
+
+          SIZE="$(jfield "$TMP/img.json" size)"
+          if [ "$SIZE" != "536870912" ]; then
+            echo "ERROR: image size is '${SIZE:-<unset>}', want 536870912 — the"
+            echo "       body was truncated somewhere on the gateway path."
+            exit 1
+          fi
+          echo "OK: 512 MiB uploaded through the Gateway in ${ELAPSED}s, image active at $SIZE bytes"
+    catch:
+    - script:
+        shell: bash
+        content: |
+          echo "=== Glance glance-upload ==="
+          kubectl get glance glance-upload -n openstack -o yaml 2>&1 || true
+          echo "=== HTTPRoute glance-upload ==="
+          kubectl get httproute glance-upload -n openstack -o yaml 2>&1 || true
+          echo "=== glance-api pods ==="
+          kubectl get pods -n openstack -l app.kubernetes.io/instance=glance-upload -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=glance-upload -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n openstack "$pod" --all-containers --tail=80 2>&1 || true
+          done
+          echo "=== events (last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    - podLogs:
+        namespace: envoy-gateway-system
+        selector: app.kubernetes.io/name=gateway-helm
+        tail: 100
+  # ── Step 4 (leg 2): a staged upload lands on the bounded volume ───
+  - try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          if ! kubectl get glance glance-upload -n openstack >/dev/null 2>&1; then
+            echo "SKIP: Glance/glance-upload absent (the preflight skipped this suite)."
+            exit 0
+          fi
+
+          BASE="https://glance-upload.127-0-0-1.nip.io"
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+
+          jfield() {
+            python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' \
+              "$1" "$2" 2>/dev/null || true
+          }
+
+          CODE="$(curl -sk -o "$TMP/create.json" -w '%{http_code}' \
+            -X POST "$BASE/v2/images" -H 'Content-Type: application/json' \
+            -d '{"name":"stage-leg","disk_format":"raw","container_format":"bare"}' || true)"
+          if [ "$CODE" != "201" ]; then
+            echo "ERROR: POST /v2/images returned HTTP $CODE (expected 201)"
+            head -c 2048 "$TMP/create.json" 2>/dev/null || true
+            echo
+            exit 1
+          fi
+          ID="$(jfield "$TMP/create.json" id)"
+          [ -n "$ID" ] || { echo "ERROR: image create response carries no id"; cat "$TMP/create.json"; exit 1; }
+          echo "OK: created image $ID for the staged upload"
+
+          # The same 8 MiB/s throttle as leg 1, so this leg re-proves the 4h
+          # route timeout on the /stage path too. A 404 here means
+          # glance-direct is not enabled — see the extraConfig override in
+          # 01-glance-cr.yaml; a 403 body names the missing policy rule (see
+          # the DOCUMENTED ASSUMPTION there).
+          dd if=/dev/urandom of="$TMP/upload.img" bs=1M count=512 status=none
+          START="$(date +%s)"
+          CODE="$(curl -sk -o "$TMP/stage.body" -w '%{http_code}' \
+            -X PUT --limit-rate 8M -T "$TMP/upload.img" \
+            -H 'Content-Type: application/octet-stream' \
+            "$BASE/v2/images/$ID/stage" || true)"
+          ELAPSED=$(( $(date +%s) - START ))
+          echo "PUT /v2/images/$ID/stage -> HTTP $CODE after ${ELAPSED}s"
+          if [ "$CODE" != "204" ]; then
+            echo "ERROR: staged upload returned HTTP $CODE (expected 204)"
+            echo "--- response body (first 2KB) ---"
+            head -c 2048 "$TMP/stage.body" 2>/dev/null || true
+            echo
+            exit 1
+          fi
+          if [ "$ELAPSED" -lt 30 ]; then
+            echo "ERROR: staged upload finished in ${ELAPSED}s — the 8 MiB/s throttle"
+            echo "       did not engage, so this run never crossed the 15s default"
+            echo "       route timeout and proves nothing."
+            exit 1
+          fi
+
+          # The staged bytes must sit on the bounded staging emptyDir at full
+          # size, named by image id. /var/lib/glance/staging is the
+          # os_glance_staging_store datadir the operator renders; the
+          # basic-deployment suites pin the volume and its mount.
+          POD="$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/instance=glance-upload -o name | head -1)"
+          STAGED="$(kubectl exec -n openstack "${POD#pod/}" -- \
+            stat -c %s "/var/lib/glance/staging/$ID" 2>/dev/null || true)"
+          if [ "$STAGED" != "536870912" ]; then
+            echo "ERROR: staged file is '${STAGED:-<absent>}' bytes, want 536870912"
+            kubectl exec -n openstack "${POD#pod/}" -- ls -l /var/lib/glance/staging/ 2>&1 || true
+            exit 1
+          fi
+          curl -sk -o "$TMP/img.json" "$BASE/v2/images/$ID" || true
+          STATUS="$(jfield "$TMP/img.json" status)"
+          if [ "$STATUS" != "uploading" ]; then
+            echo "ERROR: image $ID is '${STATUS:-<unknown>}', want uploading"
+            exit 1
+          fi
+          echo "OK: 512 MiB staged through the Gateway in ${ELAPSED}s, $STAGED bytes on the staging volume"
+
+          # Deleting the image must release the staged bytes — and leg 3 needs
+          # the volume empty again, so its 64Mi bound is breached by its own
+          # upload alone.
+          CODE="$(curl -sk -o /dev/null -w '%{http_code}' -X DELETE "$BASE/v2/images/$ID" || true)"
+          if [ "$CODE" != "204" ]; then
+            echo "ERROR: DELETE /v2/images/$ID returned HTTP $CODE (expected 204)"
+            exit 1
+          fi
+          if kubectl exec -n openstack "${POD#pod/}" -- test -e "/var/lib/glance/staging/$ID" 2>/dev/null; then
+            echo "ERROR: the staged file survived the image delete"
+            exit 1
+          fi
+          echo "OK: image delete released the staged bytes"
+    catch:
+    - script:
+        shell: bash
+        content: |
+          echo "=== Glance glance-upload ==="
+          kubectl get glance glance-upload -n openstack -o yaml 2>&1 || true
+          echo "=== glance-api pods ==="
+          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=glance-upload -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n openstack "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod staging dir ---"
+            kubectl exec -n openstack "${pod#pod/}" -- ls -l /var/lib/glance/staging/ 2>&1 || true
+          done
+          echo "=== events (last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5 (leg 3): the staging bound contains a runaway upload ───
+  - try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          if ! kubectl get glance glance-upload -n openstack >/dev/null 2>&1; then
+            echo "SKIP: Glance/glance-upload absent (the preflight skipped this suite)."
+            exit 0
+          fi
+
+          BASE="https://glance-upload.127-0-0-1.nip.io"
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP"' EXIT
+
+          jfield() {
+            python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' \
+              "$1" "$2" 2>/dev/null || true
+          }
+
+          # 64Mi is a bound the very same 512 MiB upload cannot fit under. The
+          # emptyDir sizeLimit is part of the pod template, so the patch rolls
+          # the Deployment. `rollout status` alone would race the operator: it
+          # reports the OLD generation as rolled out until the reconcile lands,
+          # so wait for the projected value first — which doubles as the
+          # assertion that the operator honours a patched bound at all.
+          kubectl patch glance glance-upload -n openstack --type=merge \
+            -p '{"spec":{"staging":{"sizeLimit":"64Mi"}}}'
+          PROJECTED=""
+          for _ in $(seq 1 30); do
+            PROJECTED="$(kubectl get deployment glance-upload -n openstack \
+              -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="staging")].emptyDir.sizeLimit}' \
+              2>/dev/null || true)"
+            [ "$PROJECTED" = "64Mi" ] && break
+            sleep 5
+          done
+          if [ "$PROJECTED" != "64Mi" ]; then
+            echo "ERROR: the operator never projected staging.sizeLimit=64Mi onto the"
+            echo "       Deployment (it still shows '${PROJECTED:-<unset>}')."
+            exit 1
+          fi
+          kubectl rollout status deployment/glance-upload -n openstack --timeout=2m
+          echo "OK: glance-api rolled with staging.sizeLimit=64Mi"
+
+          # The rollout swapped the pod, so warm the gateway path again before
+          # calling the API (Envoy's xDS push trails pod readiness).
+          CODE=""
+          for attempt in $(seq 1 15); do
+            CODE="$(curl -sk -o /dev/null -w '%{http_code}' "$BASE/healthcheck" || true)"
+            [ "$CODE" = "200" ] && break
+            echo "healthcheck attempt $attempt: HTTP $CODE (retrying in 2s)"
+            sleep 2
+          done
+          [ "$CODE" = "200" ] || { echo "ERROR: $BASE/healthcheck never answered 200 (last $CODE)"; exit 1; }
+
+          # The oversized staged upload, attempted up to three times. The
+          # sizeLimit patch just rolled the Deployment, and Envoy's endpoint
+          # set trails the swap: until EDS drops the draining old pod, a
+          # request can land on it and die instantly with a 503 before
+          # staging a byte (seen in CI), leaving the new pod unbreached and
+          # the eviction poll below to time out. So each attempt is verified
+          # against the new pod's staging volume: kubelet evicts on its
+          # local-storage housekeeping tick (~10 s), the 8 MiB/s throttle
+          # lands the breach about eight seconds in, and a staged file
+          # persists until its image is deleted — once the volume holds more
+          # than 64Mi, the eviction cannot be raced away. The curl is still
+          # EXPECTED to die mid-request (an empty or 5xx code) when the
+          # eviction kills the pod; what separates "expected" from "retry"
+          # is the volume, not the HTTP code.
+          dd if=/dev/urandom of="$TMP/upload.img" bs=1M count=512 status=none
+          BREACHED=""
+          ID=""
+          for attempt in $(seq 1 3); do
+            CODE="$(curl -sk -o "$TMP/create.json" -w '%{http_code}' \
+              -X POST "$BASE/v2/images" -H 'Content-Type: application/json' \
+              -d '{"name":"overflow-leg","disk_format":"raw","container_format":"bare"}' || true)"
+            if [ "$CODE" != "201" ]; then
+              echo "attempt $attempt: POST /v2/images returned HTTP $CODE — retrying in 5s"
+              sleep 5
+              continue
+            fi
+            ID="$(jfield "$TMP/create.json" id)"
+            [ -n "$ID" ] || { echo "ERROR: image create response carries no id"; cat "$TMP/create.json"; exit 1; }
+            CODE="$(curl -sk -o "$TMP/stage.body" -w '%{http_code}' \
+              -X PUT --limit-rate 8M -T "$TMP/upload.img" \
+              -H 'Content-Type: application/octet-stream' \
+              "$BASE/v2/images/$ID/stage" || true)"
+            echo "attempt $attempt: overflow PUT /stage ended with HTTP '${CODE:-000}'"
+            POD="$(kubectl get pods -n openstack \
+              -l app.kubernetes.io/instance=glance-upload \
+              --field-selector=status.phase=Running -o name 2>/dev/null | head -1)"
+            if [ -z "$POD" ]; then
+              echo "OK: no Running glance-api pod — the eviction is already in flight"
+              BREACHED="yes"
+              break
+            fi
+            STAGED="$(kubectl exec -n openstack "${POD#pod/}" -- \
+              du -sb /var/lib/glance/staging 2>/dev/null | cut -f1 || true)"
+            case "$STAGED" in *[!0-9]*|"") STAGED=0;; esac
+            if [ "$STAGED" -gt 67108864 ]; then
+              echo "OK: the staging volume holds $STAGED bytes — the 64Mi bound is breached"
+              BREACHED="yes"
+              break
+            fi
+            echo "attempt $attempt: staging holds only $STAGED bytes — the transfer died"
+            echo "         before the volume filled; retrying in 5s"
+            sleep 5
+          done
+          if [ -z "$BREACHED" ]; then
+            echo "ERROR: three staged uploads never breached the 64Mi bound, so the"
+            echo "       eviction contract cannot be asserted."
+            exit 1
+          fi
+
+          # 30 polls x 10s = 5m.
+          EVICTED=""
+          for _ in $(seq 1 30); do
+            EVICTED="$(kubectl get pods -n openstack \
+              -l app.kubernetes.io/instance=glance-upload \
+              -o 'jsonpath={range .items[?(@.status.reason=="Evicted")]}{.metadata.name}{"\n"}{end}' \
+              2>/dev/null | head -1 || true)"
+            [ -n "$EVICTED" ] && break
+            sleep 10
+          done
+          if [ -z "$EVICTED" ]; then
+            echo "ERROR: no glance-api pod was evicted within 5m — the staging"
+            echo "       bound did not contain the oversized import."
+            kubectl get pods -n openstack -l app.kubernetes.io/instance=glance-upload -o wide 2>&1 || true
+            exit 1
+          fi
+          echo "OK: kubelet evicted $EVICTED for breaching the staging bound"
+
+          # The containment contract's second half: the Deployment replaces the
+          # evicted pod on its own, so the API is back without operator or
+          # human intervention.
+          kubectl wait --for=condition=Available \
+            deployment/glance-upload -n openstack --timeout=2m
+          echo "OK: the glance-api Deployment is Available again"
+
+          # The killed import must not have produced a usable image. The record
+          # has to be read back for real: an unreachable API also yields an
+          # empty status, and concluding "not active" from that would turn a
+          # dead endpoint into a green run. Retry until the API answers.
+          STATUS=""
+          for _ in $(seq 1 15); do
+            curl -sk -o "$TMP/img.json" "$BASE/v2/images/$ID" || true
+            STATUS="$(jfield "$TMP/img.json" status)"
+            [ -n "$STATUS" ] && break
+            sleep 4
+          done
+          if [ -z "$STATUS" ]; then
+            echo "ERROR: the API never returned a readable record for image $ID,"
+            echo "       so 'never went active' cannot be concluded."
+            head -c 2048 "$TMP/img.json" 2>/dev/null || true
+            echo
+            exit 1
+          fi
+          if [ "$STATUS" = "active" ]; then
+            echo "ERROR: image $ID reached active despite the staging bound —"
+            echo "       the oversized import was not contained."
+            head -c 2048 "$TMP/img.json" 2>/dev/null || true
+            echo
+            exit 1
+          fi
+          echo "OK: image $ID never went active (status '${STATUS:-<unknown>}')"
+    catch:
+    - script:
+        shell: bash
+        content: |
+          echo "=== Glance glance-upload ==="
+          kubectl get glance glance-upload -n openstack -o yaml 2>&1 || true
+          echo "=== glance-api Deployment ==="
+          kubectl describe deployment glance-upload -n openstack 2>&1 | tail -40 || true
+          echo "=== glance-api pods (name / phase / reason) ==="
+          kubectl get pods -n openstack -l app.kubernetes.io/instance=glance-upload \
+            -o 'custom-columns=NAME:.metadata.name,PHASE:.status.phase,REASON:.status.reason,MSG:.status.message' 2>&1 || true
+          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=glance-upload -o name 2>/dev/null); do
+            echo "--- $pod describe ---"
+            kubectl describe -n openstack "$pod" 2>&1 | tail -40 || true
+            echo "--- $pod logs ---"
+            kubectl logs -n openstack "$pod" --all-containers --tail=80 2>&1 || true
+          done
+          echo "=== events (last 40) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -40 || true
+    finally:
+    # Everything this suite owns is applied with `kubectl` from inside the step-2
+    # script (behind the CRD presence guard), so chainsaw's own cleanup never
+    # sees it and its namespace teardown does not apply — the suite shares the
+    # long-lived `openstack` namespace with every other glance suite. Without
+    # this block each run would permanently leak the glance-api Deployment, the
+    # HTTPRoute holding `glance-upload.127-0-0-1.nip.io` on the shared Gateway,
+    # and the MariaDB Database/User/Grant CRs plus the `glance_upload` schema.
+    # Dropping the database takes the image records with it; the 512 MiB
+    # object leg 1 leaves in the shared Garage bucket outlives it and goes
+    # with the cluster, which CI creates per run. Cleanup hangs off the
+    # last step because `execution.failFast` aborts the whole run on the first
+    # failure anyway, so an earlier abort leaks nothing that outlives the
+    # cluster. Best-effort throughout: a SKIP run created nothing, and a
+    # cleanup failure must not mask the assertion result.
+    - script:
+        shell: bash
+        content: |
+          # GlanceBackend first: the Glance CR is its glanceRef target, and
+          # removing the store before the owner keeps the operator from
+          # re-reconciling a half-deleted pair.
+          kubectl delete glancebackend glance-upload-s3 -n openstack \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete glance glance-upload -n openstack \
+            --ignore-not-found --timeout=2m 2>&1 || true

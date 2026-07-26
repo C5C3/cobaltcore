@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Namespace fixture for the Glance large-upload gateway test.
+#
+# The `openstack` namespace is already created by the kind overlay
+# (`deploy/kind/base/`) because it holds the Gateway/Certificate objects wired
+# in `openstack-gateway.yaml` (including the `https-glance-upload` listener and
+# its `glance-upload-nip-io-tls` Certificate) and the managed backing services
+# the image store and cache rely on. We still apply it here defensively so the
+# suite is self-contained — chainsaw's `apply` is idempotent on an existing
+# Namespace, which makes the test tolerate being invoked against a bare cluster
+# as well.
+#
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openstack
