@@ -98,6 +98,20 @@ func TestBuildHorizonHTTPRoute_TargetsDashboardService(t *testing.T) {
 	g.Expect(backend.Port).To(HaveValue(Equal(gatewayv1.PortNumber(8080))))
 }
 
+// The dashboard is fine on the gateway implementation's default route timeout;
+// pin the absence of a timeouts stanza so the route stays byte-identical when
+// another service opts into an operator-managed timeout.
+func TestBuildHorizonHTTPRoute_NoRequestTimeout(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.Gateway = gatewaySpec()
+
+	route := buildHorizonHTTPRoute(h)
+
+	g.Expect(route.Spec.Rules).NotTo(BeEmpty())
+	g.Expect(route.Spec.Rules[0].Timeouts).To(BeNil())
+}
+
 func TestHorizonStatusEndpoint(t *testing.T) {
 	g := NewGomegaWithT(t)
 	h := testHorizon()

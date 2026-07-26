@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -95,6 +96,34 @@ func TestBuildHTTPRoute_PassesAnnotationsThrough(t *testing.T) {
 	route := BuildHTTPRoute(spec, RouteParams{Name: "ks", Namespace: "ns", BackendService: "ks", BackendPort: 5000})
 
 	g.Expect(route.Annotations).To(gomega.HaveKeyWithValue("konghq.com/plugins", "rate-limit"))
+}
+
+// Operators that are fine on the gateway implementation's default must keep
+// rendering a route without a timeouts stanza.
+func TestBuildHTTPRoute_NoTimeoutsByDefault(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	route := BuildHTTPRoute(testGatewaySpec(), RouteParams{Name: "ks", Namespace: "ns", BackendService: "ks", BackendPort: 5000})
+
+	g.Expect(route.Spec.Rules[0].Timeouts).To(gomega.BeNil(),
+		"a nil RequestTimeout must not render a timeouts stanza")
+}
+
+func TestBuildHTTPRoute_RequestTimeoutRendered(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	route := BuildHTTPRoute(testGatewaySpec(), RouteParams{
+		Name:           "gl",
+		Namespace:      "ns",
+		BackendService: "gl",
+		BackendPort:    9292,
+		RequestTimeout: ptr.To(gatewayv1.Duration("0s")),
+	})
+
+	timeouts := route.Spec.Rules[0].Timeouts
+	g.Expect(timeouts).NotTo(gomega.BeNil())
+	g.Expect(timeouts.Request).To(gomega.HaveValue(gomega.Equal(gatewayv1.Duration("0s"))),
+		"0s is the Gateway API spelling of a disabled request timeout")
 }
 
 func TestIsHTTPRouteAccepted(t *testing.T) {

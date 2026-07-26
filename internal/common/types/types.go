@@ -383,7 +383,8 @@ type GatewaySpec struct {
 
 	// Annotations are passed through to the generated HTTPRoute metadata
 	// verbatim, allowing implementation-specific configuration (rate limits,
-	// timeouts, CORS) without extending the CRD.
+	// CORS) without extending the CRD; the route timeout is operator-managed,
+	// not annotation-driven.
 	// +optional
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
