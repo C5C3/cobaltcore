@@ -751,6 +751,12 @@ func validateGlance(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, glancev1alpha1.ValidateImportFiltering(
 		glPath.Child("importFiltering"), gl.ImportFiltering,
 	)...)
+	// services.glance.staging carries the glance module's own StagingSpec for the
+	// same single-source reason, and ValidateStaging is the only gate on its size
+	// floor — see that validator for why no schema rule can express it.
+	allErrs = append(allErrs, glancev1alpha1.ValidateStaging(
+		glPath.Child("staging"), gl.Staging,
+	)...)
 	allErrs = append(allErrs, validateGlanceBackends(cp, glPath.Child("backends"))...)
 	allErrs = append(allErrs, validateGlanceServiceAccount(cp)...)
 

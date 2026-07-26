@@ -545,6 +545,16 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'allowedHosts and disallowedHosts are mutually exclusive')): true
+    # services.glance.staging.sizeLimit of 0 is rejected by the webhook: a Quantity
+    # is an int-or-string in the CRD schema and carries no Minimum marker, so no
+    # schema rule can express this floor.
+    - apply:
+        file: 63-glance-staging-sizelimit-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.glance.staging.sizeLimit')): true
+            (contains($error, 'must be at least 1Mi')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

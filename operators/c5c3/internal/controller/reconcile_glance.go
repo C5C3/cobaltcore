@@ -479,6 +479,11 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 	// projected value staying pinned on the fetched child.
 	glance.Spec.ImportFiltering = cp.Spec.Services.Glance.ImportFiltering.DeepCopy()
 
+	// The node-local scratch bound is projected the same way and for the same
+	// reasons: clearing services.glance.staging removes the field from the child,
+	// so the Glance operator's default size limit applies again.
+	glance.Spec.Staging = cp.Spec.Services.Glance.Staging.DeepCopy()
+
 	// Resolve replicas to the shared operator default, then let an override win.
 	// Assigning unconditionally means clearing services.glance.replicas reverts the
 	// child to the default instead of leaving the previously-projected value pinned
