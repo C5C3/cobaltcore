@@ -61,6 +61,8 @@ check "operators/${SERVICE}/helm/${SERVICE}-operator chart" \
   test -f "operators/${SERVICE}/helm/${SERVICE}-operator/Chart.yaml"
 check "CRD base under operators/${SERVICE}/config/crd/bases/" \
   bash -c "ls operators/${SERVICE}/config/crd/bases/*.yaml"
+check "recurring-maintenance CronJob sub-reconciler, job.EnsureCronJob (skip only if the profile recorded no maintenance task)" \
+  grep -rq "job.EnsureCronJob" "operators/${SERVICE}/internal/controller/"
 
 header "Layer 3: CI / e2e / deploy"
 check "ci.yaml FILTER_${SERVICE} env" grep -q "FILTER_${SERVICE}" .github/workflows/ci.yaml

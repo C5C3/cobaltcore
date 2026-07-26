@@ -84,7 +84,7 @@ bottom when scaffolding `operators/<op>/`:
 
 ## Design decisions the shared scaffolding encodes
 
-Two cross-service decisions were settled when the scaffolding was extracted;
+Three cross-service decisions were settled when the scaffolding was extracted;
 new operators build on them rather than reopening them:
 
 - **Cross-service endpoint discovery is convention-based.** Consumers derive a
@@ -94,6 +94,23 @@ new operators build on them rather than reopening them:
   consumers only; no machine consumer reads it, and no status-based resolve
   helper or cross-CR watch exists. If a new operator needs endpoint shapes the
   convention cannot express, build that helper then — not preemptively.
+- **Periodic maintenance belongs to the operator, from the first release
+  on.** OpenStack services expect somebody to run their housekeeping
+  commands on a schedule — `glance-manage db purge`,
+  `keystone-manage trust_flush`, cache pruning, expiry sweeps. A package
+  deployment answers that with a cron entry on a controller node; a
+  Kubernetes deployment has no such place, so a task the operator does not
+  project as a CronJob never runs at all, silently: the workload stays
+  Ready, every probe passes, and the only symptom is a table or a cache
+  that keeps growing. Model each task in the spec (`spec.dbPurge` on
+  Glance, `spec.trustFlush` on Keystone), project it from a sub-reconciler
+  via `internal/common/job`'s `EnsureCronJob`, and give it a `<Task>Ready`
+  condition that reports the newest terminal run rather than the mere
+  existence of the CronJob. Scaffold this with the operator: the first
+  CronJob added later also has to bound `metadata.name`, since Kubernetes
+  caps a CronJob name at 52 characters and an immutable field can only be
+  bounded on create — leaving the CRs admitted before the bound to a
+  hash-collapse fallback in the controller.
 - **Non-INI configuration rendering gets its own package.**
   `internal/common/config` renders oslo INI only and stays that way. A service
   that renders Python settings (e.g. Horizon's Django `local_settings.py`)

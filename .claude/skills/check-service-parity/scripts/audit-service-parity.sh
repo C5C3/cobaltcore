@@ -25,6 +25,8 @@
 #   P8  docs: reference set, metrics/networkpolicy guides, vitepress nav
 #   P9  ControlPlane integration: ServicesSpec field, reconcile_<svc>.go,
 #       <Svc>Ready condition, c5c3 chart RBAC rule
+#   P10 recurring maintenance: a database-backed service projects at least
+#       one housekeeping CronJob (job.EnsureCronJob)
 #
 # The keystone reference is audited too — a reference regression is its own
 # [FAIL]. Deliberate thin-profile deviations (a service that legitimately
@@ -358,6 +360,31 @@ for svc in ${SERVICES}; do
   t=0; grep -qi "${svc}\.openstack\.c5c3\.io" "${HELPERS}" || t=1
   check "${svc}" P9 "rbac" "${t}" \
     "c5c3 chart RBAC helper grants the ${svc}.openstack.c5c3.io group"
+done
+
+# ---------------------------------------------------------------------------
+# P10 — recurring maintenance
+# ---------------------------------------------------------------------------
+# Every soft-deleting service needs periodic housekeeping (glance:
+# glance-manage db purge; keystone: keystone-manage trust_flush). Package
+# deployments run it from a cron entry on the controller node; here nothing
+# runs it unless the operator projects a CronJob, and the omission is silent —
+# the deployment stays Ready while the backlog grows. Presence of
+# job.EnsureCronJob is a smoke signal only: whether the projected CronJob
+# covers the tasks the service actually needs is the hand cross-reference in
+# the skill's step 2.
+hdr "P10: recurring maintenance (housekeeping CronJob per database-backed service)"
+for svc in ${SERVICES}; do
+  # Skip services that model no database: they carry no soft-delete backlog,
+  # so their absence is a profile fact, not a deviation worth a token.
+  if ! grep -rq "DatabaseSpec" "operators/${svc}/api/" 2>/dev/null; then
+    info "${svc}: models no database — no housekeeping CronJob expected"
+    continue
+  fi
+
+  t=0; grep -rq "job.EnsureCronJob" "operators/${svc}/internal/controller/" 2>/dev/null || t=1
+  check "${svc}" P10 "maintenance-cronjob" "${t}" \
+    "operator projects at least one recurring-maintenance CronJob (job.EnsureCronJob)"
 done
 
 # ---------------------------------------------------------------------------

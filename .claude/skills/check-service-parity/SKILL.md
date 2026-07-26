@@ -118,6 +118,15 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   `ServicesSpec`, the `reconcile_<svc>.go` projection, the
   `<Svc>Ready` condition mirror, and the RBAC group in the c5c3
   chart helpers.
+- **P10** — recurring maintenance: a database-backed operator projects
+  at least one housekeeping CronJob (`job.EnsureCronJob` — glance's
+  `db purge`, keystone's `trust_flush`). Nothing else in the cluster
+  runs the periodic cleanup a package deployment gets from a cron entry
+  on the controller node, and the omission is invisible: the deployment
+  stays Ready while the soft-deleted backlog grows. Services that model
+  no database are skipped rather than allowlisted. Presence is a smoke
+  signal — whether the CronJobs cover the tasks the service actually
+  needs is step 2 below.
 - The **inventory** lists, per service, the helm-unittest, e2e, and
   chaos suite counts. Cross-reference outliers by hand in step 2.
 
@@ -140,6 +149,16 @@ The script checks presence, not content. Using the inventory, confirm:
 4. That suite *content* tracks the reference where it applies — e.g. a
    new assertion added to keystone's `network-policy` suite usually
    has an analogue in every other service's suite.
+5. That the housekeeping P10 found (or did not find) matches what the
+   service actually needs: compare the projected CronJobs against the
+   `<svc>-manage` subcommands upstream documents for periodic use
+   (`db purge`, `archive_deleted_rows`, `purge_deleted`, cache pruning,
+   expiry sweeps — the table in [[prepare-new-service]] § Recurring
+   maintenance jobs). A service passing P10 with a key task still
+   unscheduled is the same finding as one failing it. Check the shape
+   too: `ConcurrencyPolicy: Forbid`, a per-run row cap,
+   `ActiveDeadlineSeconds`, and a condition that reports the newest
+   terminal run instead of merely confirming the CronJob exists.
 
 ### 3. Run the per-layer authoritative gates
 
@@ -167,7 +186,10 @@ Produce a concise summary grouped by severity:
   service the ControlPlane models.
 - **MEDIUM** — a missing canonical e2e suite, chaos suite, or
   helm-unittest suite without an `ALLOWED_DEVIATIONS` entry; a
-  missing dashboard drift test; a missing deploy-stack entry.
+  missing dashboard drift test; a missing deploy-stack entry; a
+  database-backed service with no housekeeping CronJob (P10), or one
+  whose CronJobs leave a documented periodic task unscheduled — name
+  the task and the growth it leaves unbounded.
 - **LOW** — a missing docs page or nav entry; an inventory outlier
   (suite counts far apart) that turns out to be a recorded deviation.
 
@@ -196,7 +218,15 @@ These recurring shapes are worth grepping for first:
    first; both copies now evolve independently. The onboarding
    pre-work rule in [[prepare-new-service]] exists to prevent exactly
    this.
-5. **Release config added for one release only.** The service key
+5. **Housekeeping deferred to "later".** The service onboards with a
+   database and a deployment but no periodic cleanup, because nothing
+   in the onboarding fails without it. Glance ran that way until
+   `db purge` was retro-fitted, which then cost an API block, an
+   admission bound on `metadata.name` in two operators, and a
+   hash-collapse fallback for the CRs admitted before that bound —
+   [[prepare-new-service]] § Recurring maintenance jobs exists to keep
+   the next service from repeating it.
+6. **Release config added for one release only.** The service key
    landed in the newest `releases/<version>/source-refs.yaml` but not
    the older ones (or vice versa), so the build matrix builds the
    service for half the supported releases.
