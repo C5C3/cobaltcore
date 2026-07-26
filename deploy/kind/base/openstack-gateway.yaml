@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Gateway API wiring for the kind Quick Start — `GatewayClass/envoy`
-# plus a four-listener HTTPS Gateway on port 443
+# plus a five-listener HTTPS Gateway on port 443
 # (`keystone.127-0-0-1.nip.io`, `horizon.127-0-0-1.nip.io`,
-# `glance.127-0-0-1.nip.io`, and `dizzy.127-0-0-1.nip.io`, routed by
-# SNI) terminating TLS with
+# `glance.127-0-0-1.nip.io`, `dizzy.127-0-0-1.nip.io`, and
+# `glance-upload.127-0-0-1.nip.io`, routed by SNI) terminating TLS with
 # self-signed certificates issued by the existing `selfsigned-cluster-issuer`
 # ClusterIssuer (the same issuer OpenBao uses; see
 # `deploy/flux-system/infrastructure/cluster-issuer.yaml`).
@@ -144,3 +144,25 @@ spec:
           selector:
             matchLabels:
               kubernetes.io/metadata.name: dizzy
+    # Fifth HTTPS listener for the Glance large-upload e2e suite. It shares
+    # port 443 with the listeners above, routed by SNI on its distinct
+    # `hostname` and terminating with its own certificate.
+    #
+    # The suite gets its own hostname instead of reusing `https-glance`
+    # because the Quick Start smoke suite already claims that one: two
+    # HTTPRoutes on the same hostname with the same `/` prefix would race
+    # under chainsaw's parallelism. Like the dizzy listener above it is
+    # unconditional — with no HTTPRoute projected onto this hostname,
+    # requests for this SNI get 404.
+    - name: https-glance-upload
+      protocol: HTTPS
+      port: 443
+      hostname: glance-upload.127-0-0-1.nip.io
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: glance-upload-nip-io-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
