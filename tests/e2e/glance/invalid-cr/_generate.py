@@ -407,6 +407,38 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
         name="glance-invalid-name-far-too-long-for-cronjob",
     ),
+    Fixture(
+        filename="20-staging-sizelimit-zero.yaml",
+        comment=(
+            "spec.staging.sizeLimit of 0 is rejected by the validating webhook —\n"
+            "a resource.Quantity renders as x-kubernetes-int-or-string in the CRD\n"
+            "schema, which carries no Minimum marker, so ValidateStaging is the\n"
+            "sole gate against an unusable scratch-volume bound. It enforces a 1Mi\n"
+            "floor rather than mere positivity, because the schema pattern also\n"
+            "admits the sub-byte milli suffix (`100m` for `100Mi`)."
+        ),
+        name="glance-invalid-staging-sizelimit",
+        extra=(
+            "  staging:\n"
+            "    sizeLimit: 0\n"
+        ),
+    ),
+    Fixture(
+        filename="21-staging-unbounded-with-sizelimit.yaml",
+        comment=(
+            "spec.staging.unbounded and spec.staging.sizeLimit contradict each\n"
+            "other: unbounded renders both scratch emptyDirs with no sizeLimit at\n"
+            "all, so there is no bound left for sizeLimit to name. The CEL rule on\n"
+            "StagingSpec rejects the pair at the schema level, with the validating\n"
+            "webhook repeating it for the ControlPlane copy of the same type."
+        ),
+        name="glance-invalid-staging-unbounded",
+        extra=(
+            "  staging:\n"
+            "    unbounded: true\n"
+            "    sizeLimit: 40Gi\n"
+        ),
+    ),
 )
 
 

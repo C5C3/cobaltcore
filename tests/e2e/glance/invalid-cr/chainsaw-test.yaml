@@ -206,3 +206,25 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'name must be at most 43 characters')): true
+  # spec.staging.sizeLimit of 0 must be rejected by the validating webhook: a
+  # Quantity is an int-or-string in the CRD schema and carries no Minimum
+  # marker, so no schema rule can express this floor.
+  - try:
+    - apply:
+        file: 20-staging-sizelimit-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'staging.sizeLimit')): true
+            (contains($error, 'must be at least 1Mi')): true
+  # spec.staging.unbounded together with spec.staging.sizeLimit must be
+  # rejected: unbounded renders both scratch emptyDirs without a sizeLimit, so
+  # the pair has no consistent reading. Enforced by the CEL rule on StagingSpec
+  # and repeated by the validating webhook.
+  - try:
+    - apply:
+        file: 21-staging-unbounded-with-sizelimit.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'mutually exclusive')): true
