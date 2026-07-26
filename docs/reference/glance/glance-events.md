@@ -84,6 +84,24 @@ All events follow these conventions:
 > schema-check Job, so — unlike Keystone — **`SchemaDriftDetected` never fires
 > for Glance**.
 
+### DB Purge
+
+| Reason | Type | Trigger Condition | Example Message |
+| --- | --- | --- | --- |
+| `DBPurgeJobFailed` | Warning | The newest terminal Job spawned by the `{name}-db-purge` CronJob failed | `Database purge Job <name> failed; inspect its pod logs — the soft-deleted image and task rows keep accumulating until a run succeeds` |
+| `DBPurgeMetricEmissionDeferred` | Warning | Patching the last-observed Job UID annotation fails, deferring `db_purge` metric emission to the next reconcile | `Patching last-observed db-purge Job UID failed; metric emission deferred to the next reconcile: <error>` |
+
+**Source:** `reconcileDBPurge` in `reconcile_dbpurge.go` (`DBPurgeJobFailed`);
+the shared `RecordJobTerminalState` in `internal/common/job/terminal.go`
+(`DBPurgeMetricEmissionDeferred`)
+
+> **Note:** There is no `Normal` event for a successful purge run — a
+> succeeding run only flips `DBPurgeReady` back to `True`. The CronJob is
+> projected on every Glance regardless of `spec.dbPurge`; `spec.dbPurge.suspend`
+> pauses it without deleting it, and a suspended purge keeps `DBPurgeReady`
+> `True`, so it raises no event either — it is visible only through the
+> condition's `DBPurgeSuspended` reason.
+
 ### Upgrade
 
 A release transition (a `spec.openStackRelease` bump with the image in lockstep)
@@ -166,6 +184,19 @@ groups:
           summary: "Glance db-sync failed"
           description: "The Glance db-sync Job has failed. Check the Job logs for details."
 
+      - alert: GlanceDBPurgeFailed
+        expr: |
+          increase(kube_event_count{
+            reason="DBPurgeJobFailed",
+            involved_object_kind="Glance"
+          }[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Glance database purge failed"
+          description: "The Glance db-purge Job has failed. Soft-deleted image and task rows keep accumulating until a run succeeds; check the Job logs for details."
+
       - alert: GlanceUpgradePhaseFailed
         expr: |
           increase(kube_event_count{
@@ -208,6 +239,10 @@ GlanceReconciler.Reconcile()
   │                                             UpgradePathInvalid / UpgradeTargetChanged /
   │                                             ExpandFailed / MigrateFailed / ContractFailed
   │
-  └── reconcileDeployment()
-        └─ rollout ready mid-upgrade  → Normal  DeploymentRolloutComplete
+  ├── reconcileDeployment()
+  │     └─ rollout ready mid-upgrade  → Normal  DeploymentRolloutComplete
+  │
+  └── reconcileDBPurge()
+        ├─ newest run failed          → Warning DBPurgeJobFailed
+        └─ Job-UID patch fails        → Warning DBPurgeMetricEmissionDeferred
 ```

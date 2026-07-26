@@ -13,8 +13,8 @@ reference Grafana dashboard, and verifying that scrape targets transition to
 `Up`.
 
 The glance-operator emits the shared sub-reconciler instrumentation under
-the `glance_operator` prefix, plus two per-CR collectors covering the schema
-migration:
+the `glance_operator` prefix, plus per-CR collectors covering the schema
+migration and the recurring database purge:
 
 | Metric | Type | Labels |
 | --- | --- | --- |
@@ -22,6 +22,8 @@ migration:
 | `glance_operator_reconcile_errors_total` | counter | `sub_reconciler`, `condition_type` |
 | `glance_operator_db_sync_total` | counter | `glance`, `namespace`, `result` |
 | `glance_operator_db_sync_duration_seconds` | histogram | `glance`, `namespace` |
+| `glance_operator_db_purge_total` | counter | `glance`, `namespace`, `result` |
+| `glance_operator_db_purge_duration_seconds` | histogram | `glance`, `namespace` |
 
 For the controller-side contract (which sub-reconciler drives which
 condition), see

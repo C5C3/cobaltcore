@@ -6,7 +6,7 @@ quadrant: operator
 # Glance Reconciler Architecture
 
 The Glance controller runs the shared table-driven pipeline
-(`internal/common/reconcile`) with eight sub-reconcilers. Every step is
+(`internal/common/reconcile`) with nine sub-reconcilers. Every step is
 instrumented under the `glance_operator` metrics prefix, and the first step to
 return a non-zero result or an error short-circuits the chain — conditions and
 the requeue are persisted on every exit path through the shared status skeleton.
@@ -14,9 +14,11 @@ the requeue are persisted on every exit path through the shared status skeleton.
 Two Prometheus vectors cover the pipeline
 (`glance_operator_reconcile_duration_seconds`,
 `glance_operator_reconcile_errors_total`, the latter labelled by
-`sub_reconciler` and `condition_type`), and two per-CR db-sync collectors cover
+`sub_reconciler` and `condition_type`), two per-CR db-sync collectors cover
 the schema migration (`glance_operator_db_sync_total`,
-`glance_operator_db_sync_duration_seconds`).
+`glance_operator_db_sync_duration_seconds`), and two per-CR db-purge
+collectors cover the recurring purge (`glance_operator_db_purge_total`,
+`glance_operator_db_purge_duration_seconds`).
 
 ## Pipeline
 
@@ -24,7 +26,8 @@ the schema migration (`glance_operator_db_sync_total`,
 Secrets ──► DBConnectionSecret ──► Backends ──► Config ──► Database ──► Deployment ──► ┬─ HTTPRoute
                                                                                        ├─ HealthCheck
                                                                                        ├─ HPA
-                                                                                       └─ NetworkPolicy  (parallel)
+                                                                                       ├─ NetworkPolicy
+                                                                                       └─ DBPurge        (parallel)
 ```
 
 | Step | What it does | Condition |
@@ -39,6 +42,7 @@ Secrets ──► DBConnectionSecret ──► Backends ──► Config ──�
 | HealthCheck | HTTP GET of the cluster-local `/healthcheck` through the shared TTL probe cache | `GlanceAPIReady` |
 | HPA | Creates/deletes the HorizontalPodAutoscaler | `HPAReady` |
 | NetworkPolicy | Creates/deletes the NetworkPolicy (auto-derived DB/cache/S3 egress); refuses an empty ingress list (fail-closed) | `NetworkPolicyReady` |
+| DBPurge | Projects the `{name}-db-purge` CronJob and reports the newest terminal run it spawned | `DBPurgeReady` |
 
 `DBConnectionSecret` and `Config` deliberately reuse `SecretsReady` rather than
 a dedicated `ConfigReady` condition: both produce Secret/ConfigMap artefacts
@@ -49,7 +53,7 @@ minimal.
 ## Conditions
 
 The aggregate `Ready` condition is `True` (reason `AllReady`) exactly when all
-eight sub-conditions are `True`; otherwise `False` (`NotAllReady`).
+nine sub-conditions are `True`; otherwise `False` (`NotAllReady`).
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
@@ -61,6 +65,7 @@ eight sub-conditions are `True`; otherwise `False` (`NotAllReady`).
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | — (errors propagate) |
 | `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled` |
+| `DBPurgeReady` | `DBPurgeScheduled`, `DBPurgeSuspended` | `DBPurgeJobFailed` |
 
 Both `DatabaseReady` and `DeploymentReady` carry a `WaitingForBackends` reason:
 the schema cannot be `db sync`-ed and the Deployment cannot be created until a
@@ -135,6 +140,46 @@ ready, it advances the phase to `Contracting` and requeues so the contract Job
 runs. See the [Glance Upgrade Flow](./glance-upgrade-flow.md) for the phase
 table, condition reasons, events, and abort semantics.
 
+## DBPurge
+
+The DBPurge step runs in the parallel group, after Database and Deployment, so
+the purge CronJob can mount the same rendered config ConfigMap the Deployment
+already consumes. It projects the `{name}-db-purge` CronJob on every pass with
+the settings `effectiveDBPurge` resolves, and it derives run visibility rather
+than watching the CronJob: it lists the Jobs carrying the Glance's common
+labels, keeps the ones the CronJob controls, and reports on the newest that
+reached a terminal state.
+
+A failed run flips `DBPurgeReady` to `False` (reason `DBPurgeJobFailed`) and
+raises a matching Warning event; a later successful run flips it back to
+`True`, so an old failure a bounded history has not yet pruned cannot wedge
+the condition once a newer run succeeds. A run that wedges rather than fails —
+an unschedulable pod, a `glance-manage` blocked on a database lock — reaches a
+terminal `Failed` state through the Job's `activeDeadlineSeconds`, so it
+surfaces on the same path instead of leaving `DBPurgeReady` reporting a purge
+that never happens. Every terminal run also feeds the
+`glance_operator_db_purge_total` / `glance_operator_db_purge_duration_seconds`
+pair exactly once per Job UID. Because that once-per-UID annotation is a write
+to the CR from inside the parallel group, the group adopts the member's
+post-patch metadata onto the primary object before the status write.
+
+A CronJob suspended via `spec.dbPurge.suspend` keeps `DBPurgeReady` `True` — a
+pause is a posture, not a failure — but reports it under its own reason
+`DBPurgeSuspended`, because nothing else does: the CronJob never fires again, so
+no run fails, no Warning event follows, and `glance_operator_db_purge_total`
+merely stops incrementing while the soft-deleted backlog keeps growing.
+
+See [DBPurgeSpec](./glance-crd.md#dbpurgespec) for the CronJob shape and the
+`glance-manage` commands it runs.
+
+The CronJob fires on the Kubernetes scheduler's clock, not on the pipeline's,
+so it keeps running during a release upgrade — while the Database step is
+driving expand/migrate/contract, the chain short-circuits before DBPurge and
+the CronJob keeps its pre-upgrade image. A run landing inside that window fails
+loudly (`DBPurgeJobFailed`) rather than corrupting anything, since the purge
+only issues bounded deletes. Suspend the CronJob via `spec.dbPurge.suspend`
+across a planned upgrade to avoid the noise.
+
 ## Requeue semantics
 
 | Interval | Used by |
@@ -169,10 +214,12 @@ table, condition reasons, events, and abort semantics.
 
 The Glance controller `Owns` its Deployment, Service, ConfigMap, Secret,
 PodDisruptionBudget, HorizontalPodAutoscaler, NetworkPolicy, and — for the
-db-sync migration — Job; the HTTPRoute is added to the `Owns` set only when the
-Gateway API CRD is installed (otherwise `spec.gateway` surfaces
-`HTTPRouteReady=False / GatewayAPINotInstalled` instead of crashing the
-controller). Beyond the owned set it watches:
+db-sync migration — Job, plus the db-purge CronJob: its `status.active` list
+changes as each spawned run starts and finishes, which is what wakes the
+reconcile that refreshes `DBPurgeReady`. The HTTPRoute is added to the `Owns`
+set only when the Gateway API CRD is installed (otherwise `spec.gateway`
+surfaces `HTTPRouteReady=False / GatewayAPINotInstalled` instead of crashing
+the controller). Beyond the owned set it watches:
 
 - **Secrets**, mapped to the Glance CRs that reference them directly (via the
   `spec.serviceUser.secretRef.name` / `spec.database.secretRef.name` field

@@ -87,6 +87,7 @@ For a Glance CR named `{name}` the operator manages:
 | Secret | `{name}-backends-<hash>` | Immutable, content-addressed `backends.conf` (the aggregated store sections; 3 historical retained) |
 | Secret | `{name}-db-connection` | Derived pymysql DSN, consumed via `OS_DATABASE__CONNECTION` |
 | Job | `{name}-db-sync` | `glance-manage db sync` schema migration |
+| CronJob | `{name}-db-purge` | Scheduled purge of soft-deleted task rows (image rows opt-in) |
 
 ## Reference pages
 
