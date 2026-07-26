@@ -4,7 +4,7 @@
 
 # Chainsaw E2E test for happy-path Glance deployment (2026.1 release).
 # Validates the full reconciliation cycle:
-#   - All 8 sub-conditions progress to True with expected reasons
+#   - All 9 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
 #   - The API Deployment launches under uWSGI (the 2026.1-and-later launch mode,
 #     `uwsgi ... --wsgi-file /var/lib/openstack/bin/glance-wsgi-api ...`; the
@@ -67,6 +67,9 @@ spec:
             (conditions[?type == 'HTTPRouteReady']):
             - status: "True"
               reason: HTTPRouteNotRequired
+            (conditions[?type == 'DBPurgeReady']):
+            - status: "True"
+              reason: DBPurgeScheduled
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
@@ -203,3 +206,109 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Assert the db-purge CronJob and an operator-observed run ──────
+  # The CR sets spec.dbPurge, so this leg covers the accept path through the CRD
+  # schema plus the validating webhook and the operator honoring each knob: the
+  # every-minute schedule, the 7-day retention, and the opt-in images-table pass
+  # (off by default — the images row is what keeps a deleted image's UUID
+  # reserved). The every-minute schedule then produces a real firing inside the
+  # suite, so the chain no unit test can reach is exercised end to end: the
+  # CronJob controller propagates the jobTemplate labels and a controller
+  # reference onto the Job it spawns, the operator lists that Job by label,
+  # keeps it because it is controlled by the CronJob, and stamps the
+  # once-per-UID dedupe annotation as it counts the run.
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: glance-basic-2026-db-purge
+            namespace: openstack
+          spec:
+            schedule: "*/1 * * * *"
+            # Two purges deleting the same rows contend; a wedged run must not
+            # outlive its deadline and must not be overtaken by the next firing.
+            concurrencyPolicy: Forbid
+            suspend: false
+            jobTemplate:
+              spec:
+                activeDeadlineSeconds: 3600
+    - script:
+        content: |
+          set -eu
+          CMD=$(kubectl get cronjob glance-basic-2026-db-purge -n openstack \
+            -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[?(@.name=="db-purge")].command}')
+          echo "db-purge command: $CMD"
+          echo "$CMD" | grep -q -- '--age_in_days 7'
+          echo "$CMD" | grep -q -- '--max_rows 1000'
+          echo "$CMD" | grep -q 'purge_images_table'
+          echo "OK: glance-basic-2026-db-purge carries the spec.dbPurge glance-manage purge flags"
+    - script:
+        timeout: 300s
+        content: |
+          set -eu
+
+          # The CronJob controller fires within the minute; wait for the Job it
+          # spawns to complete. This pins the glance-manage purge CLI contract
+          # for this release against a real database.
+          echo "waiting for a CronJob-spawned db-purge run to complete..."
+          for _ in $(seq 1 60); do
+            LAST=$(kubectl get cronjob glance-basic-2026-db-purge -n openstack \
+              -o jsonpath='{.status.lastSuccessfulTime}')
+            [ -n "$LAST" ] && break
+            sleep 5
+          done
+          [ -n "$LAST" ] || { echo "FAIL: no db-purge run succeeded"; exit 1; }
+          echo "OK: db-purge run succeeded at $LAST"
+
+          # The operator must have observed that run: the dedupe annotation is
+          # stamped only for a terminal Job the purge CronJob controls, so a
+          # non-empty value proves the whole list → ownership → count chain ran
+          # against a Job the CronJob controller built, not a hand-made one.
+          echo "waiting for the operator to observe the run..."
+          for _ in $(seq 1 30); do
+            UID_ANN=$(kubectl get glance glance-basic-2026 -n openstack \
+              -o jsonpath='{.metadata.annotations.forge\.c5c3\.io/last-db-purge-job-uid}')
+            [ -n "$UID_ANN" ] && break
+            sleep 5
+          done
+          [ -n "$UID_ANN" ] || { echo "FAIL: the operator never observed a purge run"; exit 1; }
+          echo "OK: operator observed db-purge Job UID $UID_ANN"
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-basic-2026
+            namespace: openstack
+          status:
+            (conditions[?type == 'DBPurgeReady']):
+            - status: "True"
+              reason: DBPurgeScheduled
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== db-purge CronJob ==="
+          kubectl get cronjob glance-basic-2026-db-purge -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== db-purge Jobs ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 | grep db-purge || true
+          echo "=== db-purge pods ==="
+          for jb in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null | grep db-purge); do
+            name=${jb#job.batch/}
+            echo "--- $name ---"
+            kubectl describe -n $NAMESPACE "$jb" 2>&1 | tail -30 || true
+            for pod in $(kubectl get pods -n $NAMESPACE -l job-name="$name" -o name 2>/dev/null); do
+              echo "--- $pod logs ---"
+              kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
+              echo "--- $pod describe ---"
+              kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+            done
+          done
+          echo "=== Glance CR ==="
+          kubectl get glance glance-basic-2026 -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true

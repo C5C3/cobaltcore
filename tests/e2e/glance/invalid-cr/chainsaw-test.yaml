@@ -177,3 +177,32 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'extraConfig key and value must not contain a newline or carriage return')): true
+  # spec.dbPurge.retentionDays of 0 must be rejected by the CRD Minimum=1
+  # marker.
+  - try:
+    - apply:
+        file: 17-dbpurge-retentiondays-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'dbPurge.retentionDays')): true
+            (contains($error, 'should be greater than or equal to 1')): true
+  # spec.dbPurge.schedule with a non-cron value must be rejected by the
+  # validating webhook.
+  - try:
+    - apply:
+        file: 18-dbpurge-invalid-schedule.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'invalid cron expression')): true
+  # A metadata.name past 43 characters must be rejected: the {name}-db-purge
+  # CronJob would exceed the 52-character cap the API server enforces, so the CR
+  # would admit cleanly and then fail every reconcile.
+  - try:
+    - apply:
+        file: 19-name-too-long-for-purge-cronjob.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'name must be at most 43 characters')): true

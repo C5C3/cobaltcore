@@ -4,7 +4,7 @@
 
 # Chainsaw E2E test for happy-path Glance deployment (2025.2 release).
 # Validates the full reconciliation cycle:
-#   - All 8 sub-conditions progress to True with expected reasons
+#   - All 9 sub-conditions progress to True with expected reasons
 #   - Aggregate Ready=True with reason AllReady
 #   - The API Deployment launches the eventlet glance-api server (the pre-2026.1
 #     launch mode: `glance-api --config-dir ...`)
@@ -65,6 +65,9 @@ spec:
             (conditions[?type == 'HTTPRouteReady']):
             - status: "True"
               reason: HTTPRouteNotRequired
+            (conditions[?type == 'DBPurgeReady']):
+            - status: "True"
+              reason: DBPurgeScheduled
             (conditions[?type == 'Ready']):
             - status: "True"
               reason: AllReady
@@ -207,3 +210,66 @@ spec:
           done
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Assert the default db-purge CronJob schedule and CLI flags ──
+  # A CR without spec.dbPurge tracks the operator defaults: daily at 00:01,
+  # glance-manage db purge with a 30-day retention and a 1000-row cap per table,
+  # and no purge_images_table pass — that one frees a deleted image's UUID for
+  # reuse and is opt-in (the 2026-1 suite covers the opt-in shape). The manual
+  # run pins the glance-manage purge CLI contract for this release rather than
+  # waiting for the first midnight fire.
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: glance-basic-db-purge
+            namespace: openstack
+          spec:
+            schedule: "1 0 * * *"
+            concurrencyPolicy: Forbid
+            suspend: false
+            jobTemplate:
+              spec:
+                activeDeadlineSeconds: 3600
+    - script:
+        content: |
+          set -eu
+          CMD=$(kubectl get cronjob glance-basic-db-purge -n openstack \
+            -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[?(@.name=="db-purge")].command}')
+          echo "db-purge command: $CMD"
+          echo "$CMD" | grep -q -- '--age_in_days 30'
+          echo "$CMD" | grep -q -- '--max_rows 1000'
+          if echo "$CMD" | grep -q 'purge_images_table'; then
+            echo "FAIL: purge_images_table must stay off without spec.dbPurge.purgeImagesTable"
+            exit 1
+          fi
+          echo "OK: glance-basic-db-purge carries the default glance-manage purge flags"
+    - script:
+        timeout: 180s
+        content: |
+          set -eu
+
+          kubectl create job glance-basic-db-purge-manual \
+            --from=cronjob/glance-basic-db-purge -n openstack
+          kubectl wait --for=condition=complete \
+            job/glance-basic-db-purge-manual -n openstack --timeout=120s
+
+          echo "OK: db-purge job completed successfully"
+    catch:
+    - script:
+        content: |
+          echo "=== db-purge CronJob ==="
+          kubectl get cronjob glance-basic-db-purge -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== db-purge manual Job pods ==="
+          kubectl get pods -n $NAMESPACE -l job-name=glance-basic-db-purge-manual -o wide 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l job-name=glance-basic-db-purge-manual -o name 2>/dev/null); do
+            echo "--- $pod logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 2>&1 || true
+            echo "--- $pod previous logs ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=100 --previous 2>&1 || true
+            echo "--- $pod describe ---"
+            kubectl describe -n $NAMESPACE "$pod" 2>&1 | tail -30 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -20 || true

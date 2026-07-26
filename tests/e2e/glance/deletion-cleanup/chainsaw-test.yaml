@@ -190,6 +190,13 @@ spec:
           metadata:
             name: glance-deletion-db-sync
             namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: glance-deletion-db-purge
+            namespace: openstack
     # MariaDB CRs created by reconcileDatabase in managed mode (clusterRef).
     # Owner references are set on these CRs, but the cleanup finalizer also
     # issues an explicit Delete so the schema teardown is triggered before the

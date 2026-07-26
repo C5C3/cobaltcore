@@ -371,6 +371,42 @@ FIXTURES: tuple[Fixture, ...] = (
             '      default_backend: "s3\\n[profiler]\\nenabled = true"\n'
         ),
     ),
+    Fixture(
+        filename="17-dbpurge-retentiondays-zero.yaml",
+        comment=(
+            "spec.dbPurge.retentionDays of 0 violates the DBPurgeSpec CRD\n"
+            "Minimum=1 marker; the webhook's defense-in-depth check mirrors it."
+        ),
+        name="glance-invalid-dbpurge-retentiondays",
+        extra=(
+            "  dbPurge:\n"
+            "    retentionDays: 0\n"
+        ),
+    ),
+    Fixture(
+        filename="18-dbpurge-invalid-schedule.yaml",
+        comment=(
+            "spec.dbPurge.schedule with a non-cron value is rejected by the\n"
+            "validating webhook — the cron grammar has no CRD schema counterpart,\n"
+            "so DBPurgeSpec.Schedule is validated exclusively via\n"
+            "validation.CronSchedule."
+        ),
+        name="glance-invalid-dbpurge-schedule",
+        extra=(
+            "  dbPurge:\n"
+            '    schedule: "totally-not-cron"\n'
+        ),
+    ),
+    Fixture(
+        filename="19-name-too-long-for-purge-cronjob.yaml",
+        comment=(
+            "A metadata.name of 44 characters is rejected by the validating\n"
+            "webhook: the {name}-db-purge CronJob would exceed the 52-character\n"
+            "cap Kubernetes enforces on CronJob names, so the CR would admit and\n"
+            "then never reconcile."
+        ),
+        name="glance-invalid-name-far-too-long-for-cronjob",
+    ),
 )
 
 
