@@ -4,11 +4,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify hack/deploy-infra.sh `install_gateway_api_crds` skips the
-# `kubectl apply --server-side` when all five standard-channel Gateway API
-# CRDs already exist (so a re-run against a provisioned cluster no longer hits
-# an SSA field-manager conflict with helm-controller), still runs the 3-attempt
-# retry install on a bare cluster, tells an INCOMPLETE live CRD set apart from a
-# bare one, and fails fast on a field-manager conflict instead of retrying it.
+# `kubectl apply --server-side` when all ten standard-channel Gateway API CRDs
+# already exist AT the pinned bundle version (so a re-run against a provisioned
+# cluster no longer hits an SSA field-manager conflict with helm-controller),
+# upgrades an OLDER live bundle in place onto the pin while refusing to
+# downgrade a NEWER one, still runs the 3-attempt retry install on a bare
+# cluster, tells an INCOMPLETE live CRD set apart from a bare one, and fails
+# fast on a deterministic apply refusal — a field-manager conflict or a
+# downgrade the live bundle rejects — instead of retrying it.
 #
 # Follows the stub-kubectl + source-and-invoke pattern established by
 # deploy_infra_gateway_wait_test.sh.
@@ -28,14 +31,20 @@ SKIP=0
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
-# The five standard-channel CRD names the function probes. A bare cluster
-# reports every one missing — that, not "any one missing", is the fresh-install
-# state.
-GWAPI_ALL_CRDS="gatewayclasses.gateway.networking.k8s.io \
+# The ten standard-channel CRD names the v1.6.1 bundle ships and the function
+# probes. A bare cluster reports every one missing — that, not "any one
+# missing", is the fresh-install state. test_gwapi_crd_list_matches_script keeps
+# this literal in sync with the script's own gwapi_crds array.
+GWAPI_ALL_CRDS="backendtlspolicies.gateway.networking.k8s.io \
+gatewayclasses.gateway.networking.k8s.io \
 gateways.gateway.networking.k8s.io \
 grpcroutes.gateway.networking.k8s.io \
 httproutes.gateway.networking.k8s.io \
-referencegrants.gateway.networking.k8s.io"
+listenersets.gateway.networking.k8s.io \
+referencegrants.gateway.networking.k8s.io \
+tcproutes.gateway.networking.k8s.io \
+tlsroutes.gateway.networking.k8s.io \
+udproutes.gateway.networking.k8s.io"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -120,10 +129,16 @@ run_install() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: all five CRDs present → skip the apply, log the live bundle version
+# Test 1: all ten CRDs present but the live bundle is OLDER than the pin
+# → upgrade in place onto the pin instead of warning and returning
+#
+# A bundle older than the compiled-in gateway-api types still registers the
+# kind but silently prunes the fields its schema does not know (v1.1.0 has no
+# HTTPRoute spec.rules[].timeouts), so a re-used cluster must converge on the
+# pin rather than be told to recreate itself.
 # ---------------------------------------------------------------------------
-test_all_present_skips_apply() {
-  echo "Test: install_gateway_api_crds skips the apply when all five CRDs exist"
+test_older_bundle_upgrades_in_place() {
+  echo "Test: install_gateway_api_crds upgrades an older live bundle in place"
 
   local tmp
   tmp="$(mktemp -d)"
@@ -132,38 +147,140 @@ test_all_present_skips_apply() {
   APPLY_LOG="$tmp/apply.log"
   : >"$APPLY_LOG"
   MISSING_CRDS=""
-  LIVE_BUNDLE_VERSION="v1.5.1"
+  LIVE_BUNDLE_VERSION="v1.1.0"
   APPLY_FAIL=0
+  # Pin an explicit requested version so this test does not have to be edited
+  # every time Renovate bumps GATEWAY_API_VERSION.
+  export GATEWAY_API_VERSION="v9.9.9"
+  export GATEWAY_API_CRDS_URL="https://example.test/gwapi/standard-install.yaml"
 
   install_kubectl_stub "$tmp"
 
   local output exit_code
   output="$(run_install "$tmp")"
   exit_code=$?
+  unset GATEWAY_API_VERSION
+  unset GATEWAY_API_CRDS_URL
 
-  assert_eq "install_gateway_api_crds exits 0 when all CRDs present" "0" "$exit_code"
+  assert_eq "install_gateway_api_crds exits 0 after the in-place upgrade" "0" "$exit_code"
 
   local apply_count
   apply_count="$(wc -l <"$APPLY_LOG" | tr -d ' ')"
-  assert_eq "no kubectl apply is issued on the skip path" "0" "$apply_count"
+  assert_eq "the pinned bundle is applied exactly once" "1" "$apply_count"
+  assert_file_contains "the upgrade uses server-side apply" \
+    "$APPLY_LOG" "server-side"
+  assert_file_contains "the upgrade targets the pinned GATEWAY_API_CRDS_URL bundle" \
+    "$APPLY_LOG" "https://example.test/gwapi/standard-install.yaml"
 
-  assert_contains "skip log line announces the CRDs are already present" "$output" \
-    "Gateway API CRDs already present"
-  assert_contains "skip log line reports the live bundle version" "$output" \
-    "v1.5.1"
-  assert_contains "skip log line notes another owner may manage the CRDs" "$output" \
-    "helm-controller"
-  # The stubbed live bundle (v1.5.1) differs from the GATEWAY_API_VERSION pin,
-  # so the skip must not silently claim the requested bundle is installed.
-  assert_contains "bundle drift against GATEWAY_API_VERSION is warned about" "$output" \
-    "WARNING: the live bundle does not match the requested v1.1.0"
-  assert_contains "drift warning names the recreate remedy" "$output" \
-    "teardown-infra"
+  assert_contains "the log names the live bundle it is upgrading from" "$output" \
+    "present at bundle v1.1.0"
+  assert_contains "the log announces the in-place upgrade to the pin" "$output" \
+    "applying an in-place upgrade to v9.9.9"
+  assert_contains "the success log line is reached" "$output" \
+    "Gateway API CRDs installed."
+
+  assert_not_contains "drift is no longer reported as a warn-and-return" "$output" \
+    "WARNING: the live bundle does not match"
+  assert_not_contains "the cluster is not told to recreate itself" "$output" \
+    "Recreate the cluster"
+  assert_not_contains "a complete live set is not mislabelled INCOMPLETE" "$output" \
+    "INCOMPLETE Gateway API CRD set"
 }
 
 # ---------------------------------------------------------------------------
-# Test 1b: all five CRDs present AND the live bundle matches the pin →
-# skip without the drift warning
+# Test 1a: all ten CRDs present but the live bundle is NEWER than the pin
+# → warn and return, never apply
+#
+# Convergence is one-way. Switching to a branch with an older pin must not push
+# the older schema over the live bundle: the API server would prune every field
+# the older schema does not know from the live Gateways and HTTPRoutes — the
+# very failure the upgrade direction exists to prevent, inflicted deliberately.
+# ---------------------------------------------------------------------------
+test_newer_bundle_is_not_downgraded() {
+  echo "Test: install_gateway_api_crds refuses to downgrade a newer live bundle"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  APPLY_LOG="$tmp/apply.log"
+  : >"$APPLY_LOG"
+  MISSING_CRDS=""
+  LIVE_BUNDLE_VERSION="v9.9.9"
+  APPLY_FAIL=0
+  # The pin is older than what the cluster already carries.
+  export GATEWAY_API_VERSION="v1.1.0"
+
+  install_kubectl_stub "$tmp"
+
+  local output exit_code
+  output="$(run_install "$tmp")"
+  exit_code=$?
+  unset GATEWAY_API_VERSION
+
+  assert_eq "install_gateway_api_crds still exits 0" "0" "$exit_code"
+
+  local apply_count
+  apply_count="$(wc -l <"$APPLY_LOG" | tr -d ' ')"
+  assert_eq "a newer live bundle is never applied over" "0" "$apply_count"
+
+  assert_contains "the log says the live bundle is newer" "$output" \
+    "NEWER than the requested v1.1.0"
+  assert_contains "the warning names the pruning this would cause" "$output" \
+    "prune every field"
+  assert_contains "the warning names the recreate remedy" "$output" \
+    "teardown-infra"
+  assert_not_contains "a downgrade is never announced as an upgrade" "$output" \
+    "applying an in-place upgrade"
+}
+
+# ---------------------------------------------------------------------------
+# Test 1a2: an apply refused as a downgrade fails fast with the real diagnosis
+#
+# An INCOMPLETE live set reaches the apply without a version comparison, so the
+# bundle's own safe-upgrades ValidatingAdmissionPolicy is what refuses it. That
+# message carries no "conflict", so without a dedicated match the deterministic
+# denial would burn all three attempts and exit pointing at the download URL.
+# ---------------------------------------------------------------------------
+test_downgrade_denial_fails_fast_without_retry() {
+  echo "Test: install_gateway_api_crds fails fast on a safe-upgrades denial"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  APPLY_LOG="$tmp/apply.log"
+  : >"$APPLY_LOG"
+  MISSING_CRDS="listenersets.gateway.networking.k8s.io"
+  LIVE_BUNDLE_VERSION=""
+  APPLY_FAIL=1
+  APPLY_OUTPUT='error: gatewayclasses.gateway.networking.k8s.io is forbidden: ValidatingAdmissionPolicy '\''gateway.networking.k8s.io/safe-upgrades'\'' denied request: Installing CRDs with version before v1.5.0 is prohibited by default.'
+
+  install_kubectl_stub "$tmp"
+
+  local output exit_code
+  output="$(run_install "$tmp")"
+  exit_code=$?
+  APPLY_OUTPUT=""
+
+  assert_nonzero_exit "install_gateway_api_crds exits non-zero on a refused downgrade" \
+    "$exit_code"
+
+  local apply_count
+  apply_count="$(wc -l <"$APPLY_LOG" | tr -d ' ')"
+  assert_eq "a refused downgrade is applied exactly once, not retried" "1" "$apply_count"
+
+  assert_contains "the ERROR names the downgrade as the cause" "$output" \
+    "REFUSED because it would downgrade"
+  assert_contains "the ERROR says it is deliberately not retried" "$output" \
+    "deterministic"
+  assert_not_contains "the misleading retry-exhaustion message is not used" "$output" \
+    "after 3 attempts"
+}
+
+# ---------------------------------------------------------------------------
+# Test 1b: all ten CRDs present AND the live bundle matches the pin →
+# skip without applying
 # ---------------------------------------------------------------------------
 test_matching_bundle_skips_without_warning() {
   echo "Test: install_gateway_api_crds skips quietly when the live bundle matches"
@@ -189,13 +306,19 @@ test_matching_bundle_skips_without_warning() {
   assert_eq "install_gateway_api_crds exits 0 when the bundle matches" "0" "$exit_code"
   assert_contains "skip log line still announces the CRDs are already present" "$output" \
     "Gateway API CRDs already present"
-  assert_not_contains "no drift warning when live bundle == GATEWAY_API_VERSION" "$output" \
-    "WARNING: the live bundle does not match"
+
+  local apply_count
+  apply_count="$(wc -l <"$APPLY_LOG" | tr -d ' ')"
+  assert_eq "no kubectl apply is issued when the live bundle already is the pin" \
+    "0" "$apply_count"
+  assert_not_contains "a matching bundle is not re-applied as an upgrade" "$output" \
+    "applying an in-place upgrade"
 }
 
 # ---------------------------------------------------------------------------
-# Test 1c: all five present but no bundle-version annotation → the skip must
-# say the live version could not be verified, not accept it silently
+# Test 1c: all ten present but no bundle-version annotation → the live version
+# cannot be compared with the pin, so this stays a warn-and-return: re-applying
+# an unidentifiable bundle would risk a downgrade nobody asked for
 # ---------------------------------------------------------------------------
 test_unknown_bundle_version_warns() {
   echo "Test: install_gateway_api_crds warns when the live bundle version is unknown"
@@ -223,6 +346,11 @@ test_unknown_bundle_version_warns() {
     "cannot be verified"
   assert_contains "the warning names the recreate remedy" "$output" \
     "teardown-infra"
+
+  local apply_count
+  apply_count="$(wc -l <"$APPLY_LOG" | tr -d ' ')"
+  assert_eq "an unidentifiable live bundle is warned about, never re-applied" \
+    "0" "$apply_count"
 }
 
 # ---------------------------------------------------------------------------
@@ -300,7 +428,7 @@ test_persistent_failure_retries_three_times() {
 # Test 3b: an INCOMPLETE live CRD set is named before the apply
 #
 # `kubectl get crd a b c` exits non-zero as soon as one name is NotFound, so a
-# single presence call cannot tell "four of five present, co-owned by
+# single presence call cannot tell "nine of ten present, co-owned by
 # helm-controller" apart from a bare cluster. The partial set must be probed per
 # CRD and reported, so the conflict that follows is already diagnosed instead of
 # surfacing as a misleading retry-exhaustion message.
@@ -315,7 +443,7 @@ test_partial_crd_set_is_reported() {
   APPLY_LOG="$tmp/apply.log"
   : >"$APPLY_LOG"
   # A live bundle predating grpcroutes' promotion to the standard channel: the
-  # other four exist and are field-managed by someone else.
+  # other nine exist and are field-managed by someone else.
   MISSING_CRDS="grpcroutes.gateway.networking.k8s.io"
   LIVE_BUNDLE_VERSION=""
   APPLY_FAIL=0
@@ -332,7 +460,7 @@ test_partial_crd_set_is_reported() {
   assert_contains "the missing CRD is named" "$output" \
     "missing: grpcroutes.gateway.networking.k8s.io"
   assert_contains "the already-present CRDs are named" "$output" \
-    "present: gatewayclasses.gateway.networking.k8s.io"
+    "present: backendtlspolicies.gateway.networking.k8s.io"
   assert_not_contains "a partial set is NOT mistaken for a completed install" "$output" \
     "Gateway API CRDs already present"
 
@@ -381,6 +509,27 @@ test_conflict_fails_fast_without_retry() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 3d: the stub's CRD universe matches the script's gwapi_crds array
+#
+# The stub answers "present" for every name it is not told is missing, so a
+# GWAPI_ALL_CRDS that has drifted from the script's array would make the
+# bare-cluster and partial-set tests vacuously green. Pin the two together.
+# ---------------------------------------------------------------------------
+test_gwapi_crd_list_matches_script() {
+  echo "Test: the probed gwapi_crds array matches this test's CRD list"
+
+  local script_crds
+  script_crds="$(sed -n '/local gwapi_crds=(/,/^  )$/p' "$DEPLOY_INFRA_SH" \
+    | grep -oE '[a-z]+\.gateway\.networking\.k8s\.io' | sort | tr '\n' ' ')"
+
+  local expected
+  expected="$(printf '%s\n' $GWAPI_ALL_CRDS | sort | tr '\n' ' ')"
+
+  assert_eq "hack/deploy-infra.sh probes exactly the CRD names this test stubs" \
+    "$expected" "$script_crds"
+}
+
+# ---------------------------------------------------------------------------
 # Test 4: static wiring — main() invokes install_gateway_api_crds
 # Static-text check so this test stays independent of the stub plumbing above,
 # mirroring test_main_calls_gateway_wait_after_phase_3 in the sibling file.
@@ -397,13 +546,16 @@ test_main_calls_install_gateway_api_crds() {
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
-test_all_present_skips_apply
+test_older_bundle_upgrades_in_place
+test_newer_bundle_is_not_downgraded
+test_downgrade_denial_fails_fast_without_retry
 test_matching_bundle_skips_without_warning
 test_unknown_bundle_version_warns
 test_missing_crd_runs_apply_once
 test_persistent_failure_retries_three_times
 test_partial_crd_set_is_reported
 test_conflict_fails_fast_without_retry
+test_gwapi_crd_list_matches_script
 test_main_calls_install_gateway_api_crds
 
 echo ""

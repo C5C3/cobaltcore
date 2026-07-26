@@ -249,13 +249,32 @@ CONTROLPLANE_DB_STORAGE="${CONTROLPLANE_DB_STORAGE:-512Mi}"
 
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
 # the operator's HTTPRoute watch has a registered kind at startup.
-# Keep aligned with sigs.k8s.io/gateway-api in operators/keystone/go.mod.
+# Keep aligned with sigs.k8s.io/gateway-api in the operator go.mod files (they
+# all pin the same version): a CRD bundle OLDER than the compiled-in types
+# still registers the kind, but the API server silently PRUNES the fields the
+# bundle's schema does not know — v1.1.0 predates HTTPRoute
+# spec.rules[].timeouts, so a rendered timeouts stanza vanished on apply.
+# A live bundle whose version differs from this pin is upgraded in place by
+# install_gateway_api_crds(), so a re-used cluster converges without a teardown.
 # When bumping this, re-check the gwapi_crds presence list in
 # install_gateway_api_crds(): it enumerates the standard-channel CRD names of
 # this bundle, and a release that adds a CRD needs the new name added there —
 # otherwise the presence check passes on the old set and skips the install.
-GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.1.0}"
+GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.6.1}"
 GATEWAY_API_CRDS_URL="${GATEWAY_API_CRDS_URL:-https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml}"
+
+# Envoy Gateway CRD release asset, applied right after the Gateway API bundle.
+# The envoy-gateway HelmRelease (deploy/kind/base/envoy-gateway.yaml) runs with
+# crds.enabled=false: the chart's bundled CRD copy carries the Gateway API
+# EXPERIMENTAL channel, which the standard bundle's safe-upgrades
+# ValidatingAdmissionPolicy refuses on top of GATEWAY_API_VERSION. The upstream
+# gateway-crds-helm chart cannot deliver the gateway.envoyproxy.io group either
+# (its release Secret exceeds the 1Mi limit), so this script owns the group
+# through the release's plain CRD asset — see the CRD-ownership decision in
+# deploy/kind/base/envoy-gateway.yaml. Keep the pin inside the chart's SemVer
+# range there; Renovate bumps both through the same envoy-gateway group.
+ENVOY_GATEWAY_VERSION="${ENVOY_GATEWAY_VERSION:-v1.8.3}"
+ENVOY_GATEWAY_CRDS_URL="${ENVOY_GATEWAY_CRDS_URL:-https://github.com/envoyproxy/gateway/releases/download/${ENVOY_GATEWAY_VERSION}/envoy-gateway-crds.yaml}"
 
 # flux-operator release applied in Step 2 before the FluxInstance CR is created
 # Kept as a script-local constant so Renovate can bump it
@@ -676,12 +695,27 @@ wait_for_crds() {
 # Skip rationale: on a re-run against an already-provisioned cluster the CRDs
 # already exist and may since be field-managed by another owner — the
 # envoy-gateway chart via Flux's helm-controller. Re-asserting them with
-# `kubectl apply --server-side` then fails with a field-manager conflict, and
-# could downgrade a newer live bundle back to this script's pinned version.
-# Presence of all five standard-channel CRDs already fulfills this step's
-# purpose, so the install is skipped. Upgrading the CRDs is the chart's (or a
-# teardown/redeploy's) job, never this script's — a live bundle that differs
-# from GATEWAY_API_VERSION is therefore reported as a warning, not reconciled.
+# `kubectl apply --server-side` then fails with a field-manager conflict.
+# Presence of all ten standard-channel CRDs AT the pinned bundle version
+# already fulfills this step's purpose, so that case is skipped.
+#
+# A live bundle OLDER than the pin is reconciled: the run falls through to the
+# server-side apply below and upgrades the CRDs in place, so a re-used dev
+# cluster converges on GATEWAY_API_VERSION instead of needing a teardown. That
+# direction is the one that matters, because a bundle older than the compiled-in
+# gateway-api types silently prunes the fields the operators render.
+#
+# Convergence is deliberately ONE-WAY. A live bundle NEWER than the pin — routine
+# when switching between branches that pin different versions — is warned about
+# and skipped, never applied over. Applying an older schema in place would make
+# the API server prune every field the older bundle does not know from the live
+# Gateways and HTTPRoutes, which is the same silent-pruning failure this function
+# exists to prevent, only inflicted deliberately. Upstream refuses part of that
+# downgrade itself: the v1.5.0+ bundles ship a safe-upgrades
+# ValidatingAdmissionPolicy that denies CRD writes annotated below v1.5.0.
+#
+# A live set carrying NO bundle-version annotation cannot be compared, so it also
+# stays a warn-and-skip.
 #
 # Presence is probed per CRD, so an INCOMPLETE live set (some names present,
 # some missing) is distinguishable from a bare cluster instead of silently
@@ -698,13 +732,21 @@ install_gateway_api_crds() {
   # Standard-channel CRD names shipped by the GATEWAY_API_VERSION bundle. This
   # list is hand-maintained against that pin (see its definition above) — a
   # release that adds a standard-channel CRD needs its name added here, or the
-  # presence check below passes on the stale set and skips the install.
+  # presence check below passes on the stale set and, for a live bundle that
+  # carries no comparable version annotation, skips the install.
+  # NOTE: the bundle also ships a safe-upgrades ValidatingAdmissionPolicy and
+  # its Binding — those are not CRDs and must stay out of this list.
   local gwapi_crds=(
+    backendtlspolicies.gateway.networking.k8s.io
     gatewayclasses.gateway.networking.k8s.io
     gateways.gateway.networking.k8s.io
     grpcroutes.gateway.networking.k8s.io
     httproutes.gateway.networking.k8s.io
+    listenersets.gateway.networking.k8s.io
     referencegrants.gateway.networking.k8s.io
+    tcproutes.gateway.networking.k8s.io
+    tlsroutes.gateway.networking.k8s.io
+    udproutes.gateway.networking.k8s.io
   )
 
   # Probe each name separately. `kubectl get crd a b c` exits non-zero as soon
@@ -728,25 +770,45 @@ install_gateway_api_crds() {
     live_bundle_version="$(kubectl get crd httproutes.gateway.networking.k8s.io \
       -o jsonpath='{.metadata.annotations.gateway\.networking\.k8s\.io/bundle-version}' \
       2>/dev/null || true)"
-    log "Gateway API CRDs already present (live bundle ${live_bundle_version:-unknown}); skipping install — another owner (e.g. the envoy-gateway chart via helm-controller) may manage them now."
     if [[ -z "${live_bundle_version}" ]]; then
+      log "Gateway API CRDs already present (live bundle unknown); skipping install — another owner (e.g. the envoy-gateway chart via helm-controller) may manage them now."
       log "  WARNING: the live CRDs carry no bundle-version annotation, so the installed"
       log "           Gateway API version cannot be verified against the requested"
       log "           ${GATEWAY_API_VERSION} — an arbitrarily divergent bundle is accepted here."
       log "           Recreate the cluster (\`make teardown-infra\`) to install ${GATEWAY_API_VERSION}."
-    elif [[ "${live_bundle_version}" != "${GATEWAY_API_VERSION}" ]]; then
-      log "  WARNING: the live bundle does not match the requested ${GATEWAY_API_VERSION}."
-      log "           This step never upgrades present CRDs, so the cluster keeps"
-      log "           ${live_bundle_version}. Recreate the cluster (\`make teardown-infra\`)"
-      log "           to install ${GATEWAY_API_VERSION}."
+      return 0
     fi
-    return 0
+    if [[ "${live_bundle_version}" == "${GATEWAY_API_VERSION}" ]]; then
+      log "Gateway API CRDs already present (live bundle ${live_bundle_version}); skipping install — another owner (e.g. the envoy-gateway chart via helm-controller) may manage them now."
+      return 0
+    fi
+    # Order the two versions so only the upgrade direction converges. `sort -V`
+    # ranks the v-prefixed release tags the bundle annotation carries; the older
+    # of the pair sorts first, so the live bundle is newer exactly when the pin
+    # comes first.
+    local gwapi_older
+    gwapi_older="$(printf '%s\n%s\n' "${live_bundle_version}" "${GATEWAY_API_VERSION}" | sort -V | head -n1)"
+    if [[ "${gwapi_older}" == "${GATEWAY_API_VERSION}" ]]; then
+      log "Gateway API CRDs already present (live bundle ${live_bundle_version}); skipping install — the live bundle is NEWER than the requested ${GATEWAY_API_VERSION}."
+      log "  WARNING: this step never downgrades. Applying the older ${GATEWAY_API_VERSION} schema"
+      log "           in place would make the API server prune every field it does not know"
+      log "           from the live Gateways and HTTPRoutes, and the bundle's own safe-upgrades"
+      log "           ValidatingAdmissionPolicy refuses part of that anyway."
+      log "           Recreate the cluster (\`make teardown-infra\`) to install ${GATEWAY_API_VERSION}."
+      return 0
+    fi
+    # Upgrade drift IS reconciled: fall through to the server-side apply so a
+    # re-used cluster converges on the pin (see the docblock above).
+    log "Gateway API CRDs present at bundle ${live_bundle_version}, older than the requested ${GATEWAY_API_VERSION};"
+    log "  applying an in-place upgrade to ${GATEWAY_API_VERSION}. If another owner (e.g. the"
+    log "  envoy-gateway chart via helm-controller) field-manages the bundle, the apply below"
+    log "  fails on a field-manager conflict — see the ERROR path there."
   fi
 
   # server-side apply avoids the 'metadata.annotations: Too long' error that
   # client-side apply hits on the upstream CRD bundle.
   log "=== Installing Gateway API CRDs (${GATEWAY_API_VERSION}) ==="
-  if (( ${#gwapi_present[@]} > 0 )); then
+  if (( ${#gwapi_present[@]} > 0 && ${#gwapi_missing[@]} > 0 )); then
     log "  WARNING: the cluster carries an INCOMPLETE Gateway API CRD set."
     log "           present: ${gwapi_present[*]}"
     log "           missing: ${gwapi_missing[*]}"
@@ -779,6 +841,25 @@ install_gateway_api_crds() {
       log "       install ${GATEWAY_API_VERSION} cleanly."
       exit 1
     fi
+    # A downgrade the live bundle itself refuses. From v1.5.0 the standard bundle
+    # ships a safe-upgrades ValidatingAdmissionPolicy that denies CRD writes
+    # annotated below v1.5.0, and a live set whose status.storedVersions names a
+    # version the requested bundle no longer serves is rejected the same way.
+    # Neither message contains "conflict", so without this branch the deterministic
+    # denial burns all three attempts and exits pointing at the download URL.
+    # The version gate above catches this for a complete live set; an INCOMPLETE
+    # one reaches the apply without a version comparison, which is how it still
+    # happens.
+    if [[ "${gwapi_output}" == *"prohibited by default"* || "${gwapi_output}" == *"storedVersions"* ]]; then
+      log "ERROR: Gateway API CRD apply was REFUSED because it would downgrade the live"
+      log "       bundle: the cluster carries a Gateway API newer than the requested"
+      log "       ${GATEWAY_API_VERSION}, and neither its safe-upgrades admission policy nor"
+      log "       its stored API versions allow going back. Not retried: the refusal is"
+      log "       deterministic."
+      log "       Recreate the cluster (\`make teardown-infra && make deploy-infra\`) to"
+      log "       install ${GATEWAY_API_VERSION} cleanly."
+      exit 1
+    fi
     if (( gwapi_attempt >= gwapi_attempts )); then
       log "ERROR: Failed to install Gateway API CRDs after ${gwapi_attempts} attempts from ${GATEWAY_API_CRDS_URL}"
       exit 1
@@ -787,6 +868,101 @@ install_gateway_api_crds() {
     sleep "${gwapi_delay}"
   done
   log "Gateway API CRDs installed."
+}
+
+# ---------------------------------------------------------------------------
+# install_envoy_gateway_crds — Register the gateway.envoyproxy.io CRDs.
+#
+# Purpose: the envoy-gateway HelmRelease runs with crds.enabled=false (see the
+# CRD-ownership decision in deploy/kind/base/envoy-gateway.yaml), so nothing
+# else registers the controller's own API group. The upstream release asset
+# carries exactly the eight gateway.envoyproxy.io CRDs and none of the Gateway
+# API group, so applying it cannot collide with the safe-upgrades
+# ValidatingAdmissionPolicy the standard bundle installs.
+#
+# Skip rationale: these CRDs carry no version annotation comparable to the
+# Gateway API bundle-version, so a complete live set cannot be reconciled
+# against the pin and is skipped. On a cluster provisioned before the CRD
+# ownership split the set is also field-managed by helm-controller (the chart
+# installed it from its crds/ directory), where a re-assert would
+# SSA-conflict. Bumping ENVOY_GATEWAY_VERSION therefore takes effect on a
+# fresh cluster only (make teardown-infra).
+# ---------------------------------------------------------------------------
+install_envoy_gateway_crds() {
+  # CRD names shipped by the ENVOY_GATEWAY_VERSION envoy-gateway-crds.yaml
+  # asset. Hand-maintained against that pin, like the gwapi_crds list above: a
+  # release that adds a CRD needs its name added here, or the presence check
+  # below passes on the stale set and skips the install.
+  local eg_crds=(
+    backends.gateway.envoyproxy.io
+    backendtrafficpolicies.gateway.envoyproxy.io
+    clienttrafficpolicies.gateway.envoyproxy.io
+    envoyextensionpolicies.gateway.envoyproxy.io
+    envoypatchpolicies.gateway.envoyproxy.io
+    envoyproxies.gateway.envoyproxy.io
+    httproutefilters.gateway.envoyproxy.io
+    securitypolicies.gateway.envoyproxy.io
+  )
+
+  # Probe each name separately for the same reason install_gateway_api_crds()
+  # does: a partially-present set must stay distinguishable from a bare
+  # cluster.
+  local eg_present=()
+  local eg_missing=()
+  local crd
+  for crd in "${eg_crds[@]}"; do
+    if kubectl get crd "${crd}" &>/dev/null; then
+      eg_present+=("${crd}")
+    else
+      eg_missing+=("${crd}")
+    fi
+  done
+
+  if (( ${#eg_missing[@]} == 0 )); then
+    log "Envoy Gateway CRDs already present; skipping install — they carry no"
+    log "  comparable version annotation, so convergence on ${ENVOY_GATEWAY_VERSION} cannot"
+    log "  be verified. Recreate the cluster (\`make teardown-infra\`) to re-install."
+    return 0
+  fi
+
+  log "=== Installing Envoy Gateway CRDs (${ENVOY_GATEWAY_VERSION}) ==="
+  if (( ${#eg_present[@]} > 0 && ${#eg_missing[@]} > 0 )); then
+    log "  WARNING: the cluster carries an INCOMPLETE Envoy Gateway CRD set."
+    log "           present: ${eg_present[*]}"
+    log "           missing: ${eg_missing[*]}"
+    log "           The present CRDs may be field-managed by another owner (a"
+    log "           pre-split envoy-gateway chart install via helm-controller), so"
+    log "           the apply below may fail on a field-manager conflict."
+  fi
+  local eg_attempts=3
+  local eg_attempt=0
+  local eg_delay=5
+  local eg_output
+  while (( eg_attempt < eg_attempts )); do
+    eg_attempt=$((eg_attempt + 1))
+    if eg_output="$(kubectl apply --server-side -f "${ENVOY_GATEWAY_CRDS_URL}" 2>&1)"; then
+      printf '%s\n' "${eg_output}"
+      break
+    fi
+    printf '%s\n' "${eg_output}"
+    # Mirrors the gwapi apply above: a field-manager conflict is deterministic,
+    # so fail fast instead of burning the retry budget on it.
+    if [[ "${eg_output}" == *"conflict"* ]]; then
+      log "ERROR: Envoy Gateway CRD apply hit a field-manager conflict — another owner"
+      log "       (a pre-split envoy-gateway chart install via helm-controller) already"
+      log "       manages part of this set. Not retried: the conflict is deterministic."
+      log "       Recreate the cluster (\`make teardown-infra && make deploy-infra\`) to"
+      log "       install ${ENVOY_GATEWAY_VERSION} cleanly."
+      exit 1
+    fi
+    if (( eg_attempt >= eg_attempts )); then
+      log "ERROR: Failed to install Envoy Gateway CRDs after ${eg_attempts} attempts from ${ENVOY_GATEWAY_CRDS_URL}"
+      exit 1
+    fi
+    log "  Envoy Gateway CRD apply failed (attempt ${eg_attempt}/${eg_attempts}); retrying in ${eg_delay}s..."
+    sleep "${eg_delay}"
+  done
+  log "Envoy Gateway CRDs installed."
 }
 
 # ---------------------------------------------------------------------------
@@ -1715,6 +1891,7 @@ main() {
   log "flux-operator installed and FluxInstance/flux is Ready."
 
   install_gateway_api_crds
+  install_envoy_gateway_crds
 
   # Step 3: Apply base kustomize overlay (namespaces, HelmRepos, HelmReleases)
   #
