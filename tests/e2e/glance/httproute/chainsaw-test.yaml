@@ -73,6 +73,16 @@ spec:
               backendRefs:
               - name: glance-httproute
                 port: 9292
+              # The image data plane streams for as long as an upload takes, so
+              # the operator raises the route timeout far above the gateway
+              # implementation's default — but does NOT disable it: this rule
+              # matches a bare "/" prefix, and "0s" (the Gateway API's "no
+              # timeout") would leave the two concurrent request slots of a
+              # glance-api pod with no request-duration cap at all. The stub CRD
+              # above preserves unknown fields, so the stanza round-trips
+              # unchanged and this assertion pins what the operator rendered.
+              timeouts:
+                request: 4h
     catch:
     - script:
         content: |

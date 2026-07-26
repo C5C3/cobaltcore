@@ -127,6 +127,14 @@ spec:
                   - "1"
                   - "--pyargv"
                   - "--config-dir /etc/glance/glance-api.conf.d/ --config-dir /etc/glance/backends.conf.d/"
+                # The CR sets spec.staging.sizeLimit, so the explicit value must
+                # land on BOTH scratch emptyDirs — staging holds the import
+                # download, tasks-work the async task scratch, and either one
+                # unbounded fills the node's disk. The default-path assertion
+                # (10Gi with no spec.staging) lives in the 2025.2
+                # basic-deployment suite.
+                (volumes[?name == 'staging'].emptyDir.sizeLimit | [0]): 20Gi
+                (volumes[?name == 'tasks-work'].emptyDir.sizeLimit | [0]): 20Gi
           status:
             (availableReplicas > `0`): true
     - assert:

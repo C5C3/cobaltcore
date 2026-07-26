@@ -41,6 +41,13 @@ spec:
     schedule: "*/1 * * * *"
     retentionDays: 7
     purgeImagesTable: true
+  # spec.staging is set here for the same reason spec.dbPurge is: the accept
+  # path through the CRD schema and the validating webhook is exercised
+  # end-to-end, and step 3 then asserts the value reaches both scratch emptyDirs
+  # on the Deployment. The default path (no spec.staging, 10Gi resolved by the
+  # operator) is asserted by the 2025.2 basic-deployment suite.
+  staging:
+    sizeLimit: 20Gi
   keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
   serviceUser:
     username: admin

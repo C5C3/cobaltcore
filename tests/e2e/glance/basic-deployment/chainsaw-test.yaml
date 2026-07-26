@@ -110,6 +110,13 @@ spec:
                   - /etc/glance/glance-api.conf.d/
                   - --config-dir
                   - /etc/glance/backends.conf.d/
+                # This CR carries no spec.staging, so both scratch emptyDirs
+                # must fall back to the operator's 10Gi default. Without a
+                # sizeLimit an import fills the node's disk and takes every
+                # unrelated pod on it down with the API; the explicit-value path
+                # is covered by the 2026-1 variant of this suite.
+                (volumes[?name == 'staging'].emptyDir.sizeLimit | [0]): 10Gi
+                (volumes[?name == 'tasks-work'].emptyDir.sizeLimit | [0]): 10Gi
           status:
             (availableReplicas > `0`): true
     - assert:
