@@ -31,6 +31,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `region` | `string` | no | The Keystone region (`[keystone_authtoken] region_name`); when empty the option is omitted and Glance uses the catalog's default region |
 | `apiServer` | [`*APIServerSpec`](#apiserverspec) | no | Release-conditional API-process tuning; when nil the operator uses hardcoded defaults for the active launch mode |
 | `importFiltering` | [`*ImportFilteringSpec`](#importfilteringspec) | no | URI filtering for `web-download` image imports. The operator resolves the effective lists at render time, so a nil block and an empty struct behave alike: HTTPS on port 443, plus a literal host denylist |
+| `dbPurge` | [`*DBPurgeSpec`](#dbpurgespec) | no | Recurring database purge that hard-deletes rows Glance only ever soft-deletes. The operator resolves the effective settings at reconcile time, so a nil block and an empty struct behave alike: 30-day retention, daily at `1 0 * * *`, task rows only, not suspended |
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute on port 9292; requires `hostname` and `parentRef.name` |
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 9292 from the listed sources; egress auto-derived (DNS, database, cache, and the attached backends' S3 hosts). At least one ingress source is required (fail-closed) |
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds and CPU/memory utilization targets |
@@ -208,6 +209,91 @@ hash rolls the Deployment. When `spec.networkPolicy` is set on the CR, a
 `spec.networkPolicy.additionalEgress` rule: the auto-derived egress covers DNS,
 the database, the cache, and the backends' S3 hosts, and nothing beyond them.
 
+### DBPurgeSpec
+
+Glance never hard-deletes on its own: deleting an image only flips its row to
+deleted, and every image import leaves a task row behind, so both grow for the
+lifetime of the deployment. This block tunes the recurring `{name}-db-purge`
+CronJob that reclaims that backlog.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `retentionDays` | `*int32` (Minimum=1) | no | `30` | How long a soft-deleted row survives before the purge hard-deletes it — the `--age_in_days` argument both commands take. The one-day floor keeps the purge from racing rows an in-flight import just wrote. Lowering it applies retroactively at the next firing, so the validating webhook warns on a reduction |
+| `schedule` | `string` | no | `"1 0 * * *"` | The cron expression the purge CronJob runs on. Checked by the validating webhook rather than a CRD pattern, so a descriptor such as `@daily` is accepted alongside standard 5-field expressions. Also the only lever over purge throughput (see `max_rows` below) |
+| `purgeImagesTable` | `*bool` | no | `false` | Chains the second `glance-manage db purge_images_table` pass, hard-deleting the images rows themselves and freeing their UUIDs for reuse |
+| `suspend` | `bool` | no | `false` | Pauses the CronJob without deleting it, matching `TrustFlushSpec.suspend` on Keystone. `DBPurgeReady` stays `True` — a paused purge is a posture, not a failure — but reports reason `DBPurgeSuspended` and a message naming the growing backlog, since nothing else surfaces a purge that stopped |
+
+The operator resolves the knobs at reconcile time, the same contract
+[ImportFilteringSpec](#importfilteringspec) follows: a field left unset keeps
+tracking the operator default across upgrades instead of freezing today's
+value into the stored CR, so a nil `spec.dbPurge` resolves exactly like an
+empty struct. The defaulting webhook leaves the block untouched for that
+reason. The task sweep is scheduled on every Glance either way, since an
+unbounded soft-delete backlog is an outage waiting to happen; what varies is
+the window, the frequency, whether the images pass is chained on, and whether
+the CronJob is running at all.
+
+The CronJob renders as:
+
+| CronJob field | Value |
+| --- | --- |
+| `metadata.name` | `{name}-db-purge` |
+| `metadata.labels` | `commonLabels` (same as Deployment) |
+| `spec.schedule` | resolved `dbPurge.schedule` |
+| `spec.suspend` | resolved `dbPurge.suspend` |
+| `spec.concurrencyPolicy` | `Forbid` |
+| `spec.jobTemplate.spec.activeDeadlineSeconds` | `3600` |
+| `spec.jobTemplate.spec.template.spec.restartPolicy` | `OnFailure` |
+| Container name | `db-purge` |
+| Container image | `spec.image` reference |
+| Container command | `glance-manage --config-dir /etc/glance/glance-api.conf.d/ db purge --age_in_days <retentionDays> --max_rows 1000`, with ` && glance-manage --config-dir /etc/glance/glance-api.conf.d/ db purge_images_table --age_in_days <retentionDays> --max_rows 1000` appended when `purgeImagesTable` is true |
+| Container securityContext | `RestrictedSecurityContext()` (PSS Restricted) |
+| Container volumes | The rendered config ConfigMap, plus the db-tls keypair when `spec.database.tls` is enabled |
+| `ownerReferences` | Points to the Glance CR (controller: true) |
+
+`db purge` sweeps the tasks table and the image child tables in one pass but
+leaves the images table itself alone, and that omission is a security property:
+while the row survives, its UUID stays reserved, so a deleted image's ID can
+never be claimed by a different image (OSSN-0075). Because Glance's v2
+`image-create` accepts a client-supplied `id`, hard-deleting the row lets any
+project member claim the freed UUID — and every Heat template, Terraform state,
+or server `image_ref` still pinning it would then resolve to that image. The
+second `db purge_images_table` pass is therefore opt-in via `purgeImagesTable`,
+for deployments whose policy denies client-supplied image IDs. When enabled it
+runs after the first, so the child rows referencing an image are already gone by
+the time that image's own row is purged.
+
+`max_rows` (1000) bounds each per-table delete transaction so a long-neglected
+backlog cannot stall a Galera cluster for the length of one write-set. It is
+operator-owned rather than a CRD field, set well above Glance's own built-in
+default of 100 rows. The cap applies per invocation, so the schedule sets the
+throughput: on the default daily schedule the purge drains at most 1000 rows
+per table per day. That keeps up only while the deployment soft-deletes fewer
+rows per table than one run removes — a cloud importing more than 1000 images a
+day grows its tasks table faster than the purge drains it, and a brownfield
+backlog takes one run per batch to work off. `schedule` is the lever for both:
+an hourly purge multiplies the daily ceiling by 24.
+
+`concurrencyPolicy: Forbid` keeps a run that outlasts its interval from being
+overtaken by the next firing — two purges deleting the same rows contend, which
+is what the per-transaction cap exists to avoid. `activeDeadlineSeconds` bounds
+how long a single run may stay active, so a purge wedged on a database lock or
+an unschedulable pod reaches a terminal `Failed` state instead of staying
+active indefinitely with `DBPurgeReady` still reporting a healthy schedule.
+
+One run can still fail visibly. With `purgeImagesTable` enabled, an image row
+past its retention window can have a younger child row referencing it, an edge
+case caused by unusual timestamp skew, and `db purge_images_table` then exits
+non-zero with a `DBReferenceError`. That flips `DBPurgeReady` to `False`
+(reason `DBPurgeJobFailed`) and raises a Warning event; a later run converges
+once the child row also crosses the retention window.
+
+Rolling this operator onto a deployment that has never been purged applies the
+retention window retroactively on the first firing. To stage that, set
+`suspend: true`, raise `retentionDays` to cover the deployment's full history,
+un-suspend, and step the retention down while watching
+`glance_operator_db_purge_total`.
+
 ### Defaulting and validation
 
 The mutating webhook applies the shared `DeploymentSpec`/`LoggingSpec` defaults
@@ -224,6 +310,35 @@ untouched: those lists are resolved when the config is rendered (see
 [ImportFilteringSpec](#importfilteringspec)), so materializing them here would
 freeze today's values into the stored CR.
 
+The defaulting webhook leaves `spec.dbPurge` untouched for the same reason:
+its fields are resolved at reconcile time (see
+[DBPurgeSpec](#dbpurgespec)), not written back into the CR. The validating
+webhook still checks the block as defense in depth: `retentionDays` mirrors
+the CRD's `Minimum=1` marker, and `schedule` is checked against the cron
+grammar, the one rule with no CRD-schema counterpart, since a regex
+expressive enough to accept a descriptor like `@daily` alongside standard
+5-field expressions would also accept invalid ones. On update it also warns
+when `retentionDays` is reduced: the shorter window applies retroactively at
+the next firing and the rows it removes do not come back.
+
+The validating webhook additionally bounds `metadata.name` at 43 characters.
+The `{name}-db-purge` CronJob is the child object with the tightest name
+budget — Kubernetes caps a CronJob name at 52 characters, because its
+controller appends an 11-character timestamp suffix to every Job it spawns —
+so a longer Glance would name a CronJob the API server refuses to create. The
+bound applies on create only: `metadata.name` is immutable, so on update it
+could only reject a CR an earlier operator version already admitted —
+including the finalizer-removal update that completes its deletion. Such a
+grandfathered CR still reconciles: the operator collapses the overflowing tail
+of the name onto a content-stable hash, naming its CronJob
+`{truncated}-{hash}-db-purge` instead of `{name}-db-purge`.
+
+The same bound reaches one level up. A `ControlPlane` projects its Glance
+child as `{controlplane}-glance`, so a ControlPlane declaring
+`spec.services.glance` is capped at 36 characters; its own validating webhook
+rejects a longer one at create time, and on update when that update is what
+enables Glance.
+
 The validating webhook accumulates every violation into one admission response,
 reusing the shared validators: replicas floor, image tag/digest XOR, the
 database mutual-exclusivity and Dynamic-requires-clusterRef rules, cache
@@ -235,7 +350,8 @@ inside the drain window), the `Recreate`-vs-`rollingUpdate` sanity check,
 autoscaling bounds (including the implicit `minReplicas` default from
 `deployment.replicas`), network-policy ingress, gateway hostname/parentRef, the
 three `importFiltering` allow/deny pairings together with the scheme enum, host
-length, port range, and 64-item cap of each list,
+length, port range, and 64-item cap of each list, the `dbPurge.retentionDays`
+floor and the `dbPurge.schedule` cron grammar,
 resource requests-vs-limits, PriorityClass existence, topology-spread selectors
 (matching the `glance` / instance labels), and the `extraConfig` guards (a
 preserve-unknown-fields map CEL cannot constrain): empty section/key names, a
@@ -291,6 +407,7 @@ The content-addressed and derived resources are the exceptions:
 | Backends Secret | `{name}-backends-<hash>` | Immutable, content-hashed `backends.conf` (the aggregated store sections); 3 historical retained |
 | DB-connection Secret | `{name}-db-connection` | Derived pymysql DSN, stable name |
 | DB-sync Job | `{name}-db-sync` | `glance-manage db sync` |
+| DB-purge CronJob | `{name}-db-purge` | `glance-manage db purge`, plus `db purge_images_table` when opted in |
 
 ## Example
 
