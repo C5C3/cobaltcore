@@ -37,7 +37,12 @@ The v1 operator resolves the onboarding decisions as follows:
   `/var/lib/glance/staging` and `/var/lib/glance/tasks-work` on every
   deployment, even an all-object-store
   one: import staging and async task work land on local disk regardless of the
-  image store. `enabled_import_methods` is rendered as `[web-download,copy-image]`
+  image store. Both are `emptyDir`s bounded by a default `sizeLimit` of 10Gi
+  (`spec.staging.sizeLimit`), so an oversized import gets the glance-api pod
+  evicted rather than running until the node's disk is full; see
+  [StagingSpec](./glance-crd.md#stagingspec) for what that bound does and does
+  not guarantee.
+  `enabled_import_methods` is rendered as `[web-download,copy-image]`
   — `glance-direct` is deliberately excluded because it stages the uploaded
   image on the API pod's local disk, and there is no staging volume shared
   across replicas, so an import begun on one pod could not be finished by

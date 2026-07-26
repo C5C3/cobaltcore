@@ -768,14 +768,21 @@ CRD after the operator has started requires restarting the operator for the
 watch to become active. The quickstart stack (`make deploy-infra`) installs
 the upstream Gateway API standard CRDs for this reason; the pinned version is
 set via `GATEWAY_API_VERSION` in `hack/deploy-infra.sh` and tracks
-`sigs.k8s.io/gateway-api` in `operators/keystone/go.mod`.
+`sigs.k8s.io/gateway-api` in `operators/keystone/go.mod`. That pin is `v1.6.1`
+(standard channel), which is also the floor for the route timeout below:
+`spec.rules[].timeouts` reached the HTTPRoute schema after the versions the
+stack shipped earlier, and an older CRD prunes the stanza silently, leaving the
+implementation default in force with nothing logged or rejected. When live CRDs
+carry a `gateway.networking.k8s.io/bundle-version` annotation that differs from
+the pin, the script upgrades them in place; a live set without that annotation
+is warned about and skipped, since it cannot be compared.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `parentRef` | [`GatewayParentRefSpec`](#gatewayparentrefspec) | Yes | — | Gateway the HTTPRoute attaches to. |
 | `hostname` | `string` | Yes | — | Externally reachable hostname (SNI / `Host` header) matched by the HTTPRoute. Used for both route hostname matching and deriving `status.endpoint` (`https://{hostname}/v3`). Minimum length: 1. |
 | `path` | `string` | No | `"/"` | URL path prefix matched by the HTTPRoute. The reconciler applies the default when the field is empty. Uses `PathPrefix` match type. |
-| `annotations` | `map[string]string` | No | `nil` | Annotations passed through verbatim to the HTTPRoute `metadata.annotations`, allowing implementation-specific configuration (rate limits, timeouts, CORS). Operator-managed labels are preserved — user annotations do not shadow them. |
+| `annotations` | `map[string]string` | No | `nil` | Annotations passed through verbatim to the HTTPRoute `metadata.annotations`, allowing implementation-specific configuration (rate limits, CORS). The route timeout is operator-managed and not annotation-driven — see [`spec.rules[0].timeouts.request`](#httproute-resource-mapping) below. Operator-managed labels are preserved: user annotations do not shadow them. |
 
 ### GatewayParentRefSpec
 
@@ -810,7 +817,28 @@ The HTTPRoute created from this spec has the following shape
 | `spec.rules[0].backendRefs[0].kind` | `Service` |
 | `spec.rules[0].backendRefs[0].name` | `{name}` |
 | `spec.rules[0].backendRefs[0].port` | `5000` |
+| `spec.rules[0].timeouts.request` | Not rendered; the gateway implementation's default applies. Glance is the exception, and renders `"4h"` (see below) |
 | `ownerReferences` | Points to the Keystone CR (controller: true) — enables garbage collection |
+
+The route timeout is operator-managed on every service that renders an
+HTTPRoute, and no CRD exposes it. Keystone and Horizon omit the stanza and
+inherit the implementation's default, 15 s on the Envoy Gateway the kind stack
+deploys, which their short identity and dashboard requests fit inside. The
+Glance route raises it to `timeouts.request: "4h"`, because an image upload or
+import legitimately streams for hours.
+
+It is raised, not disabled. `"0s"` is the Gateway API spelling of no timeout,
+and the rule it would land on matches a bare `/` prefix, so it covers every path
+of the service behind the route. The route timeout is then the only
+request-duration cap in front of the backend: a stream idle timeout resets on
+every byte, so it never fires for a client that trickles one. A finite bound far
+above any legitimate transfer still caps how long a stalled request holds what it
+holds, while letting a multi-gibibyte transfer finish. It bounds duration only,
+not how many requests may hold a worker at once; see [Gateway requirements for
+the upload
+path](../../guides/glance/large-image-uploads.md#gateway-requirements-for-the-upload-path)
+for what that leaves uncovered. Rendering the stanza needs the Gateway API CRD
+version named in the prerequisite above.
 
 ### status.endpoint Derivation
 
