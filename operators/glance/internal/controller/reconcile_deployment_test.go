@@ -12,6 +12,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -189,11 +190,18 @@ func TestBuildGlanceDeployment_Volumes(t *testing.T) {
 	g.Expect(volumesByName).To(HaveKey(backendsVolumeName))
 	g.Expect(volumesByName[backendsVolumeName].Secret).NotTo(BeNil())
 	g.Expect(volumesByName[backendsVolumeName].Secret.SecretName).To(Equal(art.backendsSecretName))
-	// Reserved-store emptyDirs.
+	// Reserved-store emptyDirs, both bounded by the operator default when
+	// spec.staging is unset — an unbounded scratch volume lets one import fill
+	// the node's disk.
+	defaultLimit := resource.MustParse("10Gi")
 	g.Expect(volumesByName).To(HaveKey(stagingVolumeName))
 	g.Expect(volumesByName[stagingVolumeName].EmptyDir).NotTo(BeNil())
+	g.Expect(volumesByName[stagingVolumeName].EmptyDir.SizeLimit).NotTo(BeNil())
+	g.Expect(*volumesByName[stagingVolumeName].EmptyDir.SizeLimit).To(Equal(defaultLimit))
 	g.Expect(volumesByName).To(HaveKey(tasksVolumeName))
 	g.Expect(volumesByName[tasksVolumeName].EmptyDir).NotTo(BeNil())
+	g.Expect(volumesByName[tasksVolumeName].EmptyDir.SizeLimit).NotTo(BeNil())
+	g.Expect(*volumesByName[tasksVolumeName].EmptyDir.SizeLimit).To(Equal(defaultLimit))
 	// No db-tls volume when TLS is disabled.
 	g.Expect(volumesByName).NotTo(HaveKey(dbTLSVolumeName))
 
@@ -206,6 +214,123 @@ func TestBuildGlanceDeployment_Volumes(t *testing.T) {
 	g.Expect(mountsByName[backendsVolumeName].MountPath).To(Equal(glanceBackendsConfigDir))
 	g.Expect(mountsByName[stagingVolumeName].MountPath).To(Equal(glanceStagingStorePath))
 	g.Expect(mountsByName[tasksVolumeName].MountPath).To(Equal(glanceTasksStorePath))
+}
+
+// TestEffectiveStagingSizeLimit pins the three ways of saying "use the operator
+// default" — no block, an empty block, an explicitly nil sizeLimit — against the
+// two ways of overriding it: a larger bound, and unbounded. All of them are
+// resolved at reconcile time, so none depends on the defaulting webhook having
+// run. Unbounded resolving to nil is what keeps a deployment that predates the
+// bound able to stay unbounded across the operator upgrade that introduces it.
+func TestEffectiveStagingSizeLimit(t *testing.T) {
+	tests := []struct {
+		name    string
+		staging *glancev1alpha1.StagingSpec
+		want    *resource.Quantity
+	}{
+		{
+			name:    "nil block resolves the default",
+			staging: nil,
+			want:    ptr.To(glancev1alpha1.DefaultStagingSizeLimit()),
+		},
+		{
+			name:    "empty block resolves the default",
+			staging: &glancev1alpha1.StagingSpec{},
+			want:    ptr.To(glancev1alpha1.DefaultStagingSizeLimit()),
+		},
+		{
+			name:    "explicit nil sizeLimit resolves the default",
+			staging: &glancev1alpha1.StagingSpec{SizeLimit: nil},
+			want:    ptr.To(glancev1alpha1.DefaultStagingSizeLimit()),
+		},
+		{
+			name:    "explicit sizeLimit is honored",
+			staging: &glancev1alpha1.StagingSpec{SizeLimit: ptr.To(resource.MustParse("50Gi"))},
+			want:    ptr.To(resource.MustParse("50Gi")),
+		},
+		{
+			name:    "unbounded resolves to no limit",
+			staging: &glancev1alpha1.StagingSpec{Unbounded: true},
+			want:    nil,
+		},
+		{
+			// unbounded: false is the zero value and must not be mistaken for a
+			// third way of asking for the default's absence.
+			name:    "explicit unbounded false resolves the default",
+			staging: &glancev1alpha1.StagingSpec{Unbounded: false},
+			want:    ptr.To(glancev1alpha1.DefaultStagingSizeLimit()),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			glance := deployGlance("2026.1")
+			glance.Spec.Staging = tc.staging
+
+			got := effectiveStagingSizeLimit(glance)
+			if tc.want == nil {
+				g.Expect(got).To(BeNil())
+				return
+			}
+			g.Expect(got).NotTo(BeNil())
+			g.Expect(*got).To(Equal(*tc.want))
+		})
+	}
+}
+
+// TestBuildGlanceDeployment_UnboundedStaging pins the opt-out end to end: both
+// scratch emptyDirs must render with no sizeLimit at all, the shape a Glance
+// carried before the bound existed. Asserting on the built Deployment rather
+// than only on the resolver catches a later change that re-derives a limit from
+// the nil, which would silently re-impose eviction on a deployment that opted
+// out of it.
+func TestBuildGlanceDeployment_UnboundedStaging(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := deployGlance("2026.1")
+	glance.Spec.Staging = &glancev1alpha1.StagingSpec{Unbounded: true}
+	deploy := buildGlanceDeployment(glance, testArtifacts(), "", "")
+
+	volumesByName := map[string]corev1.Volume{}
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		volumesByName[v.Name] = v
+	}
+
+	for _, name := range []string{stagingVolumeName, tasksVolumeName} {
+		emptyDir := volumesByName[name].EmptyDir
+		g.Expect(emptyDir).NotTo(BeNil())
+		g.Expect(emptyDir.SizeLimit).To(BeNil(),
+			"%s must carry no sizeLimit when spec.staging.unbounded is set", name)
+	}
+}
+
+// TestBuildGlanceDeployment_ExplicitStagingSizeLimit pins that the configured
+// bound reaches both scratch volumes, and that each gets its own Quantity: a
+// shared pointer would make the two emptyDirs alias one value that a later
+// mutation of either would move under both.
+func TestBuildGlanceDeployment_ExplicitStagingSizeLimit(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := deployGlance("2026.1")
+	glance.Spec.Staging = &glancev1alpha1.StagingSpec{SizeLimit: ptr.To(resource.MustParse("25Gi"))}
+	deploy := buildGlanceDeployment(glance, testArtifacts(), "", "")
+
+	volumesByName := map[string]corev1.Volume{}
+	for _, v := range deploy.Spec.Template.Spec.Volumes {
+		volumesByName[v.Name] = v
+	}
+
+	staging := volumesByName[stagingVolumeName].EmptyDir
+	tasks := volumesByName[tasksVolumeName].EmptyDir
+	g.Expect(staging).NotTo(BeNil())
+	g.Expect(tasks).NotTo(BeNil())
+	g.Expect(staging.SizeLimit).NotTo(BeNil())
+	g.Expect(tasks.SizeLimit).NotTo(BeNil())
+	g.Expect(*staging.SizeLimit).To(Equal(resource.MustParse("25Gi")))
+	g.Expect(*tasks.SizeLimit).To(Equal(resource.MustParse("25Gi")))
+	g.Expect(staging.SizeLimit).NotTo(BeIdenticalTo(tasks.SizeLimit),
+		"each emptyDir must carry its own Quantity, not a shared pointer")
 }
 
 func TestBuildGlanceDeployment_DBTLSVolumeWhenEnabled(t *testing.T) {

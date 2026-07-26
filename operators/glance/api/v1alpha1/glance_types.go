@@ -5,6 +5,7 @@
 package v1alpha1
 
 import (
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -141,6 +142,16 @@ type GlanceSpec struct {
 	// +optional
 	DBPurge *DBPurgeSpec `json:"dbPurge,omitempty"`
 
+	// Staging bounds the node-local scratch space an image import may consume.
+	// The operator resolves the effective size limit at reconcile time —
+	// DefaultStagingSizeLimit — rather than materializing it into the CR, so a
+	// nil block, an empty block, and a nil sizeLimit all mean the same thing:
+	// use the operator default. Leaving it unset therefore keeps tracking that
+	// default across upgrades instead of freezing today's value into the stored
+	// CR. Setting staging.unbounded opts out of the bound altogether.
+	// +optional
+	Staging *StagingSpec `json:"staging,omitempty"`
+
 	// Gateway configures external exposure of the Glance API via a Gateway API
 	// HTTPRoute. When set, the operator creates an HTTPRoute targeting the {name}
 	// Service and attaches it to the referenced pre-existing Gateway. When removed
@@ -202,8 +213,8 @@ type GlanceSpec struct {
 	Plugins []commonv1.PluginSpec `json:"plugins,omitempty"`
 
 	// ExtraConfig provides free-form INI sections for configuration not covered by
-	// explicit CRD fields. It is the deliberate escape hatch for import/staging
-	// tuning, which has no dedicated knobs of its own yet.
+	// explicit CRD fields. It is the deliberate escape hatch for options that have
+	// no dedicated knob of their own.
 	// +optional
 	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
 }
@@ -494,6 +505,58 @@ type DBPurgeSpec struct {
 	// suspended — a paused purge is a deliberate posture, not a failure.
 	// +optional
 	Suspend bool `json:"suspend,omitempty"`
+}
+
+// StagingSpec bounds the node-local scratch space image imports consume. Glance
+// stages every import on local disk before the data reaches the backing store —
+// the reserved staging store takes the uploaded image, the reserved tasks-work
+// store the async task's working copy — and both are emptyDirs on the node
+// filesystem. Left unbounded, one oversized web-download import fills the node's
+// disk.
+//
+// The resolved value is stamped as the SizeLimit of BOTH emptyDirs, so one
+// glance-api pod is expected to occupy at most twice the configured value.
+//
+// The enforcement is best-effort, not a filesystem quota. emptyDir.sizeLimit is
+// an eviction threshold the kubelet evaluates on its periodic local-storage
+// housekeeping pass (~10s), so actual peak usage is the bound plus whatever a
+// writer appends within one pass — a full-speed in-cluster download overshoots
+// by that much, and a download shorter than one pass can finish before the
+// kubelet ever looks. The bound is also not a scheduling reservation: no
+// ephemeral-storage request is derived from it, so co-scheduled replicas each
+// get their own budget and the sum is bounded by the node's disk, not by this
+// field. Size nodes against replicas x 2 x sizeLimit plus that overshoot.
+//
+// Within one pod the bound is a single shared budget, not per-import accounting:
+// concurrent imports draw from it together, and breaching it evicts the pod
+// rather than the offending import — every in-flight transfer on that replica
+// dies with it. That contains a runaway import to one glance-api pod; it does
+// not isolate tenants from each other.
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.unbounded) && self.unbounded && has(self.sizeLimit))",message="unbounded and sizeLimit are mutually exclusive: an unbounded staging area has no size limit to configure"
+type StagingSpec struct {
+	// SizeLimit caps each of the two scratch emptyDirs, staging and tasks-work.
+	// It must be at least 1Mi. When unset the operator resolves
+	// DefaultStagingSizeLimit (10Gi) at reconcile time.
+	// +optional
+	SizeLimit *resource.Quantity `json:"sizeLimit,omitempty"`
+
+	// Unbounded removes the bound entirely: the operator renders both scratch
+	// emptyDirs without a sizeLimit, so an import may consume node disk until
+	// the node itself runs out. It is the escape hatch for a deployment whose
+	// largest import cannot be expressed as a number worth committing to —
+	// notably one that ran before this field existed, since an operator upgrade
+	// otherwise stamps DefaultStagingSizeLimit onto its Deployment and starts
+	// evicting on imports that used to succeed. Prefer raising SizeLimit; reach
+	// for this only to deliberately restore the pre-bound behaviour, and size
+	// the node accordingly, because nothing then stops one import from filling
+	// the disk out from under every other pod on it.
+	//
+	// It is a separate field rather than a sentinel SizeLimit so the 1Mi floor
+	// keeps rejecting the sub-byte quantities it exists to catch. Setting both
+	// is a contradiction and rejected at admission.
+	// +optional
+	Unbounded bool `json:"unbounded,omitempty"`
 }
 
 // GlanceStatus defines the observed state of Glance.
