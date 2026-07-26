@@ -198,27 +198,48 @@ func EnsureCronJob(ctx context.Context, c client.Client, scheme *runtime.Scheme,
 	return apply.EnsureObject(ctx, c, scheme, owner, cronJob, apply.FieldManager)
 }
 
+// TerminalCondition returns the terminal condition type — JobComplete or
+// JobFailed — currently True on the given Job, or the empty type while the Job
+// has not reached a terminal state. Callers observing the runs a CronJob spawns
+// use it to tell a finished run from a running one.
+//
+// The non-terminal types (JobSuspended, JobFailureTarget, JobSuccessCriteriaMet)
+// never count: a suspended Job may resume, and the two target types flip briefly
+// before the terminal condition follows. JobFailed wins over a simultaneously
+// True JobComplete, preserving the precedence RunJobWithRerunKey has always had
+// (it tests isJobFailed before isJobComplete) regardless of the order the two
+// conditions happen to sit in the slice.
+func TerminalCondition(job *batchv1.Job) batchv1.JobConditionType {
+	var terminal batchv1.JobConditionType
+	for _, c := range job.Status.Conditions {
+		if c.Status != corev1.ConditionTrue {
+			continue
+		}
+		switch c.Type {
+		case batchv1.JobFailed:
+			return c.Type
+		case batchv1.JobComplete:
+			terminal = c.Type
+		case batchv1.JobSuspended, batchv1.JobFailureTarget, batchv1.JobSuccessCriteriaMet:
+			// Not terminal: a Suspended Job may be resumed, and
+			// FailureTarget/SuccessCriteriaMet flip briefly before the terminal
+			// JobFailed/JobComplete follows.
+		}
+	}
+	return terminal
+}
+
 // isJobComplete returns true if the given Job has a Complete condition with
 // status True.
 func isJobComplete(job *batchv1.Job) bool {
-	for _, c := range job.Status.Conditions {
-		if c.Type == batchv1.JobComplete && c.Status == corev1.ConditionTrue {
-			return true
-		}
-	}
-	return false
+	return TerminalCondition(job) == batchv1.JobComplete
 }
 
 // isJobFailed returns true if the given Job has a Failed condition with
 // status True, indicating it has permanently failed (e.g. exceeded its
 // backoffLimit).
 func isJobFailed(job *batchv1.Job) bool {
-	for _, c := range job.Status.Conditions {
-		if c.Type == batchv1.JobFailed && c.Status == corev1.ConditionTrue {
-			return true
-		}
-	}
-	return false
+	return TerminalCondition(job) == batchv1.JobFailed
 }
 
 // DeleteCronJob deletes the CronJob identified by namespace and name. It is a

@@ -773,6 +773,70 @@ func TestEnsureCronJob_idempotent(t *testing.T) {
 	g.Expect(list.Items).To(HaveLen(1))
 }
 
+// --- TerminalCondition ---
+
+// TerminalCondition is what every caller observing a CronJob's runs decides on,
+// so its classification is pinned directly rather than only through the two
+// boolean helpers that now delegate to it. The both-terminal case pins the
+// failed-over-complete precedence RunJobWithRerunKey relies on, independent of
+// the order the two conditions sit in the slice.
+func TestTerminalCondition(t *testing.T) {
+	tests := []struct {
+		name  string
+		conds []batchv1.JobCondition
+		want  batchv1.JobConditionType
+	}{
+		{name: "no conditions", conds: nil, want: ""},
+		{
+			name:  "complete true",
+			conds: []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}},
+			want:  batchv1.JobComplete,
+		},
+		{
+			name:  "failed true",
+			conds: []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}},
+			want:  batchv1.JobFailed,
+		},
+		{
+			name:  "complete false is not terminal",
+			conds: []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionFalse}},
+			want:  "",
+		},
+		{
+			name: "non-terminal types are ignored",
+			conds: []batchv1.JobCondition{
+				{Type: batchv1.JobSuspended, Status: corev1.ConditionTrue},
+				{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue},
+				{Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue},
+			},
+			want: "",
+		},
+		{
+			name: "failed wins when complete is listed first",
+			conds: []batchv1.JobCondition{
+				{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+				{Type: batchv1.JobFailed, Status: corev1.ConditionTrue},
+			},
+			want: batchv1.JobFailed,
+		},
+		{
+			name: "failed wins when failed is listed first",
+			conds: []batchv1.JobCondition{
+				{Type: batchv1.JobFailed, Status: corev1.ConditionTrue},
+				{Type: batchv1.JobComplete, Status: corev1.ConditionTrue},
+			},
+			want: batchv1.JobFailed,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			job := &batchv1.Job{Status: batchv1.JobStatus{Conditions: tc.conds}}
+			g.Expect(TerminalCondition(job)).To(Equal(tc.want))
+		})
+	}
+}
+
 // --- isJobComplete ---
 
 func TestIsJobComplete_true(t *testing.T) {

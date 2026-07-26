@@ -75,7 +75,8 @@ func (s Skeleton[T, S]) MarkFailed(obj T, conditionType, reason string, err erro
 // resolving each CR's conditions through the Skeleton's accessor and
 // instrumenting each member through instrument. Conditions from every member —
 // including those that succeeded before a peer failed — are merged back into
-// obj, and on success the shortest non-zero RequeueAfter is returned.
+// obj, along with the metadata a member persisted on its copy, and on success
+// the shortest non-zero RequeueAfter is returned.
 func (s Skeleton[T, S]) RunParallelGroup(ctx context.Context, obj T, instrument InstrumentFunc, steps []ParallelStep[T]) (ctrl.Result, error) {
 	return RunParallelGroup(ctx, obj, s.Conditions, instrument, steps)
 }

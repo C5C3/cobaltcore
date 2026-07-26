@@ -139,6 +139,76 @@ func TestGlobalCollectorPathRecordsAndDeletes(t *testing.T) {
 	g.Expect(seriesForGlance(dur, survivorName, survivorNs)).To(HaveLen(1))
 }
 
+func TestDbPurgeCounterIncrementsOnTerminalStateOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	reg := prometheus.NewRegistry()
+	c := newCollectorsForTest(reg)
+
+	c.recordDBPurge("foo", "bar", "failed", 42*time.Second)
+
+	fam := gatherMetric(t, reg, "glance_operator_db_purge_total")
+	g.Expect(fam).NotTo(BeNil())
+	g.Expect(fam.GetMetric()).To(HaveLen(1))
+	values := map[string]string{}
+	for _, l := range fam.GetMetric()[0].GetLabel() {
+		values[l.GetName()] = l.GetValue()
+	}
+	g.Expect(values).To(HaveKeyWithValue("glance", "foo"))
+	g.Expect(values).To(HaveKeyWithValue("namespace", "bar"))
+	g.Expect(values).To(HaveKeyWithValue("result", "failed"))
+	g.Expect(fam.GetMetric()[0].GetCounter().GetValue()).To(Equal(1.0))
+
+	durFam := gatherMetric(t, reg, "glance_operator_db_purge_duration_seconds")
+	g.Expect(durFam).NotTo(BeNil())
+	g.Expect(durFam.GetMetric()).To(HaveLen(1))
+	g.Expect(durFam.GetMetric()[0].GetHistogram().GetSampleCount()).To(Equal(uint64(1)))
+	g.Expect(durFam.GetMetric()[0].GetHistogram().GetSampleSum()).To(BeNumerically("~", 42.0, 0.001))
+
+	// The purge pair must not bleed into the db-sync pair: both carry the same
+	// glance/namespace labels, so a copy-paste in recordDBPurge would be invisible
+	// without this assertion.
+	g.Expect(gatherMetric(t, reg, "glance_operator_db_sync_total").GetMetric()).To(BeEmpty())
+}
+
+// TestGlobalCollectorPathRecordsAndDeletesDBPurge is the db-purge half of the
+// global-path coverage: RecordDBPurge must publish on the controller-runtime
+// registry and DeleteForGlance must drop the purge series too, otherwise a
+// deleted CR leaks a purge time series for the operator's lifetime.
+func TestGlobalCollectorPathRecordsAndDeletesDBPurge(t *testing.T) {
+	g := NewGomegaWithT(t)
+	reg := ctrlmetrics.Registry
+
+	g.Expect(Register()).To(Succeed())
+
+	const (
+		targetName   = "purge-target"
+		targetNs     = "purge-ns"
+		survivorName = "purge-survivor"
+		survivorNs   = "purge-ns"
+	)
+
+	RecordDBPurge(targetName, targetNs, "succeeded", 5*time.Second)
+	RecordDBPurge(survivorName, survivorNs, "failed", 6*time.Second)
+
+	total := gatherMetric(t, reg, "glance_operator_db_purge_total")
+	g.Expect(seriesForGlance(total, targetName, targetNs)).To(HaveLen(1),
+		"RecordDBPurge must publish a db_purge_total series on ctrlmetrics.Registry")
+	dur := gatherMetric(t, reg, "glance_operator_db_purge_duration_seconds")
+	g.Expect(seriesForGlance(dur, targetName, targetNs)).To(HaveLen(1))
+
+	DeleteForGlance(targetName, targetNs)
+
+	total = gatherMetric(t, reg, "glance_operator_db_purge_total")
+	g.Expect(seriesForGlance(total, targetName, targetNs)).To(BeEmpty(),
+		"DeleteForGlance must remove the target's purge series (stale-series leak guard)")
+	g.Expect(seriesForGlance(total, survivorName, survivorNs)).To(HaveLen(1),
+		"an unrelated CR's purge series must survive the delete")
+
+	dur = gatherMetric(t, reg, "glance_operator_db_purge_duration_seconds")
+	g.Expect(seriesForGlance(dur, targetName, targetNs)).To(BeEmpty())
+	g.Expect(seriesForGlance(dur, survivorName, survivorNs)).To(HaveLen(1))
+}
+
 func TestRegisterDuplicateReturnsError(t *testing.T) {
 	g := NewGomegaWithT(t)
 

@@ -48,6 +48,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"HealthCheck":        conditionTypeGlanceAPIReady,
 	"HPA":                "HPAReady",
 	"NetworkPolicy":      conditionTypeNetworkPolicyReady,
+	"DBPurge":            conditionTypeDBPurgeReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error
