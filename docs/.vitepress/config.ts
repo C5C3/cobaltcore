@@ -68,6 +68,7 @@ export default defineConfig({
             collapsed: true,
             items: [
               { text: 'Attach S3 Multi-Store Backends to Glance', link: '/guides/glance/glance-s3-multistore' },
+              { text: 'Enable Glance Image Caching', link: '/guides/glance/enable-glance-image-caching' },
               { text: 'Enable Glance Operator Metrics', link: '/guides/glance/enable-glance-operator-metrics' },
               { text: 'Enable Glance Operator NetworkPolicy', link: '/guides/glance/enable-glance-operator-networkpolicy' },
               { text: 'Large Image Uploads through the Gateway', link: '/guides/glance/large-image-uploads' },

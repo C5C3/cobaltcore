@@ -33,6 +33,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `importFiltering` | [`*ImportFilteringSpec`](#importfilteringspec) | no | URI filtering for `web-download` image imports. The operator resolves the effective lists at render time, so a nil block and an empty struct behave alike: HTTPS on port 443, plus a literal host denylist |
 | `dbPurge` | [`*DBPurgeSpec`](#dbpurgespec) | no | Recurring database purge that hard-deletes rows Glance only ever soft-deletes. The operator resolves the effective settings at reconcile time, so a nil block and an empty struct behave alike: 30-day retention, daily at `1 0 * * *`, task rows only, not suspended |
 | `staging` | [`*StagingSpec`](#stagingspec) | no | Bounds the node-local scratch space an image import may consume. The operator resolves the effective limit at reconcile time, so a nil block, an empty struct, and a set block leaving `sizeLimit` unset all behave alike: `10Gi` on each of the two scratch volumes. `unbounded: true` opts out of the bound entirely |
+| `imageCache` | [`*ImageCacheSpec`](#imagecachespec) | no | Turns on the per-replica local image cache: presence of the block enables it, nil disables it. `sizeLimit` bounds the cache `emptyDir` (default `10Gi`, floor `1Mi`) and `maintenanceInterval` sets the pruner/cleaner cadence (default `5m`, floor `1m`). Both resolve at render time, so an unset field keeps tracking the operator default |
 | `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute on port 9292; requires `hostname` and `parentRef.name` |
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 9292 from the listed sources; egress auto-derived (DNS, database, cache, and the attached backends' S3 hosts). At least one ingress source is required (fail-closed) |
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds and CPU/memory utilization targets |
@@ -41,7 +42,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `policyOverrides` | `*PolicySpec` | no | Custom oslo.policy rules. A CEL rule requires at least one of `rules` or `configMapRef`; when set, the operator renders a `policy.yaml` and wires `oslo_policy.policy_file` |
 | `middleware` | `[]MiddlewareSpec` | no | WSGI middleware filters injected into the `api-paste.ini` pipeline |
 | `plugins` | `[]PluginSpec` | no | Service plugins/drivers, modeled as a list-map keyed by `configSection` so duplicate sections are rejected structurally |
-| `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for configuration not covered by explicit fields — the escape hatch for options with no dedicated knob of their own. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so user values win over both. Overrides of operator-owned keys are honored but reported (report-only) via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event — except `[keystone_authtoken] password`, which the validating webhook rejects at admission so the env-injected service password never leaks into the namespace-readable ConfigMap, and the six `[import_filtering_opts]` keys, which it rejects so the `web-download` URI filter stays reachable only through [`spec.importFiltering`](#importfilteringspec) and its admission gates. Option names are validated at admission against a per-release option catalog embedded in the operator (release derived from `spec.openStackRelease`; a release with no embedded catalog skips the check with an admission warning). Sections declared by `spec.plugins`, operator-owned keys, and the reserved store sections `os_glance_staging_store` and `os_glance_tasks_store` are exempt. An unknown section or option is rejected with the section and key named, so an arbitrary backend-named section is refused; backend options belong to the [`GlanceBackend`](./glance-backend-crd.md) CR. A deprecated-but-accepted option is admitted with a warning naming its replacement. Values are checked for one thing only — a newline or carriage return in a section name, key, or value is rejected, because the rendered INI writes each verbatim and a newline would inject arbitrary config lines past the ownership and catalog gates. Every rule here is webhook-only with no CEL backstop |
+| `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for configuration not covered by explicit fields — the escape hatch for options with no dedicated knob of their own. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so user values win over both. Overrides of operator-owned keys are honored but reported (report-only) via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event — except `[keystone_authtoken] password`, which the validating webhook rejects at admission so the env-injected service password never leaks into the namespace-readable ConfigMap, the six `[import_filtering_opts]` keys, which it rejects so the `web-download` URI filter stays reachable only through [`spec.importFiltering`](#importfilteringspec) and its admission gates, and the three `[DEFAULT] image_cache_*` keys, which it rejects because each of them ends in an evicted glance-api pod or in database rows nothing reclaims — see [ImageCacheSpec](#imagecachespec). Option names are validated at admission against a per-release option catalog embedded in the operator (release derived from `spec.openStackRelease`; a release with no embedded catalog skips the check with an admission warning). Sections declared by `spec.plugins`, operator-owned keys, and the reserved store sections `os_glance_staging_store` and `os_glance_tasks_store` are exempt. An unknown section or option is rejected with the section and key named, so an arbitrary backend-named section is refused; backend options belong to the [`GlanceBackend`](./glance-backend-crd.md) CR. A deprecated-but-accepted option is admitted with a warning naming its replacement. Values are checked for one thing only — a newline or carriage return in a section name, key, or value is rejected, because the rendered INI writes each verbatim and a newline would inject arbitrary config lines past the ownership and catalog gates. Every rule here is webhook-only with no CEL backstop |
 
 ### ServiceUserSpec
 
@@ -385,6 +386,178 @@ kubectl get deploy glance -n openstack \
   -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="staging")].emptyDir.sizeLimit}{"\n"}'
 ```
 
+### ImageCacheSpec
+
+Glance can keep a copy of the image data it has served on the API pod's own
+filesystem, so a repeat download of the same image is answered from the node
+instead of from the backing store. This block is the opt-in. While
+`spec.imageCache` is set the operator mounts the cache volume, renders the cache
+config keys, injects the `cache` paste filter, and runs the maintenance sidecar;
+with it nil the pod template and the rendered config are what they were before
+the block existed.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `sizeLimit` | `*resource.Quantity` | no | `10Gi` | The `emptyDir.sizeLimit` stamped on the per-replica `image-cache` volume, mounted at `/var/lib/glance/image-cache` in the `glance-api` container. Must be at least `1Mi` |
+| `maintenanceInterval` | `*metav1.Duration` | no | `5m` | How often the `cache-maintenance` sidecar runs `glance-cache-pruner` and `glance-cache-cleaner`. Must be at least `1m` |
+
+Both fields resolve at reconcile time, the contract
+[ImportFilteringSpec](#importfilteringspec), [DBPurgeSpec](#dbpurgespec) and
+[StagingSpec](#stagingspec) already follow: the defaulting webhook writes nothing
+back into the CR, so an empty block and a set block leaving one field unset both
+keep tracking the operator default across upgrades.
+
+**The cache is per replica, and it is not shared.** Every pod fills its own copy,
+an image is cached once per replica that served it, and a request is answered
+from cache only when it lands on a replica that already holds the image. Three
+replicas therefore claim three times `sizeLimit` of node disk, and the same
+image is pulled from the store up to three times before every replica holds it.
+Hit rate rises as replicas fall, which is the one place where this block and the
+availability argument for more replicas pull in opposite directions.
+
+**Every rollout starts the cache cold.** It lives in an `emptyDir`, so any pod
+replacement (a config change, a release upgrade, a node drain, an eviction)
+discards it and the first read of each image goes to the backing store again.
+Nothing warms it in advance, and no CR field changes that.
+
+Three `[DEFAULT]` keys are rendered, and only while the block is set:
+
+| Key | Value |
+| --- | --- |
+| `image_cache_dir` | `/var/lib/glance/image-cache` |
+| `image_cache_driver` | `sqlite` |
+| `image_cache_max_size` | 80% of `sizeLimit`, in bytes |
+
+`image_cache_stall_time` (86400) and `image_cache_sqlite_db` (`cache.db`) stay
+unrendered. Glance's own defaults for those two are already what this deployment
+wants, and rendering them would claim ownership of two more keys for no gain.
+The three above are registered as operator-owned and **Rejected**: the
+validating webhook refuses an `extraConfig` override of any of them, whether or
+not `spec.imageCache` is set. `extraConfig` wins over every operator default in
+the merge, and `ExtraConfigHealthy` is informational — it never gates `Ready` —
+so each of these overrides would be damage already done by the time a condition
+could report it. `image_cache_max_size` at or above the `emptyDir` bound leaves
+the pruner nothing to prune down to, so the volume grows until the kubelet
+evicts the pod. `image_cache_dir` elsewhere does not create an unbounded path —
+the root filesystem is read-only, so every writable path in the pod is already
+a bounded `emptyDir` — it spends a different volume's bound, filling the
+staging or tasks-work budget and evicting the pod mid-import.
+`image_cache_driver` is covered below.
+
+`image_cache_max_size` is derived as `Value()/10*8`, so a `10Gi` bound renders
+`8589934592` and a `256Mi` bound `214748360`. The division runs before the
+multiplication, which keeps the truncation below the true 80% and never above
+it. The band matters because glance's pruner only prunes *down to*
+`image_cache_max_size`, and only when the maintenance loop runs it, so the cache
+legitimately sits above that mark between two passes. The remaining 20% is the
+headroom those writes have before they cross the `emptyDir` bound and the
+kubelet evicts the pod. What bounds how much of that headroom one burst of
+downloads may eat is the sidecar's 30-second size poll, not
+`maintenanceInterval` — see the maintenance loop below.
+
+A single image larger than `image_cache_max_size` is still cached in full: the
+size check happens after the download, and the next pruner pass removes it. Such
+an image only becomes a problem once it approaches `sizeLimit` itself, the bound
+the kubelet enforces and the one glance knows nothing about.
+
+**The driver is pinned to `sqlite`.** Upstream marks that driver deprecated in
+favour of `centralized_db`, and the operator chooses it anyway.
+`centralized_db` keys cache state in the Glance database per
+`worker_self_reference_url`, and Deployment pods get a new name on every
+replacement: each roll would strand the dead pods' `node_reference` and
+`cached_images` rows there, and every cache hit would carry a database write.
+Nothing reclaims those rows: the `db-purge` CronJob sweeps the tasks table, the
+image child tables and the images table, and the pruner and cleaner key on the
+running pod's own `worker_self_reference_url`, so a surviving replica never sees
+a dead one's entries. `sqlite` keeps its metadata in `cache.db` inside the cache
+directory, so cache metadata shares the volume's lifecycle and the volume the
+pod's, and a replaced pod leaves nothing behind.
+
+**The `cache` paste filter is injected, and its name is reserved.** The operator
+appends the filter directly before the root app, after every `spec.middleware`
+entry positioned `after`:
+
+```text
+cors http_proxy_to_wsgi versionnegotiation authtoken context [middleware…] cache rootapp
+```
+
+Glance's cache filter applies a single policy rule, `download_image`, on
+`GET /v2/images/{id}/file`. Because the operator writes the `[filter:cache]`
+section itself, a `spec.middleware` entry named `cache` would define that filter
+a second time, and the validating webhook rejects it for as long as
+`spec.imageCache` is set. With the block nil the name stays free, so a CR that
+already carries such a middleware is unaffected.
+
+**The pod gains a volume and a container.** An `image-cache` `emptyDir` bounded
+by the resolved `sizeLimit`, mounted read-write into `glance-api`, and a second
+container named `cache-maintenance` running the same image under the restricted
+security context, with fixed requests of `25m` CPU and `64Mi` memory and a
+`256Mi` memory limit. Those requests are not cosmetic: the HPA emits a
+pod-scoped `Resource` metric, so one container without a CPU request makes the
+metric unavailable for the whole pod and silently freezes `spec.autoscaling`.
+The sidecar carries no environment either: both CLIs read the mounted config
+directory and touch only the cache directory and its sqlite metadata, so they
+open neither the database nor `glance_store`, and they make no network calls,
+which is why `spec.networkPolicy` needs no rule for them.
+
+**The loop runs on cache size first and the clock second.** Glance applies no
+write barrier of its own — `image_cache_max_size` is read by the pruner, never
+by the API's cache filter — so a purely time-driven loop would let concurrent
+downloads pile into the `emptyDir` between two passes and cross the bound the
+kubelet does enforce. The sidecar therefore re-reads the directory every 30
+seconds and prunes as soon as it sits above `image_cache_max_size`, whatever
+`maintenanceInterval` says. That interval remains the cadence for the passes
+that run while the cache is under the mark, which is what bounds how long a
+stalled entry survives.
+
+The size poll deliberately measures less than the directory holds: the
+`incomplete/`, `invalid/` and `queue/` subdirectories are excluded, because
+their entries belong to `glance-cache-cleaner` and only once
+`image_cache_stall_time` (a day) has passed. Counting them would leave the size
+trigger latched on for that whole day over bytes no prune could release. A poll
+that fails to measure at all is logged and runs a pass anyway rather than read
+an unreadable directory as an empty cache.
+
+**No maintenance failure takes the pod down, and none of them reach the control
+plane.** The loop reports each failed pass and retries on the next one, however
+long the failure lasts. The sidecar shares the pod with the API container, so an
+exiting loop would `CrashLoopBackOff` the pod into `NotReady` and drop that
+replica from the Service — and a permanently broken pruner (a corrupted sqlite
+index, a renamed CLI after an image bump) is a property of the image and the
+shared config, so it fails on every replica at once. Escalating it would turn a
+degraded cache into an immediate Glance outage.
+
+Absorbing it is not free either, and the CR will not tell you so. Nothing else
+enforces `image_cache_max_size`, so under a pruner that never succeeds every
+replica's cache climbs to the `emptyDir` bound and the kubelet evicts it on
+ephemeral-storage pressure. That eviction is a node-local decision that never
+passes through the eviction API, so the `PodDisruptionBudget` the operator
+creates does **not** stagger it: replicas under even traffic cross their
+identical bound at roughly the same time and go together. What the `Glance` CR
+shows is `DeploymentReady=False` with reason `WaitingForDeployment` and nothing
+naming the cause — no condition, no event, and no metric tracks this loop.
+
+The sidecar's log is therefore the only signal, and it is the one to alert on:
+
+| Line | Meaning |
+| --- | --- |
+| `glance-cache-maintenance failed: <n> consecutive, cache at <used> KiB of <high water>` | A pass failed. `1 consecutive` on an otherwise quiet log is a transient (a lost sqlite lock); a count that keeps climbing is a pruner that can never run, and the evictions above are what comes next |
+| `glance-cache-maintenance recovered: after <n> consecutive failures` | A pass succeeded again — what closes an alert opened on the line above |
+| `glance-cache-maintenance unmeasured: could not measure <dir>; running a pass anyway` | The size poll failed; `du`'s own error is on the line before it |
+
+All three go to stderr, apart from the two CLIs' own output, and are read with
+`kubectl logs -c cache-maintenance`.
+
+Enabling the cache, resizing it, or retuning the interval rolls the Deployment
+once. The pod template and the config hash change in the same reconcile, so the
+two do not produce separate rollouts. The effective bound is readable from the
+live Deployment, and the volume is absent while the block is nil:
+
+```bash
+kubectl get deploy glance -n openstack \
+  -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="image-cache")].emptyDir.sizeLimit}{"\n"}'
+```
+
 ### Defaulting and validation
 
 The mutating webhook applies the shared `DeploymentSpec`/`LoggingSpec` defaults
@@ -428,6 +601,16 @@ staged byte and the replacement on the next import, with nothing in the CR
 status naming the cause. A `ControlPlane` calls the same exported validator on
 `spec.services.glance.staging`, so both CRs admit the same values.
 
+`spec.imageCache` is in the same position, one field over. The defaulting
+webhook leaves it untouched, and both of its floors are webhook-only: a
+`resource.Quantity` renders as `x-kubernetes-int-or-string` and a
+`metav1.Duration` as a plain string, and neither shape carries a `Minimum`
+marker, so no CEL rule can express "at least `1Mi`" or "at least `1m`". The same
+exported validator admits `spec.services.glance.imageCache` on a `ControlPlane`.
+The webhook additionally rejects a `spec.middleware` entry named `cache` while
+the block is set, since the operator injects a paste filter of that name itself
+(see [ImageCacheSpec](#imagecachespec)).
+
 The validating webhook additionally bounds `metadata.name` at 43 characters.
 The `{name}-db-purge` CronJob is the child object with the tightest name
 budget — Kubernetes caps a CronJob name at 52 characters, because its
@@ -464,8 +647,9 @@ resource requests-vs-limits, PriorityClass existence, topology-spread selectors
 preserve-unknown-fields map CEL cannot constrain): empty section/key names, a
 newline or carriage return in any section name, key, or value, and the rejected
 overrides of `[keystone_authtoken] password` (owned via
-`spec.serviceUser.secretRef`) and the six `[import_filtering_opts]` keys (owned
-via `spec.importFiltering`).
+`spec.serviceUser.secretRef`), the six `[import_filtering_opts]` keys (owned
+via `spec.importFiltering`), and the three `[DEFAULT] image_cache_*` keys (owned
+via `spec.imageCache`).
 
 Two `importFiltering` rules have no schema-layer counterpart. A host carrying a
 newline or carriage return is rejected outright: the host lists are the only
