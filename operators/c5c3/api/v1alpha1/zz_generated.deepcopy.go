@@ -892,6 +892,11 @@ func (in *ServiceGlanceSpec) DeepCopyInto(out *ServiceGlanceSpec) {
 		*out = new(apiv1alpha1.StagingSpec)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.ImageCache != nil {
+		in, out := &in.ImageCache, &out.ImageCache
+		*out = new(apiv1alpha1.ImageCacheSpec)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.ExtraConfig != nil {
 		in, out := &in.ExtraConfig, &out.ExtraConfig
 		*out = make(map[string]map[string]string, len(*in))

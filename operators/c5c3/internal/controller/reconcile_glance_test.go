@@ -8,6 +8,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
@@ -1012,6 +1013,60 @@ func TestReconcileGlance_StagingClearedProjectsNil(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Staging).To(BeNil(),
 		"clearing the ControlPlane bound must revert the child to the operator default")
+}
+
+// TestReconcileGlance_ImageCacheProjected proves the cache block reaches the
+// child unchanged — both the size bound and the maintenance cadence — and that
+// the child does not alias the ControlPlane spec. (A nil source projecting to
+// nil is pinned by TestReconcileGlance_ImageCacheClearedProjectsNil.)
+func TestReconcileGlance_ImageCacheProjected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.ImageCache = &glancev1alpha1.ImageCacheSpec{
+		SizeLimit:           ptr.To(resource.MustParse("256Mi")),
+		MaintenanceInterval: &metav1.Duration{Duration: 7 * time.Minute},
+	}
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	gl := getProjectedGlance(t, r.Client, cp)
+	g.Expect(gl.Spec.ImageCache).NotTo(BeNil())
+	g.Expect(gl.Spec.ImageCache.SizeLimit).NotTo(BeNil())
+	// Compare the rendered quantities, not the structs: DeepCopy drops the
+	// Quantity's cached string form, so struct equality fails on equal values.
+	g.Expect(gl.Spec.ImageCache.SizeLimit.String()).To(Equal("256Mi"))
+	g.Expect(gl.Spec.ImageCache.MaintenanceInterval).NotTo(BeNil())
+	g.Expect(gl.Spec.ImageCache.MaintenanceInterval.Duration).To(Equal(7 * time.Minute))
+
+	// DeepCopy: the child's pointer must not alias the ControlPlane's spec, or a
+	// later mutation there would reach through into the projected object.
+	g.Expect(gl.Spec.ImageCache).NotTo(BeIdenticalTo(cp.Spec.Services.Glance.ImageCache))
+}
+
+// TestReconcileGlance_ImageCacheClearedProjectsNil proves the field is assigned
+// unconditionally: clearing services.glance.imageCache removes the block from
+// the child, which disables the cache on the next rollout, rather than leaving
+// the previously-projected budget pinned and the cache silently on.
+func TestReconcileGlance_ImageCacheClearedProjectsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.ImageCache = &glancev1alpha1.ImageCacheSpec{
+		SizeLimit: ptr.To(resource.MustParse("256Mi")),
+	}
+	r := newGlanceTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.ImageCache).NotTo(BeNil())
+
+	cp.Spec.Services.Glance.ImageCache = nil
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.ImageCache).To(BeNil(),
+		"clearing the ControlPlane cache must disable it on the child again")
 }
 
 // TestReconcileGlance_DoesNotSetAPIServer pins the child-side defaults contract:

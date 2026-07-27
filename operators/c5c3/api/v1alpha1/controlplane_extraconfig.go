@@ -167,9 +167,11 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 			paths := contributingKeyPaths(owned.Section, owned.Key, blocks...)
 			// Every Rejected glance key is always forbidden: rendering
 			// [keystone_authtoken] password would leak the service password into the
-			// namespace-readable ConfigMap, and rendering an [import_filtering_opts]
+			// namespace-readable ConfigMap, rendering an [import_filtering_opts]
 			// key would loosen the web-download URI filter past every gate
-			// services.glance.importFiltering puts in front of it.
+			// services.glance.importFiltering puts in front of it, and rendering a
+			// [DEFAULT] image_cache_* key ends in an evicted glance-api pod or in
+			// database rows nothing reclaims.
 			if owned.Rejected {
 				for _, p := range paths {
 					errs = append(errs, field.Forbidden(p, rejectedGlanceMessage(owned)))

@@ -757,6 +757,13 @@ func validateGlance(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, glancev1alpha1.ValidateStaging(
 		glPath.Child("staging"), gl.Staging,
 	)...)
+	// services.glance.imageCache is the same arrangement one field over:
+	// ValidateImageCache is the sole gate on both the cache's size floor and its
+	// maintenance-interval floor, since neither a Quantity nor a Duration carries a
+	// Minimum marker in the schema.
+	allErrs = append(allErrs, glancev1alpha1.ValidateImageCache(
+		glPath.Child("imageCache"), gl.ImageCache,
+	)...)
 	allErrs = append(allErrs, validateGlanceBackends(cp, glPath.Child("backends"))...)
 	allErrs = append(allErrs, validateGlanceServiceAccount(cp)...)
 

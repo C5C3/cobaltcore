@@ -3986,6 +3986,102 @@ func TestValidateCreate_GlanceStagingUnbounded(t *testing.T) {
 	})
 }
 
+// TestValidateCreate_RejectsGlanceImageCacheSizeLimit mirrors the 1Mi floor on
+// services.glance.imageCache.sizeLimit, the staging floor's twin. The value is a
+// resource.Quantity, which renders as x-kubernetes-int-or-string and carries no
+// Minimum marker, so the glance module's exported validator is the only gate an
+// unusable cache budget ever meets on this CR — including the `100m`-for-`100Mi`
+// suffix typo, which is positive and schema-legal.
+func TestValidateCreate_RejectsGlanceImageCacheSizeLimit(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	tests := []struct {
+		name      string
+		sizeLimit string
+	}{
+		{"zero", "0"},
+		{"negative", "-1Gi"},
+		{"milli suffix typo", "100m"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			cp.Spec.Services.Glance.ImageCache = &glancev1alpha1.ImageCacheSpec{
+				SizeLimit: ptr.To(resource.MustParse(tc.sizeLimit)),
+			}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.glance.imageCache.sizeLimit"))
+			g.Expect(err.Error()).To(ContainSubstring("must be at least 1Mi"))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsGlanceImageCacheMaintenanceInterval covers the other
+// floor the shared validator carries: a metav1.Duration renders as a plain
+// string, so nothing in the schema stops a sub-minute maintenance loop that would
+// spend the pod's local-disk bandwidth walking the cache instead of serving the
+// downloads it exists to accelerate.
+func TestValidateCreate_RejectsGlanceImageCacheMaintenanceInterval(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	tests := []struct {
+		name     string
+		interval time.Duration
+	}{
+		{"just under the floor", 59 * time.Second},
+		{"zero", 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			cp.Spec.Services.Glance.ImageCache = &glancev1alpha1.ImageCacheSpec{
+				MaintenanceInterval: &metav1.Duration{Duration: tc.interval},
+			}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.glance.imageCache.maintenanceInterval"))
+			// The rendered detail is "must be at least 1m0s"; match its stable prefix.
+			g.Expect(err.Error()).To(ContainSubstring("must be at least 1m"))
+		})
+	}
+}
+
+// TestValidateCreate_AcceptsGlanceImageCache pins the positive half: a block
+// clearing both floors is admitted, and so is an empty one, which is how a
+// ControlPlane asks for the cache with the glance operator's own defaults.
+func TestValidateCreate_AcceptsGlanceImageCache(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	tests := []struct {
+		name  string
+		cache *glancev1alpha1.ImageCacheSpec
+	}{
+		{
+			name:  "empty block takes the operator defaults",
+			cache: &glancev1alpha1.ImageCacheSpec{},
+		},
+		{
+			name: "both floors cleared",
+			cache: &glancev1alpha1.ImageCacheSpec{
+				SizeLimit:           ptr.To(resource.MustParse("20Gi")),
+				MaintenanceInterval: &metav1.Duration{Duration: time.Minute},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			cp.Spec.Services.Glance.ImageCache = tc.cache
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
 // TestValidateCreate_GlancePublicEndpointMustBeURL covers the defense-in-depth
 // URL parse behind the coarse ^https?:// pattern. The value is advertised
 // verbatim as the public image catalog Endpoint and is projected into no child

@@ -913,6 +913,25 @@ type ServiceGlanceSpec struct {
 	// +optional
 	Staging *glancev1alpha1.StagingSpec `json:"staging,omitempty"`
 
+	// ImageCache turns on the local image cache on the child Glance: every
+	// glance-api pod then keeps a copy of the image data it has served on its own
+	// disk, so a repeat download of the same image is answered from there instead
+	// of from the backing store. The cache is per replica rather than shared, so
+	// an image is cached once per replica that served it and the disk budget
+	// multiplies by replicas; see glancev1alpha1.ImageCacheSpec for what the cache
+	// does and does not promise. It is projected UNCONDITIONALLY onto the child's
+	// spec.imageCache: setting it here enables the cache, and clearing it removes
+	// the field from the child, which disables the cache again on the next rollout
+	// rather than leaving the last projected value pinned.
+	//
+	// Like Staging above, the field is typed as the glance module's own
+	// ImageCacheSpec so the floors stay single-source in Go — the webhook
+	// validates through glancev1alpha1.ValidateImageCache, not a copy — and the
+	// chart-skew caveat documented on ImportFiltering applies to this copied
+	// schema too.
+	// +optional
+	ImageCache *glancev1alpha1.ImageCacheSpec `json:"imageCache,omitempty"`
+
 	// DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
 	// for THIS service on the managed SHARED database, so a staged migration can run
 	// Glance on one mode while another service stays on the other. Empty (the
