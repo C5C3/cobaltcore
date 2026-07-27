@@ -1405,6 +1405,60 @@ func TestGlanceValidate_ExtraConfigImportFilteringOwnedKeyRejected(t *testing.T)
 	g.Expect(err.Error()).NotTo(gomega.ContainSubstring("no such section"))
 }
 
+// TestGlanceValidate_ExtraConfigImageCacheOwnedKeyRejected pins that none of the
+// three [DEFAULT] image_cache_* keys can be set through spec.extraConfig. They
+// are Rejected rather than Reported because extraConfig wins over every operator
+// default in the merge and ExtraConfigHealthy never gates Ready: an
+// image_cache_max_size above the emptyDir bound leaves the pruner nothing to
+// prune down to, an image_cache_dir elsewhere spends another emptyDir's bound,
+// and image_cache_driver back at centralized_db writes rows into the shared
+// Glance database that no db-purge pass reclaims — each one damage already done
+// by the time an informational condition could report it.
+//
+// The reservation does not depend on spec.imageCache being set: the registry
+// records "this key is not the user's to set", the same posture every other
+// conditionally rendered key here has.
+func TestGlanceValidate_ExtraConfigImageCacheOwnedKeyRejected(t *testing.T) {
+	tests := []struct {
+		key        string
+		value      string
+		wantImpact string
+	}{
+		{"image_cache_dir", "/var/lib/glance/staging", "another volume's bound"},
+		{"image_cache_driver", "centralized_db", "no db-purge pass reclaims them"},
+		{"image_cache_max_size", "1099511627776", "the volume grows until the kubelet evicts the pod"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.key, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &GlanceWebhook{}
+			obj := validGlance()
+			obj.Spec.ImageCache = &ImageCacheSpec{}
+			obj.Spec.ExtraConfig = map[string]map[string]string{
+				"DEFAULT": {tc.key: tc.value},
+			}
+
+			_, createErr := w.ValidateCreate(context.Background(), obj)
+			_, updateErr := w.ValidateUpdate(context.Background(), validGlance(), obj)
+
+			for verb, err := range map[string]error{"create": createErr, "update": updateErr} {
+				g.Expect(err).To(gomega.HaveOccurred(), "%s must reject [DEFAULT] %s", verb, tc.key)
+				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.key + " is managed via spec.imageCache"))
+				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantImpact))
+			}
+
+			// The cache being off does not hand the key back: the operator owns it
+			// whenever it renders it, so the rejection is unconditional.
+			off := validGlance()
+			off.Spec.ExtraConfig = obj.Spec.ExtraConfig
+			_, err := w.ValidateCreate(context.Background(), off)
+			g.Expect(err).To(gomega.HaveOccurred(),
+				"[DEFAULT] %s must stay reserved even while spec.imageCache is nil", tc.key)
+		})
+	}
+}
+
 // TestGlanceValidate_ExtraConfigImportFilteringUnknownKeyRejected pins the other
 // half of that exemption: only the six registered keys are admitted under
 // [import_filtering_opts]. Any other key falls through to the unknown-section

@@ -13,26 +13,28 @@ import "github.com/c5c3/forge/internal/common/config"
 // Two rules govern what belongs here:
 //
 //   - The registry is static. Conditionally rendered keys — [DEFAULT] workers /
-//     default_log_levels / log_config_append, the [keystone_authtoken]
-//     region_name / memcached_servers, and the [oslo_policy] policy_file — are
-//     registered unconditionally, because the registry documents "this key is
-//     not the user's to set", not "this key is currently rendered". A key the
-//     operator owns whenever it renders it stays owned even in the CRs where
-//     that render is skipped.
+//     default_log_levels / log_config_append, the three [DEFAULT] image_cache_*
+//     keys, the [keystone_authtoken] region_name / memcached_servers, and the
+//     [oslo_policy] policy_file — are registered unconditionally, because the
+//     registry documents "this key is not the user's to set", not "this key is
+//     currently rendered". A key the operator owns whenever it renders it stays
+//     owned even in the CRs where that render is skipped.
 //
 //   - An entry is Reported (honored-but-surfaced through the ExtraConfigHealthy
 //     condition) unless honoring the override would already have done the damage
 //     by the time the condition surfaces it. Those are Rejected, and the
 //     validating webhook blocks them at admission: [keystone_authtoken] password,
 //     because the service password would land in the namespace-readable
-//     ConfigMap, and the six [import_filtering_opts] keys, because a silently
+//     ConfigMap; the six [import_filtering_opts] keys, because a silently
 //     loosened web-download filter is the very thing spec.importFiltering exists
-//     to make visible.
+//     to make visible; and the three [DEFAULT] image_cache_* keys, because each
+//     of them ends in an evicted pod or in database rows nothing reclaims.
 
 // OwnedConfigKeys is the registry of glance-api.conf keys the operator owns.
 // Reported entries are honored-but-surfaced when overridden in spec.extraConfig;
-// the Rejected entries ([keystone_authtoken] password and the six
-// [import_filtering_opts] keys) are blocked at admission instead. The entries
+// the Rejected entries ([keystone_authtoken] password, the six
+// [import_filtering_opts] keys and the three [DEFAULT] image_cache_* keys) are
+// blocked at admission instead. The entries
 // mirror the defaults map built by operatorDefaults (the
 // [keystone_authtoken] keys come from keystoneauth.Section) plus the oslo_policy
 // policy_file injected by config.InjectOsloPolicyConfig.
@@ -45,6 +47,24 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "DEFAULT", Key: "workers", OwnedBy: "operator-computed"},
 	{Section: "DEFAULT", Key: "default_log_levels", OwnedBy: "operator-computed"},
 	{Section: "DEFAULT", Key: "log_config_append", OwnedBy: "operator-computed"},
+
+	// [DEFAULT] image cache — derived from spec.imageCache. All three are
+	// Rejected. Sizing a cache reads like an operational choice, but each of
+	// these three overrides converges on damage that is done before
+	// ExtraConfigHealthy — an informational condition that never gates Ready —
+	// could surface it. image_cache_max_size above the emptyDir bound gives the
+	// pruner a mark the cache can never reach, so it prunes nothing and the
+	// volume grows until the kubelet evicts the pod. image_cache_dir points the
+	// API's cache writes at a different path; the root filesystem is read-only,
+	// so that path is another bounded emptyDir and cache growth is spent out of
+	// the staging or tasks-work budget instead. image_cache_driver set back to
+	// glance's centralized_db writes cache rows into the shared Glance database.
+	// Every one of them is expressible through spec.imageCache or is a decision
+	// the operator has to keep, so the override buys no reach the typed field
+	// lacks.
+	{Section: "DEFAULT", Key: "image_cache_dir", Rejected: true, OwnedBy: "spec.imageCache", Impact: "the operator mounts the bounded cache emptyDir at this path; another path is another volume's bound, so the cache is filled out of the staging or tasks-work budget and evicts the pod mid-import"},
+	{Section: "DEFAULT", Key: "image_cache_driver", Rejected: true, OwnedBy: "spec.imageCache", Impact: "only sqlite keeps the cache state inside the pod-local volume; centralized_db strands a dead pod's rows in the shared Glance database on every replacement and no db-purge pass reclaims them"},
+	{Section: "DEFAULT", Key: "image_cache_max_size", Rejected: true, OwnedBy: "spec.imageCache", Impact: "the operator derives it as 80% of the emptyDir bound, which is what leaves the pruner a target it can reach; a value at or above that bound leaves nothing to prune down to and the volume grows until the kubelet evicts the pod"},
 
 	// [database]
 	{Section: "database", Key: "max_retries", OwnedBy: "operator-computed"},
