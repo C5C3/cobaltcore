@@ -51,6 +51,20 @@ The v1 operator resolves the onboarding decisions as follows:
   plus a literal host denylist covering loopback, the link-local metadata
   address, and the in-cluster API server. See
   [ImportFilteringSpec](./glance-crd.md#importfilteringspec).
+- **Image cache: sqlite driver, bounded `emptyDir`, sidecar pruner.**
+  `spec.imageCache` turns on a per-replica cache of the image data the API has
+  served. The driver is pinned to `sqlite` even though upstream deprecates it in
+  favour of `centralized_db`: that default keys cache state in the Glance
+  database per `worker_self_reference_url`, so with Deployment pods whose names
+  change on every replacement it strands `node_reference` and `cached_images`
+  rows there and turns every cache hit into a database write. `sqlite` keeps the
+  metadata inside the cache directory, where it shares the volume's lifecycle.
+  The directory is a bounded `emptyDir` and not a PVC, so the operator assumes
+  no StorageClass, reuses the bounded-scratch pattern the staging volumes
+  already establish, and avoids a bound that would be fiction on kind, whose
+  local-path provisioner enforces no capacity. Pruning runs in a
+  `cache-maintenance` sidecar because a CronJob cannot reach a pod-local volume.
+  See [ImageCacheSpec](./glance-crd.md#imagecachespec).
 - **`isDefault` lives on the backend CR.** Exactly one attached,
   credential-ready `GlanceBackend` must be marked `isDefault`; that backend
   becomes the `[glance_store] default_backend`. The glance-side sub-reconciler
