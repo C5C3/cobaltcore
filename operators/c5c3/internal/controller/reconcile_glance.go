@@ -484,6 +484,12 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 	// so the Glance operator's default size limit applies again.
 	glance.Spec.Staging = cp.Spec.Services.Glance.Staging.DeepCopy()
 
+	// The per-replica image cache is projected the same way: clearing
+	// services.glance.imageCache removes the field from the child, so the cache is
+	// switched off again on the next rollout instead of staying enabled with the
+	// last projected budget.
+	glance.Spec.ImageCache = cp.Spec.Services.Glance.ImageCache.DeepCopy()
+
 	// Resolve replicas to the shared operator default, then let an override win.
 	// Assigning unconditionally means clearing services.glance.replicas reverts the
 	// child to the default instead of leaving the previously-projected value pinned
