@@ -33,6 +33,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -102,7 +103,7 @@ func TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T) {
 	// Must requeue to confirm the secret is available before proceeding. Uses
 	// RequeueAfter (not the deprecated Requeue field) so the parallel group's
 	// shortestRequeue propagates it (issue #467).
-	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: RequeueSecretPolling}))
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}))
 
 	// Verify the Secret was created with the right number of keys.
 	var secret corev1.Secret
@@ -1289,7 +1290,7 @@ func TestReconcileFernetKeys_AppliesStagedKeysWhenAnnotationPresent(t *testing.T
 	g.Expect(err).NotTo(HaveOccurred())
 	// Rotation applied: short-circuit via RequeueAfter so the parallel group's
 	// shortestRequeue propagates it (issue #467).
-	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: RequeueSecretPolling}))
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}))
 
 	// Production Secret now contains the exact data from staging.
 	var updated corev1.Secret

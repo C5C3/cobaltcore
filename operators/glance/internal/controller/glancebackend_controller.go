@@ -133,7 +133,10 @@ func (r *GlanceBackendReconciler) reconcileNormal(ctx context.Context, backend *
 		// The referenced Secret is absent or missing keys. The parent's Secret
 		// watch re-renders on rotation, but a genuinely absent Secret emits no
 		// event, so poll as the liveness backstop.
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+		// commonreconcile.RequeueSecretPolling is that backstop for both of
+		// this controller's gates: CredentialsReady here and ConfigProjected
+		// below.
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
 	return r.observeConfigProjected(ctx, backend)
 }
@@ -180,11 +183,12 @@ func (r *GlanceBackendReconciler) gateCredentials(ctx context.Context, backend *
 // observeConfigProjected derives the ConfigProjected condition from the single
 // authoritative pointer: the parent Glance Deployment's backends volume and the
 // rendered store section inside the Secret it references. A False observation
-// carries a RequeueSecretPolling safety net — the Glance watch normally wakes
-// this controller when the projection lands, but a converged Glance status (no
-// write, no event) must not strand the backend. A transient Get/List failure
-// returns the error WITHOUT demoting a currently-True condition, so a converged
-// backend does not flap on a cache blip.
+// carries a commonreconcile.RequeueSecretPolling safety net — the Glance
+// watch normally wakes this controller when the projection lands, but a
+// converged Glance status (no write, no event) must not strand the backend.
+// A transient Get/List failure returns the error WITHOUT demoting a
+// currently-True condition, so a converged backend does not flap on a cache
+// blip.
 func (r *GlanceBackendReconciler) observeConfigProjected(ctx context.Context, backend *glancev1alpha1.GlanceBackend) (ctrl.Result, error) {
 	projected, err := r.isConfigProjected(ctx, backend)
 	if err != nil {
@@ -193,7 +197,7 @@ func (r *GlanceBackendReconciler) observeConfigProjected(ctx context.Context, ba
 	if !projected {
 		r.setConfigProjected(backend, metav1.ConditionFalse, conditionReasonWaitingForProjection,
 			"waiting for the Glance Deployment to mount this backend's rendered store section")
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
 	r.setConfigProjected(backend, metav1.ConditionTrue, conditionReasonConfigProjected,
 		"store section is rendered into the Glance Deployment's backends config")

@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/secrets"
 )
 
@@ -24,7 +25,7 @@ func TestReconcileSecrets_StoreNotReady(t *testing.T) {
 	res, digest, err := r.reconcileSecrets(context.Background(), glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 	g.Expect(digest).To(BeEmpty())
 	cond := conditions.GetCondition(glance.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -44,7 +45,7 @@ func TestReconcileSecrets_DBCredentialsMissing(t *testing.T) {
 	res, digest, err := r.reconcileSecrets(context.Background(), glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 	g.Expect(digest).To(BeEmpty())
 	cond := conditions.GetCondition(glance.Status.Conditions, "SecretsReady")
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
@@ -66,7 +67,7 @@ func TestReconcileSecrets_ServiceUserKeyMissing(t *testing.T) {
 	res, digest, err := r.reconcileSecrets(context.Background(), glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 	g.Expect(digest).To(BeEmpty())
 	cond := conditions.GetCondition(glance.Status.Conditions, "SecretsReady")
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))

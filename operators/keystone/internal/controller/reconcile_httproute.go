@@ -12,6 +12,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/gateway"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -81,7 +82,7 @@ const keystoneAPIPort = gatewayv1.PortNumber(5000)
 // Gateway controller to report Accepted=True on the HTTPRoute's parent status.
 // Acceptance is typically near-immediate, so a short interval keeps the
 // controller responsive without incurring excessive API load.
-const requeueHTTPRouteAccepted = RequeueDeploymentPolling
+const requeueHTTPRouteAccepted = commonreconcile.RequeueDeploymentPolling
 
 // reconcileHTTPRoute ensures the HTTPRoute that exposes the Keystone API
 // through a Gateway matches the desired state, via the shared route flow. It

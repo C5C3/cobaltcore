@@ -39,6 +39,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/database"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commontls "github.com/c5c3/forge/internal/common/tls"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -154,7 +155,7 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 			Message: fmt.Sprintf("Waiting for cert-manager to issue database client Certificate %q",
 				cert.Name),
 		})
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
 
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{

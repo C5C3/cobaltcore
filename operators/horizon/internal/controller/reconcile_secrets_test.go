@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
@@ -23,7 +24,7 @@ func TestReconcileSecrets_StoreNotReady(t *testing.T) {
 	res, digest, err := r.reconcileSecrets(context.Background(), h)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 	g.Expect(digest).To(BeEmpty())
 	cond := conditions.GetCondition(h.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -40,7 +41,7 @@ func TestReconcileSecrets_SecretMissing(t *testing.T) {
 	res, digest, err := r.reconcileSecrets(context.Background(), h)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 	g.Expect(digest).To(BeEmpty())
 	cond := conditions.GetCondition(h.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -64,7 +65,7 @@ func TestReconcileSecrets_SecretMissingExpectedKey(t *testing.T) {
 	res, digest, err := r.reconcileSecrets(context.Background(), h)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 	g.Expect(digest).To(BeEmpty())
 	cond := conditions.GetCondition(h.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -158,7 +159,7 @@ func TestReconcileSecrets_NamespacedStoreMissing_SetsCondition(t *testing.T) {
 	res, digest, err := r.reconcileSecrets(context.Background(), h)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 	g.Expect(digest).To(BeEmpty())
 	cond := conditions.GetCondition(h.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())

@@ -26,6 +26,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
@@ -187,7 +188,7 @@ func TestBackendReconcile_CredentialsSecretMissingWaits(t *testing.T) {
 
 	result, err := r.Reconcile(context.Background(), backendRequest(backend))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	updated := getBackend(t, r.Client, "store")
 	cond := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeCredentialsReady)
@@ -215,7 +216,7 @@ func TestBackendReconcile_CredentialsSecretMissingOneKeyWaits(t *testing.T) {
 
 	result, err := r.Reconcile(context.Background(), backendRequest(backend))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	updated := getBackend(t, r.Client, "store")
 	cond := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeCredentialsReady)
@@ -249,7 +250,7 @@ func TestBackendReconcile_ConfigProjectedNoParentGlanceWaits(t *testing.T) {
 
 	result, err := r.Reconcile(context.Background(), backendRequest(backend))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	updated := getBackend(t, r.Client, "store")
 	g.Expect(commonconditions.GetCondition(updated.Status.Conditions, conditionTypeCredentialsReady).Status).
@@ -267,7 +268,7 @@ func TestBackendReconcile_ConfigProjectedNoDeploymentWaits(t *testing.T) {
 
 	result, err := r.Reconcile(context.Background(), backendRequest(backend))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	updated := getBackend(t, r.Client, "store")
 	projected := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeConfigProjected)
@@ -288,7 +289,7 @@ func TestBackendReconcile_ConfigProjectedDeploymentWithoutBackendsVolumeWaits(t 
 
 	result, err := r.Reconcile(context.Background(), backendRequest(backend))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	updated := getBackend(t, r.Client, "store")
 	projected := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeConfigProjected)
@@ -336,7 +337,7 @@ func TestBackendReconcile_ConfigProjectedSubstringCollisionStaysFalse(t *testing
 
 	result, err := r.Reconcile(context.Background(), backendRequest(backend))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	updated := getBackend(t, r.Client, "store")
 	projected := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeConfigProjected)

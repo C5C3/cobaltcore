@@ -25,6 +25,7 @@ import (
 	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/keystoneauth"
 	"github.com/c5c3/forge/internal/common/naming"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/release"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
@@ -181,7 +182,7 @@ func (r *GlanceReconciler) reconcileDeployment(ctx context.Context, glance *glan
 			Reason:             conditionReasonWaitingForDeployment,
 			Message:            "Glance API deployment is not yet available",
 		})
-		return ctrl.Result{RequeueAfter: RequeueDeploymentPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueDeploymentPolling}, nil
 	}
 
 	// Hold the RollingUpdate → Contracting flip until the Deployment has FULLY
@@ -202,7 +203,7 @@ func (r *GlanceReconciler) reconcileDeployment(ctx context.Context, glance *glan
 			Reason:             conditionReasonWaitingForDeployment,
 			Message:            "Waiting for the upgraded image to finish rolling out before contracting the database schema",
 		})
-		return ctrl.Result{RequeueAfter: RequeueDeploymentPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueDeploymentPolling}, nil
 	}
 
 	// Transition from RollingUpdate to Contracting when the Deployment is ready.

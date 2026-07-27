@@ -24,6 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/c5c3/forge/internal/common/database"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -60,6 +61,6 @@ func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, ke
 		Conditions:    &keystone.Status.Conditions,
 		Generation:    keystone.Generation,
 		ConditionType: "SecretsReady",
-		RequeueAfter:  RequeueSecretPolling,
+		RequeueAfter:  commonreconcile.RequeueSecretPolling,
 	})
 }

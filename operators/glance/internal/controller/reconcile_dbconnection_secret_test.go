@@ -15,6 +15,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/database"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 )
 
 func TestReconcileDBConnectionSecret_DerivesSecretAndDigest(t *testing.T) {
@@ -50,7 +51,7 @@ func TestReconcileDBConnectionSecret_MissingUpstreamWaits(t *testing.T) {
 	res, digest, err := r.reconcileDBConnectionSecret(context.Background(), glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 	g.Expect(digest).To(BeEmpty())
 
 	cond := conditions.GetCondition(glance.Status.Conditions, "SecretsReady")

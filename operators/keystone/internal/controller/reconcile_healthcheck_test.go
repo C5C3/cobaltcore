@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/healthcheck"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -204,7 +205,7 @@ func TestReconcileHealthCheck_Unhealthy500_SetsConditionFalse(t *testing.T) {
 
 	result, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(result.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 
 	cond := conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady)
 	g.Expect(cond).NotTo(BeNil())
@@ -228,7 +229,7 @@ func TestReconcileHealthCheck_Unhealthy503_SetsConditionFalse(t *testing.T) {
 
 	result, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(result.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 
 	cond := conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady)
 	g.Expect(cond).NotTo(BeNil())
@@ -328,7 +329,7 @@ func TestReconcileHealthCheck_EmptyEndpoint_SetsConditionFalse(t *testing.T) {
 
 	result, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(result.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 
 	cond := conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady)
 	g.Expect(cond).NotTo(BeNil())
@@ -338,7 +339,7 @@ func TestReconcileHealthCheck_EmptyEndpoint_SetsConditionFalse(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(int64(3)))
 }
 
-// --- Timeout error → HealthCheckTimeout ---
+// --- Timeout error → healthcheck.HealthCheckTimeout ---
 
 func TestReconcileHealthCheck_Timeout_SetsConditionFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -354,7 +355,7 @@ func TestReconcileHealthCheck_Timeout_SetsConditionFalse(t *testing.T) {
 
 	result, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(result.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 
 	cond := conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady)
 	g.Expect(cond).NotTo(BeNil())
@@ -364,7 +365,7 @@ func TestReconcileHealthCheck_Timeout_SetsConditionFalse(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(int64(5)))
 }
 
-// --- Socket-level deadline → HealthCheckTimeout ---
+// --- Socket-level deadline → healthcheck.HealthCheckTimeout ---
 
 func TestReconcileHealthCheck_OSDeadlineExceeded_SetsConditionFalse(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -380,7 +381,7 @@ func TestReconcileHealthCheck_OSDeadlineExceeded_SetsConditionFalse(t *testing.T
 
 	result, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(result.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 
 	cond := conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady)
 	g.Expect(cond).NotTo(BeNil())
@@ -409,7 +410,7 @@ func TestReconcileHealthCheck_ConnectionRefused_SetsConditionFalse(t *testing.T)
 
 	result, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(result.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 
 	cond := conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady)
 	g.Expect(cond).NotTo(BeNil())
@@ -438,7 +439,7 @@ func TestReconcileHealthCheck_DNSError_SetsConditionFalse(t *testing.T) {
 
 	result, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(result.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 
 	cond := conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady)
 	g.Expect(cond).NotTo(BeNil())
@@ -460,7 +461,7 @@ func TestReconcileHealthCheck_GenericNetworkError_SetsConditionFalse(t *testing.
 
 	result, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(result.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 
 	cond := conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady)
 	g.Expect(cond).NotTo(BeNil())
@@ -495,7 +496,7 @@ func TestReconcileHealthCheck_ParentContextCancelled_PropagatesWithoutFlipping(t
 	// re-probes (a fresh entry would serve from cache and never hit the network).
 	r.healthProbeCache.Store(client.ObjectKeyFromObject(ks), ks.UID, internalAPIURL(ks))
 	key := client.ObjectKeyFromObject(ks)
-	clk = clk.Add(HealthCheckCacheTTL + time.Second)
+	clk = clk.Add(healthcheck.HealthCheckCacheTTL + time.Second)
 
 	// A cancelled parent context stands in for the errgroup cancelling gctx after
 	// a peer sub-reconciler failed.
@@ -580,7 +581,7 @@ func TestReconcileHealthCheck_CacheHit_SkipsProbe(t *testing.T) {
 }
 
 // TestReconcileHealthCheck_CacheExpiry_ReProbes verifies the probe fires again
-// once the cached entry ages past HealthCheckCacheTTL.
+// once the cached entry ages past healthcheck.HealthCheckCacheTTL.
 func TestReconcileHealthCheck_CacheExpiry_ReProbes(t *testing.T) {
 	g := NewGomegaWithT(t)
 	doer := &scriptedDoer{fn: ok200}
@@ -595,7 +596,7 @@ func TestReconcileHealthCheck_CacheExpiry_ReProbes(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(doer.calls).To(Equal(1))
 
-	clk = clk.Add(HealthCheckCacheTTL + time.Second)
+	clk = clk.Add(healthcheck.HealthCheckCacheTTL + time.Second)
 
 	_, err = r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -626,10 +627,10 @@ func TestReconcileHealthCheck_ProbeError_EvictsCache(t *testing.T) {
 	g.Expect(r.healthProbeCache.Has(key)).To(BeTrue(), "successful probe must be cached")
 
 	// Age past the TTL so the next pass re-probes and hits the error branch.
-	clk = clk.Add(HealthCheckCacheTTL + time.Second)
+	clk = clk.Add(healthcheck.HealthCheckCacheTTL + time.Second)
 	result, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(result.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 	g.Expect(doer.calls).To(Equal(2))
 	g.Expect(r.healthProbeCache.Has(key)).To(BeFalse(), "a probe error must evict the cached entry")
 }

@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -117,7 +118,7 @@ func TestReconcileDatabaseTLS_CreatesCertificateWhenEnabled(t *testing.T) {
 	result, err := r.reconcileDatabaseTLS(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	// Newly created Certificate is not yet Ready, so the reconciler requeues.
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	cert := &certmanagerv1.Certificate{}
 	g.Expect(r.Get(context.Background(), client.ObjectKey{Name: "test-keystone-db-client", Namespace: "default"}, cert)).To(Succeed())

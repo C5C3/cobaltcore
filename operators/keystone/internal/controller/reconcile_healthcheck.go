@@ -67,8 +67,8 @@ func (r *KeystoneReconciler) reconcileHealthCheck(ctx context.Context, keystone 
 		ConditionType:      conditionTypeKeystoneAPIReady,
 		HealthyReason:      conditionReasonAPIHealthy,
 		UnhealthyReason:    conditionReasonAPIUnhealthy,
-		Timeout:            HealthCheckTimeout,
-		CacheTTL:           HealthCheckCacheTTL,
-		RequeueAfter:       RequeueHealthCheck,
+		Timeout:            healthcheck.HealthCheckTimeout,
+		CacheTTL:           healthcheck.HealthCheckCacheTTL,
+		RequeueAfter:       healthcheck.RequeueHealthCheck,
 	})
 }

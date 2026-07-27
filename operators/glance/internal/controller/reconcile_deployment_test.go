@@ -23,6 +23,7 @@ import (
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/keystoneauth"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
@@ -686,7 +687,7 @@ func TestReconcileDeployment_ServiceAndPDBEnsured(t *testing.T) {
 	res, err := r.reconcileDeployment(context.Background(), glance, testArtifacts(), "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Fresh Deployment is not ready yet — requeue.
-	g.Expect(res.RequeueAfter).To(Equal(RequeueDeploymentPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 	cond := meta.FindStatusCondition(glance.Status.Conditions, "DeploymentReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
@@ -842,7 +843,7 @@ func TestReconcileDeployment_RollingUpdateSurgeReadyHoldsContract(t *testing.T) 
 	res, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Holds in RollingUpdate and requeues to wait for the old image to drain.
-	g.Expect(res.RequeueAfter).To(Equal(RequeueDeploymentPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 	g.Expect(glance.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseRollingUpdate),
 		"a surge-ready-but-not-converged Deployment must not flip to Contracting")
 

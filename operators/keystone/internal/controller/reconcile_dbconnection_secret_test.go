@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/database"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
@@ -220,7 +221,7 @@ func TestReconcileDBConnectionSecret_DynamicManaged_MissingUsername_Requeues(t *
 
 	result, digest, err := r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 	g.Expect(digest).To(BeEmpty())
 
 	var cond *metav1.Condition
@@ -325,7 +326,7 @@ func TestReconcileDBConnectionSecret_UpstreamSecretMissing_RequeueAndCondition(t
 
 	result, _, err := r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	// No derived Secret should have been created.
 	derived := &corev1.Secret{}
@@ -377,7 +378,7 @@ func TestReconcileDBConnectionSecret_UpstreamSecretMissingKey_RequeueAndConditio
 
 	result, _, err := r.reconcileDBConnectionSecret(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	// No derived Secret should have been created when a required data key is
 	// absent: partial credentials must never be materialised.

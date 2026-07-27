@@ -21,6 +21,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/c5c3/forge/internal/common/database"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
 
@@ -55,6 +56,6 @@ func (r *GlanceReconciler) reconcileDBConnectionSecret(ctx context.Context, glan
 		Conditions:    &glance.Status.Conditions,
 		Generation:    glance.Generation,
 		ConditionType: "SecretsReady",
-		RequeueAfter:  RequeueSecretPolling,
+		RequeueAfter:  commonreconcile.RequeueSecretPolling,
 	})
 }

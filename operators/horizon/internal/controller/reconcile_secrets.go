@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/secrets"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 )
@@ -48,7 +49,7 @@ func (r *HorizonReconciler) reconcileSecrets(ctx context.Context,
 		return ctrl.Result{}, "", err
 	}
 	if !storeReady {
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, "", nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, "", nil
 	}
 
 	// Gate on the materialized SECRET_KEY Secret via the shared ladder: the
@@ -77,7 +78,7 @@ func (r *HorizonReconciler) reconcileSecrets(ctx context.Context,
 			Reason:             "WaitingForSecretKey",
 			Message:            msg,
 		})
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, "", nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, "", nil
 	}
 
 	// Digest the key material so reconcileDeployment can roll pods when it

@@ -45,6 +45,7 @@ import (
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/gateway"
+	"github.com/c5c3/forge/internal/common/healthcheck"
 	"github.com/c5c3/forge/internal/common/job"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -835,9 +836,10 @@ func TestReconcile_HealthCheckFailureDrivesReadyFalse(t *testing.T) {
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
 	})
 	g.Expect(err).NotTo(HaveOccurred())
-	// HealthCheck requeues at RequeueHealthCheck (10s); the other group members
-	// resolve to zero or longer requeues, so shortestRequeue returns 10s.
-	g.Expect(result.RequeueAfter).To(Equal(RequeueHealthCheck))
+	// HealthCheck requeues at healthcheck.RequeueHealthCheck (10s); the other
+	// group members resolve to zero or longer requeues, so shortestRequeue
+	// returns 10s.
+	g.Expect(result.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Get(ctx, types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}, &updated)).To(Succeed())
@@ -2433,9 +2435,9 @@ func TestReconcile_OpenBaoFinalizerUpdateConflict_ReturnsError(t *testing.T) {
 // TestReconcile_TerminatingCR_RequeuesWhilePushSecretsExist verifies that a
 // terminating CR carrying the openbao finalizer with a PushSecret held in
 // Terminating state by ESO's cleanup finalizer returns
-// ctrl.Result{RequeueAfter: RequeueSecretPolling} and records the
-// OpenBaoFinalizerBlocked condition via updateStatus — keeping the CR alive
-// until ESO has purged the kv-v2 path.
+// ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling} and records
+// the OpenBaoFinalizerBlocked condition via updateStatus — keeping the CR
+// alive until ESO has purged the kv-v2 path.
 func TestReconcile_TerminatingCR_RequeuesWhilePushSecretsExist(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2453,8 +2455,8 @@ func TestReconcile_TerminatingCR_RequeuesWhilePushSecretsExist(t *testing.T) {
 	result, err := r.Reconcile(ctx, req)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling),
-		"terminating CR with a stuck PushSecret must requeue after RequeueSecretPolling")
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling),
+		"terminating CR with a stuck PushSecret must requeue after commonreconcile.RequeueSecretPolling")
 
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed(),
@@ -2966,7 +2968,7 @@ func TestReconcile_DBConnectionSecret_SecretsReadyFalseWhenUpstreamMissing(t *te
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
 	})
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling),
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling),
 		"missing upstream Secret must trigger the secret-polling requeue")
 
 	var updated keystonev1alpha1.Keystone

@@ -17,6 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 )
 
@@ -67,7 +68,7 @@ func TestReconcile_SecretsGateShortCircuitsAndPersistsStatus(t *testing.T) {
 	})
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	var got horizonv1alpha1.Horizon
 	g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "test-horizon"}, &got)).To(Succeed())

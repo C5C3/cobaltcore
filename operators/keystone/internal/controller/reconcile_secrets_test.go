@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -233,7 +234,7 @@ func TestReconcileSecrets_SecretMissingKeys_ESReady_MissingKeysMessage(t *testin
 
 	result, err := r.reconcileSecrets(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -266,7 +267,7 @@ func TestReconcileSecrets_DBCredentialsNotReady(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -302,7 +303,7 @@ func TestReconcileSecrets_DBCredentialsExternalSecretMissing(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -340,7 +341,7 @@ func TestReconcileSecrets_AdminCredentialsNotReady(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -478,7 +479,7 @@ func TestReconcileSecrets_DBSecretMissingKeys(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -520,7 +521,7 @@ func TestReconcileSecrets_AdminSecretMissingKeys(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -554,7 +555,7 @@ func TestReconcileSecrets_BothNotReady_DBCheckFirst(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	// DB credentials are checked first, so the reason should be WaitingForDBCredentials.
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
@@ -591,7 +592,7 @@ func TestReconcileSecrets_StoreNotReady(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -678,7 +679,7 @@ func TestReconcileSecrets_NamespacedStoreMissing_SetsCondition(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
@@ -708,7 +709,7 @@ func TestReconcileSecrets_StoreMissing(t *testing.T) {
 	result, err := r.reconcileSecrets(context.Background(), ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
 	g.Expect(cond).NotTo(BeNil())

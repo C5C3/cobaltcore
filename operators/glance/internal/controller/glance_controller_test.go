@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
 
@@ -46,7 +47,7 @@ func TestReconcile_FailingSecretsStepShortCircuitsPipeline(t *testing.T) {
 	res, err := r.Reconcile(context.Background(), glanceRequest)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	got := getGlance(t, r.Client, "test-glance")
 	secrets := conditions.GetCondition(got.Status.Conditions, "SecretsReady")

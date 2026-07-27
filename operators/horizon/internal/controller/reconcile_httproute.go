@@ -12,6 +12,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/gateway"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 )
 
@@ -28,7 +29,7 @@ const (
 // requeueHTTPRouteAccepted is the interval for requeuing while waiting for a
 // Gateway controller to report Accepted=True on the HTTPRoute's parent
 // status.
-const requeueHTTPRouteAccepted = RequeueDeploymentPolling
+const requeueHTTPRouteAccepted = commonreconcile.RequeueDeploymentPolling
 
 // horizonStatusEndpoint returns the externally reachable dashboard URL.
 // When spec.gateway is set, https://{hostname}/ (implicit port 443, the

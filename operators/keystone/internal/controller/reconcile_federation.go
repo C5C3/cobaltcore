@@ -59,7 +59,8 @@ const maxProviderMetadataBytes = 256 * 1024
 // reconcile context carries no deadline by default, so without this a slow or
 // byte-withholding IdP (or an SSRF target) that completes the TCP handshake
 // and then trickles bytes would pin the reconcile worker indefinitely — the
-// health-check path bounds its probe the same way (HealthCheckTimeout).
+// health-check path bounds its probe the same way
+// (healthcheck.HealthCheckTimeout).
 const federationMetadataFetchTimeout = 10 * time.Second
 
 // errProviderMetadataUnavailable classifies discovery-document failures

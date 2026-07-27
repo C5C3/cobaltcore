@@ -31,6 +31,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -133,7 +134,7 @@ func TestReconcileDeployment_DeploymentAndServiceCreated(t *testing.T) {
 	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	// Deployment just created, not ready yet — should requeue.
-	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 
 	// Verify Deployment was created.
 	var deploy appsv1.Deployment
@@ -157,7 +158,7 @@ func TestReconcileDeployment_NotReady_Requeues(t *testing.T) {
 
 	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -548,7 +549,7 @@ func TestReconcileDeployment_NotReady_ConditionMessageAndGeneration(t *testing.T
 
 	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
 	g.Expect(cond).NotTo(BeNil())
@@ -736,7 +737,7 @@ func TestReconcileDeployment_NoSecretReadRequired(t *testing.T) {
 
 	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 	g.Expect(secretGetCalled).To(BeFalse(),
 		"reconcileDeployment must not read Secrets after hash removal")
 }
@@ -1263,7 +1264,7 @@ func TestReconcileDeployment_RollingUpdate_NotReady_Requeues(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Must requeue with the standard polling interval.
-	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 
 	// UpgradePhase must remain RollingUpdate — no transition when not ready.
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseRollingUpdate))
@@ -1311,7 +1312,7 @@ func TestReconcileDeployment_RollingUpdate_SurgeReady_HoldsContract(t *testing.T
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Holds in RollingUpdate and requeues to wait for the old image to drain.
-	g.Expect(result.RequeueAfter).To(Equal(RequeueDeploymentPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseRollingUpdate),
 		"a surge-ready-but-not-converged Deployment must not flip to Contracting")
 
