@@ -255,8 +255,9 @@ func buildBootstrapJob(keystone *keystonev1alpha1.Keystone, configMapName, domai
 						Name:  "bootstrap",
 						Image: keystone.Spec.Image.Reference(),
 						// TODO Wire spec.Resources (or a smaller Job-specific default) to
-						// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-						// containerResources() for the pattern used by the keystone container.
+						// this container. Currently runs as BestEffort QoS. See
+						// deployment.ContainerResources for the pattern used by the keystone
+						// container.
 						Command: []string{"/bin/sh", "-eu", "-c", bootstrapScript},
 						Env: []corev1.EnvVar{
 							{

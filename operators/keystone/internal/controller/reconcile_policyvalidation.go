@@ -166,8 +166,9 @@ func buildPolicyValidationJob(keystone *keystonev1alpha1.Keystone, configMapName
 						Name:  "validator",
 						Image: keystone.Spec.Image.Reference(),
 						// TODO Wire spec.Resources (or a smaller Job-specific default) to
-						// this container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-						// containerResources() for the pattern used by the keystone container.
+						// this container. Currently runs as BestEffort QoS. See
+						// deployment.ContainerResources for the pattern used by the keystone
+						// container.
 						Command: []string{
 							"oslopolicy-validator",
 							"--namespace", "keystone",
