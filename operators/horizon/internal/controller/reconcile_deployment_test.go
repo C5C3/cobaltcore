@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 )
 
 // findContainer returns the container with the given name, avoiding brittle
@@ -135,7 +136,7 @@ func TestReconcileDeployment_NotReadySetsConditionAndRequeues(t *testing.T) {
 	res, err := r.reconcileDeployment(context.Background(), h, "cm-name", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueDeploymentPolling))
+	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 	cond := conditions.GetCondition(h.Status.Conditions, "DeploymentReady")
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))

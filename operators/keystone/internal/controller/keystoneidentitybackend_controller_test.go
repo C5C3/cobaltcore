@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/forge/operators/keystone/internal/identity"
 	identityfake "github.com/c5c3/forge/operators/keystone/internal/identity/fake"
@@ -255,7 +256,7 @@ func TestBackendReconcile_AdminSecretMissingWaits(t *testing.T) {
 
 	result, err := reconcileBackendTwice(t, r, backend)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	updated := getBackend(t, r.Client, "corp-ldap")
 	cond := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeDomainReady)
@@ -356,7 +357,7 @@ func TestBackendReconcile_ConfigNotProjectedRequeuesAsSafetyNet(t *testing.T) {
 
 	result, err := reconcileBackendTwice(t, r, backend)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling),
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling),
 		"a converged Keystone status emits no watch event, so the poll is the liveness backstop")
 
 	updated := getBackend(t, r.Client, "corp-ldap")
@@ -469,7 +470,7 @@ func TestBackendDelete_WaitsForDeProjection(t *testing.T) {
 	// Still projected: the finalizer must hold and no domain call may fire.
 	result, err := r.Reconcile(ctx, backendRequest(backend))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretPolling))
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 	g.Expect(srv.GetDomain(id)).NotTo(BeNil())
 	g.Expect(backendHasFinalizer(t, r.Client, "corp-ldap")).To(BeTrue())
 

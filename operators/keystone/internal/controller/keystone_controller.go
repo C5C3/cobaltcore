@@ -259,11 +259,11 @@ type KeystoneReconciler struct {
 
 	// healthProbeCache memoizes the last successful Keystone API health probe
 	// per CR (shared TTL probe cache) so a steady-state reconcile does not
-	// fire a synchronous HTTP GET (bounded by HealthCheckTimeout) on every
-	// pass. A cache hit re-upserts KeystoneAPIReady=True without probing; any
-	// probe error or non-2xx evicts the entry. The cache's internal mutex
-	// guards concurrent access now that MaxConcurrentReconciles may exceed 1;
-	// tests inject a controllable clock via its Now field.
+	// fire a synchronous HTTP GET (bounded by healthcheck.HealthCheckTimeout)
+	// on every pass. A cache hit re-upserts KeystoneAPIReady=True without
+	// probing; any probe error or non-2xx evicts the entry. The cache's
+	// internal mutex guards concurrent access now that MaxConcurrentReconciles
+	// may exceed 1; tests inject a controllable clock via its Now field.
 	healthProbeCache healthcheck.ProbeCache
 
 	// configRenderCache memoizes the rendered config ConfigMap name per CR,
@@ -671,7 +671,8 @@ func (r *KeystoneReconciler) hasLiveMariaDBResources(ctx context.Context, keysto
 // gone, Terminating, or still unadopted and suppress the emit), calls
 // finalizeOpenBaoSecrets, and on done=true emits OpenBaoSecretsFinalized and
 // releases the finalizer. A PushSecret held Terminating by ESO's cleanup
-// finalizer surfaces as ctrl.Result{RequeueAfter: RequeueSecretPolling} so the
+// finalizer surfaces as
+// ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling} so the
 // Keystone CR stays live until ESO has purged the kv-v2 path.
 func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(keystone, keystoneOpenBaoFinalizer) {
@@ -683,8 +684,8 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keyston
 	// PushSecret Terminating (DeletionTimestamp set), absent, or still
 	// unadopted and suppress the emit, giving exactly-once semantics per
 	// termination. Gating on ESO adoption is what preserves the exactly-once
-	// contract across the Pass-0 adoption-wait window;
-	// without the gate, the 15s RequeueSecretPolling tick would fire a fresh
+	// contract across the Pass-0 adoption-wait window; without the gate, the
+	// 15s commonreconcile.RequeueSecretPolling tick would fire a fresh
 	// FinalizingOpenBaoSecrets event on every requeue until ESO adopts
 	hasLiveCleanupWork, err := r.hasLiveOpenBaoBackupPushSecrets(ctx, keystone)
 	if err != nil {
@@ -700,7 +701,7 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keyston
 		return ctrl.Result{}, err
 	}
 	if !done {
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
 
 	r.Recorder.Event(keystone, corev1.EventTypeNormal, "OpenBaoSecretsFinalized",
@@ -723,9 +724,9 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keyston
 //     the prior transition; counting it again would double-announce on every
 //     requeue.
 //   - Adopted=false: Pass-0 is still blocking the Delete, so there is nothing
-//     to announce yet. Without this gate the 15s RequeueSecretPolling tick
-//     would fire a fresh Event on every requeue until ESO adopts, regressing the
-//     exactly-once contract.
+//     to announce yet. Without this gate the 15s
+//     commonreconcile.RequeueSecretPolling tick would fire a fresh Event on
+//     every requeue until ESO adopts, regressing the exactly-once contract.
 func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context, keystone *keystonev1alpha1.Keystone) (bool, error) {
 	for _, name := range openBaoBackupPushSecretNames(keystone) {
 		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
@@ -919,8 +920,9 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// transitions that affect Pass-0 adoption (esoPushSecretFinalizer added)
 		// or Pass-1 deletion (finalizer set churn, DeletionTimestamp flip). This
 		// cuts the openbao-finalizer adoption-wait latency from up to
-		// RequeueSecretPolling (15s) to watch-event delivery latency while
-		// avoiding the duplicate-enqueue churn of the prior Owns() wiring
+		// commonreconcile.RequeueSecretPolling (15s) to watch-event delivery
+		// latency while avoiding the duplicate-enqueue churn of the prior
+		// Owns() wiring
 		Watches(
 			&esov1alpha1.PushSecret{},
 			handler.EnqueueRequestsFromMapFunc(pushSecretToKeystoneMapper(mgr.GetClient())),

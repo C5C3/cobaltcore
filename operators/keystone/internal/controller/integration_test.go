@@ -3622,8 +3622,8 @@ func TestIntegrationKeystone_DeleteRacingESOAdoption(t *testing.T) {
 
 	// Across the adoption-wait window (stage 1) the reconciler must emit at
 	// most one FinalizingOpenBaoSecrets event — preserving the exactly-once
-	// contract. The preceding Eventually already spans
-	// well over one RequeueSecretPolling tick, so any regression that fires
+	// contract. The preceding Eventually already spans well over one
+	// commonreconcile.RequeueSecretPolling tick, so any regression that fires
 	// the event per requeue would surface as stage1Finalizing>1 here. The
 	// exactly-once gate (hasLiveOpenBaoBackupPushSecrets skipping unadopted
 	// PushSecrets) means the expected count during stage 1 is 0; ≤1 is the

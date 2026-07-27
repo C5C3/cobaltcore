@@ -71,8 +71,8 @@ func (r *HorizonReconciler) reconcileHealthCheck(ctx context.Context, horizon *h
 		ConditionType:      conditionTypeHorizonAPIReady,
 		HealthyReason:      conditionReasonAPIHealthy,
 		UnhealthyReason:    conditionReasonAPIUnhealthy,
-		Timeout:            HealthCheckTimeout,
-		CacheTTL:           HealthCheckCacheTTL,
-		RequeueAfter:       RequeueHealthCheck,
+		Timeout:            healthcheck.HealthCheckTimeout,
+		CacheTTL:           healthcheck.HealthCheckCacheTTL,
+		RequeueAfter:       healthcheck.RequeueHealthCheck,
 	})
 }

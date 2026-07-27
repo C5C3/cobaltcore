@@ -20,6 +20,7 @@ import (
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/config"
 	"github.com/c5c3/forge/internal/common/job"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/secrets"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 
@@ -71,7 +72,7 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 		// parallel group's shortestRequeue propagates this non-zero result and
 		// the chain short-circuits, instead of dropping it and continuing in the
 		// same pass (issue #467).
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("getting credential keys secret: %w", err)
@@ -127,7 +128,7 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 		// deprecated ctrl.Result.Requeue field) so the parallel group's
 		// shortestRequeue propagates it and the next pass re-enters the happy
 		// path with the production Secret already updated (issue #467).
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
 
 	// 4. Ensure the RBAC resources for the rotation CronJob exist.

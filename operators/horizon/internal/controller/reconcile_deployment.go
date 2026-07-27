@@ -19,6 +19,7 @@ import (
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/naming"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 )
 
@@ -97,7 +98,7 @@ func (r *HorizonReconciler) reconcileDeployment(ctx context.Context, horizon *ho
 			Reason:             "WaitingForDeployment",
 			Message:            "Horizon dashboard deployment is not yet available",
 		})
-		return ctrl.Result{RequeueAfter: RequeueDeploymentPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueDeploymentPolling}, nil
 	}
 
 	// Status.Endpoint derivation is delegated to horizonStatusEndpoint so

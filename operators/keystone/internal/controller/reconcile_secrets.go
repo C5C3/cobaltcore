@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/secrets"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -71,7 +72,7 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 		return ctrl.Result{}, err
 	}
 	if !storeReady {
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
 
 	// Validate the credential Secrets from a declarative (secretRef,
@@ -101,7 +102,7 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 		return ctrl.Result{}, err
 	}
 	if !ready {
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
 
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{

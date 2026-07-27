@@ -23,6 +23,7 @@ import (
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/naming"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -124,7 +125,7 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 			Reason:             "WaitingForDeployment",
 			Message:            "Keystone API deployment is not yet available",
 		})
-		return ctrl.Result{RequeueAfter: RequeueDeploymentPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueDeploymentPolling}, nil
 	}
 
 	// Hold the RollingUpdate → Contracting flip until the Deployment has FULLY
@@ -145,7 +146,7 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 			Reason:             "WaitingForDeployment",
 			Message:            "Waiting for the upgraded image to finish rolling out before contracting the database schema",
 		})
-		return ctrl.Result{RequeueAfter: RequeueDeploymentPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueDeploymentPolling}, nil
 	}
 
 	// Transition from RollingUpdate to Contracting when the Deployment is ready.

@@ -46,7 +46,7 @@ func TestReconcileHealthCheck_EndpointNotConfigured(t *testing.T) {
 	res, err := r.reconcileHealthCheck(context.Background(), h)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(res.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 	cond := conditions.GetCondition(h.Status.Conditions, conditionTypeHorizonAPIReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
@@ -83,7 +83,7 @@ func TestReconcileHealthCheck_Non2xxUnhealthy(t *testing.T) {
 	res, err := r.reconcileHealthCheck(context.Background(), h)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(res.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 	cond := conditions.GetCondition(h.Status.Conditions, conditionTypeHorizonAPIReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
@@ -101,7 +101,7 @@ func TestReconcileHealthCheck_ConnectionErrorClassified(t *testing.T) {
 	res, err := r.reconcileHealthCheck(context.Background(), h)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.RequeueAfter).To(Equal(RequeueHealthCheck))
+	g.Expect(res.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
 	cond := conditions.GetCondition(h.Status.Conditions, conditionTypeHorizonAPIReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))

@@ -146,7 +146,7 @@ func (r *KeystoneIdentityBackendReconciler) reconcileNormal(ctx context.Context,
 			r.setDomainReady(backend, metav1.ConditionFalse, conditionReasonAdminSecretUnavailable,
 				fmt.Sprintf("Admin password Secret %s/%s is missing or has no password key",
 					keystone.Namespace, keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name))
-			return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+			return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 		}
 		return ctrl.Result{}, err
 	}
@@ -191,7 +191,7 @@ func (r *KeystoneIdentityBackendReconciler) resolveKeystone(ctx context.Context,
 		log.FromContext(ctx).Error(err, "fetching referenced Keystone", "keystone", key)
 		r.setDomainReady(backend, metav1.ConditionFalse, conditionReasonKeystoneNotFound,
 			fmt.Sprintf("fetching Keystone %s: %v", key.Name, err))
-		return nil, false, ctrl.Result{RequeueAfter: RequeueSecretPolling}
+		return nil, false, ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}
 	}
 
 	apiReady := conditions.GetCondition(keystone.Status.Conditions, conditionTypeKeystoneAPIReady)
@@ -302,9 +302,9 @@ func (r *KeystoneIdentityBackendReconciler) ensureDomain(ctx context.Context, ba
 // observeConfigProjected derives the ConfigProjected condition from the
 // single authoritative pointer: the Keystone Deployment's domains volume and
 // the per-domain file inside the Secret it references. A False observation
-// carries a RequeueSecretPolling safety net — the Keystone watch normally
-// wakes this controller when the projection lands, but a converged Keystone
-// status (no write, no event) must not strand the backend.
+// carries a commonreconcile.RequeueSecretPolling safety net — the Keystone
+// watch normally wakes this controller when the projection lands, but a
+// converged Keystone status (no write, no event) must not strand the backend.
 func (r *KeystoneIdentityBackendReconciler) observeConfigProjected(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (ctrl.Result, error) {
 	projected, err := r.isConfigProjected(ctx, keystone, backend)
 	if err != nil {
@@ -318,7 +318,7 @@ func (r *KeystoneIdentityBackendReconciler) observeConfigProjected(ctx context.C
 			Reason:             conditionReasonWaitingForProjection,
 			Message:            "waiting for the Keystone Deployment to mount this backend's domain config",
 		})
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
 	conditions.SetCondition(&backend.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeConfigProjected,
@@ -422,7 +422,7 @@ func (r *KeystoneIdentityBackendReconciler) reconcileDelete(ctx context.Context,
 	}
 	if projected {
 		logger.V(1).Info("waiting for identity-backend config de-projection before domain teardown")
-		return ctrl.Result{RequeueAfter: RequeueSecretPolling}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
 
 	// Federation backends (OIDC and SAML) tear their federation API objects
