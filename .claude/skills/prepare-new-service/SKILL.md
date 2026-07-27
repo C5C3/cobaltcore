@@ -8,7 +8,9 @@ description: >-
   internal/common first, and draft the phased meta issue ready to be split
   into sub-issues. Use when asked to onboard or add a new OpenStack service
   (e.g. Glance, Nova, Neutron, Placement), to prepare a service meta issue,
-  or to assess readiness for the next service operator.
+  or to assess readiness for the next service operator. Also covers
+  OpenStack-adjacent services from outside the upstream (e.g. the Aurora
+  dashboard) — see § Non-OpenStack-upstream services.
 ---
 
 # Prepare a new service onboarding
@@ -25,6 +27,10 @@ a new one; they are the calibration for scope, tone, and checkbox
 granularity. #656 also demonstrates the alternative implementation mode —
 Phases 2–4 as one continuous stacked-PR arc instead of fanned-out
 sub-issues — and a Phase-0 decision record (D1–D10) worth imitating.
+Aurora dashboard — meta issue #758 with pre-work #757 (shared workload
+builder) — is the first **non-OpenStack-upstream** service; its Phase-0
+block records the release-decoupling decisions that
+§ Non-OpenStack-upstream services generalizes.
 
 ## The five layers
 
@@ -341,6 +347,54 @@ command it runs, e.g.:
 >   `{name}-db-purge` CronJob (`<svc>-manage db purge`), report the
 >   newest terminal run via `DBPurgeReady`, metric pair, invalid-CR
 >   fixtures, CRD/reconciler/events docs
+
+## Non-OpenStack-upstream services (verified 2026-07-27 pre-aurora, re-verify at HEAD)
+
+A service from outside the OpenStack upstream (own org and repo, own
+release cadence, usually not Python — worked example: Aurora dashboard,
+meta #758) keeps **layers 2–5 unchanged**: the operator is Go regardless
+of the workload, and the horizon subtraction (no
+database/job/release/rotation/tls/keystoneauth) usually applies. Layer 1
+breaks structurally. Profile these instead of the Python questions:
+
+- **Upstream artifacts first:** check what upstream actually publishes
+  (Aurora: npm packages only, via Changesets; both upstream Dockerfiles
+  are dev-grade). Default posture: forge builds the production image from
+  source at a pinned upstream git ref.
+- **Release decoupling — do NOT add a `releases/*/source-refs.yaml`
+  key.** The keys *are* the build/test/verify matrix
+  (`hack/ci-generate-build-matrix.sh:44-52`), imply per-OpenStack-release
+  versioning, and obligate `verify_release_config.sh`. Use the
+  `keystone-federation-proxy` precedent instead: dedicated
+  build/merge/verify jobs outside the matrix (`build-images.yaml:391-456`),
+  image tagged with the service's own version.
+- **Source org:** two clone sites hardcode `openstack/<service>` —
+  `.github/actions/checkout-service-source/action.yaml` and
+  `hack/ci-build-service-image.sh:62-63`. Parameterize them or bypass both
+  via the dedicated job.
+- **Renovate:** the source-refs customManager templates
+  `opendev.org/openstack/{{depName}}` (`renovate.json:24`). A decoupled pin
+  needs its own customManager (github-tags/releases datasource) plus a
+  packageRules entry — gate with [[check-renovate-coverage]].
+- **The Python gotchas don't transfer:** upper-constraints,
+  `extra-packages.yaml`, uv/PBR/WSGI, the `python-base`/`venv-builder`
+  lineage, and the `openstack`-user assertion in
+  `verify_deviation_comments.sh` are all Python-specific. A non-Python
+  image writes its own `verify_<svc>.sh` contract (runtime present, built
+  assets present, non-root, no build toolchain in the final image) and its
+  own deviation-comment function. No shared base image for a new language
+  before the rule of three.
+- **e2e inversion:** instead of one service version per OpenStack release,
+  **one** service version runs against **N** OpenStack releases — the
+  `basic-deployment` fork pair carries the same service tag against both
+  stacks, and the kind image-load legs (`ci.yaml:894-903`, `:940-947`)
+  need an entry outside `hack/ci-service-image-releases.sh`'s release
+  loop.
+- **Docs that go stale the moment this lands:**
+  `docs/reference/ci-cd/build-images-workflow.md` § Adding a New Service
+  and `docs/reference/ci-cd/container-images.md` both claim source-refs is
+  the sole registration and assume pip/venv — extending them is part of
+  the first decoupled service's Phase 5, not follow-up work.
 
 ## Known gotchas (verified 2026-07 post-glance, re-verify at HEAD)
 
