@@ -239,7 +239,7 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	//
 	// Either phase's outcome funnels through updateStatus, so conditions and
 	// the requeue/error are persisted by construction on every exit path. Every
-	// named step is routed through instrumentSubReconciler so that duration
+	// named step is routed through instrumenter.Instrument so that duration
 	// samples and error counters are emitted under a stable sub_reconciler
 	// label; the group members self-instrument, which is why the group step
 	// itself is bare/unnamed. AdminPassword runs BEFORE Keystone: the
@@ -278,7 +278,7 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		// The member order is same-pass convergence ordering, not a
 		// short-circuiting dependency chain.
 		{Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return commonreconcile.RunSequentialGroup(ctx, instrumentSubReconciler, []commonreconcile.Step{
+			return commonreconcile.RunSequentialGroup(ctx, instrumenter.Instrument, []commonreconcile.Step{
 				// Horizon is gated on KeystoneReady (the dashboard
 				// authenticates against the Keystone child).
 				{Name: "Horizon", Fn: func(ctx context.Context) (ctrl.Result, error) {
@@ -312,7 +312,7 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}},
 	}
 
-	result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
+	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
 	return r.updateStatus(ctx, &cp, statusBefore, result, err)
 }
 

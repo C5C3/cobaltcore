@@ -385,7 +385,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// the first to return a non-zero result or an error short-circuits the chain
 	// and funnels through updateStatus, so conditions and the requeue/error are
 	// persisted by construction on every exit path. Named steps are wrapped in
-	// instrumentSubReconciler (emitting duration/error series under their
+	// instrumenter.Instrument (emitting duration/error series under their
 	// sub_reconciler label); the two empty-name steps are not wrapped because
 	// they either self-instrument their members (the parallel group) or are
 	// intentionally uninstrumented (config pruning) (issue #467).
@@ -598,7 +598,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// commonreconcile.RunPipeline short-circuits on the first non-zero result
 	// or error; both the short-circuit and the fully-successful chain funnel
 	// through updateStatus, which recomputes the aggregate Ready condition.
-	result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
+	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
 	return r.updateStatus(ctx, &keystone, statusBefore, result, err)
 }
 
@@ -798,13 +798,13 @@ func markConfigFailed(keystone *keystonev1alpha1.Keystone, err error) {
 // own DeepCopy of the Keystone CR, conditions from every member — including
 // those that succeeded before a peer failed — are merged back into the
 // primary keystone, and on success the shortest non-zero RequeueAfter is
-// returned. Members instrument individually via instrumentSubReconciler.
+// returned. Members instrument individually via instrumenter.Instrument.
 func (r *KeystoneReconciler) reconcileParallelGroup(
 	ctx context.Context,
 	keystone *keystonev1alpha1.Keystone,
 	subs []commonreconcile.ParallelStep[*keystonev1alpha1.Keystone],
 ) (ctrl.Result, error) {
-	return keystoneSkeleton.RunParallelGroup(ctx, keystone, instrumentSubReconciler, subs)
+	return keystoneSkeleton.RunParallelGroup(ctx, keystone, instrumenter.Instrument, subs)
 }
 
 // SetupWithManager registers the KeystoneReconciler with the controller manager.

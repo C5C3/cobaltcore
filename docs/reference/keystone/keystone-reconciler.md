@@ -393,12 +393,12 @@ Sub-reconcilers execute in a defined order using two execution modes:
 The chain is a table-driven pipeline over the shared scaffolding in
 `internal/common/reconcile`. Each step is a `commonreconcile.Step` (`Name` +
 `Fn`); `commonreconcile.RunPipeline` attempts the steps in order (named steps
-wrapped in `instrumentSubReconciler`, empty-`Name` steps run bare because they
+wrapped in `instrumenter.Instrument`, empty-`Name` steps run bare because they
 self-instrument or are intentionally uninstrumented) and the single call site
 funnels every exit path through `updateStatus` by construction:
 
 ```go
-result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
+result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
 return r.updateStatus(ctx, &keystone, statusBefore, result, err)
 ```
 
@@ -2828,7 +2828,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 The third parameter is the shared config ConfigMap name. It is accepted only for
 sub-reconciler call-site symmetry with `reconcileFernetKeys` and
 `reconcileTrustFlush` — the controller wires this sub-reconciler as
-`instrumentSubReconciler(ctx, "PasswordRotation", ...)` passing `configMapName`.
+`instrumenter.Instrument(ctx, "PasswordRotation", ...)` passing `configMapName`.
 It is intentionally unused (named `_`) because the rotate
 script never runs `keystone-manage` and therefore needs no keystone
 configuration.
@@ -3189,7 +3189,7 @@ finalizer releases. Keystone-gone and admin-credential-gone teardowns fail
 open with a `DomainDeleteFailed` / `FederationTeardownFailed` Warning instead
 of holding the CR hostage.
 
-The controller is deliberately **not** wrapped by `instrumentSubReconciler` —
+The controller is deliberately **not** wrapped by `instrumenter.Instrument` —
 those metrics and the `subReconcilerConditionTypes` map are
 keystone-pipeline-scoped (the guard tests require map values to be members of
 `subConditionTypes`); controller-runtime's per-controller metrics cover it.
@@ -3496,19 +3496,19 @@ operators/keystone/
 ## Metrics Instrumentation
 
 Every sub-reconciler invocation is instrumented for Prometheus via a
-single helper, `instrumentSubReconciler`, defined in
+single package-scope `instrumenter`, declared in
 `operators/keystone/internal/controller/instrumentation.go`. The orchestration `Reconcile` wraps every
-sub-reconciler call with this helper; direct calls that bypass it are a
+sub-reconciler call with its `Instrument` method; direct calls that bypass it are a
 contract violation.
 
 For the authoritative catalogue of registered metrics — names, labels,
 and histogram buckets — see
 [Keystone Operator Prometheus Metrics](../keystone-operator-metrics.md).
 
-### The `instrumentSubReconciler` helper
+### The `instrumenter.Instrument` method
 
 ```go
-func instrumentSubReconciler(
+func (i *Instrumenter) Instrument(
     ctx context.Context,
     name string,
     fn  func(context.Context) (ctrl.Result, error),
@@ -3569,7 +3569,7 @@ Whenever a new sub-reconciler is added to `Reconcile` (as a pipeline
 
 1. Added to the `pipeline` in `Reconcile` as a `commonreconcile.Step` with a
    non-empty `Name`. `RunPipeline` wraps named steps in
-   `instrumentSubReconciler(ctx, s.Name, s.Fn)`; only the parallel group
+   `instrumenter.Instrument(ctx, s.Name, s.Fn)`; only the parallel group
    (whose members self-instrument) and config pruning use an empty name and
    bypass the wrapper.
 2. Added to `subConditionTypes` in `keystone_controller.go` (so its

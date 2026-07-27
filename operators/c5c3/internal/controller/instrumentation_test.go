@@ -96,13 +96,13 @@ func withTestInstrumenter(t *testing.T) *prometheus.Registry {
 	return reg
 }
 
-// TestInstrumentSubReconciler_RecordsThroughInstrumenter proves the local
-// instrumentSubReconciler delegate records duration on success and attributes
-// errors to the condition_type resolved from subReconcilerConditionTypes — the
-// behaviour of the shared Instrumenter is exercised in
-// internal/common/instrumentation; this test only verifies the c5c3 wiring
-// (the map and the subReconcilerMetrics prefix).
-func TestInstrumentSubReconciler_RecordsThroughInstrumenter(t *testing.T) {
+// TestInstrumenterInstrument_RecordsMetrics proves the package instrumenter
+// records duration on success and attributes errors to the condition_type
+// resolved from subReconcilerConditionTypes — the behaviour of the shared
+// Instrumenter is exercised in internal/common/instrumentation; this test
+// only verifies the c5c3 wiring (the map and the subReconcilerMetrics
+// prefix).
+func TestInstrumenterInstrument_RecordsMetrics(t *testing.T) {
 	g := NewGomegaWithT(t)
 	reg := withTestInstrumenter(t)
 
@@ -110,14 +110,14 @@ func TestInstrumentSubReconciler_RecordsThroughInstrumenter(t *testing.T) {
 	durLabels := map[string]string{"sub_reconciler": name}
 	errLabels := map[string]string{"sub_reconciler": name, "condition_type": conditionTypeInfrastructureReady}
 
-	_, err := instrumentSubReconciler(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
+	_, err := instrumenter.Instrument(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, nil
 	})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(histogramSampleCountOn(t, reg, reconcileDurationMetric, durLabels)).
 		To(Equal(uint64(1)), "success path must observe exactly one duration sample")
 
-	_, err = instrumentSubReconciler(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
+	_, err = instrumenter.Instrument(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
 		return ctrl.Result{}, errors.New("boom")
 	})
 	g.Expect(err).To(HaveOccurred())

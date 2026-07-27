@@ -388,7 +388,7 @@ one `commonreconcile.RunPipeline` call:
 `Step` entries. `RunPipeline` returns the pass at the **first non-zero result or
 error**, because each step genuinely feeds the next — a later step applying
 before its predecessor converged would fail or wedge. Each named step is wrapped
-in `instrumentSubReconciler` (see
+in `instrumenter.Instrument` (see
 [Metrics Instrumentation](#metrics-instrumentation)) so a duration sample and an
 error counter are emitted under a stable `sub_reconciler` label.
 
@@ -396,7 +396,7 @@ error counter are emitted under a stable `sub_reconciler` label.
 ServiceAccounts and Glance are the six named members of one
 `commonreconcile.RunSequentialGroup`, embedded as the pipeline's final **bare
 (unnamed)** `Step`. The group members self-instrument through
-`instrumentSubReconciler` — following the keystone self-instrumenting-group
+`instrumenter.Instrument` — following the keystone self-instrumenting-group
 convention — which is why the enclosing group step carries no `sub_reconciler`
 name of its own. `RunSequentialGroup` attempts **every** member on **every**
 pass and never short-circuits: each member self-gates on the conditions it needs
@@ -416,14 +416,14 @@ pipeline := []commonreconcile.Step{
     // The independent tail projections run as one self-instrumenting,
     // non-short-circuiting group embedded as the final bare Step:
     {Fn: func(ctx context.Context) (ctrl.Result, error) {
-        return commonreconcile.RunSequentialGroup(ctx, instrumentSubReconciler,
+        return commonreconcile.RunSequentialGroup(ctx, instrumenter.Instrument,
             []commonreconcile.Step{
                 {Name: "Horizon", Fn: /* ... */},
                 // KORC, AdminCredential, Catalog, ServiceAccounts, Glance
             })
     }},
 }
-result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
+result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
 return r.updateStatus(ctx, &cp, statusBefore, result, err)
 ```
 
@@ -2182,16 +2182,17 @@ bootstrap secret rather than being locked out mid-rotation.
 ## Metrics Instrumentation
 
 Every sub-reconciler invocation is instrumented for Prometheus via a single
-helper, `instrumentSubReconciler`, defined in
-`operators/c5c3/internal/controller/instrumentation.go`. The helper delegates to
-the shared `internal/common/instrumentation` package — the duration/error metric
-pair and the wrapper logic are identical across all forge operators and live
-there; the c5c3 file supplies only the `c5c3_operator` prefix and the
-`subReconcilerConditionTypes` map. `Reconcile` wraps every sub-reconciler call
-with it; a direct call that bypasses the helper is a contract violation.
+package-scope `instrumenter`, declared in
+`operators/c5c3/internal/controller/instrumentation.go`. Its `Instrument` method
+comes from the shared `internal/common/instrumentation` package — the
+duration/error metric pair and the wrapper logic are identical across all forge
+operators and live there; the c5c3 file supplies only the `c5c3_operator` prefix
+and the `subReconcilerConditionTypes` map. `Reconcile` wraps every
+sub-reconciler call with it; a direct call that bypasses it is a contract
+violation.
 
 ```go
-func instrumentSubReconciler(
+func (i *Instrumenter) Instrument(
     ctx  context.Context,
     name string,
     fn   func(context.Context) (ctrl.Result, error),
@@ -2232,16 +2233,15 @@ The `condition_type` label is resolved from the package-private
 | `AdminPassword` | `AdminPasswordReady` |
 | `Catalog` | `CatalogReady` |
 
-If `instrumentSubReconciler` is ever called with a name absent from the map, the
+If `instrumenter.Instrument` is ever called with a name absent from the map, the
 helper emits the sentinel `condition_type=UNKNOWN`
 (`subReconcilerConditionTypeUnknown`) rather than an empty label, so any drift is
-visible in dashboards/alerts. Two static drift guards keep the map honest:
+visible in dashboards/alerts. One static drift guard keeps the map honest:
 `TestSubReconcilerConditionTypesCoversAllNames` asserts that every mapped
-`condition_type` is a member of `subConditionTypes`, and
-`TestSubReconcilerConditionTypesCoversAllCallSites` walks the source AST to
-assert every `instrumentSubReconciler` call-site name is a map key. Adding a new
+`condition_type` is a member of `subConditionTypes`. Adding a new
 sub-reconciler therefore requires updating `subConditionTypes` **and**
-`subReconcilerConditionTypes` or CI fails.
+`subReconcilerConditionTypes`; an unmapped name is not caught by CI and
+surfaces only as `condition_type=UNKNOWN` in the metrics.
 
 ---
 
@@ -2327,7 +2327,7 @@ operators/c5c3/
     │   ├── helpers.go                          effective backing-service resolvers, intervalToCron
     │   ├── identity_backends.go                KeystoneIdentityBackend listing + WebSSO/MultiDomain
     │   │                                        projection helpers
-    │   ├── instrumentation.go                  instrumentSubReconciler + drift-guard map
+    │   ├── instrumentation.go                  instrumenter + drift-guard map
     │   ├── korc_cloudsyaml.go                  clouds.yaml document builders (app-credential + password bootstrap)
     │   ├── korc_eso.go                         PushSecret + clouds.yaml ExternalSecret builders/ensure
     │   ├── korc_imports.go                     admin Domain/User import projection
