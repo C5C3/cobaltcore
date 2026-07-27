@@ -926,6 +926,57 @@ spec:
                 x-kubernetes-validations:
                 - message: exactly one of image.tag or image.digest must be set
                   rule: has(self.tag) != has(self.digest)
+              imageCache:
+                description: |-
+                  ImageCache turns on the per-replica image cache: presence of the block
+                  enables it, nil disables it, the same opt-in convention gateway,
+                  networkPolicy and autoscaling follow. Both of its fields resolve at render
+                  time — DefaultImageCacheSizeLimit and DefaultImageCacheMaintenanceInterval —
+                  rather than being materialized into the CR, so an empty block and an unset
+                  field both mean "use the operator default" and keep tracking it across
+                  upgrades.
+
+                  Enabling, resizing, or retuning the cache rolls the Deployment exactly once,
+                  through the existing content-hash mechanics. Every such rollout starts the
+                  cache cold: it lives in a fresh emptyDir per replica, so after a roll the
+                  first read of each image goes to the backing store again.
+                properties:
+                  maintenanceInterval:
+                    description: |-
+                      MaintenanceInterval is the scheduled cadence of the cache-maintenance
+                      sidecar loop: glance-cache-pruner, which evicts cache entries back down to
+                      image_cache_max_size, and glance-cache-cleaner, which removes the stalled
+                      entries an interrupted download leaves behind. When unset the operator
+                      resolves DefaultImageCacheMaintenanceInterval (5m) at render time. It must
+                      be at least 1m, enforced by the validating webhook.
+
+                      It is the lever over how long a stalled entry survives, NOT over how far a
+                      download burst may overshoot: the same loop also polls the cache directory's
+                      size and prunes as soon as it crosses image_cache_max_size, whatever this
+                      interval says. That poll is what defends the 20% headroom, because glance
+                      consults image_cache_max_size in the pruner alone and never on the write
+                      path.
+                    type: string
+                  sizeLimit:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      SizeLimit bounds the per-replica cache emptyDir. When unset the operator
+                      resolves DefaultImageCacheSizeLimit (10Gi) at render time. It must be at
+                      least 1Mi, enforced by the validating webhook.
+
+                      The rendered image_cache_max_size is 80% of this bound (Value()/10*8), not
+                      the bound itself. Glance's pruner only prunes DOWN TO image_cache_max_size
+                      and only when it runs, so the cache legitimately sits above that mark
+                      between two maintenance passes; the 20% band is the headroom that keeps
+                      those writes from crossing the emptyDir bound and tripping the kubelet's
+                      eviction. A single image larger than image_cache_max_size is still cached in
+                      full — the size check happens after the download — and pruned on the next
+                      pass.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
+                type: object
               importFiltering:
                 description: |-
                   ImportFiltering constrains the URIs the web-download image-import method

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"reflect"
 	"sort"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -96,6 +97,43 @@ var defaultStagingSizeLimit = resource.MustParse("10Gi")
 // DefaultStagingSizeLimit returns a copy of the size limit stamped on the
 // staging and tasks-work emptyDirs when spec.staging.sizeLimit is unset.
 func DefaultStagingSizeLimit() resource.Quantity { return defaultStagingSizeLimit.DeepCopy() }
+
+// defaultImageCacheSizeLimit bounds the per-replica image-cache emptyDir mounted
+// when spec.imageCache is set. Ten gibibytes matches the staging bound above: it
+// holds a working set of the stock cloud images without letting one replica's
+// cache dominate a normal node filesystem, and reusing the same number keeps a
+// glance-api pod's node-local footprint expressible as a small multiple of one
+// value.
+//
+// It is consumed by the render-time resolver and deliberately NOT applied by the
+// defaulting webhook: a spec.imageCache block leaving sizeLimit unset keeps
+// tracking this operator default across upgrades instead of freezing today's
+// value into the stored CR, the same reasoning as the staging and db-purge
+// defaults above.
+//
+// It is a var rather than a const for the same reason as
+// defaultStagingSizeLimit — resource.Quantity is a struct — and is exposed only
+// through the accessor below, which returns a copy.
+var defaultImageCacheSizeLimit = resource.MustParse("10Gi")
+
+// DefaultImageCacheSizeLimit returns a copy of the size limit stamped on the
+// image-cache emptyDir when spec.imageCache.sizeLimit is unset. The rendered
+// image_cache_max_size is derived from it, not equal to it — see ImageCacheSpec.
+func DefaultImageCacheSizeLimit() resource.Quantity { return defaultImageCacheSizeLimit.DeepCopy() }
+
+// DefaultImageCacheMaintenanceInterval is how often the cache-maintenance
+// sidecar runs glance-cache-pruner and glance-cache-cleaner when
+// spec.imageCache.maintenanceInterval is unset. Five minutes bounds how long the
+// cache may sit above image_cache_max_size after a burst of downloads while
+// leaving the loop cheap enough to ignore. Like the size limit above it is
+// resolved at render time rather than by the defaulting webhook.
+const DefaultImageCacheMaintenanceInterval = 5 * time.Minute
+
+// imageCacheFilterName is the api-paste.ini filter the operator injects while
+// spec.imageCache is set. It is glance's own name for that filter, so it is not
+// the operator's to rename; the webhook instead reserves it against
+// spec.middleware for as long as the cache is enabled.
+const imageCacheFilterName = "cache"
 
 // Name-length bounds enforced on metadata.name, driven by the purge CronJob —
 // the child object with the tightest name budget.
@@ -642,6 +680,30 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 	// counterpart at all — see ValidateStaging.
 	allErrs = append(allErrs, ValidateStaging(specPath.Child("staging"), g.Spec.Staging)...)
 
+	// imageCache validation. Like staging it has no schema counterpart at all —
+	// see ValidateImageCache.
+	allErrs = append(allErrs, ValidateImageCache(specPath.Child("imageCache"), g.Spec.ImageCache)...)
+
+	// The `cache` filter name belongs to the operator while the cache is on: it
+	// injects that paste filter into the pipeline and renders its [filter:cache]
+	// section, so a user middleware of the same name is not an addition but a
+	// collision — one of the two definitions wins and the pipeline silently ends
+	// up with wiring nobody wrote. With spec.imageCache nil the operator injects
+	// nothing and the name stays free, which is what a CR carrying such a
+	// middleware today keeps relying on.
+	if g.Spec.ImageCache != nil {
+		for i, m := range g.Spec.Middleware {
+			if m.Name != imageCacheFilterName {
+				continue
+			}
+			allErrs = append(allErrs, field.Invalid(
+				specPath.Child("middleware").Index(i).Child("name"), m.Name,
+				fmt.Sprintf("the operator injects the %q paste filter and owns that filter name while spec.imageCache is set: rename this middleware or unset spec.imageCache",
+					imageCacheFilterName),
+			))
+		}
+	}
+
 	// extraConfig sanity: reject an empty section name or an empty option key so
 	// the rendered glance-api.conf never carries a nameless [<section>] or a
 	// bare "= value" line. extraConfig is a preserve-unknown-fields map, so CEL
@@ -958,6 +1020,55 @@ func ValidateStaging(fldPath *field.Path, s *StagingSpec) field.ErrorList {
 		)}
 	}
 	return nil
+}
+
+// minImageCacheSizeLimit is the floor spec.imageCache.sizeLimit must clear, and
+// it is the staging floor's twin: a bound below one mebibyte names no usable
+// cache budget, and it is where the `100m`-for-`100Mi` suffix typo lands. Under
+// such a bound the derived image_cache_max_size is smaller than any image, so
+// every cached download overruns the emptyDir and the kubelet evicts the pod
+// that just served it.
+var minImageCacheSizeLimit = resource.MustParse("1Mi")
+
+// minImageCacheMaintenanceInterval is the floor
+// spec.imageCache.maintenanceInterval must clear. Every tick walks the cache
+// directory and the sqlite index, so a sub-minute loop spends the pod's
+// local-disk bandwidth on maintenance rather than on the downloads the cache
+// exists to accelerate.
+const minImageCacheMaintenanceInterval = time.Minute
+
+// ValidateImageCache enforces the floors on spec.imageCache.sizeLimit and
+// spec.imageCache.maintenanceInterval. Neither is defense in depth: a
+// resource.Quantity renders as x-kubernetes-int-or-string and a metav1.Duration
+// as a plain string, and neither shape carries a Minimum marker, so the webhook
+// is the sole gate — the same position spec.staging.sizeLimit is in. It is
+// nil-safe on both levels: an unset block is how a CR leaves the cache disabled,
+// and an unset field inside a set block is how it asks for the operator default,
+// so neither is a violation.
+//
+// It is exported for the ControlPlane webhook, which carries this type on
+// services.glance.imageCache and must admit exactly what the Glance CRD admits;
+// a hand-kept mirror there would let the two drift. The caller supplies its own
+// field path, so the errors name the CR under admission.
+func ValidateImageCache(fldPath *field.Path, c *ImageCacheSpec) field.ErrorList {
+	if c == nil {
+		return nil
+	}
+	var errs field.ErrorList
+
+	if c.SizeLimit != nil && c.SizeLimit.Cmp(minImageCacheSizeLimit) < 0 {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("sizeLimit"), c.SizeLimit.String(),
+			fmt.Sprintf("must be at least %s", minImageCacheSizeLimit.String()),
+		))
+	}
+	if c.MaintenanceInterval != nil && c.MaintenanceInterval.Duration < minImageCacheMaintenanceInterval {
+		errs = append(errs, field.Invalid(
+			fldPath.Child("maintenanceInterval"), c.MaintenanceInterval.Duration.String(),
+			fmt.Sprintf("must be at least %s", minImageCacheMaintenanceInterval.String()),
+		))
+	}
+	return errs
 }
 
 // warnDBPurgeRetention surfaces a retention window that an update shortens.

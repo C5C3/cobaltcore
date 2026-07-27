@@ -152,6 +152,21 @@ type GlanceSpec struct {
 	// +optional
 	Staging *StagingSpec `json:"staging,omitempty"`
 
+	// ImageCache turns on the per-replica image cache: presence of the block
+	// enables it, nil disables it, the same opt-in convention gateway,
+	// networkPolicy and autoscaling follow. Both of its fields resolve at render
+	// time — DefaultImageCacheSizeLimit and DefaultImageCacheMaintenanceInterval —
+	// rather than being materialized into the CR, so an empty block and an unset
+	// field both mean "use the operator default" and keep tracking it across
+	// upgrades.
+	//
+	// Enabling, resizing, or retuning the cache rolls the Deployment exactly once,
+	// through the existing content-hash mechanics. Every such rollout starts the
+	// cache cold: it lives in a fresh emptyDir per replica, so after a roll the
+	// first read of each image goes to the backing store again.
+	// +optional
+	ImageCache *ImageCacheSpec `json:"imageCache,omitempty"`
+
 	// Gateway configures external exposure of the Glance API via a Gateway API
 	// HTTPRoute. When set, the operator creates an HTTPRoute targeting the {name}
 	// Service and attaches it to the referenced pre-existing Gateway. When removed
@@ -557,6 +572,59 @@ type StagingSpec struct {
 	// is a contradiction and rejected at admission.
 	// +optional
 	Unbounded bool `json:"unbounded,omitempty"`
+}
+
+// ImageCacheSpec configures the local image cache. Glance keeps a copy of the
+// image data it has served on the API pod's own filesystem, so a repeat download
+// of the same image — a popular image booting across a fleet — is served from
+// there instead of from the backing store.
+//
+// The cache is per replica, not shared: every pod fills its own copy, an image
+// is cached once per replica that served it, and a request hits the cache only
+// when it lands on a replica that already holds the image. Sizing therefore
+// multiplies by replicas, and hit rates rise as replicas fall.
+//
+// The operator fixes the parts not worth a knob. The cache directory is an
+// emptyDir bounded by SizeLimit, and the driver is pinned to sqlite, which keeps
+// its metadata inside that same directory: cache state then shares the volume's
+// lifecycle and the volume the pod's, so a replaced pod leaves nothing behind.
+// Glance's own default driver, centralized_db, would instead key that state in
+// the Glance database per worker_self_reference_url and strand a dead pod's rows
+// there on every replacement. Eviction is not glance's business either: a
+// maintenance sidecar runs glance-cache-pruner and glance-cache-cleaner, both
+// every MaintenanceInterval and as soon as its size poll finds the cache above
+// image_cache_max_size.
+type ImageCacheSpec struct {
+	// SizeLimit bounds the per-replica cache emptyDir. When unset the operator
+	// resolves DefaultImageCacheSizeLimit (10Gi) at render time. It must be at
+	// least 1Mi, enforced by the validating webhook.
+	//
+	// The rendered image_cache_max_size is 80% of this bound (Value()/10*8), not
+	// the bound itself. Glance's pruner only prunes DOWN TO image_cache_max_size
+	// and only when it runs, so the cache legitimately sits above that mark
+	// between two maintenance passes; the 20% band is the headroom that keeps
+	// those writes from crossing the emptyDir bound and tripping the kubelet's
+	// eviction. A single image larger than image_cache_max_size is still cached in
+	// full — the size check happens after the download — and pruned on the next
+	// pass.
+	// +optional
+	SizeLimit *resource.Quantity `json:"sizeLimit,omitempty"`
+
+	// MaintenanceInterval is the scheduled cadence of the cache-maintenance
+	// sidecar loop: glance-cache-pruner, which evicts cache entries back down to
+	// image_cache_max_size, and glance-cache-cleaner, which removes the stalled
+	// entries an interrupted download leaves behind. When unset the operator
+	// resolves DefaultImageCacheMaintenanceInterval (5m) at render time. It must
+	// be at least 1m, enforced by the validating webhook.
+	//
+	// It is the lever over how long a stalled entry survives, NOT over how far a
+	// download burst may overshoot: the same loop also polls the cache directory's
+	// size and prunes as soon as it crosses image_cache_max_size, whatever this
+	// interval says. That poll is what defends the 20% headroom, because glance
+	// consults image_cache_max_size in the pruner alone and never on the write
+	// path.
+	// +optional
+	MaintenanceInterval *metav1.Duration `json:"maintenanceInterval,omitempty"`
 }
 
 // GlanceStatus defines the observed state of Glance.
