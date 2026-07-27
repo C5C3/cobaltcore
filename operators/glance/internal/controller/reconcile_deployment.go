@@ -125,13 +125,6 @@ func selectorLabels(glance *glancev1alpha1.Glance) map[string]string {
 	return naming.SelectorLabels(glanceAppName, glance.Name)
 }
 
-// deploymentReplicas returns the desired .spec.replicas for the Glance API
-// Deployment. When spec.autoscaling is set, it returns nil so the field is left
-// unmanaged and the HorizontalPodAutoscaler owns the replica count.
-func deploymentReplicas(glance *glancev1alpha1.Glance) *int32 {
-	return deployment.DeploymentReplicas(&glance.Spec.Deployment, glance.Spec.Autoscaling)
-}
-
 // reconcileDeployment ensures the Glance API Deployment, Service, and PDB exist
 // with the correct spec. It sets the DeploymentReady condition and stamps the
 // status endpoint when the Deployment becomes available.
@@ -317,122 +310,96 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 		tasksLimit = ptr.To(stagingLimit.DeepCopy())
 	}
 
-	deploy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      subResourceName(glance),
-			Namespace: glance.Namespace,
-			Labels:    labels,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: deploymentReplicas(glance),
-			Selector: &metav1.LabelSelector{
-				MatchLabels: selector,
+	deploy := deployment.BuildWorkload(deployment.WorkloadParams{
+		Namespace:      glance.Namespace,
+		Name:           subResourceName(glance),
+		Labels:         labels,
+		SelectorLabels: selector,
+		PodAnnotations: glancePodAnnotations(dsnDigest, authtokenDigest),
+		Deployment:     &glance.Spec.Deployment,
+		Autoscaling:    glance.Spec.Autoscaling,
+		Container: deployment.ContainerParams{
+			Name:    "glance-api",
+			Image:   glance.Spec.Image.Reference(),
+			Command: glanceLaunchCommand(glance),
+			Env: []corev1.EnvVar{
+				database.ConnectionEnvVar(glance.Name),
+				keystoneauth.PasswordEnvVar(glance.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(glance)),
 			},
-			Strategy: deployment.Strategy(&glance.Spec.Deployment),
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      labels,
-					Annotations: glancePodAnnotations(dsnDigest, authtokenDigest),
+			Ports: []corev1.ContainerPort{{
+				Name:          "glance-api",
+				ContainerPort: glanceAPIPort,
+			}},
+			// Readiness AND liveness hit the same /healthcheck endpoint (served by
+			// the oslo healthcheck middleware without touching the database) on the
+			// API port, identical in both launch modes. Glance has no startup probe:
+			// the readiness probe's own delay covers the WSGI app coming up.
+			LivenessProbe: &corev1.Probe{
+				ProbeHandler:        glanceHealthcheckProbeHandler(),
+				InitialDelaySeconds: 15,
+				PeriodSeconds:       20,
+			},
+			ReadinessProbe: &corev1.Probe{
+				ProbeHandler:        glanceHealthcheckProbeHandler(),
+				InitialDelaySeconds: 10,
+				PeriodSeconds:       15,
+				TimeoutSeconds:      10,
+				FailureThreshold:    3,
+			},
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      configVolumeName,
+					MountPath: glanceConfigDir,
+					ReadOnly:  true,
 				},
-				Spec: corev1.PodSpec{
-					TerminationGracePeriodSeconds: ptr.To(deployment.TerminationGracePeriodSeconds(&glance.Spec.Deployment)),
-					TopologySpreadConstraints:     deployment.TopologySpreadConstraints(&glance.Spec.Deployment, selector),
-					PriorityClassName:             deployment.PriorityClassName(&glance.Spec.Deployment),
-					SecurityContext:               &corev1.PodSecurityContext{FSGroup: ptr.To(deployment.OpenStackUID)},
-					Containers: []corev1.Container{{
-						Name:            "glance-api",
-						Image:           glance.Spec.Image.Reference(),
-						Resources:       deployment.ContainerResources(&glance.Spec.Deployment),
-						SecurityContext: deployment.RestrictedSecurityContext(),
-						Command:         glanceLaunchCommand(glance),
-						Env: []corev1.EnvVar{
-							database.ConnectionEnvVar(glance.Name),
-							keystoneauth.PasswordEnvVar(glance.Spec.ServiceUser.SecretRef.Name, effectiveServiceUserKey(glance)),
-						},
-						Ports: []corev1.ContainerPort{{
-							Name:          "glance-api",
-							ContainerPort: glanceAPIPort,
-						}},
-						// Readiness AND liveness hit the same /healthcheck endpoint
-						// (served by the oslo healthcheck middleware without touching
-						// the database) on the API port, identical in both launch
-						// modes.
-						LivenessProbe: &corev1.Probe{
-							ProbeHandler:        glanceHealthcheckProbeHandler(),
-							InitialDelaySeconds: 15,
-							PeriodSeconds:       20,
-						},
-						ReadinessProbe: &corev1.Probe{
-							ProbeHandler:        glanceHealthcheckProbeHandler(),
-							InitialDelaySeconds: 10,
-							PeriodSeconds:       15,
-							TimeoutSeconds:      10,
-							FailureThreshold:    3,
-						},
-						Lifecycle: &corev1.Lifecycle{
-							PreStop: &corev1.LifecycleHandler{
-								Exec: &corev1.ExecAction{
-									Command: deployment.PreStopSleepCommand(&glance.Spec.Deployment),
-								},
-							},
-						},
-						VolumeMounts: []corev1.VolumeMount{
-							{
-								Name:      configVolumeName,
-								MountPath: glanceConfigDir,
-								ReadOnly:  true,
-							},
-							{
-								Name:      backendsVolumeName,
-								MountPath: glanceBackendsConfigDir,
-								ReadOnly:  true,
-							},
-							{
-								Name:      stagingVolumeName,
-								MountPath: glanceStagingStorePath,
-							},
-							{
-								Name:      tasksVolumeName,
-								MountPath: glanceTasksStorePath,
-							},
-						},
-					}},
-					Volumes: []corev1.Volume{
-						{
-							Name: configVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: art.configMapName,
-									},
-								},
-							},
-						},
-						{
-							Name: backendsVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{
-									SecretName: art.backendsSecretName,
-								},
-							},
-						},
-						{
-							Name: stagingVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: stagingLimit},
-							},
-						},
-						{
-							Name: tasksVolumeName,
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: tasksLimit},
-							},
+				{
+					Name:      backendsVolumeName,
+					MountPath: glanceBackendsConfigDir,
+					ReadOnly:  true,
+				},
+				{
+					Name:      stagingVolumeName,
+					MountPath: glanceStagingStorePath,
+				},
+				{
+					Name:      tasksVolumeName,
+					MountPath: glanceTasksStorePath,
+				},
+			},
+		},
+		Volumes: []corev1.Volume{
+			{
+				Name: configVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: art.configMapName,
 						},
 					},
 				},
 			},
+			{
+				Name: backendsVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName: art.backendsSecretName,
+					},
+				},
+			},
+			{
+				Name: stagingVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: stagingLimit},
+				},
+			},
+			{
+				Name: tasksVolumeName,
+				VolumeSource: corev1.VolumeSource{
+					EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: tasksLimit},
+				},
+			},
 		},
-	}
+	})
 
 	// Project the db-tls client keypair into the API pod when database TLS is
 	// enabled; the gate is centralised in glanceDBTLSEnabled so the deployment
@@ -801,19 +768,5 @@ func buildPodDisruptionBudget(glance *glancev1alpha1.Glance) *policyv1.PodDisrup
 
 // buildGlanceService builds the Glance API Service on the API port.
 func buildGlanceService(glance *glancev1alpha1.Glance) *corev1.Service {
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      subResourceName(glance),
-			Namespace: glance.Namespace,
-			Labels:    commonLabels(glance),
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: selectorLabels(glance),
-			Ports: []corev1.ServicePort{{
-				Port:       glanceAPIPort,
-				TargetPort: intstr.FromInt32(glanceAPIPort),
-				Protocol:   corev1.ProtocolTCP,
-			}},
-		},
-	}
+	return deployment.BuildService(glance.Namespace, subResourceName(glance), commonLabels(glance), selectorLabels(glance), glanceAPIPort, glanceAPIPort)
 }
