@@ -6,10 +6,8 @@
 package controller
 
 import (
-	"context"
 	"fmt"
 
-	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/c5c3/forge/internal/common/instrumentation"
@@ -73,13 +71,4 @@ func RegisterMetrics() error {
 		return fmt.Errorf("registering glance per-CR metrics: %w", err)
 	}
 	return nil
-}
-
-// instrumentSubReconciler wraps a sub-reconciler call, observing duration on
-// every path (success, error, panic) and recording an error count if fn returns
-// non-nil. name is the sub_reconciler label value; the condition_type label on
-// the error counter is resolved via subReconcilerConditionTypes, falling back to
-// instrumentation.ConditionTypeUnknown when the name is unmapped.
-func instrumentSubReconciler(ctx context.Context, name string, fn func(context.Context) (ctrl.Result, error)) (ctrl.Result, error) {
-	return instrumenter.Instrument(ctx, name, fn)
 }

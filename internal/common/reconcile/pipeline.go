@@ -33,9 +33,9 @@ func (s Step) run(ctx context.Context, instrument InstrumentFunc) (ctrl.Result, 
 }
 
 // InstrumentFunc wraps a sub-reconciler call with per-operator duration/error
-// instrumentation. name is the sub_reconciler metric label value. Both
-// operators satisfy this with their instrumentSubReconciler glue over
-// internal/common/instrumentation.
+// instrumentation. name is the sub_reconciler metric label value. Operators
+// satisfy this by passing the bound Instrument method of their
+// internal/common/instrumentation instrumenter.
 type InstrumentFunc func(ctx context.Context, name string, fn func(context.Context) (ctrl.Result, error)) (ctrl.Result, error)
 
 // RunPipeline runs the steps in order. Named steps are wrapped in instrument;

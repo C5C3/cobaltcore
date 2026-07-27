@@ -65,7 +65,7 @@ Wall-clock duration of a single sub-reconciler invocation in seconds.
 | Type | Histogram |
 | Labels | `sub_reconciler` |
 | Buckets (seconds) | `0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30` |
-| Call site | `instrumentSubReconciler` in `operators/keystone/internal/controller/instrumentation.go` |
+| Call site | `instrumenter.Instrument` in `operators/keystone/internal/controller/instrumentation.go` |
 
 **Label cardinality.** The `sub_reconciler` value is drawn from a closed
 set of 16 strings — the keys of `subReconcilerConditionTypes` — so the
@@ -96,7 +96,7 @@ and the `status.conditions[]` type it failed to drive to `True`.
 | --- | --- |
 | Type | Counter |
 | Labels | `sub_reconciler`, `condition_type` |
-| Call site | `instrumentSubReconciler` (on non-nil error return) |
+| Call site | `instrumenter.Instrument` (on non-nil error return) |
 
 **Label cardinality.** Both labels are drawn from closed sets: the 16
 sub-reconciler names and the 14 Ready sub-condition types listed in
@@ -336,7 +336,7 @@ see
 
 ## Related
 
-- [Keystone Reconciler Architecture — Metrics Instrumentation](./keystone/keystone-reconciler.md#metrics-instrumentation) — the `instrumentSubReconciler` contract and the rule that every new sub-reconciler must be wrapped.
+- [Keystone Reconciler Architecture — Metrics Instrumentation](./keystone/keystone-reconciler.md#metrics-instrumentation) — the `instrumenter.Instrument` contract and the rule that every new sub-reconciler must be wrapped.
 - [Observability & Diagnostics](../guides/observability.md) — human-facing status, conditions, and events.
 - [How to enable the Keystone operator metrics endpoint](../guides/keystone/enable-keystone-operator-metrics.md) — cluster-side Prometheus/Grafana wiring.
 - [`operators/keystone/dashboards/keystone-operator.json`](../../operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard consuming the metrics above.

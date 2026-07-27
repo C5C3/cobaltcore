@@ -438,7 +438,7 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}},
 	}
 
-	result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
+	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
 	return r.updateStatus(ctx, &glance, statusBefore, result, err)
 }
 
@@ -512,13 +512,13 @@ func setReadyCondition(glance *glancev1alpha1.Glance) {
 // CR, conditions from every member — including those that succeeded before a
 // peer failed — are merged back into the primary glance, and on success the
 // shortest non-zero RequeueAfter is returned. Members instrument individually
-// via instrumentSubReconciler.
+// via instrumenter.Instrument.
 func (r *GlanceReconciler) reconcileParallelGroup(
 	ctx context.Context,
 	glance *glancev1alpha1.Glance,
 	subs []commonreconcile.ParallelStep[*glancev1alpha1.Glance],
 ) (ctrl.Result, error) {
-	return glanceSkeleton.RunParallelGroup(ctx, glance, instrumentSubReconciler, subs)
+	return glanceSkeleton.RunParallelGroup(ctx, glance, instrumenter.Instrument, subs)
 }
 
 // SetupWithManager registers the GlanceReconciler with the controller manager.

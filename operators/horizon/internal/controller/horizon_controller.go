@@ -271,7 +271,7 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// commonreconcile.RunPipeline short-circuits on the first non-zero result
 	// or error; both the short-circuit and the fully-successful chain funnel
 	// through updateStatus, which recomputes the aggregate Ready condition.
-	result, err := commonreconcile.RunPipeline(ctx, instrumentSubReconciler, pipeline)
+	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
 	return r.updateStatus(ctx, &horizon, statusBefore, result, err)
 }
 
@@ -315,13 +315,13 @@ func markConfigFailed(horizon *horizonv1alpha1.Horizon, err error) {
 // own DeepCopy of the Horizon CR, conditions from every member — including
 // those that succeeded before a peer failed — are merged back into the
 // primary horizon, and on success the shortest non-zero RequeueAfter is
-// returned. Members instrument individually via instrumentSubReconciler.
+// returned. Members instrument individually via instrumenter.Instrument.
 func (r *HorizonReconciler) reconcileParallelGroup(
 	ctx context.Context,
 	horizon *horizonv1alpha1.Horizon,
 	subs []commonreconcile.ParallelStep[*horizonv1alpha1.Horizon],
 ) (ctrl.Result, error) {
-	return horizonSkeleton.RunParallelGroup(ctx, horizon, instrumentSubReconciler, subs)
+	return horizonSkeleton.RunParallelGroup(ctx, horizon, instrumenter.Instrument, subs)
 }
 
 // SetupWithManager registers the HorizonReconciler with the controller manager.

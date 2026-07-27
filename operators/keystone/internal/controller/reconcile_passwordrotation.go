@@ -142,7 +142,7 @@ func normalizedAdminPasswordLength(keystone *keystonev1alpha1.Keystone) int32 {
 //
 // DECISION: the third parameter is the shared config ConfigMap name, accepted
 // only for sub-reconciler call-site symmetry with reconcileFernetKeys /
-// reconcileTrustFlush (task 3.1 wires it as instrumentSubReconciler(ctx,
+// reconcileTrustFlush (task 3.1 wires it as instrumenter.Instrument(ctx,
 // "PasswordRotation", r.reconcilePasswordRotation(..., configMapName))). It is
 // intentionally unused (named "_") because the rotate script needs no keystone
 // configuration — it never runs keystone-manage. Reviewer: please verify.

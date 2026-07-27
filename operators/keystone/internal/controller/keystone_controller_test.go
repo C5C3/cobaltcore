@@ -3896,7 +3896,7 @@ func TestRegisterSecretNameIndex_WrapsErrorWithKey(t *testing.T) {
 // least one sample for every sub_reconciler name registered in
 // subReconcilerConditionTypes. This is the wiring check: every
 // sub-reconciler call site in Reconcile must flow through
-// instrumentSubReconciler.
+// instrumenter.Instrument.
 func TestReconcileEmitsDurationForEverySubReconciler(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -4024,7 +4024,7 @@ func TestReconcileErrorsTotalIncrementsOnInducedFailure(t *testing.T) {
 		NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace},
 	})
 	g.Expect(err).To(HaveOccurred(),
-		"the induced derived-Secret write rejection MUST surface as a reconcile error so instrumentSubReconciler increments the counter")
+		"the induced derived-Secret write rejection MUST surface as a reconcile error so instrumenter.Instrument increments the counter")
 	g.Expect(strings.Contains(err.Error(), "simulated apiserver rejection")).To(BeTrue(),
 		"reconcile error MUST preserve the underlying interceptor message so the failure path is unambiguous (got: %v)", err)
 
