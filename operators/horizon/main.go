@@ -18,24 +18,18 @@ import (
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	"github.com/c5c3/forge/operators/horizon/internal/controller"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
-var scheme = runtime.NewScheme()
-
-func init() {
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(horizonv1alpha1.AddToScheme(scheme))
+var scheme = bootstrap.NewScheme(
+	horizonv1alpha1.AddToScheme,
 	// ESO v1 types are required for the SECRET_KEY gate: reconcileSecrets
 	// reads the ExternalSecret and the OpenBao ClusterSecretStore.
-	utilruntime.Must(esov1.SchemeBuilder.AddToScheme(scheme))
-	utilruntime.Must(gatewayv1.Install(scheme))
+	esov1.SchemeBuilder.AddToScheme,
+	gatewayv1.Install,
 	// +kubebuilder:scaffold:scheme
-}
+)
 
 func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{

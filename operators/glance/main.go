@@ -19,28 +19,22 @@ import (
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	"github.com/c5c3/forge/operators/glance/internal/controller"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
-var scheme = runtime.NewScheme()
-
-func init() {
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(glancev1alpha1.AddToScheme(scheme))
+var scheme = bootstrap.NewScheme(
+	glancev1alpha1.AddToScheme,
 	// ESO v1 types are required for the credential gates: reconcileSecrets and
 	// the GlanceBackend controller read the ExternalSecret and the OpenBao
 	// ClusterSecretStore/SecretStore.
-	utilruntime.Must(esov1.SchemeBuilder.AddToScheme(scheme))
+	esov1.SchemeBuilder.AddToScheme,
 	// MariaDB types are required so reconcileDatabase can provision and finalize
 	// the Database/User/Grant CRs and watch the MariaDB cluster.
-	utilruntime.Must(mariadbv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(gatewayv1.Install(scheme))
+	mariadbv1alpha1.AddToScheme,
+	gatewayv1.Install,
 	// +kubebuilder:scaffold:scheme
-}
+)
 
 func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{

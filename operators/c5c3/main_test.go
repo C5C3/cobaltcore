@@ -4,7 +4,7 @@
 
 // Tests for the c5c3 operator entrypoint wiring. These assert
 // the manager's scheme and leader-election identity WITHOUT standing up a live
-// cluster or envtest: the package-level scheme is populated by init(), so every
+// cluster or envtest: the package-level scheme is populated at init time, so every
 // API type the reconcilers create/own/watch must resolve to a registered GVK,
 // and the leader-election ID must stay pinned to the deploy-stack value.
 package main
@@ -16,8 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// TestSchemeRegistersAllExpectedGVKs asserts the package-level scheme — built in
-// init() and handed to bootstrap.Run — recognises every API kind the
+// TestSchemeRegistersAllExpectedGVKs asserts the package-level scheme — built by
+// bootstrap.NewScheme and handed to bootstrap.Run — recognises every API kind the
 // ControlPlane and CredentialRotation reconcilers create, own, or watch. A
 // missing AddToScheme would otherwise only surface at runtime as a "no kind is
 // registered for the type ..." crash on the first reconcile.
@@ -56,8 +56,8 @@ func TestSchemeRegistersAllExpectedGVKs(t *testing.T) {
 // (memcached.c5c3.io) is deliberately NOT registered: it ships no Go module, so
 // SetupWithManager's Owns(unstructured) resolves the GVK via the cluster
 // RESTMapper at runtime rather than via the typed scheme. If a future change
-// accidentally registers it, this test flags the drift so the comment in init()
-// can be revisited.
+// accidentally registers it, this test flags the drift so the comment on the
+// NewScheme argument list can be revisited.
 func TestSchemeDoesNotRegisterMemcached(t *testing.T) {
 	g := NewGomegaWithT(t)
 
