@@ -555,6 +555,16 @@ spec:
             ($error != null): true
             (contains($error, 'services.glance.staging.sizeLimit')): true
             (contains($error, 'must be at least 1Mi')): true
+    # services.glance.imageCache.sizeLimit of 0 is rejected by the same exported
+    # glance validator, one field over: a Quantity is an int-or-string in the CRD
+    # schema and carries no Minimum marker, so no schema rule can express this floor.
+    - apply:
+        file: 64-glance-imagecache-sizelimit-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.glance.imageCache.sizeLimit')): true
+            (contains($error, 'must be at least 1Mi')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

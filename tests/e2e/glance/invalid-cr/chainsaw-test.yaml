@@ -228,3 +228,36 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'mutually exclusive')): true
+  # spec.imageCache.sizeLimit of 0 must be rejected by the validating webhook:
+  # a Quantity is an int-or-string in the CRD schema and carries no Minimum
+  # marker, so no schema rule can express this floor.
+  - try:
+    - apply:
+        file: 22-imagecache-sizelimit-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'imageCache.sizeLimit')): true
+            (contains($error, 'must be at least 1Mi')): true
+  # spec.imageCache.maintenanceInterval below a minute must be rejected by the
+  # validating webhook: a Duration is a plain string in the CRD schema, a shape
+  # that carries no floor at all, so no schema rule can express this one.
+  - try:
+    - apply:
+        file: 23-imagecache-interval-below-floor.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'imageCache.maintenanceInterval')): true
+            (contains($error, 'must be at least 1m')): true
+  # A spec.middleware entry named `cache` alongside spec.imageCache must be
+  # rejected by the validating webhook: it correlates two spec fields, so no
+  # schema marker can express it and admission is the sole gate.
+  - try:
+    - apply:
+        file: 24-imagecache-middleware-name-collision.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.middleware[0].name')): true
+            (contains($error, 'owns that filter name while spec.imageCache is set')): true

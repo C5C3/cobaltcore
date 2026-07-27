@@ -439,6 +439,59 @@ FIXTURES: tuple[Fixture, ...] = (
             "    sizeLimit: 40Gi\n"
         ),
     ),
+    Fixture(
+        filename="22-imagecache-sizelimit-zero.yaml",
+        comment=(
+            "spec.imageCache.sizeLimit of 0 is rejected by the validating webhook —\n"
+            "a resource.Quantity renders as x-kubernetes-int-or-string in the CRD\n"
+            "schema, which carries no Minimum marker, so ValidateImageCache is the\n"
+            "sole gate against an unusable cache bound. It enforces a 1Mi floor\n"
+            "rather than mere positivity, because the schema pattern also admits the\n"
+            "sub-byte milli suffix (`100m` for `100Mi`)."
+        ),
+        name="glance-invalid-imagecache-sizelimit",
+        extra=(
+            "  imageCache:\n"
+            "    sizeLimit: 0\n"
+        ),
+    ),
+    Fixture(
+        filename="23-imagecache-interval-below-floor.yaml",
+        comment=(
+            "spec.imageCache.maintenanceInterval below a minute is rejected by the\n"
+            "validating webhook — a metav1.Duration renders as a plain string in the\n"
+            "CRD schema, a shape that carries no floor at all, so ValidateImageCache\n"
+            "is the sole gate. Every tick walks the cache directory and its sqlite\n"
+            "index, so a sub-minute loop spends the pod's local-disk bandwidth on\n"
+            "maintenance rather than on the downloads the cache exists to accelerate."
+        ),
+        name="glance-invalid-imagecache-interval",
+        extra=(
+            "  imageCache:\n"
+            "    maintenanceInterval: 59s\n"
+        ),
+    ),
+    Fixture(
+        filename="24-imagecache-middleware-name-collision.yaml",
+        comment=(
+            "spec.middleware[].name of `cache` alongside spec.imageCache is rejected\n"
+            "by the validating webhook: the operator injects that paste filter itself\n"
+            "while the cache is on and renders its [filter:cache] section, so the two\n"
+            "definitions would collide and the pipeline would end up with wiring\n"
+            "nobody wrote. It correlates two spec fields, so no schema marker can\n"
+            "express it and admission is the sole gate. The reservation lasts only as\n"
+            "long as spec.imageCache is set — drop that block and this same\n"
+            "middleware is admissible again."
+        ),
+        name="glance-invalid-imagecache-middleware",
+        extra=(
+            "  imageCache: {}\n"
+            "  middleware:\n"
+            "  - name: cache\n"
+            "    filterFactory: example.middleware:Filter.factory\n"
+            "    position: after\n"
+        ),
+    ),
 )
 
 
