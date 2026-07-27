@@ -1,0 +1,599 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Glance local image cache (2026.1 release). Until
+# now spec.imageCache had unit coverage only — the rendered config keys, the
+# bounded emptyDir and the maintenance sidecar were all asserted against a
+# built object, never against a running API. This suite closes that with four
+# legs:
+#
+#   Leg 1 — shape. The CR goes Ready with the cache on, the Deployment carries
+#     an `image-cache` emptyDir bounded at 256Mi, and the pod runs a second
+#     container, `cache-maintenance`, next to glance-api.
+#   Leg 2 — cache hit. A ~56Mi image is uploaded and downloaded; the download
+#     hashes back to the uploaded bytes, the cache directory then holds a file
+#     named by the image id plus the sqlite metadata file cache.db, and a
+#     SECOND download returns the same SHA-256 while glance's own
+#     cached_images.hits counter records that it was answered off that cached
+#     copy. The cache write happens on the download path (glance tees the
+#     response into the cache), which is why the directory is inspected after
+#     the first GET and not after the upload.
+#   Leg 3 — prune under the bound. Three more ~56Mi images are uploaded and
+#     downloaded, so four sit in the cache. Fewer than four survive within
+#     minutes, the Deployment stays Available, and no pod is evicted.
+#   Leg 4 — revert. spec.imageCache is unset again, and the sidecar and the
+#     cache volume have to disappear from the LIVE Deployment. That is a
+#     Server-Side-Apply pruning question, which no test against a freshly built
+#     object can answer.
+#
+# ── The 224Mi / 204.8Mi / 256Mi arithmetic ───────────────────────────
+# spec.imageCache.sizeLimit is 256Mi (268435456 bytes), from which the operator
+# derives image_cache_max_size = 268435456 / 10 * 8 = 214748360 bytes
+# (~204.8Mi). Four ~56Mi images are ~224Mi: above the threshold, so
+# glance-cache-pruner must drop at least one, and below the emptyDir bound, so
+# the kubelet must NOT evict the pod while it happens. Leg 3 asserts both
+# halves — the sibling gateway-large-upload suite proves the opposite case,
+# where an unbounded write does cross its volume's bound and kubelet evicts.
+#
+# ── DECISION: an in-cluster python probe, not host curl ──────────────
+# This CR has no Gateway, so the API is only reachable in-cluster. The probe
+# runs in the glance image (which ships python3) against the Service ClusterIP,
+# detached and read back with `kubectl logs` — `kubectl run -i` only streams
+# from the moment the attach lands and would lose the output of a fast probe.
+# That is the same pattern tests/e2e/glance/s3-multistore/chainsaw-test.yaml
+# uses.
+#
+# ── DECISION: plain PUT upload, never the import API ─────────────────
+# No Keystone runs in this leg, so the tokenless context has no project:
+# POST /v2/images/{id}/import records a task row whose `owner` column is NOT
+# NULL and answers 500. PUT /v2/images/{id}/file is the one upload path that
+# involves no task and no owner.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-image-cache
+spec:
+  namespace: openstack
+  # Four ~56Mi transfers plus a rollout make the envelope generous. The inner
+  # poll bounds all stay below the per-step script timeouts, so a failure
+  # surfaces as a targeted diagnostic rather than chainsaw's generic kill.
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1 (leg 1): deploy with the cache on and assert the shape ───────
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-glance-backend.yaml
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-cache
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-cache-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-cache
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                # The bound the whole prune arithmetic hangs off: spec.imageCache
+                # .sizeLimit must reach the emptyDir verbatim, because that — not
+                # the derived image_cache_max_size — is what the kubelet enforces.
+                (volumes[?name == 'image-cache'].emptyDir.sizeLimit | [0]): 256Mi
+                # Two containers, and the second one is the maintenance sidecar.
+                # The count alone would pass on any second container; the name
+                # filter alone would pass while some third container drifted in.
+                (length(containers) == `2`): true
+                (length(containers[?name == 'cache-maintenance']) == `1`): true
+          status:
+            (availableReplicas > `0`): true
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-cache -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend glance-cache-s3 -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== glance-api Deployment ==="
+          kubectl describe deployment glance-cache -n $NAMESPACE 2>&1 | tail -40 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-cache -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2 (leg 2): the cache-hit path ──────────────────────────────────
+  # Three acts in one script, because chainsaw scripts share no state: the
+  # image id and its digest are produced by the first probe and consumed by
+  # both the cache-directory check and the second probe.
+  - try:
+    - script:
+        timeout: 8m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; the
+        # sibling gateway-large-upload suite pins bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = "http://glance-cache.openstack.svc:9292"
+          IMAGE_BYTES = 56 << 20
+          CHUNK = 1 << 20
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def call(method, path, data=None, headers=None):
+              req = urllib.request.Request(BASE + path, data=data, method=method,
+                                           headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=300)
+
+
+          def do(fn, what):
+              err = None
+              for i in range(30):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+
+          def download(image_id, want):
+              resp = do(lambda: call("GET", "/v2/images/%s/file" % image_id),
+                        "download " + image_id)
+              digest = hashlib.sha256()
+              total = 0
+              while True:
+                  buf = resp.read(CHUNK)
+                  if not buf:
+                      break
+                  digest.update(buf)
+                  total += len(buf)
+              got = digest.hexdigest()
+              print("downloaded %s: %d bytes, sha256 %s" % (image_id, total, got))
+              if got != want:
+                  fail("download of %s hashes %s, want %s" % (image_id, got, want))
+
+
+          mode = sys.argv[1]
+          if mode == "upload":
+              payload = os.urandom(IMAGE_BYTES)
+              want = hashlib.sha256(payload).hexdigest()
+              body = json.dumps({"name": "cache-hit-probe", "disk_format": "raw",
+                                 "container_format": "bare"}).encode()
+              img = json.loads(do(lambda: call("POST", "/v2/images", data=body,
+                                               headers={"Content-Type": "application/json"}),
+                                  "create image").read())
+              image_id = img["id"]
+              print("created image %s (status %s)" % (image_id, img.get("status")))
+              do(lambda: call("PUT", "/v2/images/%s/file" % image_id, data=payload,
+                              headers={"Content-Type": "application/octet-stream"}),
+                 "upload " + image_id)
+              download(image_id, want)
+              print("IMAGE-ID: %s" % image_id)
+              print("SHA256: %s" % want)
+          elif mode == "download":
+              download(sys.argv[2], sys.argv[3])
+          else:
+              fail("unknown probe mode " + mode)
+          print("CACHE-PROBE-OK")
+          PY
+          )"
+
+          # Runs the probe detached and reads its output back afterwards:
+          # `kubectl run -i` only streams from the moment the attach lands, so a
+          # probe that finishes first would lose its sentinel. 84 polls x 5s = 7m,
+          # inside the 8m step timeout, so a stuck probe is reported with its logs
+          # rather than killed by chainsaw. Leaves the output in PROBE_OUT.
+          run_probe() {
+            local pod="$1"
+            shift
+            kubectl delete pod "$pod" -n "$NAMESPACE" --ignore-not-found >/dev/null
+            kubectl run "$pod" -n "$NAMESPACE" --image=ghcr.io/c5c3/glance:2026.1 \
+              --restart=Never --command -- python3 -c "$PROBE_SRC" "$@"
+            local phase=""
+            for _ in $(seq 1 84); do
+              phase="$(kubectl get pod "$pod" -n "$NAMESPACE" \
+                -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+              case "$phase" in Succeeded|Failed) break ;; esac
+              sleep 5
+            done
+            PROBE_OUT="$(kubectl logs "$pod" -n "$NAMESPACE" 2>&1 || true)"
+            kubectl delete pod "$pod" -n "$NAMESPACE" --ignore-not-found >/dev/null
+            echo "${PROBE_OUT}"
+            [ "$phase" = "Succeeded" ]
+            echo "${PROBE_OUT}" | grep -q 'CACHE-PROBE-OK'
+          }
+
+          # Act 1: upload ~56Mi and download it once. The probe compares the
+          # downloaded bytes against the uploaded ones itself, so this already
+          # pins that inserting the `cache` filter into the paste pipeline does
+          # not corrupt the read path.
+          run_probe glance-cache-hit-probe upload
+          IMAGE_ID="$(echo "${PROBE_OUT}" | grep '^IMAGE-ID: ' | head -1 | cut -d' ' -f2 || true)"
+          DIGEST="$(echo "${PROBE_OUT}" | grep '^SHA256: ' | head -1 | cut -d' ' -f2 || true)"
+          if [ -z "${IMAGE_ID}" ] || [ -z "${DIGEST}" ]; then
+            echo "ERROR: the probe printed no image id / digest to key the cache checks on"
+            exit 1
+          fi
+          echo "OK: image ${IMAGE_ID} uploaded and downloaded intact (sha256 ${DIGEST})"
+
+          # Act 2: the cached copy has to be on the pod's own disk now. Glance
+          # tees the download into $image_cache_dir/incomplete/<id> and renames it
+          # into place once the last byte is served — a moment AFTER the client
+          # has it — so poll rather than look once. 12 x 5s = 60s. cache.db is
+          # glance's sqlite metadata file: the operator pins
+          # image_cache_driver=sqlite precisely so that state lives inside the
+          # bounded volume, and its absence would mean the driver fell back to
+          # centralized_db.
+          LISTING=""
+          CACHED=""
+          for _ in $(seq 1 12); do
+            LISTING="$(kubectl exec -n "$NAMESPACE" deploy/glance-cache -c glance-api -- \
+              ls -1 /var/lib/glance/image-cache 2>/dev/null || true)"
+            if echo "${LISTING}" | grep -qxF "${IMAGE_ID}" \
+              && echo "${LISTING}" | grep -qxF 'cache.db'; then
+              CACHED="yes"
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "${CACHED}" ]; then
+            echo "ERROR: /var/lib/glance/image-cache does not hold both ${IMAGE_ID}"
+            echo "       and cache.db after 60s — the download was not cached."
+            echo "--- last listing ---"
+            echo "${LISTING}"
+            exit 1
+          fi
+          echo "OK: the cache directory holds ${IMAGE_ID} next to the sqlite cache.db"
+
+          # Act 3: download the same image again. The cached file was verified to
+          # exist BEFORE this call, so this read travels the cache path, and it
+          # has to return the very same bytes. A fresh pod means a fresh
+          # connection and possibly a different uWSGI worker — which is the point
+          # of pinning 2026.1: the workers share one cache directory.
+          run_probe glance-cache-hit-probe-2 download "${IMAGE_ID}" "${DIGEST}"
+          echo "OK: the second download of ${IMAGE_ID} returned the same bytes"
+
+          # The digest alone does not prove a HIT: a read served straight from
+          # the S3 backing store hashes identically, so that assertion only
+          # rules out a corrupted read path. glance's own counter is what
+          # separates the two — the sqlite driver bumps cached_images.hits for
+          # every read it answers off the cached copy, so >= 1 is the one value
+          # a store-served read cannot produce. Read-only URI, so this never
+          # takes a write lock against the uWSGI workers; polled, because the
+          # UPDATE commits on the server's schedule and not the client's.
+          # 12 x 5s = 60s.
+          HITS=-1
+          for _ in $(seq 1 12); do
+            HITS="$(kubectl exec -n "$NAMESPACE" deploy/glance-cache -c glance-api -- python3 -c \
+              "import sqlite3;r=sqlite3.connect('file:/var/lib/glance/image-cache/cache.db?mode=ro',uri=True).execute('select hits from cached_images where image_id=?',('${IMAGE_ID}',)).fetchone();print(r[0] if r else -1)" \
+              2>/dev/null || true)"
+            case "${HITS}" in *[!0-9-]*|"") HITS=-1 ;; esac
+            if [ "${HITS}" -ge 1 ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ "${HITS}" -lt 1 ]; then
+            echo "ERROR: cached_images.hits for ${IMAGE_ID} is ${HITS} after 60s."
+            echo "       The bytes matched, so the read path is intact — but nothing"
+            echo "       was served OFF the cache, which is what this leg exists for."
+            echo "       (-1 means the row is missing from cache.db entirely.)"
+            kubectl exec -n "$NAMESPACE" deploy/glance-cache -c glance-api -- \
+              ls -l /var/lib/glance/image-cache 2>&1 || true
+            exit 1
+          fi
+          echo "OK: glance counted ${HITS} cache hit(s) on ${IMAGE_ID} — the second"
+          echo "    download was served off the cached copy, not off the store"
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-cache -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== probe pods ==="
+          kubectl get pods -n $NAMESPACE -o wide 2>&1 | grep glance-cache-hit-probe || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-cache -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            echo "--- $pod cache dir ---"
+            kubectl exec -n $NAMESPACE "${pod#pod/}" -c glance-api -- ls -l /var/lib/glance/image-cache 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3 (leg 3): fill the cache past the threshold ───────────────────
+  # Three more ~56Mi images, each downloaded once so it lands in the cache.
+  # Together with the image the cache-hit leg left there that is ~224Mi against
+  # a derived image_cache_max_size of 214748360 bytes (~204.8Mi).
+  - try:
+    - script:
+        timeout: 10m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = "http://glance-cache.openstack.svc:9292"
+          IMAGE_BYTES = 56 << 20
+          CHUNK = 1 << 20
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def call(method, path, data=None, headers=None):
+              req = urllib.request.Request(BASE + path, data=data, method=method,
+                                           headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=300)
+
+
+          def do(fn, what):
+              err = None
+              for i in range(30):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+
+          for _ in range(int(sys.argv[1])):
+              payload = os.urandom(IMAGE_BYTES)
+              body = json.dumps({"name": "cache-prune-probe", "disk_format": "raw",
+                                 "container_format": "bare"}).encode()
+              img = json.loads(do(lambda: call("POST", "/v2/images", data=body,
+                                               headers={"Content-Type": "application/json"}),
+                                  "create image").read())
+              image_id = img["id"]
+              do(lambda: call("PUT", "/v2/images/%s/file" % image_id, data=payload,
+                              headers={"Content-Type": "application/octet-stream"}),
+                 "upload " + image_id)
+              # The download is what fills the cache — the upload alone never
+              # writes to it.
+              resp = do(lambda: call("GET", "/v2/images/%s/file" % image_id),
+                        "download " + image_id)
+              total = 0
+              while True:
+                  buf = resp.read(CHUNK)
+                  if not buf:
+                      break
+                  total += len(buf)
+              if total != IMAGE_BYTES:
+                  fail("download of %s served %d bytes, want %d"
+                       % (image_id, total, IMAGE_BYTES))
+              print("IMAGE-ID: %s (%d bytes served, now cached)" % (image_id, total))
+          print("CACHE-PROBE-OK")
+          PY
+          )"
+
+          # Detached run + `kubectl logs` for the same attach race the cache-hit
+          # leg documents. 100 polls x 5s = 8m20, inside the 10m step timeout.
+          POD=glance-cache-prune-probe
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/glance:2026.1 \
+            --restart=Never --command -- python3 -c "$PROBE_SRC" 3
+          PHASE=""
+          for _ in $(seq 1 100); do
+            PHASE="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$PHASE" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+          echo "${OUT}"
+          [ "$PHASE" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'CACHE-PROBE-OK'
+          echo "OK: three more ~56Mi images cached — ~224Mi against a ~204.8Mi threshold"
+    # The prune itself. Separate script because the poll needs no probe state:
+    # the cached entries are counted by shape, not by id.
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # The sqlite driver keeps completed entries as UUID-named files
+          # directly under the cache directory, alongside its cache.db metadata
+          # file and the incomplete/, invalid/ and queue/ subdirectories. Match
+          # the UUID shape so only image entries are counted, whatever else the
+          # driver parks there. `grep -c` exits 1 on zero matches — it still
+          # prints the count, so the `|| true` only keeps `set -e` out of it.
+          count_cached() {
+            kubectl exec -n "$NAMESPACE" deploy/glance-cache -c glance-api -- \
+              ls -1 /var/lib/glance/image-cache 2>/dev/null \
+              | grep -Ec '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || true
+          }
+
+          # Four ~56Mi images are cached now, ~224Mi against an
+          # image_cache_max_size of 214748360 bytes (~204.8Mi), so
+          # glance-cache-pruner must drop at least one on its next pass. The
+          # sidecar runs every minute; poll for three, so a slow pass is waited
+          # out rather than raced. The lower bound is as load-bearing as the
+          # upper one: a count of zero would satisfy "fewer than four" while
+          # proving the cache was never populated at all. 18 x 10s = 3m.
+          PRUNED=""
+          COUNT=0
+          for _ in $(seq 1 18); do
+            COUNT="$(count_cached)"
+            # An exec against a pod that is momentarily gone yields no count at
+            # all; treat that as zero rather than letting `[ -ge ]` abort the
+            # step on a non-numeric operand.
+            case "${COUNT}" in *[!0-9]*|"") COUNT=0 ;; esac
+            echo "cached image files: ${COUNT}"
+            if [ "${COUNT}" -ge 1 ] && [ "${COUNT}" -le 3 ]; then
+              PRUNED="yes"
+              break
+            fi
+            sleep 10
+          done
+          if [ -z "${PRUNED}" ]; then
+            echo "ERROR: the cache holds ${COUNT} image files after 3m, want 1 to 3."
+            echo "       Four were cached, so 4 means the maintenance sidecar never"
+            echo "       pruned and 0 means nothing was ever cached."
+            echo "--- cache directory ---"
+            kubectl exec -n "$NAMESPACE" deploy/glance-cache -c glance-api -- \
+              ls -l /var/lib/glance/image-cache 2>&1 || true
+            echo "--- rendered image_cache_max_size ---"
+            CM="$(kubectl get deploy glance-cache -n "$NAMESPACE" \
+              -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}' 2>/dev/null || true)"
+            kubectl get cm "$CM" -n "$NAMESPACE" -o 'jsonpath={.data.glance-api\.conf}' 2>/dev/null \
+              | grep '^image_cache_' || true
+            echo "--- cache-maintenance logs ---"
+            kubectl logs -n "$NAMESPACE" deploy/glance-cache -c cache-maintenance --tail=60 2>&1 || true
+            echo "--- pods ---"
+            kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=glance-cache -o wide 2>&1 || true
+            exit 1
+          fi
+          echo "OK: the maintenance sidecar pruned the cache down to ${COUNT} image files"
+
+          # The other half of the contract, and the reason the four images stay
+          # under the 256Mi bound: pruning happens without the kubelet stepping
+          # in. The sibling gateway-large-upload suite proves the opposite case,
+          # where a write past its volume's bound does get the pod evicted.
+          kubectl wait --for=condition=Available \
+            deployment/glance-cache -n "$NAMESPACE" --timeout=2m
+          EVICTED="$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=glance-cache \
+            -o 'jsonpath={range .items[?(@.status.reason=="Evicted")]}{.metadata.name}{"\n"}{end}' \
+            2>/dev/null || true)"
+          if [ -n "${EVICTED}" ]; then
+            echo "ERROR: kubelet evicted ${EVICTED} — the cache crossed its 256Mi"
+            echo "       emptyDir bound instead of being pruned back under it."
+            kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=glance-cache -o wide 2>&1 || true
+            exit 1
+          fi
+          echo "OK: the glance-api Deployment is still Available and no pod was evicted"
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-cache -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== glance-api pods (name / phase / reason) ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-cache \
+            -o 'custom-columns=NAME:.metadata.name,PHASE:.status.phase,REASON:.status.reason,MSG:.status.message' 2>&1 || true
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-cache -o name 2>/dev/null); do
+            echo "--- $pod cache-maintenance logs ---"
+            kubectl logs -n $NAMESPACE "$pod" -c cache-maintenance --tail=80 2>&1 || true
+            echo "--- $pod glance-api logs ---"
+            kubectl logs -n $NAMESPACE "$pod" -c glance-api --tail=80 2>&1 || true
+            echo "--- $pod cache dir ---"
+            kubectl exec -n $NAMESPACE "${pod#pod/}" -c glance-api -- ls -l /var/lib/glance/image-cache 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4 (leg 4): take the cache back off a live Deployment ────────────
+  # The revert direction, and the one a unit test cannot reach: the operator
+  # writes the Deployment server-side, so removing the sidecar and the volume
+  # depends on Server-Side Apply pruning the list entries it has stopped
+  # applying. A build-time test only ever sees a Deployment that never carried
+  # them. The sibling httproute suite unsets spec.gateway for the same reason.
+  - try:
+    - patch:
+        file: 02-patch-remove-imagecache.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-cache
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                # Both halves matter: the sidecar has to be gone by name, and no
+                # other container may have taken its slot.
+                (length(containers) == `1`): true
+                (length(containers[?name == 'cache-maintenance']) == `0`): true
+                (length(volumes[?name == 'image-cache']) == `0`): true
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-cache
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-cache -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== glance-api Deployment pod template ==="
+          kubectl get deploy glance-cache -n $NAMESPACE \
+            -o 'jsonpath={range .spec.template.spec.containers[*]}container={.name}{"\n"}{end}{range .spec.template.spec.volumes[*]}volume={.name}{"\n"}{end}' 2>&1 || true
+          echo "=== managedFields (SSA ownership of the pod template) ==="
+          kubectl get deploy glance-cache -n $NAMESPACE \
+            -o 'jsonpath={.metadata.managedFields}' 2>&1 || true
+          echo "=== rollout ==="
+          kubectl describe deployment glance-cache -n $NAMESPACE 2>&1 | tail -40 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
