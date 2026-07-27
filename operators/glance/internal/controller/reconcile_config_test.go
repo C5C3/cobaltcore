@@ -8,11 +8,13 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -758,6 +760,9 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 		Debug:           ptr.To(true),
 		PerLoggerLevels: map[string]string{"glance": "DEBUG"},
 	}
+	// Enable the image cache too, so the three conditionally rendered
+	// image_cache_* keys are covered by both directions of the check.
+	glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{}
 
 	defaults := operatorDefaults(glance, validProjection())
 	defaults = config.InjectOsloPolicyConfig(defaults, policyFilePath)
@@ -795,4 +800,267 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 		t.Errorf("registry key [%s] %s is not rendered by operatorDefaults: remove it "+
 			"from glancev1alpha1.OwnedConfigKeys or extend the drift-guard extras list", o.Section, o.Key)
 	}
+}
+
+// --- image cache ---
+
+// TestEffectiveImageCache pins the render-time resolution of spec.imageCache:
+// the block's presence is the opt-in, and each of its two fields defaults
+// independently, so an empty block and a half-filled one both come back complete.
+// The resolver hands back a copy, which is what lets the callers dereference
+// SizeLimit without reaching into the CR.
+func TestEffectiveImageCache(t *testing.T) {
+	tests := []struct {
+		name           string
+		in             *glancev1alpha1.ImageCacheSpec
+		wantSizeLimit  string // "" means the resolver must return nil
+		wantMaintCycle time.Duration
+	}{
+		{
+			name: "nil block leaves the cache disabled",
+			in:   nil,
+		},
+		{
+			name:           "empty block resolves both operator defaults",
+			in:             &glancev1alpha1.ImageCacheSpec{},
+			wantSizeLimit:  "10Gi",
+			wantMaintCycle: glancev1alpha1.DefaultImageCacheMaintenanceInterval,
+		},
+		{
+			name:           "sizeLimit set keeps it and defaults the interval",
+			in:             &glancev1alpha1.ImageCacheSpec{SizeLimit: ptr.To(resource.MustParse("256Mi"))},
+			wantSizeLimit:  "256Mi",
+			wantMaintCycle: glancev1alpha1.DefaultImageCacheMaintenanceInterval,
+		},
+		{
+			name:           "maintenanceInterval set keeps it and defaults the size",
+			in:             &glancev1alpha1.ImageCacheSpec{MaintenanceInterval: &metav1.Duration{Duration: time.Minute}},
+			wantSizeLimit:  "10Gi",
+			wantMaintCycle: time.Minute,
+		},
+		{
+			name: "both set pass through unchanged",
+			in: &glancev1alpha1.ImageCacheSpec{
+				SizeLimit:           ptr.To(resource.MustParse("512Mi")),
+				MaintenanceInterval: &metav1.Duration{Duration: 30 * time.Minute},
+			},
+			wantSizeLimit:  "512Mi",
+			wantMaintCycle: 30 * time.Minute,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			got := effectiveImageCache(tc.in)
+			if tc.wantSizeLimit == "" {
+				g.Expect(got).To(BeNil(), "a nil block must stay nil — presence is the opt-in")
+				return
+			}
+			g.Expect(got).NotTo(BeNil())
+			g.Expect(got.SizeLimit).NotTo(BeNil())
+			g.Expect(got.SizeLimit.String()).To(Equal(tc.wantSizeLimit))
+			g.Expect(got.MaintenanceInterval).NotTo(BeNil())
+			g.Expect(got.MaintenanceInterval.Duration).To(Equal(tc.wantMaintCycle))
+		})
+	}
+
+	// The resolver defaults into a copy: the CR it was handed keeps its unset
+	// fields unset, so nothing writes the current default back into the stored
+	// spec and an upgrade can still move it.
+	t.Run("the input spec is left untouched", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		in := &glancev1alpha1.ImageCacheSpec{}
+		got := effectiveImageCache(in)
+		g.Expect(got).NotTo(BeIdenticalTo(in))
+		g.Expect(in.SizeLimit).To(BeNil())
+		g.Expect(in.MaintenanceInterval).To(BeNil())
+	})
+}
+
+// TestImageCacheMaxSizeBytes pins the pruner threshold derived from the emptyDir
+// bound: 80% of it, computed divide-first.
+func TestImageCacheMaxSizeBytes(t *testing.T) {
+	tests := []struct {
+		limit string
+		want  int64
+	}{
+		// 10737418240 / 10 * 8 — the default bound, and the one case that divides
+		// evenly.
+		{"10Gi", 8589934592},
+		// 268435456 / 10 truncates to 26843545 BEFORE the multiply, so the result
+		// is 214748360 rather than the 214748364 a multiply-first order would
+		// give. Truncating down is the safe direction: it can only leave the
+		// eviction headroom larger, never smaller.
+		{"256Mi", 214748360},
+		// The 1Mi admission floor: 1048576 / 10 * 8.
+		{"1Mi", 838856},
+		// The other half of the divide-before-multiply contract. 4Ei is
+		// 4611686018427387904 bytes, which still fits an int64 — but multiplying
+		// it by 8 first does not, so a reordered Value()*8/10 wraps negative here
+		// while the truncating order stays exact.
+		{"4Ei", 3689348814741910320},
+	}
+	for _, tc := range tests {
+		t.Run(tc.limit, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(imageCacheMaxSizeBytes(resource.MustParse(tc.limit))).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestOperatorDefaults_ImageCacheKeys pins the three [DEFAULT] keys the cache
+// renders — and the two it deliberately leaves to glance. image_cache_stall_time
+// and image_cache_sqlite_db keep glance's own defaults, so rendering them would
+// only claim ownership of two more keys for no behavioural gain.
+func TestOperatorDefaults_ImageCacheKeys(t *testing.T) {
+	t.Run("enabled renders exactly three keys", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := glanceForConfig()
+		glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{}
+
+		section := operatorDefaults(glance, validProjection())["DEFAULT"]
+		g.Expect(section).To(HaveKeyWithValue("image_cache_dir", "/var/lib/glance/image-cache"))
+		// sqlite, not glance's default centralized_db, which would key the cache
+		// state in the database per worker_self_reference_url and strand a dead
+		// pod's rows there on every replacement.
+		g.Expect(section).To(HaveKeyWithValue("image_cache_driver", "sqlite"))
+		g.Expect(section).To(HaveKeyWithValue("image_cache_max_size", "8589934592"))
+		g.Expect(section).NotTo(HaveKey("image_cache_stall_time"))
+		g.Expect(section).NotTo(HaveKey("image_cache_sqlite_db"))
+	})
+
+	t.Run("disabled renders none of them", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := glanceForConfig()
+		glance.Spec.ImageCache = nil
+
+		section := operatorDefaults(glance, validProjection())["DEFAULT"]
+		g.Expect(section).NotTo(HaveKey("image_cache_dir"))
+		g.Expect(section).NotTo(HaveKey("image_cache_driver"))
+		g.Expect(section).NotTo(HaveKey("image_cache_max_size"))
+	})
+}
+
+// TestOperatorDefaults_ImageCacheExtraConfigRejected pins the registry posture
+// the renderer depends on: all three cache keys are Rejected, so the validating
+// webhook blocks the override at admission and the merge below never sees one.
+// That matters because extraConfig wins over every operator default in
+// reconcileConfig, and ExtraConfigHealthy is informational — it never gates
+// Ready — so a merged image_cache_max_size above the emptyDir bound would leave
+// the pruner nothing to prune down to and the kubelet evicting pods, with the
+// CR still reporting Ready=True. The admission side is covered by
+// TestGlanceValidate_ExtraConfigImageCacheOwnedKeyRejected.
+func TestOperatorDefaults_ImageCacheExtraConfigRejected(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	for _, key := range []string{"image_cache_dir", "image_cache_driver", "image_cache_max_size"} {
+		overrides := config.FindOwnedOverrides(
+			map[string]map[string]string{"DEFAULT": {key: "whatever"}},
+			glancev1alpha1.OwnedConfigKeys,
+		)
+		g.Expect(overrides).To(ContainElement(And(
+			HaveField("Section", "DEFAULT"),
+			HaveField("Key", key),
+			HaveField("Rejected", BeTrue()),
+			HaveField("OwnedBy", "spec.imageCache"),
+		)), "[DEFAULT] %s must be blocked at admission, not merely reported", key)
+	}
+}
+
+// TestRenderPasteINI_ImageCache pins where the injected cache filter lands in the
+// pipeline: last of the after-positioned filters and directly before the root
+// app, so every request reaching the versioned apps passes the cache — upstream's
+// keystone+caching flavor places it in the same spot. With the cache off the
+// pipeline directive must stay byte-identical to what it renders today.
+func TestRenderPasteINI_ImageCache(t *testing.T) {
+	t.Run("enabled without user middleware", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := glanceForConfig()
+		glance.Spec.Middleware = nil
+		glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{}
+
+		paste, err := renderPasteINI(glance)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(paste).To(ContainSubstring("\npipeline = cors http_proxy_to_wsgi versionnegotiation authtoken context cache rootapp\n"))
+		// The renderer auto-emits the filter section, so no static counterpart is
+		// needed in glanceStaticPasteSections.
+		g.Expect(paste).To(ContainSubstring("[filter:cache]"))
+		g.Expect(paste).To(ContainSubstring("paste.filter_factory = glance.api.middleware.cache:CacheFilter.factory"))
+	})
+
+	t.Run("enabled after a user after-middleware", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := glanceForConfig()
+		glance.Spec.Middleware = []commonv1.MiddlewareSpec{{
+			Name:          "myfilter",
+			FilterFactory: "myfilter:filter_factory",
+			Position:      commonv1.PipelinePositionAfter,
+		}}
+		glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{}
+
+		paste, err := renderPasteINI(glance)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(paste).To(ContainSubstring("\npipeline = cors http_proxy_to_wsgi versionnegotiation authtoken context myfilter cache rootapp\n"))
+
+		// The injection extends a clone: appending onto the CR's own slice would
+		// write into its backing array whenever it has spare capacity, leaving the
+		// reconciler having mutated the spec it renders from.
+		g.Expect(glance.Spec.Middleware).To(HaveLen(1))
+		g.Expect(glance.Spec.Middleware[0].Name).To(Equal("myfilter"))
+	})
+
+	t.Run("disabled renders today's pipeline", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := glanceForConfig()
+		glance.Spec.Middleware = nil
+		glance.Spec.ImageCache = nil
+
+		paste, err := renderPasteINI(glance)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(paste).To(ContainSubstring("\npipeline = cors http_proxy_to_wsgi versionnegotiation authtoken context rootapp\n"))
+		g.Expect(paste).NotTo(ContainSubstring("filter:cache"))
+	})
+}
+
+// TestRenderPasteINI_DuplicateCacheName covers the CR that can only exist behind
+// a bypassed webhook: admission reserves the `cache` middleware name while
+// spec.imageCache is set, so a CR carrying both never reaches the renderer
+// through the normal path. When one does, the shared renderer's duplicate-name
+// check is the backstop — the pipeline must fail to render rather than silently
+// end up with one of the two definitions.
+func TestRenderPasteINI_DuplicateCacheName(t *testing.T) {
+	newGlance := func() *glancev1alpha1.Glance {
+		glance := glanceForConfig()
+		glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{}
+		glance.Spec.Middleware = []commonv1.MiddlewareSpec{{
+			Name:          "cache",
+			FilterFactory: "rogue:filter_factory",
+			Position:      commonv1.PipelinePositionAfter,
+		}}
+		return glance
+	}
+
+	t.Run("the renderer refuses the pipeline", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		_, err := renderPasteINI(newGlance())
+		g.Expect(err).To(MatchError(ContainSubstring(`duplicate middleware Name "cache" in pipeline "api"`)))
+	})
+
+	t.Run("reconcileConfig fails the config step", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		glance := newGlance()
+		r := newGlanceTestReconciler(glance)
+
+		_, art, err := r.reconcileConfig(context.Background(), glance, validProjection())
+		g.Expect(err).To(MatchError(ContainSubstring("rendering glance-api-paste.ini:")))
+		g.Expect(err).To(MatchError(ContainSubstring(`duplicate middleware Name "cache" in pipeline "api"`)))
+		g.Expect(art.configMapName).To(BeEmpty())
+
+		// The Config→SecretsReady mapping: a render failure must not leave the
+		// aggregate Ready stale-True at the new generation.
+		cond := meta.FindStatusCondition(glance.Status.Conditions, "SecretsReady")
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(cond.Reason).To(Equal(conditionReasonConfigError))
+	})
 }

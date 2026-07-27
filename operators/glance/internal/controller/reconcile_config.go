@@ -8,10 +8,14 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -20,6 +24,7 @@ import (
 	"github.com/c5c3/forge/internal/common/keystoneauth"
 	"github.com/c5c3/forge/internal/common/plugins"
 	"github.com/c5c3/forge/internal/common/policy"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
 
@@ -62,6 +67,9 @@ const (
 const (
 	glanceStagingStorePath = "/var/lib/glance/staging"
 	glanceTasksStorePath   = "/var/lib/glance/tasks-work"
+	// glanceImageCachePath is the in-pod image-cache directory. The deployment
+	// step mounts a bounded emptyDir there when spec.imageCache is set.
+	glanceImageCachePath = "/var/lib/glance/image-cache"
 )
 
 // dbConnectionPlaceholder is the placeholder URL written to the [database]
@@ -281,6 +289,23 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 	if logging.Format == "json" {
 		defaults["DEFAULT"]["log_config_append"] = loggingConfFilePath
 	}
+	// The local image cache. Exactly three keys: the directory the deployment
+	// step bounds with an emptyDir, the driver, and the pruner threshold derived
+	// from that bound. The driver is pinned to sqlite rather than left at
+	// glance's own default centralized_db, which keys cache state in the Glance
+	// database per worker_self_reference_url and would strand a dead pod's rows
+	// there on every replacement; sqlite keeps that state inside the cache
+	// directory, so it shares the emptyDir's lifecycle and the emptyDir the
+	// pod's. image_cache_stall_time (86400) and image_cache_sqlite_db
+	// (cache.db) are deliberately NOT rendered: glance's own defaults are what
+	// this deployment wants, and rendering them would only claim ownership of
+	// two more keys for no gain. (The variable is not named `cache` — that is
+	// the memcached helper package this function calls above.)
+	if imageCache := effectiveImageCache(glance.Spec.ImageCache); imageCache != nil {
+		defaults["DEFAULT"]["image_cache_dir"] = glanceImageCachePath
+		defaults["DEFAULT"]["image_cache_driver"] = "sqlite"
+		defaults["DEFAULT"]["image_cache_max_size"] = strconv.FormatInt(imageCacheMaxSizeBytes(*imageCache.SizeLimit), 10)
+	}
 
 	return defaults
 }
@@ -296,7 +321,27 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 // probes outside authtoken, as the old front-of-pipeline filter did.
 // Any spec.Middleware is injected into the pipeline via the shared renderer,
 // merged with the literal glance sections the PipelineSpec cannot express.
+// While spec.imageCache is set the operator adds one more filter of its own,
+// `cache`, as the last after-positioned entry — upstream's keystone+caching
+// flavor likewise places it directly before the root app, so every request that
+// reaches the versioned apps passes the cache first.
 func renderPasteINI(glance *glancev1alpha1.Glance) (string, error) {
+	middleware := glance.Spec.Middleware
+	if glance.Spec.ImageCache != nil {
+		// Extend a clone, never the CR's own slice: append would write into its
+		// backing array whenever it has spare capacity, so a reconcile would
+		// mutate the spec it is rendering from. The `cache` name is reserved for
+		// the operator at admission (the imageCache/middleware collision check in
+		// the validating webhook), so a CR that reaches the renderer with both
+		// cannot have passed it; the shared renderer's duplicate-name check is
+		// the backstop for the one that bypassed the webhook.
+		middleware = append(append([]commonv1.MiddlewareSpec(nil), glance.Spec.Middleware...), commonv1.MiddlewareSpec{
+			Name:          "cache",
+			FilterFactory: "glance.api.middleware.cache:CacheFilter.factory",
+			Position:      commonv1.PipelinePositionAfter,
+		})
+	}
+
 	sections, err := plugins.RenderPastePipeline(plugins.PipelineSpec{
 		PipelineName: "api",
 		// rootapp terminates the pipeline directive; it is a composite section
@@ -304,7 +349,7 @@ func renderPasteINI(glance *glancev1alpha1.Glance) (string, error) {
 		// [app:rootapp] the renderer would otherwise emit.
 		AppName:     "rootapp",
 		BaseFilters: []string{"cors", "http_proxy_to_wsgi", "versionnegotiation", "authtoken", "context"},
-		Middleware:  glance.Spec.Middleware,
+		Middleware:  middleware,
 	})
 	if err != nil {
 		return "", err
@@ -492,6 +537,51 @@ func effectiveImportFiltering(spec *glancev1alpha1.ImportFilteringSpec) glancev1
 		}
 	}
 	return out
+}
+
+// effectiveImageCache returns the image-cache settings to render, materializing
+// the operator defaults for the fields spec.imageCache leaves unset. A nil block
+// means the cache is off and resolves to nil — presence of the block is the
+// opt-in, so there is nothing to default into. It is pure and total: no input can
+// fail, so there is no error path.
+//
+// Resolving here rather than in the defaulting webhook keeps an unset field
+// tracking the operator default across upgrades instead of freezing today's value
+// into the stored CR — the same contract effectiveStagingSizeLimit,
+// effectiveDBPurge, and effectiveImportFiltering follow.
+//
+// The result is a copy, so the returned SizeLimit and MaintenanceInterval can be
+// dereferenced without touching the CR. Both the config render here and the
+// deployment builder call it, so the two never disagree about the bound the
+// pruner threshold is derived from.
+func effectiveImageCache(spec *glancev1alpha1.ImageCacheSpec) *glancev1alpha1.ImageCacheSpec {
+	if spec == nil {
+		return nil
+	}
+	out := spec.DeepCopy()
+	if out.SizeLimit == nil {
+		out.SizeLimit = ptr.To(glancev1alpha1.DefaultImageCacheSizeLimit())
+	}
+	if out.MaintenanceInterval == nil {
+		out.MaintenanceInterval = &metav1.Duration{Duration: glancev1alpha1.DefaultImageCacheMaintenanceInterval}
+	}
+	return out
+}
+
+// imageCacheMaxSizeBytes derives the rendered [DEFAULT] image_cache_max_size
+// from the emptyDir bound: 80% of it, not the bound itself. Glance's pruner only
+// ever prunes DOWN TO image_cache_max_size, and only when the maintenance sidecar
+// runs it, so everything the API writes between that threshold and the emptyDir
+// bound has to fit somewhere — the remaining 20% is exactly that headroom, and it
+// is what keeps a burst of downloads between two maintenance passes from
+// crossing the bound and tripping the kubelet's ephemeral-storage eviction.
+//
+// The divide-before-multiply order is load-bearing and must not be reordered:
+// the integer division truncates first, which keeps the result at or below the
+// true 80% (never above it, where the headroom would shrink), and it also keeps
+// the intermediate from overflowing int64 on a very large Quantity.
+func imageCacheMaxSizeBytes(limit resource.Quantity) int64 {
+	return limit.Value() / 10 * 8
 }
 
 // unionHosts returns base followed by every entry of extra base does not already
