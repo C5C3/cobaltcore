@@ -18,6 +18,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
 )
 
 // GlanceBackendWebhook implements defaulting and validation webhooks for the
@@ -28,6 +30,8 @@ import (
 // informer start happens inside the webhook timeout.
 // +kubebuilder:object:generate=false
 type GlanceBackendWebhook struct {
+	commonwebhook.NoopDeleteValidator[*GlanceBackend]
+
 	Client client.Reader
 }
 
@@ -75,15 +79,6 @@ func (w *GlanceBackendWebhook) ValidateCreate(ctx context.Context, obj *GlanceBa
 // object.
 func (w *GlanceBackendWebhook) ValidateUpdate(ctx context.Context, _, newObj *GlanceBackend) (admission.Warnings, error) {
 	return nil, w.validate(ctx, newObj)
-}
-
-// ValidateDelete implements admission.Validator[*GlanceBackend]. The method is
-// required by the Validator interface but is never invoked: the validating
-// webhook registers only create/update (no delete verb), so with
-// failurePolicy=Fail a down operator can never block backend CR — and thereby
-// namespace — deletion.
-func (w *GlanceBackendWebhook) ValidateDelete(_ context.Context, _ *GlanceBackend) (admission.Warnings, error) {
-	return nil, nil
 }
 
 // glanceReservedStoreNames enumerates the store identifiers / glance-api.conf

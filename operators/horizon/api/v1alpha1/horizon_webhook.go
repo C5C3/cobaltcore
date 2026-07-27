@@ -21,6 +21,7 @@ import (
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/validation"
+	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
 )
 
 // PythonSettingName matches a valid Python identifier. extraConfig keys are
@@ -38,6 +39,8 @@ var PythonSettingName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // start happens inside the webhook timeout.
 // +kubebuilder:object:generate=false
 type HorizonWebhook struct {
+	commonwebhook.NoopDeleteValidator[*Horizon]
+
 	Client client.Reader
 }
 
@@ -162,15 +165,6 @@ func (w *HorizonWebhook) ValidateCreate(ctx context.Context, obj *Horizon) (admi
 // ValidateUpdate implements admission.Validator[*Horizon].
 func (w *HorizonWebhook) ValidateUpdate(ctx context.Context, _, newObj *Horizon) (admission.Warnings, error) {
 	return nil, w.validate(ctx, newObj)
-}
-
-// ValidateDelete implements admission.Validator[*Horizon]. The method is
-// required by the Validator interface but is never invoked: the validating
-// webhook registers only create/update (no delete verb), so with
-// failurePolicy=Fail a down operator can never block Horizon CR — and
-// thereby namespace — deletion.
-func (w *HorizonWebhook) ValidateDelete(_ context.Context, _ *Horizon) (admission.Warnings, error) {
-	return nil, nil
 }
 
 // validate runs all validation rules against the Horizon spec, accumulating

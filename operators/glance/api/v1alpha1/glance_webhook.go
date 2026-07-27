@@ -29,6 +29,7 @@ import (
 	"github.com/c5c3/forge/internal/common/release"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/validation"
+	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
 )
 
 // uWSGI defaults applied by the defaulting webhook (Processes/Threads/
@@ -236,6 +237,8 @@ var (
 // webhook timeout.
 // +kubebuilder:object:generate=false
 type GlanceWebhook struct {
+	commonwebhook.NoopDeleteValidator[*Glance]
+
 	Client client.Reader
 }
 
@@ -391,14 +394,6 @@ func (w *GlanceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Glan
 	)...)
 	warnings = append(warnings, warnDBPurgeRetention(oldObj.Spec.DBPurge, newObj.Spec.DBPurge)...)
 	return warnings, w.validate(ctx, newObj, catalogErrs)
-}
-
-// ValidateDelete implements admission.Validator[*Glance]. The method is required
-// by the Validator interface but is never invoked: the validating webhook
-// registers only create/update (no delete verb), so with failurePolicy=Fail a
-// down operator can never block Glance CR — and thereby namespace — deletion.
-func (w *GlanceWebhook) ValidateDelete(_ context.Context, _ *Glance) (admission.Warnings, error) {
-	return nil, nil
 }
 
 // validate runs all validation rules against the Glance spec, accumulating
