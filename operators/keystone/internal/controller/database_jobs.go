@@ -105,8 +105,8 @@ func keystoneJobSetParams(keystone *keystonev1alpha1.Keystone, configMapName, do
 // can pin the old/new release image independently of spec.image.
 //
 // TODO: Wire spec.Resources (or a smaller Job-specific default) to the
-// container. Currently runs as BestEffort QoS. See reconcile_deployment.go
-// containerResources() for the pattern used by the keystone container.
+// container. Currently runs as BestEffort QoS. See
+// deployment.ContainerResources for the pattern used by the keystone container.
 func buildDBJob(keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName, image, nameSuffix string, command []string) *batchv1.Job {
 	return database.BuildJob(keystoneJobSetParams(keystone, configMapName, domainsSecretName), image, nameSuffix, command, 4)
 }

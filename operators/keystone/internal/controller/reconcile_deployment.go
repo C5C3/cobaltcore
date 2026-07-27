@@ -215,17 +215,6 @@ func selectorLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
 	return naming.SelectorLabels(keystonev1alpha1.AppName, keystone.Name)
 }
 
-// deploymentReplicas returns the desired .spec.replicas for the Keystone API
-// Deployment. When spec.autoscaling is set, it returns nil so the field is left
-// unmanaged and the HorizontalPodAutoscaler owns the replica count; otherwise
-// it returns the effective replica count. Pinning replicas while an HPA also
-// targets the Deployment causes the operator and the HPA to fight over the
-// field, and each write re-triggers reconciliation in a scale-up/scale-down
-// loop (issue #462). EnsureDeployment preserves the live count when this is nil.
-func deploymentReplicas(keystone *keystonev1alpha1.Keystone) *int32 {
-	return deployment.DeploymentReplicas(&keystone.Spec.Deployment, keystone.Spec.Autoscaling)
-}
-
 // dbConnectionHashAnnotation is the pod-template annotation key stamped with the
 // SHA-256 of the DSN in Dynamic credentials mode so a rotated engine-issued
 // credential rolls the Deployment (the DSN is env-var-consumed, not volume-
@@ -234,8 +223,6 @@ func deploymentReplicas(keystone *keystonev1alpha1.Keystone) *int32 {
 const dbConnectionHashAnnotation = "keystone.c5c3.io/db-connection-hash"
 
 func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName, dbConnectionHash, domainsSecretName string, fed *federationProjection) *appsv1.Deployment {
-	selector := selectorLabels(keystone)
-	labels := commonLabels(keystone)
 	federationActive := fed != nil
 	fernetSecretName := fmt.Sprintf("%s-fernet-keys", keystone.Name)
 	credentialSecretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
@@ -248,101 +235,75 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName,
 	if dbConnectionHash != "" && keystone.Spec.Database.CredentialsMode == commonv1.CredentialsModeDynamic {
 		podAnnotations = map[string]string{dbConnectionHashAnnotation: dbConnectionHash}
 	}
-	deploy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      subResourceName(keystone),
-			Namespace: keystone.Namespace,
-			Labels:    labels,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: deploymentReplicas(keystone),
-			Selector: &metav1.LabelSelector{
-				MatchLabels: selector,
-			},
-			Strategy: deploymentStrategy(keystone),
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      labels,
-					Annotations: podAnnotations,
+	deploy := deployment.BuildWorkload(deployment.WorkloadParams{
+		Namespace:      keystone.Namespace,
+		Name:           subResourceName(keystone),
+		Labels:         commonLabels(keystone),
+		SelectorLabels: selectorLabels(keystone),
+		PodAnnotations: podAnnotations,
+		Deployment:     &keystone.Spec.Deployment,
+		Autoscaling:    keystone.Spec.Autoscaling,
+		Container: deployment.ContainerParams{
+			Name:    "keystone",
+			Image:   keystone.Spec.Image.Reference(),
+			Command: uwsgiCommand(keystone.Spec.UWSGI, federationActive),
+			Env:     []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
+			Ports: []corev1.ContainerPort{{
+				Name:          "keystone",
+				ContainerPort: 5000,
+			}},
+			LivenessProbe:  keystoneLivenessProbe(federationActive),
+			ReadinessProbe: dbReadinessProbe(),
+			StartupProbe:   keystoneStartupProbe(federationActive),
+			VolumeMounts: []corev1.VolumeMount{
+				{
+					Name:      "config",
+					MountPath: "/etc/keystone/keystone.conf.d/",
+					ReadOnly:  true,
 				},
-				Spec: corev1.PodSpec{
-					TerminationGracePeriodSeconds: ptr.To(terminationGracePeriodSeconds(keystone)),
-					TopologySpreadConstraints:     topologySpreadConstraints(keystone),
-					PriorityClassName:             priorityClassName(keystone),
-					SecurityContext:               &corev1.PodSecurityContext{FSGroup: ptr.To(deployment.OpenStackUID)},
-					Containers: []corev1.Container{{
-						Name:            "keystone",
-						Image:           keystone.Spec.Image.Reference(),
-						Resources:       containerResources(keystone),
-						SecurityContext: deployment.RestrictedSecurityContext(),
-						Command:         uwsgiCommand(keystone.Spec.UWSGI, federationActive),
-						Env:             []corev1.EnvVar{buildDBConnectionEnvVar(keystone)},
-						Ports: []corev1.ContainerPort{{
-							Name:          "keystone",
-							ContainerPort: 5000,
-						}},
-						LivenessProbe:  keystoneLivenessProbe(federationActive),
-						ReadinessProbe: dbReadinessProbe(),
-						StartupProbe:   keystoneStartupProbe(federationActive),
-						Lifecycle: &corev1.Lifecycle{
-							PreStop: &corev1.LifecycleHandler{
-								Exec: &corev1.ExecAction{
-									Command: preStopSleepCommand(keystone),
-								},
-							},
-						},
-						VolumeMounts: []corev1.VolumeMount{
-							{
-								Name:      "config",
-								MountPath: "/etc/keystone/keystone.conf.d/",
-								ReadOnly:  true,
-							},
-							{
-								Name:      "fernet-keys",
-								MountPath: "/etc/keystone/fernet-keys/",
-								ReadOnly:  true,
-							},
-							{
-								Name:      "credential-keys",
-								MountPath: "/etc/keystone/credential-keys/",
-								ReadOnly:  true,
-							},
-						},
-					}},
-					Volumes: []corev1.Volume{
-						{
-							Name: "config",
-							VolumeSource: corev1.VolumeSource{
-								ConfigMap: &corev1.ConfigMapVolumeSource{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: configMapName,
-									},
-								},
-							},
-						},
-						{
-							Name: "fernet-keys",
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{
-									SecretName:  fernetSecretName,
-									DefaultMode: ptr.To(int32(0o400)),
-								},
-							},
-						},
-						{
-							Name: "credential-keys",
-							VolumeSource: corev1.VolumeSource{
-								Secret: &corev1.SecretVolumeSource{
-									SecretName:  credentialSecretName,
-									DefaultMode: ptr.To(int32(0o400)),
-								},
-							},
+				{
+					Name:      "fernet-keys",
+					MountPath: "/etc/keystone/fernet-keys/",
+					ReadOnly:  true,
+				},
+				{
+					Name:      "credential-keys",
+					MountPath: "/etc/keystone/credential-keys/",
+					ReadOnly:  true,
+				},
+			},
+		},
+		Volumes: []corev1.Volume{
+			{
+				Name: "config",
+				VolumeSource: corev1.VolumeSource{
+					ConfigMap: &corev1.ConfigMapVolumeSource{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: configMapName,
 						},
 					},
 				},
 			},
+			{
+				Name: "fernet-keys",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  fernetSecretName,
+						DefaultMode: ptr.To(int32(0o400)),
+					},
+				},
+			},
+			{
+				Name: "credential-keys",
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{
+						SecretName:  credentialSecretName,
+						DefaultMode: ptr.To(int32(0o400)),
+					},
+				},
+			},
 		},
-	}
+	})
 	// project the db-tls client keypair into the API pod when DB
 	// TLS is enabled; the gate is centralised in dbTLSEnabled so deployment
 	// and job builders decide identically.
@@ -653,57 +614,11 @@ func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec, federationActive bool) []st
 	return cmd
 }
 
-// containerResources returns the ResourceRequirements for the keystone
-// container. It dereferences spec.Resources if set, falling back to a zero
-// value if nil (safe fallback for CRs that bypassed the webhook, e.g.
-// pre-existing CRs during operator upgrade).
-func containerResources(keystone *keystonev1alpha1.Keystone) corev1.ResourceRequirements {
-	return deployment.ContainerResources(&keystone.Spec.Deployment)
-}
-
-// topologySpreadConstraints returns the topology spread constraints for the
-// Keystone API pods. If spec.TopologySpreadConstraints is non-nil, those are
-// used verbatim (an empty slice disables defaults). Otherwise, two default
-// constraints are injected: one zone-spread and one hostname-spread, both with
-// ScheduleAnyway to distribute pods across zones and nodes.
-func topologySpreadConstraints(keystone *keystonev1alpha1.Keystone) []corev1.TopologySpreadConstraint {
-	return deployment.TopologySpreadConstraints(&keystone.Spec.Deployment, selectorLabels(keystone))
-}
-
 // priorityClassName returns the priority class name for the Keystone API pods.
 // If spec.PriorityClassName is set, that value is used. Otherwise, an empty
 // string is returned, leaving the cluster default in effect.
 func priorityClassName(keystone *keystonev1alpha1.Keystone) string {
 	return deployment.PriorityClassName(&keystone.Spec.Deployment)
-}
-
-// terminationGracePeriodSeconds returns the PodSpec TerminationGracePeriodSeconds
-// value. When spec.TerminationGracePeriodSeconds is nil (existing CR, pre- upgrade), it falls back to keystonev1alpha1.DefaultTerminationGracePeriodSeconds,
-// the shared constant that the validating webhook also resolves against for
-// cross-field arithmetic. Routing both sides through the same constant prevents
-// silent drift.
-func terminationGracePeriodSeconds(keystone *keystonev1alpha1.Keystone) int64 {
-	return deployment.TerminationGracePeriodSeconds(&keystone.Spec.Deployment)
-}
-
-// preStopSleepCommand returns the preStop exec command. When
-// spec.PreStopSleepSeconds is nil, it falls back to
-// keystonev1alpha1.DefaultPreStopSleepSeconds, the shared constant that the
-// validating webhook also resolves against for cross-field arithmetic. Zero is
-// a permitted opt-out value and emits "sleep 0" verbatim. Routing both sides
-// through the same constant prevents silent drift.
-func preStopSleepCommand(keystone *keystonev1alpha1.Keystone) []string {
-	return deployment.PreStopSleepCommand(&keystone.Spec.Deployment)
-}
-
-// deploymentStrategy returns the Deployment rollout strategy. When
-// spec.Strategy is non-nil, it is returned verbatim (a deep copy, so callers
-// cannot mutate the CR). Otherwise, a RollingUpdate strategy with
-// MaxUnavailable=0 and MaxSurge=1 is synthesized so available capacity never
-// drops below spec.replicas during a rolling image-tag patch — the default
-// surge-before-remove behavior that guards Keystone's rolling-update SLO
-func deploymentStrategy(keystone *keystonev1alpha1.Keystone) appsv1.DeploymentStrategy {
-	return deployment.Strategy(&keystone.Spec.Deployment)
 }
 
 // buildKeystoneService builds the Keystone API Service. The Service port
@@ -716,19 +631,5 @@ func buildKeystoneService(keystone *keystonev1alpha1.Keystone, federationActive 
 	if federationActive {
 		targetPort = federationProxyPort
 	}
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      subResourceName(keystone),
-			Namespace: keystone.Namespace,
-			Labels:    commonLabels(keystone),
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: selectorLabels(keystone),
-			Ports: []corev1.ServicePort{{
-				Port:       5000,
-				TargetPort: intstr.FromInt32(targetPort),
-				Protocol:   corev1.ProtocolTCP,
-			}},
-		},
-	}
+	return deployment.BuildService(keystone.Namespace, subResourceName(keystone), commonLabels(keystone), selectorLabels(keystone), 5000, targetPort)
 }
