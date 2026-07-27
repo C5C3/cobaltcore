@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -78,6 +79,9 @@ const (
 	tasksVolumeName = "tasks-work"
 	// dbTLSVolumeName backs the projected db-tls client keypair volume.
 	dbTLSVolumeName = "db-tls"
+	// imageCacheVolumeName backs the per-replica image-cache emptyDir, mounted
+	// into the API container and the cache-maintenance sidecar alike.
+	imageCacheVolumeName = "image-cache"
 )
 
 // uwsgiLogFormat is the uWSGI --log-format literal shared with the sibling
@@ -294,6 +298,12 @@ func effectiveStagingSizeLimit(glance *glancev1alpha1.Glance) *resource.Quantity
 // described on StagingSpec — and the db-tls client keypair is projected only
 // when database TLS is enabled. The database URL and the service-user password
 // are injected via env vars so no credential material enters the ConfigMap.
+//
+// spec.imageCache adds two more pieces, and only then: an emptyDir bounded by
+// its resolved sizeLimit mounted read-write into the API container at
+// glanceImageCachePath, and the cacheMaintenanceContainer sidecar that prunes
+// and cleans it. With the cache off the pod template is byte-identical to the
+// one built before the cache existed.
 func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, dsnDigest, authtokenDigest string) *appsv1.Deployment {
 	selector := selectorLabels(glance)
 	labels := commonLabels(glance)
@@ -434,7 +444,178 @@ func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, d
 			deploy.Spec.Template.Spec.Containers[0].VolumeMounts, tlsMount,
 		)
 	}
+
+	// Mount the per-replica image cache and run its maintenance loop when
+	// spec.imageCache opts in. The emptyDir gets its own Quantity, never the CR's
+	// pointer — the same aliasing rule the scratch volumes above follow.
+	if imageCache := effectiveImageCache(glance.Spec.ImageCache); imageCache != nil {
+		deploy.Spec.Template.Spec.Volumes = append(deploy.Spec.Template.Spec.Volumes, corev1.Volume{
+			Name: imageCacheVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(imageCache.SizeLimit.DeepCopy())},
+			},
+		})
+		deploy.Spec.Template.Spec.Containers[0].VolumeMounts = append(
+			deploy.Spec.Template.Spec.Containers[0].VolumeMounts,
+			corev1.VolumeMount{Name: imageCacheVolumeName, MountPath: glanceImageCachePath},
+		)
+		deploy.Spec.Template.Spec.Containers = append(
+			deploy.Spec.Template.Spec.Containers, cacheMaintenanceContainer(glance, imageCache),
+		)
+	}
 	return deploy
+}
+
+const (
+	// cacheMaintenancePollInterval is how often the maintenance sidecar re-reads
+	// the size of the cache directory. It is NOT the prune cadence — see
+	// cacheMaintenanceContainer — but it is the upper bound on how long the cache
+	// may keep growing after it has crossed image_cache_max_size. The admission
+	// floor on spec.imageCache.maintenanceInterval is a minute, so at least one
+	// poll always fits inside an interval.
+	cacheMaintenancePollInterval = 30 * time.Second
+)
+
+// cacheMaintenanceScript is the maintenance sidecar's loop, formatted with the
+// resolved maintenance interval, the poll interval, the high-water mark in KiB
+// (the unit `du -sk` reports), the cache directory and the config directory, in
+// that order. See cacheMaintenanceContainer for what each of those buys.
+const cacheMaintenanceScript = `interval=%d
+poll=%d
+high_water_kib=%d
+dir=%s
+conf=%s
+elapsed=0
+failures=0
+while true; do
+  sleep "$poll"
+  elapsed=$((elapsed + poll))
+  used_kib=$(du -sk --exclude=incomplete --exclude=invalid --exclude=queue "$dir" | cut -f1)
+  if [ -z "$used_kib" ]; then
+    echo "glance-cache-maintenance unmeasured: could not measure $dir; running a pass anyway" >&2
+    used_kib=$high_water_kib
+  fi
+  if [ "$elapsed" -lt "$interval" ] && [ "$used_kib" -lt "$high_water_kib" ]; then
+    continue
+  fi
+  elapsed=0
+  rc=0
+  glance-cache-pruner --config-dir "$conf" || rc=1
+  glance-cache-cleaner --config-dir "$conf" || rc=1
+  if [ "$rc" -eq 0 ]; then
+    if [ "$failures" -ne 0 ]; then
+      echo "glance-cache-maintenance recovered: after $failures consecutive failures" >&2
+    fi
+    failures=0
+    continue
+  fi
+  failures=$((failures + 1))
+  echo "glance-cache-maintenance failed: $failures consecutive, cache at $used_kib KiB of $high_water_kib" >&2
+done
+`
+
+// cacheMaintenanceContainer builds the sidecar that keeps the image cache
+// bounded: glance-cache-pruner evicts entries back down to image_cache_max_size,
+// glance-cache-cleaner removes the stalled entries an interrupted download leaves
+// behind. It is a sidecar rather than the CronJob shape reconcile_dbpurge.go
+// uses because the cache is a pod-local emptyDir: only a container in the same
+// pod can reach the files the pruner has to delete.
+//
+// The loop is driven by cache size first and by the clock second. glance applies
+// no write barrier of its own — image_cache_max_size is read by the pruner
+// alone, never by the API's cache filter — so a purely time-driven loop would
+// let an unbounded number of concurrent downloads pile into the emptyDir between
+// two passes, cross the bound the kubelet DOES enforce, and get the pod evicted
+// mid-request. The loop therefore re-reads the directory every
+// cacheMaintenancePollInterval and prunes as soon as it sits above
+// image_cache_max_size, whatever maintenanceInterval says; that interval stays
+// the cadence for the passes that run while the cache is under the mark, which
+// is what bounds how long a stalled entry survives.
+//
+// That poll measures what the pruner can actually reclaim, which is narrower
+// than the directory: glance's own accounting — the number the pruner compares
+// against image_cache_max_size — covers the cache entries alone, while the
+// incomplete/, invalid/ and queue/ subdirectories hold entries only
+// glance-cache-cleaner may touch, and only once image_cache_stall_time (a day,
+// and deliberately not rendered — see reconcile_config.go) has passed. Counting
+// them would leave the size trigger latched on for that whole day over bytes no
+// prune could release, so they are excluded. A measurement that yields nothing
+// at all is the failure not to paper over in the other direction: reading an
+// unreadable directory as an empty cache would silently drop the loop back to
+// the purely time-driven behaviour this poll exists to replace, so the empty
+// value is logged and the pass runs anyway. du's stderr stays visible for the
+// same reason. (The pipeline's status is cut's, not du's, so a failing du never
+// trips `sh -e` — the empty value is the only thing that catches it.)
+//
+// No maintenance failure takes the pod down. Capturing `rc` is what buys that:
+// under `sh -e` an unguarded non-zero exit would end the loop outright, and this
+// container shares the pod with glance-api, so a stopped loop means
+// CrashLoopBackOff, a NotReady pod, and an API replica dropped from the Service.
+// A pruner that can never run (a corrupted sqlite index, a CLI renamed by an
+// image bump) is a property of the image and the shared config, so it fails
+// identically on every replica at once, and escalating it to the pod would turn
+// a degraded cache into an immediate Glance outage. Absorbing it is not free
+// either: nothing else enforces image_cache_max_size, so every replica's cache
+// climbs to the emptyDir bound and the kubelet evicts it under ephemeral-storage
+// pressure. That eviction is a node-local decision that never passes through the
+// eviction API, so the PodDisruptionBudget this reconciler creates does not
+// stagger it and replicas under even traffic cross their identical bound at
+// roughly the same time. The trade is a delayed, repeating outage against an
+// immediate one — not an outage against none.
+//
+// That leaves the log as the only signal, so it carries a stable token rather
+// than prose: `glance-cache-maintenance failed` is what an alert keys on, the
+// consecutive count is what separates a transient lost sqlite lock from a pruner
+// that can never run, and the matching `recovered` line is what lets that alert
+// close again. All three go to stderr, apart from the two CLIs' own output.
+// Nothing reaches the control plane — no Event, no condition, no metric: the
+// sidecar has no API access, and every in-pod escalation path (exiting, a
+// probe, a container restart) drops the API replica from the Service exactly as
+// the loop-ending exit would. It is also why the container carries no probes.
+//
+// It needs no env. Both CLIs load their config through glance's
+// parse_cache_args and touch only the cache directory and the sqlite metadata
+// file inside it, so they open neither the database nor glance_store — no DSN,
+// no service-user password, and no backends Secret mount. They make no network
+// calls either, so the NetworkPolicy needs no rule for them.
+//
+// Its resources are fixed modest constants for a prune loop over a pod-local
+// directory, the same shape keystone's federation-proxy sidecar uses; a spec
+// knob is deferred until a deployment demonstrates the need. The requests are
+// mandatory rather than cosmetic: the HPA's Resource metric aggregates across
+// every container in the pod, so one container without a cpu request makes the
+// whole metric unavailable (FailedGetResourceMetric) and silently freezes
+// autoscaling, and a namespace ResourceQuota on requests.cpu rejects the pod
+// outright.
+func cacheMaintenanceContainer(glance *glancev1alpha1.Glance, imageCache *glancev1alpha1.ImageCacheSpec) corev1.Container {
+	script := fmt.Sprintf(
+		cacheMaintenanceScript,
+		int64(imageCache.MaintenanceInterval.Duration/time.Second),
+		int64(cacheMaintenancePollInterval/time.Second),
+		imageCacheMaxSizeBytes(*imageCache.SizeLimit)/1024,
+		glanceImageCachePath,
+		glanceConfigDir,
+	)
+
+	return corev1.Container{
+		Name:            "cache-maintenance",
+		Image:           glance.Spec.Image.Reference(),
+		Command:         []string{"/bin/sh", "-eu", "-c", script},
+		SecurityContext: deployment.RestrictedSecurityContext(),
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("25m"),
+				corev1.ResourceMemory: resource.MustParse("64Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceMemory: resource.MustParse("256Mi"),
+			},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: configVolumeName, MountPath: glanceConfigDir, ReadOnly: true},
+			{Name: imageCacheVolumeName, MountPath: glanceImageCachePath},
+		},
+	}
 }
 
 // glancePodAnnotations assembles the pod-template annotations, stamping each

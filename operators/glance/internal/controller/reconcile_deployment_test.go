@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -20,6 +21,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/c5c3/forge/internal/common/database"
+	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/keystoneauth"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
@@ -361,6 +363,260 @@ func TestBuildGlanceDeployment_DBTLSVolumeWhenEnabled(t *testing.T) {
 		}
 	}
 	g.Expect(mounted).To(BeTrue())
+}
+
+// TestBuildGlanceDeployment_ImageCacheVolumeAndSidecar pins the whole opt-in
+// shape: the bounded cache emptyDir, its read-write mount in the API container,
+// and the maintenance sidecar that shares it. The sidecar is deliberately
+// spartan — same image, no probes, no env, and only the two mounts its CLIs
+// need — so the assertions below also pin what it must NOT grow.
+func TestBuildGlanceDeployment_ImageCacheVolumeAndSidecar(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := deployGlance("2026.1")
+	glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{SizeLimit: ptr.To(resource.MustParse("256Mi"))}
+	deploy := buildGlanceDeployment(glance, testArtifacts(), "", "")
+	podSpec := deploy.Spec.Template.Spec
+
+	volumesByName := map[string]corev1.Volume{}
+	for _, v := range podSpec.Volumes {
+		volumesByName[v.Name] = v
+	}
+	g.Expect(volumesByName).To(HaveKey(imageCacheVolumeName))
+	cacheVolume := volumesByName[imageCacheVolumeName].EmptyDir
+	g.Expect(cacheVolume).NotTo(BeNil())
+	g.Expect(cacheVolume.SizeLimit).NotTo(BeNil())
+	// Quantity.DeepCopy drops the cached string form, so compare the canonical
+	// string rather than the struct.
+	g.Expect(cacheVolume.SizeLimit.String()).To(Equal("256Mi"))
+	// The volume must carry its OWN Quantity: sharing the CR's pointer would let
+	// a later mutation of either move the value under both.
+	g.Expect(cacheVolume.SizeLimit).NotTo(BeIdenticalTo(glance.Spec.ImageCache.SizeLimit),
+		"the cache emptyDir must not alias the spec's Quantity")
+
+	// The API container writes the images it caches, so its mount is read-write.
+	apiMounts := map[string]corev1.VolumeMount{}
+	for _, m := range podSpec.Containers[0].VolumeMounts {
+		apiMounts[m.Name] = m
+	}
+	g.Expect(apiMounts).To(HaveKey(imageCacheVolumeName))
+	g.Expect(apiMounts[imageCacheVolumeName].MountPath).To(Equal(glanceImageCachePath))
+	g.Expect(apiMounts[imageCacheVolumeName].ReadOnly).To(BeFalse())
+
+	g.Expect(podSpec.Containers).To(HaveLen(2))
+	sidecar := podSpec.Containers[1]
+	g.Expect(sidecar.Name).To(Equal("cache-maintenance"))
+	g.Expect(sidecar.Image).To(Equal(podSpec.Containers[0].Image),
+		"the maintenance CLIs ship in the same image as the API")
+	g.Expect(sidecar.SecurityContext).To(Equal(deployment.RestrictedSecurityContext()))
+	// No probes: a probe on the maintenance loop would put this API replica's
+	// Service membership behind the health of the cache it maintains.
+	g.Expect(sidecar.LivenessProbe).To(BeNil())
+	g.Expect(sidecar.ReadinessProbe).To(BeNil())
+	g.Expect(sidecar.StartupProbe).To(BeNil())
+	// No env: the CLIs open neither the database nor glance_store.
+	g.Expect(sidecar.Env).To(BeEmpty())
+	// Requests on BOTH resources are mandatory, not cosmetic: the HPA emits a
+	// pod-scoped Resource metric, and kube-controller-manager reports
+	// FailedGetResourceMetric for the whole pod as soon as one container lacks a
+	// request — silently freezing autoscaling on every CR that enables both
+	// spec.autoscaling and spec.imageCache. A namespace ResourceQuota on
+	// requests.cpu/requests.memory would reject the pod outright, and a
+	// requests==limits API container would drop from Guaranteed to Burstable.
+	g.Expect(sidecar.Resources.Requests).To(HaveKey(corev1.ResourceCPU))
+	g.Expect(sidecar.Resources.Requests).To(HaveKey(corev1.ResourceMemory))
+	g.Expect(sidecar.Resources.Requests.Cpu().IsZero()).To(BeFalse())
+	g.Expect(sidecar.Resources.Requests.Memory().IsZero()).To(BeFalse())
+	g.Expect(sidecar.Resources.Limits).To(HaveKey(corev1.ResourceMemory),
+		"an unbounded poll loop needs a memory limit so it cannot starve the API container")
+
+	sidecarMounts := map[string]corev1.VolumeMount{}
+	for _, m := range sidecar.VolumeMounts {
+		sidecarMounts[m.Name] = m
+	}
+	g.Expect(sidecar.VolumeMounts).To(HaveLen(2),
+		"the sidecar mounts the config and the cache and nothing else — no backends Secret")
+	g.Expect(sidecarMounts).To(HaveKey(configVolumeName))
+	g.Expect(sidecarMounts[configVolumeName].MountPath).To(Equal(glanceConfigDir))
+	g.Expect(sidecarMounts[configVolumeName].ReadOnly).To(BeTrue())
+	g.Expect(sidecarMounts).To(HaveKey(imageCacheVolumeName))
+	g.Expect(sidecarMounts[imageCacheVolumeName].MountPath).To(Equal(glanceImageCachePath))
+	g.Expect(sidecarMounts[imageCacheVolumeName].ReadOnly).To(BeFalse(),
+		"the pruner deletes cache entries, so its mount cannot be read-only")
+}
+
+// TestCacheMaintenanceContainer_Loop pins the two triggers the loop runs on,
+// what its size poll measures, and that no failure of it can end the loop.
+//
+// The high-water mark is the load-bearing one: glance consults
+// image_cache_max_size in the pruner alone, never in the API's cache filter, so
+// a loop that only fired every maintenanceInterval would let concurrent
+// downloads pile into the emptyDir between two passes, cross the bound the
+// kubelet enforces, and get the pod evicted. Deriving it from the same
+// imageCacheMaxSizeBytes the config renders keeps the sidecar and glance
+// agreeing on when the cache is over its target.
+func TestCacheMaintenanceContainer_Loop(t *testing.T) {
+	tests := []struct {
+		name          string
+		imageCache    *glancev1alpha1.ImageCacheSpec
+		wantInterval  string
+		wantHighWater string
+	}{
+		{
+			// The empty block is the documented opt-in shape, so BOTH defaults have
+			// to resolve here — 5m and 10Gi, the latter giving 8589934592/1024 KiB.
+			name:          "empty block resolves both defaults",
+			imageCache:    &glancev1alpha1.ImageCacheSpec{},
+			wantInterval:  "interval=300",
+			wantHighWater: "high_water_kib=8388608",
+		},
+		{
+			name: "explicit interval and size are honored",
+			imageCache: &glancev1alpha1.ImageCacheSpec{
+				SizeLimit:           ptr.To(resource.MustParse("256Mi")),
+				MaintenanceInterval: &metav1.Duration{Duration: time.Minute},
+			},
+			wantInterval: "interval=60",
+			// 214748360 bytes / 1024, the same threshold the rendered
+			// image_cache_max_size carries.
+			wantHighWater: "high_water_kib=209715",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			glance := deployGlance("2026.1")
+			glance.Spec.ImageCache = tc.imageCache
+
+			container := cacheMaintenanceContainer(glance, effectiveImageCache(glance.Spec.ImageCache))
+			g.Expect(container.Command).To(HaveLen(4))
+			g.Expect(container.Command[:3]).To(Equal([]string{"/bin/sh", "-eu", "-c"}))
+			script := container.Command[3]
+
+			g.Expect(script).To(ContainSubstring(tc.wantInterval + "\n"))
+			g.Expect(script).To(ContainSubstring(tc.wantHighWater + "\n"))
+			// The poll has to be shorter than the shortest admissible interval, or
+			// the size trigger never fires before the clock one does.
+			g.Expect(script).To(ContainSubstring("poll=30\n"))
+			g.Expect(int64(cacheMaintenancePollInterval)).To(BeNumerically("<", int64(time.Minute)))
+			// The poll must measure what the pruner can reclaim. incomplete/ and
+			// invalid/ hold entries only glance-cache-cleaner may touch, and only
+			// after image_cache_stall_time (a day) — counting them would latch the
+			// size trigger on for that long over bytes no prune could release, so
+			// the loop would fork both CLIs every poll to no effect.
+			g.Expect(script).To(ContainSubstring(
+				`used_kib=$(du -sk --exclude=incomplete --exclude=invalid --exclude=queue "$dir" | cut -f1)`,
+			))
+			// A measurement that yields nothing must NOT read as an empty cache:
+			// that fails open, silently disabling the size trigger and dropping the
+			// loop back to the time-driven behaviour the poll exists to replace.
+			// du's stderr stays visible for the same reason.
+			g.Expect(script).NotTo(ContainSubstring("2>/dev/null"))
+			g.Expect(script).To(ContainSubstring(`if [ -z "$used_kib" ]; then`))
+			g.Expect(script).To(ContainSubstring("used_kib=$high_water_kib"))
+			g.Expect(script).NotTo(ContainSubstring("${used_kib:-0}"),
+				"an unmeasured cache must be handled explicitly, not defaulted to 0")
+			g.Expect(script).To(ContainSubstring("dir=" + glanceImageCachePath + "\n"))
+			g.Expect(script).To(ContainSubstring("conf=" + glanceConfigDir + "\n"))
+
+			// Both commands run on every pass, and neither aborts the loop on its
+			// own: under `sh -e` an unguarded non-zero exit would end it outright,
+			// turning one failed pruner run into a NotReady pod.
+			g.Expect(script).To(ContainSubstring(`glance-cache-pruner --config-dir "$conf" || rc=1`))
+			g.Expect(script).To(ContainSubstring(`glance-cache-cleaner --config-dir "$conf" || rc=1`))
+
+			// No failure may end the loop. The sidecar shares the pod with
+			// glance-api, so an exiting loop is a CrashLoopBackOff, a NotReady pod
+			// and an API replica dropped from the Service — and a broken pruner is a
+			// property of the image and the shared config, so it would take every
+			// replica out at once.
+			g.Expect(script).NotTo(ContainSubstring("exit "),
+				"a cache-maintenance failure must never pull the API replica out of the Service")
+
+			// Absorbing the failure makes the log the ONLY signal there is: no
+			// Event, no condition, no metric, and a container that stays Running
+			// throughout. A permanently broken pruner ends in every replica being
+			// evicted off its emptyDir bound, so the line an alert has to key on
+			// must be a stable token instead of prose, and the recovery line is
+			// what lets that alert close again. Both go to stderr so they stay
+			// apart from the pruner's and cleaner's own output on stdout.
+			g.Expect(script).To(ContainSubstring(
+				`echo "glance-cache-maintenance failed: $failures consecutive, ` +
+					`cache at $used_kib KiB of $high_water_kib" >&2`,
+			))
+			g.Expect(script).To(ContainSubstring(
+				`echo "glance-cache-maintenance recovered: after $failures consecutive failures" >&2`,
+			))
+			g.Expect(script).To(ContainSubstring(`if [ "$failures" -ne 0 ]; then`),
+				"the recovery line must be conditional, or every quiet pass logs one")
+			g.Expect(script).To(ContainSubstring(
+				`echo "glance-cache-maintenance unmeasured: could not measure $dir; running a pass anyway" >&2`,
+			))
+		})
+	}
+}
+
+// TestBuildGlanceDeployment_ImageCacheEmptyBlockDefaults builds the Deployment
+// from the documented opt-in shape — `imageCache: {}` — rather than from a CR
+// that spells sizeLimit out. Every other build-side case sets the field, so the
+// default would only ever be exercised through cacheMaintenanceContainer; if the
+// volume builder ever read glance.Spec.ImageCache.SizeLimit instead of the
+// resolved copy, that nil would panic the operator with no unit test turning
+// red, and the e2e suite always sets 256Mi so it does not backstop this either.
+func TestBuildGlanceDeployment_ImageCacheEmptyBlockDefaults(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := deployGlance("2026.1")
+	glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{}
+	podSpec := buildGlanceDeployment(glance, testArtifacts(), "", "").Spec.Template.Spec
+
+	var cacheVolume *corev1.EmptyDirVolumeSource
+	for _, v := range podSpec.Volumes {
+		if v.Name == imageCacheVolumeName {
+			cacheVolume = v.EmptyDir
+		}
+	}
+	g.Expect(cacheVolume).NotTo(BeNil(), "an empty block is the opt-in, so the volume must be mounted")
+	g.Expect(cacheVolume.SizeLimit).NotTo(BeNil(),
+		"the resolved default must reach the emptyDir; an unbounded cache volume defeats the feature")
+	wantDefault := glancev1alpha1.DefaultImageCacheSizeLimit()
+	g.Expect(cacheVolume.SizeLimit.String()).To(Equal(wantDefault.String()))
+
+	g.Expect(podSpec.Containers).To(HaveLen(2))
+	g.Expect(podSpec.Containers[1].Name).To(Equal("cache-maintenance"))
+
+	// Nothing was written back into the CR: the unset field keeps tracking the
+	// operator default across upgrades.
+	g.Expect(glance.Spec.ImageCache.SizeLimit).To(BeNil())
+	g.Expect(glance.Spec.ImageCache.MaintenanceInterval).To(BeNil())
+}
+
+// TestBuildGlanceDeployment_ImageCacheDisabledUnchanged pins the pod template a
+// Glance without spec.imageCache must keep producing: one container and exactly
+// the pre-feature volume set. It is the guard against a later change that mounts
+// the cache or starts the sidecar unconditionally.
+func TestBuildGlanceDeployment_ImageCacheDisabledUnchanged(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := deployGlance("2026.1")
+	glance.Spec.ImageCache = nil
+	podSpec := buildGlanceDeployment(glance, testArtifacts(), "", "").Spec.Template.Spec
+
+	g.Expect(podSpec.Containers).To(HaveLen(1))
+	g.Expect(podSpec.Containers[0].Name).To(Equal("glance-api"))
+
+	volumeNames := []string{}
+	for _, v := range podSpec.Volumes {
+		volumeNames = append(volumeNames, v.Name)
+	}
+	g.Expect(volumeNames).To(Equal([]string{
+		configVolumeName, backendsVolumeName, stagingVolumeName, tasksVolumeName,
+	}), "the disabled-cache pod template must carry exactly the pre-feature volumes")
+
+	for _, m := range podSpec.Containers[0].VolumeMounts {
+		g.Expect(m.Name).NotTo(Equal(imageCacheVolumeName))
+	}
 }
 
 func TestBuildGlanceDeployment_EnvVars(t *testing.T) {
