@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/c5c3/forge/internal/common/config"
+	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
 )
 
 // KeystoneIdentityBackendWebhook implements defaulting and validation
@@ -32,6 +33,8 @@ import (
 // timeout.
 // +kubebuilder:object:generate=false
 type KeystoneIdentityBackendWebhook struct {
+	commonwebhook.NoopDeleteValidator[*KeystoneIdentityBackend]
+
 	Client client.Reader
 }
 
@@ -123,15 +126,6 @@ func (w *KeystoneIdentityBackendWebhook) ValidateCreate(ctx context.Context, obj
 // value-level rules against the new object.
 func (w *KeystoneIdentityBackendWebhook) ValidateUpdate(ctx context.Context, _, newObj *KeystoneIdentityBackend) (admission.Warnings, error) {
 	return nil, w.validate(ctx, newObj)
-}
-
-// ValidateDelete implements admission.Validator[*KeystoneIdentityBackend].
-// The method is required by the Validator interface but is never invoked: the
-// validating webhook registers only create/update (no delete verb), so with
-// failurePolicy=Fail a down operator can never block backend CR — and thereby
-// namespace — deletion.
-func (w *KeystoneIdentityBackendWebhook) ValidateDelete(_ context.Context, _ *KeystoneIdentityBackend) (admission.Warnings, error) {
-	return nil, nil
 }
 
 // ldapExtraOptionsDenylist enumerates the [ldap] option names spec.extraOptions

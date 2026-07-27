@@ -26,6 +26,7 @@ import (
 	"github.com/c5c3/forge/internal/common/release"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/validation"
+	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
 )
 
 // Graceful-termination effective defaults.
@@ -104,6 +105,8 @@ const (
 // informer cache and no lazy informer start happens inside the webhook timeout.
 // +kubebuilder:object:generate=false
 type KeystoneWebhook struct {
+	commonwebhook.NoopDeleteValidator[*Keystone]
+
 	Client client.Reader
 }
 
@@ -246,15 +249,6 @@ func (w *KeystoneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Ke
 		catalogWarnings, catalogErrs = validateExtraConfigOptions(field.NewPath("spec"), newObj)
 	}
 	return append(warnCleartextTrustedDashboards(newObj), catalogWarnings...), w.validate(ctx, newObj, catalogErrs)
-}
-
-// ValidateDelete implements admission.Validator[*Keystone]. The method is
-// required by the Validator interface but is never invoked: the validating
-// webhook registers only create/update (no delete verb), so with
-// failurePolicy=Fail a down operator can never block Keystone CR — and
-// thereby namespace — deletion.
-func (w *KeystoneWebhook) ValidateDelete(_ context.Context, _ *Keystone) (admission.Warnings, error) {
-	return nil, nil
 }
 
 // validate runs all validation rules against the Keystone spec.

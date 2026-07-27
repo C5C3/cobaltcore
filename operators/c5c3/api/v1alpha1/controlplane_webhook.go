@@ -26,6 +26,7 @@ import (
 	"github.com/c5c3/forge/internal/common/release"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/validation"
+	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
 
@@ -998,6 +999,8 @@ func externalAuthURLIsPlaintext(raw string) bool {
 // against an empty informer cache.
 // +kubebuilder:object:generate=false
 type ControlPlaneWebhook struct {
+	commonwebhook.NoopDeleteValidator[*ControlPlane]
+
 	Client client.Reader
 }
 
@@ -1346,15 +1349,6 @@ func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *
 	}
 
 	return warnings, newInvalidIfErrs(newObj, allErrs)
-}
-
-// ValidateDelete implements admission.Validator[*ControlPlane]. The method is
-// required by the Validator interface but is never invoked: the validating
-// webhook registers only create/update (no delete verb), so with
-// failurePolicy=Fail a down operator can never block ControlPlane CR — and
-// thereby namespace — deletion.
-func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane) (admission.Warnings, error) {
-	return nil, nil
 }
 
 // validate accumulates all spec validation errors for cp.
