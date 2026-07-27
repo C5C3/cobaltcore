@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/onsi/gomega"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -727,6 +728,174 @@ func TestGlanceDefault_LeavesStagingUnset(t *testing.T) {
 
 	g.Expect(obj.Spec.Staging).To(gomega.BeNil(),
 		"spec.staging must not be materialized by the defaulting webhook")
+}
+
+// TestValidateImageCache pins the shape of the exported validator directly, the
+// way the ControlPlane webhook would call it, and then runs every case through
+// both admission verbs: neither floor has a schema counterpart, so an update
+// path that skipped them would let a stored CR settle on a value create rejects.
+// Nil-safe on both levels — an unset block is how a CR leaves the cache off, an
+// unset field inside a set block is how it asks for the operator default.
+func TestValidateImageCache(t *testing.T) {
+	tests := []struct {
+		name       string
+		imageCache *ImageCacheSpec
+		wantField  string
+		wantMsg    string
+	}{
+		{
+			name:       "nil block accepted",
+			imageCache: nil,
+		},
+		{
+			// The block alone is the opt-in; both knobs resolve at render time.
+			name:       "empty block accepted",
+			imageCache: &ImageCacheSpec{},
+		},
+		{
+			// A resource.Quantity is x-kubernetes-int-or-string in the schema and
+			// carries no Minimum marker, so the webhook is the only gate between a
+			// CR that reads as bounded and a bound that bounds nothing.
+			name:       "zero sizeLimit rejected",
+			imageCache: &ImageCacheSpec{SizeLimit: ptr.To(resource.MustParse("0"))},
+			wantField:  "imageCache.sizeLimit",
+			wantMsg:    "must be at least 1Mi",
+		},
+		{
+			name:       "negative sizeLimit rejected",
+			imageCache: &ImageCacheSpec{SizeLimit: ptr.To(resource.MustParse("-1Gi"))},
+			wantField:  "imageCache.sizeLimit",
+			wantMsg:    "must be at least 1Mi",
+		},
+		{
+			name:       "sizeLimit just under the floor rejected",
+			imageCache: &ImageCacheSpec{SizeLimit: ptr.To(resource.MustParse("512Ki"))},
+			wantField:  "imageCache.sizeLimit",
+			wantMsg:    "must be at least 1Mi",
+		},
+		{
+			name:       "sizeLimit exactly at the floor accepted",
+			imageCache: &ImageCacheSpec{SizeLimit: ptr.To(resource.MustParse("1Mi"))},
+		},
+		{
+			// A metav1.Duration renders as a plain string, so this floor too is
+			// webhook-only.
+			name: "sub-minute maintenanceInterval rejected",
+			imageCache: &ImageCacheSpec{
+				MaintenanceInterval: &metav1.Duration{Duration: 59 * time.Second},
+			},
+			wantField: "imageCache.maintenanceInterval",
+			wantMsg:   "must be at least 1m0s",
+		},
+		{
+			name: "maintenanceInterval exactly at the floor accepted",
+			imageCache: &ImageCacheSpec{
+				MaintenanceInterval: &metav1.Duration{Duration: time.Minute},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			errs := ValidateImageCache(field.NewPath("spec").Child("imageCache"), tc.imageCache)
+			if tc.wantField == "" {
+				g.Expect(errs).To(gomega.BeEmpty())
+			} else {
+				g.Expect(errs).To(gomega.HaveLen(1))
+				g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeInvalid))
+				g.Expect(errs[0].Field).To(gomega.HaveSuffix(tc.wantField))
+				g.Expect(errs[0].Detail).To(gomega.Equal(tc.wantMsg))
+			}
+
+			w := &GlanceWebhook{}
+			obj := validGlance()
+			obj.Spec.ImageCache = tc.imageCache
+
+			_, createErr := w.ValidateCreate(context.Background(), obj)
+			_, updateErr := w.ValidateUpdate(context.Background(), validGlance(), obj)
+
+			if tc.wantField == "" {
+				g.Expect(createErr).NotTo(gomega.HaveOccurred())
+				g.Expect(updateErr).NotTo(gomega.HaveOccurred())
+				return
+			}
+			for verb, err := range map[string]error{"create": createErr, "update": updateErr} {
+				g.Expect(err).To(gomega.HaveOccurred(), "%s must reject %s", verb, tc.name)
+				g.Expect(err.Error()).To(gomega.ContainSubstring("spec." + tc.wantField))
+				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantMsg))
+			}
+		})
+	}
+}
+
+// The operator injects the `cache` paste filter while spec.imageCache is set, so
+// a user middleware of that name is a collision rather than an addition: without
+// this rule the rendered pipeline silently carries whichever of the two
+// definitions wins. The name is reserved only for as long as the cache is
+// enabled — a CR that carried such a middleware before this field existed stays
+// admissible.
+func TestGlanceValidate_ImageCacheMiddlewareCollision(t *testing.T) {
+	userCacheFilter := commonv1.MiddlewareSpec{
+		Name:          "cache",
+		FilterFactory: "my_cache_middleware:filter_factory",
+		Position:      commonv1.PipelinePositionBefore,
+	}
+
+	t.Run("rejected while the image cache is enabled", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		w := &GlanceWebhook{}
+
+		obj := validGlance()
+		obj.Spec.ImageCache = &ImageCacheSpec{}
+		obj.Spec.Middleware = []commonv1.MiddlewareSpec{
+			{
+				Name:          "audit",
+				FilterFactory: "audit_middleware:filter_factory",
+				Position:      commonv1.PipelinePositionAfter,
+			},
+			userCacheFilter,
+		}
+
+		_, createErr := w.ValidateCreate(context.Background(), obj)
+		_, updateErr := w.ValidateUpdate(context.Background(), validGlance(), obj)
+
+		for verb, err := range map[string]error{"create": createErr, "update": updateErr} {
+			g.Expect(err).To(gomega.HaveOccurred(), "%s must reject the colliding middleware", verb)
+			// The index matters: the message has to name the offending entry, not
+			// the list, or a CR with several filters gives no clue which to rename.
+			g.Expect(err.Error()).To(gomega.ContainSubstring("spec.middleware[1].name"))
+			g.Expect(err.Error()).To(gomega.ContainSubstring(`owns that filter name while spec.imageCache is set`))
+		}
+	})
+
+	t.Run("accepted while the image cache is disabled", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		w := &GlanceWebhook{}
+
+		obj := validGlance()
+		obj.Spec.Middleware = []commonv1.MiddlewareSpec{userCacheFilter}
+
+		_, err := w.ValidateCreate(context.Background(), obj)
+		g.Expect(err).NotTo(gomega.HaveOccurred(),
+			"the cache filter name is reserved only while spec.imageCache is set")
+	})
+}
+
+// Both image-cache defaults are resolved at render time, never stamped into the
+// stored CR — and the block's mere presence is what enables the cache, so a
+// defaulter materializing it would switch the feature on for every Glance in the
+// cluster. Nothing else in the suite exercises the defaulter against
+// spec.imageCache, so such a rule would land without a single test turning red.
+func TestGlanceDefault_LeavesImageCacheUnset(t *testing.T) {
+	g := gomega.NewWithT(t)
+	obj := validGlance()
+
+	g.Expect((&GlanceWebhook{}).Default(context.Background(), obj)).To(gomega.Succeed())
+
+	g.Expect(obj.Spec.ImageCache).To(gomega.BeNil(),
+		"spec.imageCache must not be materialized by the defaulting webhook")
 }
 
 // metadata.name is bounded by the child object with the tightest name budget,
