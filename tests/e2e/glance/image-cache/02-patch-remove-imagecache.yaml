@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch: unset spec.imageCache so the operator takes the cache back off a
+# Deployment that already carries it. The guide sells removing the block as the
+# revert procedure, and it is the one direction a unit test on a freshly built
+# object cannot observe: the Deployment is written server-side, so dropping the
+# sidecar and the volume depends on Server-Side Apply pruning the list entries
+# the operator has stopped applying. The sibling httproute suite unsets
+# spec.gateway the same way.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-cache
+  namespace: openstack
+spec:
+  imageCache: null

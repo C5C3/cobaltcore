@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR fixture for the image-cache E2E test (2026.1 release).
+#
+# The suite proves the local image cache end to end: a download lands in the
+# API pod's cache directory, a second download of the same image returns
+# byte-identical data, and the maintenance sidecar prunes the cache back under
+# its threshold without the kubelet ever stepping in.
+#
+# The two numbers below are what make the prune leg both provable and safe:
+#   - sizeLimit 256Mi bounds the cache emptyDir at 268435456 bytes, and the
+#     operator derives image_cache_max_size — the only threshold
+#     glance-cache-pruner prunes down to — as 80% of it
+#     (268435456 / 10 * 8 = 214748360 bytes, ~204.8Mi);
+#   - the suite caches four ~56Mi images, ~224Mi in total. That is ABOVE the
+#     ~204.8Mi threshold, so a prune must happen, and BELOW the 256Mi emptyDir
+#     bound, so the kubelet never evicts the pod while it does. The 20%
+#     headroom between the two is exactly the band this arithmetic sits in.
+#   - maintenanceInterval 1m is the webhook's floor. The 5m operator default
+#     would make the prune leg wait five minutes for a result it can get in
+#     one.
+#
+# 2026.1 is pinned deliberately rather than inherited from the default release:
+# that is the release where glance-api launches under uWSGI, so several worker
+# processes share one cache directory and one sqlite metadata file. That is the
+# configuration the cache has to survive, and only a 2026.1 run exercises it.
+#
+# Name-collision avoidance: chainsaw-config.yaml sets `execution.parallel: 4`,
+# so every object this suite owns carries the `glance-cache` prefix and the
+# database schema is `glance_cache` — nothing here can collide with the sibling
+# glance suites sharing the `openstack` namespace and its backing services.
+#
+# No Keystone is deployed in the glance e2e leg, so API access is opened
+# without a live token. This is the same three-knob combination
+# tests/e2e/glance/s3-multistore/00-glance-cr.yaml documents:
+#   - [DEFAULT] allow_anonymous_access=true (via extraConfig, which overrides
+#     everything) lets keystonemiddleware's delay_auth_decision pipeline admit
+#     the tokenless request instead of returning 401 from ContextMiddleware;
+#   - the injected unauthenticated-context filter replaces the anonymous
+#     read_only context glance's @mutating decorator 403s before any policy
+#     check, so no policyOverride alone can open the upload path;
+#   - policyOverrides opens the image API rules for the resulting role-less
+#     context ("@" is oslo.policy's always-allow token; the CRD's CEL rule
+#     forbids an empty rule value). download_image carries extra weight here:
+#     it is the one rule the operator-injected `cache` filter enforces itself
+#     on GET /v2/images/{id}/file, so the cache legs need it opened as much as
+#     the upload path needs upload_image.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-cache
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    # The cache is per replica, so a single pod keeps both cache legs
+    # deterministic: every download lands on the one cache the assertions
+    # inspect, and the four cached images are bounded by the one emptyDir the
+    # prune leg reasons about.
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_cache
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  imageCache:
+    sizeLimit: 256Mi
+    maintenanceInterval: 1m
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  extraConfig:
+    DEFAULT:
+      allow_anonymous_access: "true"
+  middleware:
+    - name: unauthenticated-context
+      filterFactory: glance.api.middleware.context:UnauthenticatedContextMiddleware.factory
+      position: after
+  policyOverrides:
+    rules:
+      add_image: "@"
+      get_image: "@"
+      get_images: "@"
+      upload_image: "@"
+      download_image: "@"
+      delete_image: "@"
+      modify_image: "@"

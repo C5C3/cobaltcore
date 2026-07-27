@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Default S3 image store for the glance-cache CR. glance-api registers no store
+# without a default backend, so the CR cannot reach a running Deployment (nor
+# Ready) without it. It points at the in-cluster Garage S3 endpoint and the
+# pre-created glance-images bucket the kind infrastructure overlay ships — the
+# same store the sibling glance suites write to, which is safe because every
+# object this suite uploads carries its own image UUID.
+#
+# The store is also what makes the cache legs mean anything: without a backing
+# store there is no remote copy for the first download to fetch and tee into
+# the cache, and no second read path to compare against.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: GlanceBackend
+metadata:
+  name: glance-cache-s3
+  namespace: openstack
+spec:
+  glanceRef:
+    name: glance-cache
+  type: S3
+  isDefault: true
+  s3:
+    host: http://garage.openstack.svc.cluster.local:3900
+    bucket: glance-images
+    region: garage
+    credentialsSecretRef:
+      name: garage-s3-credentials
