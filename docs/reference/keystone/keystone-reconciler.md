@@ -1288,7 +1288,7 @@ No `Warning` Event is emitted for this state. The structured log line
 `pushsecret=<name>`, and the `SecretsReady=False` condition is the
 primary observability signal. `reconcileDeleteOpenBao` returns
 `ctrl.Result{RequeueAfter: RequeueSecretPolling}` (15 s — see
-`requeue_intervals.go`) on `(done=false, nil)`, so the adoption wait is
+`internal/common/reconcile`) on `(done=false, nil)`, so the adoption wait is
 actively polled every 15 s until ESO installs its cleanup finalizer.
 The handler never force-deletes: if ESO is permanently broken, the
 Keystone CR correctly stays Terminating until an operator investigates
@@ -2565,7 +2565,7 @@ at a fixed interval (`RequeueHealthCheck = 10s`).
 | `False` | `APIUnhealthy` | `"Keystone API returned HTTP {status}"` | 10s |
 | `True` | `APIHealthy` | `"Keystone API is responding at {endpoint}"` | — |
 
-**Requeue Constants (defined in `requeue_intervals.go`):**
+**Requeue Constants (defined in `internal/common/healthcheck`):**
 
 | Constant | Value | Purpose |
 | --- | --- | --- |

@@ -23,16 +23,17 @@ The keystone operator is the reference consumer for every package listed.
 | Package | Provides |
 | --- | --- |
 | `internal/common/types` | Shared CRD spec types (`DatabaseSpec`, `CacheSpec`, `GatewaySpec`, `ImageSpec`, `DeploymentSpec`, `AutoscalingSpec`, `NetworkPolicySpec`, `LoggingSpec`, ...) with their CEL rules and `Default()` methods |
-| `internal/common/naming` | Label keys, `CommonLabels`/`SelectorLabels`, `SubResourceName` — the workload naming convention (and the cross-service endpoint contract, see below) |
+| `internal/common/naming` | Label keys and `CommonLabels`/`SelectorLabels`, the workload naming convention (and the cross-service endpoint contract, see below); the sub-resource name is the bare CR name, so each operator keeps its own one-line helper |
 | `internal/common/reconcile` | Table-driven pipeline (`Step`/`RunPipeline`), parallel groups (`ParallelStep`/`RunParallelGroup`), non-short-circuiting sequential groups (`RunSequentialGroup`), `ShortestRequeue`, `SetAggregateReady`, the no-op-skipping `UpdateStatus`, `EnsureFinalizer`, the shared requeue constants (`RequeueDeploymentPolling`/`RequeueSecretPolling`), the `Skeleton[T,S]` controller-skeleton glue (Ready aggregation, status write, `MarkFailed`, parallel-group), and `ProjectChild`/`DeleteOrphanedChild` for orchestrating operators that project child CRs |
 | `internal/common/watch` | `CRUpdatePredicate` for the `For(...)` watch, `SecretToOwnersMapper` + `RegisterSecretNameIndex`, `StoreRefFanOut` (enqueues only the CRs whose effective `spec.secretStoreRef` matches a changed cluster-scoped `ClusterSecretStore` or namespaced `SecretStore`), `ClusterRefMapper` (database-cluster reference to owning CRs) |
-| `internal/common/bootstrap` | `Run`/`ManagerConfig` manager bootstrap, `ControllerOptions` (concurrency + tuned rate limiter), `DetectOperatorNamespace` |
-| `internal/common/instrumentation` | Sub-reconciler duration/error metrics; declare a `NewSubReconcilerInstrumenter("<op>_operator", conditionTypes)` beside the instrumenter glue and register it from a `RegisterMetrics()` wired into `main.go` (registration returns an error instead of panicking) |
-| `internal/common/deployment` | SSA ensure primitives, `RestrictedSecurityContext`, PDB/HPA builders, `ReconcileHPA` flow, replica normalization, pod-knob default helpers |
+| `internal/common/bootstrap` | `Run`/`ManagerConfig` manager bootstrap, `NewScheme` scheme assembly (client-go baseline first, then the per-operator extras), `ControllerOptions` (concurrency + tuned rate limiter), `DetectOperatorNamespace` |
+| `internal/common/instrumentation` | Sub-reconciler duration/error metrics; declare a `NewSubReconcilerInstrumenter("<op>_operator", conditionTypes)` in the operator and pass its bound `Instrument` method to the reconcile pipeline, then register it from a `RegisterMetrics()` wired into `main.go` (registration returns an error instead of panicking) |
+| `internal/common/deployment` | SSA ensure primitives, `BuildWorkload`/`BuildService` (shared pod-template and Service assembly), `RestrictedSecurityContext`, PDB/HPA builders, `ReconcileHPA` flow, replica normalization, pod-knob default helpers |
 | `internal/common/networkpolicy` | `Ensure`/`Delete`, the auto-derived egress rules (`DNSEgressRule`/`DatabaseEgressRule`/`CacheEgressRule`/`CacheEgressPorts`), `IngressPeers`, and the three-path `Reconcile` flow with the fail-closed empty-ingress guard |
 | `internal/common/gateway` | `IsGVKAvailable` CRD probe, HTTPRoute builder/acceptance/ensure/delete over the shared `GatewaySpec`, and the three-path `ReconcileHTTPRoute` flow |
 | `internal/common/secrets` | ESO primitives, `OpenBaoClusterStoreName`, per-CR store-ref resolution (`EffectiveStoreRef`, `IsStoreRefReady`, `ESOSecretStoreRef`, `PushSecretStoreRefs`), the `GateSyncedSecret` ladder, the `GateStoreReady` store-ref gate and `GateCredential`/`GateCredentials` condition-reporting loop |
 | `internal/common/validation` | Shared webhook validators (DB/cache XOR, dynamic-credentials rule, cron parse, TSC selector, PriorityClass lookup) |
+| `internal/common/webhook` | `NoopDeleteValidator` (the never-invoked `ValidateDelete` embed for webhooks that guard create and update only) |
 | `internal/common/database`, `internal/common/cache` | MariaDB CR apply, `BuildDatabase`/`BuildUser`/`BuildGrant` provisioning builders, host/port/username resolution, pymysql DSN + TLS params + rollout digest, memcache server resolution; plus the reconcile flows layered on top: `ReconcileProvision` (cluster gate + Database/User/Grant ensure + Dynamic-credentials skip), `ReconcileSyncJobs` (db-sync + schema-check via the parameterized `JobSetParams` table, `InstalledRelease` tracking), `ReconcileConnectionSecret` + `ConnectionEnvVar`/`ConnectionSecretName` (derived `<name>-db-connection` Secret + DSN digest), and `FinalizeResources`/`HasLiveResources` finalizer cleanup |
 | `internal/common/rotation` | Split-compute-write credential rotation: `EnsureStagingSecret`, `CommitStaged`/`CommitSpec`, `EnsureRBAC`, `CompletedAt`/`ObserveAge`, `BuildCronJob`/`CronJobParams` |
 | `internal/common/release` | OpenStack release parsing and upgrade/downgrade classification |
@@ -89,8 +90,8 @@ new operators build on them rather than reopening them:
 
 - **Cross-service endpoint discovery is convention-based.** Consumers derive a
   service URL from the naming convention (`internal/common/naming`):
-  `http://<name>.<namespace>.svc.cluster.local:<port>` over the Service named
-  `SubResourceName(<cr name>)`. Keystone publishes `Status.Endpoint` for human
+  `http://<name>.<namespace>.svc.cluster.local:<port>` over the Service, which
+  is named after the CR itself. Keystone publishes `Status.Endpoint` for human
   consumers only; no machine consumer reads it, and no status-based resolve
   helper or cross-CR watch exists. If a new operator needs endpoint shapes the
   convention cannot express, build that helper then — not preemptively.
