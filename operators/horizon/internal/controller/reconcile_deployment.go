@@ -13,7 +13,6 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -130,112 +129,86 @@ func buildHorizonDeployment(horizon *horizonv1alpha1.Horizon, configMapName, sec
 	if secretKeyHash != "" {
 		podAnnotations = map[string]string{secretKeyHashAnnotation: secretKeyHash}
 	}
-	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      subResourceName(horizon),
-			Namespace: horizon.Namespace,
-			Labels:    labels,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: deploymentReplicas(horizon),
-			Selector: &metav1.LabelSelector{
-				MatchLabels: selector,
-			},
-			Strategy: deployment.Strategy(&horizon.Spec.Deployment),
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      labels,
-					Annotations: podAnnotations,
+	return deployment.BuildWorkload(deployment.WorkloadParams{
+		Namespace:      horizon.Namespace,
+		Name:           subResourceName(horizon),
+		Labels:         labels,
+		SelectorLabels: selector,
+		PodAnnotations: podAnnotations,
+		Deployment:     &horizon.Spec.Deployment,
+		Autoscaling:    horizon.Spec.Autoscaling,
+		Container: deployment.ContainerParams{
+			Name:    "horizon",
+			Image:   horizon.Spec.Image.Reference(),
+			Command: uwsgiCommand(),
+			Env: []corev1.EnvVar{{
+				Name: secretKeyEnvVarName,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: horizon.Spec.SecretKeyRef.Name,
+						},
+						Key: effectiveSecretKeyKey(horizon),
+					},
 				},
-				Spec: corev1.PodSpec{
-					TerminationGracePeriodSeconds: ptr.To(deployment.TerminationGracePeriodSeconds(&horizon.Spec.Deployment)),
-					TopologySpreadConstraints:     deployment.TopologySpreadConstraints(&horizon.Spec.Deployment, selector),
-					PriorityClassName:             deployment.PriorityClassName(&horizon.Spec.Deployment),
-					SecurityContext:               &corev1.PodSecurityContext{FSGroup: ptr.To(deployment.OpenStackUID)},
-					Containers: []corev1.Container{{
-						Name:            "horizon",
-						Image:           horizon.Spec.Image.Reference(),
-						Resources:       deployment.ContainerResources(&horizon.Spec.Deployment),
-						SecurityContext: deployment.RestrictedSecurityContext(),
-						Command:         uwsgiCommand(),
-						Env: []corev1.EnvVar{{
-							Name: secretKeyEnvVarName,
-							ValueFrom: &corev1.EnvVarSource{
-								SecretKeyRef: &corev1.SecretKeySelector{
-									LocalObjectReference: corev1.LocalObjectReference{
-										Name: horizon.Spec.SecretKeyRef.Name,
-									},
-									Key: effectiveSecretKeyKey(horizon),
-								},
-							},
-						}},
-						Ports: []corev1.ContainerPort{{
-							Name:          "horizon",
-							ContainerPort: horizonAPIPort,
-						}},
-						LivenessProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								TCPSocket: &corev1.TCPSocketAction{
-									Port: intstr.FromInt32(horizonAPIPort),
-								},
-							},
-							InitialDelaySeconds: 15,
-							PeriodSeconds:       20,
-						},
-						// Readiness renders the login page: Django URL
-						// routing, templates, and the offline-compression
-						// manifest are all exercised without a live Keystone.
-						ReadinessProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								HTTPGet: &corev1.HTTPGetAction{
-									Path:        dashboardLoginPath,
-									Port:        intstr.FromInt32(horizonAPIPort),
-									HTTPHeaders: probeHostHeaders(),
-								},
-							},
-							InitialDelaySeconds: 10,
-							PeriodSeconds:       15,
-							TimeoutSeconds:      10,
-							FailureThreshold:    3,
-						},
-						StartupProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								HTTPGet: &corev1.HTTPGetAction{
-									Path:        dashboardLoginPath,
-									Port:        intstr.FromInt32(horizonAPIPort),
-									HTTPHeaders: probeHostHeaders(),
-								},
-							},
-							FailureThreshold: 30,
-							PeriodSeconds:    10,
-						},
-						Lifecycle: &corev1.Lifecycle{
-							PreStop: &corev1.LifecycleHandler{
-								Exec: &corev1.ExecAction{
-									Command: deployment.PreStopSleepCommand(&horizon.Spec.Deployment),
-								},
-							},
-						},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "config",
-							MountPath: horizonLocalSettingsMountedPath,
-							ReadOnly:  true,
-						}},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: "config",
-						VolumeSource: corev1.VolumeSource{
-							ConfigMap: &corev1.ConfigMapVolumeSource{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMapName,
-								},
-							},
-						},
-					}},
+			}},
+			Ports: []corev1.ContainerPort{{
+				Name:          "horizon",
+				ContainerPort: horizonAPIPort,
+			}},
+			LivenessProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{
+					TCPSocket: &corev1.TCPSocketAction{
+						Port: intstr.FromInt32(horizonAPIPort),
+					},
+				},
+				InitialDelaySeconds: 15,
+				PeriodSeconds:       20,
+			},
+			// Readiness renders the login page: Django URL routing,
+			// templates, and the offline-compression manifest are all
+			// exercised without a live Keystone.
+			ReadinessProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{
+					HTTPGet: &corev1.HTTPGetAction{
+						Path:        dashboardLoginPath,
+						Port:        intstr.FromInt32(horizonAPIPort),
+						HTTPHeaders: probeHostHeaders(),
+					},
+				},
+				InitialDelaySeconds: 10,
+				PeriodSeconds:       15,
+				TimeoutSeconds:      10,
+				FailureThreshold:    3,
+			},
+			StartupProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{
+					HTTPGet: &corev1.HTTPGetAction{
+						Path:        dashboardLoginPath,
+						Port:        intstr.FromInt32(horizonAPIPort),
+						HTTPHeaders: probeHostHeaders(),
+					},
+				},
+				FailureThreshold: 30,
+				PeriodSeconds:    10,
+			},
+			VolumeMounts: []corev1.VolumeMount{{
+				Name:      "config",
+				MountPath: horizonLocalSettingsMountedPath,
+				ReadOnly:  true,
+			}},
+		},
+		Volumes: []corev1.Volume{{
+			Name: "config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configMapName,
+					},
 				},
 			},
-		},
-	}
+		}},
+	})
 }
 
 // probeHostHeaders pins the Host header the kubelet HTTP probes send to
@@ -243,13 +216,6 @@ func buildHorizonDeployment(horizon *horizonv1alpha1.Horizon, configMapName, sec
 // without the operator having to allow-list the dynamic pod IP.
 func probeHostHeaders() []corev1.HTTPHeader {
 	return []corev1.HTTPHeader{{Name: "Host", Value: probeHostHeader}}
-}
-
-// deploymentReplicas returns the desired .spec.replicas for the dashboard
-// Deployment. When spec.autoscaling is set, it returns nil so the field is
-// left unmanaged and the HorizontalPodAutoscaler owns the replica count.
-func deploymentReplicas(horizon *horizonv1alpha1.Horizon) *int32 {
-	return deployment.DeploymentReplicas(&horizon.Spec.Deployment, horizon.Spec.Autoscaling)
 }
 
 // uwsgiCommand constructs the uWSGI container command. Horizon has no
@@ -282,19 +248,5 @@ func buildPodDisruptionBudget(horizon *horizonv1alpha1.Horizon) *policyv1.PodDis
 }
 
 func buildHorizonService(horizon *horizonv1alpha1.Horizon) *corev1.Service {
-	return &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      subResourceName(horizon),
-			Namespace: horizon.Namespace,
-			Labels:    commonLabels(horizon),
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: selectorLabels(horizon),
-			Ports: []corev1.ServicePort{{
-				Port:       horizonAPIPort,
-				TargetPort: intstr.FromInt32(horizonAPIPort),
-				Protocol:   corev1.ProtocolTCP,
-			}},
-		},
-	}
+	return deployment.BuildService(horizon.Namespace, subResourceName(horizon), commonLabels(horizon), selectorLabels(horizon), horizonAPIPort, horizonAPIPort)
 }
