@@ -117,6 +117,13 @@ spec:
                 # is covered by the 2026-1 variant of this suite.
                 (volumes[?name == 'staging'].emptyDir.sizeLimit | [0]): 10Gi
                 (volumes[?name == 'tasks-work'].emptyDir.sizeLimit | [0]): 10Gi
+                # It carries no spec.imageCache either, and that block is opt-in:
+                # the pod must stay a lone glance-api container with no cache
+                # volume. An unconditional maintenance sidecar or cache emptyDir
+                # would otherwise land on every deployment that never asked for
+                # one, spending node disk and a container slot silently.
+                (length(containers) == `1`): true
+                (length(volumes[?name == 'image-cache']) == `0`): true
           status:
             (availableReplicas > `0`): true
     - assert:

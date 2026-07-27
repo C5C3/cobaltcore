@@ -1155,6 +1155,26 @@ FIXTURES: tuple[Fixture, ...] = (
             + "        sizeLimit: 0\n"
         ),
     ),
+    Fixture(
+        filename="64-glance-imagecache-sizelimit-zero.yaml",
+        comment=(
+            "services.glance.imageCache.sizeLimit of 0 is rejected by the validating\n"
+            "webhook, which reuses the glance module's exported validator: a\n"
+            "resource.Quantity renders as x-kubernetes-int-or-string in the CRD schema,\n"
+            "which carries no Minimum marker, so admission is the sole gate against an\n"
+            "unusable cache bound — a 1Mi floor, since the schema pattern also admits\n"
+            "the sub-byte milli suffix (`100m` for `100Mi`). The rest of the glance\n"
+            "block is valid, so the ONLY violation is the size limit."
+        ),
+        name="cp-glance-imagecache-sizelimit",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            VALID_GLANCE
+            + "      imageCache:\n"
+            + "        sizeLimit: 0\n"
+        ),
+    ),
 )
 
 
