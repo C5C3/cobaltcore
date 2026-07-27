@@ -25,29 +25,23 @@ import (
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/forge/operators/keystone/internal/controller"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
-var scheme = runtime.NewScheme()
-
-func init() {
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(keystonev1alpha1.AddToScheme(scheme))
-	utilruntime.Must(esov1alpha1.SchemeBuilder.AddToScheme(scheme))
-	utilruntime.Must(esov1.SchemeBuilder.AddToScheme(scheme))
-	utilruntime.Must(mariadbv1alpha1.AddToScheme(scheme))
-	utilruntime.Must(gatewayv1.Install(scheme))
+var scheme = bootstrap.NewScheme(
+	keystonev1alpha1.AddToScheme,
+	esov1alpha1.SchemeBuilder.AddToScheme,
+	esov1.SchemeBuilder.AddToScheme,
+	mariadbv1alpha1.AddToScheme,
+	gatewayv1.Install,
 	// cert-manager v1 scheme is required so reconcile_databasetls.go can
 	// create/get cert-manager Certificates via the cached client. Without this, EnsureCertificate fails with "no kind is
 	// registered for the type v1.Certificate" on every reconcile, leaving
 	// the Keystone CR stuck without a DatabaseTLSReady condition.
-	utilruntime.Must(certmanagerv1.AddToScheme(scheme))
+	certmanagerv1.AddToScheme,
 	// +kubebuilder:scaffold:scheme
-}
+)
 
 func main() {
 	var federationMetadataAllowCIDRs string

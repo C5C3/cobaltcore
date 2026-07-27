@@ -27,9 +27,6 @@ import (
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 
-	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -38,37 +35,34 @@ import (
 // is asserted by main_test.go so a rename cannot silently break leader election.
 const leaderElectionID = "c5c3.openstack.c5c3.io"
 
-var scheme = runtime.NewScheme()
-
-func init() {
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+var scheme = bootstrap.NewScheme(
 	// c5c3 own API types (ControlPlane, CredentialRotation).
-	utilruntime.Must(c5c3v1alpha1.AddToScheme(scheme))
+	c5c3v1alpha1.AddToScheme,
 	// Keystone CR — the ControlPlane reconciler projects and Owns a Keystone child.
-	utilruntime.Must(keystonev1alpha1.AddToScheme(scheme))
-	utilruntime.Must(horizonv1alpha1.AddToScheme(scheme))
+	keystonev1alpha1.AddToScheme,
+	horizonv1alpha1.AddToScheme,
 	// Glance CR (and GlanceBackend) — the ControlPlane reconciler projects and
 	// Owns a Glance child plus its GlanceBackend children.
-	utilruntime.Must(glancev1alpha1.AddToScheme(scheme))
+	glancev1alpha1.AddToScheme,
 	// MariaDB CR — projected and Owned by reconcileInfrastructure.
-	utilruntime.Must(mariadbv1alpha1.AddToScheme(scheme))
+	mariadbv1alpha1.AddToScheme,
 	// ESO PushSecret (v1alpha1) and ClusterSecretStore/ExternalSecret (v1) — the
 	// admin-credential push and the K-ORC clouds.yaml gate read/write these.
-	utilruntime.Must(esov1alpha1.SchemeBuilder.AddToScheme(scheme))
-	utilruntime.Must(esov1.SchemeBuilder.AddToScheme(scheme))
+	esov1alpha1.SchemeBuilder.AddToScheme,
+	esov1.SchemeBuilder.AddToScheme,
 	// ESO VaultDynamicSecret generator — projected and Owned by
 	// reconcileDBCredentials to issue short-lived DB credentials in Dynamic mode.
-	utilruntime.Must(esgenv1alpha1.AddToScheme(scheme))
+	esgenv1alpha1.AddToScheme,
 	// K-ORC CRs (ApplicationCredential, Service, Endpoint, ...) — minted/Owned by
 	// reconcileKORC and reconcileCatalog. This same group registration also
 	// covers the Role/RoleAssignment kinds used for the service-account role
 	// projection.
-	utilruntime.Must(orcv1alpha1.AddToScheme(scheme))
+	orcv1alpha1.AddToScheme,
 	// Memcached (memcached.c5c3.io) is deliberately NOT registered: it ships no Go
 	// module, so SetupWithManager's Owns(unstructured) resolves the GVK via the
 	// cluster RESTMapper at runtime — no scheme registration is required.
 	// +kubebuilder:scaffold:scheme
-}
+)
 
 func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
