@@ -31,6 +31,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `region` | `string` | no | The Keystone region (`[keystone_authtoken] region_name`); when empty the option is omitted and Glance uses the catalog's default region |
 | `apiServer` | [`*APIServerSpec`](#apiserverspec) | no | Release-conditional API-process tuning; when nil the operator uses hardcoded defaults for the active launch mode |
 | `importFiltering` | [`*ImportFilteringSpec`](#importfilteringspec) | no | URI filtering for `web-download` image imports. The operator resolves the effective lists at render time, so a nil block and an empty struct behave alike: HTTPS on port 443, plus a literal host denylist |
+| `importPlugins` | [`*ImportPluginsSpec`](#importpluginsspec) | no | Selects the image-import plugins Glance runs, rendered as `[image_import_opts] image_import_plugins` plus the section each enabled plugin reads. Presence of a sub-block enables that plugin, nil enables none; the rendered order is fixed (`image_decompression`, `image_conversion`, `inject_image_metadata`) and is not an input. Every default resolves at render time, so an unset field keeps tracking the operator default |
 | `dbPurge` | [`*DBPurgeSpec`](#dbpurgespec) | no | Recurring database purge that hard-deletes rows Glance only ever soft-deletes. The operator resolves the effective settings at reconcile time, so a nil block and an empty struct behave alike: 30-day retention, daily at `1 0 * * *`, task rows only, not suspended |
 | `staging` | [`*StagingSpec`](#stagingspec) | no | Bounds the node-local scratch space an image import may consume. The operator resolves the effective limit at reconcile time, so a nil block, an empty struct, and a set block leaving `sizeLimit` unset all behave alike: `10Gi` on each of the two scratch volumes. `unbounded: true` opts out of the bound entirely |
 | `imageCache` | [`*ImageCacheSpec`](#imagecachespec) | no | Turns on the per-replica local image cache: presence of the block enables it, nil disables it. `sizeLimit` bounds the cache `emptyDir` (default `10Gi`, floor `1Mi`) and `maintenanceInterval` sets the pruner/cleaner cadence (default `5m`, floor `1m`). Both resolve at render time, so an unset field keeps tracking the operator default |
@@ -42,7 +43,7 @@ stores are **not** part of this spec — they attach out-of-band through
 | `policyOverrides` | `*PolicySpec` | no | Custom oslo.policy rules. A CEL rule requires at least one of `rules` or `configMapRef`; when set, the operator renders a `policy.yaml` and wires `oslo_policy.policy_file` |
 | `middleware` | `[]MiddlewareSpec` | no | WSGI middleware filters injected into the `api-paste.ini` pipeline |
 | `plugins` | `[]PluginSpec` | no | Service plugins/drivers, modeled as a list-map keyed by `configSection` so duplicate sections are rejected structurally |
-| `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for configuration not covered by explicit fields — the escape hatch for options with no dedicated knob of their own. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so user values win over both. Overrides of operator-owned keys are honored but reported (report-only) via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event — except `[keystone_authtoken] password`, which the validating webhook rejects at admission so the env-injected service password never leaks into the namespace-readable ConfigMap, the six `[import_filtering_opts]` keys, which it rejects so the `web-download` URI filter stays reachable only through [`spec.importFiltering`](#importfilteringspec) and its admission gates, and the three `[DEFAULT] image_cache_*` keys, which it rejects because each of them ends in an evicted glance-api pod or in database rows nothing reclaims — see [ImageCacheSpec](#imagecachespec). Option names are validated at admission against a per-release option catalog embedded in the operator (release derived from `spec.openStackRelease`; a release with no embedded catalog skips the check with an admission warning). Sections declared by `spec.plugins`, operator-owned keys, and the reserved store sections `os_glance_staging_store` and `os_glance_tasks_store` are exempt. An unknown section or option is rejected with the section and key named, so an arbitrary backend-named section is refused; backend options belong to the [`GlanceBackend`](./glance-backend-crd.md) CR. A deprecated-but-accepted option is admitted with a warning naming its replacement. Values are checked for one thing only — a newline or carriage return in a section name, key, or value is rejected, because the rendered INI writes each verbatim and a newline would inject arbitrary config lines past the ownership and catalog gates. Every rule here is webhook-only with no CEL backstop |
+| `extraConfig` | `map[string]map[string]string` | no | Free-form INI sections for configuration not covered by explicit fields — the escape hatch for options with no dedicated knob of their own. The render-time merge follows `plugins < operator defaults < extraConfig` (each stage merged key-wise), so user values win over both. Overrides of operator-owned keys are honored but reported (report-only) via the `ExtraConfigHealthy` condition and an `ExtraConfigOwnedKeyOverride` Warning event — except `[keystone_authtoken] password`, which the validating webhook rejects at admission so the env-injected service password never leaks into the namespace-readable ConfigMap, the six `[import_filtering_opts]` keys, which it rejects so the `web-download` URI filter stays reachable only through [`spec.importFiltering`](#importfilteringspec) and its admission gates, and the three `[DEFAULT] image_cache_*` keys, which it rejects because each of them ends in an evicted glance-api pod or in database rows nothing reclaims — see [ImageCacheSpec](#imagecachespec). The four image-import plugin keys are rejected on the same footing, so the plugin pipeline stays reachable only through [`spec.importPlugins`](#importpluginsspec) and the order, enum, and property-name rules it carries. Option names are validated at admission against a per-release option catalog embedded in the operator (release derived from `spec.openStackRelease`; a release with no embedded catalog skips the check with an admission warning). Sections declared by `spec.plugins`, operator-owned keys, and the reserved store sections `os_glance_staging_store` and `os_glance_tasks_store` are exempt. An unknown section or option is rejected with the section and key named, so an arbitrary backend-named section is refused; backend options belong to the [`GlanceBackend`](./glance-backend-crd.md) CR. A deprecated-but-accepted option is admitted with a warning naming its replacement. Values are checked for one thing only — a newline or carriage return in a section name, key, or value is rejected, because the rendered INI writes each verbatim and a newline would inject arbitrary config lines past the ownership and catalog gates. Every rule here is webhook-only with no CEL backstop |
 
 ### ServiceUserSpec
 
@@ -210,6 +211,177 @@ hash rolls the Deployment. When `spec.networkPolicy` is set on the CR, a
 `web-download` import additionally needs a matching
 `spec.networkPolicy.additionalEgress` rule: the auto-derived egress covers DNS,
 the database, the cache, and the backends' S3 hosts, and nothing beyond them.
+
+### ImportPluginsSpec
+
+Glance can put an imported image through a chain of plugins before the data
+reaches the backing store: unpack a compressed one, rewrite it into a single
+disk format, stamp image properties onto it. A plugin runs only while
+`[image_import_opts] image_import_plugins` names it, and this block is that
+naming. Presence of a sub-block adds its plugin to the list, nil leaves it out,
+the same opt-in convention [ImageCacheSpec](#imagecachespec) follows.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `decompression` | `*ImportDecompressionSpec` | no | Enables `image_decompression`, which unpacks a compressed image after staging so the later plugins and the store see the disk image instead of the archive. The struct carries no fields: upstream registers no options for the plugin, so its presence is the whole configuration. Setting it requires [`spec.staging`](#stagingspec) to answer for the scratch bound — either `sizeLimit` or `unbounded` — because the plugin's expansion is unbounded and the operator default was sized against the largest download |
+| `conversion` | `*ImportConversionSpec` | no | Enables `image_conversion`, which rewrites the staged image into one target disk format |
+| `injectMetadata` | `*ImportInjectMetadataSpec` | no | Enables `inject_image_metadata`, which stamps a fixed set of image properties onto every image it applies to |
+
+`conversion` carries one field:
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `outputFormat` | `string` (Enum: `qcow2`, `raw`, `vmdk`) | no | `raw` | The disk format every imported image is converted to (`[image_conversion] output_format`). `raw` is the format an RBD store clones copy-on-write; `qcow2` stays sparse on a filesystem store |
+
+`injectMetadata` carries two:
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `properties` | `map[string]string` (MinProperties 1, MaxProperties 64, name and value each ≤ 255 characters) | yes | — | The properties injected onto every image the plugin applies to (`[inject_metadata_properties] inject`). They are how a deployment marks provenance or pins scheduling and driver behaviour on images it did not build itself, without trusting the importing user to set them. Rendered with the keys sorted alphabetically, so an unordered map cannot reshuffle the config and roll the Deployment on a reconcile that changed nothing |
+| `ignoreUserRoles` | `[]string` (MaxItems 64, item length 1–255) | no | `admin` | The Keystone roles exempt from the injection (`ignore_user_roles`): an import by a user holding one of them leaves the image's properties untouched |
+
+The rendered order is fixed (`image_decompression`, `image_conversion`,
+`inject_image_metadata`) and is not an input. Glance runs the plugins in list
+order and needs decompression ahead of conversion, since converting first would
+rewrite the archive instead of the disk image inside it. With no ordering knob,
+no shape of this block gets that wrong.
+
+Defaults resolve when the config is rendered, the contract
+[ImportFilteringSpec](#importfilteringspec) and [ImageCacheSpec](#imagecachespec)
+already follow: the defaulting webhook writes nothing back into the CR, so an
+unset `outputFormat` keeps tracking `raw` and an unset `ignoreUserRoles` keeps
+tracking `admin` across upgrades. Only a nil `ignoreUserRoles` is defaulted. An
+explicitly empty list is honored verbatim and drops the exemption, which is how
+a deployment injects for every role, admins included.
+
+One key is rendered unconditionally and three more while their plugin is
+enabled:
+
+| Key | Rendered | Value |
+| --- | --- | --- |
+| `[image_import_opts] image_import_plugins` | always | The enabled plugin names in the fixed order; `[]` while `spec.importPlugins` is nil |
+| `[image_conversion] output_format` | `conversion` set | The resolved output format |
+| `[inject_metadata_properties] inject` | `injectMetadata` set | `key:value` pairs joined with commas, keys sorted |
+| `[inject_metadata_properties] ignore_user_roles` | `injectMetadata` set | The roles joined with commas, without brackets: the option is an unbounded oslo `ListOpt`, which would read a bracket as part of the first and last role name |
+
+`image_import_plugins` is written on every reconcile, the empty list included,
+for the reason the filter lists are. An absent key leaves Glance on its own
+default; the empty list is what says no plugin. The operator upgrade that
+introduces this block therefore re-renders every existing Glance once, which
+rewrites the content-hashed config ConfigMap and rolls the Deployment. That roll
+happens once, with no CR edit, and the rendered list is `[]` until a CR asks for
+a plugin. Every later change to the block costs one further rollout.
+
+**The plugins reach the interoperable import flow and nothing else.** They are
+taskflow stages of `POST /v2/images/{image_id}/import`. An image uploaded with
+`PUT /v2/images/{image_id}/file` never passes through them, so a deployment that
+relies on conversion or on injected metadata has to keep that upload path out of
+its policy. Glance also skips them for the `copy-image` import method, which
+moves an image already in one store into another. `glance-direct` is not among
+the import methods this operator enables (`enabled_import_methods` is pinned to
+`[web-download,copy-image]`, see [StagingSpec](#stagingspec)), which leaves one
+path: the plugins act on `web-download` imports.
+
+**Decompression unpacks one layer.** Glance identifies the staged file by its
+magic number and unpacks gzip, zip, and LHA in place; LHA needs the optional
+`lhafile` package, which the operator's Glance image ships. A zip or LHA archive
+must hold exactly one file. A multi-layer archive such as `tar.gz` is
+unsupported, because unpacking the outer layer yields the tar, which is no more
+a disk image than the archive was. Formats the plugin does not recognize, bzip2
+and xz among them, pass through untouched and reach the store as the archive
+they arrived as.
+
+::: danger Size the staging area against the unpacked image, not the download
+The plugin unpacks in place with no bound on the result, and it cannot know that
+size before writing it. `image_size_cap` is no help either: it measures the
+bytes transferred, so a ~10 MiB gzip that expands past 10 GiB is well under any
+cap the deployment sets — gzip reaches roughly 1000:1 on crafted input. The
+operator adds no bound of its own; the only one in the path is
+[`spec.staging.sizeLimit`](#stagingspec), whose default is `10Gi`.
+
+Breaching that bound evicts the glance-api pod rather than the offending import,
+and within one pod it is a single shared budget rather than per-import
+accounting, so **every other in-flight import on that replica dies with it**.
+The blast radius is per-replica and shared: on the single-replica layout the
+quick start uses, one `web-download` import of a compression bomb is a full
+image-service outage, repeatable on a loop. The `import_filtering_opts`
+allow-list does not catch it, since the filter inspects the URI and not the
+payload.
+
+Which is why the bound cannot stay an inherited default here: a CR enabling
+`decompression` is rejected at admission unless it also sets
+`spec.staging.sizeLimit`, or `spec.staging.unbounded` to deliberately keep no
+bound. That is an acknowledgement, not a control — the ratio itself is nothing
+the operator can cap.
+
+So enable `decompression` only where the import path is already restricted to
+trusted callers by `oslo.policy`, and size `spec.staging.sizeLimit` against the
+largest **unpacked** image the deployment expects rather than the largest
+download. Where the import path must stay open, run imports on a glance-api
+replica set of their own so an eviction cannot take the serving path with it —
+a per-tenant import quota is the other control, and neither is something this
+block can express.
+:::
+
+**Conversion shells out to `qemu-img`.** The plugin runs `qemu-img info` on the
+staged file and `qemu-img convert` when the format it finds differs from
+`outputFormat`. That binary comes from the `qemu-utils` package, which the
+operator's Glance image ships; a plain Glance install carries neither it nor
+`lhafile`.
+
+The conversion runs on the node-local staging area, and the source and the
+converted result live there together until the source is deleted. One import can
+therefore draw about twice the image size from the [`spec.staging`](#stagingspec)
+budget while it converts. Size that bound against the largest image the
+deployment imports, measured at its full virtual size: the compressed file that
+arrives over the wire hides that number.
+
+A failing `qemu-img` call fails the import task that ran it. The image never
+reaches `active` and the failure surfaces on the task; the API keeps serving.
+
+The injected pairs render in the oslo Dict syntax, which splits the value on
+commas and each pair on its first colon. A property name therefore carries
+neither character, and a value may carry a colon (a URL-shaped value works) but
+no comma. Map keys are reachable from no CRD marker, so every rule on a property
+name lives in the validating webhook alone; see
+[Defaulting and validation](#defaulting-and-validation).
+
+All four keys are registered as operator-owned and **Rejected**: the validating
+webhook refuses an `extraConfig` override of any of them, whether or not
+`spec.importPlugins` is set. The block expresses everything they express, so an
+override adds no reach. What it adds is a way around the fixed
+decompression-before-conversion order, the output-format enum, and the
+property-name rules that keep an injected pair inside the Dict syntax, leaving an
+audit that reads `spec.importPlugins` seeing one pipeline while the rendered
+config runs another.
+
+::: warning Migrate these keys out of `extraConfig` before upgrading
+Setting `[image_import_opts] image_import_plugins` through `extraConfig` was the
+only way to enable these plugins before `spec.importPlugins` existed, so a
+Glance already running conversion or metadata injection carries it. The
+rejection is unconditional and applies on **update** as much as on create: once
+the new operator is running, any write to such a CR is refused with a
+`Forbidden` naming a field the write did not touch, so an image bump, a replica
+change, or a credential rotation is blocked until the key is removed.
+
+Move the settings onto `spec.importPlugins` **before** rolling the operator:
+
+| `extraConfig` key | Replacement |
+| --- | --- |
+| `[image_import_opts] image_import_plugins` | The sub-block per plugin — `decompression`, `conversion`, `injectMetadata` |
+| `[image_conversion] output_format` | `conversion.outputFormat` |
+| `[inject_metadata_properties] inject` | `injectMetadata.properties` |
+| `[inject_metadata_properties] ignore_user_roles` | `injectMetadata.ignoreUserRoles` |
+
+Through a [`ControlPlane`](../c5c3/controlplane-crd.md) the same key is rejected
+on `services.glance.extraConfig` **and** on the merged
+`spec.globalExtraConfig`, and the consequence is worse: the ControlPlane
+projects the merged `extraConfig` onto its Glance child unconditionally, so the
+child's webhook refuses the projection and nothing else the ControlPlane changes
+reaches the child either. That wedge is diagnosable rather than silent —
+`GlanceReady` goes `False` with reason `GlanceProjectionRejected` and the
+rejection message on it. Removing the key from the ControlPlane clears it.
+:::
 
 ### DBPurgeSpec
 
@@ -611,6 +783,38 @@ The webhook additionally rejects a `spec.middleware` entry named `cache` while
 the block is set, since the operator injects a paste filter of that name itself
 (see [ImageCacheSpec](#imagecachespec)).
 
+`spec.importPlugins` is untouched by the defaulting webhook for the same reason:
+an unset `conversion.outputFormat` resolves to `raw` and an unset
+`injectMetadata.ignoreUserRoles` to `admin` when the config is rendered, and a
+nil block enables no plugin. The validating webhook mirrors the schema as
+defense in depth (the output-format enum, the 1–64 property count, the 64-item
+and 1–255-character bounds on `ignoreUserRoles`, and the 255-character bound on
+each half of an injected property) and adds the rules the schema cannot reach. A
+map key carries no marker of its own, so every check on an injected property
+name apart from its length is webhook-only: it must be non-empty, must not start
+or end with whitespace, and must carry no colon, comma, newline, or carriage
+return, because the rendered `[inject_metadata_properties] inject` value is
+parsed as an oslo Dict that splits pairs on commas and each pair on its first
+colon. A property value is checked for the same characters minus the colon,
+which belongs to it. Length is the one rule with a schema counterpart for both
+halves — a CEL rule on `properties` — because every pair renders verbatim into
+the one `inject` line, and an unbounded value would let a CR that etcd accepts
+render a `glance-api.conf` past the 1 MiB ConfigMap ceiling, which the API
+server then refuses on every reconcile. Each `ignoreUserRoles` item is checked
+for commas and control characters, since that list renders as a plain comma
+join. A `ControlPlane` calls the same exported validator on
+`spec.services.glance.importPlugins`, so both CRs admit the same values.
+
+One more `importPlugins` rule correlates two top-level fields, which puts it out
+of reach of any marker on either type: a CR enabling `decompression` must also
+set `spec.staging.sizeLimit`, or `spec.staging.unbounded` to deliberately keep
+no bound at all. The plugin expands the staged image by a ratio the caller
+picks, which makes that bound the only one in the path, and the operator default
+was sized against the largest download rather than the largest unpacked image —
+so admission asks for the one thing it can, that somebody chose the number. A
+`ControlPlane` enforces the same pairing on `spec.services.glance`, since it
+projects both blocks onto its Glance child untouched.
+
 The validating webhook additionally bounds `metadata.name` at 43 characters.
 The `{name}-db-purge` CronJob is the child object with the tightest name
 budget — Kubernetes caps a CronJob name at 52 characters, because its
@@ -648,8 +852,11 @@ preserve-unknown-fields map CEL cannot constrain): empty section/key names, a
 newline or carriage return in any section name, key, or value, and the rejected
 overrides of `[keystone_authtoken] password` (owned via
 `spec.serviceUser.secretRef`), the six `[import_filtering_opts]` keys (owned
-via `spec.importFiltering`), and the three `[DEFAULT] image_cache_*` keys (owned
-via `spec.imageCache`).
+via `spec.importFiltering`), the three `[DEFAULT] image_cache_*` keys (owned
+via `spec.imageCache`), and the four image-import plugin keys
+(`[image_import_opts] image_import_plugins`, `[image_conversion] output_format`,
+`[inject_metadata_properties] inject` and `ignore_user_roles`, owned via
+`spec.importPlugins`).
 
 Two `importFiltering` rules have no schema-layer counterpart. A host carrying a
 newline or carriage return is rejected outright: the host lists are the only

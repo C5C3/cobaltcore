@@ -65,6 +65,21 @@ The v1 operator resolves the onboarding decisions as follows:
   local-path provisioner enforces no capacity. Pruning runs in a
   `cache-maintenance` sidecar because a CronJob cannot reach a pod-local volume.
   See [ImageCacheSpec](./glance-crd.md#imagecachespec).
+- **Import plugins: an opt-in block per plugin, rendered in a fixed order.**
+  `spec.importPlugins` selects the image-import plugins, and the presence of a
+  sub-block is the switch for its plugin. The rendered order
+  (`image_decompression`, `image_conversion`, `inject_image_metadata`) is the
+  operator's and not an input, which is what satisfies upstream's one ordering
+  requirement: decompression has to precede conversion, or conversion would
+  rewrite the archive instead of the disk image inside it.
+  `image_import_plugins` is rendered on every deployment, `[]` while the block
+  is unset, so a missing key never leaves Glance on its own default. The plugins
+  are stages of the interoperable import flow, so a
+  `PUT /v2/images/{id}/file` upload bypasses them and `copy-image` skips them,
+  which leaves `web-download` imports. The Glance image ships `qemu-img` and
+  `lhafile`, the two the conversion and decompression plugins shell out to and
+  import at run time. See
+  [ImportPluginsSpec](./glance-crd.md#importpluginsspec).
 - **`isDefault` lives on the backend CR.** Exactly one attached,
   credential-ready `GlanceBackend` must be marked `isDefault`; that backend
   becomes the `[glance_store] default_backend`. The glance-side sub-reconciler
