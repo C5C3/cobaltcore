@@ -490,6 +490,12 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 	// last projected budget.
 	glance.Spec.ImageCache = cp.Spec.Services.Glance.ImageCache.DeepCopy()
 
+	// The import-plugin selection is projected the same way: clearing
+	// services.glance.importPlugins removes the field from the child, so the Glance
+	// operator's defaults apply again and the next rollout runs no plugin at all
+	// instead of keeping the last projected selection pinned.
+	glance.Spec.ImportPlugins = cp.Spec.Services.Glance.ImportPlugins.DeepCopy()
+
 	// Resolve replicas to the shared operator default, then let an override win.
 	// Assigning unconditionally means clearing services.glance.replicas reverts the
 	// child to the default instead of leaving the previously-projected value pinned

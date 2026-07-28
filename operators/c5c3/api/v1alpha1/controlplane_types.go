@@ -932,6 +932,27 @@ type ServiceGlanceSpec struct {
 	// +optional
 	ImageCache *glancev1alpha1.ImageCacheSpec `json:"imageCache,omitempty"`
 
+	// ImportPlugins enables glance's image-import plugins on the child Glance:
+	// unpacking a compressed image after staging, converting it to one target disk
+	// format, and stamping a fixed set of image properties onto every image the
+	// plugin applies to. Presence of a sub-block enables that plugin, the rendered
+	// order is fixed (decompression, conversion, inject_image_metadata) rather than
+	// an input, and every default resolves at render time in the glance operator;
+	// see glancev1alpha1.ImportPluginsSpec for what each plugin does and which
+	// upload paths bypass it. It is projected UNCONDITIONALLY onto the child's
+	// spec.importPlugins: setting it here selects the plugins, and clearing it
+	// removes the field from the child, so the glance operator's defaults (no
+	// plugins, `image_import_plugins = []`) apply again on the next rollout rather
+	// than leaving the last projected selection pinned.
+	//
+	// Like ImageCache above, the field is typed as the glance module's own
+	// ImportPluginsSpec so the output-format enum and the property-name rules stay
+	// single-source in Go — the webhook validates through
+	// glancev1alpha1.ValidateImportPlugins, not a copy — and the chart-skew caveat
+	// documented on ImportFiltering applies to this copied schema too.
+	// +optional
+	ImportPlugins *glancev1alpha1.ImportPluginsSpec `json:"importPlugins,omitempty"`
+
 	// DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
 	// for THIS service on the managed SHARED database, so a staged migration can run
 	// Glance on one mode while another service stays on the other. Empty (the
