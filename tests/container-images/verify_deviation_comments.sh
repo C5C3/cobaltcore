@@ -14,8 +14,21 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PASS=0
 FAIL=0
 
+# Service images that inherit the generic user instead of creating their own.
+# python-base is checked separately: it is where the user is created.
+SERVICES="keystone horizon glance placement"
+
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
+
+# Print the DEVIATION comment block: the '# DEVIATION' line plus the comment
+# lines that follow it, stopping at the first non-comment line. Scoping the
+# rationale assertion to this block matters — 'openstack' also appears in
+# /var/lib/openstack paths and USER openstack, so grepping the whole
+# Dockerfile would pass no matter what the comment says.
+deviation_block() {
+  awk '/^# DEVIATION/{f=1} f&&!/^#/{exit} f' "$1"
+}
 
 # --- Test 1: python-base has DEVIATION comment ---
 test_python_base_deviation_comment() {
@@ -24,49 +37,30 @@ test_python_base_deviation_comment() {
   local dockerfile="$PROJECT_ROOT/images/python-base/Dockerfile"
 
   assert_file_contains "python-base/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
-  assert_file_contains "DEVIATION comment references generic openstack user" "$dockerfile" "openstack"
+  assert_contains "DEVIATION comment references generic openstack user" \
+    "$(deviation_block "$dockerfile")" "openstack"
 }
 
-# --- Test 2: keystone has DEVIATION comment ---
-test_keystone_deviation_comment() {
-  echo "Test: keystone Dockerfile has DEVIATION comment"
+# --- Test 2: every service image has a DEVIATION comment ---
+test_service_deviation_comment() {
+  local service="$1"
+  echo "Test: $service Dockerfile has DEVIATION comment"
 
-  local dockerfile="$PROJECT_ROOT/images/keystone/Dockerfile"
+  local dockerfile="$PROJECT_ROOT/images/${service}/Dockerfile"
 
-  assert_file_contains "keystone/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
-  assert_file_contains "DEVIATION comment references generic user vs per-service" "$dockerfile" "openstack"
-}
-
-# --- Test 3: horizon has DEVIATION comment ---
-test_horizon_deviation_comment() {
-  echo "Test: horizon Dockerfile has DEVIATION comment"
-
-  local dockerfile="$PROJECT_ROOT/images/horizon/Dockerfile"
-
-  assert_file_contains "horizon/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
-  assert_file_contains "DEVIATION comment references generic user vs per-service" "$dockerfile" "openstack"
-}
-
-# --- Test 4: glance has DEVIATION comment ---
-test_glance_deviation_comment() {
-  echo "Test: glance Dockerfile has DEVIATION comment"
-
-  local dockerfile="$PROJECT_ROOT/images/glance/Dockerfile"
-
-  assert_file_contains "glance/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
-  assert_file_contains "DEVIATION comment references generic user vs per-service" "$dockerfile" "openstack"
+  assert_file_contains "$service/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
+  assert_contains "DEVIATION comment references generic user vs per-service" \
+    "$(deviation_block "$dockerfile")" "openstack"
 }
 
 # --- Run all tests ---
 echo "=== DEVIATION comment verification tests ==="
 echo ""
 test_python_base_deviation_comment
-echo ""
-test_keystone_deviation_comment
-echo ""
-test_horizon_deviation_comment
-echo ""
-test_glance_deviation_comment
+for service in $SERVICES; do
+  echo ""
+  test_service_deviation_comment "$service"
+done
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
