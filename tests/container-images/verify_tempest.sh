@@ -90,6 +90,23 @@ test_no_build_tools_in_final_image() {
   assert_nonzero_exit "uv not found" "$uv_exit"
 }
 
+# --- Test 7: osc-placement registers its openstack CLI commands ---
+test_osc_placement_cli_registered() {
+  echo "Test: osc-placement registers its openstack CLI commands"
+  # osc-placement is installed for the `openstack resource class list`
+  # round-trip, which needs its openstack.cli.extension entry points to
+  # resolve — importing the module would only prove the wheel is on sys.path.
+  # --help builds the command without contacting a cloud, so no credentials
+  # are needed. cliff prints "Unknown command" and can still exit 0 for an
+  # unregistered command, so assert on the rendered usage line too.
+  local help_output exit_code=0
+  help_output=$(docker run --rm "$IMAGE" openstack resource class list --help 2>&1) || exit_code=$?
+
+  assert_eq "openstack resource class list --help exits 0" "0" "$exit_code"
+  assert_contains "resource class list is a registered command" "$help_output" \
+    "usage: openstack resource class list"
+}
+
 # --- Run all tests ---
 echo "=== tempest container verification tests ==="
 echo "Image: $IMAGE"
@@ -105,6 +122,8 @@ echo ""
 test_runs_as_openstack_user
 echo ""
 test_no_build_tools_in_final_image
+echo ""
+test_osc_placement_cli_registered
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
