@@ -28,6 +28,8 @@ permissions:
 jobs:
   # Cleanup order follows the image dependency chain (leaf → root):
   #   1. Service images  (keystone, tempest)  – depend on venv-builder
+  #      The matrix below must list every images/<service>/Dockerfile that
+  #      build-service-images pushes; verify_release_config.sh gates this.
   #   2. venv-builder                         – depends on python-base
   #   3. python-base                          – base layer
   #   4. Operator images (keystone-operator)  – independent
@@ -39,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [keystone, horizon, glance]
+        package: [keystone, horizon, glance, placement]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 

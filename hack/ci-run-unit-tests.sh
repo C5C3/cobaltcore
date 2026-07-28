@@ -81,7 +81,27 @@ docker run --rm --network host \
   bash -c '
     set -e
     source /var/lib/openstack/bin/activate
-    printf "Metadata-Version: 2.1\nName: %s\nVersion: %s\n" "$SERVICE_NAME" "$SERVICE_VERSION" > PKG-INFO
+    # pbr only trusts PKG-INFO when its Name matches the package name in
+    # setup.cfg / pyproject.toml, and that name can differ from the CI
+    # service name (placement ships as openstack-placement). Derive it
+    # from the source tree, falling back to SERVICE_NAME.
+    PKG_NAME="$(python3 <<"PYEOF"
+import configparser, os
+name = None
+cp = configparser.ConfigParser()
+try:
+    if cp.read("setup.cfg") and cp.has_option("metadata", "name"):
+        name = cp.get("metadata", "name")
+except configparser.Error:
+    pass
+if not name and os.path.exists("pyproject.toml"):
+    import tomllib
+    with open("pyproject.toml", "rb") as f:
+        name = tomllib.load(f).get("project", {}).get("name")
+print(name or os.environ["SERVICE_NAME"])
+PYEOF
+)"
+    printf "Metadata-Version: 2.1\nName: %s\nVersion: %s\n" "$PKG_NAME" "$SERVICE_VERSION" > PKG-INFO
     # Old sdist-only pins (e.g. the 2025.2 XStatic set) have legacy setup.py
     # scripts importing pkg_resources, which setuptools 81 removed from uv
     # isolated build envs; pin the build backend to the last bundling release.

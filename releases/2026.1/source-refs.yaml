@@ -8,3 +8,4 @@
 keystone: "29.0.0"
 horizon: "25.7.0"
 glance: "32.0.0"
+placement: "15.0.0"
