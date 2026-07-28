@@ -4082,6 +4082,70 @@ func TestValidateCreate_AcceptsGlanceImageCache(t *testing.T) {
 	}
 }
 
+// TestValidateCreate_RejectsGlanceImportPluginsInjectProperty mirrors the rules
+// on the injected property names, the importFiltering bounds' counterpart one
+// field over. A map key has no CRD marker at all, so the glance module's exported
+// validator is the only gate here: a colon in the name is split off by the oslo
+// Dict parser, which injects a property nobody wrote.
+func TestValidateCreate_RejectsGlanceImportPluginsInjectProperty(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.ImportPlugins = &glancev1alpha1.ImportPluginsSpec{
+		InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+			Properties: map[string]string{"hw:disk_bus": "scsi"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.glance.importPlugins.injectMetadata.properties"))
+	g.Expect(err.Error()).To(ContainSubstring("splits each pair on the first colon"))
+}
+
+// TestValidateCreate_AcceptsGlanceImportPlugins pins the positive half: all three
+// plugins selected at once, with a format inside the enum and an explicitly empty
+// ignoreUserRoles, is a legitimate platform choice and must be admitted. The
+// staging bound is set alongside because the decompression plugin requires it —
+// see TestValidateCreate_RejectsGlanceDecompressionWithoutStagingBound.
+func TestValidateCreate_AcceptsGlanceImportPlugins(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Staging = &glancev1alpha1.StagingSpec{
+		SizeLimit: ptr.To(resource.MustParse("40Gi")),
+	}
+	cp.Spec.Services.Glance.ImportPlugins = &glancev1alpha1.ImportPluginsSpec{
+		Decompression: &glancev1alpha1.ImportDecompressionSpec{},
+		Conversion:    &glancev1alpha1.ImportConversionSpec{OutputFormat: "raw"},
+		InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+			Properties:      map[string]string{"hw_disk_bus": "scsi"},
+			IgnoreUserRoles: []string{},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsGlanceDecompressionWithoutStagingBound covers the
+// cross-field rule on the ControlPlane copy of the two blocks. Both are projected
+// onto the child Glance untouched, so admitting the pair here would only move the
+// rejection to a reconcile the ControlPlane cannot report on.
+func TestValidateCreate_RejectsGlanceDecompressionWithoutStagingBound(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.ImportPlugins = &glancev1alpha1.ImportPluginsSpec{
+		Decompression: &glancev1alpha1.ImportDecompressionSpec{},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.glance.staging.sizeLimit"))
+	g.Expect(err.Error()).To(ContainSubstring("importPlugins.decompression is enabled"))
+}
+
 // TestValidateCreate_GlancePublicEndpointMustBeURL covers the defense-in-depth
 // URL parse behind the coarse ^https?:// pattern. The value is advertised
 // verbatim as the public image catalog Endpoint and is projected into no child

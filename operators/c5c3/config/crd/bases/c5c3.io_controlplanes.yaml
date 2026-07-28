@@ -1480,6 +1480,118 @@ spec:
                           rule: '!(has(self.allowedPorts) && self.allowedPorts.size()
                             > 0 && has(self.disallowedPorts) && self.disallowedPorts.size()
                             > 0)'
+                      importPlugins:
+                        description: |-
+                          ImportPlugins enables glance's image-import plugins on the child Glance:
+                          unpacking a compressed image after staging, converting it to one target disk
+                          format, and stamping a fixed set of image properties onto every image the
+                          plugin applies to. Presence of a sub-block enables that plugin, the rendered
+                          order is fixed (decompression, conversion, inject_image_metadata) rather than
+                          an input, and every default resolves at render time in the glance operator;
+                          see glancev1alpha1.ImportPluginsSpec for what each plugin does and which
+                          upload paths bypass it. It is projected UNCONDITIONALLY onto the child's
+                          spec.importPlugins: setting it here selects the plugins, and clearing it
+                          removes the field from the child, so the glance operator's defaults (no
+                          plugins, `image_import_plugins = []`) apply again on the next rollout rather
+                          than leaving the last projected selection pinned.
+
+                          Like ImageCache above, the field is typed as the glance module's own
+                          ImportPluginsSpec so the output-format enum and the property-name rules stay
+                          single-source in Go — the webhook validates through
+                          glancev1alpha1.ValidateImportPlugins, not a copy — and the chart-skew caveat
+                          documented on ImportFiltering applies to this copied schema too.
+                        properties:
+                          conversion:
+                            description: |-
+                              Conversion enables the image_conversion plugin, which rewrites the staged
+                              image into one target disk format.
+                            properties:
+                              outputFormat:
+                                description: |-
+                                  OutputFormat is the disk format every imported image is converted to
+                                  ([image_conversion] output_format). When empty the operator resolves
+                                  DefaultImportConversionOutputFormat at render time rather than
+                                  materializing it into the CR, so leaving it unset keeps tracking that
+                                  default across upgrades. The accepted values are glance's own: raw, which
+                                  an RBD store can clone; qcow2, which stays sparse on a filesystem store;
+                                  and vmdk.
+                                enum:
+                                - qcow2
+                                - raw
+                                - vmdk
+                                type: string
+                            type: object
+                          decompression:
+                            description: |-
+                              Decompression enables the image_decompression plugin, which unpacks a
+                              compressed image after staging so the later plugins and the backing store
+                              see the disk image rather than the archive. It unpacks by an unbounded
+                              ratio and glance's image_size_cap bounds only the bytes transferred, so
+                              size spec.staging.sizeLimit against the largest UNPACKED image: breaching
+                              that bound evicts the glance-api pod and every in-flight import on the
+                              replica with it. Setting this block therefore requires spec.staging to
+                              answer for that bound — either sizeLimit or unbounded — because the
+                              operator default was sized against the largest download. See
+                              ImportDecompressionSpec.
+                            type: object
+                          injectMetadata:
+                            description: |-
+                              InjectMetadata enables the inject_image_metadata plugin, which stamps a
+                              fixed set of image properties onto every image it applies to.
+                            properties:
+                              ignoreUserRoles:
+                                description: |-
+                                  IgnoreUserRoles lists the Keystone roles exempt from the injection
+                                  ([inject_metadata_properties] ignore_user_roles): an import by a user
+                                  holding one of them leaves the image's properties untouched. When nil the
+                                  operator resolves DefaultImportInjectIgnoreUserRoles at render time —
+                                  glance's own default, which exempts admins — so an unset field keeps
+                                  tracking that default across upgrades.
+
+                                  An explicitly empty list is honored verbatim and is the opt-in to injecting
+                                  for every role including admin, the same nil-versus-empty contract the
+                                  spec.importFiltering lists carry.
+                                items:
+                                  maxLength: 255
+                                  minLength: 1
+                                  type: string
+                                maxItems: 64
+                                type: array
+                              properties:
+                                additionalProperties:
+                                  type: string
+                                description: |-
+                                  Properties are the image properties injected onto every image the plugin
+                                  applies to ([inject_metadata_properties] inject). At least one entry is
+                                  required: an empty map would enable a plugin with nothing to do. The
+                                  operator renders the pairs with the keys sorted alphabetically, so the
+                                  unordered map cannot reshuffle the rendered config and roll the Deployment
+                                  on a reconcile that changed nothing.
+
+                                  The rendered value uses the oslo Dict syntax, which splits pairs on commas
+                                  and each pair on its FIRST colon. A key therefore carries neither
+                                  character; a value may carry a colon (a URL-shaped value works) but no
+                                  comma. The validating webhook enforces this — a map key has no marker of
+                                  its own.
+
+                                  Both halves are bounded at 255 characters. Every pair renders verbatim into
+                                  the one inject line, so an unbounded value would let a CR that etcd accepts
+                                  render a glance-api.conf past the 1 MiB ConfigMap ceiling: admission would
+                                  pass the reconciler an object the API server then refuses on every attempt.
+                                  The CEL rule is the schema counterpart the map's halves otherwise lack; the
+                                  webhook repeats it as defense in depth.
+                                maxProperties: 64
+                                minProperties: 1
+                                type: object
+                                x-kubernetes-validations:
+                                - message: each injected property name and value must
+                                    be at most 255 characters
+                                  rule: self.all(k, size(k) <= 255 && size(self[k])
+                                    <= 255)
+                            required:
+                            - properties
+                            type: object
+                        type: object
                       namespace:
                         description: |-
                           Namespace places the Glance service — and the backing services, secret

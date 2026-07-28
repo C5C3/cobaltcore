@@ -765,6 +765,22 @@ func validateGlance(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, glancev1alpha1.ValidateImageCache(
 		glPath.Child("imageCache"), gl.ImageCache,
 	)...)
+	// services.glance.importPlugins carries the glance module's own
+	// ImportPluginsSpec, and ValidateImportPlugins is its single source too: the
+	// output-format enum, the property-count bounds, and above all the injected
+	// property names, which no CRD marker reaches — a map key has no schema
+	// counterpart, so this call is the only gate a name breaking the oslo Dict
+	// syntax meets on the ControlPlane.
+	allErrs = append(allErrs, glancev1alpha1.ValidateImportPlugins(
+		glPath.Child("importPlugins"), gl.ImportPlugins,
+	)...)
+	// The projection hands both blocks to the child Glance untouched, so the rule
+	// tying the decompression plugin to an explicitly chosen staging bound has to
+	// hold here too — otherwise the ControlPlane would admit a service block whose
+	// projected Glance child is then rejected on every reconcile.
+	allErrs = append(allErrs, glancev1alpha1.ValidateImportDecompressionStaging(
+		glPath, gl.ImportPlugins, gl.Staging,
+	)...)
 	allErrs = append(allErrs, validateGlanceBackends(cp, glPath.Child("backends"))...)
 	allErrs = append(allErrs, validateGlanceServiceAccount(cp)...)
 

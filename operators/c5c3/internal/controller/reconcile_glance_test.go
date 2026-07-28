@@ -1069,6 +1069,66 @@ func TestReconcileGlance_ImageCacheClearedProjectsNil(t *testing.T) {
 		"clearing the ControlPlane cache must disable it on the child again")
 }
 
+// TestReconcileGlance_ImportPluginsProjected proves every sub-block of the
+// plugin selection reaches the child unchanged, and that the child does not alias
+// the ControlPlane spec. (A nil source projecting to nil is pinned by
+// TestReconcileGlance_ImportPluginsClearedProjectsNil.)
+func TestReconcileGlance_ImportPluginsProjected(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.ImportPlugins = &glancev1alpha1.ImportPluginsSpec{
+		Decompression: &glancev1alpha1.ImportDecompressionSpec{},
+		Conversion:    &glancev1alpha1.ImportConversionSpec{OutputFormat: "qcow2"},
+		InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+			Properties:      map[string]string{"hw_disk_bus": "scsi"},
+			IgnoreUserRoles: []string{"admin", "reader"},
+		},
+	}
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	gl := getProjectedGlance(t, r.Client, cp)
+	g.Expect(gl.Spec.ImportPlugins).To(Equal(&glancev1alpha1.ImportPluginsSpec{
+		Decompression: &glancev1alpha1.ImportDecompressionSpec{},
+		Conversion:    &glancev1alpha1.ImportConversionSpec{OutputFormat: "qcow2"},
+		InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+			Properties:      map[string]string{"hw_disk_bus": "scsi"},
+			IgnoreUserRoles: []string{"admin", "reader"},
+		},
+	}))
+
+	// DeepCopy: the child's pointer must not alias the ControlPlane's spec, or a
+	// later mutation there would reach through into the projected object.
+	g.Expect(gl.Spec.ImportPlugins).NotTo(BeIdenticalTo(cp.Spec.Services.Glance.ImportPlugins))
+}
+
+// TestReconcileGlance_ImportPluginsClearedProjectsNil proves the field is
+// assigned unconditionally: clearing services.glance.importPlugins removes the
+// block from the child, so the Glance operator's defaults apply again and the
+// next rollout runs no plugin, rather than leaving the previously-projected
+// selection pinned.
+func TestReconcileGlance_ImportPluginsClearedProjectsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.ImportPlugins = &glancev1alpha1.ImportPluginsSpec{
+		Decompression: &glancev1alpha1.ImportDecompressionSpec{},
+	}
+	r := newGlanceTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.ImportPlugins).NotTo(BeNil())
+
+	cp.Spec.Services.Glance.ImportPlugins = nil
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.ImportPlugins).To(BeNil(),
+		"clearing the ControlPlane selection must run no import plugin on the child again")
+}
+
 // TestReconcileGlance_DoesNotSetAPIServer pins the child-side defaults contract:
 // the projection must leave spec.apiServer unset so the release-conditional
 // glance defaults stay authoritative.

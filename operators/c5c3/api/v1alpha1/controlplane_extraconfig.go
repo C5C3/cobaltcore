@@ -169,9 +169,15 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 			// [keystone_authtoken] password would leak the service password into the
 			// namespace-readable ConfigMap, rendering an [import_filtering_opts]
 			// key would loosen the web-download URI filter past every gate
-			// services.glance.importFiltering puts in front of it, and rendering a
+			// services.glance.importFiltering puts in front of it, rendering a
 			// [DEFAULT] image_cache_* key ends in an evicted glance-api pod or in
-			// database rows nothing reclaims.
+			// database rows nothing reclaims, and rendering an
+			// [image_import_opts] image_import_plugins, [image_conversion]
+			// output_format or [inject_metadata_properties] inject /
+			// ignore_user_roles key bypasses what services.glance.importPlugins
+			// guarantees about them: the fixed decompression-before-conversion
+			// order, the output-format enum, and the oslo Dict syntax the injected
+			// property names are validated against.
 			if owned.Rejected {
 				for _, p := range paths {
 					errs = append(errs, field.Forbidden(p, rejectedGlanceMessage(owned)))
