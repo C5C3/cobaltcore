@@ -35,8 +35,17 @@ glance:
     # The S3 store driver's extra lives on glance_store, not glance — it pulls
     # boto3/botocore/s3transfer, all pinned in upper-constraints.txt.
     - "glance_store[s3]"
+    # Optional LHA-archive support for the image_decompression image-import
+    # plugin. upper-constraints.txt carries no lhafile entry — it is no
+    # OpenStack dependency — so the version is pinned in
+    # overrides/2026.1/constraints.txt, which apply-constraint-overrides.sh
+    # merges into the constraints file this install is run against.
+    - lhafile
   apt_packages:
     # uWSGI is compiled in venv-builder against the shared libpython; glance is
     # otherwise pure Python at runtime. Without this, uwsgi fails to load
     # (python-base ships no libpython3.12.so.1.0).
     - libpython3.12t64
+    # The image_conversion image-import plugin shells out to `qemu-img info`
+    # and `qemu-img convert` on the staged image.
+    - qemu-utils

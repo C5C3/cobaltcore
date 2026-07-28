@@ -38,6 +38,17 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/overrides/.*/constraints\\.txt$/"
+      ],
+      "matchStrings": [
+        "(?m)^(?<depName>[\\w.-]+)===(?<currentValue>[^\\s#]+)\\s*$"
+      ],
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "pep440"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/hack/deploy-infra\\.sh$/"
       ],
       "matchStrings": [
@@ -323,6 +334,20 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "OpenStack test tooling (PyPI)"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["overrides/**/constraints.txt"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["overrides/**/constraints.txt"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": false,
+      "minimumReleaseAge": "7 days",
+      "groupName": "Constraint overrides (PyPI)"
     },
     {
       "matchManagers": ["custom.regex"],
