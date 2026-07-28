@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"slices"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -200,6 +203,28 @@ var (
 	}
 )
 
+// DefaultImportConversionOutputFormat is the disk format the image_conversion
+// plugin rewrites an imported image into when
+// spec.importPlugins.conversion.outputFormat is empty. It is glance's own
+// default and the format a Ceph/RBD store needs: RBD clones copy-on-write from
+// raw only, so any other format turns every boot from that image into a full
+// flatten.
+//
+// Like the import-filtering defaults above it is consumed by the render-time
+// resolver in the controller package and deliberately NOT applied by the
+// defaulting webhook, so an unset field keeps tracking it across upgrades
+// instead of freezing today's value into the stored CR.
+const DefaultImportConversionOutputFormat = "raw"
+
+// DefaultImportInjectIgnoreUserRoles are the Keystone roles the
+// inject_image_metadata plugin skips when
+// spec.importPlugins.injectMetadata.ignoreUserRoles is nil. It is glance's own
+// default: an admin import is taken to know which properties it wants, so the
+// injection stays out of its way. It is a variable rather than a constant only
+// because Go has no constant slices — treat it as read-only, and note that an
+// explicitly empty list in the CR is honored verbatim and drops the exemption.
+var DefaultImportInjectIgnoreUserRoles = []string{"admin"}
+
 // Messages and bounds shared between the spec.importFiltering CRD schema and the
 // webhook mirror below. The markers on ImportFilteringSpec cannot reference a Go
 // constant, so the same literals appear there and must stay byte-identical —
@@ -216,6 +241,36 @@ const (
 	// host lists (the DNS name length limit).
 	maxImportFilteringHostLength = 253
 )
+
+// Bounds the spec.importPlugins webhook mirror shares with the CRD schema. As
+// with the importFiltering bounds, the markers on ImportInjectMetadataSpec
+// cannot reference a Go constant, so the same literals appear there and must
+// stay in sync.
+const (
+	// maxImportInjectEntries mirrors the MaxProperties marker on
+	// injectMetadata.properties and the MaxItems marker on
+	// injectMetadata.ignoreUserRoles, which share the bound.
+	maxImportInjectEntries = 64
+	// maxImportInjectStringLength mirrors the items:MaxLength marker on
+	// injectMetadata.ignoreUserRoles and bounds both halves of an injected
+	// property by the same measure. A map key carries no marker of its own, so
+	// the schema counterpart for the pair is the CEL rule on
+	// injectMetadata.properties, which repeats this literal.
+	//
+	// Both schema counterparts count CODE POINTS — CEL size() over a string and
+	// the MaxLength keyword alike — so every mirror below measures with
+	// utf8.RuneCountInString rather than len(). Counting bytes would make the
+	// webhook the stricter half and reject a 90-character CJK value the schema
+	// admits, under a message naming a limit that value is nowhere near.
+	maxImportInjectStringLength = 255
+)
+
+// importConversionOutputFormats are the disk formats
+// spec.importPlugins.conversion.outputFormat accepts, mirroring the Enum marker
+// on the field. They are glance's own choices for [image_conversion]
+// output_format; a value outside them makes qemu-img fail on every import
+// rather than at admission.
+var importConversionOutputFormats = []string{"qcow2", "raw", "vmdk"}
 
 // Glance-specific container memory defaults, replacing the shared 256Mi/512Mi
 // baseline that keystone and horizon fit in. The glance-api container carries
@@ -666,6 +721,17 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 	// XValidation CEL rules and the item markers on ImportFilteringSpec.
 	allErrs = append(allErrs, ValidateImportFiltering(specPath.Child("importFiltering"), g.Spec.ImportFiltering)...)
 
+	// Defense-in-depth importPlugins validation alongside the enum and the
+	// count/length markers on ImportPluginsSpec, plus the property-name rules no
+	// CRD marker can reach — see ValidateImportPlugins.
+	allErrs = append(allErrs, ValidateImportPlugins(specPath.Child("importPlugins"), g.Spec.ImportPlugins)...)
+
+	// The decompression plugin turns spec.staging.sizeLimit into the only bound
+	// on an unbounded expansion, so enabling it requires that bound to be a
+	// choice rather than an inherited default — see
+	// ValidateImportDecompressionStaging.
+	allErrs = append(allErrs, ValidateImportDecompressionStaging(specPath, g.Spec.ImportPlugins, g.Spec.Staging)...)
+
 	// Defense-in-depth dbPurge validation alongside the Minimum marker on
 	// DBPurgeSpec.RetentionDays, plus the cron-grammar check that has no schema
 	// counterpart.
@@ -947,6 +1013,234 @@ func validateImportFilteringPorts(fldPath *field.Path, ports []int32) field.Erro
 		}
 	}
 	return errs
+}
+
+// ValidateImportPlugins mirrors the spec.importPlugins schema as defense in
+// depth behind the CRD layer — the output-format enum, the property-count
+// bounds, and the ignoreUserRoles item markers — and carries the checks the
+// schema has no way to express. A map key is not reachable from a CRD marker
+// (the position spec.logging.perLoggerLevels is in), so every rule on a
+// property name below is the only gate there is.
+//
+// Those rules guard the oslo Dict syntax of the rendered
+// [inject_metadata_properties] inject value, which splits pairs on commas and
+// each pair on its first colon: a comma or colon in a key breaks the pair apart
+// silently, and a newline injects whole config lines the way an unfiltered
+// import-filtering host would — the same reasoning as
+// validateImportFilteringHosts.
+//
+// It is nil-safe. An unset block enables no plugin and carries nothing to
+// validate, and every default it leaves open is resolved at render time.
+//
+// It is exported for the ControlPlane webhook, which carries this very type on
+// services.glance.importPlugins and must admit exactly what the Glance CRD
+// admits: a hand-kept mirror there would let the two drift, and the ControlPlane
+// would start admitting values its projected Glance child then rejects. The
+// caller supplies its own field path, so the errors name the CR under admission.
+func ValidateImportPlugins(fldPath *field.Path, p *ImportPluginsSpec) field.ErrorList {
+	if p == nil {
+		return nil
+	}
+	var errs field.ErrorList
+
+	// An empty outputFormat is how the block asks for the operator default, so
+	// only a non-empty value is measured against the enum.
+	if p.Conversion != nil && p.Conversion.OutputFormat != "" &&
+		!slices.Contains(importConversionOutputFormats, p.Conversion.OutputFormat) {
+		errs = append(errs, field.NotSupported(
+			fldPath.Child("conversion", "outputFormat"),
+			p.Conversion.OutputFormat,
+			importConversionOutputFormats,
+		))
+	}
+
+	errs = append(errs, validateImportInjectMetadata(fldPath.Child("injectMetadata"), p.InjectMetadata)...)
+	return errs
+}
+
+// validateImportInjectMetadata checks one inject_image_metadata block: the
+// property map against its count bounds and the Dict-syntax rules, and the role
+// list against the item bounds it shares with the importFiltering lists. It is
+// nil-safe, so the caller does not repeat the check.
+func validateImportInjectMetadata(fldPath *field.Path, m *ImportInjectMetadataSpec) field.ErrorList {
+	if m == nil {
+		return nil
+	}
+	var errs field.ErrorList
+
+	propsPath := fldPath.Child("properties")
+	switch {
+	case len(m.Properties) == 0:
+		// A nil map and an explicit {} are the same shape here, and neither is the
+		// "keep the operator default" gesture the optional fields make: the plugin
+		// has nothing to inject, so enabling it says nothing.
+		errs = append(errs, field.Required(propsPath,
+			"at least one property must be set: the inject_image_metadata plugin has nothing to inject otherwise"))
+	case len(m.Properties) > maxImportInjectEntries:
+		errs = append(errs, field.TooMany(propsPath, len(m.Properties), maxImportInjectEntries))
+	}
+
+	// Sort the keys so the aggregated error list is deterministic, the same
+	// reason GlanceBackend sorts its extraOptions keys before validating them.
+	keys := make([]string, 0, len(m.Properties))
+	for k := range m.Properties {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		errs = append(errs, validateImportInjectProperty(propsPath, k, m.Properties[k])...)
+	}
+
+	rolesPath := fldPath.Child("ignoreUserRoles")
+	if len(m.IgnoreUserRoles) > maxImportInjectEntries {
+		errs = append(errs, field.TooMany(rolesPath, len(m.IgnoreUserRoles), maxImportInjectEntries))
+	}
+	for i, role := range m.IgnoreUserRoles {
+		switch {
+		case role == "":
+			errs = append(errs, field.Invalid(rolesPath.Index(i), role, "role must not be empty"))
+		case hasControlChars(role):
+			errs = append(errs, field.Invalid(rolesPath.Index(i), truncateForError(role),
+				"role must not contain newline or carriage-return characters: the rendered "+
+					"[inject_metadata_properties] value is written verbatim, so a newline injects arbitrary config lines"))
+		case strings.Contains(role, ","):
+			errs = append(errs, field.Invalid(rolesPath.Index(i), truncateForError(role),
+				"role must not contain a comma: the rendered ignore_user_roles list separates roles on commas, "+
+					"so the entry would be read as two roles"))
+		case utf8.RuneCountInString(role) > maxImportInjectStringLength:
+			errs = append(errs, field.Invalid(rolesPath.Index(i), truncateForError(role),
+				fmt.Sprintf("role must be at most %d characters", maxImportInjectStringLength)))
+		}
+	}
+	return errs
+}
+
+// validateImportInjectProperty checks one injected property pair against the
+// oslo Dict syntax the rendered inject value is parsed with. The key side is
+// the strict one: the parser splits pairs on commas and each pair on its first
+// colon, so either character in a key silently produces a property nobody
+// wrote. A value may carry a colon — everything after the first one belongs to
+// it, which is what lets a URL be injected — but not a comma, which would start
+// the next pair. Both sides reject the control characters that would inject
+// config lines, and both reject surrounding whitespace, which the parser strips
+// so the injected property would differ from the one the CR stores.
+//
+// Both sides are also length-bounded. Every pair is rendered verbatim into one
+// [inject_metadata_properties] inject line, so an unbounded value lets a CR that
+// etcd accepts (~1.5 MiB) render a glance-api.conf past the 1 MiB ConfigMap
+// ceiling — admission would be handing the reconciler an object the API server
+// then refuses on every attempt, with the Deployment pinned to the last good
+// render because the ConfigMap name carries the content hash.
+func validateImportInjectProperty(propsPath *field.Path, key, value string) field.ErrorList {
+	var errs field.ErrorList
+
+	// Every error below names the property through its map key, and Path.Key
+	// stores that string verbatim as the subscript: field.Error.Field carries it
+	// into the response body, the operator log, and a RequestResponse audit entry
+	// — the same three places BadValue lands in, and the reason truncateForError
+	// exists. So the subscript is truncated once here, and an over-long key
+	// cannot be echoed back through the path either. Both halves are truncated
+	// wherever they are reported, not only on the length branch: a value that
+	// carries a comma or a newline is rejected before its size is ever measured.
+	keyPath := propsPath.Key(truncateForError(key))
+
+	// An empty key has no Key() path worth printing, so it is reported on the map
+	// itself — the same shape the perLoggerLevels empty-name check uses.
+	switch {
+	case key == "":
+		errs = append(errs, field.Invalid(propsPath, key, "property name must not be empty"))
+		return errs
+	case hasControlChars(key):
+		errs = append(errs, field.Invalid(keyPath, truncateForError(key),
+			"property name must not contain newline or carriage-return characters: the rendered "+
+				"[inject_metadata_properties] inject value is written verbatim, so a newline injects arbitrary config lines"))
+	case strings.Contains(key, ":"):
+		errs = append(errs, field.Invalid(keyPath, truncateForError(key),
+			"property name must not contain a colon: the oslo Dict syntax splits each pair on the first colon, "+
+				"so the name would be silently truncated there and its remainder injected as part of the value"))
+	case strings.Contains(key, ","):
+		errs = append(errs, field.Invalid(keyPath, truncateForError(key),
+			"property name must not contain a comma: the oslo Dict syntax separates pairs on commas, "+
+				"so the name would be split into a property of its own"))
+	case strings.TrimSpace(key) != key:
+		errs = append(errs, field.Invalid(keyPath, truncateForError(key),
+			"property name must not start or end with whitespace: the oslo parser strips it, "+
+				"so the injected property name would differ from the one stored here"))
+	case utf8.RuneCountInString(key) > maxImportInjectStringLength:
+		errs = append(errs, field.Invalid(keyPath, truncateForError(key),
+			fmt.Sprintf("property name must be at most %d characters", maxImportInjectStringLength)))
+	}
+
+	switch {
+	case hasControlChars(value):
+		errs = append(errs, field.Invalid(keyPath, truncateForError(value),
+			"property value must not contain newline or carriage-return characters: the rendered "+
+				"[inject_metadata_properties] inject value is written verbatim, so a newline injects arbitrary config lines"))
+	case strings.Contains(value, ","):
+		errs = append(errs, field.Invalid(keyPath, truncateForError(value),
+			"property value must not contain a comma: the oslo Dict syntax separates pairs on commas, "+
+				"so the value would be cut short and its remainder read as another property"))
+	case strings.TrimSpace(value) != value:
+		errs = append(errs, field.Invalid(keyPath, truncateForError(value),
+			"property value must not start or end with whitespace: the oslo parser strips it, "+
+				"so the injected value would differ from the one stored here"))
+	case utf8.RuneCountInString(value) > maxImportInjectStringLength:
+		errs = append(errs, field.Invalid(keyPath, truncateForError(value),
+			fmt.Sprintf("property value must be at most %d characters", maxImportInjectStringLength)))
+	}
+	return errs
+}
+
+// ValidateImportDecompressionStaging requires a CR that enables the
+// image_decompression plugin to size the staging area itself instead of
+// inheriting DefaultStagingSizeLimit. The plugin expands the staged file by a
+// ratio the caller picks and neither glance nor this operator caps the result,
+// which leaves spec.staging.sizeLimit as the only bound in the path — and
+// breaching it evicts the whole glance-api pod, taking every concurrent import
+// and in-flight request on that replica with it. A bound left at the default was
+// sized against the largest DOWNLOAD, which is the wrong number the moment the
+// plugin is on, so admission asks for the one thing it can: that somebody picked
+// it. spec.staging.unbounded satisfies the rule too — it is the deliberate
+// no-bound escape hatch, and choosing it is equally an answer.
+//
+// It correlates two top-level spec fields, so no marker on either type reaches
+// it and admission is the sole gate — the position the imageCache/middleware
+// name collision is in.
+//
+// It is exported and takes the path of the spec that carries both blocks, so the
+// ControlPlane webhook enforces this rule on services.glance through the same
+// code rather than a copy that could drift.
+func ValidateImportDecompressionStaging(specPath *field.Path, p *ImportPluginsSpec, s *StagingSpec) field.ErrorList {
+	if p == nil || p.Decompression == nil {
+		return nil
+	}
+	if s != nil && (s.SizeLimit != nil || s.Unbounded) {
+		return nil
+	}
+	return field.ErrorList{field.Required(
+		specPath.Child("staging", "sizeLimit"),
+		fmt.Sprintf("must be set explicitly while importPlugins.decompression is enabled: the plugin expands "+
+			"the staged image by a ratio the caller picks and nothing caps the result, and breaching this bound "+
+			"evicts the glance-api pod together with every other in-flight import on that replica, so the %s "+
+			"default cannot be assumed to fit the largest UNPACKED image (set staging.unbounded to deliberately "+
+			"keep no bound instead)", defaultStagingSizeLimit.String()),
+	)}
+}
+
+// truncateForError shortens an over-long string before it is echoed back by an
+// admission error — as the BadValue, or as the map-key subscript of the field
+// path, which field.Error renders alongside it. field.Invalid puts both into the
+// response body, which the API server returns to the client, the operator logs,
+// and a RequestResponse audit policy records — so a value sized against etcd's
+// ~1.5 MiB object ceiling would be reproduced in full three times over for a
+// message that is a fixed-length statement. Keeping the bound's worth of prefix
+// is enough to recognize which value was rejected.
+func truncateForError(s string) string {
+	runes := []rune(s)
+	if len(runes) <= maxImportInjectStringLength {
+		return s
+	}
+	return string(runes[:maxImportInjectStringLength]) + "…"
 }
 
 // validateDBPurge mirrors the spec.dbPurge schema as defense in depth behind the
