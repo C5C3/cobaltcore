@@ -171,19 +171,33 @@ Ask: **what would the new operator copy-paste from `operators/keystone`
 a second (or third) time?** Classify keystone internals into:
 
 1. thin wrappers over `internal/common` — copy as pattern, fine;
-2. generic logic living in keystone (pipeline/status machinery, workload
-   builders, watch mappers, webhook validators) — **extraction candidates**;
+2. generic logic living in keystone (pipeline/status machinery, watch
+   mappers, webhook validators) — **extraction candidates**;
 3. genuinely keystone-specific (fernet, bootstrap, trust-flush) — leave
    alone, rule of three.
+
+Read § The shared operator scaffold first: pod-template and Service
+assembly, scheme wiring, the `ValidateDelete` shim, and the
+instrumentation glue have already been extracted, so they are no longer
+candidates — they are consumption, and a copy of the pre-extraction
+keystone shapes reintroduces boilerplate the repo has deleted.
 
 If category 2 is non-empty, file (or update) a **separate refactor issue**
 listing the candidates with file:line references, S/M/L effort, and a
 must-before / opportunistic split — then mark the meta **blocked on it**.
 #551 is the template (#655 is the second round: DB orchestration +
-`keystone_authtoken` renderer for glance); check first whether it (or a
-successor) is still open and simply needs extending. Also check open API-shape issues
-(e.g. #471) — a new CRD must be born with the target shape, not the
-legacy one.
+`keystone_authtoken` renderer for glance; #757 the third: the shared
+workload builder plus the boilerplate collapse); check first whether it
+(or a successor) is still open and simply needs extending. Also check open
+API-shape issues (e.g. #471) — a new CRD must be born with the target
+shape, not the legacy one.
+
+Extract **with** a consumer, never ahead of one. #757 deliberately left
+out both API bits its own issue sketched — `ContainerParams.EnvFrom` and
+a `webhook.Setup[T]` wrapper — because no existing operator sets either;
+the fourth operator adds `EnvFrom` when its env contract needs it. A
+field no caller sets is untested surface, and the same calculus applies
+to whatever the new service seems to ask for.
 
 ### 5. Draft the meta issue
 
@@ -199,8 +213,11 @@ Standard phase skeleton (drop/merge phases the profile rules out):
   defaults (record the decisions in the meta as #656 records D1–D10).
 - **Phase 1 — container image** (usually independent of pre-work).
 - **Phase 2 — service operator scaffold** (blocked on generalization) —
-  one checkbox per recurring-maintenance task from the profile; they are
-  part of the scaffold, not a follow-up (§ Recurring maintenance jobs).
+  built on the shared forms of § The shared operator scaffold, with the
+  rendered Deployment and Service pinned in the same checkbox that adds
+  them; one checkbox per recurring-maintenance task from the profile,
+  which is part of the scaffold, not a follow-up (§ Recurring maintenance
+  jobs).
 - **Phase 3 — CI, e2e, deploy stack** (alongside Phase 2) — including the
   kind Gateway listener/cert, OpenBao bootstrap legs, and chaos suites.
 - **Phase 4 — ControlPlane integration** (blocked on Phase 2) — including
@@ -235,6 +252,38 @@ sub-issues use them as gates): [[check-crd-drift]], [[check-fixture-drift]],
 [[check-go-workspace-deps]], [[check-spdx-reuse]], and
 [[check-service-parity]] as the closing cross-layer gate once the
 onboarding lands (#656 used it exactly that way).
+
+## The shared operator scaffold (verified 2026-07-28 post-#757, re-verify at HEAD)
+
+The three existing service operators no longer hand-write their pod
+template, their scheme, or their webhook and instrumentation shims. A new
+operator consumes the shared forms below; writing the pre-extraction
+keystone shapes from memory (or from an older PR) reintroduces
+boilerplate that has been deleted repo-wide, and review will send it
+back.
+
+| Consume | Instead of |
+|---|---|
+| `deployment.BuildWorkload(WorkloadParams{...})` — replicas/selector/strategy, pod-level knobs, container resources, restricted security context, preStop hook; everything else renders verbatim, **nilness included** | a hand-assembled `appsv1.Deployment` literal |
+| `deployment.BuildService(ns, name, labels, selector, port, targetPort)` — `port` and `targetPort` stay separate so traffic can route to a sidecar | a hand-assembled `corev1.Service` literal |
+| `bootstrap.NewScheme(<extra AddToScheme funcs>...)` in `main.go` | `var scheme = runtime.NewScheme()` plus an `init()` block |
+| embedding `webhook.NoopDeleteValidator[T]` | a per-webhook `ValidateDelete` method |
+| passing the bound method `instrumenter.Instrument` into the pipeline | a package-local `instrumentSubReconciler` wrapper |
+| referencing `commonreconcile.*` / `healthcheck.*` requeue constants directly | package-local aliases in a `requeue_intervals.go` (keep that file only for genuinely operator-specific waits; horizon has none and therefore no file) |
+
+What stays service-specific is the residue the builder cannot know:
+conditional volume/mount/container appends (db-TLS keypair, backend
+config, sidecars), the launch command, probes, and any pod annotation
+that must roll the Deployment when a secret rotates.
+
+**Pin the rendered objects.** All three operators carry a
+`reconcile_deployment_pin_test.go`: the full Deployment and Service
+marshalled with `sigs.k8s.io/yaml` and compared as a plain string, one
+golden per input that perturbs the pod template (launch mode, TLS,
+sidecar, autoscaling, hash annotations). Generate the new operator's pins
+in the same commit that adds its builders — they are what makes the next
+change to the shared `BuildWorkload` provably byte-neutral for this
+service, and they cost nothing to write while the builder is fresh.
 
 ## Recurring maintenance jobs
 
@@ -439,6 +488,15 @@ breaks structurally. Profile these instead of the Python questions:
   hash (`dbPurgeCronJobName`). Adding the first CronJob to an existing
   operator means paying all of this; adding it during onboarding means
   the bound exists before any CR does.
+- **In-cluster API probes must retry the connection, not the response:**
+  every `basic-deployment` suite fires a one-off pod at the service API
+  right after the CR flips Ready, and kube-proxy's endpoint programming
+  can trail that flip by a second or two — a single-shot request loses
+  that race with every pod serving. Copy the hardened idiom (`d11fef10`):
+  retry connection-level failures inside the probe pod (15 attempts, 2s
+  apart) with a step timeout covering the whole budget, while `HTTPError`
+  and the status/body assertions still fail on the first response, so the
+  suite tolerates the endpoint lag and nothing else.
 - **Paste-deploy divergence between releases:** factory references
   (`API.factory` vs `API_factory`) and oslo.middleware healthcheck
   semantics (filter tolerated in 2025.2, app-only in 2026.1) differ

@@ -132,6 +132,7 @@ Family-specific constraints:
 |---|---|---|
 | `context deadline exceeded` / `InternalError` on the first webhook-gated kubectl right after an operator rollout | apiserver reuses a stale keep-alive to a terminated webhook pod IP | `85e3172a` — retry loop with fresh dials + 120s step timeout |
 | Single-shot `kubectl get <job/pod>` fails although the object appears seconds later | script raced the controller's next reconcile pass (status flips before the object is created) | `5b0c961a` — chainsaw `assert` instead of one-shot get |
+| In-cluster HTTP probe refused seconds after the CR flipped Ready, with every pod serving and no rollout in flight | kube-proxy's endpoint programming trails the Ready flip | `d11fef10` — retry connection-level errors in the probe pod (15 × 2s) + 90s step timeout; `HTTPError` still fails hard |
 | Helper script targets the wrong namespace, `pods "openbao-0" not found` | chainsaw injects `NAMESPACE=<test ns>` into every script step, poisoning generic env vars | `2c23003e` — dedicated `OPENBAO_NAMESPACE` contract |
 | Availability-sampling loop flakes when a CR raises `terminationGracePeriodSeconds`/preStop | hard-coded window silently coupled to spec defaults | `0fa60e6e` — derive window from the rendered Deployment |
 | Cleanup timeout exceeded in deletion suites under `parallel: 4` | MariaDB operator serializes Database/User/Grant deletions past the old 60s window | `cleanup: 3m` in `tests/e2e/chainsaw-config.yaml` |
