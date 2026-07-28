@@ -140,11 +140,20 @@ spec:
           # re-apply the experiment a bounded number of times. The chainsaw
           # apply above stays authoritative for cleanup tracking; the first
           # kubectl apply below is a no-op on the same object.
+          # Selected=False is NOT terminal on first sight: Chaos Mesh's
+          # condition controller initializes every condition to False at
+          # creation, before the selector has run, so a single False read
+          # can mean "not evaluated yet" — acting on it deletes the
+          # experiment out from under an injection that is already in
+          # flight. Only two consecutive False reads, 2s apart, count as a
+          # failed selection worth a delete-and-re-apply.
           # NOTE: set -euo pipefail is intentionally omitted — a transient
           # kubectl failure must count as "not yet injected", not abort.
           for attempt in 1 2 3; do
             kubectl apply -f 03-container-kill.yaml
+            SELECTED_FALSE=0
             for i in $(seq 1 10); do
+              sleep 2
               INJECTED=$(kubectl get podchaos kill-federation-proxy -n $NAMESPACE \
                 -o jsonpath='{.status.conditions[?(@.type=="AllInjected")].status}')
               if [ "$INJECTED" = "True" ]; then
@@ -154,9 +163,13 @@ spec:
               SELECTED=$(kubectl get podchaos kill-federation-proxy -n $NAMESPACE \
                 -o jsonpath='{.status.conditions[?(@.type=="Selected")].status}')
               if [ "$SELECTED" = "False" ]; then
+                SELECTED_FALSE=$((SELECTED_FALSE + 1))
+              else
+                SELECTED_FALSE=0
+              fi
+              if [ "$SELECTED_FALSE" -ge 2 ]; then
                 break
               fi
-              sleep 2
             done
             echo "Chaos not injected (attempt ${attempt}); deleting and re-applying the experiment"
             kubectl delete podchaos kill-federation-proxy -n $NAMESPACE --ignore-not-found --wait=true
