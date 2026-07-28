@@ -745,6 +745,276 @@ func TestOperatorDefaults_ImportFilteringIsBracketBounded(t *testing.T) {
 	}
 }
 
+// TestEffectiveImportPlugins pins the render-time resolution of
+// spec.importPlugins: the presence of a sub-block is the opt-in for its plugin,
+// and only a block that is set resolves defaults for its own fields.
+//
+// The nil-versus-empty half of the contract is the one spec.importFiltering
+// carries: an unset ignoreUserRoles picks up glance's admin exemption, while an
+// explicitly empty list is honored verbatim and is the only way to have the
+// plugin inject for admins too.
+func TestEffectiveImportPlugins(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *glancev1alpha1.ImportPluginsSpec
+		want glancev1alpha1.ImportPluginsSpec
+	}{
+		{
+			name: "nil block enables no plugin",
+			in:   nil,
+		},
+		{
+			name: "empty block enables no plugin",
+			in:   &glancev1alpha1.ImportPluginsSpec{},
+		},
+		{
+			// The block carries no fields, so resolution only has to keep it set.
+			name: "decompression passes through",
+			in:   &glancev1alpha1.ImportPluginsSpec{Decompression: &glancev1alpha1.ImportDecompressionSpec{}},
+			want: glancev1alpha1.ImportPluginsSpec{Decompression: &glancev1alpha1.ImportDecompressionSpec{}},
+		},
+		{
+			name: "empty conversion resolves the default output format",
+			in:   &glancev1alpha1.ImportPluginsSpec{Conversion: &glancev1alpha1.ImportConversionSpec{}},
+			want: glancev1alpha1.ImportPluginsSpec{
+				Conversion: &glancev1alpha1.ImportConversionSpec{OutputFormat: "raw"},
+			},
+		},
+		{
+			name: "an explicit output format is honored",
+			in: &glancev1alpha1.ImportPluginsSpec{
+				Conversion: &glancev1alpha1.ImportConversionSpec{OutputFormat: "qcow2"},
+			},
+			want: glancev1alpha1.ImportPluginsSpec{
+				Conversion: &glancev1alpha1.ImportConversionSpec{OutputFormat: "qcow2"},
+			},
+		},
+		{
+			name: "nil ignoreUserRoles resolves the admin exemption",
+			in: &glancev1alpha1.ImportPluginsSpec{
+				InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+					Properties: map[string]string{"hw_disk_bus": "scsi"},
+				},
+			},
+			want: glancev1alpha1.ImportPluginsSpec{
+				InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+					Properties:      map[string]string{"hw_disk_bus": "scsi"},
+					IgnoreUserRoles: []string{"admin"},
+				},
+			},
+		},
+		{
+			// The opt-in to injecting for admins too: the empty list survives, it
+			// does not fall back to the default the nil case picks up.
+			name: "explicitly empty ignoreUserRoles opts out of the exemption",
+			in: &glancev1alpha1.ImportPluginsSpec{
+				InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+					Properties:      map[string]string{"hw_disk_bus": "scsi"},
+					IgnoreUserRoles: []string{},
+				},
+			},
+			want: glancev1alpha1.ImportPluginsSpec{
+				InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+					Properties:      map[string]string{"hw_disk_bus": "scsi"},
+					IgnoreUserRoles: []string{},
+				},
+			},
+		},
+		{
+			name: "an explicit ignoreUserRoles list is honored verbatim",
+			in: &glancev1alpha1.ImportPluginsSpec{
+				InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+					Properties:      map[string]string{"hw_disk_bus": "scsi"},
+					IgnoreUserRoles: []string{"admin", "service"},
+				},
+			},
+			want: glancev1alpha1.ImportPluginsSpec{
+				InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+					Properties:      map[string]string{"hw_disk_bus": "scsi"},
+					IgnoreUserRoles: []string{"admin", "service"},
+				},
+			},
+		},
+		{
+			name: "all three blocks resolve independently",
+			in: &glancev1alpha1.ImportPluginsSpec{
+				Decompression: &glancev1alpha1.ImportDecompressionSpec{},
+				Conversion:    &glancev1alpha1.ImportConversionSpec{},
+				InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+					Properties: map[string]string{"hw_disk_bus": "scsi"},
+				},
+			},
+			want: glancev1alpha1.ImportPluginsSpec{
+				Decompression: &glancev1alpha1.ImportDecompressionSpec{},
+				Conversion:    &glancev1alpha1.ImportConversionSpec{OutputFormat: "raw"},
+				InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+					Properties:      map[string]string{"hw_disk_bus": "scsi"},
+					IgnoreUserRoles: []string{"admin"},
+				},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(effectiveImportPlugins(tc.in)).To(Equal(tc.want))
+		})
+	}
+
+	t.Run("nil block is indistinguishable from an empty one", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		g.Expect(effectiveImportPlugins(nil)).To(Equal(effectiveImportPlugins(&glancev1alpha1.ImportPluginsSpec{})))
+	})
+
+	// The resolver defaults into fresh sub-blocks: the CR it was handed keeps its
+	// unset fields unset, so nothing writes the current default back into the
+	// stored spec and an upgrade can still move it.
+	t.Run("the input spec is left untouched", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		in := &glancev1alpha1.ImportPluginsSpec{
+			Conversion: &glancev1alpha1.ImportConversionSpec{},
+			InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+				Properties: map[string]string{"hw_disk_bus": "scsi"},
+			},
+		}
+		got := effectiveImportPlugins(in)
+		g.Expect(got.Conversion.OutputFormat).To(Equal("raw"))
+		g.Expect(got.InjectMetadata.IgnoreUserRoles).To(Equal([]string{"admin"}))
+		g.Expect(got.Conversion).NotTo(BeIdenticalTo(in.Conversion))
+		g.Expect(got.InjectMetadata).NotTo(BeIdenticalTo(in.InjectMetadata))
+		g.Expect(in.Conversion.OutputFormat).To(BeEmpty())
+		g.Expect(in.InjectMetadata.IgnoreUserRoles).To(BeNil())
+	})
+}
+
+// TestOperatorDefaults_ImportPluginsRendering pins the wire format of the three
+// groups spec.importPlugins renders: the plugin list, the conversion format, and
+// the two inject_image_metadata options.
+//
+// The list is always present, so a CR without the block says "no plugins" rather
+// than falling back to glance's own default, and its order is the operator's, not
+// the CR's. The two per-plugin groups appear only with their plugin. The one
+// asymmetry that is easy to get wrong is bracketing: image_import_plugins is a
+// bounded ListOpt and needs the brackets, ignore_user_roles is an unbounded one
+// and would read them as part of a role name.
+func TestOperatorDefaults_ImportPluginsRendering(t *testing.T) {
+	defaultsFor := func(spec *glancev1alpha1.ImportPluginsSpec) map[string]map[string]string {
+		glance := glanceForConfig()
+		glance.Spec.ImportPlugins = spec
+		return operatorDefaults(glance, validProjection())
+	}
+	injectProperties := map[string]string{"hw_disk_bus": "scsi"}
+
+	t.Run("all three blocks render in the fixed order", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		// Decompression ahead of conversion is upstream's requirement, and the
+		// literal is spelled out rather than assembled so a reordering of the
+		// renderer cannot pass unnoticed.
+		defaults := defaultsFor(&glancev1alpha1.ImportPluginsSpec{
+			Decompression:  &glancev1alpha1.ImportDecompressionSpec{},
+			Conversion:     &glancev1alpha1.ImportConversionSpec{},
+			InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{Properties: injectProperties},
+		})
+		g.Expect(defaults["image_import_opts"]).To(HaveKeyWithValue("image_import_plugins",
+			"[image_decompression,image_conversion,inject_image_metadata]"))
+	})
+
+	t.Run("a single block renders only its own plugin", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		defaults := defaultsFor(&glancev1alpha1.ImportPluginsSpec{
+			Conversion: &glancev1alpha1.ImportConversionSpec{},
+		})
+		g.Expect(defaults["image_import_opts"]).To(HaveKeyWithValue("image_import_plugins", "[image_conversion]"))
+		g.Expect(defaults).NotTo(HaveKey("inject_metadata_properties"))
+	})
+
+	t.Run("a nil block renders an empty list and no plugin group", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		defaults := defaultsFor(nil)
+		// "[]" is an empty oslo list; an absent key would leave glance at its own
+		// default instead.
+		g.Expect(defaults["image_import_opts"]).To(HaveKeyWithValue("image_import_plugins", "[]"))
+		g.Expect(defaults).NotTo(HaveKey("image_conversion"))
+		g.Expect(defaults).NotTo(HaveKey("inject_metadata_properties"))
+	})
+
+	t.Run("an empty block renders exactly like a nil one", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		g.Expect(defaultsFor(&glancev1alpha1.ImportPluginsSpec{})).To(Equal(defaultsFor(nil)))
+	})
+
+	t.Run("the output format defaults to raw", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		defaults := defaultsFor(&glancev1alpha1.ImportPluginsSpec{
+			Conversion: &glancev1alpha1.ImportConversionSpec{},
+		})
+		g.Expect(defaults["image_conversion"]).To(HaveKeyWithValue("output_format", "raw"))
+	})
+
+	t.Run("an explicit output format is rendered", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		defaults := defaultsFor(&glancev1alpha1.ImportPluginsSpec{
+			Conversion: &glancev1alpha1.ImportConversionSpec{OutputFormat: "qcow2"},
+		})
+		g.Expect(defaults["image_conversion"]).To(HaveKeyWithValue("output_format", "qcow2"))
+	})
+
+	// The oslo Dict wire format: unquoted key:value pairs joined by commas, keys
+	// sorted. Sorting is what keeps the value — and the ConfigMap content hash it
+	// feeds — stable across reconciles, so the render is repeated often enough
+	// that a map-order render would show up.
+	t.Run("inject renders sorted key:value pairs and is stable", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		spec := &glancev1alpha1.ImportPluginsSpec{
+			InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+				Properties: map[string]string{
+					"os_distro":        "ubuntu",
+					"hw_disk_bus":      "scsi",
+					"hw_scsi_model":    "virtio-scsi",
+					"provenance":       "https://images.example.com/builds",
+					"hw_qemu_guest_ag": "yes",
+				},
+			},
+		}
+		want := "hw_disk_bus:scsi,hw_qemu_guest_ag:yes,hw_scsi_model:virtio-scsi," +
+			"os_distro:ubuntu,provenance:https://images.example.com/builds"
+		for i := range 32 {
+			got := defaultsFor(spec)["inject_metadata_properties"]["inject"]
+			g.Expect(got).To(Equal(want), "render %d differs; Go map order must not reach the rendered value", i)
+		}
+	})
+
+	roleTests := []struct {
+		name  string
+		roles []string
+		want  string
+	}{
+		{name: "nil roles resolve the admin exemption", roles: nil, want: "admin"},
+		{name: "an explicit list is joined verbatim", roles: []string{"admin", "service"}, want: "admin,service"},
+		{name: "an explicitly empty list drops the exemption", roles: []string{}, want: ""},
+	}
+	for _, tc := range roleTests {
+		t.Run("ignore_user_roles: "+tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			defaults := defaultsFor(&glancev1alpha1.ImportPluginsSpec{
+				InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+					Properties:      injectProperties,
+					IgnoreUserRoles: tc.roles,
+				},
+			})
+			section := defaults["inject_metadata_properties"]
+			g.Expect(section).To(HaveKeyWithValue("ignore_user_roles", tc.want))
+			// Unlike every [import_filtering_opts] list, this one is an unbounded
+			// ListOpt: brackets would become part of the first and last role name,
+			// so the exemption would silently match nobody.
+			g.Expect(section["ignore_user_roles"]).NotTo(HavePrefix("["),
+				"ignore_user_roles is an unbounded ListOpt; brackets are read as item text")
+			g.Expect(section["ignore_user_roles"]).NotTo(HaveSuffix("]"),
+				"ignore_user_roles is an unbounded ListOpt; brackets are read as item text")
+		})
+	}
+}
+
 // TestOperatorDefaults_RegistryDriftGuard is the completeness check tying
 // operatorDefaults to glancev1alpha1.OwnedConfigKeys: every key the operator
 // renders must be registered (forward) and every registered key must be
@@ -763,6 +1033,15 @@ func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
 	// Enable the image cache too, so the three conditionally rendered
 	// image_cache_* keys are covered by both directions of the check.
 	glance.Spec.ImageCache = &glancev1alpha1.ImageCacheSpec{}
+	// All three import plugins, so the conditionally rendered [image_conversion]
+	// and [inject_metadata_properties] keys are covered as well.
+	glance.Spec.ImportPlugins = &glancev1alpha1.ImportPluginsSpec{
+		Decompression: &glancev1alpha1.ImportDecompressionSpec{},
+		Conversion:    &glancev1alpha1.ImportConversionSpec{},
+		InjectMetadata: &glancev1alpha1.ImportInjectMetadataSpec{
+			Properties: map[string]string{"hw_disk_bus": "scsi"},
+		},
+	}
 
 	defaults := operatorDefaults(glance, validProjection())
 	defaults = config.InjectOsloPolicyConfig(defaults, policyFilePath)

@@ -7,7 +7,8 @@ package controller
 import (
 	"context"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -202,6 +203,24 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, glance *glancev1
 func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjection) map[string]map[string]string {
 	logging := effectiveLogging(glance.Spec.Logging)
 	filtering := effectiveImportFiltering(glance.Spec.ImportFiltering)
+	// The image-import plugins. (The variable is not named `plugins` — that is
+	// the pipeline helper package renderPasteINI calls below.)
+	importPlugins := effectiveImportPlugins(glance.Spec.ImportPlugins)
+	// The enabled plugin names, in the order glance runs them. The order is fixed
+	// here and is not an input, which is what satisfies upstream's one ordering
+	// requirement by construction: decompression has to run before conversion,
+	// because converting first would rewrite the archive rather than the disk
+	// image inside it.
+	var importPluginNames []string
+	if importPlugins.Decompression != nil {
+		importPluginNames = append(importPluginNames, "image_decompression")
+	}
+	if importPlugins.Conversion != nil {
+		importPluginNames = append(importPluginNames, "image_conversion")
+	}
+	if importPlugins.InjectMetadata != nil {
+		importPluginNames = append(importPluginNames, "inject_image_metadata")
+	}
 	defaults := map[string]map[string]string{
 		"DEFAULT": {
 			"enabled_backends": projection.enabledBackends,
@@ -265,6 +284,20 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 			"allowed_ports":      renderPortList(filtering.AllowedPorts),
 			"disallowed_ports":   renderPortList(filtering.DisallowedPorts),
 		},
+		// The image-import plugin pipeline, rendered unconditionally for the reason
+		// the filter lists above are: an absent key is not "no plugins", it is
+		// glance's own default, and a key the ownership registry rejects in
+		// extraConfig has to be one the operator actually writes. A CR without
+		// spec.importPlugins renders "[]" and runs no plugin. The option is declared
+		// bounds=True upstream (its sample default is "[no_op]") and its items are
+		// quoted strings that accept an unquoted name, so the value is
+		// bracket-bounded like the filter lists; see renderBoundedList. Rendering it
+		// unconditionally means every existing Glance re-renders once when the
+		// operator is upgraded and rolls its Deployment through the usual
+		// content-hash mechanics — the same one-time roll the filter render caused.
+		"image_import_opts": {
+			"image_import_plugins": renderBoundedList(importPluginNames),
+		},
 	}
 
 	// workers is the eventlet API worker count. Below release 2026.1 (eventlet
@@ -281,7 +314,7 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 	}
 	// PerLoggerLevels render into oslo.log's default_log_levels CSV; empty omits
 	// the key so oslo.log keeps its compiled-in defaults.
-	if v := renderDefaultLogLevels(logging.PerLoggerLevels); v != "" {
+	if v := renderSortedPairs(logging.PerLoggerLevels, "="); v != "" {
 		defaults["DEFAULT"]["default_log_levels"] = v
 	}
 	// format=json ships a logging.conf and points oslo.log at it via
@@ -305,6 +338,33 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 		defaults["DEFAULT"]["image_cache_dir"] = glanceImageCachePath
 		defaults["DEFAULT"]["image_cache_driver"] = "sqlite"
 		defaults["DEFAULT"]["image_cache_max_size"] = strconv.FormatInt(imageCacheMaxSizeBytes(*imageCache.SizeLimit), 10)
+	}
+	// The image_conversion plugin's single option, rendered only while the plugin
+	// is in the list above: the section is inert without it, and writing it anyway
+	// would claim ownership of a key the deployment never asked about.
+	if importPlugins.Conversion != nil {
+		defaults["image_conversion"] = map[string]string{
+			"output_format": importPlugins.Conversion.OutputFormat,
+		}
+	}
+	// The inject_image_metadata plugin's two options, again only while the plugin
+	// is enabled. inject is an oslo DictOpt, rendered as sorted, unquoted
+	// "key:value" pairs: oslo splits the value on commas and each pair on its
+	// first colon, then takes the rest of the pair as the property value verbatim,
+	// so a quote would land in the property rather than delimit it. An empty
+	// property map would render an empty value, which only a CR that bypassed the
+	// schema reaches — the CRD requires at least one property on the block that
+	// enables the plugin. ignore_user_roles is a plain comma join with NO
+	// brackets: upstream declares it as an unbounded ListOpt, which reads the
+	// brackets as item text — the trap renderBoundedList's godoc documents — so a
+	// bracketed value would exempt a role literally named "[admin" and leave the
+	// real admin role subject to the injection. An empty resolved list renders an
+	// empty value, which is the explicit opt-in to injecting for every role.
+	if importPlugins.InjectMetadata != nil {
+		defaults["inject_metadata_properties"] = map[string]string{
+			"inject":            renderSortedPairs(importPlugins.InjectMetadata.Properties, ":"),
+			"ignore_user_roles": strings.Join(importPlugins.InjectMetadata.IgnoreUserRoles, ","),
+		}
 	}
 
 	return defaults
@@ -539,6 +599,58 @@ func effectiveImportFiltering(spec *glancev1alpha1.ImportFilteringSpec) glancev1
 	return out
 }
 
+// effectiveImportPlugins returns the image-import plugins to render,
+// materializing the operator defaults for the fields spec.importPlugins leaves
+// unset. A nil block behaves exactly like an empty one: both enable no plugin.
+// It is pure and total: no input can fail, so there is no error path.
+//
+// The presence of a sub-block is the opt-in for its plugin, so there is nothing
+// to default into an absent one and only the fields of a block that IS set
+// resolve:
+//
+//   - conversion.outputFormat → DefaultImportConversionOutputFormat while empty.
+//   - injectMetadata.ignoreUserRoles → DefaultImportInjectIgnoreUserRoles while
+//     nil. "Unset" means nil here, the nil-versus-empty contract
+//     effectiveImportFiltering follows: an explicitly empty list is honored
+//     verbatim, and it is the documented way to inject for admins too.
+//
+// Resolving here rather than in the defaulting webhook keeps an unset field
+// tracking the operator default across upgrades instead of freezing today's value
+// into the stored CR — the same contract effectiveImportFiltering and
+// effectiveImageCache follow.
+//
+// The sub-blocks in the result are fresh, so nothing the resolver decides is
+// written back into the CR. The property map and the role slice inside them may
+// alias the CR's own or the package-level default slice, so callers must treat
+// the result as read-only.
+func effectiveImportPlugins(spec *glancev1alpha1.ImportPluginsSpec) glancev1alpha1.ImportPluginsSpec {
+	var out glancev1alpha1.ImportPluginsSpec
+	if spec == nil {
+		return out
+	}
+	if spec.Decompression != nil {
+		out.Decompression = &glancev1alpha1.ImportDecompressionSpec{}
+	}
+	if spec.Conversion != nil {
+		format := spec.Conversion.OutputFormat
+		if format == "" {
+			format = glancev1alpha1.DefaultImportConversionOutputFormat
+		}
+		out.Conversion = &glancev1alpha1.ImportConversionSpec{OutputFormat: format}
+	}
+	if spec.InjectMetadata != nil {
+		roles := spec.InjectMetadata.IgnoreUserRoles
+		if roles == nil {
+			roles = glancev1alpha1.DefaultImportInjectIgnoreUserRoles
+		}
+		out.InjectMetadata = &glancev1alpha1.ImportInjectMetadataSpec{
+			Properties:      spec.InjectMetadata.Properties,
+			IgnoreUserRoles: roles,
+		}
+	}
+	return out
+}
+
 // effectiveImageCache returns the image-cache settings to render, materializing
 // the operator defaults for the fields spec.imageCache leaves unset. A nil block
 // means the cache is off and resolves to nil — presence of the block is the
@@ -615,9 +727,8 @@ func unionHosts(base, extra []string) []string {
 // import it was meant to filter — with a 500, not a refusal. An empty list
 // renders "[]", the empty value oslo parses, never "".
 //
-// Only for a bounded ListOpt: an unbounded one (oslo.log's default_log_levels,
-// see renderDefaultLogLevels) reads the brackets as part of the first and last
-// item.
+// Only for a bounded ListOpt: an unbounded one (oslo.log's default_log_levels)
+// reads the brackets as part of the first and last item.
 func renderBoundedList(items []string) string {
 	return "[" + strings.Join(items, ",") + "]"
 }
@@ -632,24 +743,16 @@ func renderPortList(ports []int32) string {
 	return renderBoundedList(items)
 }
 
-// renderDefaultLogLevels formats PerLoggerLevels as oslo.log's
-// default_log_levels CSV ("name=LEVEL,..."), with keys sorted alphabetically so
-// the rendered config — and therefore the immutable ConfigMap content hash — is
-// independent of Go's randomized map iteration order. Empty input returns "" so
-// the caller omits the key rather than overriding oslo.log defaults with an
-// empty list.
-func renderDefaultLogLevels(perLogger map[string]string) string {
-	if len(perLogger) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(perLogger))
-	for k := range perLogger {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	pairs := make([]string, 0, len(keys))
-	for _, k := range keys {
-		pairs = append(pairs, fmt.Sprintf("%s=%s", k, perLogger[k]))
+// renderSortedPairs joins a map into the comma-separated "key<sep>value" list an
+// oslo option consumes — sep is "=" for oslo.log's default_log_levels CSV, ":"
+// for an oslo DictOpt. The keys are sorted alphabetically so the rendered config
+// — and therefore the immutable ConfigMap content hash — is independent of Go's
+// randomized map iteration order; unsorted, a reconcile that changed nothing
+// would rotate the ConfigMap and roll the Deployment. An empty map renders "".
+func renderSortedPairs(m map[string]string, sep string) string {
+	pairs := make([]string, 0, len(m))
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		pairs = append(pairs, k+sep+m[k])
 	}
 	return strings.Join(pairs, ",")
 }
