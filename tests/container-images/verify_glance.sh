@@ -139,6 +139,80 @@ test_uwsgi_runnable() {
   assert_not_empty "uwsgi version output is non-empty" "$version"
 }
 
+# --- Test 9: qemu-img is runnable (image_conversion import plugin) ---
+test_qemu_img_runnable() {
+  echo "Test: qemu-img --version succeeds"
+  # Proves the qemu-utils apt wiring: the image_conversion import plugin shells
+  # out to `qemu-img info` and `qemu-img convert` on the staged image.
+  local version exit_code=0
+  version=$(docker run --rm "$IMAGE" qemu-img --version 2>&1) || exit_code=$?
+
+  assert_eq "qemu-img --version exits 0" "0" "$exit_code"
+  assert_not_empty "qemu-img version output is non-empty" "$version"
+}
+
+# --- Test 10: lhafile is importable (image_decompression import plugin) ---
+test_lhafile_importable() {
+  echo "Test: lhafile imports cleanly"
+  # Proves the lhafile pip wiring: the image_decompression import plugin imports
+  # lhafile to unpack LHA archives.
+  local exit_code=0
+  docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c "import lhafile" > /dev/null 2>&1 || exit_code=$?
+
+  assert_eq "import lhafile exits 0" "0" "$exit_code"
+}
+
+# --- Test 11: the installed lhafile matches a recorded pin ---
+test_lhafile_version_pinned() {
+  echo "Test: installed lhafile matches a recorded constraint-override pin"
+  # lhafile is the one pip input of this image that upper-constraints.txt does
+  # not carry, so without a pin it floats to whatever PyPI serves at build time
+  # and "which version is in our image" is only answerable by opening the image.
+  # The pin lives in overrides/<release>/constraints.txt, which
+  # apply-constraint-overrides.sh merges into the constraints file the install
+  # runs against. This asserts both halves: every release records a pin, and the
+  # version that actually landed is one of them.
+  local project_root
+  project_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+  local overrides missing=""
+  local -a pins=()
+  for overrides in "$project_root"/overrides/*/constraints.txt; do
+    [ -f "$overrides" ] || continue
+    local pin
+    pin=$(sed -n 's/^lhafile===\(.*\)$/\1/p' "$overrides")
+    if [ -z "$pin" ]; then
+      missing="${missing} ${overrides#"$project_root"/}"
+    else
+      pins+=("$pin")
+    fi
+  done
+
+  assert_eq "every overrides/*/constraints.txt pins lhafile" "" "$missing"
+
+  # stderr is discarded rather than folded into the value: a DeprecationWarning
+  # on import would otherwise make the version multi-line and fail the match on
+  # a correctly pinned image. The exit code below is what catches a real failure.
+  local installed exit_code=0
+  installed=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    "import importlib.metadata as m; print(m.version('lhafile'))" 2>/dev/null) || exit_code=$?
+
+  assert_eq "reading the installed lhafile version exits 0" "0" "$exit_code"
+
+  # Whole-value comparison against each pin, not a substring test: a substring
+  # test passes 0.3.1 against a 0.3.10 pin (every prefix matches) and passes an
+  # empty value against anything, which is the opposite of what this asserts.
+  local candidate matched=""
+  for candidate in "${pins[@]}"; do
+    if [ "$candidate" = "$installed" ]; then
+      matched="yes"
+    fi
+  done
+  assert_eq "installed lhafile version ${installed} is a recorded pin (${pins[*]})" "yes" "$matched"
+}
+
 # --- Run all tests ---
 echo "=== glance container verification tests ==="
 echo "Image: $IMAGE"
@@ -158,6 +232,12 @@ echo ""
 test_no_build_tools_in_final_image
 echo ""
 test_uwsgi_runnable
+echo ""
+test_qemu_img_runnable
+echo ""
+test_lhafile_importable
+echo ""
+test_lhafile_version_pinned
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

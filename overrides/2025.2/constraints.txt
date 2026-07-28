@@ -11,3 +11,13 @@
 # horizon source tree against its own pin, so the pin is stripped; the git ref
 # in source-refs.yaml stays the single source of truth for what is built.
 -horizon
+
+# lhafile is the optional LHA reader the image_decompression image-import plugin
+# imports at run time; extra-packages.yaml installs it into the glance image. It
+# is no OpenStack dependency, so upper-constraints.txt carries no entry for it
+# and the constrained pip install would leave it floating on whatever PyPI
+# serves at build time — the one pip input in that image nothing records. Pinned
+# here so two builds of the same release tag resolve the same archive parser,
+# and so a CVE against it can be answered from the tree. Renovate tracks this
+# file (renovate.json, "Constraint overrides (PyPI)").
+lhafile===0.3.1
