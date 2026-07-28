@@ -27,14 +27,16 @@ import "github.com/c5c3/forge/internal/common/config"
 //     because the service password would land in the namespace-readable
 //     ConfigMap; the six [import_filtering_opts] keys, because a silently
 //     loosened web-download filter is the very thing spec.importFiltering exists
-//     to make visible; and the three [DEFAULT] image_cache_* keys, because each
-//     of them ends in an evicted pod or in database rows nothing reclaims.
+//     to make visible; the three [DEFAULT] image_cache_* keys, because each
+//     of them ends in an evicted pod or in database rows nothing reclaims; and
+//     the four image-import plugin keys, because each one reaches past a
+//     guarantee spec.importPlugins makes at admission.
 
 // OwnedConfigKeys is the registry of glance-api.conf keys the operator owns.
 // Reported entries are honored-but-surfaced when overridden in spec.extraConfig;
 // the Rejected entries ([keystone_authtoken] password, the six
-// [import_filtering_opts] keys and the three [DEFAULT] image_cache_* keys) are
-// blocked at admission instead. The entries
+// [import_filtering_opts] keys, the three [DEFAULT] image_cache_* keys and the
+// four image-import plugin keys) are blocked at admission instead. The entries
 // mirror the defaults map built by operatorDefaults (the
 // [keystone_authtoken] keys come from keystoneauth.Section) plus the oslo_policy
 // policy_file injected by config.InjectOsloPolicyConfig.
@@ -123,6 +125,24 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "import_filtering_opts", Key: "disallowed_hosts", Rejected: true, OwnedBy: "spec.importFiltering", Impact: importFilteringOverrideImpact},
 	{Section: "import_filtering_opts", Key: "allowed_ports", Rejected: true, OwnedBy: "spec.importFiltering", Impact: importFilteringOverrideImpact},
 	{Section: "import_filtering_opts", Key: "disallowed_ports", Rejected: true, OwnedBy: "spec.importFiltering", Impact: importFilteringOverrideImpact},
+
+	// Image-import plugins — derived from spec.importPlugins. All four are
+	// Rejected, for the reason the import_filtering_opts entries are: the typed
+	// field expresses every one of them, so an extraConfig override buys no reach
+	// it lacks, only a way past the guarantees it makes at admission. An
+	// image_import_plugins list written by hand can order conversion ahead of
+	// decompression, which converts the archive instead of the disk image inside
+	// it; an output_format written by hand escapes the enum and fails on every
+	// import instead of at admission; and an inject / ignore_user_roles written
+	// by hand escapes the property-name rules that keep a pair inside the oslo
+	// Dict syntax, so a stray colon or comma silently injects a property nobody
+	// wrote. Reporting any of them after the fact would leave an audit reading
+	// spec.importPlugins seeing one pipeline while the rendered config runs
+	// another.
+	{Section: "image_import_opts", Key: "image_import_plugins", Rejected: true, OwnedBy: "spec.importPlugins", Impact: importPluginsOverrideImpact},
+	{Section: "image_conversion", Key: "output_format", Rejected: true, OwnedBy: "spec.importPlugins", Impact: importPluginsOverrideImpact},
+	{Section: "inject_metadata_properties", Key: "inject", Rejected: true, OwnedBy: "spec.importPlugins", Impact: importPluginsOverrideImpact},
+	{Section: "inject_metadata_properties", Key: "ignore_user_roles", Rejected: true, OwnedBy: "spec.importPlugins", Impact: importPluginsOverrideImpact},
 }
 
 // importFilteringOverrideImpact is the shared consequence note for the six
@@ -130,3 +150,9 @@ var OwnedConfigKeys = []config.OwnedKey{
 const importFilteringOverrideImpact = "the web-download URI filter is platform security policy; setting it " +
 	"through extraConfig bypasses the exclusivity rules, the host INI guard, and the admission warning that " +
 	"flags a loosened filter"
+
+// importPluginsOverrideImpact is the shared consequence note for the four
+// Rejected image-import plugin keys, rendered into the admission error.
+const importPluginsOverrideImpact = "the image-import plugin pipeline is expressed by spec.importPlugins; " +
+	"setting it through extraConfig bypasses the fixed decompression-before-conversion order, the " +
+	"output-format enum, and the property-name rules that keep an injected pair inside the oslo Dict syntax"

@@ -132,6 +132,27 @@ type GlanceSpec struct {
 	// +optional
 	ImportFiltering *ImportFilteringSpec `json:"importFiltering,omitempty"`
 
+	// ImportPlugins enables glance's image-import plugins, rendered as the
+	// [image_import_opts] image_import_plugins list plus the section each enabled
+	// plugin reads. Presence of a sub-block enables that plugin and nil leaves it
+	// out, the same opt-in convention spec.imageCache follows. The operator
+	// renders the list in the fixed order decompression, conversion,
+	// inject_image_metadata — glance runs the plugins in list order and requires
+	// decompression before conversion, which holds here by construction because
+	// there is no ordering input. Every default resolves at render time rather
+	// than in the defaulting webhook, so a field left unset keeps tracking the
+	// operator defaults across upgrades instead of freezing today's values into
+	// the stored CR.
+	//
+	// The plugins act in the interoperable image import flow alone
+	// (POST /v2/images/{image_id}/import). A plain PUT /v2/images/{image_id}/file
+	// upload never reaches them, and glance skips them for the copy-image import
+	// method, so with the operator's pinned enabled_import_methods of
+	// web-download and copy-image they take effect exactly on web-download
+	// imports.
+	// +optional
+	ImportPlugins *ImportPluginsSpec `json:"importPlugins,omitempty"`
+
 	// DBPurge tunes the recurring database purge that hard-deletes the rows
 	// glance only ever soft-deletes. The operator resolves the effective
 	// retention and schedule at reconcile time — DefaultDBPurgeRetentionDays and
@@ -455,6 +476,159 @@ type ImportFilteringSpec struct {
 	// +kubebuilder:validation:items:Minimum=1
 	// +kubebuilder:validation:items:Maximum=65535
 	DisallowedPorts []int32 `json:"disallowedPorts,omitempty"`
+}
+
+// ImportPluginsSpec selects the image-import plugins glance runs. They are
+// taskflow stages the import flow applies to the staged image before it reaches
+// the backing store, and glance runs none of them unless [image_import_opts]
+// image_import_plugins names them. A sub-block set here is that naming: the
+// plugin joins the list, nil leaves it out.
+//
+// The rendered order is fixed — decompression, conversion,
+// inject_image_metadata — and is not an input. Glance runs the plugins in list
+// order, and conversion ahead of decompression would rewrite the archive rather
+// than the disk image inside it, so the one ordering constraint upstream
+// documents is satisfied by construction.
+//
+// The blocks only reach imports that go through the interoperable image import
+// flow. An image uploaded with PUT /v2/images/{image_id}/file bypasses the
+// plugins entirely, so a deployment that relies on conversion or on injected
+// metadata has to keep that upload path out of its policy.
+type ImportPluginsSpec struct {
+	// Decompression enables the image_decompression plugin, which unpacks a
+	// compressed image after staging so the later plugins and the backing store
+	// see the disk image rather than the archive. It unpacks by an unbounded
+	// ratio and glance's image_size_cap bounds only the bytes transferred, so
+	// size spec.staging.sizeLimit against the largest UNPACKED image: breaching
+	// that bound evicts the glance-api pod and every in-flight import on the
+	// replica with it. Setting this block therefore requires spec.staging to
+	// answer for that bound — either sizeLimit or unbounded — because the
+	// operator default was sized against the largest download. See
+	// ImportDecompressionSpec.
+	// +optional
+	Decompression *ImportDecompressionSpec `json:"decompression,omitempty"`
+
+	// Conversion enables the image_conversion plugin, which rewrites the staged
+	// image into one target disk format.
+	// +optional
+	Conversion *ImportConversionSpec `json:"conversion,omitempty"`
+
+	// InjectMetadata enables the inject_image_metadata plugin, which stamps a
+	// fixed set of image properties onto every image it applies to.
+	// +optional
+	InjectMetadata *ImportInjectMetadataSpec `json:"injectMetadata,omitempty"`
+}
+
+// ImportDecompressionSpec enables the image_decompression plugin. Glance
+// identifies the staged file by its magic number and unpacks it in place, which
+// is what lets an import fetch a compressed image over a slow link and still
+// land an uncompressed disk image in the store. It recognizes gzip, zip, and
+// LHA, the last only where the optional lhafile package is present. bzip2 and xz
+// are not recognized, so an image compressed either way passes through untouched
+// and reaches the store as the archive it arrived as.
+//
+// The plugin unpacks one compression layer and no more. A zip or LHA archive
+// must hold exactly one file, and a multi-layer archive such as tar.gz is
+// unsupported: unpacking the outer layer yields the tar, which is no more a disk
+// image than the archive was.
+//
+// The expansion is UNBOUNDED, and it is the caller who picks the ratio. The
+// plugin unpacks in place with no cap on the result and cannot know that size
+// before writing it, and glance's image_size_cap is no help: it measures the
+// bytes transferred, so a ~10 MiB gzip that expands past 10 GiB stays well
+// under any cap the deployment sets. Nothing in this operator caps it either,
+// which leaves spec.staging.sizeLimit as the only bound in the path — which is
+// why admission refuses to let that bound stay an inherited default here: a CR
+// setting this block must set spec.staging.sizeLimit, or spec.staging.unbounded
+// to deliberately keep none. Breaching
+// that bound evicts the glance-api pod rather than the offending import, and
+// within one pod it is a single shared budget rather than per-import accounting
+// (see StagingSpec), so every other in-flight import on that replica dies with
+// it — the blast radius is per-replica and shared, and on a single-replica
+// Glance one import is a full image-service outage. Enable this only where the
+// import path is already restricted to trusted callers by oslo.policy, and size
+// spec.staging.sizeLimit against the largest UNPACKED image rather than the
+// largest download. Sibling ImportConversionSpec carries a bounded 2x cost by
+// comparison: conversion works on a file the caller had to transfer in full.
+//
+// It carries no fields: upstream registers no options for the plugin, so the
+// presence of the block is the entire configuration. It is a struct rather than
+// a bool so a future upstream option can be added without changing the shape a
+// stored CR carries.
+type ImportDecompressionSpec struct{}
+
+// ImportConversionSpec enables the image_conversion plugin, which converts the
+// staged image to a single disk format before it reaches the backing store.
+// Uniform image formats are what make a Ceph/RBD backend clone an image
+// copy-on-write instead of flattening a full copy per boot, and they close the
+// gap where an image's declared disk_format disagrees with its actual content.
+//
+// The conversion runs on the node-local staging area and needs room for the
+// source and the result at once, so enabling it raises the scratch space an
+// import consumes — size spec.staging.sizeLimit accordingly.
+type ImportConversionSpec struct {
+	// OutputFormat is the disk format every imported image is converted to
+	// ([image_conversion] output_format). When empty the operator resolves
+	// DefaultImportConversionOutputFormat at render time rather than
+	// materializing it into the CR, so leaving it unset keeps tracking that
+	// default across upgrades. The accepted values are glance's own: raw, which
+	// an RBD store can clone; qcow2, which stays sparse on a filesystem store;
+	// and vmdk.
+	// +optional
+	// +kubebuilder:validation:Enum=qcow2;raw;vmdk
+	OutputFormat string `json:"outputFormat,omitempty"`
+}
+
+// ImportInjectMetadataSpec enables the inject_image_metadata plugin, which
+// stamps operator-chosen image properties onto imported images. The properties
+// are how a deployment marks provenance or pins scheduling and driver behaviour
+// on images it did not build itself, without trusting the importing user to set
+// them.
+//
+// The properties are not immutable afterwards: the plugin writes them during
+// the import, and whether the image owner may change them later is an
+// oslo.policy question (modify_image / the protected-property rules), not one
+// this block answers.
+type ImportInjectMetadataSpec struct {
+	// Properties are the image properties injected onto every image the plugin
+	// applies to ([inject_metadata_properties] inject). At least one entry is
+	// required: an empty map would enable a plugin with nothing to do. The
+	// operator renders the pairs with the keys sorted alphabetically, so the
+	// unordered map cannot reshuffle the rendered config and roll the Deployment
+	// on a reconcile that changed nothing.
+	//
+	// The rendered value uses the oslo Dict syntax, which splits pairs on commas
+	// and each pair on its FIRST colon. A key therefore carries neither
+	// character; a value may carry a colon (a URL-shaped value works) but no
+	// comma. The validating webhook enforces this — a map key has no marker of
+	// its own.
+	//
+	// Both halves are bounded at 255 characters. Every pair renders verbatim into
+	// the one inject line, so an unbounded value would let a CR that etcd accepts
+	// render a glance-api.conf past the 1 MiB ConfigMap ceiling: admission would
+	// pass the reconciler an object the API server then refuses on every attempt.
+	// The CEL rule is the schema counterpart the map's halves otherwise lack; the
+	// webhook repeats it as defense in depth.
+	// +kubebuilder:validation:MinProperties=1
+	// +kubebuilder:validation:MaxProperties=64
+	// +kubebuilder:validation:XValidation:rule="self.all(k, size(k) <= 255 && size(self[k]) <= 255)",message="each injected property name and value must be at most 255 characters"
+	Properties map[string]string `json:"properties"`
+
+	// IgnoreUserRoles lists the Keystone roles exempt from the injection
+	// ([inject_metadata_properties] ignore_user_roles): an import by a user
+	// holding one of them leaves the image's properties untouched. When nil the
+	// operator resolves DefaultImportInjectIgnoreUserRoles at render time —
+	// glance's own default, which exempts admins — so an unset field keeps
+	// tracking that default across upgrades.
+	//
+	// An explicitly empty list is honored verbatim and is the opt-in to injecting
+	// for every role including admin, the same nil-versus-empty contract the
+	// spec.importFiltering lists carry.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=255
+	IgnoreUserRoles []string `json:"ignoreUserRoles,omitempty"`
 }
 
 // DBPurgeSpec tunes the recurring database purge. Glance never hard-deletes on

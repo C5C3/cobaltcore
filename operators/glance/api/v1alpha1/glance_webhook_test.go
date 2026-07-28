@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/onsi/gomega"
 	admissionv1 "k8s.io/api/admission/v1"
@@ -898,6 +899,594 @@ func TestGlanceDefault_LeavesImageCacheUnset(t *testing.T) {
 		"spec.imageCache must not be materialized by the defaulting webhook")
 }
 
+// TestValidateImportPlugins pins the shape of the exported validator directly,
+// the way the ControlPlane webhook would call it, and runs every case through
+// both admission verbs. The enum and the count bounds are defense in depth, but
+// every rule on a property name is the only gate there is: a map key is out of
+// reach of a CRD marker, so an update path that skipped the webhook would let a
+// pair break out of the oslo Dict syntax the rendered inject value uses.
+func TestValidateImportPlugins(t *testing.T) {
+	// A property map the count bound rejects, built one entry past the cap.
+	tooManyProperties := make(map[string]string, maxImportInjectEntries+1)
+	tooManyRoles := make([]string, maxImportInjectEntries+1)
+	for i := 0; i <= maxImportInjectEntries; i++ {
+		tooManyProperties[fmt.Sprintf("prop_%02d", i)] = "value"
+		tooManyRoles[i] = fmt.Sprintf("role-%02d", i)
+	}
+	overlong := strings.Repeat("a", maxImportInjectStringLength+1)
+	// Exactly at the bound in code points, three times over it in bytes: what the
+	// schema counterparts admit and a byte-counting mirror would reject.
+	atBound := strings.Repeat("界", maxImportInjectStringLength)
+
+	tests := []struct {
+		name string
+		// plugins is the block under test; wantField empty means accepted.
+		plugins    *ImportPluginsSpec
+		wantField  string
+		wantType   field.ErrorType
+		wantDetail string
+	}{
+		{
+			// Nil-safety is pinned rather than implied: the ControlPlane calls this
+			// validator on a field its own CRs usually leave unset.
+			name:    "nil block accepted",
+			plugins: nil,
+		},
+		{
+			// No sub-block is no plugin, which is a legitimate way to carry the
+			// field while every plugin stays off.
+			name:    "empty block accepted",
+			plugins: &ImportPluginsSpec{},
+		},
+		{
+			name:    "decompression alone accepted",
+			plugins: &ImportPluginsSpec{Decompression: &ImportDecompressionSpec{}},
+		},
+		{
+			// An empty outputFormat asks for the render-time default, so it must
+			// not be measured against the enum.
+			name:    "empty outputFormat accepted",
+			plugins: &ImportPluginsSpec{Conversion: &ImportConversionSpec{}},
+		},
+		{
+			name:       "unsupported outputFormat rejected",
+			plugins:    &ImportPluginsSpec{Conversion: &ImportConversionSpec{OutputFormat: "qcow3"}},
+			wantField:  "importPlugins.conversion.outputFormat",
+			wantType:   field.ErrorTypeNotSupported,
+			wantDetail: `supported values: "qcow2", "raw", "vmdk"`,
+		},
+		{
+			name: "nil properties rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeRequired,
+			wantDetail: "at least one property must be set",
+		},
+		{
+			// The nil map and the explicit empty map must fail identically: the
+			// required marker catches only the first.
+			name: "empty properties rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{Properties: map[string]string{}},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeRequired,
+			wantDetail: "at least one property must be set",
+		},
+		{
+			name: "too many properties rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{Properties: tooManyProperties},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeTooMany,
+			wantDetail: "must have at most 64 items",
+		},
+		{
+			name: "empty property name rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{Properties: map[string]string{"": "value"}},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "property name must not be empty",
+		},
+		{
+			// The Dict parser would keep "hw" as the name and hand "vif_model" to
+			// the value, so the property nobody wrote is the one that lands.
+			name: "colon in a property name rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties: map[string]string{"hw:vif_model": "virtio"},
+				},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "splits each pair on the first colon",
+		},
+		{
+			name: "comma in a property name rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties: map[string]string{"hw_qemu,guest_agent": "yes"},
+				},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "property name must not contain a comma",
+		},
+		{
+			name: "overlong property name rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{Properties: map[string]string{overlong: "value"}},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "property name must be at most 255 characters",
+		},
+		{
+			name: "newline in a property name rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties: map[string]string{"owner\n[glance_store]\nrogue": "yes"},
+				},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "property name must not contain newline or carriage-return characters",
+		},
+		{
+			name: "carriage return in a property name rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{Properties: map[string]string{"owner\rrogue": "yes"}},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "property name must not contain newline or carriage-return characters",
+		},
+		{
+			name: "leading whitespace in a property name rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{Properties: map[string]string{" owner": "platform"}},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "property name must not start or end with whitespace",
+		},
+		{
+			name: "trailing whitespace in a property name rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{Properties: map[string]string{"owner ": "platform"}},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "property name must not start or end with whitespace",
+		},
+		{
+			name: "comma in a property value rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties: map[string]string{"owner": "platform,team"},
+				},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "property value must not contain a comma",
+		},
+		{
+			name: "newline in a property value rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties: map[string]string{"owner": "platform\n[glance_store]\nrogue = 1"},
+				},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "property value must not contain newline or carriage-return characters",
+		},
+		{
+			name: "surrounding whitespace in a property value rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{Properties: map[string]string{"owner": " platform "}},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "property value must not start or end with whitespace",
+		},
+		{
+			// The value half needs the bound as much as the name half: every pair
+			// renders verbatim into the one inject line, so 64 unbounded values
+			// admit a CR whose glance-api.conf crosses the 1 MiB ConfigMap ceiling
+			// and can then never be applied.
+			name: "overlong property value rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{Properties: map[string]string{"owner": overlong}},
+			},
+			wantField:  "importPlugins.injectMetadata.properties",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "property value must be at most 255 characters",
+		},
+		{
+			// The schema counterparts count code points (CEL size(), MaxLength), so
+			// a name at the bound must be admitted however many bytes its runes
+			// occupy — measuring bytes here would reject 85 CJK characters under a
+			// message naming a 255-character limit.
+			name: "multi-byte property name at the code-point bound accepted",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties: map[string]string{atBound: "platform"},
+				},
+			},
+		},
+		{
+			name: "multi-byte property value at the code-point bound accepted",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties: map[string]string{"owner": atBound},
+				},
+			},
+		},
+		{
+			name: "multi-byte role at the code-point bound accepted",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties:      map[string]string{"owner": "platform"},
+					IgnoreUserRoles: []string{atBound},
+				},
+			},
+		},
+		{
+			// Everything past the first colon belongs to the value, so a URL is a
+			// legitimate property — rejecting it would rule out the provenance
+			// annotations this plugin exists for.
+			name: "colon in a property value accepted",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties: map[string]string{"image_source": "https://mirror.example.com:8443/images"},
+				},
+			},
+		},
+		{
+			name: "empty role rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties:      map[string]string{"owner": "platform"},
+					IgnoreUserRoles: []string{""},
+				},
+			},
+			wantField:  "importPlugins.injectMetadata.ignoreUserRoles[0]",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "role must not be empty",
+		},
+		{
+			name: "comma in a role rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties:      map[string]string{"owner": "platform"},
+					IgnoreUserRoles: []string{"admin,reader"},
+				},
+			},
+			wantField:  "importPlugins.injectMetadata.ignoreUserRoles[0]",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "role must not contain a comma",
+		},
+		{
+			name: "overlong role rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties:      map[string]string{"owner": "platform"},
+					IgnoreUserRoles: []string{overlong},
+				},
+			},
+			wantField:  "importPlugins.injectMetadata.ignoreUserRoles[0]",
+			wantType:   field.ErrorTypeInvalid,
+			wantDetail: "role must be at most 255 characters",
+		},
+		{
+			name: "too many roles rejected",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties:      map[string]string{"owner": "platform"},
+					IgnoreUserRoles: tooManyRoles,
+				},
+			},
+			wantField:  "importPlugins.injectMetadata.ignoreUserRoles",
+			wantType:   field.ErrorTypeTooMany,
+			wantDetail: "must have at most 64 items",
+		},
+		{
+			// The explicitly empty list is the opt-in to injecting for admins too,
+			// so it must survive admission as written rather than read as unset.
+			name: "explicitly empty ignoreUserRoles accepted",
+			plugins: &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties:      map[string]string{"owner": "platform"},
+					IgnoreUserRoles: []string{},
+				},
+			},
+		},
+		{
+			name: "all three plugins accepted",
+			plugins: &ImportPluginsSpec{
+				Decompression: &ImportDecompressionSpec{},
+				Conversion:    &ImportConversionSpec{OutputFormat: "raw"},
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties:      map[string]string{"hw_scsi_model": "virtio-scsi", "owner": "platform"},
+					IgnoreUserRoles: []string{"admin", "service"},
+				},
+			},
+		},
+		// Every value of the enum must be admitted, not just the one the fixture
+		// above happens to use.
+		{
+			name:    "outputFormat qcow2 accepted",
+			plugins: &ImportPluginsSpec{Conversion: &ImportConversionSpec{OutputFormat: "qcow2"}},
+		},
+		{
+			name:    "outputFormat raw accepted",
+			plugins: &ImportPluginsSpec{Conversion: &ImportConversionSpec{OutputFormat: "raw"}},
+		},
+		{
+			name:    "outputFormat vmdk accepted",
+			plugins: &ImportPluginsSpec{Conversion: &ImportConversionSpec{OutputFormat: "vmdk"}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			errs := ValidateImportPlugins(field.NewPath("spec").Child("importPlugins"), tc.plugins)
+			if tc.wantField == "" {
+				g.Expect(errs).To(gomega.BeEmpty())
+			} else {
+				g.Expect(errs).To(gomega.HaveLen(1))
+				g.Expect(errs[0].Type).To(gomega.Equal(tc.wantType))
+				g.Expect(errs[0].Field).To(gomega.ContainSubstring("spec." + tc.wantField))
+				g.Expect(errs[0].Detail).To(gomega.ContainSubstring(tc.wantDetail))
+			}
+
+			w := &GlanceWebhook{}
+			obj := validGlance()
+			obj.Spec.ImportPlugins = tc.plugins
+			if tc.plugins != nil && tc.plugins.Decompression != nil {
+				// The whole-CR verbs also run the cross-field rule that requires an
+				// explicit staging bound alongside the decompression plugin
+				// (TestValidateImportDecompressionStaging owns that rule), so satisfy
+				// it here — this table is about ValidateImportPlugins alone.
+				obj.Spec.Staging = &StagingSpec{SizeLimit: ptr.To(resource.MustParse("40Gi"))}
+			}
+
+			_, createErr := w.ValidateCreate(context.Background(), obj)
+			_, updateErr := w.ValidateUpdate(context.Background(), validGlance(), obj)
+
+			if tc.wantField == "" {
+				g.Expect(createErr).NotTo(gomega.HaveOccurred())
+				g.Expect(updateErr).NotTo(gomega.HaveOccurred())
+				return
+			}
+			for verb, err := range map[string]error{"create": createErr, "update": updateErr} {
+				g.Expect(err).To(gomega.HaveOccurred(), "%s must reject %s", verb, tc.name)
+				g.Expect(err.Error()).To(gomega.ContainSubstring("spec." + tc.wantField))
+				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.wantDetail))
+			}
+		})
+	}
+}
+
+// An oversized property value must not come back verbatim: field.Invalid renders
+// BadValue into the admission response, the operator's webhook log, and any
+// RequestResponse audit entry, so a value sized against etcd's ~1.5 MiB object
+// ceiling would be reproduced in full three times over for a message that is a
+// fixed-length statement.
+func TestValidateImportPlugins_OversizedValueIsNotEchoedBack(t *testing.T) {
+	g := gomega.NewWithT(t)
+	huge := strings.Repeat("a", 64*1024)
+
+	errs := ValidateImportPlugins(field.NewPath("spec", "importPlugins"), &ImportPluginsSpec{
+		InjectMetadata: &ImportInjectMetadataSpec{Properties: map[string]string{"owner": huge}},
+	})
+
+	g.Expect(errs).To(gomega.HaveLen(1))
+	bad, ok := errs[0].BadValue.(string)
+	g.Expect(ok).To(gomega.BeTrue(), "the property value is reported as the BadValue")
+	g.Expect(utf8.RuneCountInString(bad)).To(gomega.Equal(maxImportInjectStringLength+1),
+		"the echoed value keeps the bound's worth of prefix plus the ellipsis")
+	g.Expect(bad).To(gomega.HavePrefix(huge[:maxImportInjectStringLength]))
+	g.Expect(errs[0].Error()).NotTo(gomega.ContainSubstring(huge))
+}
+
+// The same must hold for the property NAME, which is echoed twice over: once as
+// the BadValue and once as the map-key subscript of the field path, which
+// field.Error renders in front of every message — including the ones about the
+// value, which name the property they belong to. And it must hold on every
+// branch, not only the one that measures length: a comma or a newline is
+// rejected before the size is ever looked at, so an oversized key or value
+// carrying one would otherwise reach the response untouched.
+func TestValidateImportPlugins_OversizedKeyIsNotEchoedBack(t *testing.T) {
+	huge := strings.Repeat("a", 64*1024)
+
+	tests := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "oversized key", key: huge, value: "platform"},
+		{name: "oversized key with a colon", key: huge + ":x", value: "platform"},
+		{name: "oversized key with a comma", key: huge + ",x", value: "platform"},
+		{name: "oversized key with trailing whitespace", key: huge + " ", value: "platform"},
+		{name: "oversized key with a newline", key: huge + "\n", value: "platform"},
+		{name: "oversized value with a comma", key: "owner", value: huge + ",x"},
+		{name: "oversized value with a newline", key: "owner", value: huge + "\n"},
+		{name: "oversized value with trailing whitespace", key: "owner", value: huge + " "},
+		// The path names the property on the value side too, so an oversized key
+		// must stay truncated even when it is the value that is rejected.
+		{name: "oversized key and value", key: huge, value: huge + ",x"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			errs := ValidateImportPlugins(field.NewPath("spec", "importPlugins"), &ImportPluginsSpec{
+				InjectMetadata: &ImportInjectMetadataSpec{Properties: map[string]string{tc.key: tc.value}},
+			})
+
+			g.Expect(errs).NotTo(gomega.BeEmpty())
+			for _, err := range errs {
+				g.Expect(err.Field).NotTo(gomega.ContainSubstring(huge),
+					"the field path must not carry the property name in full")
+				g.Expect(err.Error()).NotTo(gomega.ContainSubstring(huge),
+					"neither half may be reproduced in full anywhere in the rendered error")
+			}
+		})
+	}
+}
+
+// An oversized ignoreUserRoles entry is echoed as the BadValue on every branch
+// that reports it, not only the one that measures its length.
+func TestValidateImportPlugins_OversizedRoleIsNotEchoedBack(t *testing.T) {
+	huge := strings.Repeat("a", 64*1024)
+
+	for _, role := range []string{huge, huge + ",x", huge + "\n"} {
+		g := gomega.NewWithT(t)
+
+		errs := ValidateImportPlugins(field.NewPath("spec", "importPlugins"), &ImportPluginsSpec{
+			InjectMetadata: &ImportInjectMetadataSpec{
+				Properties:      map[string]string{"owner": "platform"},
+				IgnoreUserRoles: []string{role},
+			},
+		})
+
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Error()).NotTo(gomega.ContainSubstring(huge))
+	}
+}
+
+// TestValidateImportDecompressionStaging pins the cross-field rule that ties the
+// image_decompression plugin to a staging bound somebody chose. It correlates
+// two top-level spec fields, so no CRD marker reaches it and the webhook is the
+// sole gate — which also means nothing but this test turns red if the call is
+// dropped from either webhook.
+func TestValidateImportDecompressionStaging(t *testing.T) {
+	sizeLimit := resource.MustParse("40Gi")
+
+	tests := []struct {
+		name    string
+		plugins *ImportPluginsSpec
+		staging *StagingSpec
+		wantErr bool
+	}{
+		{
+			name:    "nil plugins accepted",
+			plugins: nil,
+		},
+		{
+			// Only the decompression plugin expands past what the caller
+			// transferred, so the other two carry no such requirement.
+			name: "conversion and injectMetadata without staging accepted",
+			plugins: &ImportPluginsSpec{
+				Conversion: &ImportConversionSpec{OutputFormat: "raw"},
+				InjectMetadata: &ImportInjectMetadataSpec{
+					Properties: map[string]string{"owner": "platform"},
+				},
+			},
+		},
+		{
+			name:    "decompression without a staging block rejected",
+			plugins: &ImportPluginsSpec{Decompression: &ImportDecompressionSpec{}},
+			wantErr: true,
+		},
+		{
+			// An empty block is how a CR asks for the operator default, which is
+			// exactly the inherited number this rule refuses.
+			name:    "decompression with an empty staging block rejected",
+			plugins: &ImportPluginsSpec{Decompression: &ImportDecompressionSpec{}},
+			staging: &StagingSpec{},
+			wantErr: true,
+		},
+		{
+			name:    "decompression with an explicit sizeLimit accepted",
+			plugins: &ImportPluginsSpec{Decompression: &ImportDecompressionSpec{}},
+			staging: &StagingSpec{SizeLimit: &sizeLimit},
+		},
+		{
+			// unbounded is the deliberate no-bound escape hatch; choosing it is an
+			// answer to the same question.
+			name:    "decompression with unbounded staging accepted",
+			plugins: &ImportPluginsSpec{Decompression: &ImportDecompressionSpec{}},
+			staging: &StagingSpec{Unbounded: true},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			errs := ValidateImportDecompressionStaging(field.NewPath("spec"), tc.plugins, tc.staging)
+
+			obj := validGlance()
+			obj.Spec.ImportPlugins = tc.plugins
+			obj.Spec.Staging = tc.staging
+			w := &GlanceWebhook{}
+			_, createErr := w.ValidateCreate(context.Background(), obj)
+			_, updateErr := w.ValidateUpdate(context.Background(), validGlance(), obj)
+
+			if !tc.wantErr {
+				g.Expect(errs).To(gomega.BeEmpty())
+				g.Expect(createErr).NotTo(gomega.HaveOccurred())
+				g.Expect(updateErr).NotTo(gomega.HaveOccurred())
+				return
+			}
+
+			g.Expect(errs).To(gomega.HaveLen(1))
+			g.Expect(errs[0].Type).To(gomega.Equal(field.ErrorTypeRequired))
+			g.Expect(errs[0].Field).To(gomega.Equal("spec.staging.sizeLimit"))
+			g.Expect(errs[0].Detail).To(gomega.ContainSubstring("importPlugins.decompression is enabled"))
+			for verb, err := range map[string]error{"create": createErr, "update": updateErr} {
+				g.Expect(err).To(gomega.HaveOccurred(), "%s must reject %s", verb, tc.name)
+				g.Expect(err.Error()).To(gomega.ContainSubstring("spec.staging.sizeLimit"))
+			}
+		})
+	}
+}
+
+// Every spec.importPlugins default is resolved at render time, never stamped
+// into the stored CR — and each sub-block's mere presence is what enables its
+// plugin, so a defaulter materializing one would switch a plugin on for every
+// Glance in the cluster. Nothing else in the suite exercises the defaulter
+// against spec.importPlugins, so such a rule would land without a single test
+// turning red.
+func TestGlanceDefault_LeavesImportPluginsUnset(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+
+	obj := validGlance()
+	g.Expect(w.Default(context.Background(), obj)).To(gomega.Succeed())
+	g.Expect(obj.Spec.ImportPlugins).To(gomega.BeNil(),
+		"spec.importPlugins must not be materialized by the defaulting webhook")
+
+	// A set block must survive untouched too: its unset fields are how the CR
+	// keeps tracking DefaultImportConversionOutputFormat and
+	// DefaultImportInjectIgnoreUserRoles across upgrades.
+	set := validGlance()
+	set.Spec.ImportPlugins = &ImportPluginsSpec{
+		Conversion: &ImportConversionSpec{},
+		InjectMetadata: &ImportInjectMetadataSpec{
+			Properties: map[string]string{"owner": "platform"},
+		},
+	}
+	g.Expect(w.Default(context.Background(), set)).To(gomega.Succeed())
+	g.Expect(set.Spec.ImportPlugins.Conversion.OutputFormat).To(gomega.BeEmpty(),
+		"outputFormat must stay unset so it keeps tracking the operator default")
+	g.Expect(set.Spec.ImportPlugins.InjectMetadata.IgnoreUserRoles).To(gomega.BeNil(),
+		"ignoreUserRoles must stay nil so it keeps tracking the operator default")
+	g.Expect(set.Spec.ImportPlugins.Decompression).To(gomega.BeNil(),
+		"an unrequested plugin must not be materialized by the defaulting webhook")
+}
+
 // metadata.name is bounded by the child object with the tightest name budget,
 // the "{name}-db-purge" CronJob. Nothing else in the CRD or the webhook bounds
 // it, so without this rule a name the API server would refuse as a CronJob
@@ -1474,6 +2063,81 @@ func TestGlanceValidate_ExtraConfigImportFilteringUnknownKeyRejected(t *testing.
 	_, err := w.ValidateCreate(context.Background(), obj)
 	g.Expect(err).To(gomega.HaveOccurred())
 	g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the glance 2025.2 option catalog"))
+}
+
+// TestGlanceValidate_ExtraConfigImportPluginsOwnedKeyRejected pins that none of
+// the four image-import plugin keys can be set through spec.extraConfig. They
+// are Rejected rather than Reported because each one reaches past a guarantee
+// spec.importPlugins makes at admission: a hand-written image_import_plugins
+// list can put conversion ahead of decompression, a hand-written output_format
+// escapes the enum, and a hand-written inject or ignore_user_roles escapes the
+// property-name rules that keep a pair inside the oslo Dict syntax.
+//
+// The last case pins the other half of the registry exemption: none of the three
+// sections appears in any embedded catalog, so only the registered keys reach
+// the ownership error and every other key still falls through to the
+// unknown-section verdict.
+func TestGlanceValidate_ExtraConfigImportPluginsOwnedKeyRejected(t *testing.T) {
+	tests := []struct {
+		name    string
+		section string
+		key     string
+		value   string
+	}{
+		{"image_import_plugins", "image_import_opts", "image_import_plugins", "image_conversion,image_decompression"},
+		{"output_format", "image_conversion", "output_format", "vmdk"},
+		{"inject", "inject_metadata_properties", "inject", "owner:rogue"},
+		{"ignore_user_roles", "inject_metadata_properties", "ignore_user_roles", "admin,service"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			w := &GlanceWebhook{}
+			obj := validGlance()
+			obj.Spec.ImportPlugins = &ImportPluginsSpec{Decompression: &ImportDecompressionSpec{}}
+			obj.Spec.ExtraConfig = map[string]map[string]string{
+				tc.section: {tc.key: tc.value},
+			}
+
+			_, createErr := w.ValidateCreate(context.Background(), obj)
+			_, updateErr := w.ValidateUpdate(context.Background(), validGlance(), obj)
+
+			for verb, err := range map[string]error{"create": createErr, "update": updateErr} {
+				g.Expect(err).To(gomega.HaveOccurred(), "%s must reject [%s] %s", verb, tc.section, tc.key)
+				g.Expect(err.Error()).To(gomega.ContainSubstring(tc.key + " is managed via spec.importPlugins"))
+				g.Expect(err.Error()).To(gomega.ContainSubstring(
+					"bypasses the fixed decompression-before-conversion order",
+				))
+				// The registry exemption is what gets the override here: without it
+				// the section is unknown to every catalog and the user would see the
+				// catalog verdict instead of the ownership rejection.
+				g.Expect(err.Error()).NotTo(gomega.ContainSubstring("no such section"))
+			}
+
+			// No plugin enabled does not hand the key back: the registry records
+			// "this key is not the user's to set", the posture every other
+			// conditionally rendered key here has.
+			off := validGlance()
+			off.Spec.ExtraConfig = obj.Spec.ExtraConfig
+			_, err := w.ValidateCreate(context.Background(), off)
+			g.Expect(err).To(gomega.HaveOccurred(),
+				"[%s] %s must stay reserved even while spec.importPlugins is nil", tc.section, tc.key)
+		})
+	}
+
+	t.Run("unregistered key in an owned section stays a catalog error", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		w := &GlanceWebhook{}
+		obj := validGlance()
+		obj.Spec.ExtraConfig = map[string]map[string]string{
+			"image_import_opts": {"no_such_option": "x"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), obj)
+		g.Expect(err).To(gomega.HaveOccurred())
+		g.Expect(err.Error()).To(gomega.ContainSubstring("no such section in the glance 2025.2 option catalog"))
+	})
 }
 
 // TestGlanceValidate_ExtraConfigPluginSectionExempt pins that a section declared
