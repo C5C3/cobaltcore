@@ -505,16 +505,19 @@ spec:
           # sizeLimit patch just rolled the Deployment, and Envoy's endpoint
           # set trails the swap: until EDS drops the draining old pod, a
           # request can land on it and die instantly with a 503 before
-          # staging a byte (seen in CI), leaving the new pod unbreached and
-          # the eviction poll below to time out. So each attempt is verified
-          # against the new pod's staging volume: kubelet evicts on its
-          # local-storage housekeeping tick (~10 s), the 8 MiB/s throttle
-          # lands the breach about eight seconds in, and a staged file
-          # persists until its image is deleted — once the volume holds more
-          # than 64Mi, the eviction cannot be raced away. The curl is still
-          # EXPECTED to die mid-request (an empty or 5xx code) when the
-          # eviction kills the pod; what separates "expected" from "retry"
-          # is the volume, not the HTTP code.
+          # staging a byte (seen in CI), leaving the new pod unbreached. The
+          # curl is EXPECTED to die mid-request (an empty or 5xx code) when
+          # the eviction kills the pod, so the HTTP code separates nothing;
+          # each attempt reads the cluster instead, strongest signal first.
+          # A pod already marked Evicted proves the breach outright, and it
+          # must be checked first: the Deployment replaces an evicted pod
+          # within seconds (the image is cached on the node), so the two
+          # fallback probes race that replacement — "no Running pod" is a
+          # tiny window, and the volume probe can land on the fresh pod's
+          # empty staging volume right after the breached one was evicted
+          # (seen in CI). The fallbacks still catch the window where the
+          # 8 MiB/s throttle has breached 64Mi (about eight seconds in)
+          # but kubelet's ~10 s housekeeping tick has not yet evicted.
           dd if=/dev/urandom of="$TMP/upload.img" bs=1M count=512 status=none
           BREACHED=""
           ID=""
@@ -534,6 +537,15 @@ spec:
               -H 'Content-Type: application/octet-stream' \
               "$BASE/v2/images/$ID/stage" || true)"
             echo "attempt $attempt: overflow PUT /stage ended with HTTP '${CODE:-000}'"
+            EVICTED_NOW="$(kubectl get pods -n openstack \
+              -l app.kubernetes.io/instance=glance-upload \
+              -o 'jsonpath={range .items[?(@.status.reason=="Evicted")]}{.metadata.name}{"\n"}{end}' \
+              2>/dev/null | head -1 || true)"
+            if [ -n "$EVICTED_NOW" ]; then
+              echo "OK: pod $EVICTED_NOW is already Evicted — the 64Mi bound is breached"
+              BREACHED="yes"
+              break
+            fi
             POD="$(kubectl get pods -n openstack \
               -l app.kubernetes.io/instance=glance-upload \
               --field-selector=status.phase=Running -o name 2>/dev/null | head -1)"
