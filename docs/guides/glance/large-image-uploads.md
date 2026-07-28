@@ -290,8 +290,9 @@ openstack --insecure image import --method web-download \
 
 The call returns immediately and the image reaches `active` once the download
 and the move into the store have finished. Watch `openstack image show
-big-import -f value -c status` for the transition. A 403 at import time comes
-from the URI filter, before any bytes are staged.
+big-import -f value -c status` for the transition. A synchronous 400 at import
+time comes from the URI filter, before any bytes are staged — see
+[Filter web-download Image Imports](./filter-web-download-imports.md).
 
 Clean up:
 
