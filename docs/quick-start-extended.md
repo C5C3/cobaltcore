@@ -33,7 +33,7 @@ identical to what CI validates.
 
 | Resource | Minimum |
 |----------|---------|
-| RAM | 8 GB available to Docker |
+| RAM | 8 GB available to the container runtime |
 | CPU | 2 cores |
 | Disk | 10 GB free |
 
@@ -41,7 +41,7 @@ identical to what CI validates.
 
 | Tool | Install |
 |------|---------|
-| [Docker](https://docs.docker.com/get-docker/) | platform installer |
+| Container runtime | [Docker](https://docs.docker.com/get-docker/) or [Podman](https://podman.io/docs/installation) |
 | [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) | see below |
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | see below |
 | [Helm](https://helm.sh/docs/intro/install/) | platform installer |
@@ -71,6 +71,13 @@ still has to be installed separately (kind needs a running daemon).
 ```bash
 git clone https://github.com/c5c3/forge.git
 cd forge
+```
+
+For Podman, ensure the Podman machine is already running and make kind use the
+same provider:
+
+```bash
+export KIND_EXPERIMENTAL_PROVIDER=podman
 ```
 
 The project ships a helper script that downloads and verifies kind and kubectl with pinned
@@ -702,6 +709,14 @@ docker pull ghcr.io/c5c3/keystone:"${RELEASE}"
 kind load docker-image ghcr.io/c5c3/keystone:"${RELEASE}" --name forge
 ```
 
+With Podman, keep `KIND_EXPERIMENTAL_PROVIDER=podman` exported from the
+Prerequisites step:
+
+```bash
+podman pull ghcr.io/c5c3/keystone:"${RELEASE}"
+kind load docker-image ghcr.io/c5c3/keystone:"${RELEASE}" --name forge
+```
+
 ### Option B — Build locally
 
 ```bash
@@ -718,7 +733,7 @@ git clone --depth 1 --branch "${SERVICE_REF}" \
 # Apply constraint overrides
 scripts/apply-constraint-overrides.sh "${RELEASE}"
 
-# Build the image chain
+# Build the image chain (replace `docker` with `podman` when using Podman)
 docker build -t python-base images/python-base/
 docker build -t venv-builder images/venv-builder/
 docker build -t "ghcr.io/c5c3/keystone:${RELEASE}" \

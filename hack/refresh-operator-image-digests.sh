@@ -28,10 +28,10 @@
 # valuesFrom reference is optional). Run it standalone after a feature merge
 # to roll the operators of a running cluster to the freshly built images.
 #
-# Requires docker (with buildx) to resolve digests and kubectl to write the
-# ConfigMaps. Per-image resolve failures are logged and skipped so one
-# unreachable image does not block the others; the exit code is non-zero when
-# any image could not be refreshed.
+# Requires kubectl to write the ConfigMaps and either docker (with buildx) or
+# curl to resolve digests. Per-image resolve failures are logged and skipped
+# so one unreachable image does not block the others; the exit code is non-zero
+# when any image could not be refreshed.
 
 set -euo pipefail
 
@@ -60,21 +60,32 @@ log() {
 # preflight — Verify the required tools exist before touching anything.
 # ---------------------------------------------------------------------------
 preflight() {
-  local tool
-  for tool in docker kubectl; do
-    if ! command -v "${tool}" >/dev/null 2>&1; then
-      log "ERROR: required tool not found: ${tool}"
-      exit 1
-    fi
-  done
-  if ! docker buildx version >/dev/null 2>&1; then
-    log "ERROR: docker buildx is required to resolve image digests (docker buildx version failed)."
+  if ! command -v kubectl >/dev/null 2>&1; then
+    log "ERROR: required tool not found: kubectl"
+    exit 1
+  fi
+  if ! have_docker_buildx && ! have_curl; then
+    log "ERROR: need either docker with buildx or curl to resolve image digests."
     exit 1
   fi
 }
 
 # ---------------------------------------------------------------------------
-# resolve_image_digest — Resolve the manifest digest behind an image ref.
+# have_docker_buildx — Return success when docker buildx is available.
+# ---------------------------------------------------------------------------
+have_docker_buildx() {
+  command -v docker >/dev/null 2>&1 && docker buildx version >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# have_curl — Return success when curl is available.
+# ---------------------------------------------------------------------------
+have_curl() {
+  command -v curl >/dev/null 2>&1
+}
+
+# ---------------------------------------------------------------------------
+# resolve_image_digest_via_docker — Resolve the manifest digest behind an image ref.
 #
 # $1: image reference (e.g. ghcr.io/c5c3/keystone-operator:latest)
 #
@@ -82,7 +93,7 @@ preflight() {
 # registry is unreachable or the resolved digest is empty. Same idiom as
 # hack/ci-resolve-ubuntu-digest.sh.
 # ---------------------------------------------------------------------------
-resolve_image_digest() {
+resolve_image_digest_via_docker() {
   local image="$1"
   local digest
   if ! digest=$(docker buildx imagetools inspect "${image}" \
@@ -93,6 +104,112 @@ resolve_image_digest() {
     return 1
   fi
   echo "${digest}"
+}
+
+# ---------------------------------------------------------------------------
+# resolve_image_digest_via_curl — Resolve the manifest digest behind an image
+# ref using curl against the registry HTTP API.
+#
+# This fallback avoids requiring docker on the host. It supports public and
+# bearer-token protected registries (including ghcr.io) by honoring the
+# standard WWW-Authenticate challenge.
+# ---------------------------------------------------------------------------
+resolve_image_digest_via_curl() {
+  local image="$1"
+  local registry repo reference digest tmp_headers http_code
+
+  # Parse the image reference (simplified; handles most cases)
+  if [[ "$image" == *"@"* ]]; then
+    # Already has digest
+    echo "${image#*@}"
+    return 0
+  fi
+
+  # Extract registry, repo, and tag
+  if [[ "$image" == *"/"* ]]; then
+    registry="${image%%/*}"
+    repo="${image#*/}"
+  else
+    registry="registry-1.docker.io"
+    repo="library/$image"
+  fi
+
+  if [[ "$repo" == *":"* ]]; then
+    reference="${repo##*:}"
+    repo="${repo%:*}"
+  else
+    reference="latest"
+  fi
+
+  tmp_headers="$(mktemp)"
+  trap 'rm -f "$tmp_headers"' RETURN
+
+  # Try without auth first
+  http_code=$(curl -s -w '%{http_code}' -o /dev/null \
+    -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+    -D "$tmp_headers" \
+    "https://${registry}/v2/${repo}/manifests/${reference}")
+
+  if [[ "$http_code" == "200" ]]; then
+    grep -i "Docker-Content-Digest:" "$tmp_headers" | sed 's/.*: //' | tr -d '\r'
+    return 0
+  fi
+
+  # If 401, try with bearer token
+  if [[ "$http_code" == "401" ]]; then
+    local auth_header service scope realm token
+    auth_header=$(grep -i "WWW-Authenticate:" "$tmp_headers" | head -1 | sed 's/.*: //')
+
+    if [[ "$auth_header" == *"Bearer"* ]]; then
+      realm=$(echo "$auth_header" | grep -o 'realm="[^"]*"' | cut -d'"' -f2)
+      service=$(echo "$auth_header" | grep -o 'service="[^"]*"' | cut -d'"' -f2)
+      scope="repository:${repo}:pull"
+
+      if [[ -n "$realm" ]]; then
+        local token_url="${realm}?service=${service}&scope=${scope}"
+        token=$(curl -s "$token_url" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+
+        if [[ -n "$token" ]]; then
+          # Retry with bearer token
+          curl -s \
+            -H "Authorization: Bearer $token" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json" \
+            -D "$tmp_headers" \
+            "https://${registry}/v2/${repo}/manifests/${reference}" > /dev/null
+
+          grep -i "Docker-Content-Digest:" "$tmp_headers" | sed 's/.*: //' | tr -d '\r'
+          return 0
+        fi
+      fi
+    fi
+  fi
+
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# resolve_image_digest — Resolve the manifest digest behind an image ref.
+#
+# Prefer docker buildx when available, otherwise use curl against the registry
+# HTTP API. If docker exists but fails for a given image, the curl fallback
+# is still attempted.
+# ---------------------------------------------------------------------------
+resolve_image_digest() {
+  local image="$1"
+  local digest
+  if have_docker_buildx; then
+    if digest=$(resolve_image_digest_via_docker "${image}"); then
+      echo "${digest}"
+      return 0
+    fi
+  fi
+  if have_curl; then
+    if digest=$(resolve_image_digest_via_curl "${image}"); then
+      echo "${digest}"
+      return 0
+    fi
+  fi
+  return 1
 }
 
 # ---------------------------------------------------------------------------

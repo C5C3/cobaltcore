@@ -26,6 +26,14 @@ Same toolchain as the [Quick Start](./quick-start.md), plus:
 - Roughly 8 GB RAM, 2 CPU cores, and 10 GB of free disk for a laptop-sized kind cluster
 - `yq` v4.x on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
 
+Docker Desktop and Podman are both valid kind providers. When using Podman,
+ensure its machine is already running and select it explicitly before running
+Step 2:
+
+```bash
+export KIND_EXPERIMENTAL_PROVIDER=podman
+```
+
 - The bundled kind `ControlPlane` CR pins its backing services to a single
   instance (`spec.infrastructure.database.replicas: 1`, `cache.replicas: 1`) so
   the fresh-create chain fits a single-node kind cluster.
@@ -45,8 +53,6 @@ Same toolchain as the [Quick Start](./quick-start.md), plus:
 - To mirror the production volume on a bigger box, set
   `CONTROLPLANE_DB_STORAGE=100Gi` for Step 2. Any Kubernetes quantity in
   `Mi`/`Gi`/`Ti` is accepted.
-- Like `database.replicas`, `database.storageSize` is immutable after the CR is
-  created, so change it on a fresh environment (`make teardown-infra` first).
 
 ```bash
 make install-test-deps
@@ -83,7 +89,8 @@ image-digest ConfigMaps consumed by the HelmReleases via `valuesFrom`). After
 a feature merges to `main`, run `make refresh-operator-digests` against the
 running cluster: it re-resolves the digests, updates the ConfigMaps, and
 requests a Flux reconcile so the operators roll to the freshly built images —
-no redeploy needed.
+no redeploy needed. The helper prefers `docker buildx`, but falls back to `curl`
+if Docker is unavailable.
 :::
 
 ## Step 3 — Create the ControlPlane CR
