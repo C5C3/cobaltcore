@@ -20,10 +20,12 @@ ubuntu:noble
 │   ├── venv-builder     Build stage: compilers, uv, virtualenv with common packages
 │   │   ├── keystone     Stage 1 (build): install Keystone into virtualenv
 │   │   ├── horizon      Stage 1 (build): install Horizon, pre-build static assets
-│   │   └── glance       Stage 1 (build): install Glance + glance_store[s3]
+│   │   ├── glance       Stage 1 (build): install Glance + glance_store[s3]
+│   │   └── placement    Stage 1 (build): install Placement, write WSGI entry
 │   ├── keystone         Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── horizon          Stage 2 (runtime): copy virtualenv + static assets
-│   └── glance           Stage 2 (runtime): copy virtualenv, add runtime apt packages
+│   ├── glance           Stage 2 (runtime): copy virtualenv, add runtime apt packages
+│   └── placement        Stage 2 (runtime): copy virtualenv, add runtime apt packages
 ```
 
 The `venv-builder` image is used only as a build stage — it never runs in production.
@@ -280,6 +282,63 @@ runs its suite under stestr (the default path, as for keystone).
 **Image contract check:** `tests/container-images/verify_glance.sh` is the hard
 gate — it verifies the CLIs, importability, the uWSGI entry script, the S3 store
 driver's boto3 resolution, non-root execution, and the absence of build tools.
+
+### placement
+
+**Location:** `images/placement/Dockerfile`
+
+The Placement service image uses the same two-stage build as Keystone. Its one
+service-specific twist is the WSGI entry script: upstream ships no usable one
+for either release. 2025.2 declares `placement-api` as a PBR `wsgi_scripts`
+entry in `setup.cfg`, which uv's `--prefix` install mode does not generate;
+2026.1 moved packaging to `pyproject.toml` and declares no WSGI script at all.
+The entry is therefore written by hand in the build stage under the upstream
+name, for both releases, with no release conditional.
+
+**Stage 1 (`build`)** — extends `venv-builder`:
+
+- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` (both empty for placement
+  today; the wiring mirrors the other service images so `extra-packages.yaml`
+  stays the single edit point)
+- Mounts `upper-constraints.txt` and the Placement source tree via named build
+  contexts (`--build-context placement=...` /
+  `--build-context upper-constraints=...`)
+- Installs Placement into the virtualenv using `uv pip install --constraint`.
+  The `--prefix` install generates the `placement-manage` and `placement-status`
+  console scripts (it only skips PBR `wsgi_scripts`)
+- Writes `/var/lib/openstack/bin/placement-api` — a two-line entry that calls
+  `placement.wsgi.init_application()` — and marks it executable
+
+**Stage 2 (runtime)** — extends `python-base`:
+
+- Declares `ARG EXTRA_APT_PACKAGES`, which carries `libpython3.12t64`: the
+  venv-builder-compiled uwsgi binary links `libpython3.12.so.1.0`, which
+  python-base does not ship (the same rationale as glance and horizon).
+  Placement is otherwise pure Python at runtime
+- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
+- Sets `USER openstack` for non-root execution
+
+The image stays config-free: placement locates its configuration via the
+`OS_PLACEMENT_CONFIG_DIR` environment variable set by the operator.
+
+**Runtime packages:**
+
+| Package | Purpose |
+| --- | --- |
+| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
+
+**Final image properties:**
+
+- Runs as `openstack` user (UID 42424, GID 42424)
+- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Virtualenv at `/var/lib/openstack` with all Placement dependencies
+- `placement-manage` and `placement-status` CLIs available via `PATH`
+- The uWSGI entry script at `/var/lib/openstack/bin/placement-api`
+
+**Image contract check:** `tests/container-images/verify_placement.sh` is the
+hard gate — it verifies the CLIs, importability, the uWSGI entry script
+(present, executable, parsable, and its import target resolvable), that uwsgi
+runs, non-root execution, and the absence of build tools.
 
 ## Named Build Contexts
 
@@ -568,4 +627,5 @@ the user via `USER openstack` without needing its own user creation step.
 
 The `# DEVIATION` comment appears in `images/python-base/Dockerfile` (where the
 user is created) and in every service Dockerfile that uses it instead of a
-per-service user (`images/keystone/Dockerfile`, `images/horizon/Dockerfile`).
+per-service user (`images/keystone/Dockerfile`, `images/horizon/Dockerfile`,
+`images/glance/Dockerfile`, `images/placement/Dockerfile`).
