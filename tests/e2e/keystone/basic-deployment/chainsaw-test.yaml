@@ -212,9 +212,27 @@ spec:
         content: |
           kubectl get cm -n openstack -o name | grep keystone-basic-config-
   # ── Step 7: Assert API accessibility ───────────────────────────────────
+  # The probe retries connection-level failures inside the pod: kube-proxy's
+  # endpoint programming can trail the CR's Ready flip by a second or two, so
+  # a single-shot request races it (seen in CI). HTTP errors still fail hard.
   - try:
     - script:
-        timeout: 30s
+        timeout: 90s
         content: |
           kubectl run curl-test-basic --image=ghcr.io/c5c3/keystone:2025.2 --rm -i --restart=Never \
-            --command -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://keystone-basic.openstack.svc:5000/v3').read().decode())"
+            --command -- python3 -c "
+          import time, urllib.error, urllib.request
+          last = None
+          for _ in range(15):
+              try:
+                  print(urllib.request.urlopen('http://keystone-basic.openstack.svc:5000/v3').read().decode())
+                  break
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit('GET /v3 -> HTTP %d' % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  print('GET /v3 retry: %s' % exc)
+                  time.sleep(2)
+          else:
+              raise SystemExit('GET /v3 never answered after retries: %r' % last)
+          "
