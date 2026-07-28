@@ -1,0 +1,86 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Glance CR fixture for the import-plugins E2E test (2025.2 release).
+#
+# All three plugin blocks are set at once, because the rendered
+# image_import_plugins list is the operator's fixed order rather than the CR's
+# and only a CR carrying every block pins that order end to end.
+#
+# Every value below is deliberately off the operator default, so a config the
+# suite greps can only come from this CR:
+#   - conversion.outputFormat is qcow2 where the render-time default is raw;
+#   - injectMetadata.properties carries two entries, so the rendered pairs pin
+#     the alphabetical sort instead of a single-entry coincidence;
+#   - ignoreUserRoles is [admin, service] where the default resolves to admin
+#     alone.
+#
+# The release is the one the basic-deployment suite runs, rather than the 2026.1
+# the image-cache suite has to pin for its uWSGI worker layout. Nothing here
+# depends on the launch mode: qemu-img and lhafile ship in both release images,
+# and step 3 executes them in whichever this CR runs.
+#
+# The CR opens no API access (no allow_anonymous_access, no unauthenticated
+# context filter, no policy overrides) because the suite makes no Glance API
+# call. The plugins only run inside POST /v2/images/{id}/import, which answers
+# 500 without Keystone: the task row it records has a NOT NULL owner column and
+# the tokenless context has no project to put there. What is provable without
+# Keystone is the rendered config, the binaries the plugins shell out to, and
+# the revert, which is what the four legs assert.
+#
+# Name-collision avoidance: chainsaw-config.yaml sets `execution.parallel: 4`,
+# so every object this suite owns carries the `glance-import-plugins` prefix and
+# the database schema is `glance_import_plugins`. Nothing here can collide with
+# the sibling glance suites sharing the `openstack` namespace and its backing
+# services.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-import-plugins
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    # One replica: every assertion reads the Deployment's config volume or execs
+    # into the pod behind it, and a single pod keeps the revert leg's rollout
+    # short.
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance_import_plugins
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  staging:
+    # Required alongside decompression: the plugin expands the staged image by a
+    # ratio the caller picks, so admission refuses to let the only bound in that
+    # path stay the inherited operator default. The value is the default itself
+    # — this suite runs no import — but it has to be written out.
+    sizeLimit: 10Gi
+  importPlugins:
+    decompression: {}
+    conversion:
+      outputFormat: qcow2
+    injectMetadata:
+      properties:
+        cost-center: images
+        tier: gold
+      ignoreUserRoles:
+      - admin
+      - service
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

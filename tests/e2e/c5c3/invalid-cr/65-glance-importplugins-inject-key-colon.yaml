@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.glance.importPlugins.injectMetadata.properties carries a property
+# name with a colon, rejected by the validating webhook through the glance
+# module's exported ValidateImportPlugins. A map key has no CRD schema
+# counterpart, so admission is the sole gate on this one: the rendered
+# [inject_metadata_properties] inject value is an oslo Dict whose parser
+# splits each pair on the first colon, so the name would be truncated there
+# and its remainder injected as part of the value. The rest of the glance
+# block is valid, so the ONLY violation is the property name.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-glance-importplugins-inject-colon
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+      importPlugins:
+        injectMetadata:
+          properties:
+            "hw:disk_bus": virtio
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

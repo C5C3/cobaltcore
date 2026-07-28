@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.importPlugins.decompression without a spec.staging bound of its own
+# is rejected by the validating webhook. The plugin expands the staged image
+# by a ratio the caller picks and nothing caps the result, which leaves
+# spec.staging.sizeLimit as the only bound in the path — and breaching it
+# evicts the whole glance-api pod. The inherited default was sized against
+# the largest download, so admission requires the deployment to answer for
+# it. Correlating two top-level spec fields is out of reach of any marker,
+# so the webhook is the sole gate.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-invalid-importplugins-decompression-staging
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: glance-service-password
+  importPlugins:
+    decompression: {}

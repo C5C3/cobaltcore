@@ -492,6 +492,91 @@ FIXTURES: tuple[Fixture, ...] = (
             "    position: after\n"
         ),
     ),
+    Fixture(
+        filename="25-importplugins-output-format-invalid.yaml",
+        comment=(
+            "spec.importPlugins.conversion.outputFormat of 'qcow3' violates the CRD\n"
+            "Enum marker (qcow2;raw;vmdk). ValidateImportPlugins repeats the enum as\n"
+            "defense in depth and for the ControlPlane, which carries this very type\n"
+            "on services.glance.importPlugins."
+        ),
+        name="glance-invalid-importplugins-format",
+        extra=(
+            "  importPlugins:\n"
+            "    conversion:\n"
+            "      outputFormat: qcow3\n"
+        ),
+    ),
+    Fixture(
+        filename="26-importplugins-inject-key-colon.yaml",
+        comment=(
+            "spec.importPlugins.injectMetadata.properties carries a property name with a\n"
+            "colon. Only the validating webhook rejects it: a map KEY has no CRD schema\n"
+            "counterpart, so no marker reaches it. The rendered\n"
+            "[inject_metadata_properties] inject value is an oslo Dict, and its parser\n"
+            "splits each pair on the FIRST colon: the name would be truncated to `hw`\n"
+            "and its remainder read as part of the value, injecting a property nobody\n"
+            "wrote."
+        ),
+        name="glance-invalid-importplugins-inject-colon",
+        extra=(
+            "  importPlugins:\n"
+            "    injectMetadata:\n"
+            "      properties:\n"
+            '        "hw:disk_bus": virtio\n'
+        ),
+    ),
+    Fixture(
+        filename="27-importplugins-inject-empty-properties.yaml",
+        comment=(
+            "spec.importPlugins.injectMetadata with an empty properties map violates the\n"
+            "MinProperties=1 marker on the field, which is required as well, so an\n"
+            "absent map is rejected the same way. validateImportInjectMetadata mirrors\n"
+            "both: enabling inject_image_metadata with nothing to inject says nothing."
+        ),
+        name="glance-invalid-importplugins-inject-empty",
+        extra=(
+            "  importPlugins:\n"
+            "    injectMetadata:\n"
+            "      properties: {}\n"
+        ),
+    ),
+    Fixture(
+        filename="28-extraconfig-owned-importplugins.yaml",
+        comment=(
+            "spec.extraConfig setting [image_import_opts] image_import_plugins is\n"
+            "rejected by the validating webhook. It is one of four Rejected registry\n"
+            "entries owned by spec.importPlugins: a hand-written list can order\n"
+            "conversion ahead of decompression, which rewrites the archive instead of\n"
+            "the disk image inside it. Reaching that error at all is the per-key\n"
+            "registry exemption at work: the section is in no catalog, so an\n"
+            "unregistered key under it draws the unknown-section verdict instead."
+        ),
+        name="glance-invalid-extraconfig-importplugins",
+        extra=(
+            "  extraConfig:\n"
+            "    image_import_opts:\n"
+            '      image_import_plugins: "[image_conversion,image_decompression]"\n'
+        ),
+    ),
+    Fixture(
+        filename="29-importplugins-decompression-without-staging.yaml",
+        comment=(
+            "spec.importPlugins.decompression without a spec.staging bound of its own\n"
+            "is rejected by the validating webhook. The plugin expands the staged image\n"
+            "by a ratio the caller picks and nothing caps the result, which leaves\n"
+            "spec.staging.sizeLimit as the only bound in the path — and breaching it\n"
+            "evicts the whole glance-api pod. The inherited default was sized against\n"
+            "the largest download, so admission requires the deployment to answer for\n"
+            "it. Correlating two top-level spec fields is out of reach of any marker,\n"
+            "so the webhook is the sole gate."
+        ),
+        name="glance-invalid-importplugins-decompression-staging",
+        extra=(
+            "  importPlugins:\n"
+            "    decompression: {}\n"
+        ),
+    ),
 )
 
 

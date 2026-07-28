@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch: unset spec.importPlugins so the operator takes every plugin back off a
+# Deployment that already runs them. Removing the block is the documented way to
+# disable the plugins, and it is the direction with the most room for a
+# half-revert: the plugin list is rendered unconditionally and has to fall back
+# to the empty list, while the two per-plugin sections have to disappear
+# entirely. The sibling image-cache suite unsets spec.imageCache the same way.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-import-plugins
+  namespace: openstack
+spec:
+  importPlugins: null

@@ -1,0 +1,271 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Glance image-import plugins. The existing coverage
+# for spec.importPlugins runs in process: the rendered keys against a built
+# config map, the admission rules against a built CR. This suite asserts the
+# same contract against a running API, in four legs:
+#
+#   Leg 1 — shape. The CR goes Ready with all three plugin blocks set, and so
+#     does its default S3 backend.
+#   Leg 2 — rendered config. The ConfigMap the glance-api Deployment actually
+#     mounts carries the plugin list in the operator's fixed order, the
+#     non-default output format, the alphabetically sorted inject pairs, and the
+#     unbracketed role list. All four greps are anchored on both sides, and each
+#     carries the brackets its option takes: image_import_plugins is a bounded
+#     oslo ListOpt and needs them, ignore_user_roles is an unbounded one that
+#     would read them as part of a role name.
+#   Leg 3 — shipped binaries. qemu-img and lhafile are what the conversion and
+#     decompression plugins reach for at import time, and neither is part of
+#     glance itself: one is an apt package, the other a pip package, both wired
+#     through releases/<release>/extra-packages.yaml.
+#     tests/container-images/verify_glance.sh probes them in the image it
+#     builds; this leg probes them in the image the operator deploys.
+#   Leg 4 — revert. spec.importPlugins is unset again and the config has to
+#     converge back to the plugin-free posture: an empty list, and neither
+#     per-plugin section left behind. The Deployment must roll to a new
+#     content-hashed ConfigMap for that, which no test against a freshly built
+#     object can observe.
+#
+# ── DECISION: no import is performed ─────────────────────────────────
+# The plugins are taskflow stages of POST /v2/images/{id}/import and run
+# nowhere else. No Keystone is deployed in the glance e2e leg, so the tokenless
+# context has no project: the task row an import records has a NOT NULL owner
+# column, and the call answers 500 before any plugin runs. The sibling
+# image-cache suite documents the same constraint for its upload path. What
+# remains provable without Keystone is the config the plugins would read, the
+# binaries they would call, and the revert, which is what the legs below do.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: glance-import-plugins
+spec:
+  namespace: openstack
+  # The revert leg waits out a full Deployment rollout; everything else is a
+  # read against the API server or one exec.
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1 (leg 1): deploy with all three plugins on ─────────────────────
+  - try:
+    - apply:
+        file: 00-glance-cr.yaml
+    - apply:
+        file: 01-glance-backend.yaml
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-import-plugins
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: GlanceBackend
+          metadata:
+            name: glance-import-plugins-s3
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-import-plugins
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-import-plugins -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== GlanceBackend status ==="
+          kubectl get glancebackend glance-import-plugins-s3 -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== glance-api Deployment ==="
+          kubectl describe deployment glance-import-plugins -n $NAMESPACE 2>&1 | tail -40 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-import-plugins -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2 (leg 2): the rendered plugin config ───────────────────────────
+  # The ConfigMap is resolved off the Deployment's `config` volume rather than
+  # by name: the name carries the content hash, so it changes with every render.
+  # That is the same mechanism the basic-deployment suite's import-filter step
+  # uses.
+  - try:
+    - script:
+        content: |
+          set -eu
+          CM=$(kubectl get deploy glance-import-plugins -n "$NAMESPACE" \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          test -n "$CM"
+          kubectl get cm "$CM" -n "$NAMESPACE" -o 'jsonpath={.data.glance-api\.conf}' \
+            > /tmp/glance-import-plugins-api.conf
+          # The list order is the operator's, not the CR's: decompression has to
+          # precede conversion, or conversion would rewrite the archive instead
+          # of the disk image inside it. Spelled out in full so a reordering
+          # cannot pass.
+          grep -q '^image_import_plugins = \[image_decompression,image_conversion,inject_image_metadata\]$' \
+            /tmp/glance-import-plugins-api.conf
+          # qcow2 is the CR's value; raw is what an unset outputFormat would
+          # render.
+          grep -q '^output_format = qcow2$' /tmp/glance-import-plugins-api.conf
+          # Sorted keys in the oslo Dict syntax. Go map iteration is randomized,
+          # so an unsorted render would put the two pairs the other way round on
+          # some reconciles and roll the Deployment for a config nobody changed.
+          grep -q '^inject = cost-center:images,tier:gold$' /tmp/glance-import-plugins-api.conf
+          # No brackets here: ignore_user_roles is an unbounded ListOpt, which
+          # would read them as part of the first and last role name.
+          grep -q '^ignore_user_roles = admin,service$' /tmp/glance-import-plugins-api.conf
+          echo "OK: $CM renders the three plugins, qcow2 conversion, and the sorted injection"
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-import-plugins -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== rendered import-plugin config ==="
+          CM="$(kubectl get deploy glance-import-plugins -n $NAMESPACE \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}' 2>/dev/null || true)"
+          kubectl get cm "$CM" -n $NAMESPACE -o 'jsonpath={.data.glance-api\.conf}' 2>/dev/null \
+            | grep -E '^(\[|image_import_plugins|output_format|inject|ignore_user_roles)' || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3 (leg 3): the binaries the plugins shell out to ────────────────
+  # image_conversion runs `qemu-img info` and `qemu-img convert` on the staged
+  # image, and image_decompression imports lhafile to unpack an LHA archive.
+  # Both are absent from a plain glance install, so the config above would
+  # enable plugins that fail at import time without them. lhafile is imported
+  # with the venv interpreter the API itself runs under, since a system python3
+  # would not see the packages installed into /var/lib/openstack.
+  - try:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          kubectl exec -n "$NAMESPACE" deploy/glance-import-plugins -c glance-api -- \
+            qemu-img --version
+          kubectl exec -n "$NAMESPACE" deploy/glance-import-plugins -c glance-api -- \
+            /var/lib/openstack/bin/python -c 'import lhafile'
+          echo "OK: the API container ships qemu-img and lhafile"
+    catch:
+    - script:
+        content: |
+          echo "=== glance-api pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-import-plugins -o wide 2>&1 || true
+          echo "=== image the pods run ==="
+          kubectl get deploy glance-import-plugins -n $NAMESPACE \
+            -o 'jsonpath={range .spec.template.spec.containers[*]}{.name}={.image}{"\n"}{end}' 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-import-plugins -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+  # ── Step 4 (leg 4): take the plugins back off a live Deployment ──────────
+  # The revert direction. The operator writes an immutable, content-hashed
+  # ConfigMap and points the Deployment at it, so the plugin-free config only
+  # becomes observable once the render, the new ConfigMap, and the pod-template
+  # update have all landed. That is why this leg polls instead of reading once.
+  - try:
+    - patch:
+        file: 02-patch-remove-importplugins.yaml
+    - script:
+        timeout: 5m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; the sibling
+        # image-cache suite pins bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CONF=/tmp/glance-import-plugins-api-reverted.conf
+
+          # All three conditions have to hold on the SAME rendered config: the
+          # list back to empty, and neither per-plugin section left behind. An
+          # absent image_import_plugins key would not do: glance would fall back
+          # to its own default instead of running no plugin at all.
+          # 36 x 5s = 3m, inside the 5m step timeout, so a stuck rollout is
+          # reported with its diagnostics rather than killed by chainsaw.
+          CM=""
+          REVERTED=""
+          for _ in $(seq 1 36); do
+            CM="$(kubectl get deploy glance-import-plugins -n "$NAMESPACE" \
+              -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}' 2>/dev/null || true)"
+            if [ -n "${CM}" ] \
+              && kubectl get cm "${CM}" -n "$NAMESPACE" \
+                -o 'jsonpath={.data.glance-api\.conf}' > "${CONF}" 2>/dev/null \
+              && grep -q '^image_import_plugins = \[\]$' "${CONF}" \
+              && ! grep -q '^\[image_conversion\]$' "${CONF}" \
+              && ! grep -q '^\[inject_metadata_properties\]$' "${CONF}"; then
+              REVERTED="yes"
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "${REVERTED}" ]; then
+            echo "ERROR: the config the Deployment mounts still carries import plugins"
+            echo "       after 3m. Wanted an empty image_import_plugins list and no"
+            echo "       [image_conversion] / [inject_metadata_properties] section."
+            echo "--- ConfigMap on the config volume: ${CM} ---"
+            grep -E '^(\[|image_import_plugins|output_format|inject|ignore_user_roles)' "${CONF}" 2>&1 || true
+            echo "--- rollout ---"
+            kubectl describe deployment glance-import-plugins -n "$NAMESPACE" 2>&1 | tail -40 || true
+            exit 1
+          fi
+          echo "OK: ${CM} renders an empty plugin list and neither per-plugin section"
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: glance-import-plugins
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: glance.openstack.c5c3.io/v1alpha1
+          kind: Glance
+          metadata:
+            name: glance-import-plugins
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Glance CR status ==="
+          kubectl get glance glance-import-plugins -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== config volume the Deployment points at ==="
+          kubectl get deploy glance-import-plugins -n $NAMESPACE \
+            -o 'jsonpath={range .spec.template.spec.volumes[*]}volume={.name}{" cm="}{.configMap.name}{"\n"}{end}' 2>&1 || true
+          echo "=== rollout ==="
+          kubectl describe deployment glance-import-plugins -n $NAMESPACE 2>&1 | tail -40 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Glance API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=glance-import-plugins -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

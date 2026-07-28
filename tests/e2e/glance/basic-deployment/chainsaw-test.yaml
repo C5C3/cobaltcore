@@ -182,6 +182,11 @@ spec:
   # on the first read inside validate_import_uri, which is why nothing in this
   # suite goes unready when the format is wrong — only a web-download import
   # fails, and only in the tempest legs.
+  #
+  # The last grep pins the plugin-free default in the neighbouring section: a CR
+  # without spec.importPlugins renders an EMPTY image_import_plugins list, not an
+  # absent key, which would leave glance at its own default. The import-plugins
+  # suite covers the populated side.
   - try:
     - script:
         content: |
@@ -198,7 +203,9 @@ spec:
           grep -q '^allowed_schemes = \[https\]$' /tmp/glance-basic-api.conf
           grep -q '^allowed_ports = \[443\]$' /tmp/glance-basic-api.conf
           grep '^disallowed_hosts = \[' /tmp/glance-basic-api.conf | grep -q '169\.254\.169\.254'
+          grep -q '^image_import_plugins = \[\]$' /tmp/glance-basic-api.conf
           echo "OK: $CM ships the default import filter posture (https/443, metadata host denied)"
+          echo "OK: $CM runs no import plugin (empty list, not an absent key)"
   # ── Step 6: Assert the Glance API answers /healthcheck over HTTP ────────
   # HTTP-level API coverage: the oslo healthcheck middleware answers without
   # touching the database or Keystone, proving the WSGI app is serving requests.
