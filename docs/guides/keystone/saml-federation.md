@@ -277,7 +277,7 @@ chainsaw test --test-dir tests/e2e/keystone/saml-federation
 ::: details The backend CR the suite applies
 The suite isolates its Keystone instance from the parallel suite pool, so its
 backend CR name (`keycloak-saml`) and `keystoneRef` (`keystone-saml`)
-deliberately differ from the `corp-saml` / `keystone` names used in the
+differ from the `corp-saml` / `keystone` names used in the
 walkthrough above.
 
 <<< @/../tests/e2e/keystone/saml-federation/02-backend-cr.yaml#backend-cr

@@ -48,7 +48,7 @@ export default defineConfig({
               { text: 'Attach an LDAP Domain Backend', link: '/guides/keystone/ldap-domain-backend' },
               { text: 'Attach an OIDC Federation Backend', link: '/guides/keystone/oidc-federation' },
               { text: 'Attach a SAML Federation Backend', link: '/guides/keystone/saml-federation' },
-              { text: 'Enable Keystone Database TLS', link: '/guides/keystone/enable-keystone-database-tls' },
+              { text: 'Enable Keystone Database TLS/mTLS', link: '/guides/keystone/enable-keystone-database-tls' },
               { text: 'Enable Keystone Operator Metrics', link: '/guides/keystone/enable-keystone-operator-metrics' },
               { text: 'Enable Keystone Operator NetworkPolicy', link: '/guides/keystone/enable-keystone-operator-networkpolicy' },
               { text: 'Migrate Keystone DB to Dynamic Credentials', link: '/guides/keystone/migrate-keystone-db-to-dynamic-credentials' },

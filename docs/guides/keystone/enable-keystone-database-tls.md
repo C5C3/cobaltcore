@@ -64,7 +64,7 @@ examples below is one that devstack produces.
 3. **A MariaDB that offers server-side TLS.** Client-side DB TLS only works
    against a server that speaks it. On the **managed** ControlPlane devstack the
    c5c3-operator provisions the `openstack-db` MariaDB from a minimal spec and
-   deliberately leaves server-side TLS/issuerRefs unset — DB-server hardening is a
+   leaves server-side TLS/issuerRefs unset — DB-server hardening is a
    platform-team concern outside the aggregate's knowledge (see the DECISION on
    `reconcileInfrastructure` in `operators/c5c3/internal/controller/reconcile_infrastructure.go`).
    So before enabling client DB TLS on a ControlPlane, run a MariaDB with
@@ -247,9 +247,9 @@ encrypted — re-check `DatabaseTLSReady` and confirm the MariaDB CR has
 This check requires the MariaDB from prerequisite 3 to set
 `spec.tls.required=true`, so any connection that does not negotiate TLS is
 rejected at the transport layer before authentication. The `probe`/`probe`
-credentials below are deliberately bogus — they are never checked, because the
+credentials below are bogus — they are never checked, because the
 server rejects the plaintext handshake before it reaches authentication. Probe
-from inside the Keystone Pod by deliberately omitting the `ssl=` kwarg:
+from inside the Keystone Pod by omitting the `ssl=` kwarg:
 
 ```bash
 kubectl -n openstack exec "$POD" -c keystone -- python3 -c '

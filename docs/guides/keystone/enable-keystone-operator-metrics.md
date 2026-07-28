@@ -35,7 +35,7 @@ for the port-forward, default credentials, and the Prometheus targets
 sanity-check.
 
 The remainder of this guide is the **canonical non-kind path** —
-production overlays (`deploy/flux-system/`) deliberately omit the
+production overlays (`deploy/flux-system/`) omit the
 stack so production clusters can wire their own Prometheus, and the
 sections below cover that wiring end-to-end.
 :::
@@ -255,7 +255,7 @@ Operators with stricter cluster policies must take extra steps:
   does not ship this configuration — it is a forge-wide bootstrap change rather
   than a per-operator override.
 
-The metrics endpoint deliberately exposes **no credentials, secrets,
+The metrics endpoint exposes **no credentials, secrets,
 or per-tenant payloads** — only Prometheus collector samples described
 in the
 [reference catalogue](../../reference/keystone-operator-metrics.md) — so

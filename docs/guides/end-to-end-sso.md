@@ -254,7 +254,7 @@ kubectl get horizon controlplane-horizon -n openstack -o jsonpath='{.spec.multiD
 The login page now shows a domain field, and users who leave it blank land in
 `Default` — so the bootstrap admin stays reachable.
 
-The field is deliberately free text rather than a dropdown. Horizon bounds a
+The field is free text rather than a dropdown. Horizon bounds a
 domain dropdown by `OPENSTACK_KEYSTONE_DOMAIN_CHOICES` and rejects every domain
 outside it, but the operator only sees the domains your LDAP backends declare.
 A dropdown built from those would lock out everyone in a domain it cannot
@@ -319,7 +319,7 @@ the dashboard somewhere else. Two things must agree with what the browser sees:
 
 The operator then projects
 `https://horizon.127-0-0-1.nip.io:8443/auth/websso/` as the trusted origin. The
-port cannot be derived from the hostname, which is exactly why the override
+port cannot be derived from the hostname, which is why the override
 exists.
 
 ## Pinning the federation proxy image
@@ -380,7 +380,7 @@ chainsaw test --test-dir tests/e2e-controlplane-sso
 ::: details The ControlPlane CR the suite applies
 The suite runs a second full ControlPlane in its own CI job (the webhook permits
 only one ControlPlane per namespace), so its CR name (`controlplane-sso`)
-deliberately differs from the `controlplane` devstack name used in the
+differs from the `controlplane` devstack name used in the
 walkthrough above.
 
 <<< @/../tests/e2e-controlplane-sso/02-controlplane-cr.yaml#controlplane-cr

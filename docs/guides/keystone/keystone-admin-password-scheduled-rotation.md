@@ -132,7 +132,7 @@ spec:
 > **Own the ExternalSecret for a durable setup.** If your devstack continuously
 > reconciles `deploy/kind/infrastructure/` (Flux/GitOps), a manual patch to the
 > shim is reverted — own a dedicated ExternalSecret for your CR reading the per-CR
-> path instead, exactly as the `admin-password-scheduled-rotation` chainsaw suite
+> path instead, as the `admin-password-scheduled-rotation` chainsaw suite
 > ships its own CR + ExternalSecret (`tests/e2e/keystone/admin-password-scheduled-rotation/00-keystone-cr.yaml`).
 > On a non-kind deployment you already own the ExternalSecret, so just set its
 > `remoteRef.key` to `bootstrap/openstack/keystone/admin`.
@@ -373,7 +373,7 @@ Keystone CRs concurrently.
 
 > **Path in lockstep.** The admin-credentials ExternalSecret's `remoteRef.key`
 > must match the per-CR path of the Keystone CR whose rotation feeds it — this is
-> exactly what Step 1 wired up. For a CR named `{name}` in `{namespace}`, that is
+> what Step 1 wired up. For a CR named `{name}` in `{namespace}`, that is
 > `bootstrap/{namespace}/{name}/admin`. On a ControlPlane deployment the
 > operator-projected `controlplane-keystone-admin-credentials` ExternalSecret
 > reads `bootstrap/openstack/controlplane-keystone/admin`, and the bootstrap seed
@@ -438,7 +438,7 @@ chainsaw test --test-dir tests/e2e/keystone/admin-password-scheduled-rotation
 ::: details The Keystone CR the suite applies
 The suite isolates its Keystone instance from the parallel suite pool, so its
 CR name (`keystone-adminpw-sched`) and logical database
-(`keystone_adminpw_sched`) deliberately differ from the devstack names used in
+(`keystone_adminpw_sched`) differ from the devstack names used in
 the walkthrough above.
 
 <<< @/../tests/e2e/keystone/admin-password-scheduled-rotation/00-keystone-cr.yaml#keystone-cr

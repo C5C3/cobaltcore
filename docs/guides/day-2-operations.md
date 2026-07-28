@@ -64,7 +64,7 @@ Scale down the same way. The keystone-operator maintains a `PodDisruptionBudget`
 named `controlplane-keystone`, sized from the child's replica count: at
 `replicas > 1` it sets `minAvailable=1` so a voluntary disruption never drains
 the last healthy pod; at `replicas == 1` it sets `maxUnavailable=1` instead,
-deliberately allowing eviction so a node drain cannot deadlock on a
+allowing eviction so a node drain cannot deadlock on a
 single-replica child.
 
 ::: tip Load-driven autoscaling is standalone-only
