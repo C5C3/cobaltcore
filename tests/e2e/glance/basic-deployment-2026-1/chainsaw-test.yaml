@@ -192,12 +192,32 @@ spec:
   # ── Step 6: Assert the Glance API answers /healthcheck over HTTP ────────
   # HTTP-level API coverage: the oslo healthcheck middleware answers without
   # touching the database or Keystone, proving the WSGI app is serving requests.
+  # The probe retries connection-level failures inside the pod: kube-proxy's
+  # endpoint programming can trail the CR's Ready flip by a second or two, so
+  # a single-shot request races it (seen in CI). HTTP errors still fail hard.
   - try:
     - script:
-        timeout: 60s
+        timeout: 90s
         content: |
           kubectl run curl-test-glance-basic-2026 -n $NAMESPACE --image=ghcr.io/c5c3/glance:2026.1 --rm -i --restart=Never \
-            --command -- python3 -c "import urllib.request; r = urllib.request.urlopen('http://glance-basic-2026.openstack.svc:9292/healthcheck'); assert r.status == 200, r.status; print('healthcheck OK, status %d' % r.status)"
+            --command -- python3 -c "
+          import time, urllib.error, urllib.request
+          last = None
+          for _ in range(15):
+              try:
+                  r = urllib.request.urlopen('http://glance-basic-2026.openstack.svc:9292/healthcheck')
+                  assert r.status == 200, r.status
+                  print('healthcheck OK, status %d' % r.status)
+                  break
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit('GET /healthcheck -> HTTP %d' % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  print('healthcheck retry: %s' % exc)
+                  time.sleep(2)
+          else:
+              raise SystemExit('healthcheck never answered after retries: %r' % last)
+          "
     catch:
     - script:
         content: |
