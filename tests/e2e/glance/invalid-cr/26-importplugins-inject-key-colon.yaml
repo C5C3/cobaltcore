@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.importPlugins.injectMetadata.properties carries a property name with a
+# colon. Only the validating webhook rejects it: a map KEY has no CRD schema
+# counterpart, so no marker reaches it. The rendered
+# [inject_metadata_properties] inject value is an oslo Dict, and its parser
+# splits each pair on the FIRST colon: the name would be truncated to `hw`
+# and its remainder read as part of the value, injecting a property nobody
+# wrote.
+apiVersion: glance.openstack.c5c3.io/v1alpha1
+kind: Glance
+metadata:
+  name: glance-invalid-importplugins-inject-colon
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/glance
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: glance
+    secretRef:
+      name: glance-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: glance-service-password
+  importPlugins:
+    injectMetadata:
+      properties:
+        "hw:disk_bus": virtio

@@ -565,6 +565,17 @@ spec:
             ($error != null): true
             (contains($error, 'services.glance.imageCache.sizeLimit')): true
             (contains($error, 'must be at least 1Mi')): true
+    # A colon in a services.glance.importPlugins injected property name is rejected
+    # by the same exported glance validator. A map key has no CRD schema
+    # counterpart, so admission is the sole gate: the oslo Dict parser splits each
+    # pair on its first colon, and the name would be truncated there.
+    - apply:
+        file: 65-glance-importplugins-inject-key-colon.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.glance.importPlugins.injectMetadata.properties')): true
+            (contains($error, 'property name must not contain a colon')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

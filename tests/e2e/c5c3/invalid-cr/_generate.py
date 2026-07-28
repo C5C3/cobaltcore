@@ -1175,6 +1175,29 @@ FIXTURES: tuple[Fixture, ...] = (
             + "        sizeLimit: 0\n"
         ),
     ),
+    Fixture(
+        filename="65-glance-importplugins-inject-key-colon.yaml",
+        comment=(
+            "services.glance.importPlugins.injectMetadata.properties carries a property\n"
+            "name with a colon, rejected by the validating webhook through the glance\n"
+            "module's exported ValidateImportPlugins. A map key has no CRD schema\n"
+            "counterpart, so admission is the sole gate on this one: the rendered\n"
+            "[inject_metadata_properties] inject value is an oslo Dict whose parser\n"
+            "splits each pair on the first colon, so the name would be truncated there\n"
+            "and its remainder injected as part of the value. The rest of the glance\n"
+            "block is valid, so the ONLY violation is the property name."
+        ),
+        name="cp-glance-importplugins-inject-colon",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            VALID_GLANCE
+            + "      importPlugins:\n"
+            + "        injectMetadata:\n"
+            + "          properties:\n"
+            + '            "hw:disk_bus": virtio\n'
+        ),
+    ),
 )
 
 

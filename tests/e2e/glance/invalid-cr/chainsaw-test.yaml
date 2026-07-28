@@ -261,3 +261,59 @@ spec:
             ($error != null): true
             (contains($error, 'spec.middleware[0].name')): true
             (contains($error, 'owns that filter name while spec.imageCache is set')): true
+  # spec.importPlugins.conversion.outputFormat outside the enum must be rejected
+  # by the CRD Enum marker; ValidateImportPlugins repeats it.
+  - try:
+    - apply:
+        file: 25-importplugins-output-format-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'outputFormat')): true
+            (contains($error, 'qcow2')): true
+  # A colon in a spec.importPlugins.injectMetadata property name must be rejected
+  # by the validating webhook: a map key has no CRD schema counterpart, so no
+  # marker reaches it, and the oslo Dict parser splits each pair on its first
+  # colon.
+  - try:
+    - apply:
+        file: 26-importplugins-inject-key-colon.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'property name must not contain a colon')): true
+            (contains($error, 'splits each pair on the first colon')): true
+  # spec.importPlugins.injectMetadata.properties as an empty map must be rejected
+  # by the MinProperties=1 marker on the required field; the webhook mirrors it.
+  - try:
+    - apply:
+        file: 27-importplugins-inject-empty-properties.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'importPlugins.injectMetadata.properties')): true
+  # spec.extraConfig setting an image-import plugin key must be rejected: all four
+  # are Rejected registry entries owned by spec.importPlugins, so the pipeline
+  # cannot be rewritten behind the admission rules that constrain it. The
+  # ownership error is also what proves the registry exemption fires: without it
+  # the unknown-section verdict would answer instead.
+  - try:
+    - apply:
+        file: 28-extraconfig-owned-importplugins.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'image_import_plugins is managed via spec.importPlugins')): true
+            (contains($error, 'bypasses the fixed decompression-before-conversion order')): true
+  # spec.importPlugins.decompression without an explicit spec.staging bound must
+  # be rejected by the validating webhook: the plugin expands by a ratio the
+  # caller picks, which makes that bound the only one in the path, and the rule
+  # correlates two top-level spec fields so no marker can express it.
+  - try:
+    - apply:
+        file: 29-importplugins-decompression-without-staging.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.staging.sizeLimit')): true
+            (contains($error, 'importPlugins.decompression is enabled')): true
