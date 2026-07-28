@@ -17,7 +17,7 @@ FAIL=0
 
 # Services that every release must register in source-refs.yaml and
 # extra-packages.yaml, each with a matching images/<service>/Dockerfile.
-SERVICES="keystone horizon glance"
+SERVICES="keystone horizon glance placement"
 
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
@@ -60,6 +60,23 @@ test_source_refs_valid_yaml_with_services() {
         FAIL=$((FAIL + 1))
       fi
     done
+
+    # $SERVICES is what tests 2-4 iterate, and the build matrix derives from
+    # these keys instead. Assert the converse direction too: a service
+    # registered here but absent from the list would build and ship while its
+    # extra-packages entries go unvalidated and its Dockerfile never gets
+    # checked for hardcoded apt packages. Fail loudly rather than skip four
+    # tests silently.
+    local unlisted
+    unlisted=$(yq 'keys | .[]' "$source_refs" | tr -d '"' \
+      | grep -vxF -f <(tr ' ' '\n' <<< "$SERVICES") || true)
+    if [ -z "$unlisted" ]; then
+      echo "  PASS: [$release_name] every service in $rel_path is covered by the SERVICES list"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: [$release_name] services in $rel_path missing from the SERVICES list: $(echo "$unlisted" | tr '\n' ' ')"
+      FAIL=$((FAIL + 1))
+    fi
   done
 
   if [ "$found_any" = false ]; then
@@ -450,6 +467,53 @@ test_option_catalogs_present_and_parse() {
   fi
 }
 
+# --- Test 9: nightly GHCR cleanup covers every service image ---
+test_cleanup_matrix_covers_services() {
+  echo "Test: cleanup-images.yaml service matrix covers every service"
+
+  local workflow="$PROJECT_ROOT/.github/workflows/cleanup-images.yaml"
+
+  if [ ! -f "$workflow" ]; then
+    echo "  FAIL: .github/workflows/cleanup-images.yaml not found"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  # build-service-images derives its matrix from source-refs.yaml, so a newly
+  # registered service starts pushing composite tags and untagged per-platform
+  # digests to GHCR immediately. The cleanup matrix is hand-maintained, so an
+  # unlisted service accumulates both forever. Compare against the same YAML
+  # keys the build matrix reads, not the hand-maintained $SERVICES list, or a
+  # service onboarded without touching this file slips through unnoticed.
+  # Both sides go through the same quote strip as every other yq read here —
+  # normalizing only one side would report every service missing at once.
+  local matrix
+  matrix=$(yq '.jobs.cleanup-service-images.strategy.matrix.package[]' "$workflow" | tr -d '"')
+
+  local registered
+  registered=$(for source_refs in "$PROJECT_ROOT"/releases/*/source-refs.yaml; do
+    [ -f "$source_refs" ] || continue
+    yq 'keys | .[]' "$source_refs" | tr -d '"'
+  done | sort -u)
+
+  if [ -z "$registered" ]; then
+    echo "  FAIL: no services registered in releases/*/source-refs.yaml"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  local service
+  while IFS= read -r service; do
+    if grep -qxF "$service" <<< "$matrix"; then
+      echo "  PASS: [$service] listed in the cleanup-service-images matrix"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: [$service] missing from the cleanup-service-images matrix"
+      FAIL=$((FAIL + 1))
+    fi
+  done <<< "$registered"
+}
+
 # --- Run all tests ---
 echo "=== Release config verification tests ==="
 echo ""
@@ -468,6 +532,8 @@ echo ""
 test_test_excludes_files_match_services
 echo ""
 test_option_catalogs_present_and_parse
+echo ""
+test_cleanup_matrix_covers_services
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
