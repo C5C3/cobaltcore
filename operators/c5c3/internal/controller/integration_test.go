@@ -32,6 +32,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -2627,16 +2628,24 @@ func TestIntegration_ExternalMode_TransitionsRejected(t *testing.T) {
 		cp := integrationManagedControlPlane("cp-m2e", ns.Name)
 		g.Expect(c.Create(ctx, cp)).To(Succeed())
 
-		fetched := &c5c3v1alpha1.ControlPlane{}
-		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed())
-		fetched.Spec.Services.Keystone.Mode = c5c3v1alpha1.KeystoneModeExternal
-		fetched.Spec.Services.Keystone.Replicas = nil
-		fetched.Spec.Services.Keystone.External = &c5c3v1alpha1.ExternalKeystoneSpec{
-			AuthURL: "https://keystone.example.com/v3",
-		}
-		fetched.Spec.Infrastructure = nil
-
-		err := c.Update(ctx, fetched)
+		// Get-mutate-update under RetryOnConflict: the live controller updates
+		// the freshly created CR concurrently (finalizer, status), and a stale
+		// resourceVersion returns 409 Conflict before admission ever sees the
+		// transition. The webhook denial itself is deterministic once the
+		// update reaches it, so only the Conflict is retried.
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			fetched := &c5c3v1alpha1.ControlPlane{}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(cp), fetched); err != nil {
+				return err
+			}
+			fetched.Spec.Services.Keystone.Mode = c5c3v1alpha1.KeystoneModeExternal
+			fetched.Spec.Services.Keystone.Replicas = nil
+			fetched.Spec.Services.Keystone.External = &c5c3v1alpha1.ExternalKeystoneSpec{
+				AuthURL: "https://keystone.example.com/v3",
+			}
+			fetched.Spec.Infrastructure = nil
+			return c.Update(ctx, fetched)
+		})
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("cannot be changed to External"))
 	})
@@ -2649,16 +2658,20 @@ func TestIntegration_ExternalMode_TransitionsRejected(t *testing.T) {
 		cp := integrationExternalControlPlane("cp-e2m", ns.Name)
 		g.Expect(c.Create(ctx, cp)).To(Succeed())
 
-		fetched := &c5c3v1alpha1.ControlPlane{}
-		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed())
-		fetched.Spec.Services.Keystone.Mode = c5c3v1alpha1.KeystoneModeManaged
-		fetched.Spec.Services.Keystone.External = nil
-		fetched.Spec.Infrastructure = &c5c3v1alpha1.InfrastructureSpec{
-			Database: commonv1.DatabaseSpec{Host: "db", Database: "d", SecretRef: commonv1.SecretRefSpec{Name: "s"}},
-			Cache:    commonv1.CacheSpec{Backend: "b", Servers: []string{"mc:11211"}},
-		}
-
-		err := c.Update(ctx, fetched)
+		// Same RetryOnConflict rationale as the managed -> External leg above.
+		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			fetched := &c5c3v1alpha1.ControlPlane{}
+			if err := c.Get(ctx, client.ObjectKeyFromObject(cp), fetched); err != nil {
+				return err
+			}
+			fetched.Spec.Services.Keystone.Mode = c5c3v1alpha1.KeystoneModeManaged
+			fetched.Spec.Services.Keystone.External = nil
+			fetched.Spec.Infrastructure = &c5c3v1alpha1.InfrastructureSpec{
+				Database: commonv1.DatabaseSpec{Host: "db", Database: "d", SecretRef: commonv1.SecretRefSpec{Name: "s"}},
+				Cache:    commonv1.CacheSpec{Backend: "b", Servers: []string{"mc:11211"}},
+			}
+			return c.Update(ctx, fetched)
+		})
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("phase-3"))
 	})
