@@ -12,6 +12,11 @@
 # service-user password from the pre-seeded keystone-admin Secret. glance-api
 # cannot start without a default image store, so 03-glancebackend-cr.yaml
 # attaches one before Ready can settle.
+#
+# The region marker below is imported verbatim by
+# docs/guides/glance/filter-web-download-imports.md as the widened-filter
+# exhibit, so the CR the guide shows cannot drift from the one CI runs.
+# region glance-cr
 apiVersion: glance.openstack.c5c3.io/v1alpha1
 kind: Glance
 metadata:
@@ -62,3 +67,4 @@ spec:
     secretRef:
       name: keystone-admin
       key: password
+# endregion glance-cr
