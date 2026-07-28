@@ -853,6 +853,22 @@ test_test_service_images_run_tests_stestr() {
   assert_file_contains "ci-run-unit-tests.sh runs stestr run" "$HACK_RUN_UNIT_TESTS" "stestr run"
 }
 
+# --- test-service-images derives the PBR package name for PKG-INFO ---
+test_test_service_images_pkg_info_name() {
+  echo "Test: test-service-images derives the PBR package name for PKG-INFO"
+
+  # pbr ignores PKG-INFO when its Name does not match setup.cfg /
+  # pyproject.toml (placement ships as openstack-placement), so the
+  # runner must derive the name from the source tree instead of
+  # hard-coding SERVICE_NAME.
+  assert_file_contains "ci-run-unit-tests.sh reads the package name from setup.cfg metadata" \
+    "$HACK_RUN_UNIT_TESTS" 'cp.get("metadata", "name")'
+  assert_file_contains "ci-run-unit-tests.sh falls back to the pyproject.toml project name" \
+    "$HACK_RUN_UNIT_TESTS" 'tomllib.load(f).get("project", {}).get("name")'
+  assert_file_contains "ci-run-unit-tests.sh writes the derived name into PKG-INFO" \
+    "$HACK_RUN_UNIT_TESTS" '"$PKG_NAME" "$SERVICE_VERSION"'
+}
+
 # --- test-service-images uses exclude-list from test-excludes ---
 test_test_service_images_exclude_list() {
   echo "Test: test-service-images uses exclude-list from test-excludes"
@@ -1828,6 +1844,8 @@ echo ""
 test_test_service_images_run_tests_volumes
 echo ""
 test_test_service_images_run_tests_stestr
+echo ""
+test_test_service_images_pkg_info_name
 echo ""
 test_test_service_images_exclude_list
 echo ""
