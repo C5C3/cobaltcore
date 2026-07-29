@@ -682,10 +682,11 @@ keystone-operator-6d7f9f4d5b-xyz99   1/1     Running   0          30s
 
 ---
 
-## Step 6 — Build and load the Keystone service image
+## Step 6 — Prepare and load the Keystone service image
 
 The `Keystone` CR references a service image that runs the actual OpenStack Keystone API. Either
-pull the pre-built image from GHCR or build it locally.
+pull the pre-built image from GHCR or build it locally. Run **one option only**; both options
+produce the same image reference and load it into the `forge` kind cluster.
 
 Set the release you want to work with. The default is the most recent release; update this variable
 whenever a new release is available:
@@ -694,14 +695,14 @@ whenever a new release is available:
 RELEASE=2025.2   # update to the target release
 ```
 
-### Pull from GHCR
+### Option A — Pull from GHCR (recommended)
 
 ```bash
 docker pull ghcr.io/c5c3/keystone:"${RELEASE}"
 kind load docker-image ghcr.io/c5c3/keystone:"${RELEASE}" --name forge
 ```
 
-### Build locally
+### Option B — Build locally
 
 ```bash
 # Resolve the upstream source ref
