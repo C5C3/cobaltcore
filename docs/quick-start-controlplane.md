@@ -387,6 +387,59 @@ at `https://keystone.127-0-0-1.nip.io:8443/v3` — the same path as the per-serv
 curl -k https://keystone.127-0-0-1.nip.io:8443/v3
 ```
 
+::: tip If your host cannot resolve `*.nip.io`
+On some local setups that filter or block this specific DNS pattern, the
+following command fails:
+
+```bash
+curl -k https://keystone.127-0-0-1.nip.io:8443/v3
+```
+
+The command returns the following error:
+
+```
+curl: (6) Could not resolve host: keystone.127-0-0-1.nip.io
+```
+
+`nip.io` deliberately resolves hostnames like `keystone.127-0-0-1.nip.io` to
+the loopback address `127.0.0.1`. Some routers ship **DNS rebind
+protection**, a security feature that silently drops any DNS response
+resolving a public hostname to a private or loopback address, which is
+this pattern. When your machine's resolver does this, `nip.io`
+never resolves. Confirm the cause by comparing your
+router against a public resolver:
+
+```bash
+dig +short keystone.127-0-0-1.nip.io @<your-router-ip>   # empty: blocked
+dig +short keystone.127-0-0-1.nip.io @1.1.1.1            # 127.0.0.1: as expected
+```
+
+The most reliable fix is host-local: add loopback
+entries to `/etc/hosts`:
+
+```bash
+sudo sh -c 'cat >> /etc/hosts <<EOF
+127.0.0.1 keystone.127-0-0-1.nip.io
+127.0.0.1 horizon.127-0-0-1.nip.io
+127.0.0.1 glance.127-0-0-1.nip.io
+EOF'
+```
+
+For a one-off `curl` check without touching `/etc/hosts`, use `--resolve` to
+override DNS for a single host/port pair — `curl` still sends the original
+hostname in the request and TLS handshake, but connects directly to
+`127.0.0.1`:
+
+```bash
+curl -k --resolve keystone.127-0-0-1.nip.io:8443:127.0.0.1 \
+  https://keystone.127-0-0-1.nip.io:8443/v3
+```
+
+If you'd rather fix it at the network level, most routers let you exempt
+specific domains from rebind protection, or you can add a public resolver
+(e.g. `1.1.1.1`) ahead of the router in your machine's network settings.
+:::
+
 Then issue a token with the admin password:
 
 ```bash
