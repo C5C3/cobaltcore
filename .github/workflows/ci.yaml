@@ -880,7 +880,10 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    runs-on: self-hosted
+    # The keystone leg is pinned back to Blacksmith for now: it is by far the
+    # largest suite in this matrix and has not been stable on the self-hosted
+    # runners since they took over. The other legs stay self-hosted.
+    runs-on: ${{ matrix.operator == 'keystone' && 'blacksmith-4vcpu-ubuntu-2404' || 'self-hosted' }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -1139,9 +1142,11 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    # Both legs run on the self-hosted runners. The split into two matrix
-    # entries is kept so PodChaos and NetworkChaos stay independently gated
-    # (see continue-on-error below) and so the two suites run in parallel.
+    # The pod leg is pinned back to Blacksmith for now: it is the blocking leg
+    # and has not been stable on the self-hosted runners since they took over.
+    # The network leg stays self-hosted. The split into two matrix entries is
+    # kept so PodChaos and NetworkChaos stay independently gated (see
+    # continue-on-error below) and so the two suites run in parallel.
     #
     # test_dirs lists the per-suite test directories explicitly. chainsaw
     # v0.2.14 accepts --{include,exclude}-test-regex flags but does not apply
@@ -1158,7 +1163,7 @@ jobs:
           # runners set WITH_CHAOS_MESH=true via setup-e2e-infra (env block
           # below), so the test's runtime presence guard never SKIPs here.
           - suite: pod
-            runner: self-hosted
+            runner: blacksmith-4vcpu-ubuntu-2404
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/api-pod-kill-pdb

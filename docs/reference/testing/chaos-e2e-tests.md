@@ -162,8 +162,8 @@ cancelled.
 **Per-leg gating (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' }}</code>):** The `pod`
 leg is **blocking** — a failure in any PodChaos suite (operator restart, PDB, rotation)
 fails the build. The `network` leg stays **non-blocking**, because its
-`ip_set`/`sch_netem` kernel-module dependency is resolvable only on the GitHub-hosted
-runner and remains prone to environment flakiness; its failures are visible but do not
+`ip_set`/`sch_netem` kernel-module dependency remains prone to environment
+flakiness; its failures are visible but do not
 block merges. The `run-chaos` PR label runs both legs on demand for pre-validation.
 
 **Timeout:** 45 minutes to accommodate serial test execution and longer recovery
