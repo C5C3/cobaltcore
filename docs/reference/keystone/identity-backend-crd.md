@@ -439,8 +439,9 @@ this status. The keystone-side `identitybackends` sub-reconciler only reads
 | `MappingsReady` | False | `NoMappingRules` | Federation: `spec.mappings` is empty. |
 | `MappingsReady` | False | `RoleOrProjectNotFound` | Federation: a role assignment references a role, project, or project domain that does not exist (yet); retried on a bounded poll. |
 | `MappingsReady` | False | `IdentityAPIError` | Federation: a mapping/group/assignment call failed. |
-| `ConfigProjected` | True | `ConfigProjected` | LDAP: the Keystone Deployment's `domains` volume Secret carries this backend's `keystone.<domain>.conf`. OIDC: the federation Secret mounted by the sidecar carries this backend's client document. SAML: the federation Secret carries this backend's IdP-metadata document. |
-| `ConfigProjected` | False | `WaitingForProjection` | The projection has not landed in the Deployment yet. |
+| `ConfigProjected` | True | `ConfigProjected` | LDAP: the Keystone Deployment's `domains` volume Secret carries this backend's `keystone.<domain>.conf`. OIDC: the federation Secret mounted by the sidecar carries this backend's client document. SAML: the federation Secret carries this backend's IdP-metadata document. In every case the Deployment has also finished rolling that template out. |
+| `ConfigProjected` | False | `WaitingForProjection` | The projection has not landed in the Deployment's pod template yet. |
+| `ConfigProjected` | False | `WaitingForRollout` | The pod template mounts this backend's config, but replicas of the previous template still serve; the condition flips once every replica runs the projected config. |
 | `Ready` | True | `AllReady` | Both sub-conditions are True. |
 | `Ready` | False | `NotAllReady` | At least one sub-condition is not True. |
 
@@ -455,6 +456,13 @@ backend and re-trigger the same rollout in a loop. Transient failures surface
 as Events and reconcile retries; only authoritative findings (domain gone,
 foreign same-named domain, missing mapping rules, unresolvable role/project)
 flip a provisioned condition back to False.
+
+`WaitingForRollout` is deliberately not on that transient list: a pending
+rollout demotes `ConfigProjected`, and with it the aggregate `Ready`. The
+aggregate therefore only turns True once every replica of the Keystone
+Deployment runs this backend's projected config — a consumer gating on
+`Ready` (the ControlPlane websso projection, for example) never observes a
+backend whose config only the pod template carries.
 
 ## Deletion Semantics
 

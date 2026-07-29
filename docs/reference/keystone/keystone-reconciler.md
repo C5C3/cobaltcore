@@ -1437,7 +1437,7 @@ after a full reconcile loop, every condition in the status carries the correct
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
 | `TrustFlushReady` | `reconcileTrustFlush` | Trust flush CronJob configured or not required |
 | `PasswordRotationReady` | `reconcilePasswordRotation` | Model B admin-password rotation CronJob configured, or disabled/torn down |
-| `IdentityBackendsReady` | `reconcileIdentityBackends` | Every attached, `DomainReady` KeystoneIdentityBackend is projected into its type's Secret — the domains Secret (LDAP) or the federation Secret (OIDC) (True/`IdentityBackendsNotRequired` when none attach) |
+| `IdentityBackendsReady` | `reconcileIdentityBackends` | Every attached, `DomainReady` KeystoneIdentityBackend is projected into its type's Secret — the domains Secret (LDAP) or the federation Secret (OIDC) — **and** the Keystone Deployment has converged onto exactly that projection (every replica updated, ready, and counted). The gate holds in both directions: an attach and a detach each keep the condition False/`WaitingForRollout` until the rollout lands. True/`IdentityBackendsNotRequired` when none attach, likewise only once the Deployment carries no projection volumes anymore |
 
 ---
 
@@ -2205,14 +2205,38 @@ preserving the no-rollout behavior.
 | Image | `{spec.image.repository}:{spec.image.tag}` |
 | Port | 5000 (named `keystone`) |
 
-**Probes:**
+**Probes (keystone container):**
 
-| Probe | Type | Target | Port | InitialDelay | Period |
+| Probe | Type | Target | InitialDelay | Period | Timeout |
 | --- | --- | --- | --- | --- | --- |
-| Liveness | TCPSocket | — | 5000 | 15s | 20s |
-| Readiness | HTTPGet | `/v3` | 5000 | 5s | 10s |
+| Liveness | TCPSocket 5000; with federation active an exec-form localhost connect (uWSGI binds `127.0.0.1` only) | uWSGI accepting connections | 15s | 20s | kubelet default (1s); 8s for the federation exec variant |
+| Readiness | Exec | TCP connect to the host/port parsed from `OS_DATABASE__CONNECTION` (inner connect timeout 20s) | 10s | 30s | 25s |
+| Startup | HTTPGet `/v3` port 5000; with federation active an exec-form localhost fetch (inner timeout 5s) | WSGI app answering | — | 10s | 8s (FailureThreshold 30) |
 
-The liveness and readiness probes are intentionally separated. The liveness probe uses a TCP socket check that only verifies the uWSGI process is accepting connections, without exercising the database code path. This prevents the kubelet from killing pods during transient database outages (e.g., MariaDB maintenance), avoiding CrashLoopBackOff cascades and thundering-herd restarts. The readiness probe continues to use HTTP GET `/v3`, which exercises the full stack including the database. When the database is unavailable, the readiness probe fails and the pod is removed from Service endpoints, preventing HTTP 500 responses to clients. Once the database recovers, the pod re-enters Service endpoints within one readiness probe period (10s).
+The exec-form probes fork a shell plus a Python interpreter, which alone can
+consume the kubelet's 1-second default timeout — every exec probe therefore
+carries an explicit `timeoutSeconds` sitting above its inner connect/fetch
+timeout and below its own period. The liveness and readiness probes are
+intentionally separated. The liveness probe only verifies uWSGI is accepting
+connections, without exercising the database code path, so the kubelet does
+not kill pods during transient database outages (e.g., MariaDB maintenance).
+The readiness probe TCP-connects to the database endpoint from inside the
+pod — `/v3` is served without touching the database and cannot observe a lost
+connection — so a keystone-side database outage depools the pod from the
+Service instead of going unnoticed, and the pod re-enters the endpoints
+within one probe period after recovery.
+
+**Probes (federation-proxy sidecar, when federation is active):**
+
+| Probe | Type | InitialDelay | Period | Timeout |
+| --- | --- | --- | --- | --- |
+| Startup | TCPSocket on the proxy port | — | 2s | kubelet default (FailureThreshold 30) |
+| Liveness | TCPSocket on the proxy port | 15s | 20s | kubelet default |
+| Readiness | HTTPGet `/v3` through the whole proxy-to-uWSGI chain | 5s | 10s | 5s |
+
+The sidecar's TCP probes fork no process and keep the kubelet default; only
+its readiness probe, which traverses Apache and uWSGI, carries an explicit
+5-second timeout.
 
 **Volume Mounts:**
 
@@ -3173,10 +3197,14 @@ client. `FederationObjectsReady` covers the identity provider + protocol,
 Keystone Deployment's `domains` volume and the conf file inside the Secret it
 references (LDAP), or the `federation-metadata` volume and the backend's
 client document (OIDC) — with a `RequeueSecretPolling` safety net because a
-converged Keystone status emits no watch event. `Ready` aggregates the
-backend type's own sub-condition set via the shared helper (LDAP:
-`DomainReady` + `ConfigProjected`; OIDC: plus `FederationObjectsReady` and
-`MappingsReady`).
+converged Keystone status emits no watch event. A config the pod template
+mounts but the Deployment has not finished rolling out reports
+False/`WaitingForRollout`, so the condition — in both the attach and the
+detach direction — trails the running workload, not the rendered spec; the
+keystone-side `IdentityBackendsReady` applies the same gate. `Ready`
+aggregates the backend type's own sub-condition set via the shared helper
+(LDAP: `DomainReady` + `ConfigProjected`; OIDC: plus
+`FederationObjectsReady` and `MappingsReady`).
 
 **Finalizer (`keystone.openstack.c5c3.io/identitybackend`):** deletion waits
 for de-projection first; OIDC backends then tear their federation objects
