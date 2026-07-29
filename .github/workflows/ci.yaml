@@ -403,7 +403,7 @@ jobs:
     # wall-clock back down. Even so the keystone controller envtest
     # suite alone runs ~14m and intermittently brushed the 15m job wall (a 15m07s
     # run was cancelled), so the limit is raised to 20m for headroom.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: self-hosted
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -588,7 +588,7 @@ jobs:
   e2e-infra:
     needs: [changes]
     if: github.event_name == 'pull_request' && needs.changes.outputs.e2e-infra == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: self-hosted
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -691,7 +691,7 @@ jobs:
       github.event.pull_request.head.repo.fork != true &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: self-hosted
     timeout-minutes: 30
     permissions:
       contents: read
@@ -880,7 +880,7 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: self-hosted
     timeout-minutes: 45
     permissions:
       contents: read
@@ -1031,7 +1031,7 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: self-hosted
     timeout-minutes: 45
     permissions:
       contents: read
@@ -1124,9 +1124,9 @@ jobs:
   # Gating is split by matrix leg (see continue-on-error below): the pod-chaos
   # leg is blocking — an operator-restart/PDB/rotation regression fails the
   # build — while the network-chaos leg stays non-blocking because its
-  # ip_set/xt_set/sch_netem dependency is resolvable only on the GitHub-hosted
-  # runner and remains prone to environment flakiness. On-demand pre-validation
-  # of either leg is available via the run-chaos PR label.
+  # ip_set/xt_set/sch_netem dependency makes it prone to environment flakiness.
+  # On-demand pre-validation of either leg is available via the run-chaos PR
+  # label.
   e2e-chaos:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]
     # always(): allow the job to run when upstream Go jobs are skipped
@@ -1139,11 +1139,9 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    # Split into two matrix entries to work around the Blacksmith
-    # Firecracker microVM kernel, which ships without ip_set/xt_set/sch_netem
-    # modules and has no matching linux-modules-extra package. PodChaos runs
-    # on Blacksmith for speed; NetworkChaos runs on a GitHub-hosted ubuntu
-    # runner where linux-modules-extra-$(uname -r) is resolvable.
+    # Both legs run on the self-hosted runners. The split into two matrix
+    # entries is kept so PodChaos and NetworkChaos stay independently gated
+    # (see continue-on-error below) and so the two suites run in parallel.
     #
     # test_dirs lists the per-suite test directories explicitly. chainsaw
     # v0.2.14 accepts --{include,exclude}-test-regex flags but does not apply
@@ -1160,7 +1158,7 @@ jobs:
           # runners set WITH_CHAOS_MESH=true via setup-e2e-infra (env block
           # below), so the test's runtime presence guard never SKIPs here.
           - suite: pod
-            runner: blacksmith-4vcpu-ubuntu-2404
+            runner: self-hosted
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/api-pod-kill-pdb
@@ -1176,7 +1174,7 @@ jobs:
               tests/e2e-chaos/operator-pod-kill
               tests/e2e-chaos/glance-operator-pod-kill
           - suite: network
-            runner: ubuntu-24.04
+            runner: self-hosted
             test_dirs: >-
               tests/e2e/infrastructure/chaos-mesh-health
               tests/e2e-chaos/mariadb-network-latency
@@ -1185,8 +1183,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     # Pod-chaos is blocking; network-chaos stays non-blocking (its kernel-module
-    # dependency is only resolvable on the GitHub-hosted runner and remains
-    # flakiness-prone). See the gating note above the job.
+    # dependency keeps it flakiness-prone). See the gating note above the job.
     continue-on-error: ${{ matrix.suite == 'network' }}
     permissions:
       contents: read
@@ -1287,7 +1284,7 @@ jobs:
   # presence in openstack, Prometheus target health for keystone-operator,
   # Grafana dashboard presence).
   #
-  # Single matrix entry on the Blacksmith runner — the
+  # Single matrix entry on the self-hosted runner — the
   # kube-prometheus stack is deterministic, so unlike e2e-chaos this job runs
   # `continue-on-error: false`.  Inherits the e2e-chaos `needs:` chain so the
   # same upstream Go gate applies and an operator code change re-runs the
@@ -1304,7 +1301,7 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: self-hosted
     timeout-minutes: 45
     continue-on-error: false
     permissions:
@@ -1389,7 +1386,7 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: self-hosted
     timeout-minutes: 60
     continue-on-error: false
     permissions:
@@ -1526,7 +1523,7 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: self-hosted
     timeout-minutes: 60
     continue-on-error: false
     permissions:
@@ -1637,7 +1634,7 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: self-hosted
     timeout-minutes: 60
     continue-on-error: false
     permissions:
@@ -1752,7 +1749,7 @@ jobs:
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: self-hosted
     timeout-minutes: 45
     permissions:
       contents: read

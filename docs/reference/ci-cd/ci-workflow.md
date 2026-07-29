@@ -150,9 +150,8 @@ The E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`,
 `e2e-prometheus`, `e2e-controlplane`, `e2e-external-keystone`, `tempest`) share
 infrastructure setup via
 the `setup-e2e-infra` composite action and diagnostic teardown via
-`hack/ci-dump-diagnostics.sh`. They run on `blacksmith-4vcpu-ubuntu-2404` runners
-(as does `test-integration`), except the `e2e-chaos` network suite, which uses a
-GitHub-hosted `ubuntu-24.04` runner for its kernel-module requirements.
+`hack/ci-dump-diagnostics.sh`. They run on the `self-hosted` runners, as does
+`test-integration`.
 
 ## Jobs
 
@@ -686,16 +685,15 @@ tests run after the happy-path operator E2E suite has passed. Gating is set per
 matrix leg via `continue-on-error: ${{ matrix.suite == 'network' }}`: the `pod`
 leg is **blocking** — an operator-restart, PDB, or rotation regression fails the
 build — while the `network` leg stays **non-blocking**, because its
-`ip_set`/`sch_netem` kernel-module dependency is resolvable only on the
-GitHub-hosted runner and remains prone to environment flakiness. On-demand
-pre-validation of either leg is available via the `run-chaos` PR label.
+`ip_set`/`sch_netem` kernel-module dependency keeps it prone to environment
+flakiness. On-demand pre-validation of either leg is available via the
+`run-chaos` PR label.
 
-The job runs as a two-entry matrix split by chaos type: the `pod` suite (PodChaos
-tests) runs on `blacksmith-4vcpu-ubuntu-2404` for speed, while the `network` suite
-(NetworkChaos tests) runs on a GitHub-hosted `ubuntu-24.04` runner, where the
-`linux-modules-extra` kernel modules required by `ip_set`/`sch_netem` are resolvable
-(the Blacksmith Firecracker microVM kernel ships without them). Each matrix entry
-lists its per-suite test directories explicitly.
+The job runs as a two-entry matrix split by chaos type: the `pod` suite
+(PodChaos tests) and the `network` suite (NetworkChaos tests). Both legs run on
+the `self-hosted` runners; the split keeps the two suites independently gated and
+lets them run in parallel. Each matrix entry lists its per-suite test directories
+explicitly.
 
 | Step | Action | Details |
 | --- | --- | --- |

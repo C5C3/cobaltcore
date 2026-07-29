@@ -138,7 +138,7 @@ Family-specific constraints:
 | Cleanup timeout exceeded in deletion suites under `parallel: 4` | MariaDB operator serializes Database/User/Grant deletions past the old 60s window | `cleanup: 3m` in `tests/e2e/chainsaw-config.yaml` |
 | Image pull / manifest inspect flakes against ghcr.io | registry eventual consistency, transient 5xx | `4b3cfbde`, `1f43aee7`, `f67318cd` — bounded retries; `b5efce28` — GHCR transport replaced artifact download |
 | OpenBao pod 0/1 Running forever after a chaos kill | single-replica Shamir sealing — new pod starts sealed, no auto-unseal in kind | `tests/e2e-chaos/unseal-openbao.sh` |
-| NetworkChaos suites fail only on Blacksmith runners | Firecracker microVM kernel lacks `ip_set`/`xt_set`/`sch_netem` | chaos matrix `network` leg pinned to `ubuntu-24.04`, `continue-on-error` |
+| NetworkChaos suites fail with missing `ip_set`/`xt_set`/`sch_netem` | runner kernel ships without the modules | `hack/deploy-infra.sh` installs `linux-modules-extra-$(uname -r)` and retries; chaos matrix `network` leg stays `continue-on-error` |
 | Individual tempest test fails intermittently in one release row | upstream test races under concurrency | `ca194368` — failed tests rerun once serially, rewritten as flakes in JUnit |
 
 ## Notes
