@@ -4,36 +4,50 @@ title: Overview
 
 # CobaltCore Forge
 
-CobaltCore (C5C3) is a Kubernetes-native OpenStack distribution for operating
-Hosted Control Planes across a multi-cluster topology — Management, Control
-Plane, Hypervisor, and Storage. This repository delivers everything needed for
-a self-contained Keystone deployment stack: from the declarative infrastructure
-manifests, through the service operators, to the c5c3-operator orchestration
-layer — built with the Operator SDK (Go), controller-runtime, and Kubebuilder.
+CobaltCore Forge helps teams run OpenStack control planes on Kubernetes.
 
-The implementation follows a Keystone-first strategy. The Keystone operator is
-the reference implementation that establishes the patterns — CRD layout,
-sub-reconciler chain, webhooks, finalizers, instrumentation — replicated by
-every subsequent service operator. Horizon and Glance are already onboarded on
-the same scaffolding, and the c5c3-operator ties the services together into a
-single ControlPlane resource.
+This repository includes deployment manifests, Kubernetes operators, and tested
+workflows for running the stack locally and in CI.
+
+You can complete the main quick start and make an authenticated Keystone API
+call on a local kind cluster.
+
+## Who this is for
+
+- Platform engineers and site reliability engineers (SREs) managing
+  Kubernetes-based control planes.
+- OpenStack operators.
+- Developers contributing to Kubernetes operators.
 
 ## Start here
 
-- **[Quick Start](./quick-start.md)** — from `git clone` to an authenticated
-  Keystone API call on a local kind cluster.
-- **[Quick Start (Extended)](./quick-start-extended.md)** — UI tours, the
-  local-build path, the production HelmRelease, E2E, and Tempest.
-- **[Quick Start (ControlPlane)](./quick-start-controlplane.md)** — bring up a
-  full ControlPlane through the c5c3-operator.
+If you open only one page first, open **[Quick Start](./quick-start.md)**.
 
-## What's inside
+- **[Quick Start](./quick-start.md)** — Path from clone to an
+  authenticated Keystone API call on a local kind cluster.
+- **[Quick Start (ControlPlane)](./quick-start-controlplane.md)** — bring up a
+  full ControlPlane through the c5c3-operator after the main quick start.
+- **[Quick Start (Extended)](./quick-start-extended.md)** *(optional)* — UI
+  tours, local-build path, production HelmRelease, E2E, and Tempest.
+
+## Architecture at a glance
+
+CobaltCore (C5C3) operates hosted control planes across a multi-cluster
+topology: Management, Control Plane, Hypervisor, and Storage.
+
+The architecture follows a Keystone-first strategy. CobaltCore delivers a
+self-contained deployment stack, from declarative infrastructure
+manifests through service operators to c5c3-operator orchestration, built with
+Operator SDK (Go), controller-runtime, and Kubebuilder.
 
 - **Operators.** Service operators following a shared sub-reconciler pattern,
   with [Keystone](./reference/keystone/) as the reference implementation and the
   [c5c3-operator](./reference/c5c3/controlplane-crd.md) as the ControlPlane
   orchestration layer. [Horizon](./reference/horizon/) and
   [Glance](./reference/glance/) are onboarded on the same conventions.
+- **Operator pattern details.** The Keystone reference pattern includes CRD
+  layout, sub-reconciler chain, webhooks, finalizers, and instrumentation,
+  replicated by subsequent service operators.
 - **Shared library.** Common types, conditions, config rendering, and
   Kubernetes helpers in `internal/common/`, plus the Helm chart, operator
   packaging, and rotation scripts. See the
