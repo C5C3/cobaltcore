@@ -360,6 +360,10 @@ func keystoneLivenessProbe(federationActive bool) *corev1.Probe {
 				`python3 -c "import socket; socket.create_connection(('127.0.0.1', 5000), 5).close()"`,
 			}},
 		}
+		// The exec forks a shell plus a Python interpreter, which alone can
+		// eat the kubelet's 1s default before the inner 5s connect timeout
+		// ever applies: sit above that inner timeout and below the 20s period.
+		probe.TimeoutSeconds = 8
 		return probe
 	}
 	probe.ProbeHandler = corev1.ProbeHandler{
@@ -376,6 +380,12 @@ func keystoneStartupProbe(federationActive bool) *corev1.Probe {
 	probe := &corev1.Probe{
 		FailureThreshold: 30,
 		PeriodSeconds:    10,
+		// On the shared struct, so both variants carry it: the federation
+		// exec variant forks a shell plus a Python interpreter whose inner
+		// fetch timeout is 5s — the kubelet's 1s default would kill it first —
+		// and a cold-starting WSGI app can hold even the plain HTTP GET past
+		// 1s. Sits above the inner timeout and below the 10s period.
+		TimeoutSeconds: 8,
 	}
 	if federationActive {
 		probe.ProbeHandler = corev1.ProbeHandler{
@@ -437,6 +447,11 @@ func buildFederationProxyContainer(fed *federationProjection) corev1.Container {
 			},
 			InitialDelaySeconds: 5,
 			PeriodSeconds:       10,
+			// This probe traverses the whole Apache-to-uWSGI chain; give it
+			// more than the kubelet's 1s default, below the 10s period. The
+			// sidecar's TCP startup/liveness probes fork no process and keep
+			// the default.
+			TimeoutSeconds: 5,
 		},
 		VolumeMounts: buildFederationProxyVolumeMounts(fed),
 	}
