@@ -406,6 +406,34 @@ spec:
           (spec.replicas == status.replicas): true
           (spec.replicas == status.updatedReplicas): true
           (spec.replicas == status.readyReplicas): true
+    # The same two waits for the keystone side, which serves every endpoint
+    # step 5b drives: the federation projection rolls the Keystone Deployment
+    # (sidecar + volumes), and a browser that races that roll meets a 503 from
+    # the gateway. The Keystone child's Ready now trails the rollout
+    # (IdentityBackendsReady gates on it), so asserting it here is the
+    # keystone-side twin of the Horizon wait above.
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: controlplane-sso-keystone
+            namespace: openstack
+          (metadata.generation == status.observedGeneration): true
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: controlplane-sso-keystone
+            namespace: openstack
+          (metadata.generation == status.observedGeneration): true
+          (spec.replicas == status.replicas): true
+          (spec.replicas == status.updatedReplicas): true
+          (spec.replicas == status.readyReplicas): true
     - script:
         timeout: 5m
         shell: bash
@@ -570,7 +598,21 @@ spec:
           origin = urllib.parse.quote(f"https://{HORIZON}/auth/websso/", safe="")
           websso = (f"https://{KEYSTONE}/v3/auth/OS-FEDERATION/identity_providers/"
                     f"keycloak-forge/protocols/openid/websso?origin={origin}")
-          url, resp, data = follow(websso)
+          # Same xDS lag as 5a, on the keystone route: the rollout has landed
+          # (asserted above), but Envoy can still dispatch the first request to
+          # the endpoint that just went away, which surfaces as a bare 502/503.
+          # Retry only that gateway answer; every other status is a real
+          # failure and asserts immediately. The cookie jars stay untouched —
+          # a gateway 502/503 sets no cookies.
+          deadline = time.monotonic() + 90
+          while True:
+              url, resp, data = follow(websso)
+              if resp.status not in (502, 503):
+                  break
+              if time.monotonic() > deadline:
+                  raise AssertionError(
+                      f"websso endpoint still answers {resp.status} through the gateway")
+              time.sleep(3)
           assert resp.status == 200, f"expected the Keycloak login page, got {resp.status} at {url}"
           assert "/realms/forge/" in url, f"websso must pin the forge realm, landed at {url}"
           m = re.search(r"action=\"([^\"]+)\"", data.decode(errors="replace"))
