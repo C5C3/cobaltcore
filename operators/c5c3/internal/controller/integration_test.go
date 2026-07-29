@@ -3670,16 +3670,25 @@ func TestIntegration_DedicatedBackingServices_TransitionRejected(t *testing.T) {
 	shared := integrationManagedControlPlane("cp", ns.Name)
 	g.Expect(c.Create(ctx, shared)).To(Succeed(), "create shared-backing-services ControlPlane")
 
-	// shared -> dedicated is rejected.
-	live := &c5c3v1alpha1.ControlPlane{}
-	g.Expect(c.Get(ctx, types.NamespacedName{Name: "cp", Namespace: ns.Name}, live)).To(Succeed())
-	live.Spec.Services.Keystone.DedicatedBackingServices = &c5c3v1alpha1.KeystoneDedicatedBackingServicesSpec{
-		Cache: &commonv1.CacheSpec{
-			ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-cache"},
-			Backend:    commonv1.DefaultCacheBackend,
-		},
-	}
-	err := c.Update(ctx, live)
+	// shared -> dedicated is rejected. Get-mutate-update under RetryOnConflict:
+	// the live controller writes to the freshly created CR concurrently (the
+	// c5c3.io/orc-teardown finalizer, then status), and a stale resourceVersion
+	// returns 409 Conflict before admission ever evaluates the transition. The
+	// webhook denial is deterministic once the update reaches it, so only the
+	// Conflict is retried.
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		live := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, types.NamespacedName{Name: "cp", Namespace: ns.Name}, live); err != nil {
+			return err
+		}
+		live.Spec.Services.Keystone.DedicatedBackingServices = &c5c3v1alpha1.KeystoneDedicatedBackingServicesSpec{
+			Cache: &commonv1.CacheSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "cp-keystone-cache"},
+				Backend:    commonv1.DefaultCacheBackend,
+			},
+		}
+		return c.Update(ctx, live)
+	})
 	g.Expect(err).To(HaveOccurred(), "moving a live service onto dedicated backing services must be rejected")
 	g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
 
@@ -3690,10 +3699,15 @@ func TestIntegration_DedicatedBackingServices_TransitionRejected(t *testing.T) {
 	dedicated := integrationDedicatedControlPlane("cp", ns2.Name)
 	g.Expect(c.Create(ctx, dedicated)).To(Succeed(), "create dedicated-backing-services ControlPlane")
 
-	live2 := &c5c3v1alpha1.ControlPlane{}
-	g.Expect(c.Get(ctx, types.NamespacedName{Name: "cp", Namespace: ns2.Name}, live2)).To(Succeed())
-	live2.Spec.Services.Keystone.DedicatedBackingServices = nil
-	err = c.Update(ctx, live2)
+	// Same RetryOnConflict rationale as the shared -> dedicated leg above.
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		live2 := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, types.NamespacedName{Name: "cp", Namespace: ns2.Name}, live2); err != nil {
+			return err
+		}
+		live2.Spec.Services.Keystone.DedicatedBackingServices = nil
+		return c.Update(ctx, live2)
+	})
 	g.Expect(err).To(HaveOccurred(), "moving a live service back onto the shared instances must be rejected")
 	g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
 }
