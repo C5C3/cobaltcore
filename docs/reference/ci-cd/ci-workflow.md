@@ -151,7 +151,10 @@ The E2E jobs (`e2e-infra`, `e2e-operator`, `e2e-operator-upgrade`, `e2e-chaos`,
 infrastructure setup via
 the `setup-e2e-infra` composite action and diagnostic teardown via
 `hack/ci-dump-diagnostics.sh`. They run on the `self-hosted` runners, as does
-`test-integration`.
+`test-integration` — with two exceptions: the keystone leg of the
+`e2e-operator` matrix and the `pod` leg of the `e2e-chaos` matrix are pinned
+back to the `blacksmith-4vcpu-ubuntu-2404` runner for now, because those suites
+have not been stable on the self-hosted runners.
 
 ## Jobs
 
@@ -690,10 +693,12 @@ flakiness. On-demand pre-validation of either leg is available via the
 `run-chaos` PR label.
 
 The job runs as a two-entry matrix split by chaos type: the `pod` suite
-(PodChaos tests) and the `network` suite (NetworkChaos tests). Both legs run on
-the `self-hosted` runners; the split keeps the two suites independently gated and
-lets them run in parallel. Each matrix entry lists its per-suite test directories
-explicitly.
+(PodChaos tests) and the `network` suite (NetworkChaos tests). The `pod` leg is
+pinned to the `blacksmith-4vcpu-ubuntu-2404` runner for now, because it is the
+blocking leg and has not been stable on the self-hosted runners; the `network`
+leg runs on the `self-hosted` runners. The split keeps the two suites
+independently gated and lets them run in parallel. Each matrix entry lists its
+per-suite test directories explicitly.
 
 | Step | Action | Details |
 | --- | --- | --- |
