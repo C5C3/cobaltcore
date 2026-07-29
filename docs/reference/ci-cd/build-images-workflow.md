@@ -323,7 +323,7 @@ is assembled by the subsequent `merge-base-images` job.
 | Property | Value |
 | --- | --- |
 | `runs-on` | <code v-pre>${{ matrix.runner }}</code> (`ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64) |
-| `timeout-minutes` | `30` |
+| `timeout-minutes` | `45` |
 | `needs` | `[lint-dockerfiles]` |
 | Matrix | `platform: [linux/amd64, linux/arm64]` × native runner |
 | Push behavior | Pushes by digest to GHCR (even on PRs); tags assigned by `merge-base-images` |
@@ -358,7 +358,7 @@ on the final manifests.
 | Property | Value |
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
-| `timeout-minutes` | `15` |
+| `timeout-minutes` | `23` |
 | `needs` | `[build-base-images]` |
 | Permissions | `contents: read`, `packages: write`, `id-token: write`, `attestations: write`, `security-events: write` |
 
@@ -408,7 +408,7 @@ service image builds begin. Runs after `merge-base-images` and blocks
 | Property | Value |
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
-| `timeout-minutes` | `10` |
+| `timeout-minutes` | `15` |
 | `needs` | `[merge-base-images]` |
 | Permissions | `contents: read`, `packages: read` |
 
@@ -444,7 +444,7 @@ locally for inline verification instead of being pushed to GHCR.
 | Property | Value |
 | --- | --- |
 | `runs-on` | <code v-pre>${{ matrix.runner }}</code> (`ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64) |
-| `timeout-minutes` | `30` |
+| `timeout-minutes` | `45` |
 | `needs` | `[merge-base-images, verify-base-images, generate-matrix]` |
 | Matrix | `service × release × platform × runner` (from `generate-matrix.build-matrix`; ARM64 excluded on PRs) |
 
@@ -477,7 +477,7 @@ Runs only on push events.
 | Property | Value |
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
-| `timeout-minutes` | `30` |
+| `timeout-minutes` | `45` |
 | `needs` | `[merge-base-images, build-service-images, generate-matrix]` |
 | `if` | `github.event_name != 'pull_request'` |
 | Matrix | `service × release` (from `generate-matrix.matrix`) |
@@ -556,7 +556,7 @@ This job runs in parallel with `build-service-images` — both depend on
 | Property | Value |
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
-| `timeout-minutes` | `60` |
+| `timeout-minutes` | `90` |
 | `needs` | `[merge-base-images, verify-base-images, generate-matrix]` |
 | Permissions | `contents: read`, `packages: read` |
 | Matrix | `service × release` (from `generate-matrix.matrix`) |
@@ -592,7 +592,7 @@ and steps:
 | Test | Validates |
 | --- | --- |
 | `test_five_jobs_defined` | All five jobs (build-base-images, verify-base-images, build-service-images, test-service-images, verify-service-images) exist |
-| `test_test_service_images_job_structure` | `runs-on: ubuntu-latest`, `timeout-minutes: 60`, `contents: read`, `packages: read`, no `id-token`, `attestations`, or `security-events` |
+| `test_test_service_images_job_structure` | `runs-on: ubuntu-latest`, `timeout-minutes: 90`, `contents: read`, `packages: read`, no `id-token`, `attestations`, or `security-events` |
 | `test_test_service_images_has_matrix` | Matrix includes `service: keystone` and `release: 2025.2`, with `fail-fast: false` |
 | `test_test_service_images_depends_on_base` | `needs` array contains `build-base-images` and `verify-base-images` |
 | `test_test_service_images_uses_venv_builder_output` | Steps reference `needs.build-base-images.outputs.venv-builder-image` |
@@ -638,7 +638,7 @@ On PRs, the equivalent verification runs as an inline step within `build-service
 | Property | Value |
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
-| `timeout-minutes` | `10` |
+| `timeout-minutes` | `15` |
 | `needs` | `[merge-service-images, test-service-images, generate-matrix]` |
 | `if` | `github.event_name != 'pull_request'` |
 | Permissions | `contents: read`, `packages: read` |
@@ -1353,7 +1353,7 @@ non-zero, the job fails.
 | Property | Value |
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
-| `timeout-minutes` | `10` |
+| `timeout-minutes` | `15` |
 
 **Steps:**
 

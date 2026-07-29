@@ -301,7 +301,7 @@ of the `changes` job matches. It depends only on `changes` — not on the `lint`
 
 | Setting | Value |
 | --- | --- |
-| `timeout-minutes` | 30 |
+| `timeout-minutes` | 45 |
 | `permissions` | `contents: read` (inherited from workflow-level) |
 | `concurrency` | Cancel-in-progress on PRs (inherited from workflow-level) |
 | Action pinning | All `uses:` references are SHA-pinned with version comments |
