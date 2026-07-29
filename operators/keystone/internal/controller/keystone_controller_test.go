@@ -253,7 +253,12 @@ func testReadyKeystoneDeployment() runtime.Object {
 		},
 		Status: appsv1.DeploymentStatus{
 			ObservedGeneration: 1,
-			ReadyReplicas:      3,
+			// Fully converged, not merely available: the identity-backend
+			// rollout gate (projectionRolledOut) requires every replica
+			// updated, ready, and counted.
+			Replicas:        3,
+			UpdatedReplicas: 3,
+			ReadyReplicas:   3,
 			Conditions: []appsv1.DeploymentCondition{
 				{Type: appsv1.DeploymentAvailable, Status: corev1.ConditionTrue},
 			},

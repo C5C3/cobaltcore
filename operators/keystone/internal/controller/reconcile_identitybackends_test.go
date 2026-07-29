@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -83,7 +84,7 @@ func testBindSecret(backendName string) *corev1.Secret {
 func TestReconcileIdentityBackends_NotRequiredWhenNoBackends(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
-	r := newTestReconciler(ks)
+	r := newTestReconciler(ks, testProjectedDeployment(ks, "", ""))
 
 	name, err := reconcileIdentityBackendsDomains(context.Background(), r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -102,9 +103,20 @@ func TestReconcileIdentityBackends_ProjectsReadyBackend(t *testing.T) {
 	r := newTestReconciler(ks, backend, testBindSecret("corp-ldap"))
 	ctx := context.Background()
 
+	// First pass: the projection is rendered, but no Deployment runs it yet —
+	// the condition must trail the rollout while the Secret name is already
+	// handed to the downstream builders.
 	name, err := reconcileIdentityBackendsDomains(ctx, r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(name).To(HavePrefix("test-keystone-domains-"))
+
+	cond := commonconditions.GetCondition(ks.Status.Conditions, conditionTypeIdentityBackendsReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForRollout))
+
+	// The Deployment converges onto exactly this projection; the second pass
+	// may then report True.
+	g.Expect(r.Client.Create(ctx, testProjectedDeployment(ks, name, ""))).To(Succeed())
 
 	var secret corev1.Secret
 	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &secret)).To(Succeed())
@@ -127,14 +139,15 @@ func TestReconcileIdentityBackends_ProjectsReadyBackend(t *testing.T) {
 	g.Expect(conf).To(ContainSubstring("user_enabled_invert = true"))
 	g.Expect(conf).To(ContainSubstring("user_enabled_default = false"))
 
-	cond := commonconditions.GetCondition(ks.Status.Conditions, conditionTypeIdentityBackendsReady)
-	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal(conditionReasonAllBackendsProjected))
-
-	// Deterministic naming: a second pass produces the same content hash.
+	// Deterministic naming: the second pass produces the same content hash —
+	// and, with the Deployment converged, flips the condition to True.
 	name2, err := reconcileIdentityBackendsDomains(ctx, r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(name2).To(Equal(name))
+
+	cond = commonconditions.GetCondition(ks.Status.Conditions, conditionTypeIdentityBackendsReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonAllBackendsProjected))
 }
 
 func TestReconcileIdentityBackends_RendersOptionalFieldsAndExtraOptions(t *testing.T) {
@@ -236,7 +249,7 @@ func TestReconcileIdentityBackends_SkipsDeletingBackend(t *testing.T) {
 	now := metav1.Now()
 	backend.DeletionTimestamp = &now
 	backend.Finalizers = []string{identityBackendFinalizerName}
-	r := newTestReconciler(ks, backend, testBindSecret("corp-ldap"))
+	r := newTestReconciler(ks, backend, testBindSecret("corp-ldap"), testProjectedDeployment(ks, "", ""))
 
 	name, err := reconcileIdentityBackendsDomains(context.Background(), r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -364,7 +377,7 @@ func TestReconcileIdentityBackends_IgnoresBackendsOfOtherKeystones(t *testing.T)
 	ks := testKeystone()
 	other := testIdentityBackend("other-ldap", "corp")
 	other.Spec.KeystoneRef.Name = "another-keystone"
-	r := newTestReconciler(ks, other, testBindSecret("other-ldap"))
+	r := newTestReconciler(ks, other, testBindSecret("other-ldap"), testProjectedDeployment(ks, "", ""))
 
 	name, err := reconcileIdentityBackendsDomains(context.Background(), r, ks)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -372,6 +385,84 @@ func TestReconcileIdentityBackends_IgnoresBackendsOfOtherKeystones(t *testing.T)
 
 	cond := commonconditions.GetCondition(ks.Status.Conditions, conditionTypeIdentityBackendsReady)
 	g.Expect(cond.Reason).To(Equal(conditionReasonIdentityBackendsNotRequired))
+}
+
+// secretNameForVolume is the single authoritative volume-to-Secret pointer:
+// absent volumes and non-Secret-backed volumes of the searched name must both
+// read as "no pointer".
+func TestSecretNameForVolume(t *testing.T) {
+	g := NewGomegaWithT(t)
+	deploy := &appsv1.Deployment{Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+		Volumes: []corev1.Volume{
+			{Name: domainsVolumeName, VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: "test-keystone-domains-abc"},
+			}},
+			{Name: "config", VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{},
+			}},
+		},
+	}}}}
+	g.Expect(secretNameForVolume(deploy, domainsVolumeName)).To(Equal("test-keystone-domains-abc"))
+	g.Expect(secretNameForVolume(deploy, "absent")).To(BeEmpty())
+	g.Expect(secretNameForVolume(deploy, "config")).To(BeEmpty(),
+		"a non-Secret volume of the searched name must not be read as a Secret pointer")
+}
+
+// First attach with a live, converged Deployment: the domains volume is still
+// absent, so a rolled-out previous generation cannot satisfy the gate — the
+// projection is rendered and handed downstream while the condition waits.
+func TestReconcileIdentityBackends_FirstAttachVolumeAbsentWaitsForRollout(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	backend := testIdentityBackend("corp-ldap", "corp")
+	r := newTestReconciler(ks, backend, testBindSecret("corp-ldap"), testProjectedDeployment(ks, "", ""))
+
+	name, err := reconcileIdentityBackendsDomains(context.Background(), r, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(name).To(HavePrefix("test-keystone-domains-"))
+
+	cond := commonconditions.GetCondition(ks.Status.Conditions, conditionTypeIdentityBackendsReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForRollout))
+	g.Expect(cond.Message).To(ContainSubstring("domains projection"))
+}
+
+// On first install no Deployment exists yet: even the zero-backend path must
+// report WaitingForRollout (never an error), and the pipeline contract keeps
+// the pass alive so the Deployment step can create the workload.
+func TestReconcileIdentityBackends_NoDeploymentWaitsForRollout(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	r := newTestReconciler(ks)
+
+	name, err := reconcileIdentityBackendsDomains(context.Background(), r, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(name).To(BeEmpty())
+
+	cond := commonconditions.GetCondition(ks.Status.Conditions, conditionTypeIdentityBackendsReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForRollout))
+	g.Expect(cond.Message).To(ContainSubstring("does not exist yet"))
+}
+
+// The gate holds in the detach direction too: a Deployment still carrying the
+// domains volume after the last backend was removed keeps the condition
+// WaitingForRollout instead of flipping to IdentityBackendsNotRequired while
+// pods still serve the detached domain.
+func TestReconcileIdentityBackends_StaleDomainsVolumeHoldsDetach(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	r := newTestReconciler(ks, testProjectedDeployment(ks, "test-keystone-domains-stale", ""))
+
+	name, err := reconcileIdentityBackendsDomains(context.Background(), r, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(name).To(BeEmpty())
+
+	cond := commonconditions.GetCondition(ks.Status.Conditions, conditionTypeIdentityBackendsReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForRollout))
+	g.Expect(cond.Message).To(ContainSubstring("domains projection"))
 }
 
 // pruneStaleDomainsSecrets with an empty current name removes every

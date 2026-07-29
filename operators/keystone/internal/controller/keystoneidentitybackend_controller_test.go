@@ -263,16 +263,41 @@ func TestBackendReconcile_AdminSecretMissingWaits(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonAdminSecretUnavailable))
 }
 
-// testProjectedDeployment returns the Keystone Deployment carrying the
-// domains volume pointing at the given Secret name.
-func testProjectedDeployment(ks *keystonev1alpha1.Keystone, domainsSecretName string) *appsv1.Deployment {
-	vol, _ := domainsVolumeAndMount(domainsSecretName)
+// testProjectedDeployment returns the rolled-out Keystone Deployment carrying
+// the projection volumes: the domains volume when domainsSecretName is
+// non-empty, the federation volumes when federationSecretName is. The status
+// is stamped fully converged (every replica updated, ready, and counted at
+// the observed generation) so the fixture passes keystoneDeploymentRolledOut.
+func testProjectedDeployment(ks *keystonev1alpha1.Keystone, domainsSecretName, federationSecretName string) *appsv1.Deployment {
+	var volumes []corev1.Volume
+	if domainsSecretName != "" {
+		vol, _ := domainsVolumeAndMount(domainsSecretName)
+		volumes = append(volumes, vol)
+	}
+	if federationSecretName != "" {
+		for _, name := range []string{federationProxyConfigVolumeName, federationMetadataVolumeName, federationMellonVolumeName} {
+			volumes = append(volumes, corev1.Volume{
+				Name: name,
+				VolumeSource: corev1.VolumeSource{
+					Secret: &corev1.SecretVolumeSource{SecretName: federationSecretName},
+				},
+			})
+		}
+	}
+	replicas := ks.Spec.Deployment.Replicas
 	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: subResourceName(ks), Namespace: ks.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: subResourceName(ks), Namespace: ks.Namespace, Generation: 1},
 		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.To(replicas),
 			Template: corev1.PodTemplateSpec{
-				Spec: corev1.PodSpec{Volumes: []corev1.Volume{vol}},
+				Spec: corev1.PodSpec{Volumes: volumes},
 			},
+		},
+		Status: appsv1.DeploymentStatus{
+			ObservedGeneration: 1,
+			Replicas:           replicas,
+			UpdatedReplicas:    replicas,
+			ReadyReplicas:      replicas,
 		},
 	}
 }
@@ -290,7 +315,7 @@ func TestBackendReconcile_ConfigProjectedFlipsOnDeploymentObservation(t *testing
 		Data:       map[string][]byte{domainConfFileName("corp"): []byte("[ldap]\n")},
 	}
 	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret(),
-		testProjectedDeployment(ks, "test-keystone-domains-abcd1234"), domainsSecret)
+		testProjectedDeployment(ks, "test-keystone-domains-abcd1234", ""), domainsSecret)
 
 	result, err := reconcileBackendTwice(t, r, backend)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -320,16 +345,8 @@ func TestSAMLBackendReconcile_ConfigProjectedPublishesSPMetadataSecretName(t *te
 		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-federation-abcd1234", Namespace: "default"},
 		Data:       map[string][]byte{samlIdPMetadataKeyName("corp-saml"): []byte("<EntityDescriptor/>")},
 	}
-	deploy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: subResourceName(ks), Namespace: ks.Namespace},
-		Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
-			Volumes: []corev1.Volume{{
-				Name:         federationMellonVolumeName,
-				VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: fedSecret.Name}},
-			}},
-		}}},
-	}
-	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret(), deploy, fedSecret)
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret(),
+		testProjectedDeployment(ks, "", fedSecret.Name), fedSecret)
 
 	_, err := reconcileBackendTwice(t, r, backend)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -339,6 +356,10 @@ func TestSAMLBackendReconcile_ConfigProjectedPublishesSPMetadataSecretName(t *te
 	g.Expect(projected).NotTo(BeNil())
 	g.Expect(projected.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(updated.Status.SAMLSPMetadataSecretName).To(Equal("test-keystone-saml-sp-metadata"))
+	ready := commonconditions.GetCondition(updated.Status.Conditions, "Ready")
+	g.Expect(ready).NotTo(BeNil())
+	g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(ready.Reason).To(Equal("AllReady"))
 }
 
 func TestBackendReconcile_ConfigNotProjectedRequeuesAsSafetyNet(t *testing.T) {
@@ -349,16 +370,65 @@ func TestBackendReconcile_ConfigNotProjectedRequeuesAsSafetyNet(t *testing.T) {
 	ks := testKeystoneWithReadyAPI()
 	backend := testIdentityBackend("corp-ldap", "corp")
 	backend.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{}
-	// Deployment exists but has no domains volume yet.
-	deploy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: subResourceName(ks), Namespace: ks.Namespace},
-	}
-	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret(), deploy)
+	// Deployment exists (fully rolled out) but has no domains volume yet.
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret(),
+		testProjectedDeployment(ks, "", ""))
 
 	result, err := reconcileBackendTwice(t, r, backend)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling),
 		"a converged Keystone status emits no watch event, so the poll is the liveness backstop")
+
+	updated := getBackend(t, r.Client, "corp-ldap")
+	projected := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeConfigProjected)
+	g.Expect(projected.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(projected.Reason).To(Equal(conditionReasonWaitingForProjection))
+}
+
+// A config that the pod template mounts but that has not rolled out to every
+// replica is not running yet: the condition must trail the rollout instead of
+// reporting a config only the template carries.
+func TestBackendReconcile_RolloutPendingReportsWaitingForRollout(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+
+	ks := testKeystoneWithReadyAPI()
+	backend := testIdentityBackend("corp-ldap", "corp")
+	backend.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{}
+	domainsSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-domains-abcd1234", Namespace: "default"},
+		Data:       map[string][]byte{domainConfFileName("corp"): []byte("[ldap]\n")},
+	}
+	deploy := testProjectedDeployment(ks, "test-keystone-domains-abcd1234", "")
+	deploy.Status.UpdatedReplicas = ks.Spec.Deployment.Replicas - 1
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret(), deploy, domainsSecret)
+
+	result, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+
+	updated := getBackend(t, r.Client, "corp-ldap")
+	projected := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeConfigProjected)
+	g.Expect(projected.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(projected.Reason).To(Equal(conditionReasonWaitingForRollout))
+}
+
+// With no Keystone Deployment at all the config is simply not projected: the
+// first-install path reports WaitingForProjection, never an error.
+func TestBackendReconcile_DeploymentAbsentWaitsForProjection(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+
+	ks := testKeystoneWithReadyAPI()
+	backend := testIdentityBackend("corp-ldap", "corp")
+	backend.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{}
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+
+	result, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	updated := getBackend(t, r.Client, "corp-ldap")
 	projected := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeConfigProjected)
@@ -464,7 +534,7 @@ func TestBackendDelete_WaitsForDeProjection(t *testing.T) {
 		Data:       map[string][]byte{domainConfFileName("corp"): []byte("[ldap]\n")},
 	}
 	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret(),
-		testProjectedDeployment(ks, "test-keystone-domains-abcd1234"), domainsSecret)
+		testProjectedDeployment(ks, "test-keystone-domains-abcd1234", ""), domainsSecret)
 	ctx := context.Background()
 
 	// Still projected: the finalizer must hold and no domain call may fire.
