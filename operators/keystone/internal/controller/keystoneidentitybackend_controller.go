@@ -45,9 +45,28 @@ const (
 	conditionReasonDomainAlreadyExists    = "DomainAlreadyExists"
 	conditionReasonIdentityAPIError       = "IdentityAPIError"
 
-	// ConfigProjected reasons.
+	// ConfigProjected reasons. conditionReasonWaitingForRollout (declared with
+	// the shared identity-backend vocabulary in reconcile_identitybackends.go)
+	// is the third: the config is mounted but the Deployment has not finished
+	// rolling it out.
 	conditionReasonConfigProjected      = "ConfigProjected"
 	conditionReasonWaitingForProjection = "WaitingForProjection"
+)
+
+// configProjectionState is inspectConfigProjection's three-valued answer to
+// "does the Keystone workload run this backend's config?".
+type configProjectionState int
+
+const (
+	// configNotProjected: the Deployment's pod template does not reference
+	// this backend's rendered config (volume absent, Secret absent, or the
+	// backend's data key missing).
+	configNotProjected configProjectionState = iota
+	// configRolloutPending: the pod template mounts the config, but replicas
+	// of a previous template still serve.
+	configRolloutPending
+	// configRunning: every replica runs the template that mounts the config.
+	configRunning
 )
 
 // identityBackendSubConditionTypesFor returns the per-backend sub-conditions
@@ -306,11 +325,12 @@ func (r *KeystoneIdentityBackendReconciler) ensureDomain(ctx context.Context, ba
 // watch normally wakes this controller when the projection lands, but a
 // converged Keystone status (no write, no event) must not strand the backend.
 func (r *KeystoneIdentityBackendReconciler) observeConfigProjected(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (ctrl.Result, error) {
-	projected, err := r.isConfigProjected(ctx, keystone, backend)
+	state, err := r.inspectConfigProjection(ctx, keystone, backend)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if !projected {
+	switch state {
+	case configNotProjected:
 		conditions.SetCondition(&backend.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeConfigProjected,
 			Status:             metav1.ConditionFalse,
@@ -319,6 +339,17 @@ func (r *KeystoneIdentityBackendReconciler) observeConfigProjected(ctx context.C
 			Message:            "waiting for the Keystone Deployment to mount this backend's domain config",
 		})
 		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+	case configRolloutPending:
+		conditions.SetCondition(&backend.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeConfigProjected,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: backend.Generation,
+			Reason:             conditionReasonWaitingForRollout,
+			Message:            "the Keystone Deployment has not finished rolling out this backend's config",
+		})
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+	case configRunning:
+		// Fall through to the True observation below.
 	}
 	conditions.SetCondition(&backend.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeConfigProjected,
@@ -336,19 +367,22 @@ func (r *KeystoneIdentityBackendReconciler) observeConfigProjected(ctx context.C
 	return ctrl.Result{}, nil
 }
 
-// isConfigProjected reports whether the Keystone Deployment mounts this
+// inspectConfigProjection reports whether the Keystone Deployment runs this
 // backend's rendered config: an LDAP backend's keystone.<domain>.conf inside
 // the domains-volume Secret, an OIDC backend's <name>.client document inside
 // the federation-metadata-volume Secret, a SAML backend's IdP-metadata document
-// inside the federation-mellon-volume Secret.
-func (r *KeystoneIdentityBackendReconciler) isConfigProjected(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (bool, error) {
+// inside the federation-mellon-volume Secret. A config that is mounted by the
+// pod template but not yet rolled out to every replica reports
+// configRolloutPending — the template flips the moment the Keystone side
+// writes it, while the pod serving requests lags a rollout behind.
+func (r *KeystoneIdentityBackendReconciler) inspectConfigProjection(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (configProjectionState, error) {
 	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Namespace: keystone.Namespace, Name: subResourceName(keystone)}
 	if err := r.Get(ctx, deployKey, &deploy); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, nil
+			return configNotProjected, nil
 		}
-		return false, fmt.Errorf("fetching Deployment %s: %w", deployKey, err)
+		return configNotProjected, fmt.Errorf("fetching Deployment %s: %w", deployKey, err)
 	}
 
 	volumeName := domainsVolumeName
@@ -364,28 +398,26 @@ func (r *KeystoneIdentityBackendReconciler) isConfigProjected(ctx context.Contex
 		dataKey = samlIdPMetadataKeyName(backend.Name)
 	}
 
-	var secretName string
-	for i := range deploy.Spec.Template.Spec.Volumes {
-		v := &deploy.Spec.Template.Spec.Volumes[i]
-		if v.Name == volumeName && v.Secret != nil {
-			secretName = v.Secret.SecretName
-			break
-		}
-	}
+	secretName := secretNameForVolume(&deploy, volumeName)
 	if secretName == "" {
-		return false, nil
+		return configNotProjected, nil
 	}
 
 	var secret corev1.Secret
 	secretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: secretName}
 	if err := r.Get(ctx, secretKey, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return false, nil
+			return configNotProjected, nil
 		}
-		return false, fmt.Errorf("fetching projection Secret %s: %w", secretKey, err)
+		return configNotProjected, fmt.Errorf("fetching projection Secret %s: %w", secretKey, err)
 	}
-	_, ok := secret.Data[dataKey]
-	return ok, nil
+	if _, ok := secret.Data[dataKey]; !ok {
+		return configNotProjected, nil
+	}
+	if !keystoneDeploymentRolledOut(&deploy) {
+		return configRolloutPending, nil
+	}
+	return configRunning, nil
 }
 
 // reconcileDelete drives the finalizer teardown: wait until the keystone-side
@@ -413,14 +445,15 @@ func (r *KeystoneIdentityBackendReconciler) reconcileDelete(ctx context.Context,
 
 	// Wait for de-projection: reconcileIdentityBackends skips deleting
 	// backends, so the next Keystone pass drops our conf file from the
-	// domains Secret and rolls the Deployment. The backend watch on the
-	// Keystone controller wakes it on our DeletionTimestamp flip; the requeue
-	// below is the safety net.
-	projected, err := r.isConfigProjected(ctx, &keystone, backend)
+	// domains Secret and rolls the Deployment. Anything other than
+	// configNotProjected — including a rollout still carrying the config —
+	// holds the teardown. The backend watch on the Keystone controller wakes
+	// it on our DeletionTimestamp flip; the requeue below is the safety net.
+	state, err := r.inspectConfigProjection(ctx, &keystone, backend)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if projected {
+	if state != configNotProjected {
 		logger.V(1).Info("waiting for identity-backend config de-projection before domain teardown")
 		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}

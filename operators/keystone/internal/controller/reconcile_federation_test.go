@@ -675,14 +675,21 @@ func TestReconcileIdentityBackends_OIDCRendersFederationSecret(t *testing.T) {
 	g.Expect(passSecret.Data["passphrase"]).NotTo(BeEmpty())
 	g.Expect(passSecret.OwnerReferences).To(HaveLen(1))
 
+	// First pass: rendered but not running — the condition trails the rollout.
 	cond := commonconditions.GetCondition(ks.Status.Conditions, conditionTypeIdentityBackendsReady)
-	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
-	g.Expect(cond.Reason).To(Equal(conditionReasonAllBackendsProjected))
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForRollout))
 
-	// A second pass reuses the passphrase, so the content hash is stable.
+	// The Deployment converges onto the federation projection. The second pass
+	// reuses the passphrase (stable content hash) and may then report True.
+	g.Expect(r.Client.Create(ctx, testProjectedDeployment(ks, "", projection.Federation.SecretName))).To(Succeed())
 	projection2, err := r.reconcileIdentityBackends(ctx, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection2.Federation.SecretName).To(Equal(projection.Federation.SecretName))
+
+	cond = commonconditions.GetCondition(ks.Status.Conditions, conditionTypeIdentityBackendsReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonAllBackendsProjected))
 }
 
 // Two OIDC backends sharing an issuer would render colliding KeyToPath mount

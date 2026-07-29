@@ -11,7 +11,9 @@ import (
 	"sort"
 	"strings"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,6 +50,13 @@ const (
 	// backend is pending (domain not ready, bind Secret missing, or a
 	// defensive duplicate-domain skip).
 	conditionReasonWaitingForBackends = "WaitingForBackends"
+	// conditionReasonWaitingForRollout is set while the rendered projection
+	// has not converged onto the running workload: the Deployment does not
+	// mount this pass's artifacts yet, or it does but replicas of the previous
+	// template still serve. Shared by the Keystone-side IdentityBackendsReady
+	// and the per-backend ConfigProjected condition so both trail the same
+	// rollout.
+	conditionReasonWaitingForRollout = "WaitingForRollout"
 
 	// conditionTypeDomainReady and conditionTypeConfigProjected are the
 	// per-backend conditions owned by the dedicated
@@ -131,6 +140,77 @@ func domainsVolumeAndMount(domainsSecretName string) (corev1.Volume, corev1.Volu
 	return volume, mount
 }
 
+// secretNameForVolume returns the name of the Secret a named pod volume of
+// the Deployment references, or "" when no volume carries the name or the
+// matching volume is not Secret-backed (a ConfigMap- or emptyDir-backed
+// volume of the same name must not be read as a Secret pointer). It is the
+// single authoritative pointer both the Keystone-side rollout gate and the
+// per-backend ConfigProjected observation read.
+func secretNameForVolume(deploy *appsv1.Deployment, volumeName string) string {
+	for i := range deploy.Spec.Template.Spec.Volumes {
+		v := &deploy.Spec.Template.Spec.Volumes[i]
+		if v.Name == volumeName {
+			if v.Secret == nil {
+				return ""
+			}
+			return v.Secret.SecretName
+		}
+	}
+	return ""
+}
+
+// projectionRolledOut reports whether the live Keystone Deployment has fully
+// converged onto this pass's identity-backend projection: the domains and
+// federation-proxy-config volumes reference exactly the Secrets this pass
+// computed (both absent when nothing of that type is projected), and every
+// replica runs the current template (keystoneDeploymentRolledOut). Checking
+// federation-proxy-config alone covers the whole federation projection —
+// buildFederationVolumes adds it unconditionally whenever federation is
+// active, and the federation-metadata / federation-mellon volumes source the
+// same Secret. When the gate does not hold it returns (false, reason, nil)
+// with a fixed human-readable reason string; only a non-NotFound Get failure
+// surfaces as an error.
+func (r *KeystoneReconciler) projectionRolledOut(ctx context.Context, keystone *keystonev1alpha1.Keystone, projection identityBackendsProjection) (bool, string, error) {
+	var deploy appsv1.Deployment
+	key := client.ObjectKey{Namespace: keystone.Namespace, Name: subResourceName(keystone)}
+	if err := r.Get(ctx, key, &deploy); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, "the Keystone Deployment does not exist yet", nil
+		}
+		return false, "", fmt.Errorf("fetching Deployment %s: %w", key, err)
+	}
+
+	if secretNameForVolume(&deploy, domainsVolumeName) != projection.DomainsSecretName {
+		return false, "the domains projection has not reached the Deployment yet", nil
+	}
+
+	var federationSecretName string
+	if projection.Federation != nil {
+		federationSecretName = projection.Federation.SecretName
+	}
+	if secretNameForVolume(&deploy, federationProxyConfigVolumeName) != federationSecretName {
+		return false, "the federation projection has not reached the Deployment yet", nil
+	}
+
+	if !keystoneDeploymentRolledOut(&deploy) {
+		return false, "the Keystone Deployment is still rolling out", nil
+	}
+	return true, "", nil
+}
+
+// setIdentityBackendsWaitingForRollout demotes IdentityBackendsReady while
+// the projection has not converged onto the running workload. The reason
+// string comes from projectionRolledOut.
+func setIdentityBackendsWaitingForRollout(keystone *keystonev1alpha1.Keystone, reason string) {
+	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeIdentityBackendsReady,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: keystone.Generation,
+		Reason:             conditionReasonWaitingForRollout,
+		Message:            "Waiting for the identity-backend projection to roll out: " + reason,
+	})
+}
+
 // reconcileIdentityBackends aggregates every attached, DomainReady
 // KeystoneIdentityBackend into the per-type projection artifacts — LDAP
 // backends into one immutable content-hashed domains Secret, OIDC and SAML
@@ -161,6 +241,18 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 	}
 
 	if len(backends.Items) == 0 {
+		// The empty projection must also converge before the condition may
+		// report True: detaching the last backend keeps the condition False
+		// until the sidecar/volume removal has rolled out. The wake-up is the
+		// Deployment watch; no requeue (pipeline contract above).
+		rolledOut, reason, err := r.projectionRolledOut(ctx, keystone, identityBackendsProjection{})
+		if err != nil {
+			return identityBackendsProjection{}, err
+		}
+		if !rolledOut {
+			setIdentityBackendsWaitingForRollout(keystone, reason)
+			return identityBackendsProjection{}, nil
+		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeIdentityBackendsReady,
 			Status:             metav1.ConditionTrue,
@@ -415,6 +507,19 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 			Reason:             conditionReasonWaitingForBackends,
 			Message:            "Waiting for identity backends: " + strings.Join(pending, "; "),
 		})
+		return projection, nil
+	}
+
+	// Everything is rendered — but rendered is not running. Hold the condition
+	// False until the Deployment mounts exactly this pass's artifacts and every
+	// replica runs them, so consumers gating on IdentityBackendsReady (the
+	// ControlPlane websso projection among them) never race the rollout.
+	rolledOut, reason, err := r.projectionRolledOut(ctx, keystone, projection)
+	if err != nil {
+		return identityBackendsProjection{}, err
+	}
+	if !rolledOut {
+		setIdentityBackendsWaitingForRollout(keystone, reason)
 		return projection, nil
 	}
 

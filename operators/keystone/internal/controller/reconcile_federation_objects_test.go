@@ -459,7 +459,7 @@ func TestLDAPBackend_ReadyUnaffectedByFederationConditions(t *testing.T) {
 		Data:       map[string][]byte{domainConfFileName("corp"): []byte("[ldap]\n")},
 	}
 	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret(),
-		testProjectedDeployment(ks, domainsSecret.Name), domainsSecret)
+		testProjectedDeployment(ks, domainsSecret.Name, ""), domainsSecret)
 
 	_, err := reconcileBackendTwice(t, r, backend)
 	g.Expect(err).NotTo(HaveOccurred())
