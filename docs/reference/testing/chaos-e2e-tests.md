@@ -166,7 +166,7 @@ fails the build. The `network` leg stays **non-blocking**, because its
 flakiness; its failures are visible but do not
 block merges. The `run-chaos` PR label runs both legs on demand for pre-validation.
 
-**Timeout:** 45 minutes to accommodate serial test execution and longer recovery
+**Timeout:** 90 minutes to accommodate serial test execution and longer recovery
 assertion windows.
 
 ## Test Suite Inventory

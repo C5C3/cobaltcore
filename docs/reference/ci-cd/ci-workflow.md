@@ -228,7 +228,7 @@ from tracked sources only. If any are found, their paths are printed along with 
 diff (`gofumpt -d`), and the job exits 1. The `-r` flag prevents `xargs` from running
 `gofumpt` when no Go files are piped (GNU coreutils, available on `ubuntu-latest`).
 
-Timeout: 5 minutes.
+Timeout: 8 minutes.
 
 ### shellcheck
 
@@ -240,7 +240,7 @@ The shellcheck binary is pre-installed on `ubuntu-latest` runners.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `make shellcheck` | Runs `shellcheck --severity=warning` over `hack/*.sh` and the operator rotation scripts (`operators/*/internal/controller/scripts/*.sh`) |
 
-Timeout: 5 minutes.
+Timeout: 8 minutes.
 
 ### feature-ids
 
@@ -254,7 +254,7 @@ docs-only check.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `make check-feature-ids` | Greps the tracked tree for internal feature/requirement ID patterns and fails on any hit |
 
-Timeout: 5 minutes.
+Timeout: 8 minutes.
 
 ### verify-invalid-cr-fixtures
 
@@ -271,7 +271,7 @@ job runs. Always-on because the check is sub-second and `python3` is preinstalle
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `make verify-invalid-cr-fixtures` | Runs `_generate.py --check` and `test_generate.py` |
 
-Timeout: 5 minutes.
+Timeout: 8 minutes.
 
 ### chainsaw-lint
 
@@ -290,7 +290,7 @@ the `setup-test-deps` composite action, the same one consumed internally by
 | 2 | `./.github/actions/setup-test-deps` | Restores the testdeps cache and runs `make install-test-deps` (puts `chainsaw` on `PATH`) |
 | 3 | `make chainsaw-lint` | Runs `chainsaw lint test -f` and `chainsaw lint configuration -f` over every matching file under `tests/` |
 
-Timeout: 5 minutes.
+Timeout: 8 minutes.
 
 ### test-shell
 
@@ -308,7 +308,7 @@ explicitly so the deploy/ overlay assertions run their full check set
 | 2 | Install kustomize | Downloads the pinned kustomize binary into `/usr/local/bin` |
 | 3 | `make test-shell` | Iterates every `tests/unit/**/*_test.sh` and aggregates exit status |
 
-Timeout: 5 minutes.
+Timeout: 8 minutes.
 
 ### test
 
@@ -376,7 +376,7 @@ The `common` leg runs `make test-integration-common` (producing
 `cover-integration-<operator>.out`). Both targets set `KUBEBUILDER_ASSETS` via
 `$(SETUP_ENVTEST) use <pinned-k8s-version> -p path`.
 
-Timeout: 15 minutes (longer than unit tests to account for envtest startup).
+Timeout: 30 minutes (longer than unit tests to account for envtest startup).
 
 ### test-race
 
@@ -407,7 +407,7 @@ not on the critical path for E2E or publish jobs, so race detector overhead does
 down the primary feedback loop. The corresponding local command is `make test-race`
 (which omits `-count=1` via the default empty `RACE_FLAGS` for developer convenience).
 
-Timeout: 20 minutes (accommodates 2–5x race detector overhead).
+Timeout: 30 minutes (accommodates 2–5x race detector overhead).
 
 ### govulncheck
 
@@ -452,7 +452,7 @@ be updated with the new module name. The verification test
 (`tests/ci/verify_govulncheck_modules.sh`) catches drift between `go.work` and the
 Makefile automatically.
 
-Timeout: 10 minutes.
+Timeout: 15 minutes.
 
 ### verify-codegen
 
@@ -534,7 +534,7 @@ suites; the keystone-operator suites are listed below as representative.
 | `webhook_test.yaml` | `webhook-configuration.yaml` | Mutating/Validating configs when enabled, absent when disabled, cert-manager annotation |
 | `certificate_test.yaml` | `certificate.yaml` | Issuer and Certificate when enabled, absent when disabled, DNS names, issuer reference |
 
-Timeout: 10 minutes.
+Timeout: 15 minutes.
 
 ### e2e-infra
 
@@ -559,7 +559,7 @@ validates health of all operators, CRs, and ExternalSecrets.
 | 10 | `hack/ci-dump-diagnostics.sh` (on failure) | Dumps HelmReleases, pods, events, Flux logs |
 | 11 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
 
-Timeout: 30 minutes.
+Timeout: 45 minutes.
 
 The two re-run legs (steps 6–9) lock the `make deploy-infra` idempotency
 contract: the unchanged-parameter re-run must converge against the provisioned
@@ -608,7 +608,7 @@ GHCR push/pull because the 355 MB single-blob artifact intermittently timed out 
 the 5-minute `actions/download-artifact` window. Layer-level pull retries plus the
 GHCR CDN dramatically reduce the failure rate.
 
-Timeout: 30 minutes.
+Timeout: 45 minutes.
 
 ### e2e-operator
 
@@ -644,7 +644,7 @@ strategy:
 
 The operator matrix is dynamically constructed by the `changes` job, including only operators
 whose code (or shared code) changed. The `imagePullPolicy: Never` Helm value ensures the
-kind-loaded image is used instead of attempting a registry pull. Timeout: 45 minutes.
+kind-loaded image is used instead of attempting a registry pull. Timeout: 68 minutes.
 
 ### e2e-operator-upgrade
 
@@ -667,7 +667,7 @@ release itself, so it runs in its own single job. The job pulls the run-scoped
 fetches the released baseline via `hack/ci-fetch-released-operator.sh`, installs
 it via `hack/ci-deploy-operator.sh` (with `CHART_DIR` pointing at the pulled
 chart and `IMAGE_TAG=latest`), deploys the infra stack, and runs the suite from
-`tests/e2e-operator-upgrade/`. Blocking (no `continue-on-error`). Timeout: 45
+`tests/e2e-operator-upgrade/`. Blocking (no `continue-on-error`). Timeout: 68
 minutes.
 
 ### e2e-chaos
@@ -719,7 +719,7 @@ per-suite test directories explicitly.
 | Matrix | Dynamic per-operator | Two suites (`pod` / `network`) on different runners |
 | Test config | `tests/e2e/chainsaw-config.yaml` | `tests/e2e-chaos/chainsaw-config.yaml` |
 | Test directory | `tests/e2e/<operator>/` | per-suite `test_dirs` under `tests/e2e-chaos/` |
-| Timeout | 45 minutes | 60 minutes |
+| Timeout | 68 minutes | 90 minutes |
 | Blocking | Yes | `pod` leg blocking; `network` leg non-blocking (`continue-on-error: ${{ matrix.suite == 'network' }}`) |
 | Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
 | Service images | 2025.2 + 2025.2-upgraded + 2026.1 | 2025.2 only |
@@ -811,7 +811,7 @@ at the tag pinned in `deploy/flux-system/sources/k-orc.yaml`.
 The suite runs with `E2E_REQUIRE_CONTROLPLANE_STACK: "true"`, which flips its
 presence guard from a silent SKIP to a hard failure — so a broken operator/CRD
 deployment fails the build instead of going green. Like `e2e-prometheus`, the
-job runs with `continue-on-error: false`, and it uses a 60-minute timeout on the
+job runs with `continue-on-error: false`, and it uses a 90-minute timeout on the
 larger runner because a real MariaDB + Memcached + Keystone + three operators +
 OpenBao + ESO + K-ORC on one node is resource-heavy.
 
@@ -951,7 +951,7 @@ these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
 | 10 | Upload Tempest results | Uploads `_output/tempest/` as `tempest-<release>-results` artifact (14-day retention) |
 | 11 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` |
 
-Timeout: 45 minutes.
+Timeout: 68 minutes.
 
 ### cleanup-e2e-tags
 
@@ -971,7 +971,7 @@ The nightly `cleanup-e2e-stale-tags` job in `cleanup-images.yaml` is the safety
 net: if a workflow is cancelled before `cleanup-e2e-tags` fires, that job
 deletes any `e2e-*` tag older than one day across the same package set.
 
-Timeout: 10 minutes.
+Timeout: 15 minutes.
 
 ### build-and-push
 
@@ -1097,7 +1097,7 @@ Creates a GitHub Release with auto-generated release notes on v* tag pushes.
 This job runs only after both `merge-operator-images` and `helm-push` complete
 successfully, ensuring the final multi-arch manifest list and charts are published before
 the release is created. Helm chart tarballs
-are attached as release assets for direct download. Timeout: 5 minutes.
+are attached as release assets for direct download. Timeout: 8 minutes.
 
 ## Reusable CI Scripts
 

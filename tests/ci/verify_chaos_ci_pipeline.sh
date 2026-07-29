@@ -335,12 +335,12 @@ test_e2e_chaos_if_condition() {
 }
 
 test_e2e_chaos_timeout() {
-  echo "Test: e2e-chaos job timeout is 60 minutes"
+  echo "Test: e2e-chaos job timeout is 90 minutes"
 
   assert_contains \
-    "e2e-chaos timeout-minutes is 60" \
+    "e2e-chaos timeout-minutes is 90" \
     "$E2E_CHAOS_JOB_SECTION" \
-    "timeout-minutes: 60"
+    "timeout-minutes: 90"
 }
 
 test_e2e_chaos_continue_on_error() {

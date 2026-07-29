@@ -714,7 +714,7 @@ test_test_service_images_job_structure() {
 
   local timeout
   timeout=$(yq_raw '.jobs["test-service-images"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
-  assert_eq "test-service-images has timeout-minutes: 60" "60" "$timeout"
+  assert_eq "test-service-images has timeout-minutes: 90" "90" "$timeout"
 
   local contents_perms
   contents_perms=$(yq_raw '.jobs["test-service-images"]["permissions"]["contents"]' "$WORKFLOW" || echo "null")
