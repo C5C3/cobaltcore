@@ -120,6 +120,7 @@ spec:
             path: /v3
             port: 5000
           periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/keystone/keystone.conf.d/
           name: config
@@ -263,6 +264,7 @@ spec:
             path: /v3
             port: 5000
           periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/keystone/keystone.conf.d/
           name: config
@@ -404,6 +406,7 @@ spec:
             path: /v3
             port: 5000
           periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/keystone/keystone.conf.d/
           name: config
@@ -543,6 +546,7 @@ spec:
               5).close()"
           initialDelaySeconds: 15
           periodSeconds: 20
+          timeoutSeconds: 8
         name: keystone
         ports:
         - containerPort: 5000
@@ -580,6 +584,7 @@ spec:
               timeout=5)"
           failureThreshold: 30
           periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/keystone/keystone.conf.d/
           name: config
@@ -611,6 +616,7 @@ spec:
             port: 5050
           initialDelaySeconds: 5
           periodSeconds: 10
+          timeoutSeconds: 5
         resources:
           limits:
             memory: 256Mi
@@ -802,6 +808,7 @@ spec:
             path: /v3
             port: 5000
           periodSeconds: 10
+          timeoutSeconds: 8
         volumeMounts:
         - mountPath: /etc/keystone/keystone.conf.d/
           name: config

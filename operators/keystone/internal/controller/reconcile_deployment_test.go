@@ -2260,6 +2260,35 @@ func TestBuildKeystoneDeployment_FederationSidecar(t *testing.T) {
 	g.Expect(cmd[bufIdx+1]).To(Equal("65535"))
 }
 
+// TestProbeTimeouts pins the explicit probe timeouts: every probe that forks
+// a process (the exec variants) or traverses the proxy chain carries a
+// timeout above its inner timeout and below its period, while the plain
+// TCPSocket checks keep the kubelet default — the kubelet's 1-second default
+// would otherwise kill the shell+python exec probes before their inner
+// timeout ever applies.
+func TestProbeTimeouts(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// Startup: the shared struct carries the timeout in both variants.
+	g.Expect(keystoneStartupProbe(false).TimeoutSeconds).To(Equal(int32(8)))
+	g.Expect(keystoneStartupProbe(true).TimeoutSeconds).To(Equal(int32(8)))
+
+	// Liveness: only the federation exec variant needs one; the TCPSocket
+	// variant keeps the kubelet default.
+	g.Expect(keystoneLivenessProbe(true).TimeoutSeconds).To(Equal(int32(8)))
+	g.Expect(keystoneLivenessProbe(false).TimeoutSeconds).To(Equal(int32(0)))
+
+	// Sidecar: readiness goes through Apache and uWSGI and gets 5s; the TCP
+	// startup/liveness probes fork no process and keep the default, with
+	// their periods untouched.
+	proxy := buildFederationProxyContainer(testDeployFederationProjection())
+	g.Expect(proxy.ReadinessProbe.TimeoutSeconds).To(Equal(int32(5)))
+	g.Expect(proxy.StartupProbe.TimeoutSeconds).To(Equal(int32(0)))
+	g.Expect(proxy.StartupProbe.PeriodSeconds).To(Equal(int32(2)))
+	g.Expect(proxy.LivenessProbe.TimeoutSeconds).To(Equal(int32(0)))
+	g.Expect(proxy.LivenessProbe.PeriodSeconds).To(Equal(int32(20)))
+}
+
 // TestBuildKeystoneDeployment_SAMLOnlyMountsMellonNotMetadata verifies a
 // SAML-only projection mounts the federation-mellon volume and NOT the
 // federation-metadata volume: mounting an item-less metadata Secret volume would
