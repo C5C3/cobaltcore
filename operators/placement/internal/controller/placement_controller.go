@@ -38,6 +38,7 @@ import (
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
 	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	placementmetrics "github.com/c5c3/forge/operators/placement/internal/metrics"
 )
 
 // PlacementSecretNameIndexKey is the field-indexer key under which Placement
@@ -239,9 +240,13 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Each step runs in dependency order; the first to return a non-zero result
 	// or an error short-circuits the chain and funnels through updateStatus. The
-	// service-user password digest, the DSN digest, and the rendered ConfigMap
-	// name are consumed by the database and deployment steps, which land in later
-	// commits; until then the steps discard them.
+	// service-user password digest and the DSN digest are consumed by the
+	// deployment step, which lands in a later commit; until then those steps
+	// discard them.
+	//
+	// configMapName names the rendered config ConfigMap produced by
+	// reconcileConfig; the database step mounts it in the migration Job.
+	var configMapName string
 	pipeline := []commonreconcile.Step{
 		{Name: "Secrets", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			res, _, err := r.reconcileSecrets(ctx, &placement)
@@ -259,8 +264,18 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// self-marks SecretsReady=False on failure via markConfigFailed, so the
 		// wrapper only threads the result.
 		{Name: "Config", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			res, _, err := r.reconcileConfig(ctx, &placement)
+			var (
+				res ctrl.Result
+				err error
+			)
+			res, configMapName, err = r.reconcileConfig(ctx, &placement)
 			return res, err
+		}},
+		// reconcileDatabase provisions the schema, gates the requested OpenStack
+		// release against the installed one, and runs the db-sync Job against the
+		// rendered config.
+		{Name: "Database", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileDatabase(ctx, &placement, configMapName)
 		}},
 	}
 
@@ -273,8 +288,8 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // Delete on the MariaDB Database/User/Grant CRs (idempotent, NotFound-tolerant)
 // and, while at least one of them was still live (not yet issued a Delete),
 // holds the finalizer for one more pass so the schema teardown is triggered
-// before the owner-ref chain disappears. Once no live resource remains it evicts
-// the health-probe cache and releases the finalizer.
+// before the owner-ref chain disappears. Once no live resource remains it drops
+// the per-CR metrics, evicts the health-probe cache, and releases the finalizer.
 func (r *PlacementReconciler) reconcileDelete(ctx context.Context, placement *placementv1alpha1.Placement) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(placement, placementFinalizer) {
 		return ctrl.Result{}, nil
@@ -308,6 +323,7 @@ func (r *PlacementReconciler) reconcileDelete(ctx context.Context, placement *pl
 	if err := r.Update(ctx, placement); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
+	placementmetrics.DeleteForPlacement(placement.Name, placement.Namespace)
 	// Drop the per-CR health-probe cache so a CR recreated under the same
 	// name/namespace never serves a stale probe keyed on the deleted CR's UID.
 	r.healthProbeCache.Evict(key)
