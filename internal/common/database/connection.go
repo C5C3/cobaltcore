@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -62,10 +63,22 @@ func ConnectionSecretName(instanceName string) string {
 // ConnectionEnvVar returns the EnvVar that overrides [database].connection by
 // sourcing the URL from the derived <instanceName>-db-connection Secret produced
 // by ReconcileConnectionSecret. Every pod-spec builder that needs database
-// access uses this helper to avoid string duplication.
+// access uses this helper to avoid string duplication. It is the "database"
+// specialisation of ConnectionEnvVarForSection.
 func ConnectionEnvVar(instanceName string) corev1.EnvVar {
+	return ConnectionEnvVarForSection(instanceName, "database")
+}
+
+// ConnectionEnvVarForSection returns the EnvVar that overrides
+// [<section>].connection for services that keep their database options in a
+// section other than [database]. The env name follows oslo.config's
+// OS_<GROUP>__<OPTION> override form with the group upper-cased, so section
+// "placement_database" yields OS_PLACEMENT_DATABASE__CONNECTION. The URL is
+// sourced from the derived <instanceName>-db-connection Secret produced by
+// ReconcileConnectionSecret, so the section only selects the override name.
+func ConnectionEnvVarForSection(instanceName, section string) corev1.EnvVar {
 	return corev1.EnvVar{
-		Name: ConnectionEnvVarName,
+		Name: "OS_" + strings.ToUpper(section) + "__CONNECTION",
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{
