@@ -1,0 +1,121 @@
+# Webhook configuration unit tests.
+suite: Webhook Configuration
+templates:
+  - templates/webhook-configuration.yaml
+tests:
+  - it: should render MutatingWebhookConfiguration when webhook is enabled
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: MutatingWebhookConfiguration
+      - matchRegex:
+          path: metadata.name
+          pattern: -mutating$
+      - equal:
+          path: webhooks[0].clientConfig.service.path
+          value: /mutate-placement-openstack-c5c3-io-v1alpha1-placement
+      - equal:
+          path: webhooks[0].admissionReviewVersions
+          value:
+            - v1
+      - equal:
+          path: webhooks[0].failurePolicy
+          value: Fail
+      - equal:
+          path: webhooks[0].sideEffects
+          value: None
+
+  - it: should render ValidatingWebhookConfiguration when webhook is enabled
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: ValidatingWebhookConfiguration
+      - matchRegex:
+          path: metadata.name
+          pattern: -validating$
+      - equal:
+          path: webhooks[0].clientConfig.service.path
+          value: /validate-placement-openstack-c5c3-io-v1alpha1-placement
+      - equal:
+          path: webhooks[0].admissionReviewVersions
+          value:
+            - v1
+      - equal:
+          path: webhooks[0].failurePolicy
+          value: Fail
+      - equal:
+          path: webhooks[0].sideEffects
+          value: None
+      - contains:
+          path: webhooks[0].rules[0].operations
+          content: CREATE
+      - contains:
+          path: webhooks[0].rules[0].operations
+          content: UPDATE
+      # DELETE must NOT be intercepted: with failurePolicy=Fail a down operator
+      # would otherwise block CR and namespace deletion.
+      - notContains:
+          path: webhooks[0].rules[0].operations
+          content: DELETE
+
+  - it: should name the webhooks after the Placement kind
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: webhooks[0].name
+          value: mplacement.kb.io
+      - equal:
+          path: webhooks[0].rules[0].apiGroups
+          value:
+            - placement.openstack.c5c3.io
+      - contains:
+          path: webhooks[0].rules[0].resources
+          content: placements
+
+  - it: should name the validating webhook after the Placement kind
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: webhooks[0].name
+          value: vplacement.kb.io
+      - contains:
+          path: webhooks[0].rules[0].resources
+          content: placements
+
+  # Placement serves admission for a single kind, so neither configuration may
+  # carry a second webhook entry from the library's additionalWebhooks path.
+  - it: should carry exactly one mutating webhook entry
+    documentIndex: 0
+    asserts:
+      - lengthEqual:
+          path: webhooks
+          count: 1
+
+  - it: should carry exactly one validating webhook entry
+    documentIndex: 1
+    asserts:
+      - lengthEqual:
+          path: webhooks
+          count: 1
+
+  - it: should set cert-manager CA injection annotation on both configs
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
+          value: NAMESPACE/RELEASE-NAME-placement-operator-webhook
+
+  - it: should set cert-manager CA injection annotation on validating config
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
+          value: NAMESPACE/RELEASE-NAME-placement-operator-webhook
+
+  - it: should not render any documents when webhook is disabled
+    set:
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

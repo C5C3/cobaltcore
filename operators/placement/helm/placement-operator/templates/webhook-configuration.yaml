@@ -1,0 +1,8 @@
+{{- include "operator-library.webhookConfiguration" (dict
+      "root" .
+      "mutatingWebhookName" "mplacement.kb.io"
+      "validatingWebhookName" "vplacement.kb.io"
+      "mutatePath" "/mutate-placement-openstack-c5c3-io-v1alpha1-placement"
+      "validatePath" "/validate-placement-openstack-c5c3-io-v1alpha1-placement"
+      "apiGroup" "placement.openstack.c5c3.io"
+      "resource" "placements") }}
