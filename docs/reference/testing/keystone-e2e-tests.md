@@ -23,7 +23,7 @@ scaling, key rotation, image upgrades, cross-release upgrades, and deletion clea
 suite is independent and creates its own Keystone CR with a unique name in the `openstack`
 namespace, enabling parallel execution (Chainsaw runs up to 4 suites concurrently).
 
-`tests/e2e/keystone/` currently holds **47 suites** and is the canonical
+`tests/e2e/keystone/` currently holds **50 suites** and is the canonical
 inventory — the [Test Suite Inventory](#test-suite-inventory) below lists all of
 them, and the [Test Suite Details](#test-suite-details) sections walk through a
 representative subset step by step.
@@ -123,6 +123,7 @@ Deployment rollout, bootstrap Job).
 | invalid-cr | multiple (rejected) | Every CEL XValidation and webhook rejection path pinned to a deterministic admission failure |
 | key-repository-mode | `keystone-keymode` | Fernet/credential key volumes are not world-readable (no `key_repository is world readable` startup warning) |
 | logging | `keystone-logging` | `spec.logging` propagation to oslo.log: defaults, level/format overrides, per-logger levels |
+| maintenance-endpoint-isolation | `keystone-endpoint-isolation` | Maintenance pods never become API Service backends: the non-terminating EndpointSlice address count for the API Service stays at exactly the live replica count — never above, never empty — across a sampling window that observes a live trust-flush pod holding a pod IP |
 | metrics | — (operator-level) | keystone-operator chart renders and removes the ServiceMonitor; metrics endpoint scrapeable |
 | namespace-scoped-rbac | `keystone-ns-scoped` | Operator deployed with `rbac.namespaceScoped=true` + `webhook.enabled=false` still reconciles to Ready |
 | network-policy | `keystone-netpol` | Per-CR NetworkPolicy create/update/delete driven by `spec.networkPolicy` ingress sources |
@@ -968,6 +969,9 @@ tests/e2e/keystone/
 │   ├── 01-patch-debug-true.yaml        Patch enabling debug
 │   ├── 02-patch-format-json.yaml       Patch switching to JSON format
 │   └── 03-patch-invalid-perloggerlevel.yaml Invalid per-logger level (rejected)
+├── maintenance-endpoint-isolation/
+│   ├── chainsaw-test.yaml              API Service endpoints during a trust-flush run
+│   └── 00-keystone-cr.yaml             Keystone CR with an every-minute trust flush
 ├── metrics/
 │   └── chainsaw-test.yaml              Operator ServiceMonitor render/remove
 ├── middleware-config/
