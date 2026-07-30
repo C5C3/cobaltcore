@@ -239,17 +239,26 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	statusBefore := placement.Status.DeepCopy()
 
 	// Each step runs in dependency order; the first to return a non-zero result
-	// or an error short-circuits the chain and funnels through updateStatus. The
-	// service-user password digest and the DSN digest are consumed by the
-	// deployment step, which lands in a later commit; until then those steps
-	// discard them.
+	// or an error short-circuits the chain and funnels through updateStatus.
 	//
 	// configMapName names the rendered config ConfigMap produced by
-	// reconcileConfig; the database step mounts it in the migration Job.
-	var configMapName string
+	// reconcileConfig; the database step mounts it in the migration Job and the
+	// deployment step mounts it in the API pods. authtokenDigest and dsnDigest
+	// are the content digests of the service-user password and the assembled DSN;
+	// the deployment step stamps them into pod-template annotations so a rotated
+	// credential rolls the pods.
+	var (
+		configMapName   string
+		authtokenDigest string
+		dsnDigest       string
+	)
 	pipeline := []commonreconcile.Step{
 		{Name: "Secrets", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			res, _, err := r.reconcileSecrets(ctx, &placement)
+			var (
+				res ctrl.Result
+				err error
+			)
+			res, authtokenDigest, err = r.reconcileSecrets(ctx, &placement)
 			return res, err
 		}},
 		// reconcileDBConnectionSecret materialises the DB URL into the derived
@@ -257,7 +266,11 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// credentials must be synced) and before Config; failures set
 		// SecretsReady=False, the same condition reconcileSecrets uses.
 		{Name: "DBConnectionSecret", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			res, _, err := r.reconcileDBConnectionSecret(ctx, &placement)
+			var (
+				res ctrl.Result
+				err error
+			)
+			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, &placement)
 			return res, err
 		}},
 		// reconcileConfig renders placement.conf into an immutable ConfigMap. It
@@ -276,6 +289,12 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		// rendered config.
 		{Name: "Database", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			return r.reconcileDatabase(ctx, &placement, configMapName)
+		}},
+		// reconcileDeployment projects the API Deployment, its Service, and the
+		// PodDisruptionBudget. It runs after Database so the pods only start once
+		// the schema they query exists.
+		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileDeployment(ctx, &placement, configMapName, dsnDigest, authtokenDigest)
 		}},
 	}
 

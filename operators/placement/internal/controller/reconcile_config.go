@@ -25,8 +25,8 @@ const defaultConfigMapRetainCount = 3
 
 // placementConfigDir is the in-pod directory the rendered config ConfigMap is
 // mounted at, read-only and as a whole volume, shadowing the image's own
-// /etc/placement. The deployment step (later commit) points the container at it
-// through OS_PLACEMENT_CONFIG_DIR=/etc/placement, and the db-sync Job passes
+// /etc/placement. The deployment step points the container at it through
+// OS_PLACEMENT_CONFIG_DIR=/etc/placement, and the db-sync Job passes
 // --config-file /etc/placement/placement.conf.
 //
 // The directory is NOT a conf.d: the image's WSGI entry point calls

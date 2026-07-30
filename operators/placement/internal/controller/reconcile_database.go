@@ -7,7 +7,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -281,11 +280,11 @@ func placementJobSetParams(placement *placementv1alpha1.Placement, configMapName
 		Namespace:     placement.Namespace,
 		Image:         placement.Spec.Image.Reference(),
 		ConfigMapName: configMapName,
-		// The ConfigMap is mounted as a whole directory. The trailing slash
-		// placementConfigDir carries is dropped for the mountPath, so the mount
-		// and the --config-file paths in placementDBSyncScript are derived from
-		// the same constant and cannot drift apart.
-		ConfigMountPath: strings.TrimSuffix(placementConfigDir, "/"),
+		// The ConfigMap is mounted as a whole directory, at the same mount point
+		// the API pods use, so the mount and the --config-file paths in
+		// placementDBSyncScript are derived from the same constant and cannot
+		// drift apart.
+		ConfigMountPath: placementConfigMountPath,
 		// Override [placement_database] connection via the oslo.config env var so
 		// the Job reads the DB URL from the derived Secret instead of the
 		// placeholder in the rendered config.
