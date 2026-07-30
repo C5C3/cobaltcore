@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/c5c3/forge/internal/common/naming"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -418,10 +419,16 @@ func TestTrustFlushCronJob_Labels(t *testing.T) {
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+	// The CronJob object itself is not a pod, so its metadata stays on the plain
+	// common labels.
+	g.Expect(cronJob.Labels).NotTo(HaveKey(naming.LabelKeyComponent))
 
-	// Pod template labels should match.
+	// Pod template labels keep the common labels and add the component that
+	// keeps trust-flush pods out of the API Service.
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+	g.Expect(cronJob.Spec.JobTemplate.Spec.Template.Labels).To(HaveKeyWithValue(naming.LabelKeyComponent, "trust-flush"))
 }
 
 func TestTrustFlushCronJob_Image(t *testing.T) {

@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -106,7 +107,36 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, keystone *
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
 	}
 
-	svc := buildKeystoneService(keystone, fed != nil)
+	// Narrow the Service selector to the API component only once every live pod
+	// carries that label. EnsureDeployment is a Server-Side Apply: it returns as
+	// soon as the API server accepts the pod template, long before the rollout
+	// finishes. Applying the narrowed selector in the same pass would drop every
+	// pod still running from before the upgrade out of the EndpointSlices while
+	// it is still the only thing serving — and a rollout that never completes
+	// would never repool them.
+	//
+	// Once narrowed, stay narrowed. The migration is one-way: only a template
+	// built by an operator predating the component label produces pods the
+	// narrow selector misses. Re-widening on a later rollout would re-admit
+	// maintenance pods as endpoints for exactly as long as it lasts, reopening
+	// the race this narrowing closes. The latch reads the live Service through
+	// the uncached APIReader, so it cannot be decided from a cache that still
+	// predates the narrowing write (see deployment.APISelectorNarrowed);
+	// r.apiReader is nil only in unit tests, whose fake client is
+	// read-your-writes anyway.
+	narrowSelector := deployment.TemplateConverged(deploy)
+	if !narrowSelector {
+		reader := client.Reader(r.Client)
+		if r.apiReader != nil {
+			reader = r.apiReader
+		}
+		narrowSelector, err = deployment.APISelectorNarrowed(ctx, reader, keystone.Namespace, subResourceName(keystone))
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	svc := buildKeystoneService(keystone, fed != nil, narrowSelector)
 	if err := deployment.EnsureService(ctx, r.Client, r.Scheme, keystone, svc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
 	}
@@ -216,6 +246,15 @@ func selectorLabels(keystone *keystonev1alpha1.Keystone) map[string]string {
 	return naming.SelectorLabels(keystonev1alpha1.AppName, keystone.Name)
 }
 
+// componentLabels returns the pod-template labels for a workload of the given
+// component. It is commonLabels plus app.kubernetes.io/component, so the result
+// stays a superset of selectorLabels and keeps matching the Deployment pod
+// selector and the NetworkPolicy pod selector. It delegates to the shared
+// naming package to stay in sync across operators.
+func componentLabels(keystone *keystonev1alpha1.Keystone, component string) map[string]string {
+	return naming.ComponentLabels(keystonev1alpha1.AppName, keystone.Name, component)
+}
+
 // dbConnectionHashAnnotation is the pod-template annotation key stamped with the
 // SHA-256 of the DSN in Dynamic credentials mode so a rotated engine-issued
 // credential rolls the Deployment (the DSN is env-var-consumed, not volume-
@@ -239,7 +278,7 @@ func buildKeystoneDeployment(keystone *keystonev1alpha1.Keystone, configMapName,
 	deploy := deployment.BuildWorkload(deployment.WorkloadParams{
 		Namespace:      keystone.Namespace,
 		Name:           subResourceName(keystone),
-		Labels:         commonLabels(keystone),
+		Labels:         componentLabels(keystone, naming.ComponentAPI),
 		SelectorLabels: selectorLabels(keystone),
 		PodAnnotations: podAnnotations,
 		Deployment:     &keystone.Spec.Deployment,
@@ -547,8 +586,33 @@ func buildFederationVolumes(fed *federationProjection) []corev1.Volume {
 // disruptions. When it is 1, maxUnavailable=1 is used instead to avoid drain
 // deadlock (a PDB with minAvailable=1 on a single-replica deployment would block
 // all evictions).
+//
+// The selector keeps the stable name and instance labels and excludes the
+// maintenance pods by the absence of the Job name label (naming.ExcludeJobPods)
+// rather than by the API component. Both keep maintenance pods from inflating
+// currentHealthy — the disruption controller counts every matching pod, and Job
+// pods carry no readiness probe, so they are Ready from their first moment,
+// which raises disruptionsAllowed and lets a drain evict the API pods the budget
+// exists to protect. Only this one also covers the API pods of a template
+// predating the component label: a pod no budget selects is not protected at
+// all, and the Service's two-phase narrowing has no counterpart here that would
+// bound that gap.
 func buildPodDisruptionBudget(keystone *keystonev1alpha1.Keystone) *policyv1.PodDisruptionBudget {
-	return deployment.BuildPDB(keystone.Namespace, subResourceName(keystone), commonLabels(keystone), selectorLabels(keystone), &keystone.Spec.Deployment)
+	pdb := deployment.BuildPDB(keystone.Namespace, subResourceName(keystone), commonLabels(keystone), selectorLabels(keystone), &keystone.Spec.Deployment)
+	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
+	return pdb
+}
+
+// apiSelector returns the selector of the API Service. It narrows to
+// app.kubernetes.io/component=api only when narrowSelector is set, which the
+// caller derives from deployment.TemplateConverged and then latches: until every
+// live pod runs the labelled template, the wide selector is the only one that
+// still matches them.
+func apiSelector(keystone *keystonev1alpha1.Keystone, narrowSelector bool) map[string]string {
+	if narrowSelector {
+		return naming.APISelectorLabels(keystonev1alpha1.AppName, keystone.Name)
+	}
+	return selectorLabels(keystone)
 }
 
 // uwsgiCommand constructs the uWSGI container command from the given spec.
@@ -641,11 +705,13 @@ func priorityClassName(keystone *keystonev1alpha1.Keystone) string {
 // stays 5000 in every configuration — internalAPIURL, the status endpoint,
 // the HTTPRoute backend, and the health check all key on it — but with
 // federation active the targetPort switches to the sidecar so every request
-// traverses the header-stripping proxy.
-func buildKeystoneService(keystone *keystonev1alpha1.Keystone, federationActive bool) *corev1.Service {
+// traverses the header-stripping proxy. With narrowSelector the selector
+// narrows to the API component, so only the API pods can become endpoints
+// (see apiSelector for when that is safe).
+func buildKeystoneService(keystone *keystonev1alpha1.Keystone, federationActive, narrowSelector bool) *corev1.Service {
 	targetPort := int32(5000)
 	if federationActive {
 		targetPort = federationProxyPort
 	}
-	return deployment.BuildService(keystone.Namespace, subResourceName(keystone), commonLabels(keystone), selectorLabels(keystone), 5000, targetPort)
+	return deployment.BuildService(keystone.Namespace, subResourceName(keystone), commonLabels(keystone), apiSelector(keystone, narrowSelector), 5000, targetPort)
 }

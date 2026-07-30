@@ -237,9 +237,30 @@ RBAC markers on the reconciler generate the required ClusterRole:
 
 The reconciler applies `commonLabels(keystone)` (`app.kubernetes.io/name`,
 `app.kubernetes.io/instance`, `app.kubernetes.io/managed-by`) to every owned
-resource. In addition, the following forge-specific metadata keys carry
-controller-observable semantics and are stable across releases — consumers
-(watch predicates, chainsaw tests, dashboards) may rely on them:
+resource.
+
+Pod templates carry one label on top of that, `app.kubernetes.io/component`,
+naming the workload the pod belongs to:
+
+| Pod template | `app.kubernetes.io/component` |
+| --- | --- |
+| API Deployment | `api` |
+| `{name}-trust-flush` CronJob | `trust-flush` |
+| `{name}-fernet-rotate` CronJob | `fernet-rotation` |
+| `{name}-credential-rotate` CronJob | `credential-rotation` |
+| `{name}-admin-password-rotate` CronJob | `admin-password-rotation` |
+
+The API Service selects on `app.kubernetes.io/component=api` in addition to the
+name and instance labels, so a maintenance pod can never become one of its
+endpoints. The CronJob objects themselves carry plain `commonLabels`; only
+their pod templates get a component. Two selectors stay on name and instance
+alone: the Deployment pod selector (immutable after creation) and the
+NetworkPolicy pod selector (maintenance pods must keep inheriting its egress
+rules).
+
+The following forge-specific metadata keys carry controller-observable
+semantics and are stable across releases — consumers (watch predicates,
+chainsaw tests, dashboards) may rely on them:
 
 | Key | Kind | Applied to | Value | Purpose |
 | --- | --- | --- | --- | --- |
@@ -1619,6 +1640,7 @@ and disaster recovery backup to OpenBao.
 | Field | Value |
 | --- | --- |
 | Name | `{name}-fernet-rotate` |
+| Pod labels | `commonLabels(keystone)` + `app.kubernetes.io/component=fernet-rotation` |
 | Schedule | `spec.fernet.rotationSchedule` |
 | Suspend | `spec.fernet.suspend` (default `false`); set `true` to pause rotation during an incident without deleting the CronJob or changing its schedule |
 | ServiceAccount | `{name}-fernet-rotate` |
@@ -1794,6 +1816,7 @@ with credential migration, and disaster recovery backup to OpenBao.
 | Field | Value |
 | --- | --- |
 | Name | `{name}-credential-rotate` |
+| Pod labels | `commonLabels(keystone)` + `app.kubernetes.io/component=credential-rotation` |
 | Schedule | `spec.credentialKeys.rotationSchedule` |
 | Suspend | `spec.credentialKeys.suspend` (default `false`); set `true` to pause rotation during an incident without deleting the CronJob or changing its schedule |
 | ServiceAccount | `{name}-credential-rotate` |
@@ -2258,7 +2281,7 @@ its readiness probe, which traverses Apache and uWSGI, carries an explicit
 | Field | Value |
 | --- | --- |
 | Name | `{name}` (bare CR name) |
-| Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}` |
+| Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}`, `app.kubernetes.io/component=api` |
 | Port | 5000 TCP |
 
 **Status Endpoint:**
@@ -2798,6 +2821,7 @@ delegations from the Keystone database. Three lifecycle paths:
 | --- | --- |
 | Name | `{name}-trust-flush` |
 | Labels | `commonLabels(keystone)` |
+| Pod labels | `commonLabels(keystone)` + `app.kubernetes.io/component=trust-flush` |
 | Schedule | `spec.trustFlush.schedule` |
 | Suspend | `&spec.trustFlush.suspend` (pointer to CRD bool) |
 | Container name | `trust-flush` |
@@ -2924,6 +2948,7 @@ Two lifecycle paths:
 | --- | --- |
 | Name | `{name}-admin-password-rotate` |
 | Labels | `commonLabels(keystone)` |
+| Pod labels | `commonLabels(keystone)` + `app.kubernetes.io/component=admin-password-rotation` |
 | Schedule | `spec.passwordRotation.schedule` |
 | Suspend | `&spec.passwordRotation.suspend` (pointer to CRD bool) |
 | ServiceAccount | `{name}-admin-password-rotate` |

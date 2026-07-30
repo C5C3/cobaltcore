@@ -201,7 +201,7 @@ func keyRotationCronJob(keystone *keystonev1alpha1.Keystone, configMapName, scri
 		Namespace: keystone.Namespace,
 		Labels:    commonLabels(keystone),
 		Schedule:  p.schedule,
-		PodLabels: commonLabels(keystone),
+		PodLabels: componentLabels(keystone, p.keyKind+"-rotation"),
 		PodSpec:   podSpec,
 	})
 }

@@ -20,6 +20,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/c5c3/forge/internal/common/naming"
 )
 
 func newScheme() *runtime.Scheme {
@@ -473,6 +475,113 @@ func TestEnsureService_decodesServerResponseIntoObject(t *testing.T) {
 	// the server-assigned ClusterIP and a resourceVersion.
 	g.Expect(desired.Spec.ClusterIP).To(Equal("10.0.0.42"))
 	g.Expect(desired.ResourceVersion).NotTo(BeEmpty())
+}
+
+// TestTemplateConverged covers the gate the operators narrow the API Service
+// selector on. Convergence means "no pod predates the current template", which
+// is deliberately independent of health: a Deployment that never reaches full
+// readiness still runs nothing but the labelled template, and gating on
+// readiness would leave it on the wide selector forever — the latch cannot
+// rescue it, because it can only hold a narrowing that already happened.
+func TestTemplateConverged(t *testing.T) {
+	cases := []struct {
+		name   string
+		deploy appsv1.Deployment
+		want   bool
+	}{
+		{
+			name: "generation not observed yet",
+			deploy: appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 4},
+				Status:     appsv1.DeploymentStatus{ObservedGeneration: 3, Replicas: 3, UpdatedReplicas: 3},
+			},
+			want: false,
+		},
+		{
+			name: "old-template pods still counted",
+			deploy: appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 4},
+				Status:     appsv1.DeploymentStatus{ObservedGeneration: 4, Replicas: 4, UpdatedReplicas: 1},
+			},
+			want: false,
+		},
+		{
+			name: "no pod reported yet",
+			deploy: appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 1},
+				Status:     appsv1.DeploymentStatus{ObservedGeneration: 1},
+			},
+			want: false,
+		},
+		{
+			name: "converged and ready",
+			deploy: appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 4},
+				Status:     appsv1.DeploymentStatus{ObservedGeneration: 4, Replicas: 3, UpdatedReplicas: 3, ReadyReplicas: 3},
+			},
+			want: true,
+		},
+		{
+			// A third replica pending on resource pressure or on an
+			// unsatisfiable topology-spread constraint: permanently degraded,
+			// but every live pod runs the current template.
+			name: "converged but never fully ready",
+			deploy: appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Generation: 4},
+				Status:     appsv1.DeploymentStatus{ObservedGeneration: 4, Replicas: 3, UpdatedReplicas: 3, ReadyReplicas: 2},
+			},
+			want: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(TemplateConverged(&tc.deploy)).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestAPISelectorNarrowed covers the latch the operators use to keep the
+// two-phase narrowing one-way: only a Service that already selects by the API
+// component reports true, and a Service that does not exist yet is not an error.
+func TestAPISelectorNarrowed(t *testing.T) {
+	cases := []struct {
+		name     string
+		existing *corev1.Service
+		want     bool
+	}{
+		{name: "no Service yet", existing: nil, want: false},
+		{name: "wide selector", existing: func() *corev1.Service {
+			svc := testService()
+			svc.Spec.Selector = naming.SelectorLabels("keystone", "test")
+			return svc
+		}(), want: false},
+		{name: "narrowed selector", existing: func() *corev1.Service {
+			svc := testService()
+			svc.Spec.Selector = naming.APISelectorLabels("keystone", "test")
+			return svc
+		}(), want: true},
+		{name: "some other component", existing: func() *corev1.Service {
+			svc := testService()
+			svc.Spec.Selector = naming.ComponentLabels("keystone", "test", "trust-flush")
+			return svc
+		}(), want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cb := fake.NewClientBuilder().WithScheme(newScheme())
+			if tc.existing != nil {
+				cb = cb.WithObjects(tc.existing)
+			}
+
+			got, err := APISelectorNarrowed(context.Background(), cb.Build(), "default", "test-svc")
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(got).To(Equal(tc.want))
+		})
+	}
 }
 
 func TestEnsureService_updatesPreservingNodePorts(t *testing.T) {

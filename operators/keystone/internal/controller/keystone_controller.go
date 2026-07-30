@@ -239,6 +239,15 @@ type KeystoneReconciler struct {
 	// the user nonetheless sets spec.gateway.
 	gatewayAPIAvailable bool
 
+	// apiReader is set during SetupWithManager from mgr.GetAPIReader(): a
+	// direct, uncached reader. reconcileDeployment latches the two-phase
+	// narrowing of the API Service selector on the live Service, and the
+	// informer cache can still hold the pre-narrowing state right after the
+	// narrowing write — a latch decided from it could widen the selector back.
+	// Nil in unit tests that construct the reconciler without a manager; those
+	// fall back to the (read-your-writes) fake client.
+	apiReader client.Reader
+
 	// certManagerAvailable is set during SetupWithManager from the cluster's
 	// RESTMapper and indicates whether the cert-manager.io/v1 Certificate CRD
 	// is installed. When false, the controller skips the Certificate watch and
@@ -817,6 +826,7 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// when the CRD is missing, preventing every Keystone CR from being
 	// reconciled — including those that do not use spec.gateway.
 	r.gatewayAPIAvailable = gateway.IsGVKAvailable(mgr.GetRESTMapper(), httpRouteGVK)
+	r.apiReader = mgr.GetAPIReader()
 	setupLog := ctrl.Log.WithName("keystone-setup")
 	if r.gatewayAPIAvailable {
 		setupLog.Info("Gateway API detected; enabling HTTPRoute watch and reconciliation")

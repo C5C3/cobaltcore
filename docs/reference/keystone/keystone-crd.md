@@ -270,7 +270,7 @@ The HPA created from this spec has the following shape:
 | HPA Field | Value |
 | --- | --- |
 | `metadata.name` | `{name}` |
-| `metadata.labels` | `commonLabels` (same as Deployment) |
+| `metadata.labels` | `commonLabels` (name, instance, managed-by) |
 | `spec.scaleTargetRef.apiVersion` | `apps/v1` |
 | `spec.scaleTargetRef.kind` | `Deployment` |
 | `spec.scaleTargetRef.name` | `{name}` |
@@ -605,7 +605,8 @@ ever sees the object.
 | CronJob Field | Value |
 | --- | --- |
 | `metadata.name` | `{name}-trust-flush` |
-| `metadata.labels` | `commonLabels` (same as Deployment) |
+| `metadata.labels` | `commonLabels` (name, instance, managed-by) |
+| `spec.jobTemplate.spec.template.metadata.labels` | `commonLabels` + `app.kubernetes.io/component=trust-flush`, which keeps the pods out of the API Service |
 | `spec.schedule` | `trustFlush.schedule` (webhook-defaulted to `"0 * * * *"` when omitted) |
 | `spec.suspend` | `&trustFlush.suspend` (pointer to bool; webhook-defaulted to `false` when omitted) |
 | `spec.jobTemplate.spec.template.spec.restartPolicy` | `OnFailure` |
@@ -806,7 +807,7 @@ The HTTPRoute created from this spec has the following shape
 | --- | --- |
 | `metadata.name` | `{name}` (matches the backend Service, Deployment, HPA, NetworkPolicy naming) |
 | `metadata.namespace` | Keystone CR namespace |
-| `metadata.labels` | `commonLabels` (same as Deployment) |
+| `metadata.labels` | `commonLabels` (name, instance, managed-by) |
 | `metadata.annotations` | Merged from `spec.gateway.annotations` |
 | `spec.parentRefs[0].name` | `spec.gateway.parentRef.name` |
 | `spec.parentRefs[0].namespace` | `spec.gateway.parentRef.namespace` when non-empty; omitted otherwise |

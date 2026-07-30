@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	"github.com/c5c3/forge/internal/common/naming"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -259,6 +260,29 @@ func TestAdminPasswordRotationCronJob_Shape(t *testing.T) {
 	g.Expect(scriptsVol.ConfigMap).NotTo(BeNil())
 	g.Expect(scriptsVol.ConfigMap.Name).To(Equal("test-keystone-admin-password-rotate-script-abc123"))
 	g.Expect(*scriptsVol.ConfigMap.DefaultMode).To(Equal(int32(0o555)))
+}
+
+func TestAdminPasswordRotationCronJob_Labels(t *testing.T) {
+	g := NewWithT(t)
+	ks := pwRotationTestKeystone()
+
+	cj := adminPasswordRotationCronJob(ks, "test-keystone-admin-password-rotate-script-abc123")
+
+	// The CronJob object is not a pod, so its metadata stays on the plain common
+	// labels.
+	g.Expect(cj.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(cj.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(cj.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+	g.Expect(cj.Labels).NotTo(HaveKey(naming.LabelKeyComponent))
+
+	// The pod template keeps the common labels — the NetworkPolicy pod selector
+	// matches on a subset of them — and adds the component that keeps rotation
+	// pods out of the API Service.
+	podLabels := cj.Spec.JobTemplate.Spec.Template.Labels
+	g.Expect(podLabels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
+	g.Expect(podLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(podLabels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+	g.Expect(podLabels).To(HaveKeyWithValue(naming.LabelKeyComponent, "admin-password-rotation"))
 }
 
 func TestAdminPasswordRotationCronJob_Suspend(t *testing.T) {

@@ -364,7 +364,7 @@ func adminPasswordRotationCronJob(keystone *keystonev1alpha1.Keystone, scriptCon
 				Spec: batchv1.JobSpec{
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: commonLabels(keystone),
+							Labels: componentLabels(keystone, "admin-password-rotation"),
 						},
 						Spec: corev1.PodSpec{
 							ServiceAccountName: adminPasswordRotateSAName(keystone),
