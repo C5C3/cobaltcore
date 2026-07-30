@@ -251,11 +251,26 @@ naming the workload the pod belongs to:
 | `{name}-admin-password-rotate` CronJob | `admin-password-rotation` |
 
 The API Service selects on `app.kubernetes.io/component=api` in addition to the
-name and instance labels, so a maintenance pod can never become one of its
-endpoints. The CronJob objects themselves carry plain `commonLabels`; only
-their pod templates get a component. Two selectors stay on name and instance
-alone: the Deployment pod selector (immutable after creation) and the
-NetworkPolicy pod selector (maintenance pods must keep inheriting its egress
+name and instance labels, so a maintenance pod cannot become one of its
+endpoints. It adopts that selector only once the API Deployment runs nothing but
+the labelled pod template, and never gives it up again — see the Service Spec
+section.
+
+The PodDisruptionBudget needs the same exclusion but must not depend on the
+component label: a pod that no budget selects is not protected at all, so keying
+the budget on a label the pods currently serving do not carry would leave them
+without a budget. It therefore stays on name and instance and excludes
+maintenance pods by the *absence* of `batch.kubernetes.io/job-name`, the label
+the Job controller stamps on every pod it creates. Both routes keep a
+maintenance pod from counting towards `currentHealthy` — a Job pod carries no
+readiness probe, so it would be counted as healthy the moment it starts and
+would raise `disruptionsAllowed` — but only this one also covers API pods from a
+template predating the component label.
+
+The CronJob objects themselves carry plain `commonLabels`; only their pod
+templates get a component. Two selectors stay on name and instance alone with no
+further narrowing: the Deployment pod selector (immutable after creation) and
+the NetworkPolicy pod selector (maintenance pods must keep inheriting its egress
 rules).
 
 The following forge-specific metadata keys carry controller-observable
@@ -2222,8 +2237,8 @@ preserving the no-rollout behavior.
 | --- | --- |
 | Name | `{name}` (bare CR name) |
 | Replicas | `spec.deployment.replicas`; left `nil` when `spec.autoscaling` is set, so the HorizontalPodAutoscaler owns the count and the operator does not reset it each reconcile |
-| Labels | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}`, `app.kubernetes.io/managed-by=keystone-operator` |
-| Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}` |
+| Labels | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}`, `app.kubernetes.io/managed-by=keystone-operator`, `app.kubernetes.io/component=api` (on the Deployment metadata and on the pod template) |
+| Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}` (the component label is left out: a Deployment pod selector is immutable after creation) |
 | Container name | `keystone` |
 | Image | `{spec.image.repository}:{spec.image.tag}` |
 | Port | 5000 (named `keystone`) |
@@ -2281,8 +2296,62 @@ its readiness probe, which traverses Apache and uWSGI, carries an explicit
 | Field | Value |
 | --- | --- |
 | Name | `{name}` (bare CR name) |
-| Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}`, `app.kubernetes.io/component=api` |
+| Selector | `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}`, `app.kubernetes.io/component=api` from the first pass that observes a fully rolled-out Deployment onwards; `app.kubernetes.io/name` and `app.kubernetes.io/instance` alone before that |
 | Port | 5000 TCP |
+
+The selector is narrowed in two phases. The PodDisruptionBudget selector is
+not: it never keys on the component label at all.
+
+`deployment.EnsureDeployment` is a Server-Side Apply: it returns as soon as the
+API server accepts the pod template, long before the rollout finishes. On the
+operator upgrade that first ships `app.kubernetes.io/component=api`, applying
+the narrowed selector in that same reconcile pass would drop every API pod
+still running from the previous build — none of them carries the label — out of
+the EndpointSlices while they are the only pods serving. The Service would have
+no backends until the first re-rolled pod passed its probes, and a rollout that
+never completes (image pull failure, `ResourceQuota` rejection, no schedulable
+node) would never repool them, turning a stuck rollout into an unbounded
+outage.
+
+The reconciler therefore keeps the wide selector until
+`deployment.TemplateConverged` reports that no pod predates the current pod
+template — the deployment controller has observed the latest generation, reports
+at least one pod, and `status.replicas` (pods across all ReplicaSets) equals
+`status.updatedReplicas` (pods of the newest one) — and narrows it on the next
+pass. The Deployment is watched (`Owns`), so that pass is triggered by the status
+update itself.
+
+Readiness is deliberately not part of that gate. An unready pod is not an
+endpoint whichever selector the Service carries, while requiring full readiness
+would strand a Deployment that never reaches it — a third replica pending on
+resource pressure or on an unsatisfiable topology-spread constraint — on the wide
+selector permanently, and with it on the maintenance-pod race the narrowing
+closes. (The stricter `keystoneDeploymentRolledOut`, which does require
+readiness, gates the RollingUpdate → Contracting flip, where old-image pods must
+be gone before their columns are dropped.)
+
+The narrowing is a one-way migration, so the reconciler latches it: when the
+Deployment is not converged it reads the live Service and keeps the narrow
+selector if it is already there (`deployment.APISelectorNarrowed`). Only a pod
+template built by an operator predating `app.kubernetes.io/component=api` can
+miss the narrow selector, and every template this operator builds carries it —
+so after the migration the wide selector protects nothing and only re-admits
+maintenance pods. Without the latch the selector would not migrate once but
+oscillate: `deployment.TemplateConverged` turns false on every later rollout (a
+rotated Dynamic database credential restamps the pod template on each ESO
+refresh), re-admitting maintenance pods for as long as that rollout lasts.
+
+The latch reads the Service through `mgr.GetAPIReader()`, not the informer
+cache. Right after the narrowing write the cache can still hold the wide
+Service; a reconcile triggered in that window by an unrelated event, with the
+Deployment momentarily unconverged, would read the stale copy and apply the wide
+selector again. The read runs at most once per reconcile and only while the
+Deployment is unconverged.
+
+`tests/e2e-operator-upgrade/keystone-helm-upgrade` asserts the migration across
+a real `helm upgrade`: it records the EndpointSlice address count before the
+upgrade and samples it until the selector narrows, failing if the count ever
+drops.
 
 **Status Endpoint:**
 
@@ -2313,8 +2382,34 @@ disruption budget strategy:
 | PDB Field | Value |
 | --- | --- |
 | Name | `{name}` |
-| Labels | Same as Deployment (`commonLabels`) |
-| Selector | Same as Deployment (`selectorLabels`) |
+| Labels | `commonLabels` (the Deployment metadata adds `app.kubernetes.io/component=api` on top; the PDB does not) |
+| Selector | `matchLabels`: `app.kubernetes.io/name=keystone`, `app.kubernetes.io/instance={name}`; `matchExpressions`: `batch.kubernetes.io/job-name DoesNotExist` |
+
+The budget needs the same maintenance-pod exclusion as the Service but reaches it
+the other way round, and it needs no two-phase narrowing.
+
+Excluding maintenance pods matters because the disruption controller counts every
+pod its selector matches towards `currentHealthy`, and a Job pod carries no
+readiness probe, so it is healthy the moment it starts — inflating
+`disruptionsAllowed` and letting a node drain evict the API pods the budget
+exists to protect. Every maintenance workload is a CronJob, so the absence of
+`batch.kubernetes.io/job-name` — the label the Job controller stamps on each pod
+it creates — separates the API pods from them exactly.
+
+Keying on `app.kubernetes.io/component=api` instead would open a worse hole than
+it closes. The eviction API only consults budgets whose selector matches the pod
+being evicted, so a pod that no budget matches has no budget at all: on the
+operator upgrade that first ships the component label, a component-keyed budget
+would match none of the API pods actually serving, and a node drain, an
+autoscaler consolidation, or a node upgrade could take every replica at once. The
+gap would last the whole migration rollout — and, unlike the Service's, it has no
+bound: a rollout that wedges on a bad image tag, a `ResourceQuota` rejection, or
+an unschedulable pod keeps the unlabelled pods alive indefinitely.
+
+Because the Job-name requirement holds for labelled and unlabelled API pods
+alike, the budget can carry its final selector from the first reconcile. Only the
+Service, whose narrow selector genuinely misses the pre-upgrade pods, needs the
+two-phase narrowing.
 
 **Condition Contract:**
 
