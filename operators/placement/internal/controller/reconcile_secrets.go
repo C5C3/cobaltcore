@@ -32,8 +32,8 @@ func effectiveServiceUserKey(placement *placementv1alpha1.Placement) string {
 // proceeding and returns the SHA-256 digest of the service-user password. It
 // gates on the selected secret store first, then the database credentials and
 // the service-user credentials Secrets, maintaining SecretsReady. The digest is
-// stamped into a pod-template annotation by the deployment step (later commit)
-// so a rotated service-user password rolls the Placement pods — the password is
+// stamped into a pod-template annotation by the deployment step so a rotated
+// service-user password rolls the Placement pods — the password is
 // env-var-consumed (oslo.config OS_KEYSTONE_AUTHTOKEN__PASSWORD), not
 // volume-mounted, so it only takes effect on a Pod restart.
 func (r *PlacementReconciler) reconcileSecrets(ctx context.Context,

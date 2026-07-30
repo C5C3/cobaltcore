@@ -30,8 +30,7 @@ import (
 // TLS keypair) is projected; the ssl_ca/ssl_cert/ssl_key DSN parameters
 // reference files inside this directory so the keypair bytes never enter the
 // operator process. The file names inside it come from database.TLSFilePaths, so
-// the DSN paths and the workload mount layout (built by the deployment step in a
-// later commit) stay in lockstep.
+// the DSN paths and the workload mount layout stay in lockstep.
 //
 // It sits outside /etc/placement rather than under it, unlike the keystone and
 // glance db-tls directories: for those services /etc/<service> is a plain image
