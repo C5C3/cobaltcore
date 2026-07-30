@@ -62,7 +62,7 @@ const defaultConfigMapRetainCount = 3
 const dbConnectionPlaceholder = "mysql+pymysql://placeholder"
 
 // loggingConfFilePath is the on-pod path where the operator writes the
-// oslo.log fileConfig snippet rendered by renderLoggingConf when
+// oslo.log fileConfig snippet rendered by config.RenderLoggingConf when
 // spec.logging.format == "json". The same value is set as the
 // [DEFAULT].log_config_append entry in keystone.conf, so the renderer and
 // the keystone.conf builder must agree on a single source of truth.
@@ -249,7 +249,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	// content hash differs, so the immutable ConfigMap name changes and the
 	// Deployment rolls.
 	if logging.Format == "json" {
-		data["logging.conf"] = renderLoggingConf(logging.Level)
+		data["logging.conf"] = config.RenderLoggingConf(logging.Level)
 	}
 	// Federation ships keystone's canonical WebSSO callback template beside
 	// keystone.conf (pip installs do not provide it). oslo.config's
@@ -614,48 +614,4 @@ func renderDefaultLogLevels(perLogger map[string]string) string {
 		pairs = append(pairs, fmt.Sprintf("%s=%s", k, perLogger[k]))
 	}
 	return strings.Join(pairs, ",")
-}
-
-// renderLoggingConf builds the logging.conf written to loggingConfFilePath
-// and consumed by oslo.log via log_config_append when
-// spec.logging.format == "json". It wires
-// oslo_log.formatters.JSONFormatter to a stderr StreamHandler so the
-// Keystone API container emits one JSON record per log line for direct
-// ingest by Loki/OpenSearch.
-//
-// DECISION: the task brief describes a "four-section" file, but Python's
-// logging.config.fileConfig grammar requires six sections — three index
-// sections ([loggers], [handlers], [formatters]) plus one named subsection
-// per declared root-logger / handler / formatter. Emitting fewer would not
-// parse in oslo.log; this six-section shape is the minimal valid file and is
-// pinned by TestReconcileConfig_LoggingJSONPathRendersLoggingConfAndAppend.
-func renderLoggingConf(level string) string {
-	return strings.Join([]string{
-		"[loggers]",
-		"keys = root",
-		"",
-		"[handlers]",
-		"keys = stderr",
-		"",
-		"[formatters]",
-		"keys = json",
-		"",
-		"[logger_root]",
-		"level = " + level,
-		"handlers = stderr",
-		"",
-		"[handler_stderr]",
-		"class = StreamHandler",
-		"args = (sys.stderr,)",
-		// level = NOTSET defers filtering to [logger_root]: the handler emits
-		// every record the root logger forwards. Hardcoding the root level
-		// here would silently shadow spec.logging.level; do not "fix" this to
-		// match the root level.
-		"level = NOTSET",
-		"formatter = json",
-		"",
-		"[formatter_json]",
-		"class = oslo_log.formatters.JSONFormatter",
-		"",
-	}, "\n")
 }

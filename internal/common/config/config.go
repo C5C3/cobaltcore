@@ -9,6 +9,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 
@@ -130,6 +132,57 @@ func MergeDefaults(userConfig, defaults map[string]map[string]string) map[string
 	}
 
 	return result
+}
+
+// RenderSortedPairs joins a map into the comma-separated "key<sep>value" list an
+// oslo option consumes — sep is "=" for oslo.log's default_log_levels CSV, ":"
+// for an oslo DictOpt. The keys are sorted alphabetically so the rendered config
+// — and therefore the immutable ConfigMap content hash — is independent of Go's
+// randomized map iteration order; unsorted, a reconcile that changed nothing
+// would rotate the ConfigMap and roll the Deployment. An empty map renders "".
+func RenderSortedPairs(m map[string]string, sep string) string {
+	pairs := make([]string, 0, len(m))
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		pairs = append(pairs, k+sep+m[k])
+	}
+	return strings.Join(pairs, ",")
+}
+
+// RenderLoggingConf builds the logging.conf an OpenStack service ships when
+// spec.logging.format == "json" and points oslo.log at via log_config_append. It
+// wires oslo_log.formatters.JSONFormatter to a stderr StreamHandler so the API
+// container emits one JSON record per log line. The six-section shape is the
+// minimal file Python's logging.config.fileConfig grammar accepts: three index
+// sections ([loggers], [handlers], [formatters]) plus one named subsection per
+// declared root logger / handler / formatter.
+func RenderLoggingConf(level string) string {
+	return strings.Join([]string{
+		"[loggers]",
+		"keys = root",
+		"",
+		"[handlers]",
+		"keys = stderr",
+		"",
+		"[formatters]",
+		"keys = json",
+		"",
+		"[logger_root]",
+		"level = " + level,
+		"handlers = stderr",
+		"",
+		"[handler_stderr]",
+		"class = StreamHandler",
+		"args = (sys.stderr,)",
+		// level = NOTSET defers filtering to [logger_root]: the handler emits
+		// every record the root logger forwards. Hardcoding the root level here
+		// would silently shadow spec.logging.level; do not "fix" this.
+		"level = NOTSET",
+		"formatter = json",
+		"",
+		"[formatter_json]",
+		"class = oslo_log.formatters.JSONFormatter",
+		"",
+	}, "\n")
 }
 
 // ConfigBaseLabelKey is the label key applied to immutable ConfigMaps created

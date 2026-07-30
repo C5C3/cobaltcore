@@ -7,6 +7,7 @@ package config
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -328,6 +329,51 @@ func TestMergeDefaults_doesNotMutateInputs(t *testing.T) {
 	g.Expect(defaults["DEFAULT"]["debug"]).To(Equal("false"))
 	g.Expect(userConfig["DEFAULT"]).NotTo(HaveKey("new_key"))
 	g.Expect(defaults["DEFAULT"]).NotTo(HaveKey("new_key"))
+}
+
+// TestRenderSortedPairs pins the deterministic wire format of the oslo
+// "key<sep>value" list: an unsorted render would rotate the immutable ConfigMap
+// and roll the Deployment on a reconcile that changed nothing.
+func TestRenderSortedPairs(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	g.Expect(RenderSortedPairs(nil, "=")).To(BeEmpty())
+	g.Expect(RenderSortedPairs(map[string]string{}, "=")).To(BeEmpty())
+
+	levels := map[string]string{
+		"sqlalchemy.engine": "WARNING",
+		"placement":         "DEBUG",
+		"oslo_policy":       "INFO",
+	}
+	want := "oslo_policy=INFO,placement=DEBUG,sqlalchemy.engine=WARNING"
+	for range 32 {
+		g.Expect(RenderSortedPairs(levels, "=")).To(Equal(want),
+			"Go map order must not reach the rendered value")
+	}
+
+	// The separator is a parameter: an oslo DictOpt uses ":".
+	g.Expect(RenderSortedPairs(map[string]string{"b": "2", "a": "1"}, ":")).To(Equal("a:1,b:2"))
+}
+
+// TestRenderLoggingConf pins the fileConfig shape Python's
+// logging.config.fileConfig accepts and the level indirection: the root logger
+// carries spec.logging.level while the handler stays at NOTSET, so a level
+// change is not silently shadowed by the handler.
+func TestRenderLoggingConf(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	conf := RenderLoggingConf("WARNING")
+	for _, section := range []string{
+		"[loggers]", "[handlers]", "[formatters]",
+		"[logger_root]", "[handler_stderr]", "[formatter_json]",
+	} {
+		g.Expect(conf).To(ContainSubstring(section))
+	}
+	g.Expect(conf).To(ContainSubstring("\nlevel = WARNING\nhandlers = stderr\n"))
+	g.Expect(strings.Count(conf, "level = NOTSET")).To(Equal(1))
+	// Only the root logger is declared: per-logger filtering is owned by
+	// [DEFAULT].default_log_levels, not by extra [logger_<name>] sections.
+	g.Expect(conf).To(ContainSubstring("[loggers]\nkeys = root\n"))
 }
 
 func TestInjectOsloPolicyConfig(t *testing.T) {
