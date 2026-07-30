@@ -31,7 +31,7 @@ LOCALBIN ?= $(CURDIR)/bin
 # Must be kept in sync with GOFUMPT_VERSION in .github/workflows/ci.yaml.
 # GOFUMPT resolves to the bin/ copy managed by install-gofumpt at the pinned
 # version, so a stale $PATH gofumpt can never silently format differently.
-GOFUMPT_VERSION ?= v0.10.0
+GOFUMPT_VERSION ?= v0.11.0
 GOFUMPT ?= $(LOCALBIN)/gofumpt
 
 # Kubernetes version for envtest binary downloads.
