@@ -105,9 +105,9 @@ type PlacementSpec struct {
 	KeystonePublicEndpoint string `json:"keystonePublicEndpoint,omitempty"`
 
 	// ServiceUser identifies the Keystone service account Placement
-	// authenticates as and the Secret holding its password. The username/domain
-	// fields are webhook-defaulted (placement / service / Default / Default) in a
-	// later commit; the password Secret reference is required.
+	// authenticates as and the Secret holding its password. The defaulting
+	// webhook fills the username/domain fields (placement / service / Default /
+	// Default); the password Secret reference is required.
 	ServiceUser ServiceUserSpec `json:"serviceUser"`
 
 	// Region is the Keystone region Placement authenticates against
@@ -196,8 +196,8 @@ type (
 // validate tokens and call other services, and references the Secret holding its
 // password. The name and domain fields are optional; the defaulting webhook
 // materializes them (username placement, projectName service, userDomainName and
-// projectDomainName Default) in a later commit, so a minimal CR need only supply
-// the password Secret reference.
+// projectDomainName Default), so a minimal CR need only supply the password
+// Secret reference.
 type ServiceUserSpec struct {
 	// Username is the Keystone username Placement authenticates as
 	// ([keystone_authtoken] username). Webhook-defaulted to "placement".
@@ -220,7 +220,7 @@ type ServiceUserSpec struct {
 	ProjectDomainName string `json:"projectDomainName,omitempty"`
 
 	// SecretRef references the Secret holding the service user's password. The
-	// key is webhook-defaulted to "password" in a later commit.
+	// key is webhook-defaulted to "password".
 	SecretRef commonv1.SecretRefSpec `json:"secretRef"`
 }
 
