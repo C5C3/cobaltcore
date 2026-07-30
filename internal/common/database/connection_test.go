@@ -82,6 +82,20 @@ func TestConnectionEnvVar(t *testing.T) {
 	g.Expect(e.ValueFrom.SecretKeyRef.Key).To(Equal(ConnectionSecretKey))
 }
 
+func TestConnectionEnvVarForSection(t *testing.T) {
+	g := NewWithT(t)
+	// Placement keeps its database options in [placement_database], so the
+	// oslo.config override must be named after that section.
+	e := ConnectionEnvVarForSection("placement-sample", "placement_database")
+	g.Expect(e.Name).To(Equal("OS_PLACEMENT_DATABASE__CONNECTION"))
+	g.Expect(e.ValueFrom.SecretKeyRef.Name).To(Equal("placement-sample-db-connection"))
+	g.Expect(e.ValueFrom.SecretKeyRef.Key).To(Equal(ConnectionSecretKey))
+
+	// The legacy helper is exactly the "database"-section specialisation, so
+	// existing callers keep their OS_DATABASE__CONNECTION spelling.
+	g.Expect(ConnectionEnvVar(connInstance)).To(Equal(ConnectionEnvVarForSection(connInstance, "database")))
+}
+
 func TestTLSFilePaths(t *testing.T) {
 	g := NewWithT(t)
 	p := TLSFilePaths("/etc/keystone/db-tls/")
