@@ -14,11 +14,13 @@ import "github.com/c5c3/forge/internal/common/config"
 //
 //   - The registry is static. Conditionally rendered keys — the
 //     [keystone_authtoken] region_name / memcached_servers pair, which
-//     keystoneauth.Section emits only for a CR that configures them, and the
-//     [oslo_policy] policy_file, which is injected only while
-//     spec.policyOverrides is set — are registered unconditionally, because the
-//     registry documents "this key is not the user's to set", not "this key is
-//     currently rendered".
+//     keystoneauth.Section emits only for a CR that configures them, the
+//     [DEFAULT] default_log_levels / log_config_append pair, which the renderer
+//     emits only for a CR that sets spec.logging.perLoggerLevels or selects the
+//     json format, and the [oslo_policy] policy_file, which is injected only
+//     while spec.policyOverrides is set — are registered unconditionally,
+//     because the registry documents "this key is not the user's to set", not
+//     "this key is currently rendered".
 //
 //   - An entry is Reported (honored-but-surfaced through the ExtraConfigHealthy
 //     condition) unless honoring the override would already have done the damage
@@ -36,6 +38,8 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// [DEFAULT]
 	{Section: "DEFAULT", Key: "use_stderr", OwnedBy: "operator-computed"},
 	{Section: "DEFAULT", Key: "debug", OwnedBy: "operator-computed"},
+	{Section: "DEFAULT", Key: "default_log_levels", OwnedBy: "operator-computed"},
+	{Section: "DEFAULT", Key: "log_config_append", OwnedBy: "operator-computed"},
 
 	// [api] — placement reads auth_strategy from its own [api] section rather
 	// than from [DEFAULT], where the option is deprecated.

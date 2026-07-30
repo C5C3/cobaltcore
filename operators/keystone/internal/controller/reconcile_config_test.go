@@ -1151,8 +1151,8 @@ func TestReconcileConfig_LoggingPerLoggerLevelsEmptyOmitsKey(t *testing.T) {
 // invariant here is a structural contract — it pins
 // `spec.logging.perLoggerLevels` (rendered as [DEFAULT].default_log_levels)
 // as the single config surface that owns per-logger filtering. Allowing an
-// explicit [logger_<name>] section in renderLoggingConf would split that
-// responsibility across two surfaces (logging.conf fileConfig sections vs
+// explicit [logger_<name>] section in config.RenderLoggingConf would split
+// that responsibility across two surfaces (logging.conf fileConfig sections vs
 // keystone.conf [DEFAULT].default_log_levels) regardless of which one
 // oslo.log applies last, so this test catches the structural drift here
 // rather than only at e2e time (+).

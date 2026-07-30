@@ -7,8 +7,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"maps"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -171,7 +169,7 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, glance *glancev1
 		data["policy.yaml"] = policyYAML
 	}
 	if logging.Format == "json" {
-		data["logging.conf"] = renderLoggingConf(logging.Level)
+		data["logging.conf"] = config.RenderLoggingConf(logging.Level)
 	}
 
 	configMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, glance,
@@ -314,7 +312,7 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 	}
 	// PerLoggerLevels render into oslo.log's default_log_levels CSV; empty omits
 	// the key so oslo.log keeps its compiled-in defaults.
-	if v := renderSortedPairs(logging.PerLoggerLevels, "="); v != "" {
+	if v := config.RenderSortedPairs(logging.PerLoggerLevels, "="); v != "" {
 		defaults["DEFAULT"]["default_log_levels"] = v
 	}
 	// format=json ships a logging.conf and points oslo.log at it via
@@ -362,7 +360,7 @@ func operatorDefaults(glance *glancev1alpha1.Glance, projection backendsProjecti
 	// empty value, which is the explicit opt-in to injecting for every role.
 	if importPlugins.InjectMetadata != nil {
 		defaults["inject_metadata_properties"] = map[string]string{
-			"inject":            renderSortedPairs(importPlugins.InjectMetadata.Properties, ":"),
+			"inject":            config.RenderSortedPairs(importPlugins.InjectMetadata.Properties, ":"),
 			"ignore_user_roles": strings.Join(importPlugins.InjectMetadata.IgnoreUserRoles, ","),
 		}
 	}
@@ -741,54 +739,4 @@ func renderPortList(ports []int32) string {
 		items = append(items, fmt.Sprintf("%d", port))
 	}
 	return renderBoundedList(items)
-}
-
-// renderSortedPairs joins a map into the comma-separated "key<sep>value" list an
-// oslo option consumes — sep is "=" for oslo.log's default_log_levels CSV, ":"
-// for an oslo DictOpt. The keys are sorted alphabetically so the rendered config
-// — and therefore the immutable ConfigMap content hash — is independent of Go's
-// randomized map iteration order; unsorted, a reconcile that changed nothing
-// would rotate the ConfigMap and roll the Deployment. An empty map renders "".
-func renderSortedPairs(m map[string]string, sep string) string {
-	pairs := make([]string, 0, len(m))
-	for _, k := range slices.Sorted(maps.Keys(m)) {
-		pairs = append(pairs, k+sep+m[k])
-	}
-	return strings.Join(pairs, ",")
-}
-
-// renderLoggingConf builds the logging.conf written to loggingConfFilePath and
-// consumed by oslo.log via log_config_append when spec.logging.format ==
-// "json". It wires oslo_log.formatters.JSONFormatter to a stderr StreamHandler
-// so the Glance API container emits one JSON record per log line. The
-// six-section shape is the minimal file Python's logging.config.fileConfig
-// grammar accepts. It mirrors keystone's renderLoggingConf.
-func renderLoggingConf(level string) string {
-	return strings.Join([]string{
-		"[loggers]",
-		"keys = root",
-		"",
-		"[handlers]",
-		"keys = stderr",
-		"",
-		"[formatters]",
-		"keys = json",
-		"",
-		"[logger_root]",
-		"level = " + level,
-		"handlers = stderr",
-		"",
-		"[handler_stderr]",
-		"class = StreamHandler",
-		"args = (sys.stderr,)",
-		// level = NOTSET defers filtering to [logger_root]: the handler emits
-		// every record the root logger forwards. Hardcoding the root level here
-		// would silently shadow spec.logging.level; do not "fix" this.
-		"level = NOTSET",
-		"formatter = json",
-		"",
-		"[formatter_json]",
-		"class = oslo_log.formatters.JSONFormatter",
-		"",
-	}, "\n")
 }
