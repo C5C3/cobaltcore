@@ -11,6 +11,7 @@ import (
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	"github.com/c5c3/forge/internal/common/instrumentation"
+	placementmetrics "github.com/c5c3/forge/operators/placement/internal/metrics"
 )
 
 // subReconcilerConditionTypes maps a sub_reconciler label value to the
@@ -58,14 +59,16 @@ var subReconcilerConditionTypes = map[string]string{
 var instrumenter = instrumentation.NewSubReconcilerInstrumenter("placement_operator", subReconcilerConditionTypes)
 
 // RegisterMetrics exposes the operator's Prometheus collectors on the
-// controller-runtime registry: currently the shared sub-reconciler
-// duration/error vectors. The per-CR db-sync collectors land with the database
-// step in a later commit and register here alongside them. It returns an error
-// on a duplicate registration rather than panicking mid-reconcile, so main.go
-// can fail startup cleanly. Call it exactly once during operator setup.
+// controller-runtime registry: the shared sub-reconciler duration/error vectors
+// and the per-CR db-sync collectors. It returns an error on a duplicate
+// registration rather than panicking mid-reconcile, so main.go can fail startup
+// cleanly. Call it exactly once during operator setup.
 func RegisterMetrics() error {
 	if err := instrumenter.Register(ctrlmetrics.Registry); err != nil {
 		return fmt.Errorf("registering placement_operator sub-reconciler metrics: %w", err)
+	}
+	if err := placementmetrics.Register(); err != nil {
+		return fmt.Errorf("registering placement_operator db-sync metrics: %w", err)
 	}
 	return nil
 }
