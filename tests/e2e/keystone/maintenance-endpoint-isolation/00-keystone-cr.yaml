@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the maintenance endpoint-isolation E2E test.
+# Managed mode with a trust flush that fires every minute, so the sampling
+# window of the test spans at least one CronJob run.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-endpoint-isolation
+  namespace: openstack
+spec:
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_endpoint_isolation
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  trustFlush:
+    schedule: "* * * * *"
+    suspend: false
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne

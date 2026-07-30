@@ -1,0 +1,190 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for maintenance-pod isolation from the API Service.
+# Verifies:
+#   - The EndpointSlices of the API Service never list more addresses than the
+#     replica count while a maintenance CronJob runs, i.e. a trust-flush pod
+#     never becomes a backend of the API Service
+#   - The API Service is never left without backends: the full replica count is
+#     observed at least once, so an empty selector cannot pass the upper bound
+#   - The sampling window really overlaps a trust flush, proven by a live
+#     trust-flush pod holding a pod IP — the exact state that used to land in
+#     the EndpointSlices
+#
+# The CR schedules the trust flush every minute so the check is deterministic.
+# The same regression was previously only reachable by coincidence: the
+# rolling-update-zero-downtime suite caught it whenever its 60 s load window
+# happened to overlap the top of an hour, which is roughly 2 % of runs.
+#
+# This suite is keystone-only on purpose. The label mechanism lives in the
+# shared naming package and is unit-tested per operator (glance db-purge,
+# horizon dashboard); one cluster-level suite is enough to prove the
+# EndpointSlice behaviour the unit tests cannot observe.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-maintenance-endpoint-isolation
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply Keystone CR with an every-minute trust flush ───────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-endpoint-isolation
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== All pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Failed Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Sample the API Service endpoints across a trust-flush run ───
+  # The CR is never patched after Step 1: any spec change would roll the
+  # Deployment and put a second API pod into the EndpointSlices, which the
+  # address count below would report as a failure.
+  - try:
+    - script:
+        timeout: 180s
+        content: |
+          set -eu
+
+          SERVICE=keystone-endpoint-isolation
+          CRONJOB=keystone-endpoint-isolation-trust-flush
+
+          # Read the bound off the live Deployment rather than restating the
+          # fixture: a copy here would silently stop matching the CR.
+          REPLICAS=$(kubectl get deploy "$SERVICE" -n "$NAMESPACE" \
+            -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
+          [ -n "$REPLICAS" ] || { echo "FAIL: could not read spec.replicas of Deployment $SERVICE"; exit 1; }
+
+          # 90 s over an every-minute schedule covers at least one CronJob
+          # firing; the SAW_FLUSH_POD flag below turns that from an expectation
+          # into an observation.
+          WINDOW=90
+          DEADLINE=$(( $(date +%s) + WINDOW ))
+          SAW_FLUSH_POD=false
+          SAW_FULL=false
+
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            # Every non-terminating address of every slice counts, not just the
+            # ready ones: a maintenance pod that satisfies the Service selector
+            # is published as an address as soon as it is scheduled, and a Job
+            # pod carries no readiness probe, so it is Ready from its first
+            # moment. Counting only ready addresses would hide exactly the
+            # state this suite is about. Terminating addresses are excluded so
+            # an ordinary API-pod replacement — which briefly puts the old and
+            # the new address in the slice — is not misreported as a
+            # maintenance-pod leak. A transient API-server error yields an
+            # empty COUNT; that sample counts as no observation and the next
+            # tick retries.
+            COUNT=$(kubectl get endpointslices -n "$NAMESPACE" \
+              -l kubernetes.io/service-name="$SERVICE" -o json 2>/dev/null \
+              | jq '[.items[].endpoints[]?
+                     | select((.conditions.terminating // false) == false)
+                     | .addresses[]?] | length' 2>/dev/null || true)
+            [ -n "$COUNT" ] || COUNT=0
+
+            if [ "$COUNT" -gt "$REPLICAS" ]; then
+              echo "FAIL: API Service $SERVICE has $COUNT endpoint addresses, expected at most $REPLICAS"
+              echo "=== EndpointSlices ==="
+              kubectl get endpointslices -n "$NAMESPACE" \
+                -l kubernetes.io/service-name="$SERVICE" -o yaml 2>&1 || true
+              echo "=== Pods ==="
+              kubectl get pods -n "$NAMESPACE" \
+                -l app.kubernetes.io/instance="$SERVICE" -o wide 2>&1 || true
+              exit 1
+            fi
+
+            # The upper bound alone is satisfied by an empty Service, which is
+            # the opposite failure: a selector that matches no API pod at all.
+            if [ "$COUNT" -eq "$REPLICAS" ]; then
+              SAW_FULL=true
+            fi
+
+            # A trust-flush pod holding a pod IP is exactly the state that used
+            # to land in the EndpointSlices, so it is what the sampling above
+            # has to overlap. Completed pods are excluded: they keep their IP
+            # in status but the endpoints controller ignores them, so a
+            # leftover from an earlier run would prove nothing.
+            if [ "$SAW_FLUSH_POD" = false ]; then
+              LIVE=$(kubectl get pods -n "$NAMESPACE" \
+                -l app.kubernetes.io/instance="$SERVICE",app.kubernetes.io/component=trust-flush \
+                -o json 2>/dev/null \
+                | jq '[.items[]
+                       | select(.status.phase == "Running" or .status.phase == "Pending")
+                       | select((.status.podIP // "") != "")] | length' 2>/dev/null || true)
+              if [ "${LIVE:-0}" -gt 0 ]; then
+                SAW_FLUSH_POD=true
+                echo "Observed $LIVE live trust-flush pod(s) holding a pod IP"
+              fi
+            fi
+
+            sleep 1
+          done
+
+          if [ "$SAW_FULL" = false ]; then
+            echo "FAIL: API Service $SERVICE never had its full $REPLICAS endpoint address(es) during the ${WINDOW}s window"
+            echo "The selector matches no API pod, so the upper bound above proves nothing."
+            echo "=== Service ==="
+            kubectl get svc "$SERVICE" -n "$NAMESPACE" -o yaml 2>&1 || true
+            echo "=== EndpointSlices ==="
+            kubectl get endpointslices -n "$NAMESPACE" \
+              -l kubernetes.io/service-name="$SERVICE" -o yaml 2>&1 || true
+            exit 1
+          fi
+
+          if [ "$SAW_FLUSH_POD" = false ]; then
+            echo "FAIL: no live trust-flush pod observed during the ${WINDOW}s sampling window"
+            echo "The window did not overlap a trust-flush run, so the endpoint count above proves nothing."
+            echo "=== CronJob ==="
+            kubectl get cronjob "$CRONJOB" -n "$NAMESPACE" -o wide 2>&1 || true
+            echo "=== Jobs ==="
+            kubectl get jobs -n "$NAMESPACE" -o wide 2>&1 || true
+            echo "=== trust-flush pods ==="
+            kubectl get pods -n "$NAMESPACE" \
+              -l app.kubernetes.io/component=trust-flush -o wide 2>&1 || true
+            exit 1
+          fi
+
+          echo "PASS: API Service $SERVICE kept exactly its $REPLICAS backend(s) across at least one live trust-flush pod"
+    catch:
+    - script:
+        content: |
+          echo "=== EndpointSlices ==="
+          kubectl get endpointslices -n $NAMESPACE \
+            -l kubernetes.io/service-name=keystone-endpoint-isolation -o yaml 2>&1 || true
+          echo "=== Pods ==="
+          kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/instance=keystone-endpoint-isolation -o wide 2>&1 || true
+          echo "=== CronJob describe ==="
+          kubectl describe cronjob keystone-endpoint-isolation-trust-flush -n $NAMESPACE 2>&1 | tail -40 || true
+          echo "=== Jobs ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
