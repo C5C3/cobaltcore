@@ -18,17 +18,20 @@ build/CI/config seams that are still enumerated per operator.
 ## Shared packages to consume
 
 Build the operator on the shared scaffolding rather than hand-rolling copies.
-The keystone operator is the reference consumer for every package listed.
+The keystone operator is the reference consumer for most packages listed (for
+`pysettings` it is the horizon operator).
 
 | Package | Provides |
 | --- | --- |
 | `internal/common/types` | Shared CRD spec types (`DatabaseSpec`, `CacheSpec`, `GatewaySpec`, `ImageSpec`, `DeploymentSpec`, `AutoscalingSpec`, `NetworkPolicySpec`, `LoggingSpec`, ...) with their CEL rules and `Default()` methods |
 | `internal/common/naming` | Label keys and `CommonLabels`/`SelectorLabels`, the workload naming convention (and the cross-service endpoint contract, see below); the sub-resource name is the bare CR name, so each operator keeps its own one-line helper |
 | `internal/common/reconcile` | Table-driven pipeline (`Step`/`RunPipeline`), parallel groups (`ParallelStep`/`RunParallelGroup`), non-short-circuiting sequential groups (`RunSequentialGroup`), `ShortestRequeue`, `SetAggregateReady`, the no-op-skipping `UpdateStatus`, `EnsureFinalizer`, the shared requeue constants (`RequeueDeploymentPolling`/`RequeueSecretPolling`), the `Skeleton[T,S]` controller-skeleton glue (Ready aggregation, status write, `MarkFailed`, parallel-group), and `ProjectChild`/`DeleteOrphanedChild` for orchestrating operators that project child CRs |
+| `internal/common/conditions` | `SetCondition` (a `LastTransitionTime`-preserving upsert), `GetCondition`, `IsReady`, `AllTrue` |
 | `internal/common/watch` | `CRUpdatePredicate` for the `For(...)` watch, `SecretToOwnersMapper` + `RegisterSecretNameIndex`, `StoreRefFanOut` (enqueues only the CRs whose effective `spec.secretStoreRef` matches a changed cluster-scoped `ClusterSecretStore` or namespaced `SecretStore`), `ClusterRefMapper` (database-cluster reference to owning CRs) |
 | `internal/common/bootstrap` | `Run`/`ManagerConfig` manager bootstrap, `NewScheme` scheme assembly (client-go baseline first, then the per-operator extras), `ControllerOptions` (concurrency + tuned rate limiter), `DetectOperatorNamespace` |
 | `internal/common/instrumentation` | Sub-reconciler duration/error metrics; declare a `NewSubReconcilerInstrumenter("<op>_operator", conditionTypes)` in the operator and pass its bound `Instrument` method to the reconcile pipeline, then register it from a `RegisterMetrics()` wired into `main.go` (registration returns an error instead of panicking) |
 | `internal/common/deployment` | SSA ensure primitives, `BuildWorkload`/`BuildService` (shared pod-template and Service assembly), `RestrictedSecurityContext`, PDB/HPA builders, `ReconcileHPA` flow, replica normalization, pod-knob default helpers |
+| `internal/common/apply` | The SSA apply primitives under every ensure helper: `EnsureObject` (owner-referenced) and `EnsureUnownedObject` |
 | `internal/common/networkpolicy` | `Ensure`/`Delete`, the auto-derived egress rules (`DNSEgressRule`/`DatabaseEgressRule`/`CacheEgressRule`/`CacheEgressPorts`), `IngressPeers`, and the three-path `Reconcile` flow with the fail-closed empty-ingress guard |
 | `internal/common/gateway` | `IsGVKAvailable` CRD probe, HTTPRoute builder/acceptance/ensure/delete over the shared `GatewaySpec`, and the three-path `ReconcileHTTPRoute` flow |
 | `internal/common/secrets` | ESO primitives, `OpenBaoClusterStoreName`, per-CR store-ref resolution (`EffectiveStoreRef`, `IsStoreRefReady`, `ESOSecretStoreRef`, `PushSecretStoreRefs`), the `GateSyncedSecret` ladder, the `GateStoreReady` store-ref gate and `GateCredential`/`GateCredentials` condition-reporting loop |
@@ -36,10 +39,15 @@ The keystone operator is the reference consumer for every package listed.
 | `internal/common/webhook` | `NoopDeleteValidator` (the never-invoked `ValidateDelete` embed for webhooks that guard create and update only) |
 | `internal/common/database`, `internal/common/cache` | MariaDB CR apply, `BuildDatabase`/`BuildUser`/`BuildGrant` provisioning builders, host/port/username resolution, pymysql DSN + TLS params + rollout digest, memcache server resolution; plus the reconcile flows layered on top: `ReconcileProvision` (cluster gate + Database/User/Grant ensure + Dynamic-credentials skip), `ReconcileSyncJobs` (db-sync + schema-check via the parameterized `JobSetParams` table, `InstalledRelease` tracking), `ReconcileConnectionSecret` + `ConnectionEnvVar`/`ConnectionSecretName` (derived `<name>-db-connection` Secret + DSN digest), and `FinalizeResources`/`HasLiveResources` finalizer cleanup |
 | `internal/common/rotation` | Split-compute-write credential rotation: `EnsureStagingSecret`, `CommitStaged`/`CommitSpec`, `EnsureRBAC`, `CompletedAt`/`ObserveAge`, `BuildCronJob`/`CronJobParams` |
+| `internal/common/tls` | `EnsureCertificate` for cert-manager Certificate objects |
 | `internal/common/release` | OpenStack release parsing and upgrade/downgrade classification |
 | `internal/common/healthcheck` | `HTTPDoer` seam, probe-error classifier, TTL probe cache, the shared timing constants, and the `ReconcileProbe` flow |
 | `internal/common/job` | `RunJob`/`RunJobWithRerunKey`/`EnsureCronJob`/`DeleteCronJob`, the `BuildMigrationJob` skeleton, and the at-most-once `RecordJobTerminalState` recorder |
-| `internal/common/config` | oslo INI rendering + immutable-ConfigMap lifecycle (see the design decisions below for non-INI services) |
+| `internal/common/config` | oslo INI rendering + immutable-ConfigMap lifecycle, the extraConfig overlay (`MergeDefaults`) with owned-key health tracking, and the option-catalog machinery (`ParseOptionCatalog`, `MustParseEmbeddedCatalogs`); see the design decisions below for non-INI services |
+| `internal/common/keystoneauth` | `[keystone_authtoken]` section rendering without the password (`Section`) plus the `OS_KEYSTONE_AUTHTOKEN__PASSWORD` env-var injection (`PasswordEnvVar`) |
+| `internal/common/policy` | oslo policy handling: `LoadPolicyFromConfigMap`, `RenderPolicyYAML`, `MergePolicies`, `ValidatePolicyRules` |
+| `internal/common/plugins` | Paste-pipeline and middleware/plugin config rendering for services with a paste-deploy stack |
+| `internal/common/pysettings` | Python-settings rendering for non-INI services (Django `local_settings.py`); see the design decisions below |
 | `internal/common/testutil/envtest` | envtest bootstrap, `BuildScheme`, `CommonExternalSchemes`, `CommonFakeCRDDirs`, `StartManagedEnvTest`, `SetupEnvTestWithCRDs` (webhook-less), `SetupUnstartedManager` |
 
 ## Residual touch list
@@ -47,14 +55,14 @@ The keystone operator is the reference consumer for every package listed.
 Everything below is still enumerated per operator. Work through it top to
 bottom when scaffolding `operators/<op>/`:
 
-- **`go.work`** — add `./operators/<op>`; keep the Go directive, toolchain, and
-  the controller-runtime/k8s.io dependency versions in lockstep with the other
+- **`go.work`** — add `./operators/<op>`; keep the Go directive and the
+  controller-runtime/k8s.io dependency versions in lockstep with the other
   modules (see [Dependency Management](./dependency-management.md)).
 - **`operators/Dockerfile`** — the parameterized Dockerfile builds every
   operator via `--build-arg OPERATOR=<op>`; add the new module's
   `go.mod`/`go.sum` and source `COPY` lines (two lines total).
-- **`Makefile`** — extend `OPERATORS ?= keystone c5c3`; every build/test/
-  generate/lint target iterates it, provided the chart lives at
+- **`Makefile`** — append the operator to the `OPERATORS ?=` list; every
+  build/test/generate/lint target iterates it, provided the chart lives at
   `operators/<op>/helm/<op>-operator/`.
 - **Helm chart** — scaffold `operators/<op>/helm/<op>-operator/` consuming the
   `operator-library` chart: every shared manifest (deployment, certificate,
@@ -62,9 +70,20 @@ bottom when scaffolding `operators/<op>/`:
   webhook-configuration) is a one-line `include`; per-operator content is
   `Chart.yaml`, `values.yaml`, the `<op>-operator.rbacRules` helper, and the
   helm-unittest suite.
+- **`.gitignore`** — add `operators/<op>/helm/<op>-operator/charts/` (bare
+  pattern, no leading slash) so the `operator-library` tarball vendored by
+  `make helm-deps` stays untracked.
 - **`hack/gen-helm-values-schema.py`** — charts are discovered from the
   directory layout; add the new chart's `WEBHOOK_ENABLED_DESCRIPTIONS` entry
   (the generator fails loudly without it), then run `make gen-helm-schema`.
+- **Option catalog** (oslo-INI services only) — map the service to its
+  upstream oslo-config-generator config in `hack/gen-option-catalog.sh`, add
+  it to the service loops of the `gen-option-catalogs` and
+  `verify-option-catalogs` Makefile targets, and commit the generated
+  per-release catalogs under `operators/<op>/api/v1alpha1/catalogs/` with a
+  `go:embed` accessor. The validating webhook checks `spec.extraConfig`
+  against these catalogs; both targets need docker and the published service
+  images.
 - **`.github/workflows/ci.yaml`** — the biggest surface: add the operator to
   the paths-filter groups, `ALL_OPERATORS` and the `FILTER_<op>` env var, the
   unit/integration test matrices, the helm-validate chart loops, and the
@@ -73,15 +92,32 @@ bottom when scaffolding `operators/<op>/`:
   image (the shared `operators/Dockerfile` is already wired); only new service
   images under `images/` need matrix entries.
 - **`.github/workflows/cleanup-images.yaml`** — add `<op>-operator` to the
-  `cleanup-operator-images` and `cleanup-e2e-stale-tags` matrices.
+  `cleanup-operator-images` matrix, and both `<op>-operator` and `<op>` to
+  the `cleanup-e2e-stale-tags` matrix. Only the `cleanup-service-images`
+  matrix is guarded by a test
+  (`tests/container-images/verify_release_config.sh`); the other two are
+  checked by the service-parity audit alone.
 - **`.codecov.yml`** — add the per-operator `unit-<op>`/`integration-<op>`
   flag blocks; the components section auto-scales via `operators/*` globs.
+- **Dashboards** — ship `operators/<op>/dashboards/<op>-operator.json` with a
+  `dashboard_test.go` asserting the JSON parses and every metric a panel
+  references is registered by the operator. Only the keystone dashboard is
+  staged into the kind Prometheus stack; no deploy wiring is needed.
 - **Tests** — `operators/<op>/internal/testutil/` wraps
   `internal/common/testutil/envtest` with the op-local CRD/webhook paths and
   scheme list; E2E suites live under `tests/e2e/<op>/` (one directory per
-  feature, mirroring `tests/e2e/keystone/`).
+  feature, mirroring `tests/e2e/keystone/`), plus at least one chaos suite
+  under `tests/e2e-chaos/`.
+- **Deploy stack** — a flux HelmRelease under `deploy/flux-system/releases/`
+  with the matching kind-overlay suspend patch, plus the literal lists in
+  `hack/deploy-infra.sh` (the un-suspend step and the ServiceMonitor toggle)
+  and the target tuple in `hack/refresh-operator-image-digests.sh`. An
+  operator missing from the un-suspend list wedges the ControlPlane cache
+  sync.
 - **Docs** — a CRD reference and reconciler reference under
-  `docs/reference/<op>/`, wired into `docs/.vitepress/config.ts`.
+  `docs/reference/<op>/`, wired into `docs/.vitepress/config.ts`, plus a
+  naming-convention test in `tests/unit/docs/` (discovered by glob, so
+  nothing fails while it is missing).
 
 ## Design decisions the shared scaffolding encodes
 
@@ -116,6 +152,5 @@ new operators build on them rather than reopening them:
   `internal/common/config` renders oslo INI only and stays that way. A service
   that renders Python settings (e.g. Horizon's Django `local_settings.py`)
   gets a separate shared renderer package rather than bolting Python emission
-  onto the INI renderer. `internal/common/pysettings` now exists — implemented
-  with its first consumer, the horizon-operator, which is also the checklist's
-  first full second-operator walk-through.
+  onto the INI renderer. `internal/common/pysettings` now exists, implemented
+  with its first consumer, the horizon-operator.
