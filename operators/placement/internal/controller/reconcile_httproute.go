@@ -37,6 +37,15 @@ func placementStatusEndpoint(placement *placementv1alpha1.Placement) string {
 	if placement.Spec.Gateway != nil {
 		return fmt.Sprintf("https://%s/", placement.Spec.Gateway.Hostname)
 	}
+	return internalPlacementURL(placement)
+}
+
+// internalPlacementURL returns the cluster-local Placement API URL used by the
+// operator's health check. Unlike placementStatusEndpoint, this never depends on
+// spec.gateway: the operator must verify API readiness without relying on
+// external DNS, TLS trust for Gateway-terminated certs, or the Gateway data
+// plane being healthy.
+func internalPlacementURL(placement *placementv1alpha1.Placement) string {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d/", subResourceName(placement), placement.Namespace, placementAPIPort)
 }
 

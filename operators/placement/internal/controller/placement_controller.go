@@ -142,12 +142,18 @@ func markConfigFailed(placement *placementv1alpha1.Placement, err error) {
 }
 
 // PlacementReconciler reconciles a Placement object. Its fields mirror the
-// sibling service reconcilers' core set; the workload sub-reconcilers that read
-// the Gateway availability flag and the probe cache land in later commits.
+// sibling service reconcilers' core set.
 type PlacementReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+
+	// OperatorNamespace is the Namespace the operator Pod runs in (resolved at
+	// startup by bootstrap.DetectOperatorNamespace). The networkpolicy step
+	// appends an ingress peer for this Namespace so the operator's own health
+	// check can reach the Placement API. Empty when the namespace could not be
+	// determined, in which case no operator-namespace peer is added.
+	OperatorNamespace string
 
 	// MaxConcurrentReconciles bounds how many Placement CRs reconcile
 	// concurrently. It is threaded from the --max-concurrent-reconciles flag and
@@ -238,68 +244,103 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// there does not race a status write.
 	statusBefore := placement.Status.DeepCopy()
 
-	// Each step runs in dependency order; the first to return a non-zero result
-	// or an error short-circuits the chain and funnels through updateStatus.
-	//
-	// configMapName names the rendered config ConfigMap produced by
-	// reconcileConfig; the database step mounts it in the migration Job and the
-	// deployment step mounts it in the API pods. authtokenDigest and dsnDigest
-	// are the content digests of the service-user password and the assembled DSN;
-	// the deployment step stamps them into pod-template annotations so a rotated
-	// credential rolls the pods.
-	var (
-		configMapName   string
-		authtokenDigest string
-		dsnDigest       string
-	)
-	pipeline := []commonreconcile.Step{
-		{Name: "Secrets", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			var (
-				res ctrl.Result
-				err error
-			)
-			res, authtokenDigest, err = r.reconcileSecrets(ctx, &placement)
+	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, r.pipelineSteps(&placement))
+	return r.updateStatus(ctx, &placement, statusBefore, result, err)
+}
+
+// pipelineSteps returns the ordered sub-reconciler pipeline for one Placement.
+// Each step runs in dependency order; the first to return a non-zero result or
+// an error short-circuits the chain and funnels through updateStatus.
+//
+// It is a method rather than a literal inside Reconcile so the drift guard can
+// enumerate the step names without running a reconcile.
+func (r *PlacementReconciler) pipelineSteps(placement *placementv1alpha1.Placement) []commonreconcile.Step {
+	// The values one sub-reconciler hands to a later one within a single
+	// reconcile pass, captured by the step closures. configMapName names the
+	// rendered config ConfigMap produced by reconcileConfig; the database step
+	// mounts it in the migration Job and the deployment step mounts it in the API
+	// pods. authtokenDigest and dsnDigest are the content digests of the
+	// service-user password and the assembled DSN; the deployment step stamps
+	// them into pod-template annotations so a rotated credential rolls the pods.
+	var configMapName, authtokenDigest, dsnDigest string
+
+	return []commonreconcile.Step{
+		{Name: "Secrets", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
+			res, authtokenDigest, err = r.reconcileSecrets(ctx, placement)
 			return res, err
 		}},
 		// reconcileDBConnectionSecret materialises the DB URL into the derived
 		// <placement.Name>-db-connection Secret. It runs after Secrets (upstream
 		// credentials must be synced) and before Config; failures set
 		// SecretsReady=False, the same condition reconcileSecrets uses.
-		{Name: "DBConnectionSecret", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			var (
-				res ctrl.Result
-				err error
-			)
-			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, &placement)
+		{Name: "DBConnectionSecret", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
+			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, placement)
 			return res, err
 		}},
 		// reconcileConfig renders placement.conf into an immutable ConfigMap. It
 		// self-marks SecretsReady=False on failure via markConfigFailed, so the
 		// wrapper only threads the result.
-		{Name: "Config", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			var (
-				res ctrl.Result
-				err error
-			)
-			res, configMapName, err = r.reconcileConfig(ctx, &placement)
+		{Name: "Config", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
+			res, configMapName, err = r.reconcileConfig(ctx, placement)
 			return res, err
 		}},
 		// reconcileDatabase provisions the schema, gates the requested OpenStack
 		// release against the installed one, and runs the db-sync Job against the
 		// rendered config.
 		{Name: "Database", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDatabase(ctx, &placement, configMapName)
+			return r.reconcileDatabase(ctx, placement, configMapName)
 		}},
 		// reconcileDeployment projects the API Deployment, its Service, and the
 		// PodDisruptionBudget. It runs after Database so the pods only start once
 		// the schema they query exists.
 		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDeployment(ctx, &placement, configMapName, dsnDigest, authtokenDigest)
+			return r.reconcileDeployment(ctx, placement, configMapName, dsnDigest, authtokenDigest)
+		}},
+		// Once the Deployment/Service outputs are in place, HTTPRoute,
+		// HealthCheck, HPA, and NetworkPolicy have no inter-dependency and run
+		// concurrently. Each member sets exactly one condition type; the group
+		// self-instruments its members, so this step carries no sub_reconciler
+		// name.
+		{Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileParallelGroup(ctx, placement, r.parallelSteps())
 		}},
 	}
+}
 
-	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
-	return r.updateStatus(ctx, &placement, statusBefore, result, err)
+// parallelSteps returns the members of the post-deployment parallel group. Each
+// member sets exactly one condition type and receives its own copy of the CR, so
+// none of them reads a value another one produces.
+func (r *PlacementReconciler) parallelSteps() []commonreconcile.ParallelStep[*placementv1alpha1.Placement] {
+	return []commonreconcile.ParallelStep[*placementv1alpha1.Placement]{
+		{
+			Name:          "HTTPRoute",
+			ConditionType: conditionTypeHTTPRouteReady,
+			Fn: func(ctx context.Context, p *placementv1alpha1.Placement) (ctrl.Result, error) {
+				return r.reconcileHTTPRoute(ctx, p)
+			},
+		},
+		{
+			Name:          "HealthCheck",
+			ConditionType: conditionTypePlacementAPIReady,
+			Fn: func(ctx context.Context, p *placementv1alpha1.Placement) (ctrl.Result, error) {
+				return r.reconcileHealthCheck(ctx, p)
+			},
+		},
+		{
+			Name:          "HPA",
+			ConditionType: "HPAReady",
+			Fn: func(ctx context.Context, p *placementv1alpha1.Placement) (ctrl.Result, error) {
+				return r.reconcileHPA(ctx, p)
+			},
+		},
+		{
+			Name:          "NetworkPolicy",
+			ConditionType: conditionTypeNetworkPolicyReady,
+			Fn: func(ctx context.Context, p *placementv1alpha1.Placement) (ctrl.Result, error) {
+				return r.reconcileNetworkPolicy(ctx, p)
+			},
+		},
+	}
 }
 
 // reconcileDelete drives the finalizer cleanup when the Placement CR is being
@@ -365,6 +406,20 @@ func (r *PlacementReconciler) updateStatus(ctx context.Context, placement *place
 // sub-condition vocabulary.
 func setReadyCondition(placement *placementv1alpha1.Placement) {
 	placementSkeleton.SetReady(placement)
+}
+
+// reconcileParallelGroup runs the given sub-reconcilers concurrently, delegating
+// to the shared skeleton: each member operates on its own DeepCopy of the
+// Placement CR, conditions from every member (including those that succeeded
+// before a peer failed) are merged back into the primary placement, and on
+// success the shortest non-zero RequeueAfter is returned. Members instrument
+// individually via instrumenter.Instrument.
+func (r *PlacementReconciler) reconcileParallelGroup(
+	ctx context.Context,
+	placement *placementv1alpha1.Placement,
+	subs []commonreconcile.ParallelStep[*placementv1alpha1.Placement],
+) (ctrl.Result, error) {
+	return placementSkeleton.RunParallelGroup(ctx, placement, instrumenter.Instrument, subs)
 }
 
 // SetupWithManager registers the PlacementReconciler with the controller

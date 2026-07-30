@@ -1359,9 +1359,9 @@ spec:
               serviceUser:
                 description: |-
                   ServiceUser identifies the Keystone service account Placement
-                  authenticates as and the Secret holding its password. The username/domain
-                  fields are webhook-defaulted (placement / service / Default / Default) in a
-                  later commit; the password Secret reference is required.
+                  authenticates as and the Secret holding its password. The defaulting
+                  webhook fills the username/domain fields (placement / service / Default /
+                  Default); the password Secret reference is required.
                 properties:
                   projectDomainName:
                     description: |-
@@ -1376,7 +1376,7 @@ spec:
                   secretRef:
                     description: |-
                       SecretRef references the Secret holding the service user's password. The
-                      key is webhook-defaulted to "password" in a later commit.
+                      key is webhook-defaulted to "password".
                     properties:
                       key:
                         type: string

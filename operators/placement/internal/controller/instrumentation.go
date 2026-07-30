@@ -17,14 +17,14 @@ import (
 // subReconcilerConditionTypes maps a sub_reconciler label value to the
 // condition_type it drives. The instrumenter consults this map to attribute
 // errors to the correct Ready sub-condition. It carries the full pipeline
-// vocabulary, including the steps whose sub-reconcilers land in later commits,
-// so a step never reaches the instrumenter unmapped.
+// vocabulary, so a step never reaches the instrumenter unmapped.
 //
-// Every value MUST be a member of subConditionTypes; the drift-guard test
-// TestSubReconcilerConditionTypesCoversAllNames asserts this invariant. If a
-// sub_reconciler name reaches the instrumenter without a key here, the helper
-// falls back to instrumentation.ConditionTypeUnknown ("UNKNOWN") rather than an
-// empty label so the drift surfaces in alerts.
+// The mapping is guarded in both directions: every value MUST be a member of
+// subConditionTypes (TestSubReconcilerConditionTypesCoversAllNames) and every
+// pipeline step name MUST be a key here (TestPipelineStepNamesAreMapped). If a
+// sub_reconciler name reaches the instrumenter without a key, the helper falls
+// back to instrumentation.ConditionTypeUnknown ("UNKNOWN") rather than an empty
+// label so the drift surfaces in alerts.
 //
 // "DBConnectionSecret" and "Config" deliberately reuse "SecretsReady" rather
 // than introducing a dedicated ConfigReady condition. Both sub-reconcilers
