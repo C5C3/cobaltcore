@@ -16,7 +16,8 @@
 #       parity with the keystone reference chart
 #   P4  observability: dashboards/<svc>-operator.json + dashboard_test.go
 #   P5  CI wiring: paths-filter, ALL_OPERATORS, FILTER_<svc>, unit-test
-#       matrices, helm-validate chart loop, build/cleanup image matrices
+#       matrices, helm-validate chart loop, build-images coverage, and each
+#       of the three cleanup-images matrices individually (exact item match)
 #   P6  e2e coverage: canonical chainsaw suite set under tests/e2e/<svc>/
 #       (incl. latest-release variant) plus at least one chaos suite
 #   P7  deploy stack: flux HelmRelease, namespace entry, kustomization entry,
@@ -58,6 +59,19 @@ ALLOWED_DEVIATIONS="
 
 allowed() { # allowed <svc> <check> <item>
   printf '%s\n' "${ALLOWED_DEVIATIONS}" | grep -qx "${1}:${2}:${3}"
+}
+
+# cleanup_matrix <job> — the `package: [...]` line of one cleanup-images.yaml
+# job, so membership is judged per matrix rather than across the whole file.
+cleanup_matrix() {
+  sed -n "/^  ${1}:/,/^  [a-z]/p" .github/workflows/cleanup-images.yaml \
+    | grep -E 'package: \[' || true
+}
+
+# matrix_has <matrix-line> <item> — exact list-item match. grep -w would let
+# a bare service name match its <svc>-operator sibling across the hyphen.
+matrix_has() {
+  grep -Eq "(\[|, )${2}(,|\])" <<<"${1}"
 }
 
 # check <svc> <check-id> <item> <condition-exit-code> <fail-message>
@@ -222,13 +236,25 @@ for svc in ${SERVICES}; do
   check "${svc}" P5 "build-images" "${t}" \
     "build-images.yaml lints/builds images/${svc}/Dockerfile"
 
-  t=0; grep -qw "${svc}-operator" .github/workflows/cleanup-images.yaml || t=1
+  # Each cleanup matrix is checked on its own, with exact list-item matches.
+  # A file-wide (or word-boundary) grep hides two gap classes: a package
+  # present in one matrix but missing from another, and a bare service name
+  # "matching" its <svc>-operator sibling across the hyphen.
+  op_matrix=$(cleanup_matrix cleanup-operator-images)
+  t=0; matrix_has "${op_matrix}" "${svc}-operator" || t=1
   check "${svc}" P5 "cleanup-operator" "${t}" \
-    "cleanup-images.yaml covers the ${svc}-operator package"
+    "cleanup-images.yaml cleanup-operator-images matrix lists ${svc}-operator"
 
-  t=0; grep -E 'package: \[' .github/workflows/cleanup-images.yaml | grep -qw "${svc}" || t=1
+  svc_matrix=$(cleanup_matrix cleanup-service-images)
+  t=0; matrix_has "${svc_matrix}" "${svc}" || t=1
   check "${svc}" P5 "cleanup-service" "${t}" \
-    "cleanup-images.yaml covers the ${svc} service-image package"
+    "cleanup-images.yaml cleanup-service-images matrix lists ${svc}"
+
+  stale_matrix=$(cleanup_matrix cleanup-e2e-stale-tags)
+  t=0; matrix_has "${stale_matrix}" "${svc}-operator" \
+    && matrix_has "${stale_matrix}" "${svc}" || t=1
+  check "${svc}" P5 "cleanup-e2e-stale" "${t}" \
+    "cleanup-images.yaml cleanup-e2e-stale-tags matrix lists ${svc}-operator and ${svc}"
 done
 
 # ---------------------------------------------------------------------------
