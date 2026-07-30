@@ -226,7 +226,15 @@ const (
 // enforces that invariant at the schema layer for every operator that embeds a
 // CacheSpec, so it holds even when a validating webhook is bypassed.
 //
+// Both modes' inputs reach the verbatim INI renderer — cache.ResolveServers
+// joins Servers with commas or derives "<ClusterRef.Name>:11211", and the
+// consumers render the result as "<key> = <value>" into a config section. A
+// newline or carriage return there injects an additional config line, so the
+// items pattern on Servers and the second XValidation rule below reject them at
+// the schema layer, alongside validation.CacheNoControlChars in the webhooks.
+//
 // +kubebuilder:validation:XValidation:rule="has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)",message="exactly one of clusterRef or servers must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.clusterRef) || !self.clusterRef.name.matches('[\\n\\r]')",message="clusterRef.name must not contain a newline or carriage return"
 type CacheSpec struct {
 	// ClusterRef references a Memcached CR in the cluster (managed mode).
 	// +optional
@@ -235,6 +243,7 @@ type CacheSpec struct {
 	Backend string `json:"backend"`
 	// Servers is the list of cache server endpoints (brownfield mode).
 	// +optional
+	// +kubebuilder:validation:items:Pattern=`^[^\n\r]*$`
 	Servers []string `json:"servers,omitempty"`
 	// Replicas is the number of Memcached pod replicas in the referenced cluster
 	// (managed mode). Used to generate the correct number of StatefulSet pod

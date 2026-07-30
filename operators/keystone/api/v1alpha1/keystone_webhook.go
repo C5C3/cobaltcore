@@ -328,6 +328,12 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field
 	// +kubebuilder:validation:XValidation CEL rules on the shared commonv1
 	// types, via the shared validators.
 	allErrs = append(allErrs, validation.CacheXOR(specPath.Child("cache"), &k.Spec.Cache)...)
+	// spec.cache reaches the verbatim INI renderer: resolveCacheServers derives
+	// [cache].memcache_servers and [memcache].servers from spec.cache.servers or
+	// spec.cache.clusterRef.name. This is the defense-in-depth twin of the items
+	// pattern and XValidation rule the shared commonv1.CacheSpec carries, for
+	// objects that bypass schema validation.
+	allErrs = append(allErrs, validation.CacheNoControlChars(specPath.Child("cache"), &k.Spec.Cache)...)
 	allErrs = append(allErrs, validation.DatabaseXOR(specPath.Child("database"), &k.Spec.Database)...)
 	allErrs = append(allErrs, validation.DynamicCredentialsRequireClusterRef(specPath.Child("database"), &k.Spec.Database)...)
 	allErrs = append(allErrs, validation.SecretStoreRef(specPath.Child("secretStoreRef"), k.Spec.SecretStoreRef)...)

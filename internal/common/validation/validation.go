@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"strings"
 
 	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
@@ -57,6 +58,50 @@ func CacheXOR(fldPath *field.Path, cache *commonv1.CacheSpec) field.ErrorList {
 		)}
 	}
 	return nil
+}
+
+// CacheNoControlChars rejects a newline or carriage return in the CacheSpec
+// fields that reach the INI renderer verbatim. cache.ResolveServers joins
+// spec.cache.servers with commas (brownfield mode) or derives
+// "<clusterRef.name>:11211" (managed mode), and every consumer renders the
+// result as "memcached_servers = %s" inside [keystone_authtoken]. A newline
+// there injects an additional config line — smuggling a whole key past the
+// (section, key)-keyed ownership and catalog gates that guard extraConfig,
+// which is exactly how an attacker-controlled auth_url would reach
+// keystonemiddleware. Its schema-layer twin is the items pattern on
+// CacheSpec.Servers plus the XValidation rule on CacheSpec.ClusterRef.Name.
+func CacheNoControlChars(fldPath *field.Path, cache *commonv1.CacheSpec) field.ErrorList {
+	const detail = "value must not contain a newline or carriage return: it is rendered verbatim " +
+		"into the service configuration file, so a newline injects arbitrary config lines"
+
+	var allErrs field.ErrorList
+	if cache.ClusterRef != nil && HasControlChars(cache.ClusterRef.Name) {
+		allErrs = append(allErrs, field.Invalid(
+			fldPath.Child("clusterRef", "name"),
+			cache.ClusterRef.Name,
+			detail,
+		))
+	}
+	for i, server := range cache.Servers {
+		if HasControlChars(server) {
+			allErrs = append(allErrs, field.Invalid(
+				fldPath.Child("servers").Index(i),
+				server,
+				detail,
+			))
+		}
+	}
+	return allErrs
+}
+
+// HasControlChars reports whether s contains a newline or carriage return. The
+// INI renderer writes every section name, key and value verbatim, so either
+// character lets one entry inject additional config lines. It is exported so
+// the per-operator webhooks that guard their own typed spec fields share this
+// one definition of the character set rather than each carrying a copy that
+// could drift from it.
+func HasControlChars(s string) bool {
+	return strings.ContainsAny(s, "\n\r")
 }
 
 // DynamicCredentialsRequireClusterRef enforces that CredentialsMode Dynamic

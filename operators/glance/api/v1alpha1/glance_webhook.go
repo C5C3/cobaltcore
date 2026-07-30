@@ -489,6 +489,12 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 	allErrs = append(allErrs, validation.DatabaseXOR(specPath.Child("database"), &g.Spec.Database)...)
 	allErrs = append(allErrs, validation.DynamicCredentialsRequireClusterRef(specPath.Child("database"), &g.Spec.Database)...)
 	allErrs = append(allErrs, validation.CacheXOR(specPath.Child("cache"), &g.Spec.Cache)...)
+	// spec.cache reaches the verbatim INI renderer the same way the typed fields
+	// below do: cache.ResolveServers derives [keystone_authtoken].memcached_servers
+	// from spec.cache.servers or spec.cache.clusterRef.name. This is the
+	// defense-in-depth twin of the items pattern and XValidation rule the shared
+	// commonv1.CacheSpec carries, for objects that bypass schema validation.
+	allErrs = append(allErrs, validation.CacheNoControlChars(specPath.Child("cache"), &g.Spec.Cache)...)
 	allErrs = append(allErrs, validation.SecretStoreRef(specPath.Child("secretStoreRef"), g.Spec.SecretStoreRef)...)
 
 	// keystoneEndpoint is required (rendered as [keystone_authtoken] auth_url):

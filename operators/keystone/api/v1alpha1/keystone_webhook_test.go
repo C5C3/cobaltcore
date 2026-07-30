@@ -1898,6 +1898,46 @@ func TestValidateCreate_RejectsDynamicCredentialsWithoutClusterRef(t *testing.T)
 	g.Expect(err.Error()).To(ContainSubstring("requires clusterRef"))
 }
 
+// TestValidateCreate_RejectsCacheControlChars verifies that both CacheSpec
+// shapes are guarded against control characters. resolveCacheServers renders
+// spec.cache into [cache].memcache_servers and [memcache].servers, and the INI
+// renderer writes the value verbatim — so a newline injects an additional
+// keystone.conf line, bypassing the (section, key)-keyed extraConfig gates.
+// Neither field carries a pattern marker, so the webhook is the enforcement
+// point for objects that reach etcd without schema validation.
+func TestValidateCreate_RejectsCacheControlChars(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(k *Keystone)
+	}{
+		{
+			name: "server with a newline",
+			mutate: func(k *Keystone) {
+				k.Spec.Cache.Servers = []string{"mc:11211\nadmin_token = smuggled"}
+			},
+		},
+		{
+			name: "clusterRef name with a carriage return",
+			mutate: func(k *Keystone) {
+				k.Spec.Cache.Servers = nil
+				k.Spec.Cache.ClusterRef = &corev1.LocalObjectReference{Name: "mc\radmin_token = smuggled"}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &KeystoneWebhook{Client: newFakeClient().Build()}
+			k := validKeystone()
+			tc.mutate(k)
+
+			_, err := w.ValidateCreate(context.Background(), k)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("must not contain a newline or carriage return"))
+		})
+	}
+}
+
 // TestValidateCreate_AcceptsDynamicCredentialsWithClusterRef verifies Dynamic is
 // accepted in managed mode.
 func TestValidateCreate_AcceptsDynamicCredentialsWithClusterRef(t *testing.T) {

