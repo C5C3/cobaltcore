@@ -1,0 +1,164 @@
+{
+  "release": "2025.2",
+  "sections": {
+    "DEFAULT": {
+      "deprecated": {
+        "auth_strategy": "[api] auth_strategy",
+        "log_config": "[DEFAULT] log_config_append",
+        "logdir": "[DEFAULT] log_dir",
+        "logfile": "[DEFAULT] log_file"
+      },
+      "opts": [
+        "debug",
+        "default_log_levels",
+        "fatal_deprecations",
+        "instance_format",
+        "instance_uuid_format",
+        "log_color",
+        "log_config_append",
+        "log_date_format",
+        "log_dir",
+        "log_file",
+        "log_rotate_interval",
+        "log_rotate_interval_type",
+        "log_rotation_type",
+        "logging_context_format_string",
+        "logging_debug_format_suffix",
+        "logging_default_format_string",
+        "logging_exception_prefix",
+        "logging_user_identity_format",
+        "max_logfile_count",
+        "max_logfile_size_mb",
+        "publish_errors",
+        "pybasedir",
+        "rate_limit_burst",
+        "rate_limit_except_level",
+        "rate_limit_interval",
+        "state_path",
+        "syslog_log_facility",
+        "tempdir",
+        "use_journal",
+        "use_json",
+        "use_stderr",
+        "use_syslog",
+        "watch_log_file"
+      ]
+    },
+    "api": {
+      "deprecated": {},
+      "opts": [
+        "auth_strategy"
+      ]
+    },
+    "cors": {
+      "deprecated": {},
+      "opts": [
+        "allow_credentials",
+        "allow_headers",
+        "allow_methods",
+        "allowed_origin",
+        "expose_headers",
+        "max_age"
+      ]
+    },
+    "keystone_authtoken": {
+      "deprecated": {
+        "auth_plugin": "[keystone_authtoken] auth_type",
+        "memcache_servers": "[keystone_authtoken] memcached_servers"
+      },
+      "opts": [
+        "auth_section",
+        "auth_type",
+        "auth_uri",
+        "auth_version",
+        "cache",
+        "cafile",
+        "certfile",
+        "delay_auth_decision",
+        "enforce_token_bind",
+        "http_connect_timeout",
+        "http_request_max_retries",
+        "include_service_catalog",
+        "insecure",
+        "interface",
+        "keyfile",
+        "memcache_password",
+        "memcache_pool_conn_get_timeout",
+        "memcache_pool_dead_retry",
+        "memcache_pool_maxsize",
+        "memcache_pool_socket_timeout",
+        "memcache_pool_unused_timeout",
+        "memcache_sasl_enabled",
+        "memcache_secret_key",
+        "memcache_security_strategy",
+        "memcache_tls_allowed_ciphers",
+        "memcache_tls_cafile",
+        "memcache_tls_certfile",
+        "memcache_tls_enabled",
+        "memcache_tls_keyfile",
+        "memcache_use_advanced_pool",
+        "memcache_username",
+        "memcached_servers",
+        "region_name",
+        "service_token_roles",
+        "service_token_roles_required",
+        "service_type",
+        "token_cache_time",
+        "www_authenticate_uri"
+      ]
+    },
+    "oslo_middleware": {
+      "deprecated": {},
+      "opts": [
+        "enable_proxy_headers_parsing"
+      ]
+    },
+    "oslo_policy": {
+      "deprecated": {},
+      "opts": [
+        "enforce_new_defaults",
+        "enforce_scope",
+        "policy_default_rule",
+        "policy_dirs",
+        "policy_file",
+        "remote_content_type",
+        "remote_ssl_ca_crt_file",
+        "remote_ssl_client_crt_file",
+        "remote_ssl_client_key_file",
+        "remote_ssl_verify_server_crt",
+        "remote_timeout"
+      ]
+    },
+    "placement": {
+      "deprecated": {},
+      "opts": [
+        "allocation_candidates_generation_strategy",
+        "allocation_conflict_retry_count",
+        "incomplete_consumer_project_id",
+        "incomplete_consumer_user_id",
+        "max_allocation_candidates",
+        "randomize_allocation_candidates"
+      ]
+    },
+    "placement_database": {
+      "deprecated": {},
+      "opts": [
+        "connection",
+        "connection_debug",
+        "connection_parameters",
+        "connection_recycle_time",
+        "connection_trace",
+        "max_overflow",
+        "max_pool_size",
+        "max_retries",
+        "mysql_sql_mode",
+        "pool_timeout",
+        "retry_interval",
+        "slave_connection",
+        "sqlite_synchronous",
+        "sync_on_startup"
+      ]
+    }
+  },
+  "service": "placement"
+}
