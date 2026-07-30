@@ -1414,6 +1414,11 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		// validator mirroring the CEL rule on the shared commonv1.CacheSpec.
 		cache := infra.Cache
 		allErrs = append(allErrs, validation.CacheXOR(specPath.Child("infrastructure", "cache"), &cache)...)
+		// The block is projected onto every service CR's spec.cache, where it
+		// reaches the verbatim INI renderer. Rejecting a control character here
+		// fails the ControlPlane at admission rather than leaving a projected
+		// child CR to be rejected by its own webhook mid-reconcile.
+		allErrs = append(allErrs, validation.CacheNoControlChars(specPath.Child("infrastructure", "cache"), &cache)...)
 	}
 
 	// the K-ORC admin-credential password Secret reference is required —
@@ -1829,6 +1834,7 @@ func validateDedicatedBackingServices(cp *ControlPlane) field.ErrorList {
 		if cache := d.cache; cache != nil {
 			cachePath := d.path.Child("cache")
 			allErrs = append(allErrs, validation.CacheXOR(cachePath, cache)...)
+			allErrs = append(allErrs, validation.CacheNoControlChars(cachePath, cache)...)
 			if ref := cache.ClusterRef; ref != nil {
 				if _, dup := cacheNames[ref.Name]; dup {
 					allErrs = append(allErrs, field.Duplicate(cachePath.Child("clusterRef", "name"), ref.Name))

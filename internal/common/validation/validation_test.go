@@ -63,6 +63,41 @@ func TestCacheXOR(t *testing.T) {
 	}
 }
 
+func TestCacheNoControlChars(t *testing.T) {
+	cases := []struct {
+		name    string
+		cache   commonv1.CacheSpec
+		wantErr bool
+	}{
+		{"managed mode clean", commonv1.CacheSpec{ClusterRef: &corev1.LocalObjectReference{Name: "mc"}}, false},
+		{"brownfield mode clean", commonv1.CacheSpec{Servers: []string{"mc-0:11211", "mc-1:11211"}}, false},
+		// Both shapes end up in [keystone_authtoken].memcached_servers, so a
+		// newline smuggles an attacker-controlled auth_url into the section.
+		{
+			"server with a newline rejected",
+			commonv1.CacheSpec{Servers: []string{"mc-0:11211\nauth_url = http://attacker.example/v3"}},
+			true,
+		},
+		{
+			"server with a carriage return rejected",
+			commonv1.CacheSpec{Servers: []string{"mc-0:11211", "mc-1:11211\rregion_name = elsewhere"}},
+			true,
+		},
+		{
+			"clusterRef name with a newline rejected",
+			commonv1.CacheSpec{ClusterRef: &corev1.LocalObjectReference{Name: "mc\nauth_url = http://attacker.example/v3"}},
+			true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs := CacheNoControlChars(testPath, &tc.cache)
+			g.Expect(len(errs) > 0).To(gomega.Equal(tc.wantErr))
+		})
+	}
+}
+
 func TestDynamicCredentialsRequireClusterRef(t *testing.T) {
 	g := gomega.NewWithT(t)
 

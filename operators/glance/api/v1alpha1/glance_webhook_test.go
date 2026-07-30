@@ -206,6 +206,28 @@ func TestGlanceValidateCreate_RejectionTable(t *testing.T) {
 			},
 			wantSub: "exactly one of clusterRef or servers",
 		},
+		// Both cache shapes land in [keystone_authtoken].memcached_servers via
+		// cache.ResolveServers, which the INI renderer writes verbatim. A newline
+		// appends a second auth_url to that section and oslo.config keeps the last
+		// value for a non-multi option, so keystonemiddleware would validate every
+		// incoming token against an attacker-controlled Keystone.
+		{
+			name: "cache server with a newline rejected",
+			mutate: func(o *Glance) {
+				o.Spec.Cache.ClusterRef = nil
+				o.Spec.Cache.Servers = []string{"memcached-0:11211\nauth_url = http://attacker.example/v3"}
+			},
+			wantSub: "must not contain a newline or carriage return",
+		},
+		{
+			name: "cache clusterRef name with a carriage return rejected",
+			mutate: func(o *Glance) {
+				o.Spec.Cache.ClusterRef = &corev1.LocalObjectReference{
+					Name: "memcached\rauth_url = http://attacker.example/v3",
+				}
+			},
+			wantSub: "must not contain a newline or carriage return",
+		},
 		{
 			name:    "empty keystoneEndpoint rejected",
 			mutate:  func(o *Glance) { o.Spec.KeystoneEndpoint = "" },

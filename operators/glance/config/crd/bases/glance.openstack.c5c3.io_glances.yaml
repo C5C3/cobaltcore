@@ -219,6 +219,7 @@ spec:
                     description: Servers is the list of cache server endpoints (brownfield
                       mode).
                     items:
+                      pattern: ^[^\n\r]*$
                       type: string
                     type: array
                 required:
@@ -228,6 +229,9 @@ spec:
                 - message: exactly one of clusterRef or servers must be set
                   rule: has(self.clusterRef) != (has(self.servers) && size(self.servers)
                     > 0)
+                - message: clusterRef.name must not contain a newline or carriage
+                    return
+                  rule: '!has(self.clusterRef) || !self.clusterRef.name.matches(''[\n\r]'')'
               database:
                 description: |-
                   Database defines the MariaDB connection parameters.
