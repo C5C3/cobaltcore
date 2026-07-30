@@ -123,7 +123,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [keystone-operator, c5c3-operator, glance-operator]
+        package: [keystone-operator, c5c3-operator, horizon-operator, glance-operator]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -149,7 +149,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [keystone-operator, c5c3-operator, keystone, glance-operator, glance, tempest]
+        package: [keystone-operator, c5c3-operator, keystone, horizon-operator, horizon, glance-operator, glance, tempest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
