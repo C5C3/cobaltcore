@@ -266,6 +266,7 @@ back.
 |---|---|
 | `deployment.BuildWorkload(WorkloadParams{...})` — replicas/selector/strategy, pod-level knobs, container resources, restricted security context, preStop hook; everything else renders verbatim, **nilness included** | a hand-assembled `appsv1.Deployment` literal |
 | `deployment.BuildService(ns, name, labels, selector, port, targetPort)` — `port` and `targetPort` stay separate so traffic can route to a sidecar | a hand-assembled `corev1.Service` literal |
+| the component-label contract from `internal/common/naming`: API pod template labelled `ComponentLabels(app, instance, ComponentAPI)`, API Service selecting on `APISelectorLabels`, API PDB on `SelectorLabels` + `ExcludeJobPods()`, while `Deployment.spec.selector` and the NetworkPolicy `podSelector` stay on `SelectorLabels` (see § Recurring maintenance jobs for why) | a name+instance Service selector that admits every pod of the instance — including maintenance Job pods — as an API endpoint |
 | `bootstrap.NewScheme(<extra AddToScheme funcs>...)` in `main.go` | `var scheme = runtime.NewScheme()` plus an `init()` block |
 | embedding `webhook.NoopDeleteValidator[T]` | a per-webhook `ValidateDelete` method |
 | passing the bound method `instrumenter.Instrument` into the pipeline | a package-local `instrumentSubReconciler` wrapper |
@@ -275,6 +276,17 @@ What stays service-specific is the residue the builder cannot know:
 conditional volume/mount/container appends (db-TLS keypair, backend
 config, sidecars), the launch command, probes, and any pod annotation
 that must roll the Deployment when a secret rotates.
+
+Copy the Service-selector latch with the label contract, not just the
+labels: every `reconcileDeployment` gates the narrow `APISelectorLabels`
+selector on `deployment.TemplateConverged` and latches it one-way via
+`deployment.APISelectorNarrowed`, read through the uncached
+`mgr.GetAPIReader()` (the informer cache can predate the narrowing
+write). A new operator's pods carry the component label from birth, so
+the latch closes on the first converged rollout — but the gate is what
+keeps the Service from ever selecting zero serving pods during a
+rollout, and horizon adopted the full shape for exactly that reason
+(#785) despite projecting no maintenance pods at all.
 
 **Pin the rendered objects.** All three operators carry a
 `reconcile_deployment_pin_test.go`: the full Deployment and Service
@@ -372,16 +384,29 @@ maintenance task touches:
   `database.ConnectionEnvVar` override so the job reads dynamic
   credentials from the derived Secret rather than the ConfigMap, the
   db-TLS keypair mount under the same gate the Deployment uses, and pod
-  labels that are a superset of the selector labels so the NetworkPolicy
-  covers the job pods. A job that also talks to the API server needs its
-  own egress rule (keystone's rotation CronJobs do).
+  labels from `naming.ComponentLabels` with the task's own component
+  value (`trust-flush`, `db-purge`, `<kind>-rotation`): a superset of
+  the selector labels so the NetworkPolicy covers the job pods, but
+  **never** bare `commonLabels` — a Job pod whose labels satisfy the
+  API Service selector becomes a Service endpoint with nothing
+  listening (numeric `targetPort`, no readiness probe) and answers API
+  traffic with `ECONNREFUSED` for its whole runtime, the #778 outage
+  the component contract exists to prevent. The API PDB keeps the Job
+  pods out via `naming.ExcludeJobPods`, not via the component label. A
+  job that also talks to the API server needs its own egress rule
+  (keystone's rotation CronJobs do).
 - **Naming** — Kubernetes caps a CronJob name at 52 characters. Bound
   `metadata.name` in the webhook accordingly (see the gotcha below) and
   mirror that bound in the c5c3 webhook for the projected child name.
 - **Tests** — unit tests pinning the rendered CronJob and every condition
   arm, invalid-CR fixtures for each new validation rule
   (`tests/e2e/glance/invalid-cr/17`–`19` are the template), and a
-  `basic-deployment` assertion that the CronJob exists.
+  `basic-deployment` assertion that the CronJob exists. For the endpoint
+  isolation itself, `tests/e2e/keystone/maintenance-endpoint-isolation`
+  is the template: a fast schedule, the API EndpointSlices sampled
+  against the live Deployment's replica count, and a live maintenance
+  pod required during the window so the suite proves isolation rather
+  than an idle cluster.
 - **Docs** — the spec block and the projected CronJob shape in
   `docs/reference/<svc>/<svc>-crd.md`, the step and its condition in
   `<svc>-reconciler.md`, the events plus an alerting rule in
