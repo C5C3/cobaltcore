@@ -437,6 +437,7 @@ WEBHOOK_ENABLED_DESCRIPTIONS = {
     "c5c3-operator": "Enable admission webhooks for ControlPlane CR validation and defaulting",
     "horizon-operator": "Enable admission webhooks for Horizon CR validation and defaulting",
     "glance-operator": "Enable admission webhooks for Glance and GlanceBackend CR validation and defaulting",
+    "placement-operator": "Enable admission webhooks for Placement CR validation and defaulting",
 }
 
 
