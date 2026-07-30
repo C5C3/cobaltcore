@@ -11,10 +11,13 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/naming"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 )
 
@@ -106,6 +109,13 @@ func TestBuildHorizonDeployment_Shape(t *testing.T) {
 
 	// Rotated SECRET_KEY rolls the pods via the hash annotation.
 	g.Expect(deploy.Spec.Template.Annotations).To(HaveKeyWithValue(secretKeyHashAnnotation, "digest123"))
+
+	// The dashboard pods carry the component the Service selects on.
+	g.Expect(deploy.Labels).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
+	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
+	// The Deployment selector is immutable, so the component key must stay out
+	// of it: adding one would force a delete/recreate of every live Deployment.
+	g.Expect(deploy.Spec.Selector.MatchLabels).NotTo(HaveKey(naming.LabelKeyComponent))
 }
 
 func TestBuildHorizonDeployment_NoHashAnnotationWhenDigestEmpty(t *testing.T) {
@@ -175,14 +185,155 @@ func TestReconcileDeployment_ReadySetsEndpoint(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 }
 
+// TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout pins the two-phase
+// narrowing of the dashboard Service selector. EnsureDeployment is a
+// Server-Side Apply that returns as soon as the API server accepts the pod
+// template, so narrowing to app.kubernetes.io/component=api in the same pass
+// would drop every pod still running from the pre-upgrade template out of the
+// EndpointSlices — the Service would have no backends at all until the first
+// re-rolled pod passed its probes, and a rollout that wedges would never
+// repool them. The PDB selector, by contrast, covers the dashboard pods in
+// every phase — labelled or not, see buildPodDisruptionBudget.
+func TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout(t *testing.T) {
+	cases := []struct {
+		name string
+		// updatedReplicas is what the deployment controller reports; a value
+		// below the replica count means old-template pods are still counted
+		// and still serving.
+		updatedReplicas int32
+		totalReplicas   int32
+		narrowed        bool
+	}{
+		{name: "rollout in flight", updatedReplicas: 1, totalReplicas: 4, narrowed: false},
+		{name: "fully rolled out", updatedReplicas: 3, totalReplicas: 3, narrowed: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			h := testHorizon()
+			r := newTestReconciler(testScheme(), h)
+			ctx := context.Background()
+
+			// First pass creates the Deployment; then stamp the rollout state.
+			_, err := r.reconcileDeployment(ctx, h, "cm-name", "")
+			g.Expect(err).NotTo(HaveOccurred())
+
+			key := types.NamespacedName{Namespace: "default", Name: "test-horizon"}
+			var deploy appsv1.Deployment
+			g.Expect(r.Get(ctx, key, &deploy)).To(Succeed())
+			deploy.Status.ReadyReplicas = 3
+			deploy.Status.UpdatedReplicas = tc.updatedReplicas
+			deploy.Status.Replicas = tc.totalReplicas
+			deploy.Status.Conditions = []appsv1.DeploymentCondition{{
+				Type:   appsv1.DeploymentAvailable,
+				Status: corev1.ConditionTrue,
+			}}
+			g.Expect(r.Status().Update(ctx, &deploy)).To(Succeed())
+
+			_, err = r.reconcileDeployment(ctx, h, "cm-name", "")
+			g.Expect(err).NotTo(HaveOccurred())
+
+			var svc corev1.Service
+			g.Expect(r.Get(ctx, key, &svc)).To(Succeed())
+			var pdb policyv1.PodDisruptionBudget
+			g.Expect(r.Get(ctx, key, &pdb)).To(Succeed())
+
+			if tc.narrowed {
+				g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
+			} else {
+				g.Expect(svc.Spec.Selector).NotTo(HaveKey(naming.LabelKeyComponent),
+					"pods from the pre-upgrade template must stay in the EndpointSlices until the rollout completes")
+			}
+			// Either way the dashboard pods must satisfy the Service selector,
+			// or it has no backends at all.
+			podLabels := buildHorizonDeployment(h, "cm-name", "").Spec.Template.Labels
+			g.Expect(labels.SelectorFromSet(svc.Spec.Selector).Matches(labels.Set(podLabels))).To(BeTrue())
+			// The budget covers the dashboard pods in BOTH phases, the
+			// pre-upgrade ones included. Anything else leaves the pods that are
+			// actually serving outside every budget for the whole migration —
+			// and forever if the rollout wedges — because the eviction API only
+			// consults budgets matching the pod being evicted.
+			pdbSelector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(pdbSelector.Matches(labels.Set(podLabels))).To(BeTrue(),
+				"the budget must cover the dashboard pods")
+			g.Expect(pdbSelector.Matches(labels.Set(commonLabels(h)))).To(BeTrue(),
+				"the budget must cover dashboard pods from a template predating the component label")
+		})
+	}
+}
+
+// TestReconcileDeployment_NarrowedServiceSelectorNeverWidens pins the latch on
+// the two-phase narrowing. deployment.TemplateConverged turns false on every
+// later rollout, so deriving the selector from it on every pass would not
+// migrate the Service once but oscillate it.
+func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	h := testHorizon()
+	r := newTestReconciler(testScheme(), h)
+	key := types.NamespacedName{Namespace: "default", Name: "test-horizon"}
+
+	// Pass 1 creates the Deployment; stamping full convergence and reconciling
+	// again completes the migration and narrows the Service selector.
+	_, err := r.reconcileDeployment(ctx, h, "cm-name", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	var deploy appsv1.Deployment
+	g.Expect(r.Get(ctx, key, &deploy)).To(Succeed())
+	deploy.Status.ReadyReplicas = 3
+	deploy.Status.UpdatedReplicas = 3
+	deploy.Status.Replicas = 3
+	deploy.Status.Conditions = []appsv1.DeploymentCondition{{
+		Type:   appsv1.DeploymentAvailable,
+		Status: corev1.ConditionTrue,
+	}}
+	g.Expect(r.Status().Update(ctx, &deploy)).To(Succeed())
+
+	_, err = r.reconcileDeployment(ctx, h, "cm-name", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	var svc corev1.Service
+	g.Expect(r.Get(ctx, key, &svc)).To(Succeed())
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
+
+	// A later rollout drops the Deployment back below full convergence. The
+	// Deployment is watched without a generation predicate, so this status
+	// transition drives a reconcile of its own.
+	g.Expect(r.Get(ctx, key, &deploy)).To(Succeed())
+	deploy.Status.UpdatedReplicas = 1
+	deploy.Status.Replicas = 4
+	g.Expect(r.Status().Update(ctx, &deploy)).To(Succeed())
+
+	_, err = r.reconcileDeployment(ctx, h, "cm-name", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(r.Get(ctx, key, &svc)).To(Succeed())
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI),
+		"an already narrowed Service selector must never widen again — every pod template this operator builds carries the component label")
+}
+
 func TestBuildHorizonService_Port8080(t *testing.T) {
 	g := NewGomegaWithT(t)
 	h := testHorizon()
 
-	svc := buildHorizonService(h)
+	svc := buildHorizonService(h, true)
 
 	g.Expect(svc.Name).To(Equal("test-horizon"))
 	g.Expect(svc.Spec.Ports).To(HaveLen(1))
 	g.Expect(svc.Spec.Ports[0].Port).To(Equal(int32(8080)))
-	g.Expect(svc.Spec.Selector).To(Equal(selectorLabels(h)))
+	// The Service routes to a numeric targetPort, which admits any pod of this
+	// instance regardless of the ports it declares, and a pod without a
+	// readiness probe counts as Ready as soon as it starts. The component key
+	// is what keeps a workload other than the dashboard from becoming an
+	// endpoint with nothing listening on 8080.
+	g.Expect(svc.Spec.Selector).To(Equal(map[string]string{
+		"app.kubernetes.io/name":      "horizon",
+		"app.kubernetes.io/instance":  "test-horizon",
+		"app.kubernetes.io/component": "api",
+	}))
+
+	// The dashboard pods must keep satisfying the selector, or the Service
+	// would have no backends at all.
+	podLabels := buildHorizonDeployment(h, "cm", "").Spec.Template.Labels
+	g.Expect(labels.SelectorFromSet(svc.Spec.Selector).Matches(labels.Set(podLabels))).To(BeTrue(),
+		"the dashboard pod template must satisfy the Service selector")
 }

@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -79,7 +80,35 @@ func (r *HorizonReconciler) reconcileDeployment(ctx context.Context, horizon *ho
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
 	}
 
-	svc := buildHorizonService(horizon)
+	// Narrow the Service selector to the API component only once every live pod
+	// carries that label. EnsureDeployment is a Server-Side Apply: it returns as
+	// soon as the API server accepts the pod template, long before the rollout
+	// finishes. Applying the narrowed selector in the same pass would drop every
+	// pod still running from before the upgrade out of the EndpointSlices while
+	// it is still the only thing serving — and a rollout that never completes
+	// would never repool them.
+	//
+	// Once narrowed, stay narrowed. The migration is one-way: only a template
+	// built by an operator predating the component label produces pods the
+	// narrow selector misses. Re-widening on a later rollout would put the
+	// Service selector back on a wider set than the dashboard pods for exactly
+	// as long as it lasts. The latch reads the live Service through the uncached
+	// APIReader, so it cannot be decided from a cache that still predates the
+	// narrowing write (see deployment.APISelectorNarrowed); r.apiReader is nil
+	// only in unit tests, whose fake client is read-your-writes anyway.
+	narrowSelector := deployment.TemplateConverged(deploy)
+	if !narrowSelector {
+		reader := client.Reader(r.Client)
+		if r.apiReader != nil {
+			reader = r.apiReader
+		}
+		narrowSelector, err = deployment.APISelectorNarrowed(ctx, reader, horizon.Namespace, subResourceName(horizon))
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	svc := buildHorizonService(horizon, narrowSelector)
 	if err := deployment.EnsureService(ctx, r.Client, r.Scheme, horizon, svc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
 	}
@@ -122,7 +151,7 @@ func (r *HorizonReconciler) reconcileDeployment(ctx context.Context, horizon *ho
 // never enters the ConfigMap.
 func buildHorizonDeployment(horizon *horizonv1alpha1.Horizon, configMapName, secretKeyHash string) *appsv1.Deployment {
 	selector := selectorLabels(horizon)
-	labels := commonLabels(horizon)
+	labels := naming.ComponentLabels(horizonv1alpha1.AppName, horizon.Name, naming.ComponentAPI)
 	// Roll the Deployment when the SECRET_KEY rotates: the key is consumed
 	// via HORIZON_SECRET_KEY, so a changed value only takes effect on Pod
 	// restart.
@@ -244,10 +273,36 @@ func uwsgiCommand() []string {
 // deployment, delegating to the shared builder (minAvailable=1 for
 // multi-replica, maxUnavailable=1 for single-replica to avoid drain
 // deadlock).
+//
+// The selector keeps the stable name and instance labels and excludes
+// Job-created pods (naming.ExcludeJobPods) rather than narrowing to the API
+// component. Horizon runs no maintenance Job today, so the requirement is a
+// no-op here and only keeps the budget shaped like the other operators' — but
+// unlike the component key it also covers the dashboard pods of a template
+// predating that label: a pod no budget selects is not protected at all, and the
+// Service's two-phase narrowing has no counterpart here that would bound that
+// gap.
 func buildPodDisruptionBudget(horizon *horizonv1alpha1.Horizon) *policyv1.PodDisruptionBudget {
-	return deployment.BuildPDB(horizon.Namespace, subResourceName(horizon), commonLabels(horizon), selectorLabels(horizon), &horizon.Spec.Deployment)
+	pdb := deployment.BuildPDB(horizon.Namespace, subResourceName(horizon), commonLabels(horizon), selectorLabels(horizon), &horizon.Spec.Deployment)
+	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
+	return pdb
 }
 
-func buildHorizonService(horizon *horizonv1alpha1.Horizon) *corev1.Service {
-	return deployment.BuildService(horizon.Namespace, subResourceName(horizon), commonLabels(horizon), selectorLabels(horizon), horizonAPIPort, horizonAPIPort)
+// buildHorizonService builds the dashboard Service on the dashboard port. With
+// narrowSelector the selector narrows to the API component, so only the
+// dashboard pods can become endpoints (see apiSelector for when that is safe).
+func buildHorizonService(horizon *horizonv1alpha1.Horizon, narrowSelector bool) *corev1.Service {
+	return deployment.BuildService(horizon.Namespace, subResourceName(horizon), commonLabels(horizon), apiSelector(horizon, narrowSelector), horizonAPIPort, horizonAPIPort)
+}
+
+// apiSelector returns the selector of the dashboard Service. It narrows to
+// app.kubernetes.io/component=api only when narrowSelector is set, which the
+// caller derives from deployment.TemplateConverged and then latches: until every
+// live pod runs the labelled template, the wide selector is the only one that
+// still matches them.
+func apiSelector(horizon *horizonv1alpha1.Horizon, narrowSelector bool) map[string]string {
+	if narrowSelector {
+		return naming.APISelectorLabels(horizonv1alpha1.AppName, horizon.Name)
+	}
+	return selectorLabels(horizon)
 }
