@@ -14,6 +14,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/record"
@@ -25,6 +26,7 @@ import (
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/job"
+	"github.com/c5c3/forge/internal/common/naming"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	"github.com/c5c3/forge/operators/glance/internal/metrics"
@@ -177,13 +179,15 @@ func TestReconcileDBPurge_CreatesCronJobWithDefaults(t *testing.T) {
 	g.Expect(cronJob.OwnerReferences).To(HaveLen(1))
 	g.Expect(cronJob.OwnerReferences[0].Name).To(Equal("test-glance"))
 
-	// The spawned Jobs must be listable by label, so the labels sit on the
-	// CronJob, the JobTemplate, and the pod template alike.
+	// The spawned Jobs must be listable by label, so the common labels sit on the
+	// CronJob and the JobTemplate alike. The pod template adds the component on
+	// top, which is what keeps the purge pods out of the API Service.
 	g.Expect(cronJob.Labels).To(Equal(commonLabels(glance)))
 	g.Expect(cronJob.Spec.JobTemplate.Labels).To(Equal(commonLabels(glance)),
 		"the JobTemplate must carry the labels reconcileDBPurge lists runs by")
 	podTemplate := cronJob.Spec.JobTemplate.Spec.Template
-	g.Expect(podTemplate.Labels).To(Equal(commonLabels(glance)))
+	g.Expect(podTemplate.Labels).To(Equal(componentLabels(glance, "db-purge")))
+	g.Expect(podTemplate.Labels).To(HaveKeyWithValue(naming.LabelKeyComponent, "db-purge"))
 	g.Expect(podTemplate.Spec.RestartPolicy).To(Equal(corev1.RestartPolicyOnFailure))
 	g.Expect(podTemplate.Spec.PriorityClassName).To(BeEmpty(),
 		"glance's own migration Jobs set no priority class either")
@@ -216,6 +220,28 @@ func TestReconcileDBPurge_CreatesCronJobWithDefaults(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(conditionReasonDBPurgeScheduled))
 	g.Expect(cond.Message).To(ContainSubstring("30 days"))
+}
+
+// TestDBPurgePodsNotSelectedByAPIService locks the invariant the API Service
+// depends on: only the API pods satisfy its selector. The purge pod template
+// once carried the full selector, and because the Service targets a numeric
+// port and job pods have no readiness probe, every scheduled run turned a pod
+// with nothing listening on 9292 into a ready endpoint.
+func TestDBPurgePodsNotSelectedByAPIService(t *testing.T) {
+	g := NewGomegaWithT(t)
+	glance := testGlance()
+
+	selector := labels.SelectorFromSet(buildGlanceService(glance, true).Spec.Selector)
+
+	// The API pods must keep matching, or the Service would have no backends.
+	apiPodLabels := buildGlanceDeployment(glance, testArtifacts(), "", "").Spec.Template.Labels
+	g.Expect(selector.Matches(labels.Set(apiPodLabels))).To(BeTrue(),
+		"the API pod template must satisfy the API Service selector")
+
+	purgePodLabels := dbPurgeCronJob(glance, dbPurgeConfigMapName).Spec.JobTemplate.Spec.Template.Labels
+	g.Expect(purgePodLabels).To(HaveKeyWithValue(naming.LabelKeyComponent, "db-purge"))
+	g.Expect(selector.Matches(labels.Set(purgePodLabels))).To(BeFalse(),
+		"db-purge pods must never become endpoints of the API Service")
 }
 
 func TestReconcileDBPurge_HonorsSpecKnobs(t *testing.T) {

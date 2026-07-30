@@ -298,9 +298,11 @@ func dbPurgeCronJob(glance *glancev1alpha1.Glance, configMapName string) *batchv
 						// selectorLabels — and the auto-derived DB and DNS egress is all
 						// glance-manage needs, so no purge-specific rule is required
 						// (keystone hit the opposite case: its rotation CronJobs also talk
-						// to the apiserver, see reconcile_networkpolicy.go).
+						// to the apiserver, see reconcile_networkpolicy.go). The component
+						// value differs from the one the API pods carry, which is what keeps
+						// the purge pods out of the API Service selector.
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: commonLabels(glance),
+							Labels: componentLabels(glance, "db-purge"),
 						},
 						Spec: corev1.PodSpec{
 							RestartPolicy: corev1.RestartPolicyOnFailure,

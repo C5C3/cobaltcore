@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -88,6 +89,34 @@ func TestBuildGlanceNetworkPolicy_IngressAndEgressRules(t *testing.T) {
 	g.Expect(np.Spec.Egress[1].Ports[0].Port.IntValue()).To(Equal(3306))
 	g.Expect(np.Spec.Egress[2].Ports[0].Port.IntValue()).To(Equal(11211))
 	g.Expect(np.Spec.Egress[3].Ports[0].Port.IntValue()).To(Equal(443))
+}
+
+// The pod selector matches on name and instance only, so both the API pods and
+// the purge pods keep inheriting the auto-derived egress rules even though
+// their component labels differ. Without the DB and DNS egress, glance-manage
+// cannot reach the database and every scheduled purge fails.
+func TestBuildGlanceNetworkPolicy_PodSelectorCoversPurgePods(t *testing.T) {
+	glance := testGlance()
+	glance.Spec.NetworkPolicy = glanceNetworkPolicySpec()
+
+	selector := labels.SelectorFromSet(buildGlanceNetworkPolicy(glance, "", nil).Spec.PodSelector.MatchLabels)
+
+	cases := []struct {
+		name      string
+		podLabels map[string]string
+	}{
+		{"api", buildGlanceDeployment(glance, testArtifacts(), "", "").Spec.Template.Labels},
+		{"db-purge", dbPurgeCronJob(glance, dbPurgeConfigMapName).Spec.JobTemplate.Spec.Template.Labels},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			g.Expect(selector.Matches(labels.Set(tc.podLabels))).To(BeTrue(),
+				"%s pods must stay selected by the NetworkPolicy", tc.name)
+		})
+	}
 }
 
 func TestBuildGlanceNetworkPolicy_OmitsCacheAndS3WhenAbsent(t *testing.T) {

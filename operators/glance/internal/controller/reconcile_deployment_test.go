@@ -6,15 +6,18 @@ package controller
 
 import (
 	"context"
+	"maps"
 	"testing"
 	"time"
 
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -23,6 +26,7 @@ import (
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/keystoneauth"
+	"github.com/c5c3/forge/internal/common/naming"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
@@ -696,9 +700,170 @@ func TestReconcileDeployment_ServiceAndPDBEnsured(t *testing.T) {
 	var svc corev1.Service
 	g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "test-glance"}, &svc)).To(Succeed())
 	g.Expect(svc.Spec.Ports[0].Port).To(Equal(glanceAPIPort))
+	// The component key is absent while the freshly created Deployment has not
+	// rolled out — see TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout.
+	g.Expect(svc.Spec.Selector).To(Equal(map[string]string{
+		"app.kubernetes.io/name":     "glance",
+		"app.kubernetes.io/instance": "test-glance",
+	}))
 
 	var deploy appsv1.Deployment
 	g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "test-glance"}, &deploy)).To(Succeed())
+	g.Expect(deploy.Labels).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
+	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
+	// The Deployment selector is immutable, so the component key must stay out
+	// of it: adding one would force a delete/recreate of every live Deployment.
+	g.Expect(deploy.Spec.Selector.MatchLabels).NotTo(HaveKey(naming.LabelKeyComponent))
+}
+
+// TestReconcileDeployment_PDBSelectorCoversAPIPodsOnly verifies the budget
+// covers every API pod and no db-purge pod. The exclusion must not be keyed on
+// app.kubernetes.io/component=api: that label arrives with this operator build,
+// so on the operator upgrade a component-keyed budget matches none of the API
+// pods actually serving — and the eviction API only consults budgets matching
+// the pod being evicted, so those pods would have no budget at all until the
+// migration rollout lands, and forever if it wedges.
+func TestReconcileDeployment_PDBSelectorCoversAPIPodsOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := deployGlance("2026.1")
+	r := newGlanceTestReconciler(glance)
+	art := testArtifacts()
+
+	_, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var pdb policyv1.PodDisruptionBudget
+	g.Expect(r.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: "test-glance"}, &pdb)).To(Succeed())
+
+	g.Expect(pdbSelects(g, &pdb, buildGlanceDeployment(glance, art, "", "").Spec.Template.Labels)).To(BeTrue(),
+		"the budget must cover the API pods")
+	g.Expect(pdbSelects(g, &pdb, commonLabels(glance))).To(BeTrue(),
+		"the budget must cover API pods from a template predating the component label")
+
+	// A db-purge pod carries the CronJob pod-template labels plus the Job
+	// controller's own job-name label, and no readiness probe — so a budget that
+	// matched it would count it as healthy from its first moment and raise
+	// disruptionsAllowed for the API pods.
+	purgePod := maps.Clone(dbPurgeCronJob(glance, "glance-config").Spec.JobTemplate.Spec.Template.Labels)
+	purgePod[naming.LabelKeyJobName] = "test-glance-db-purge-29000000"
+	g.Expect(pdbSelects(g, &pdb, purgePod)).To(BeFalse(),
+		"a Job-created db-purge pod must never count towards the budget")
+}
+
+// pdbSelects reports whether the budget's selector — MatchLabels and
+// MatchExpressions together — matches a pod carrying podLabels.
+func pdbSelects(g *WithT, pdb *policyv1.PodDisruptionBudget, podLabels map[string]string) bool {
+	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+	g.Expect(err).NotTo(HaveOccurred())
+	return selector.Matches(labels.Set(podLabels))
+}
+
+// TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout pins the two-phase
+// narrowing of the API Service selector. EnsureDeployment is a Server-Side
+// Apply that returns as soon as the API server accepts the pod template, so
+// narrowing to app.kubernetes.io/component=api in the same pass would drop
+// every pod still running from the pre-upgrade template out of the
+// EndpointSlices — the Service would have no backends at all until the first
+// re-rolled pod passed its probes, and a rollout that wedges would never
+// repool them. The PDB selector, by contrast, covers the API pods in every
+// phase — labelled or not, see buildPodDisruptionBudget.
+func TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout(t *testing.T) {
+	// surgingDeployment is the state the narrowing must survive: the first
+	// new-template pod is Ready — so EnsureDeployment already reports ready —
+	// while the old-template pods, the ones without the component label, are
+	// still counted and still serving.
+	surgingDeployment := func(glance *glancev1alpha1.Glance, art configArtifacts) *appsv1.Deployment {
+		deploy := readyGlanceDeployment(glance, art)
+		deploy.Status.UpdatedReplicas = 1
+		deploy.Status.Replicas = *deploy.Spec.Replicas + 1
+		return deploy
+	}
+
+	cases := []struct {
+		name     string
+		deploy   func(*glancev1alpha1.Glance, configArtifacts) *appsv1.Deployment
+		narrowed bool
+	}{
+		{name: "rollout in flight", deploy: surgingDeployment, narrowed: false},
+		{name: "fully rolled out", deploy: readyGlanceDeployment, narrowed: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			glance := deployGlance("2026.1")
+			art := testArtifacts()
+			r := newGlanceTestReconciler(glance, tc.deploy(glance, art))
+
+			_, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
+			g.Expect(err).NotTo(HaveOccurred())
+
+			key := types.NamespacedName{Namespace: "default", Name: "test-glance"}
+			var svc corev1.Service
+			g.Expect(r.Get(context.Background(), key, &svc)).To(Succeed())
+			var pdb policyv1.PodDisruptionBudget
+			g.Expect(r.Get(context.Background(), key, &pdb)).To(Succeed())
+
+			if tc.narrowed {
+				g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
+			} else {
+				g.Expect(svc.Spec.Selector).NotTo(HaveKey(naming.LabelKeyComponent),
+					"pods from the pre-upgrade template must stay in the EndpointSlices until the rollout completes")
+			}
+			// Either way the API pods must satisfy the Service selector, or it
+			// has no backends at all.
+			apiPodLabels := buildGlanceDeployment(glance, art, "", "").Spec.Template.Labels
+			g.Expect(labels.SelectorFromSet(svc.Spec.Selector).Matches(labels.Set(apiPodLabels))).To(BeTrue())
+			// The budget covers the API pods in BOTH phases, the pre-upgrade
+			// ones included. Anything else leaves the pods that are actually
+			// serving outside every budget for the whole migration — and
+			// forever if the rollout wedges — because the eviction API only
+			// consults budgets matching the pod being evicted.
+			g.Expect(pdbSelects(g, &pdb, apiPodLabels)).To(BeTrue(),
+				"the budget must cover the API pods")
+			g.Expect(pdbSelects(g, &pdb, commonLabels(glance))).To(BeTrue(),
+				"the budget must cover API pods from a template predating the component label")
+		})
+	}
+}
+
+// TestReconcileDeployment_NarrowedServiceSelectorNeverWidens pins the latch on
+// the two-phase narrowing. deployment.TemplateConverged turns false on every
+// later rollout, so deriving the selector from it on every pass would not
+// migrate the Service once but oscillate it, re-admitting db-purge pods as
+// endpoints for the whole window.
+func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	glance := deployGlance("2026.1")
+	art := testArtifacts()
+	r := newGlanceTestReconciler(glance, readyGlanceDeployment(glance, art))
+	key := types.NamespacedName{Namespace: "default", Name: "test-glance"}
+
+	// Pass 1: the Deployment is fully converged, so the migration completes and
+	// the Service selector narrows.
+	_, err := r.reconcileDeployment(ctx, glance, art, "", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	var svc corev1.Service
+	g.Expect(r.Get(ctx, key, &svc)).To(Succeed())
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
+
+	// Pass 2: the Deployment drops back below full convergence. The Deployment
+	// is watched without a generation predicate, so this status transition
+	// drives a reconcile of its own.
+	var deploy appsv1.Deployment
+	g.Expect(r.Get(ctx, key, &deploy)).To(Succeed())
+	deploy.Status.UpdatedReplicas = 0
+	deploy.Status.ReadyReplicas = 0
+	g.Expect(r.Status().Update(ctx, &deploy)).To(Succeed())
+
+	_, err = r.reconcileDeployment(ctx, glance, art, "", "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(r.Get(ctx, key, &svc)).To(Succeed())
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI),
+		"an already narrowed Service selector must never widen again — every pod template this operator builds carries the component label")
 }
 
 func TestReconcileDeployment_ReadyStampsEndpoint(t *testing.T) {
