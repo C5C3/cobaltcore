@@ -412,11 +412,12 @@ The CronJob renders as:
 | CronJob field | Value |
 | --- | --- |
 | `metadata.name` | `{name}-db-purge` |
-| `metadata.labels` | `commonLabels` (same as Deployment) |
+| `metadata.labels` | `commonLabels` (name, instance, managed-by) |
 | `spec.schedule` | resolved `dbPurge.schedule` |
 | `spec.suspend` | resolved `dbPurge.suspend` |
 | `spec.concurrencyPolicy` | `Forbid` |
 | `spec.jobTemplate.spec.activeDeadlineSeconds` | `3600` |
+| `spec.jobTemplate.spec.template.metadata.labels` | `commonLabels` + `app.kubernetes.io/component=db-purge`, which keeps the pods out of the API Service |
 | `spec.jobTemplate.spec.template.spec.restartPolicy` | `OnFailure` |
 | Container name | `db-purge` |
 | Container image | `spec.image` reference |

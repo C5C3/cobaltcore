@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -126,6 +127,15 @@ func selectorLabels(glance *glancev1alpha1.Glance) map[string]string {
 	return naming.SelectorLabels(glanceAppName, glance.Name)
 }
 
+// componentLabels returns the pod-template labels for a workload of the given
+// component. It is commonLabels plus app.kubernetes.io/component, so the result
+// stays a superset of selectorLabels and keeps matching the Deployment pod
+// selector and the NetworkPolicy pod selector. It delegates to the shared
+// naming package to stay in sync across operators.
+func componentLabels(glance *glancev1alpha1.Glance, component string) map[string]string {
+	return naming.ComponentLabels(glanceAppName, glance.Name, component)
+}
+
 // reconcileDeployment ensures the Glance API Deployment, Service, and PDB exist
 // with the correct spec. It sets the DeploymentReady condition and stamps the
 // status endpoint when the Deployment becomes available.
@@ -163,7 +173,36 @@ func (r *GlanceReconciler) reconcileDeployment(ctx context.Context, glance *glan
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
 	}
 
-	svc := buildGlanceService(glance)
+	// Narrow the Service selector to the API component only once every live pod
+	// carries that label. EnsureDeployment is a Server-Side Apply: it returns as
+	// soon as the API server accepts the pod template, long before the rollout
+	// finishes. Applying the narrowed selector in the same pass would drop every
+	// pod still running from before the upgrade out of the EndpointSlices while
+	// it is still the only thing serving — and a rollout that never completes
+	// would never repool them.
+	//
+	// Once narrowed, stay narrowed. The migration is one-way: only a template
+	// built by an operator predating the component label produces pods the
+	// narrow selector misses. Re-widening on a later rollout would re-admit
+	// db-purge pods as endpoints for exactly as long as it lasts, reopening the
+	// race this narrowing closes. The latch reads the live Service through the
+	// uncached APIReader, so it cannot be decided from a cache that still
+	// predates the narrowing write (see deployment.APISelectorNarrowed);
+	// r.apiReader is nil only in unit tests, whose fake client is
+	// read-your-writes anyway.
+	narrowSelector := deployment.TemplateConverged(deploy)
+	if !narrowSelector {
+		reader := client.Reader(r.Client)
+		if r.apiReader != nil {
+			reader = r.apiReader
+		}
+		narrowSelector, err = deployment.APISelectorNarrowed(ctx, reader, glance.Namespace, subResourceName(glance))
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	svc := buildGlanceService(glance, narrowSelector)
 	if err := deployment.EnsureService(ctx, r.Client, r.Scheme, glance, svc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
 	}
@@ -300,7 +339,7 @@ func effectiveStagingSizeLimit(glance *glancev1alpha1.Glance) *resource.Quantity
 // one built before the cache existed.
 func buildGlanceDeployment(glance *glancev1alpha1.Glance, art configArtifacts, dsnDigest, authtokenDigest string) *appsv1.Deployment {
 	selector := selectorLabels(glance)
-	labels := commonLabels(glance)
+	labels := componentLabels(glance, naming.ComponentAPI)
 
 	// Both scratch emptyDirs carry the same resolved bound, each with its own
 	// Quantity so the two volumes never share a pointer. Both stay nil when the
@@ -763,11 +802,38 @@ func glanceDBTLSVolumeAndMount(glance *glancev1alpha1.Glance) (corev1.Volume, co
 // buildPodDisruptionBudget constructs the desired PDB for the Glance API
 // deployment, delegating to the shared builder (minAvailable=1 for multi-replica,
 // maxUnavailable=1 for single-replica to avoid drain deadlock).
+//
+// The selector keeps the stable name and instance labels and excludes the
+// db-purge pods by the absence of the Job name label (naming.ExcludeJobPods)
+// rather than by the API component. Both keep db-purge pods from inflating
+// currentHealthy — the disruption controller counts every matching pod, and Job
+// pods carry no readiness probe, so they are Ready from their first moment,
+// which raises disruptionsAllowed and lets a drain evict the API pods the budget
+// exists to protect. Only this one also covers the API pods of a template
+// predating the component label: a pod no budget selects is not protected at
+// all, and the Service's two-phase narrowing has no counterpart here that would
+// bound that gap.
 func buildPodDisruptionBudget(glance *glancev1alpha1.Glance) *policyv1.PodDisruptionBudget {
-	return deployment.BuildPDB(glance.Namespace, subResourceName(glance), commonLabels(glance), selectorLabels(glance), &glance.Spec.Deployment)
+	pdb := deployment.BuildPDB(glance.Namespace, subResourceName(glance), commonLabels(glance), selectorLabels(glance), &glance.Spec.Deployment)
+	pdb.Spec.Selector.MatchExpressions = naming.ExcludeJobPods()
+	return pdb
 }
 
-// buildGlanceService builds the Glance API Service on the API port.
-func buildGlanceService(glance *glancev1alpha1.Glance) *corev1.Service {
-	return deployment.BuildService(glance.Namespace, subResourceName(glance), commonLabels(glance), selectorLabels(glance), glanceAPIPort, glanceAPIPort)
+// buildGlanceService builds the Glance API Service on the API port. With
+// narrowSelector the selector narrows to the API component, so only the API
+// pods can become endpoints (see apiSelector for when that is safe).
+func buildGlanceService(glance *glancev1alpha1.Glance, narrowSelector bool) *corev1.Service {
+	return deployment.BuildService(glance.Namespace, subResourceName(glance), commonLabels(glance), apiSelector(glance, narrowSelector), glanceAPIPort, glanceAPIPort)
+}
+
+// apiSelector returns the selector of the API Service. It narrows to
+// app.kubernetes.io/component=api only when narrowSelector is set, which the
+// caller derives from deployment.TemplateConverged and then latches: until every
+// live pod runs the labelled template, the wide selector is the only one that
+// still matches them.
+func apiSelector(glance *glancev1alpha1.Glance, narrowSelector bool) map[string]string {
+	if narrowSelector {
+		return naming.APISelectorLabels(glanceAppName, glance.Name)
+	}
+	return selectorLabels(glance)
 }

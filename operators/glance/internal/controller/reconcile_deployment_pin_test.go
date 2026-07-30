@@ -23,6 +23,7 @@ import (
 
 const pinGlanceDeploymentDefaultGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-glance
     app.kubernetes.io/managed-by: glance-operator
     app.kubernetes.io/name: glance
@@ -42,6 +43,7 @@ spec:
   template:
     metadata:
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-glance
         app.kubernetes.io/managed-by: glance-operator
         app.kubernetes.io/name: glance
@@ -165,6 +167,7 @@ status: {}
 
 const pinGlanceDeploymentEventletGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-glance
     app.kubernetes.io/managed-by: glance-operator
     app.kubernetes.io/name: glance
@@ -184,6 +187,7 @@ spec:
   template:
     metadata:
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-glance
         app.kubernetes.io/managed-by: glance-operator
         app.kubernetes.io/name: glance
@@ -291,6 +295,7 @@ status: {}
 
 const pinGlanceDeploymentImageCacheGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-glance
     app.kubernetes.io/managed-by: glance-operator
     app.kubernetes.io/name: glance
@@ -310,6 +315,7 @@ spec:
   template:
     metadata:
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-glance
         app.kubernetes.io/managed-by: glance-operator
         app.kubernetes.io/name: glance
@@ -500,6 +506,7 @@ status: {}
 
 const pinGlanceDeploymentDBTLSGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-glance
     app.kubernetes.io/managed-by: glance-operator
     app.kubernetes.io/name: glance
@@ -519,6 +526,7 @@ spec:
   template:
     metadata:
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-glance
         app.kubernetes.io/managed-by: glance-operator
         app.kubernetes.io/name: glance
@@ -661,6 +669,7 @@ status: {}
 
 const pinGlanceDeploymentAutoscalingGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-glance
     app.kubernetes.io/managed-by: glance-operator
     app.kubernetes.io/name: glance
@@ -682,6 +691,7 @@ spec:
         glance.c5c3.io/authtoken-hash: auth456
         glance.c5c3.io/db-connection-hash: dsn123
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-glance
         app.kubernetes.io/managed-by: glance-operator
         app.kubernetes.io/name: glance
@@ -805,6 +815,7 @@ status: {}
 
 const pinGlanceDeploymentUnboundedStagingGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-glance
     app.kubernetes.io/managed-by: glance-operator
     app.kubernetes.io/name: glance
@@ -824,6 +835,7 @@ spec:
   template:
     metadata:
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-glance
         app.kubernetes.io/managed-by: glance-operator
         app.kubernetes.io/name: glance
@@ -956,6 +968,7 @@ spec:
     protocol: TCP
     targetPort: 9292
   selector:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-glance
     app.kubernetes.io/name: glance
 status:
@@ -1064,7 +1077,7 @@ func TestPinGlanceService(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		g := NewWithT(t)
 
-		got, err := yaml.Marshal(buildGlanceService(testGlance()))
+		got, err := yaml.Marshal(buildGlanceService(testGlance(), true))
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(string(got)).To(Equal(pinGlanceServiceGolden),
 			"the rendered Glance Service must stay byte-identical")
