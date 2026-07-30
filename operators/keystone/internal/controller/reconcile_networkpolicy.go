@@ -157,7 +157,7 @@ func buildAutoEgressRules(keystone *keystonev1alpha1.Keystone) []networkingv1.Ne
 	rules := []networkingv1.NetworkPolicyEgressRule{networkpolicy.DNSEgressRule()}
 
 	// kube-apiserver egress: always required (TCP 443+6443). The
-	// fernet/credential/admin-password rotation CronJob pods carry commonLabels
+	// fernet/credential/admin-password rotation CronJob pods carry componentLabels
 	// — a superset of the Deployment selectorLabels — so they are selected by
 	// this NetworkPolicy's podSelector and share its egress rules. Those scripts
 	// PATCH the rotated keys back to a Kubernetes Secret via

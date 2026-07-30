@@ -7,17 +7,20 @@ package controller
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -31,6 +34,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
+	"github.com/c5c3/forge/internal/common/naming"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -215,7 +219,11 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
-	r := newDeployTestReconciler(s, ks)
+	// Seed a fully rolled-out Deployment so the Service assertions below see
+	// the converged selector; it is narrowed to the API component only once
+	// every live pod carries the label (see
+	// TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout).
+	r := newDeployTestReconciler(s, ks, readyDeployment(ks, "keystone-config-abc123"))
 
 	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -340,10 +348,15 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(deploy.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(deploy.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 	g.Expect(deploy.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+	g.Expect(deploy.Labels).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
 	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
 	g.Expect(deploy.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(deploy.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	// The Deployment selector is immutable, so the component key must stay out
+	// of it: adding one would force a delete/recreate of every live Deployment.
+	g.Expect(deploy.Spec.Selector.MatchLabels).NotTo(HaveKey(naming.LabelKeyComponent))
 
 	// Verify Service spec.
 	var svc corev1.Service
@@ -359,6 +372,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	g.Expect(svc.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
 	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
 }
 
 // TestBuildKeystoneDeployment_NilReplicasWhenAutoscaling verifies that the
@@ -599,15 +613,243 @@ func TestReconcileDeployment_ServiceCreatedAlongsideDeployment(t *testing.T) {
 		Name: "test-keystone", Namespace: "default",
 	}, &svc)).To(Succeed())
 
-	// Verify the Service targets the Deployment's pods.
+	// Verify the Service targets the Deployment's pods. The component key is
+	// absent while the freshly created Deployment has not rolled out — see
+	// TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout.
 	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(svc.Spec.Selector).NotTo(HaveKey(naming.LabelKeyComponent))
 	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(deploy.Spec.Template.Labels).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
 
 	// Both should have owner references.
 	g.Expect(deploy.OwnerReferences).To(HaveLen(1))
 	g.Expect(svc.OwnerReferences).To(HaveLen(1))
+}
+
+// TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout pins the two-phase
+// narrowing of the API Service selector — and the fact that it only ever runs
+// once. EnsureDeployment is a Server-Side Apply that returns as soon as the API
+// server accepts the pod template, so narrowing to
+// app.kubernetes.io/component=api in the same pass would drop every pod still
+// running from the pre-upgrade template out of the EndpointSlices — the Service
+// would have no backends at all until the first re-rolled pod passed its
+// probes, and a rollout that wedges would never repool them.
+//
+// Once the live Service carries the narrow selector the migration is over and
+// widening it again is pure regression: every template this operator builds
+// carries the component label, so a later rollout would re-admit maintenance
+// pods as endpoints for as long as it lasts. The PDB selector, by contrast,
+// covers the API pods in every phase — labelled or not, see
+// buildPodDisruptionBudget.
+func TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout(t *testing.T) {
+	// surgingDeployment is the state the narrowing must survive: the first
+	// new-template pod is Ready — so EnsureDeployment already reports ready —
+	// while the old-template pods, the ones without the component label, are
+	// still counted and still serving.
+	surgingDeployment := func(ks *keystonev1alpha1.Keystone) *appsv1.Deployment {
+		deploy := readyDeployment(ks, "keystone-config-abc123")
+		deploy.Status.UpdatedReplicas = 1
+		deploy.Status.Replicas = *deploy.Spec.Replicas + 1
+		return deploy
+	}
+
+	cases := []struct {
+		name     string
+		deploy   func(*keystonev1alpha1.Keystone) *appsv1.Deployment
+		narrowed bool
+	}{
+		{name: "rollout in flight", deploy: surgingDeployment, narrowed: false},
+		{name: "fully rolled out", deploy: func(ks *keystonev1alpha1.Keystone) *appsv1.Deployment {
+			return readyDeployment(ks, "keystone-config-abc123")
+		}, narrowed: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := deployTestScheme()
+			ks := deployTestKeystone()
+			r := newDeployTestReconciler(s, ks, tc.deploy(ks))
+
+			_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			key := types.NamespacedName{Name: "test-keystone", Namespace: "default"}
+			var svc corev1.Service
+			g.Expect(r.Client.Get(context.Background(), key, &svc)).To(Succeed())
+			var pdb policyv1.PodDisruptionBudget
+			g.Expect(r.Client.Get(context.Background(), key, &pdb)).To(Succeed())
+
+			if tc.narrowed {
+				g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
+			} else {
+				g.Expect(svc.Spec.Selector).NotTo(HaveKey(naming.LabelKeyComponent),
+					"pods from the pre-upgrade template must stay in the EndpointSlices until the rollout completes")
+			}
+			// Either way the API pods must satisfy the Service selector, or it
+			// has no backends at all.
+			apiPodLabels := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "", nil).Spec.Template.Labels
+			g.Expect(labels.SelectorFromSet(svc.Spec.Selector).Matches(labels.Set(apiPodLabels))).To(BeTrue())
+			// The budget covers the API pods in BOTH phases, the pre-upgrade
+			// ones included. Anything else leaves the pods that are actually
+			// serving outside every budget for the whole migration — and
+			// forever if the rollout wedges — because the eviction API only
+			// consults budgets matching the pod being evicted.
+			g.Expect(pdbSelects(g, &pdb, apiPodLabels)).To(BeTrue(),
+				"the budget must cover the API pods")
+			g.Expect(pdbSelects(g, &pdb, legacyAPIPodLabels(ks))).To(BeTrue(),
+				"the budget must cover API pods from a template predating the component label")
+		})
+	}
+}
+
+// TestReconcileDeployment_NarrowedServiceSelectorNeverWidens pins the latch on
+// the two-phase narrowing. deployment.TemplateConverged turns false on every
+// later rollout — a rotated Dynamic DB credential restamps the pod template on
+// each ESO refresh. Deriving the selector from it on every pass would therefore
+// not migrate the Service once but oscillate it, re-admitting maintenance pods
+// as endpoints for the whole window: exactly the race the narrowing closes,
+// during the rolling update where it matters most.
+func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+	r := newDeployTestReconciler(s, ks, readyDeployment(ks, "keystone-config-abc123"))
+	key := types.NamespacedName{Name: "test-keystone", Namespace: "default"}
+
+	// Pass 1: the Deployment is fully converged, so the migration completes and
+	// the Service selector narrows.
+	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "", nil)
+	g.Expect(err).NotTo(HaveOccurred())
+	var svc corev1.Service
+	g.Expect(r.Client.Get(ctx, key, &svc)).To(Succeed())
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI))
+
+	// Pass 2: the Deployment drops back below full convergence. The Deployment
+	// is watched without a generation predicate, so this status transition
+	// drives a reconcile of its own.
+	var deploy appsv1.Deployment
+	g.Expect(r.Client.Get(ctx, key, &deploy)).To(Succeed())
+	deploy.Status.UpdatedReplicas = 0
+	deploy.Status.ReadyReplicas = 0
+	g.Expect(r.Client.Status().Update(ctx, &deploy)).To(Succeed())
+
+	_, err = r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "", nil)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(r.Client.Get(ctx, key, &svc)).To(Succeed())
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI),
+		"an already narrowed Service selector must never widen again — every pod template this operator builds carries the component label")
+}
+
+// TestReconcileDeployment_SelectorNarrowsWithoutFullReadiness pins that the
+// narrowing gate is template convergence, not health. An install that never
+// reaches full readiness — a third replica pending on resource pressure or on an
+// unsatisfiable topology-spread constraint — still runs nothing but the labelled
+// template, so it must narrow. Gating on readiness instead would leave such a
+// deployment on the wide selector permanently, and the latch cannot help: it can
+// only hold a narrowing that already happened. The hourly trust-flush pod would
+// keep joining the EndpointSlices on every run, which is the bug the component
+// label exists to fix.
+func TestReconcileDeployment_SelectorNarrowsWithoutFullReadiness(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+
+	deploy := readyDeployment(ks, "keystone-config-abc123")
+	// Every pod runs the current template, but one replica never becomes Ready.
+	deploy.Status.ReadyReplicas = *deploy.Spec.Replicas - 1
+	deploy.Status.Conditions = nil
+	r := newDeployTestReconciler(s, ks, deploy)
+
+	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "", nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var svc corev1.Service
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: "test-keystone", Namespace: "default"}, &svc)).To(Succeed())
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI),
+		"a Deployment that runs only the current template must narrow even while it is degraded")
+}
+
+// TestReconcileDeployment_NarrowingLatchReadsUncached pins that the latch reads
+// the live Service through the uncached APIReader, not the informer cache. Right
+// after the narrowing write the cache can still hold the wide Service; a
+// reconcile triggered in that window by an unrelated event, with the Deployment
+// momentarily unconverged, would read the stale copy and apply the wide selector
+// again — reopening the maintenance-pod race until the Deployment converges.
+//
+// The two readers are separate fake clients: the writable one stands in for the
+// stale cache (it has no Service at all) and apiReader for the API server (it
+// carries the narrowed Service).
+func TestReconcileDeployment_NarrowingLatchReadsUncached(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := deployTestScheme()
+	ks := deployTestKeystone()
+
+	// Unconverged, so the latch is what decides.
+	deploy := readyDeployment(ks, "keystone-config-abc123")
+	deploy.Status.UpdatedReplicas = 1
+	deploy.Status.Replicas = *deploy.Spec.Replicas + 1
+	r := newDeployTestReconciler(s, ks, deploy)
+	r.apiReader = fake.NewClientBuilder().WithScheme(s).
+		WithObjects(buildKeystoneService(ks, false, true)).Build()
+
+	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "", nil)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var svc corev1.Service
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: "test-keystone", Namespace: "default"}, &svc)).To(Succeed())
+	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI),
+		"the latch must read the API server, or a stale cache re-widens an already narrowed selector")
+}
+
+// TestMaintenancePodsNotSelectedByAPIService locks the invariant the API
+// Service depends on: only the API pods satisfy its selector. The maintenance
+// CronJob pod templates once carried the full selector, and because the Service
+// targets a numeric port and job pods have no readiness probe, every scheduled
+// run turned a pod with nothing listening into a ready endpoint.
+func TestMaintenancePodsNotSelectedByAPIService(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := deployTestKeystone()
+	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
+	}
+	ks.Spec.PasswordRotation = &keystonev1alpha1.PasswordRotationSpec{
+		Enabled:  true,
+		Schedule: "0 0 1 * *",
+	}
+
+	selector := labels.SelectorFromSet(buildKeystoneService(ks, false, true).Spec.Selector)
+
+	// The API pods must keep matching, or the Service would have no backends.
+	apiPodLabels := buildKeystoneDeployment(ks, "keystone-config-abc123", "", "", nil).Spec.Template.Labels
+	g.Expect(selector.Matches(labels.Set(apiPodLabels))).To(BeTrue(),
+		"the API pod template must satisfy the API Service selector")
+
+	cases := []struct {
+		component string
+		cronJob   *batchv1.CronJob
+	}{
+		{"trust-flush", trustFlushCronJob(ks, "keystone-config-abc123", "")},
+		{"fernet-rotation", fernetRotationCronJob(ks, "keystone-config-abc123", "fernet-scripts-cm", "")},
+		{"credential-rotation", credentialRotationCronJob(ks, "keystone-config-abc123", "credential-scripts-cm", "")},
+		{"admin-password-rotation", adminPasswordRotationCronJob(ks, "admin-password-scripts-cm")},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.component, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			podLabels := tc.cronJob.Spec.JobTemplate.Spec.Template.Labels
+			g.Expect(podLabels).To(HaveKeyWithValue(naming.LabelKeyComponent, tc.component))
+			g.Expect(selector.Matches(labels.Set(podLabels))).To(BeFalse(),
+				"%s pods must never become endpoints of the API Service", tc.component)
+		})
+	}
 }
 
 // TestBuildKeystoneDeployment_StablePodTemplate verifies that two calls to
@@ -858,10 +1100,25 @@ func TestReconcileDeployment_PDBUpdatedOnReplicaChange(t *testing.T) {
 	g.Expect(pdb.Spec.MinAvailable).To(BeNil())
 }
 
-func TestReconcileDeployment_PDBSelectorMatchesDeployment(t *testing.T) {
+// TestReconcileDeployment_PDBSelectorMatchesDeploymentPods verifies the budget
+// covers every API pod and no maintenance pod. It deliberately does not equal
+// the Deployment's own selector: that one is immutable and therefore stays on
+// name and instance, while the budget additionally excludes Job-created pods so
+// they cannot inflate currentHealthy.
+//
+// The exclusion must not be keyed on app.kubernetes.io/component=api. That label
+// arrives with this operator build, so on the operator upgrade a component-keyed
+// budget matches none of the API pods actually serving — and the eviction API
+// only consults budgets matching the pod being evicted, so those pods would have
+// no budget at all until the migration rollout lands, and forever if it wedges.
+// A node drain could then take every replica at once.
+func TestReconcileDeployment_PDBSelectorMatchesDeploymentPods(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := deployTestScheme()
 	ks := deployTestKeystone()
+	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
+	}
 	r := newDeployTestReconciler(s, ks)
 
 	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
@@ -877,7 +1134,34 @@ func TestReconcileDeployment_PDBSelectorMatchesDeployment(t *testing.T) {
 		Name: "test-keystone", Namespace: "default",
 	}, &pdb)).To(Succeed())
 
-	g.Expect(pdb.Spec.Selector.MatchLabels).To(Equal(deploy.Spec.Selector.MatchLabels))
+	g.Expect(pdbSelects(g, &pdb, deploy.Spec.Template.Labels)).To(BeTrue(),
+		"the budget must cover the API pods")
+	g.Expect(pdbSelects(g, &pdb, legacyAPIPodLabels(ks))).To(BeTrue(),
+		"the budget must cover API pods from a template predating the component label")
+
+	// A maintenance pod carries the CronJob pod-template labels plus the Job
+	// controller's own job-name label, and no readiness probe — so a budget that
+	// matched it would count it as healthy from its first moment and raise
+	// disruptionsAllowed for the API pods.
+	trustFlushPod := maps.Clone(trustFlushCronJob(ks, "keystone-config-abc123", "").Spec.JobTemplate.Spec.Template.Labels)
+	trustFlushPod[naming.LabelKeyJobName] = "test-keystone-trust-flush-29000000"
+	g.Expect(pdbSelects(g, &pdb, trustFlushPod)).To(BeFalse(),
+		"a Job-created maintenance pod must never count towards the budget")
+}
+
+// pdbSelects reports whether the budget's selector — MatchLabels and
+// MatchExpressions together — matches a pod carrying podLabels.
+func pdbSelects(g *WithT, pdb *policyv1.PodDisruptionBudget, podLabels map[string]string) bool {
+	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+	g.Expect(err).NotTo(HaveOccurred())
+	return selector.Matches(labels.Set(podLabels))
+}
+
+// legacyAPIPodLabels returns the pod-template labels an API pod created by an
+// operator build predating app.kubernetes.io/component carries. Those pods are
+// the ones still serving while the migration rollout runs.
+func legacyAPIPodLabels(ks *keystonev1alpha1.Keystone) map[string]string {
+	return commonLabels(ks)
 }
 
 func TestBuildPodDisruptionBudget_BoundaryReplicas2(t *testing.T) {
@@ -1962,7 +2246,7 @@ func TestBuildKeystoneService_NameMatchesCR(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	svc := buildKeystoneService(ks, false)
+	svc := buildKeystoneService(ks, false, true)
 
 	g.Expect(svc.Name).To(Equal(ks.Name),
 		"Service Name must equal the CR name")
@@ -2362,11 +2646,11 @@ func TestBuildKeystoneService_FederationTargetPortSwitch(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := deployTestKeystone()
 
-	plain := buildKeystoneService(ks, false)
+	plain := buildKeystoneService(ks, false, true)
 	g.Expect(plain.Spec.Ports[0].Port).To(Equal(int32(5000)))
 	g.Expect(plain.Spec.Ports[0].TargetPort.IntValue()).To(Equal(5000))
 
-	federated := buildKeystoneService(ks, true)
+	federated := buildKeystoneService(ks, true, true)
 	g.Expect(federated.Spec.Ports[0].Port).To(Equal(int32(5000)), "the Service port is the stable API contract")
 	g.Expect(federated.Spec.Ports[0].TargetPort.IntValue()).To(Equal(int(federationProxyPort)))
 }

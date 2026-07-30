@@ -15,6 +15,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -126,6 +127,50 @@ func TestBuildKeystoneNetworkPolicy_PodSelector(t *testing.T) {
 	g.Expect(np.Spec.PodSelector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(np.Spec.PodSelector.MatchLabels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 	g.Expect(np.Spec.PodSelector.MatchLabels).To(HaveLen(2))
+}
+
+// TestBuildKeystoneNetworkPolicy_PodSelectorCoversMaintenancePods locks the
+// egress guarantee the rotation scripts depend on: the pod selector matches on
+// name and instance only, so every maintenance pod keeps inheriting the
+// auto-derived egress rules even though its component label differs from the
+// API pods'. Without the apiserver rule those scripts cannot PATCH their
+// rotated keys back and every scheduled run fails.
+func TestBuildKeystoneNetworkPolicy_PodSelectorCoversMaintenancePods(t *testing.T) {
+	ks := npTestKeystone()
+	ks.Spec.NetworkPolicy = &keystonev1alpha1.NetworkPolicySpec{
+		Ingress: []keystonev1alpha1.NetworkPolicyIngressSource{
+			{NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "openstack"}}},
+		},
+	}
+	ks.Spec.TrustFlush = &keystonev1alpha1.TrustFlushSpec{
+		Schedule: keystonev1alpha1.DefaultTrustFlushSchedule,
+	}
+	ks.Spec.PasswordRotation = &keystonev1alpha1.PasswordRotationSpec{
+		Enabled:  true,
+		Schedule: "0 0 1 * *",
+	}
+
+	selector := labels.SelectorFromSet(buildKeystoneNetworkPolicy(ks, "", nil).Spec.PodSelector.MatchLabels)
+
+	cases := []struct {
+		name      string
+		podLabels map[string]string
+	}{
+		{"api", buildKeystoneDeployment(ks, "keystone-config-abc123", "", "", nil).Spec.Template.Labels},
+		{"trust-flush", trustFlushCronJob(ks, "keystone-config-abc123", "").Spec.JobTemplate.Spec.Template.Labels},
+		{"fernet-rotation", fernetRotationCronJob(ks, "keystone-config-abc123", "fernet-scripts-cm", "").Spec.JobTemplate.Spec.Template.Labels},
+		{"credential-rotation", credentialRotationCronJob(ks, "keystone-config-abc123", "credential-scripts-cm", "").Spec.JobTemplate.Spec.Template.Labels},
+		{"admin-password-rotation", adminPasswordRotationCronJob(ks, "admin-password-scripts-cm").Spec.JobTemplate.Spec.Template.Labels},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+
+			g.Expect(selector.Matches(labels.Set(tc.podLabels))).To(BeTrue(),
+				"%s pods must stay selected by the NetworkPolicy", tc.name)
+		})
+	}
 }
 
 func TestBuildKeystoneNetworkPolicy_PolicyTypes(t *testing.T) {

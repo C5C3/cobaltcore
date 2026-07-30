@@ -33,6 +33,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
+	"github.com/c5c3/forge/internal/common/naming"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -663,14 +664,19 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 		Name:      "test-keystone-credential-rotate",
 	}, &cronJob)).To(Succeed())
 
-	// Verify labels on CronJob ObjectMeta and pod template.
+	// Verify labels on CronJob ObjectMeta and pod template. The CronJob object
+	// is not a pod, so its metadata stays on the plain common labels; the pod
+	// template adds the component that keeps rotation pods out of the API
+	// Service.
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 	g.Expect(cronJob.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+	g.Expect(cronJob.Labels).NotTo(HaveKey(naming.LabelKeyComponent))
 	podTemplate := cronJob.Spec.JobTemplate.Spec.Template
 	g.Expect(podTemplate.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(podTemplate.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 	g.Expect(podTemplate.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))
+	g.Expect(podTemplate.Labels).To(HaveKeyWithValue(naming.LabelKeyComponent, "credential-rotation"))
 
 	podSpec := podTemplate.Spec
 

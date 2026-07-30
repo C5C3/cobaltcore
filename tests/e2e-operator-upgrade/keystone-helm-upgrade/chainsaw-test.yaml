@@ -16,7 +16,12 @@
 #     Keystone service image tag, not the operator version),
 #   - the bootstrap Job is NOT re-run (its UID is unchanged and exactly one
 #     bootstrap Job exists), guarding the cross-version re-bootstrap failure
-#     mode (bootstrap is gated on the admin-password digest, not the image).
+#     mode (bootstrap is gated on the admin-password digest, not the image),
+#   - the API Service never loses its backends while the new operator narrows
+#     the Service selector to app.kubernetes.io/component=api. Ready=True and
+#     observedGeneration are derived from Deployment status and stay green
+#     through a total endpoint outage, so the EndpointSlices are sampled
+#     directly.
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
 metadata:
@@ -67,8 +72,24 @@ spec:
             exit 1
           fi
           echo "Baseline bootstrap Job UID: ${BOOT_UID}"
+          # Stash the API Service backend count too: Step 5 asserts it never
+          # drops while the new operator narrows the Service selector. The
+          # pipeline is guarded so a failed kubectl or jq leaves ENDPOINTS
+          # empty and reaches the diagnostic below instead of aborting the
+          # script under set -e with no message.
+          ENDPOINTS=$(kubectl get endpointslices -n openstack \
+            -l kubernetes.io/service-name=keystone-op-upgrade -o json 2>/dev/null \
+            | jq '[.items[].endpoints[]?
+                   | select((.conditions.terminating // false) == false)
+                   | .addresses[]?] | length' 2>/dev/null || true)
+          if [ -z "${ENDPOINTS}" ] || [ "${ENDPOINTS}" -lt 1 ]; then
+            echo "FAIL: API Service has no backends before the upgrade (${ENDPOINTS:-0})"
+            exit 1
+          fi
+          echo "Baseline API Service backend count: ${ENDPOINTS}"
           kubectl create configmap keystone-op-upgrade-baseline -n openstack \
             --from-literal=bootstrap-uid="${BOOT_UID}" \
+            --from-literal=endpoints="${ENDPOINTS}" \
             --dry-run=client -o yaml | kubectl apply -f -
   # ── Step 3: helm upgrade to the locally built chart + CRDs ─────────────
   # Chainsaw runs scripts with the test directory as CWD, so ../../.. is the
@@ -129,15 +150,94 @@ spec:
             exit 1
           fi
           echo "OK: rollout complete (updatedReplicas=${UPD} == replicas=${REP})"
-  # ── Step 5: Force one full reconcile by the NEW operator ───────────────
+  # ── Step 5: Assert the API Service keeps its backends across the upgrade ─
+  # The new operator narrows the API Service selector to
+  # app.kubernetes.io/component=api, a label the pods running under the
+  # released operator do not carry. Applying that narrowing before the
+  # Deployment has rolled onto the labelled template would empty the
+  # EndpointSlices while those pods are the only ones serving — and a rollout
+  # that wedges would never repool them. Ready=True, installedRelease, and
+  # observedGeneration are all derived from Deployment status and stay green
+  # through that outage, so sample the EndpointSlices directly, from the moment
+  # the new operator takes over until the narrowing actually lands. Runs before
+  # the Step-6 replica patch so the baseline count still describes the CR.
+  - name: assert-endpoints-survive-upgrade
+    try:
+    - script:
+        shell: bash
+        # 5m: the migration rollout has to create a new API pod and get it
+        # through the keystone startup probe before the selector may narrow.
+        timeout: 300s
+        content: |
+          set -euo pipefail
+          SERVICE=keystone-op-upgrade
+          BASE=$(kubectl get configmap keystone-op-upgrade-baseline -n openstack \
+            -o jsonpath='{.data.endpoints}')
+          if [ -z "${BASE}" ]; then
+            echo "FAIL: no baseline backend count stashed by the capture-baseline step"
+            exit 1
+          fi
+          echo "baseline backend count: ${BASE}"
+          deadline=$(( $(date +%s) + 240 ))
+          narrowed=false
+          while :; do
+            # Terminating addresses are excluded: the surge pod replacement
+            # briefly publishes the old and the new address at once, and the
+            # old one is what leaves. A transient API-server error yields an
+            # empty COUNT; that sample counts as no observation, and the next
+            # tick retries — this loop samples the API server for up to 240s
+            # while the operator Deployment rolls, so a hiccup here must not be
+            # reported as an upgrade regression.
+            COUNT=$(kubectl get endpointslices -n openstack \
+              -l kubernetes.io/service-name="${SERVICE}" -o json 2>/dev/null \
+              | jq '[.items[].endpoints[]?
+                     | select((.conditions.terminating // false) == false)
+                     | .addresses[]?] | length' 2>/dev/null || true)
+            if [ -n "${COUNT}" ] && [ "${COUNT}" -lt "${BASE}" ]; then
+              echo "FAIL: API Service backends dropped to ${COUNT} (baseline ${BASE}) during the operator upgrade"
+              echo "The selector was narrowed before the live API pods carried app.kubernetes.io/component=api."
+              kubectl get svc "${SERVICE}" -n openstack -o yaml 2>&1 || true
+              kubectl get endpointslices -n openstack \
+                -l kubernetes.io/service-name="${SERVICE}" -o yaml 2>&1 || true
+              kubectl get pods -n openstack \
+                -l app.kubernetes.io/instance="${SERVICE}" -o wide 2>&1 || true
+              exit 1
+            fi
+            SEL=$(kubectl get svc "${SERVICE}" -n openstack -o json 2>/dev/null \
+              | jq -r '.spec.selector["app.kubernetes.io/component"] // ""' 2>/dev/null || true)
+            if [ "${SEL}" = "api" ]; then
+              narrowed=true
+              echo "OK: selector narrowed to component=api and backends never fell below ${BASE}"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              break
+            fi
+            sleep 2
+          done
+          if [ "${narrowed}" = false ]; then
+            echo "FAIL: the new operator never narrowed the API Service selector to app.kubernetes.io/component=api"
+            echo "Without the narrowing the sampling above proves nothing — maintenance pods can still become backends."
+            kubectl get svc "${SERVICE}" -n openstack -o yaml 2>&1 || true
+            kubectl get deploy "${SERVICE}" -n openstack -o yaml 2>&1 || true
+            exit 1
+          fi
+    catch:
+    - script:
+        content: |
+          kubectl get endpointslices -n openstack \
+            -l kubernetes.io/service-name=keystone-op-upgrade -o yaml 2>&1 || true
+          kubectl get pods -n openstack -o wide 2>&1 || true
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 2>&1 || true
+  # ── Step 6: Force one full reconcile by the NEW operator ───────────────
   # Patch a real spec field (spec.deployment.replicas 1 → 2) so
   # metadata.generation advances. An annotation poke would NOT bump generation
   # (with the /status subresource the apiserver increments generation only on
-  # .spec changes), which is exactly what would make the Step-6
+  # .spec changes), which is exactly what would make the Step-7
   # observedGeneration check tautological: observedGeneration == generation was
   # already true from the released operator's last status write and would stay
   # true whether or not the NEW operator ever reconciled. Bumping generation is
-  # what lets Step 6 prove the NEW operator drove a post-upgrade reconcile to
+  # what lets Step 7 prove the NEW operator drove a post-upgrade reconcile to
   # completion. Same field and pattern as tests/e2e/keystone/semantic-invariants.
   - name: poke-reconcile
     try:
@@ -175,7 +275,7 @@ spec:
             echo "FAIL: spec patch did not advance metadata.generation (${GEN_BEFORE} -> ${GEN_AFTER})"
             exit 1
           fi
-  # ── Step 6: Assert Ready persists and no re-bootstrap happened ─────────
+  # ── Step 7: Assert Ready persists and no re-bootstrap happened ─────────
   - name: assert-after-upgrade
     try:
     - assert:
@@ -198,7 +298,7 @@ spec:
         timeout: 3m
         content: |
           set -euo pipefail
-          # Poll until status.observedGeneration catches up to the (Step-5
+          # Poll until status.observedGeneration catches up to the (Step-6
           # bumped) metadata.generation — this is what proves the NEW operator
           # drove a post-upgrade reconcile to completion. The declarative
           # Ready=True assert above cannot prove it on its own: Ready was already

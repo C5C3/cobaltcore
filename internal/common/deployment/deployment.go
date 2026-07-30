@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/apply"
+	"github.com/c5c3/forge/internal/common/naming"
 )
 
 // EnsureDeployment creates a Deployment if it does not exist or applies its
@@ -103,6 +104,56 @@ func EnsureService(ctx context.Context, c client.Client, scheme *runtime.Scheme,
 	}
 
 	return apply.EnsureObject(ctx, c, scheme, owner, svc, apply.FieldManager)
+}
+
+// TemplateConverged reports whether every pod of the Deployment belongs to its
+// current pod template: the deployment controller has observed the latest
+// generation and reported at least one pod, and Status.Replicas (pods across all
+// ReplicaSets) equals Status.UpdatedReplicas (pods of the newest one only), so no
+// old-template pod survives. A status that reports no pod at all is not
+// convergence, it is a Deployment the controller has not acted on yet.
+//
+// It is the precondition for narrowing the API Service selector to the API
+// component. Readiness is deliberately not part of it — an unready pod is not an
+// endpoint regardless of which selector the Service carries, while demanding it
+// would strand an install that never reaches full readiness (a replica pending
+// on resource pressure or an unsatisfiable topology-spread constraint) on the
+// wide selector forever, and with it on the maintenance-pod race the narrowing
+// closes. Callers that need full convergence *including* readiness — the
+// RollingUpdate → Contracting flip, which drops columns old-image pods still
+// read — keep their own stricter check.
+func TemplateConverged(deploy *appsv1.Deployment) bool {
+	return deploy.Status.ObservedGeneration >= deploy.Generation &&
+		deploy.Status.Replicas > 0 &&
+		deploy.Status.UpdatedReplicas == deploy.Status.Replicas
+}
+
+// APISelectorNarrowed reports whether the named Service already selects by
+// naming.ComponentAPI. Callers latch the two-phase narrowing of the API Service
+// selector on it: the narrowing is a one-way migration off pod templates that
+// predate the component label, so once a Service carries the narrow selector it
+// must never widen again. Every template the operator builds carries the label,
+// so no later rollout can produce a pod the narrow selector misses — while
+// widening would re-admit maintenance pods as endpoints for the duration of
+// every later rollout.
+//
+// c must be an uncached reader (mgr.GetAPIReader()). Reading through the
+// informer cache would decide the latch from state that can still predate the
+// narrowing write: a reconcile triggered in that window by an unrelated event
+// would see a wide Service, and if the Deployment happened to be unconverged
+// just then it would apply the wide selector again — reopening the race for as
+// long as the Deployment takes to converge.
+//
+// A Service that does not exist yet counts as not narrowed.
+func APISelectorNarrowed(ctx context.Context, c client.Reader, namespace, name string) (bool, error) {
+	svc := &corev1.Service{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, svc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("getting Service %s/%s: %w", namespace, name, err)
+	}
+	return svc.Spec.Selector[naming.LabelKeyComponent] == naming.ComponentAPI, nil
 }
 
 // EnsurePDB creates a PodDisruptionBudget if it does not exist or applies its

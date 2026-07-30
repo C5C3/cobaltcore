@@ -24,6 +24,7 @@ import (
 
 const pinKeystoneDeploymentDefaultGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-keystone
     app.kubernetes.io/managed-by: keystone-operator
     app.kubernetes.io/name: keystone
@@ -43,6 +44,7 @@ spec:
   template:
     metadata:
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-keystone
         app.kubernetes.io/managed-by: keystone-operator
         app.kubernetes.io/name: keystone
@@ -166,6 +168,7 @@ status: {}
 
 const pinKeystoneDeploymentDynamicCredentialsGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-keystone
     app.kubernetes.io/managed-by: keystone-operator
     app.kubernetes.io/name: keystone
@@ -187,6 +190,7 @@ spec:
       annotations:
         keystone.c5c3.io/db-connection-hash: 0123abc
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-keystone
         app.kubernetes.io/managed-by: keystone-operator
         app.kubernetes.io/name: keystone
@@ -310,6 +314,7 @@ status: {}
 
 const pinKeystoneDeploymentDBTLSDomainsGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-keystone
     app.kubernetes.io/managed-by: keystone-operator
     app.kubernetes.io/name: keystone
@@ -329,6 +334,7 @@ spec:
   template:
     metadata:
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-keystone
         app.kubernetes.io/managed-by: keystone-operator
         app.kubernetes.io/name: keystone
@@ -478,6 +484,7 @@ status: {}
 
 const pinKeystoneDeploymentFederationGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-keystone
     app.kubernetes.io/managed-by: keystone-operator
     app.kubernetes.io/name: keystone
@@ -497,6 +504,7 @@ spec:
   template:
     metadata:
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-keystone
         app.kubernetes.io/managed-by: keystone-operator
         app.kubernetes.io/name: keystone
@@ -713,6 +721,7 @@ status: {}
 
 const pinKeystoneDeploymentAutoscalingGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-keystone
     app.kubernetes.io/managed-by: keystone-operator
     app.kubernetes.io/name: keystone
@@ -731,6 +740,7 @@ spec:
   template:
     metadata:
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-keystone
         app.kubernetes.io/managed-by: keystone-operator
         app.kubernetes.io/name: keystone
@@ -865,6 +875,7 @@ spec:
     protocol: TCP
     targetPort: 5000
   selector:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-keystone
     app.kubernetes.io/name: keystone
 status:
@@ -884,6 +895,7 @@ spec:
     protocol: TCP
     targetPort: 5050
   selector:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-keystone
     app.kubernetes.io/name: keystone
 status:
@@ -1009,7 +1021,7 @@ func TestPinKeystoneService(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewWithT(t)
 
-			got, err := yaml.Marshal(buildKeystoneService(testKeystone(), tc.federationActive))
+			got, err := yaml.Marshal(buildKeystoneService(testKeystone(), tc.federationActive, true))
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(string(got)).To(Equal(tc.golden),
 				"the rendered Keystone Service must stay byte-identical")

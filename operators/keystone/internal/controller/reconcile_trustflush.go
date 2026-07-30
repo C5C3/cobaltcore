@@ -120,7 +120,7 @@ func trustFlushCronJob(keystone *keystonev1alpha1.Keystone, configMapName, domai
 				Spec: batchv1.JobSpec{
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: commonLabels(keystone),
+							Labels: componentLabels(keystone, "trust-flush"),
 						},
 						Spec: corev1.PodSpec{
 							PriorityClassName: priorityClassName(keystone),
