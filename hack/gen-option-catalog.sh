@@ -36,7 +36,7 @@ Usage: hack/gen-option-catalog.sh [--check] <service> <release> [image-ref]
 
   --check       diff the generated catalog against the committed file instead
                 of writing it; non-zero exit on any difference.
-  service       keystone or glance.
+  service       keystone, glance, or placement.
   release       release directory name (e.g. 2025.2).
   image-ref     service image to extract from
                 (default: ghcr.io/c5c3/<service>:<release>).
@@ -74,11 +74,26 @@ if [[ -z "${SERVICE_REF}" || "${SERVICE_REF}" == "null" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Map the service to its oslo-config-generator config path.
+# 3. Map the service to its oslo-config-generator config path and to the number
+#    of sections a complete extraction must yield. That floor catches a
+#    truncated generator run, and it is per service because a full run yields
+#    very different counts: keystone registers 44 sections and glance 30, so 10
+#    is a loose guard for both, while placement registers 8 (2025.2) and 9
+#    (2026.1).
 # ---------------------------------------------------------------------------
 case "${SERVICE}" in
-  keystone) GEN_CONFIG_PATH="config-generator/keystone.conf" ;;
-  glance) GEN_CONFIG_PATH="etc/oslo-config-generator/glance-api.conf" ;;
+  keystone)
+    GEN_CONFIG_PATH="config-generator/keystone.conf"
+    MIN_SECTIONS=10
+    ;;
+  glance)
+    GEN_CONFIG_PATH="etc/oslo-config-generator/glance-api.conf"
+    MIN_SECTIONS=10
+    ;;
+  placement)
+    GEN_CONFIG_PATH="etc/placement/config-generator.conf"
+    MIN_SECTIONS=8
+    ;;
   *)
     echo "unsupported service ${SERVICE}: no oslo-config-generator config mapping" >&2
     exit 1
@@ -159,6 +174,7 @@ def normalize(name):
 
 service = sys.argv[1]
 release = sys.argv[2]
+min_sections = int(sys.argv[3])
 options = json.load(sys.stdin)["options"]
 
 opts_by_section = {}   # section -> set of current option names
@@ -194,10 +210,10 @@ for section in set(opts_by_section) | set(removal) | set(renamed):
     sections[section] = {"opts": sorted(live), "deprecated": deprecated}
 
 total = sum(len(section["opts"]) for section in sections.values())
-if len(sections) < 10 or total < 100 or "DEFAULT" not in sections:
+if len(sections) < min_sections or total < 100 or "DEFAULT" not in sections:
     sys.stderr.write(
-        "plausibility floor not met for %s %s: sections=%d options=%d default=%s\n"
-        % (service, release, len(sections), total, "DEFAULT" in sections)
+        "plausibility floor not met for %s %s: sections=%d (min %d) options=%d default=%s\n"
+        % (service, release, len(sections), min_sections, total, "DEFAULT" in sections)
     )
     sys.exit(1)
 
@@ -207,7 +223,7 @@ PYEOF
 )
 
 docker run -i --rm "${IMAGE_REF}" /var/lib/openstack/bin/python3 -c "${TRANSFORM}" \
-  "${SERVICE}" "${RELEASE}" < "${WORK_DIR}/raw.json" > "${WORK_DIR}/catalog.json"
+  "${SERVICE}" "${RELEASE}" "${MIN_SECTIONS}" < "${WORK_DIR}/raw.json" > "${WORK_DIR}/catalog.json"
 
 # ---------------------------------------------------------------------------
 # 10. Write the catalog, or (in --check mode) diff it against the committed one.

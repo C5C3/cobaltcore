@@ -392,14 +392,14 @@ verify-invalid-cr-fixtures:
 .PHONY: gen-option-catalogs
 # gen-option-catalogs regenerates the per-release option catalogs the
 # extraConfig validation checks against. For every releases/<release>/ directory
-# it runs hack/gen-option-catalog.sh for keystone and glance, extracting each
-# catalog from the matching shipped service image via that image's own
-# oslo-config-generator. Requires docker and network access: it pulls the
-# service image when absent and fetches the upstream generator config. It is
-# intentionally wired into no aggregate target and no CI job.
+# it runs hack/gen-option-catalog.sh for keystone, glance, and placement,
+# extracting each catalog from the matching shipped service image via that
+# image's own oslo-config-generator. Requires docker and network access: it
+# pulls the service image when absent and fetches the upstream generator
+# config. It is intentionally wired into no aggregate target and no CI job.
 gen-option-catalogs:
 	@for release in $(notdir $(patsubst %/,%,$(wildcard releases/*/))); do \
-		for service in keystone glance; do \
+		for service in keystone glance placement; do \
 			echo "Generating $$service $$release option catalog..."; \
 			hack/gen-option-catalog.sh $$service $$release; \
 		done; \
@@ -413,7 +413,7 @@ gen-option-catalogs:
 # aggregate target and no CI job.
 verify-option-catalogs:
 	@for release in $(notdir $(patsubst %/,%,$(wildcard releases/*/))); do \
-		for service in keystone glance; do \
+		for service in keystone glance placement; do \
 			echo "Checking $$service $$release option catalog..."; \
 			hack/gen-option-catalog.sh --check $$service $$release; \
 		done; \
