@@ -27,6 +27,10 @@
 #       <Svc>Ready condition, c5c3 chart RBAC rule
 #   P10 recurring maintenance: a database-backed service projects at least
 #       one housekeeping CronJob (job.EnsureCronJob)
+#   P11 API endpoint isolation: component-labelled API Service selector
+#       (naming.APISelectorLabels), per-component pod-template labels
+#       (naming.ComponentLabels), Job-pod exclusion on the API PDB
+#       (naming.ExcludeJobPods)
 #
 # The keystone reference is audited too — a reference regression is its own
 # [FAIL]. Deliberate thin-profile deviations (a service that legitimately
@@ -385,6 +389,36 @@ for svc in ${SERVICES}; do
   t=0; grep -rq "job.EnsureCronJob" "operators/${svc}/internal/controller/" 2>/dev/null || t=1
   check "${svc}" P10 "maintenance-cronjob" "${t}" \
     "operator projects at least one recurring-maintenance CronJob (job.EnsureCronJob)"
+done
+
+# ---------------------------------------------------------------------------
+# P11 — API endpoint isolation
+# ---------------------------------------------------------------------------
+# A maintenance pod (CronJob/Job) whose template carries bare commonLabels
+# satisfies a name+instance Service selector and becomes an API Service
+# endpoint: the numeric targetPort admits a pod without the container port,
+# and a Job pod has no readiness probe, so it counts as ready from its first
+# moment — a share of in-cluster API traffic is answered with ECONNREFUSED
+# for the pod's whole runtime. The fixed shape selects the API Service by
+# component (naming.APISelectorLabels), labels every pod template per
+# component (naming.ComponentLabels), and keys the API PodDisruptionBudget on
+# the absence of batch.kubernetes.io/job-name (naming.ExcludeJobPods) rather
+# than the component label. These greps are smoke signals: whether EVERY
+# Job/CronJob pod template actually sets a non-api component value is the
+# hand cross-reference in the skill's step 2.
+hdr "P11: API endpoint isolation (component-labelled Service selector, PDB Job-pod exclusion)"
+for svc in ${SERVICES}; do
+  t=0; grep -rq "naming.APISelectorLabels" "operators/${svc}/internal/controller/" 2>/dev/null || t=1
+  check "${svc}" P11 "api-service-selector" "${t}" \
+    "API Service selector narrows by component (naming.APISelectorLabels)"
+
+  t=0; grep -rq "naming.ComponentLabels" "operators/${svc}/internal/controller/" 2>/dev/null || t=1
+  check "${svc}" P11 "component-pod-labels" "${t}" \
+    "pod templates are labelled per component (naming.ComponentLabels)"
+
+  t=0; grep -rq "naming.ExcludeJobPods" "operators/${svc}/internal/controller/" 2>/dev/null || t=1
+  check "${svc}" P11 "pdb-excludes-job-pods" "${t}" \
+    "API PodDisruptionBudget excludes Job pods (naming.ExcludeJobPods)"
 done
 
 # ---------------------------------------------------------------------------

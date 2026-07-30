@@ -127,6 +127,17 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   no database are skipped rather than allowlisted. Presence is a smoke
   signal — whether the CronJobs cover the tasks the service actually
   needs is step 2 below.
+- **P11** — API endpoint isolation: the API Service selector narrows by
+  `app.kubernetes.io/component` (`naming.APISelectorLabels`), pod
+  templates are labelled per component (`naming.ComponentLabels`), and
+  the API PodDisruptionBudget keys on the absence of
+  `batch.kubernetes.io/job-name` (`naming.ExcludeJobPods`) instead of
+  the component label. A maintenance pod template with bare
+  `commonLabels` satisfies a name+instance Service selector and becomes
+  an API endpoint with nothing listening on the API port — the numeric
+  `targetPort` admits it, the missing readiness probe makes it ready
+  from its first moment, and in-cluster API traffic answers
+  `ECONNREFUSED` for its whole runtime (#778, fixed in #785).
 - The **inventory** lists, per service, the helm-unittest, e2e, and
   chaos suite counts. Cross-reference outliers by hand in step 2.
 
@@ -159,6 +170,15 @@ The script checks presence, not content. Using the inventory, confirm:
    too: `ConcurrencyPolicy: Forbid`, a per-run row cap,
    `ActiveDeadlineSeconds`, and a condition that reports the newest
    terminal run instead of merely confirming the CronJob exists.
+6. That every Job/CronJob pod template actually sets a non-`api`
+   component value (grep the builders for `componentLabels(` /
+   `naming.ComponentLabels`). P11 only proves the helpers are
+   referenced somewhere in the package — a single new maintenance
+   workload added with bare `commonLabels` still passes it and
+   reintroduces the #778 endpoint pollution. Keystone's
+   `maintenance-endpoint-isolation` suite pins the isolation
+   end-to-end; a service with maintenance CronJobs and no equivalent
+   assertion is a candidate for pattern 2 below.
 
 ### 3. Run the per-layer authoritative gates
 
@@ -230,6 +250,13 @@ These recurring shapes are worth grepping for first:
    landed in the newest `releases/<version>/source-refs.yaml` but not
    the older ones (or vice versa), so the build matrix builds the
    service for half the supported releases.
+7. **Maintenance pod template with bare `commonLabels`.** A new
+   Job/CronJob builder copies the workload's label set instead of
+   `naming.ComponentLabels` with its own component value, so its pods
+   satisfy the API Service selector again — the #778 shape P11 exists
+   for. The failure is invisible in every gate that renders or asserts
+   on the CronJob itself; only an EndpointSlice-level assertion (the
+   `maintenance-endpoint-isolation` suite) catches it.
 
 ## Notes
 
