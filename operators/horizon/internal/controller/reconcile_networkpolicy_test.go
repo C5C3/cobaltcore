@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -83,6 +84,22 @@ func TestBuildHorizonNetworkPolicy_Rules(t *testing.T) {
 	g.Expect(np.Spec.Egress[0].Ports[0].Port.IntValue()).To(Equal(53))
 	g.Expect(np.Spec.Egress[1].Ports[0].Port.IntValue()).To(Equal(5000))
 	g.Expect(np.Spec.Egress[2].Ports[0].Port.IntValue()).To(Equal(11211))
+}
+
+// The pod selector matches on name and instance only, so the dashboard pods
+// stay selected even though their labels carry a component on top, and any
+// workload added under another component inherits the same auto-derived
+// egress. Losing the DNS and keystone egress would depool every pod.
+func TestBuildHorizonNetworkPolicy_PodSelectorCoversAPIPods(t *testing.T) {
+	g := NewGomegaWithT(t)
+	h := testHorizon()
+	h.Spec.NetworkPolicy = networkPolicySpec()
+
+	selector := labels.SelectorFromSet(buildHorizonNetworkPolicy(h, "horizon-system").Spec.PodSelector.MatchLabels)
+
+	apiPodLabels := buildHorizonDeployment(h, "cm", "").Spec.Template.Labels
+	g.Expect(selector.Matches(labels.Set(apiPodLabels))).To(BeTrue(),
+		"the dashboard pod template must stay selected by the NetworkPolicy")
 }
 
 func TestBuildHorizonNetworkPolicy_GatewayPeerAppended(t *testing.T) {

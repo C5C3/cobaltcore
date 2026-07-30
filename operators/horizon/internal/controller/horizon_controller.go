@@ -103,6 +103,15 @@ type HorizonReconciler struct {
 	// added.
 	OperatorNamespace string
 
+	// apiReader is set during SetupWithManager from mgr.GetAPIReader(): a
+	// direct, uncached reader. reconcileDeployment latches the two-phase
+	// narrowing of the dashboard Service selector on the live Service, and the
+	// informer cache can still hold the pre-narrowing state right after the
+	// narrowing write — a latch decided from it could widen the selector back.
+	// Nil in unit tests that construct the reconciler without a manager; those
+	// fall back to the (read-your-writes) fake client.
+	apiReader client.Reader
+
 	// gatewayAPIAvailable is set during SetupWithManager from the cluster's
 	// RESTMapper and indicates whether the gateway.networking.k8s.io/v1
 	// HTTPRoute CRD is installed. When false, the controller skips the
@@ -332,6 +341,7 @@ func (r *HorizonReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// fail at Start with "no matches for kind HTTPRoute" when the CRD is
 	// missing, preventing every Horizon CR from being reconciled.
 	r.gatewayAPIAvailable = gateway.IsGVKAvailable(mgr.GetRESTMapper(), httpRouteGVK)
+	r.apiReader = mgr.GetAPIReader()
 	setupLog := ctrl.Log.WithName("horizon-setup")
 	if r.gatewayAPIAvailable {
 		setupLog.Info("Gateway API detected; enabling HTTPRoute watch and reconciliation")

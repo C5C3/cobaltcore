@@ -22,6 +22,7 @@ import (
 
 const pinHorizonDeploymentDefaultGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-horizon
     app.kubernetes.io/managed-by: horizon-operator
     app.kubernetes.io/name: horizon
@@ -43,6 +44,7 @@ spec:
       annotations:
         horizon.c5c3.io/secret-key-hash: sk-hash-123
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-horizon
         app.kubernetes.io/managed-by: horizon-operator
         app.kubernetes.io/name: horizon
@@ -153,6 +155,7 @@ status: {}
 
 const pinHorizonDeploymentAutoscalingGolden = `metadata:
   labels:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-horizon
     app.kubernetes.io/managed-by: horizon-operator
     app.kubernetes.io/name: horizon
@@ -171,6 +174,7 @@ spec:
   template:
     metadata:
       labels:
+        app.kubernetes.io/component: api
         app.kubernetes.io/instance: test-horizon
         app.kubernetes.io/managed-by: horizon-operator
         app.kubernetes.io/name: horizon
@@ -292,6 +296,7 @@ spec:
     protocol: TCP
     targetPort: 8080
   selector:
+    app.kubernetes.io/component: api
     app.kubernetes.io/instance: test-horizon
     app.kubernetes.io/name: horizon
 status:
@@ -346,7 +351,7 @@ func TestPinHorizonService(t *testing.T) {
 	t.Run("default", func(t *testing.T) {
 		g := NewWithT(t)
 
-		got, err := yaml.Marshal(buildHorizonService(testHorizon()))
+		got, err := yaml.Marshal(buildHorizonService(testHorizon(), true))
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(string(got)).To(Equal(pinHorizonServiceGolden),
 			"the rendered Horizon Service must stay byte-identical")
