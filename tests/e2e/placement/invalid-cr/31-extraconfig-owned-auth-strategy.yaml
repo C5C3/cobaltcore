@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraConfig setting [api] auth_strategy is rejected by the validating
+# webhook. extraConfig has the last word in the merge, so honoring noauth2
+# would put the API on the no-auth middleware: every request
+# unauthenticated, project and role taken from the x-auth-token header, and
+# reachable from outside the cluster whenever spec.gateway is set. The
+# damage lands the moment the pods load the rendered file, which is why the
+# registry marks the key Rejected rather than Reported.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-invalid-extraconfig-auth-strategy
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: placement-service-password
+  extraConfig:
+    api:
+      auth_strategy: noauth2

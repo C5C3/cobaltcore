@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.database.credentialsMode Dynamic without clusterRef violates the
+# second DatabaseSpec CEL rule; the webhook mirrors it via
+# DynamicCredentialsRequireClusterRef. Dynamic credentials are minted
+# against a MariaDB CR the operator manages, so there is nothing to mint
+# against in brownfield (host) mode. The host field keeps the XOR rule
+# satisfied so this fixture reaches the credentialsMode rule.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-invalid-database-dynamic
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2025.2"
+  database:
+    host: mariadb.example.com
+    credentialsMode: Dynamic
+    database: placement
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: placement-service-password

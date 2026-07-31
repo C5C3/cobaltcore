@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.openStackRelease omitted. What answers is the CRD pattern, not the
+# required-properties list: the defaulting webhook marshals the whole typed
+# object back into its admission patch, and PlacementSpec.OpenStackRelease
+# carries no omitempty tag, so the patch materializes the field as an empty
+# string. By the time the schema is checked the property is present and the
+# empty value fails the pattern. The fixture still earns its place: it pins
+# that no layer invents a release for a CR that names none.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-invalid-release-missing
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: placement-service-password
