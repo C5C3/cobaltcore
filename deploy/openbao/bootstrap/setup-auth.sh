@@ -158,6 +158,51 @@ main() {
     token_max_ttl=72h
   log "glance-db role written."
 
+  # placement-db role on the management cluster's Kubernetes auth mount — the
+  # Placement analogue of the glance-db role above, and equally
+  # keystone-independent. The c5c3 operator's per-ControlPlane
+  # VaultDynamicSecret generator authenticates with the "placement-db-creds"
+  # ServiceAccount to read short-lived DB credentials at
+  # database/mariadb/creds/placement-<namespace>.
+  # bound_service_account_namespaces="*" lets any ControlPlane namespace
+  # authenticate; the fixed SA name is what tells this role apart from
+  # keystone-db and glance-db (a placement-db-creds token can never read their
+  # creds paths), and the cross-tenant boundary is enforced by the
+  # placement-db-dynamic policy, which templates the readable creds path to the
+  # caller's OWN service_account_namespace (an exact match).
+  #
+  # Token TTLs are pinned to DB_CREDS_MAX_TTL (72h, setup-database-tenant.sh) for
+  # the same reason spelled out on the keystone-db role above: OpenBao revokes a
+  # dynamic-secret lease together with the token that minted it, so the token must
+  # outlive the lease or the issued DB credential dies early under a running
+  # Placement.
+  #
+  # The role is written unconditionally but stays dormant until the ControlPlane
+  # spec carries a placement service: no placement-db-creds ServiceAccount is
+  # projected before then, so nothing authenticates against it. Pre-creating it
+  # (as the per-cluster ESO roles above are pre-created) gets the auth half of
+  # that onboarding out of the way.
+  #
+  # The ENGINE half is still open: setup-database-tenant.sh writes the
+  # database/mariadb connection+role pair per service and has a keystone and a
+  # glance branch but no placement one, so database/mariadb/creds/placement-<ns>
+  # — the exact path placement-db-dynamic grants — does not resolve yet.
+  # Kubernetes auth would succeed and the ACL would permit the read, but OpenBao
+  # answers 404 and the Placement CR parks on WaitingForDBCredentials. That
+  # branch cannot be written before the ControlPlane CRD grows
+  # spec.services.placement (the field it gates on) and the c5c3 operator grows
+  # the credential generator whose role-name derivation it must mirror; it
+  # belongs in that same change, so onboarding placement dynamic credentials
+  # needs a second bootstrap pass after it.
+  log "Writing placement-db role on kubernetes/management..."
+  bao_exec bao write "auth/kubernetes/management/role/placement-db" \
+    bound_service_account_names=placement-db-creds \
+    bound_service_account_namespaces="*" \
+    token_policies=placement-db-dynamic \
+    token_ttl=72h \
+    token_max_ttl=72h
+  log "placement-db role written."
+
   # eso-tenant role on the management cluster's Kubernetes auth mount. This is
   # the per-ControlPlane ESO identity a namespaced SecretStore authenticates
   # with (created per tenant by setup-eso-tenant.sh with the "eso-tenant-auth"
