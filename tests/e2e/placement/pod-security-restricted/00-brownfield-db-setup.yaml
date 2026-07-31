@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Brownfield MariaDB Database/User/Grant pre-creation for the PSS-restricted
+# E2E test.
+#
+# The Placement CR lives in the labelled `placement-pss-restricted-test`
+# namespace, but `Database.ClusterRef` / `Cache.ClusterRef` are
+# `LocalObjectReference` and the shared provisioning flow (`IsClusterReady` in
+# internal/common/database/flow.go) only looks up MariaDB CRs in the Placement
+# CR's own namespace — cross-namespace lookup is not supported. To reach the
+# cluster's existing `openstack/openstack-db` without copying MariaDB CRs into
+# the test namespace, the test uses brownfield mode (database.host +
+# cache.servers) and pre-creates the Database/User/Grant CRs here, in
+# `openstack`.
+#
+# The User CR manages the canonical `placement` MariaDB user against the
+# existing `openstack/placement-db` Secret (synced from OpenBao by the cluster's
+# `placement-db` ExternalSecret), so the User's SET PASSWORD lands the same
+# value the PSS-namespace `placement-db` Secret carries (copied from the same
+# standalone OpenBao path) — no race. `cleanupPolicy: Skip` keeps the user alive
+# when this test's User CR is deleted, so a sibling test still managing the same
+# canonical user is not stranded mid-flight.
+#
+# All resource names are prefixed `placement-pss-restricted-` and the database
+# name is `placement_pss` so this fixture cannot collide with sibling tests. The
+# Grant scopes the `placement` user's privileges to the test-only
+# `placement_pss` database.
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Database
+metadata:
+  name: placement-pss-restricted-db
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  characterSet: utf8
+  collate: utf8_general_ci
+  name: placement_pss
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: User
+metadata:
+  name: placement-pss-restricted-user
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  name: placement
+  passwordSecretKeyRef:
+    name: placement-db
+    key: password
+---
+apiVersion: k8s.mariadb.com/v1alpha1
+kind: Grant
+metadata:
+  name: placement-pss-restricted-grant
+  namespace: openstack
+spec:
+  mariaDbRef:
+    name: openstack-db
+  cleanupPolicy: Skip
+  privileges:
+  - "ALL PRIVILEGES"
+  database: placement_pss
+  table: "*"
+  username: placement
