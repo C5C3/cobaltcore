@@ -73,6 +73,11 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: placement-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: c5c3-system
 ---
 apiVersion: v1
