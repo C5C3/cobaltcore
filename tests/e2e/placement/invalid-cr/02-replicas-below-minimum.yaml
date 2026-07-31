@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.deployment.replicas below the CRD Minimum=1 marker. The value is -1
+# rather than 0 because DeploymentSpec.Default() normalizes a zero to
+# DefaultReplicas in the mutating webhook, which runs before schema
+# validation — a CR asking for 0 replicas is admitted and scaled to 3. Only
+# a negative count survives defaulting and reaches the Minimum marker. The
+# keystone corpus makes the same choice for the same reason.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-invalid-replicas
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: -1
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: placement-service-password

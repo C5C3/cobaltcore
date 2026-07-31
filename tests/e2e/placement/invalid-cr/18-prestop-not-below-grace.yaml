@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.deployment.preStopSleepSeconds equal to terminationGracePeriodSeconds
+# violates the drain-window CEL rule on DeploymentSpec: the pod would spend
+# its entire grace period asleep in the preStop hook and be SIGKILLed with
+# requests still in flight. The webhook repeats the rule with the two
+# resolved numbers in its message.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-invalid-prestop
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+    terminationGracePeriodSeconds: 30
+    preStopSleepSeconds: 30
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: placement-service-password

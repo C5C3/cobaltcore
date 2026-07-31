@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.autoscaling.minReplicas above maxReplicas violates the shared
+# AutoscalingSpec CEL rule; the webhook mirrors it. The rule is declared on
+# the type, so the API server reports it at the parent path spec.autoscaling
+# rather than at the minReplicas field.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-invalid-autoscaling-range
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: placement-service-password
+  autoscaling:
+    minReplicas: 5
+    maxReplicas: 2
+    targetCPUUtilization: 80

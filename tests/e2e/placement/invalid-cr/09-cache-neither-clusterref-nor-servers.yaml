@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.cache with neither clusterRef nor servers violates the same CacheSpec
+# XOR CEL rule from the other side. backend is spelled out because the CRD
+# requires it and the defaulting webhook would otherwise be the only thing
+# filling it, which would obscure what this fixture omits on purpose.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-invalid-cache-neither
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement
+    secretRef:
+      name: placement-db
+  cache:
+    backend: dogpile.cache.pymemcache
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: placement-service-password

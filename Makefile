@@ -381,6 +381,7 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/c5c3/invalid-cr/_generate.py --check
 	@python3 tests/e2e/glance/invalid-cr/_generate.py --check
 	@python3 tests/e2e/glance/invalid-glancebackend-cr/_generate.py --check
+	@python3 tests/e2e/placement/invalid-cr/_generate.py --check
 	@echo "Running invalid-CR fixture unit tests..."
 	@python3 tests/e2e/keystone/invalid-cr/test_generate.py
 	@python3 tests/e2e/keystone/invalid-identitybackend-cr/test_generate.py
@@ -388,6 +389,7 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/c5c3/invalid-cr/test_generate.py
 	@python3 tests/e2e/glance/invalid-cr/test_generate.py
 	@python3 tests/e2e/glance/invalid-glancebackend-cr/test_generate.py
+	@python3 tests/e2e/placement/invalid-cr/test_generate.py
 
 .PHONY: gen-option-catalogs
 # gen-option-catalogs regenerates the per-release option catalogs the

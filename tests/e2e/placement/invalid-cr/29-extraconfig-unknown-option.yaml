@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraConfig setting an unknown option in the known [placement]
+# section is rejected by the validating webhook: the singular spelling is
+# absent from the placement 2025.2 option catalog, so a typo'd key can never
+# silently reach the rendered placement.conf. The value is quoted because
+# extraConfig is a map of string to string: a bare YAML boolean would draw a
+# schema type error and never reach the catalog check.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-invalid-extraconfig-unknown-option
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: placement-service-password
+  extraConfig:
+    placement:
+      randomize_allocation_candidate: "true"
