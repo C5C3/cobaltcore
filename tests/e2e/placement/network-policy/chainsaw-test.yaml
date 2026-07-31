@@ -1,0 +1,153 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the NetworkPolicy sub-reconciler.
+#
+# SCOPE CAVEAT: the default CI CNI (kindnet) does NOT enforce NetworkPolicy,
+# so this suite validates the rendered policy object (ingress on the Placement
+# API port 8778, auto-derived DNS/database/keystone/cache egress) and its
+# lifecycle, not actual traffic enforcement — same scope as the
+# keystone/horizon/glance network-policy suites.
+#
+# The auto-derived egress order is deterministic (DNS, database, keystone,
+# cache):
+#   - DNS      UDP+TCP 53
+#   - database TCP 3306 (spec.database default port)
+#   - keystone TCP 5000 (parsed from spec.keystoneEndpoint)
+#   - cache    TCP 11211 (managed memcached)
+# Unlike glance, placement renders a dedicated keystone egress rule:
+# keystonemiddleware validates every authenticated request server-side, and
+# without that rule the API answers 503 while both readiness signals keep
+# passing (they target the unauthenticated version document). Placement reads
+# and writes nothing but its own database, so there is no object-store egress
+# rule.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: placement-network-policy
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Placement CR with networkPolicy ──────────────────
+  - try:
+    - apply:
+        file: 00-placement-cr.yaml
+  # ── Step 2: Assert NetworkPolicy created with the expected rules ───────
+  - try:
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyReady
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: placement-netpol
+            namespace: openstack
+          spec:
+            # The selector carries no component key, so the policy covers the
+            # API pods and the db-sync pods alike — without the DNS and database
+            # egress, placement-manage cannot reach the schema it migrates.
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: placement
+                app.kubernetes.io/instance: placement-netpol
+            policyTypes:
+            - Ingress
+            - Egress
+            ingress:
+            - ports:
+              - protocol: TCP
+                port: 8778
+            egress:
+            - ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+            - ports:
+              - protocol: TCP
+                port: 3306
+            - ports:
+              - protocol: TCP
+                port: 5000
+            - ports:
+              - protocol: TCP
+                port: 11211
+    catch:
+    - script:
+        content: |
+          echo "=== Placement CR status ==="
+          kubectl get placement placement-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== NetworkPolicy ==="
+          kubectl get networkpolicy placement-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Add a second ingress source and assert it lands ────────────
+  # Peer arithmetic: the operator appends one peer per declared ingress source
+  # plus one for its own Namespace (so the operator's health check reaches the
+  # API). One source therefore renders 2 peers and the patched two sources
+  # render 3 — `>= 3` is what distinguishes "the patch landed" from "the policy
+  # is unchanged".
+  - try:
+    - patch:
+        file: 01-patch-update-ingress.yaml
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: placement-netpol
+            namespace: openstack
+          spec:
+            ingress:
+            - (length(from) >= `3`): true
+    catch:
+    - script:
+        content: |
+          echo "=== Placement CR status ==="
+          kubectl get placement placement-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== NetworkPolicy ==="
+          kubectl get networkpolicy placement-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Disable networkPolicy and assert deletion ──────────────────
+  - try:
+    - patch:
+        file: 02-patch-disable-networkpolicy.yaml
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+    - script:
+        content: |
+          if kubectl get networkpolicy placement-netpol -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: NetworkPolicy should have been deleted"
+            exit 1
+          fi
+          echo "PASS: NetworkPolicy correctly deleted"
