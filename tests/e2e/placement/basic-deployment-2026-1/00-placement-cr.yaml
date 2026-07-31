@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Placement CR fixture for the basic-deployment E2E test (2026.1 release).
+# Managed mode: database via clusterRef to openstack-db (schema
+# placement_basic_2026), cache via clusterRef to openstack-memcached. The
+# database credentials come from the ESO-synced placement-db Secret and the
+# service-user password from the pre-seeded keystone-admin Secret (both
+# deploy/kind/infrastructure). Apart from the release, the image tag, and the
+# names, this is the 2025.2 fixture: placement has shipped the same WSGI
+# application across both releases, so the operator renders the same launch
+# command and the same placement.conf for either one.
+apiVersion: placement.openstack.c5c3.io/v1alpha1
+kind: Placement
+metadata:
+  name: placement-basic-2026
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/placement
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: placement_basic_2026
+    secretRef:
+      name: placement-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

@@ -1,0 +1,293 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for happy-path Placement deployment (2025.2 release).
+# Validates the full reconciliation cycle:
+#   - All 7 sub-conditions progress to True with expected reasons
+#   - Aggregate Ready=True with reason AllReady
+#   - The API Deployment launches uWSGI against the image-shipped WSGI entry
+#     (--wsgi-file /var/lib/openstack/bin/placement-api) and points placement at
+#     the mounted config through OS_PLACEMENT_CONFIG_DIR
+#   - The database URL and the service-user password arrive as env vars, and
+#     both content-digest annotations are stamped on the pod template so a
+#     rotated credential rolls the pods
+#   - Owned resources exist (Deployment, Service on 8778, PDB, config ConfigMap)
+#   - The rendered placement.conf keeps its database options in
+#     [placement_database] and renders no [database] section
+#   - The Placement API answers the unauthenticated version document with 200,
+#     and rejects an unauthenticated /resource_providers request with exactly
+#     401 — the token-validation path is wired, not disabled
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: placement-basic-deployment
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Placement CR ──────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-placement-cr.yaml
+  # ── Step 2: Assert all sub-conditions and Ready ────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-basic
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'PlacementAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Placement CR status ==="
+          kubectl get placement placement-basic -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Placement API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=placement-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert the Deployment, its uWSGI launch command, Service ────
+  # ── and PDB ─────────────────────────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: placement-basic
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: placement-api
+                  command:
+                  - uwsgi
+                  - "--http"
+                  - ":8778"
+                  - "--http-keepalive"
+                  - "--log-master"
+                  - "--log-format"
+                  - "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
+                  - "--wsgi-file"
+                  - "/var/lib/openstack/bin/placement-api"
+                  - "--master"
+                  - "--lazy-apps"
+                  - "--need-app"
+                  - "--processes"
+                  - "2"
+                  - "--threads"
+                  - "1"
+                # Placement runs one process per pod: no store backend, no
+                # maintenance sidecar, no cache warmer. A second container here
+                # would mean something injected itself into every Placement
+                # deployment in the fleet.
+                (length(containers) == `1`): true
+                # The WSGI entry resolves its config as
+                # $OS_PLACEMENT_CONFIG_DIR/placement.conf, so this env var is
+                # the only thing pointing placement at the mounted ConfigMap —
+                # there is no --config-file and no --pyargv on the command line
+                # asserted above.
+                (containers[0].env[?name == 'OS_PLACEMENT_CONFIG_DIR'].value | [0]): /etc/placement
+                # The DSN and the service-user password travel as oslo.config
+                # env overrides sourced from Secrets, so no credential material
+                # enters the rendered ConfigMap.
+                (containers[0].env[?name == 'OS_PLACEMENT_DATABASE__CONNECTION'].valueFrom.secretKeyRef.name | [0]): placement-basic-db-connection
+                (containers[0].env[?name == 'OS_PLACEMENT_DATABASE__CONNECTION'].valueFrom.secretKeyRef.key | [0]): connection
+                (containers[0].env[?name == 'OS_KEYSTONE_AUTHTOKEN__PASSWORD'].valueFrom.secretKeyRef.name | [0]): keystone-admin
+                (containers[0].env[?name == 'OS_KEYSTONE_AUTHTOKEN__PASSWORD'].valueFrom.secretKeyRef.key | [0]): password
+          status:
+            (availableReplicas > `0`): true
+    # Both credentials are env-var-consumed, so a rotation only reaches the
+    # workers on a Pod restart. The digest annotations are what turns a rotated
+    # DSN or service-user password into a rollout; a missing annotation means a
+    # rotation would leave the pods running the old credential until something
+    # else happened to roll them.
+    - script:
+        content: |
+          set -eu
+          for key in db-connection-hash authtoken-hash; do
+            VALUE=$(kubectl get deploy placement-basic -n openstack \
+              -o "jsonpath={.spec.template.metadata.annotations['placement\.c5c3\.io/${key}']}")
+            if [ -z "$VALUE" ]; then
+              echo "ERROR: pod template carries no placement.c5c3.io/${key} annotation"
+              exit 1
+            fi
+            echo "OK: placement.c5c3.io/${key} = $VALUE"
+          done
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: placement-basic
+            namespace: openstack
+          spec:
+            ports:
+            - port: 8778
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: placement-basic
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: placement
+              app.kubernetes.io/instance: placement-basic
+              app.kubernetes.io/managed-by: placement-operator
+          spec:
+            minAvailable: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: placement
+                app.kubernetes.io/instance: placement-basic
+              # db-sync pods carry no readiness probe, so they count as healthy
+              # from their first moment. Without this exclusion they inflate
+              # currentHealthy and let a drain evict the API pods the budget
+              # protects.
+              matchExpressions:
+              - key: batch.kubernetes.io/job-name
+                operator: DoesNotExist
+  # ── Step 4: Assert the rendered config ConfigMap ────────────────────────
+  # Placement is the one service in the fleet that reads its database options
+  # from [placement_database]. A [database] section would be inert: placement
+  # would fall back to its own default DSN and fail to reach the schema the
+  # db-sync Job migrated. The ConfigMap is resolved through the Deployment's
+  # config volume so the assertion follows the content hash instead of guessing
+  # the current name.
+  - try:
+    - script:
+        content: |
+          kubectl get cm -n openstack -o name | grep placement-basic-config-
+    - script:
+        content: |
+          set -eu
+          CM=$(kubectl get deploy placement-basic -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          test -n "$CM"
+          kubectl get cm "$CM" -n openstack -o 'jsonpath={.data.placement\.conf}' \
+            > /tmp/placement-basic.conf
+          grep -q '^\[placement_database\]$' /tmp/placement-basic.conf
+          if grep -q '^\[database\]$' /tmp/placement-basic.conf; then
+            echo "ERROR: placement.conf carries a [database] section"
+            exit 1
+          fi
+          echo "OK: $CM keeps the database options in [placement_database]"
+  # ── Step 5: Assert the Placement API answers over HTTP ──────────────────
+  # HTTP-level API coverage. "/" is the version document, which placement serves
+  # without a token and without touching the database, so a 200 there proves the
+  # WSGI app is serving requests. The probe retries connection-level failures
+  # inside the pod: kube-proxy's endpoint programming can trail the CR's Ready
+  # flip by a second or two, so a single-shot request races it (seen in CI).
+  # HTTP errors still fail hard.
+  - try:
+    - script:
+        timeout: 90s
+        content: |
+          kubectl run curl-test-placement-basic -n $NAMESPACE --image=ghcr.io/c5c3/placement:2025.2 --rm -i --restart=Never \
+            --command -- python3 -c "
+          import time, urllib.error, urllib.request
+          last = None
+          for _ in range(15):
+              try:
+                  r = urllib.request.urlopen('http://placement-basic.openstack.svc.cluster.local:8778/')
+                  body = r.read().decode()
+                  assert r.status == 200, r.status
+                  assert 'versions' in body, body
+                  print('version document OK, status %d: %s' % (r.status, body))
+                  break
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit('GET / -> HTTP %d' % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  print('version document retry: %s' % exc)
+                  time.sleep(2)
+          else:
+              raise SystemExit('version document never answered after retries: %r' % last)
+          "
+    # The version document alone cannot tell a keystone-protected API from an
+    # open one: placement serves it unauthenticated either way. /resource_providers
+    # is behind keystonemiddleware, so an unauthenticated GET must come back 401.
+    # A 200 would mean [api] auth_strategy never reached the config and every
+    # inventory in the deployment is world-writable; a 503 would mean the
+    # middleware cannot reach Keystone at all. Both fail here, and only
+    # connection-level errors are retried.
+    - script:
+        timeout: 90s
+        content: |
+          kubectl run authz-test-placement-basic -n $NAMESPACE --image=ghcr.io/c5c3/placement:2025.2 --rm -i --restart=Never \
+            --command -- python3 -c "
+          import time, urllib.error, urllib.request
+          last = None
+          for _ in range(15):
+              try:
+                  r = urllib.request.urlopen('http://placement-basic.openstack.svc.cluster.local:8778/resource_providers')
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 401:
+                      print('unauthenticated GET /resource_providers -> HTTP 401')
+                      break
+                  raise SystemExit('unauthenticated GET /resource_providers -> HTTP %d, want 401' % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  print('resource_providers retry: %s' % exc)
+                  time.sleep(2)
+              else:
+                  raise SystemExit('unauthenticated GET /resource_providers -> HTTP %d, want 401' % r.status)
+          else:
+              raise SystemExit('resource_providers never answered after retries: %r' % last)
+          "
+    catch:
+    - script:
+        content: |
+          echo "=== Placement CR status ==="
+          kubectl get placement placement-basic -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Placement API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=placement-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Service and Endpoints ==="
+          kubectl get svc,endpoints -n $NAMESPACE -l app.kubernetes.io/instance=placement-basic 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

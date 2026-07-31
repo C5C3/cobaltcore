@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the HealthCheck sub-reconciler.
+# Verifies the operator's HTTP probe of the Placement API version document
+# drives PlacementAPIReady and status.endpoint:
+#   - PlacementAPIReady=True with reason APIHealthy once the Deployment serves
+#   - status.endpoint carries the cluster-local URL (no gateway configured)
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: placement-healthcheck
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Placement CR ──────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-placement-cr.yaml
+  # ── Step 2: Assert PlacementAPIReady and the endpoint ──────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-healthcheck
+            namespace: openstack
+          status:
+            endpoint: http://placement-healthcheck.openstack.svc.cluster.local:8778/
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+            (conditions[?type == 'PlacementAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Placement CR status ==="
+          kubectl get placement placement-healthcheck -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Placement API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=placement-healthcheck -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

@@ -1,0 +1,198 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the finalizer-driven cleanup on Placement CR deletion.
+#
+# Deploys a Placement CR, waits for Ready=True, then:
+#   - asserts the cleanup finalizer and every owned child (Deployment, Service,
+#     PDB, the content-hashed config ConfigMap, the derived db-connection
+#     Secret, and the db-sync Job);
+#   - deletes the CR and asserts all of them are gone within a bounded deletion
+#     window, together with the MariaDB Database/User/Grant CRs the operator
+#     created in managed mode.
+#
+# Placement owns no store backend and renders no CronJob, so the CR is the only
+# fixture and the sweep has no periodic workload to reap.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: placement-deletion-cleanup
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Placement CR ──────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-placement-cr.yaml
+  # ── Step 2: Wait for Ready=True and assert the cleanup finalizer ────────
+  # The finalizer is added on first reconcile so deletion can trigger the
+  # MariaDB CR cleanup before the Placement CR leaves etcd.
+  - try:
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-deletion
+            namespace: openstack
+            # Nil-safe: on the first poll after apply the controller may not
+            # have added the finalizer yet (`finalizers` is nil). The `|| `[]``
+            # fallback lets the assert retry rather than raising a non-retryable
+            # JMESPath type error.
+            (contains(finalizers || `[]`, 'placement.openstack.c5c3.io/finalizer')): true
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Placement CR status ==="
+          kubectl get placement placement-deletion -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert the owned children exist before the deletion ─────────
+  # Asserting them here is what gives step 5 its meaning: an absence assertion
+  # on a resource that never existed passes for the wrong reason.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: placement-deletion
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: placement-deletion
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: placement-deletion
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: placement-deletion-db-connection
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: placement-deletion-db-sync
+            namespace: openstack
+    - script:
+        content: |
+          set -eu
+          kubectl get cm -n openstack -o name | grep placement-deletion-config-
+  # ── Step 4: Delete the Placement CR ─────────────────────────────────────
+  # Bounded timeout (<= 2m) to keep deletion responsive; fails the test if the
+  # finalizer blocks removal for longer than this.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          name: placement-deletion
+          namespace: openstack
+  # ── Step 5: Assert owned resources and MariaDB CRs are deleted ──────────
+  - try:
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: placement-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: placement-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: placement-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: placement-deletion-db-connection
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: placement-deletion-db-sync
+            namespace: openstack
+    # MariaDB CRs created by reconcileDatabase in managed mode (clusterRef).
+    # Owner references are set on these CRs, but the cleanup finalizer also
+    # issues an explicit Delete so the schema teardown is triggered before the
+    # owner-ref chain disappears.
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: placement-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: placement-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: placement-deletion
+            namespace: openstack
+  # ── Step 6: Assert the content-hashed ConfigMaps are gone ──────────────
+  # These carry a content-hash suffix so they cannot use a static error
+  # assertion. A script step with an inverted grep verifies none with the
+  # expected prefix remains after garbage collection.
+  - try:
+    - script:
+        content: |
+          set -eu
+          if kubectl get cm -n openstack -o name | grep -q placement-deletion-config-; then
+            echo "ERROR: ConfigMap matching placement-deletion-config-* still exists"
+            exit 1
+          fi
+          echo "OK: no placement-deletion config ConfigMap remains"
+    catch:
+    - script:
+        content: |
+          echo "=== remaining placement-deletion objects ==="
+          kubectl get all,cm,secret,job -n $NAMESPACE 2>&1 | grep placement-deletion || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
