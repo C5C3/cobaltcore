@@ -29,6 +29,9 @@ resources:
   # TLS for the fifth Gateway listener (`https-glance-upload`) the Glance
   # large-upload e2e suite streams through (deploy/kind/base/openstack-gateway.yaml).
   - glance-upload-nip-io-tls-certificate.yaml
+  # TLS for the sixth Gateway listener (`https-placement`) the Placement API
+  # is exposed through (deploy/kind/base/openstack-gateway.yaml).
+  - placement-nip-io-tls-certificate.yaml
   # kind-only: standalone Keystone CRs (Quick Start, keystone e2e/tempest/
   # chaos suites) reference the Secret "keystone-db"; ControlPlane-based
   # deployments use the operator-projected per-ControlPlane ExternalSecret
