@@ -54,6 +54,10 @@ flag_management:
       paths:
         - operators/glance/
       carryforward: true
+    - name: unit-placement
+      paths:
+        - operators/placement/
+      carryforward: true
     - name: integration-common
       paths:
         - internal/common/
@@ -73,6 +77,10 @@ flag_management:
     - name: integration-glance
       paths:
         - operators/glance/
+      carryforward: true
+    - name: integration-placement
+      paths:
+        - operators/placement/
       carryforward: true
 
 # Component-level thresholds: each component is tracked independently on the

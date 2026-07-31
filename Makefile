@@ -172,7 +172,7 @@ chainsaw-lint:
 test-shell:
 	@echo "Running shell unit tests..."
 	@status=0; \
-	for t in tests/unit/hack/*_test.sh tests/unit/deploy/*_test.sh tests/unit/renovate/*_test.sh tests/unit/docs/*_test.sh; do \
+	for t in tests/unit/hack/*_test.sh tests/unit/deploy/*_test.sh tests/unit/renovate/*_test.sh tests/unit/docs/*_test.sh tests/unit/ci/*_test.sh; do \
 		[ -f "$$t" ] || continue; \
 		echo "=== $$t ==="; \
 		bash "$$t" || status=1; \
