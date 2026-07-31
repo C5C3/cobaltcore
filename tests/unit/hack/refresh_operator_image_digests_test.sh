@@ -35,6 +35,7 @@ KEYSTONE_DIGEST="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 C5C3_DIGEST="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 HORIZON_DIGEST="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 GLANCE_DIGEST="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+PLACEMENT_DIGEST="sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -70,6 +71,7 @@ if [ "${1:-}" = "buildx" ] && [ "${2:-}" = "imagetools" ] && [ "${3:-}" = "inspe
     *c5c3-operator*)     printf '"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"' ;;
     *horizon-operator*)  printf '"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"' ;;
     *glance-operator*)   printf '"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"' ;;
+    *placement-operator*) printf '"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"' ;;
     *) exit 1 ;;
   esac
   exit 0
@@ -86,6 +88,7 @@ if [ "${1:-}" = "get" ] && [ "${2:-}" = "configmap" ]; then
       c5c3-operator-image-digest)     printf 'image:\n  digest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n' ;;
       horizon-operator-image-digest)  printf 'image:\n  digest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\n' ;;
       glance-operator-image-digest)   printf 'image:\n  digest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n' ;;
+      placement-operator-image-digest) printf 'image:\n  digest: sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n' ;;
     esac
   fi
   exit 0
@@ -197,10 +200,10 @@ test_render_digest_configmap_yaml() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: the loop applies all four ConfigMaps and requests reconciles
+# Test 4: the loop applies all five ConfigMaps and requests reconciles
 # ---------------------------------------------------------------------------
 test_refresh_applies_and_annotates_all_operators() {
-  echo "Test: refresh applies 4 ConfigMaps and annotates 4 HelmReleases"
+  echo "Test: refresh applies 5 ConfigMaps and annotates 5 HelmReleases"
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
@@ -226,13 +229,17 @@ test_refresh_applies_and_annotates_all_operators() {
   assert_contains "glance ConfigMap applied" "$apply_log" "name: glance-operator-image-digest"
   assert_contains "glance ConfigMap namespace" "$apply_log" "namespace: glance-system"
   assert_contains "glance digest in payload" "$apply_log" "$GLANCE_DIGEST"
+  assert_contains "placement ConfigMap applied" "$apply_log" "name: placement-operator-image-digest"
+  assert_contains "placement ConfigMap namespace" "$apply_log" "namespace: placement-system"
+  assert_contains "placement digest in payload" "$apply_log" "$PLACEMENT_DIGEST"
 
-  assert_eq "four reconcile annotations" "4" "$(grep -c 'annotate helmrelease/' "$tmp/annotate.log")"
+  assert_eq "five reconcile annotations" "5" "$(grep -c 'annotate helmrelease/' "$tmp/annotate.log")"
   assert_contains "keystone reconcile requested" "$annotate_log" "helmrelease/keystone-operator"
   assert_contains "keystone reconcile namespace" "$annotate_log" "-n keystone-system"
   assert_contains "c5c3 reconcile requested" "$annotate_log" "helmrelease/c5c3-operator"
   assert_contains "horizon reconcile requested" "$annotate_log" "helmrelease/horizon-operator"
   assert_contains "glance reconcile requested" "$annotate_log" "helmrelease/glance-operator"
+  assert_contains "placement reconcile requested" "$annotate_log" "helmrelease/placement-operator"
   assert_contains "requestedAt annotation" "$annotate_log" "reconcile.fluxcd.io/requestedAt="
   assert_contains "annotation is idempotent (overwrite)" "$annotate_log" "overwrite"
   assert_contains "pinned log line" "$out" "pinned to"
@@ -251,7 +258,7 @@ test_refresh_skips_annotate_when_digest_unchanged() {
   local out rc=0
   out=$(run_refresh "$tmp" KUBECTL_CM_EXISTS=true) || rc=$?
   assert_eq "refresh succeeds" "0" "$rc"
-  assert_eq "four ConfigMap applies (idempotent re-apply)" "4" "$(grep -c -- '--- kubectl apply' "$tmp/apply.log")"
+  assert_eq "five ConfigMap applies (idempotent re-apply)" "5" "$(grep -c -- '--- kubectl apply' "$tmp/apply.log")"
   assert_eq "no reconcile annotations" "0" "$(grep -c 'annotate' "$tmp/annotate.log")"
   assert_contains "unchanged log line" "$out" "digest unchanged"
 }
@@ -277,7 +284,8 @@ test_refresh_continues_on_resolve_failure() {
   assert_contains "c5c3 ConfigMap still applied" "$apply_log" "name: c5c3-operator-image-digest"
   assert_contains "horizon ConfigMap still applied" "$apply_log" "name: horizon-operator-image-digest"
   assert_contains "glance ConfigMap still applied" "$apply_log" "name: glance-operator-image-digest"
-  assert_eq "three reconcile annotations" "3" "$(grep -c 'annotate helmrelease/' "$tmp/annotate.log")"
+  assert_contains "placement ConfigMap still applied" "$apply_log" "name: placement-operator-image-digest"
+  assert_eq "four reconcile annotations" "4" "$(grep -c 'annotate helmrelease/' "$tmp/annotate.log")"
 }
 
 # ---------------------------------------------------------------------------
