@@ -99,6 +99,10 @@ jobs:
               - 'operators/glance/**'
               - 'operators/Dockerfile'
               - 'images/glance/**'
+            placement:
+              - 'operators/placement/**'
+              - 'operators/Dockerfile'
+              - 'images/placement/**'
             docs:
               - 'docs/**'
               - 'package.json'
@@ -114,6 +118,7 @@ jobs:
               - 'operators/c5c3/helm/**'
               - 'operators/horizon/helm/**'
               - 'operators/glance/helm/**'
+              - 'operators/placement/helm/**'
               - 'operators/shared/helm/**'
               - 'hack/gen-helm-values-schema.py'
               - 'Makefile'
@@ -183,11 +188,12 @@ jobs:
       - name: Resolve effective changes
         id: result
         env:
-          ALL_OPERATORS: keystone c5c3 horizon glance
+          ALL_OPERATORS: keystone c5c3 horizon glance placement
           FILTER_keystone: ${{ steps.filter.outputs.keystone }}
           FILTER_c5c3: ${{ steps.filter.outputs.c5c3 }}
           FILTER_horizon: ${{ steps.filter.outputs.horizon }}
           FILTER_glance: ${{ steps.filter.outputs.glance }}
+          FILTER_placement: ${{ steps.filter.outputs.placement }}
           FILTER_docs: ${{ steps.filter.outputs.docs }}
           FILTER_helm: ${{ steps.filter.outputs.helm }}
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
@@ -371,7 +377,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [common, keystone, c5c3, horizon, glance]
+        target: [common, keystone, c5c3, horizon, glance, placement]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -408,7 +414,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [common, keystone, c5c3, horizon, glance]
+        target: [common, keystone, c5c3, horizon, glance, placement]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -556,13 +562,13 @@ jobs:
         run: make helm-deps
       - name: Helm lint
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator; do
             echo "--- lint $chart ---"
             helm lint "$chart"
           done
       - name: Helm template
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator; do
             echo "=== $chart ==="
             echo "--- Scenario 1: default values ---"
             helm template test "$chart"
@@ -577,7 +583,7 @@ jobs:
           done
       - name: Helm unittest
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator; do
             echo "--- unittest $chart ---"
             helm unittest "$chart"
           done
@@ -711,13 +717,32 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Tempest and the e2e-chaos suites always exercise both keystone and
-      # glance, so both must be built regardless of which operator triggered
-      # the pipeline.  Union the changed-operator list with fixed "keystone"
-      # and "glance" entries so the dependency is explicit.
+      # glance, and the e2e-chaos pod leg always exercises placement, so all
+      # three must be built regardless of which operator triggered the
+      # pipeline.  Union the changed-operator list with fixed "keystone",
+      # "glance" and "placement" entries so the dependency is explicit.
+      #
+      # placement is unioned in unconditionally rather than behind a copy of
+      # the e2e-chaos `if:`. That condition lives hundreds of lines away and
+      # nothing keeps a duplicate in sync, so a third trigger added there
+      # would leave the pod leg pulling a placement tag this job never
+      # pushed — a blocking failure an hour into the run. Such a gate would
+      # also save very little: a non-empty operator matrix already implies
+      # e2e-chaos runs (every path that fills the matrix sets go=true or
+      # forces the full E2E suite), so it would skip the build only on the
+      # PRs that reach this job through the e2e-prometheus or
+      # e2e-controlplane paths alone.
       - name: Resolve build operators
         run: |
-          ops=$(echo '${{ needs.changes.outputs.e2e-operators }}' | jq -r '.operator[]')
-          for base in keystone glance; do
+          # ci-resolve-changes.sh emits {"operator":["__none__"]} when no
+          # operator changed, so fromJson() stays valid in the matrix jobs that
+          # gate on has-e2e-operators. This job is the one consumer that reads
+          # the matrix ungated (it also runs for e2e-chaos/-prometheus/
+          # -controlplane), so the sentinel must be dropped here — otherwise
+          # `make docker-build OPERATOR=__none__` fails the build on exactly
+          # the PRs the comment above describes.
+          ops=$(echo '${{ needs.changes.outputs.e2e-operators }}' | jq -r '.operator[] | select(. != "__none__")')
+          for base in keystone glance placement; do
             if ! printf '%s\n' $ops | grep -qx "$base"; then
               ops=$(printf '%s\n%s' "$ops" "$base")
             fi
@@ -972,6 +997,7 @@ jobs:
           kubectl apply -f operators/keystone/helm/keystone-operator/crds/
           kubectl apply -f operators/horizon/helm/horizon-operator/crds/
           kubectl apply -f operators/glance/helm/glance-operator/crds/
+          kubectl apply -f operators/placement/helm/placement-operator/crds/
           hack/ci-deploy-korc.sh
       # Use shared operator deployment script. NAMESPACE mirrors what
       # hack/ci-dump-diagnostics.sh derives (${OPERATOR}-system) so the
@@ -1178,6 +1204,7 @@ jobs:
               tests/e2e-chaos/operator-pod-crash
               tests/e2e-chaos/operator-pod-kill
               tests/e2e-chaos/glance-operator-pod-kill
+              tests/e2e-chaos/placement-operator-pod-kill
           - suite: network
             runner: self-hosted
             test_dirs: >-
@@ -1212,6 +1239,11 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/horizon:2025.2
             ${{ env.IMAGE_PREFIX }}/glance-operator:dev
             ${{ env.IMAGE_PREFIX }}/glance:2025.2
+            # placement is exercised by the pod leg alone (see the pod-leg-only
+            # load and deploy steps below); the action skips the blank lines the
+            # network leg renders here.
+            ${{ matrix.suite == 'pod' && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'pod' && format('{0}/placement:2025.2', env.IMAGE_PREFIX) || '' }}
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
@@ -1221,6 +1253,16 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2025.2 --name ${{ env.KIND_CLUSTER }}
+      # placement-operator-pod-kill is the only suite that touches placement and
+      # it runs on the pod leg; none of the network leg's four suites reference
+      # it. Keep the load off that leg — `kind load docker-image` is a docker
+      # save piped into the node's containerd and the placement service image is
+      # the expensive half of the pair.
+      - name: Load placement images into kind
+        if: matrix.suite == 'pod'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       # Opt in to Chaos Mesh - required for the chaos suites; covers both matrix entries.
       - name: Setup E2E infrastructure
@@ -1261,6 +1303,19 @@ jobs:
           OPERATOR: glance
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
           NAMESPACE: glance-system
+      # The placement chaos suite needs the placement-operator too. Like horizon
+      # and glance it must land in its own placement-system namespace, not the
+      # script's keystone-system default: that is where the Flux/deploy-infra
+      # path installs it and where the suite's pod selector and PodChaos look.
+      # Pod leg only — the suite that needs it runs there, so the network leg
+      # would `helm install --wait` an operator that reconciles nothing.
+      - name: Deploy placement operator
+        if: matrix.suite == 'pod'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: placement
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
+          NAMESPACE: placement-system
       - name: Run chaos E2E tests
         run: |
           mkdir -p _output/reports
@@ -1904,7 +1959,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [keystone-operator, keystone, c5c3-operator, horizon-operator, horizon, glance-operator, glance, tempest]
+        package: [keystone-operator, keystone, c5c3-operator, horizon-operator, horizon, glance-operator, glance, placement-operator, placement, tempest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # GH-312: do NOT pass delete-untagged here. This job runs in
