@@ -1,0 +1,195 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a cross-release Placement upgrade from 2025.2 to 2026.1.
+# Placement migrates in a single pass: one db-sync Job runs placement-manage db
+# sync, db online_data_migrations, and the placement-status upgrade check. There
+# is no expand-migrate-contract phase machine and no status.upgradePhase field,
+# and this suite pins both absences as hard as it pins the upgrade itself.
+#   (1) Fresh deployment at 2025.2 reaches Ready=True/AllReady with
+#       installedRelease=2025.2 on the :2025.2 image
+#   (2) Patching spec.openStackRelease and spec.image.tag to 2026.1 promotes
+#       installedRelease to 2026.1 and settles Ready=True/AllReady again
+#   (3) The db-sync Job re-runs on the :2026.1 image and succeeds
+#   (4) The Deployment flips to the :2026.1 image and the rollout completes
+#   (5) No db-expand/db-migrate/db-contract Job is ever created
+#   (6) status.upgradePhase stays absent
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: placement-release-upgrade
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Placement CR at 2025.2 ────────────────────────────
+  - try:
+    - apply:
+        file: 00-placement-cr.yaml
+  # ── Step 2: Assert the pre-upgrade steady state ─────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-release-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2025.2"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: placement-release-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: placement-api
+                  image: ghcr.io/c5c3/placement:2025.2
+          status:
+            (availableReplicas > `0`): true
+    catch:
+    - script:
+        content: |
+          echo "=== Placement CR status ==="
+          kubectl get placement placement-release-upgrade -n $NAMESPACE -o yaml 2>&1 | tail -60 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Placement API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=placement-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Patch release + image tag to trigger the upgrade ────────────
+  - try:
+    - patch:
+        file: 01-patch-upgrade.yaml
+  # ── Step 4: Assert the upgrade completes through the single db-sync ─────
+  - try:
+    # Gate on the settled end state first: installedRelease is promoted only
+    # after the db-sync Job succeeds, and the fresh Job flips DatabaseReady (and
+    # so Ready) back False until it completes, so a stable Ready=True/AllReady
+    # here means the whole flow has drained.
+    - assert:
+        resource:
+          apiVersion: placement.openstack.c5c3.io/v1alpha1
+          kind: Placement
+          metadata:
+            name: placement-release-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 3m
+        content: |
+          set -eu
+          JOB=placement-release-upgrade-db-sync
+          echo "=== Verifying the db-sync Job re-ran on :2026.1 ==="
+          # RunJob deletes and re-creates a completed Job in place when its
+          # pod-spec-hash changes, so the same-named db-sync Job is replaced on
+          # the :2026.1 image. Poll to ride out the delete/re-create window,
+          # then assert the current Job carries :2026.1 and succeeded.
+          for _ in $(seq 1 30); do
+            IMG=$(kubectl get job "$JOB" -n openstack \
+              -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
+            SUCC=$(kubectl get job "$JOB" -n openstack \
+              -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
+            case "$IMG" in
+            *:2026.1)
+              if [ "$SUCC" = "1" ]; then
+                echo "OK: $JOB at $IMG succeeded=$SUCC"
+                exit 0
+              fi
+              ;;
+            esac
+            sleep 5
+          done
+          echo "ERROR: $JOB did not reach :2026.1 succeeded=1 (image=$IMG succeeded=$SUCC)"
+          exit 1
+    - script:
+        content: |
+          set -eu
+          echo "=== Verifying no expand-migrate-contract phase Job exists ==="
+          # Placement migrates in one pass. A phase Job here would mean the
+          # operator was wired to the phased flow, which for placement runs
+          # migrations that placement-manage does not implement.
+          for phase in expand migrate contract; do
+            JOB="placement-release-upgrade-db-${phase}"
+            if kubectl get job "$JOB" -n openstack >/dev/null 2>&1; then
+              echo "ERROR: Job $JOB exists; placement runs a single db-sync Job"
+              exit 1
+            fi
+            echo "OK: no Job $JOB"
+          done
+    - script:
+        content: |
+          set -eu
+          echo "=== Verifying status.upgradePhase is absent ==="
+          # The Placement CRD carries no upgradePhase field, so jsonpath resolves
+          # to the empty string. A value here means the field was reintroduced
+          # and the phase machine came with it.
+          PHASE=$(kubectl get placement placement-release-upgrade -n openstack \
+            -o jsonpath='{.status.upgradePhase}')
+          if [ -n "$PHASE" ]; then
+            echo "ERROR: status.upgradePhase is set to '$PHASE'"
+            exit 1
+          fi
+          echo "OK: status.upgradePhase is absent"
+    # The Deployment now runs the :2026.1 image and the single-replica rollout
+    # has fully converged (updatedReplicas == replicas).
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: placement-release-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: placement-api
+                  image: ghcr.io/c5c3/placement:2026.1
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    catch:
+    - script:
+        content: |
+          echo "=== Placement CR status ==="
+          kubectl get placement placement-release-upgrade -n $NAMESPACE -o yaml 2>&1 | tail -60 || true
+          echo "=== Jobs ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Placement API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=placement-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
