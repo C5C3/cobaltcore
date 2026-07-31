@@ -304,6 +304,21 @@ main() {
     "username=glance" \
     "password=${GENERATED_PASSWORD}"
 
+  # Standalone (non-ControlPlane) Placement demos read a static KV DB credential
+  # too, mirroring the Glance standalone seed above. It is read by the kind-only
+  # placement-db ExternalSecret
+  # (deploy/kind/infrastructure/placement-db-externalsecret.yaml) and materialised
+  # as the Secret the placement e2e suites' Placement CR selects via
+  # database.secretRef. No PushSecret targets it, so no mark_eso_managed is needed.
+  #
+  # The path mirrors the Keystone standalone shape with the placement service
+  # segment (openstack/placement/{namespace}/standalone/db); like glance-db, the
+  # placement-db ExternalSecret reaches it through the per-tenant
+  # openbao-tenant-store.
+  write_secret_if_missing "kv-v2/openstack/placement/openstack/standalone/db" \
+    "username=placement" \
+    "password=${GENERATED_PASSWORD}"
+
   log "=== Done ==="
 }
 
