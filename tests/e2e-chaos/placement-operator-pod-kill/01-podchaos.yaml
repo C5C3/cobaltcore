@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR to kill a placement-operator pod in placement-system.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: kill-placement-operator
+  namespace: placement-system
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+    - placement-system
+    labelSelectors:
+      app.kubernetes.io/name: placement-operator
+  gracePeriod: 0
