@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -85,6 +86,12 @@ const (
 	// DedicatedGlanceCacheClusterRefSuffix names the Memcached CR of a dedicated
 	// Glance cache.
 	DedicatedGlanceCacheClusterRefSuffix = "-glance-cache"
+	// DedicatedPlacementDatabaseClusterRefSuffix names the MariaDB CR of a
+	// dedicated Placement database.
+	DedicatedPlacementDatabaseClusterRefSuffix = "-placement-db" //nolint:gosec // G101 false positive: CR name suffix, not a credential
+	// DedicatedPlacementCacheClusterRefSuffix names the Memcached CR of a
+	// dedicated Placement cache.
+	DedicatedPlacementCacheClusterRefSuffix = "-placement-cache"
 	// DefaultDatabaseStorageSize is the effective per-replica MariaDB volume size
 	// when spec.infrastructure.database.storageSize is empty. It aliases
 	// commonv1.DatabaseStorageSizeDefault (also the CRD +kubebuilder:default and
@@ -335,6 +342,12 @@ const (
 	// ControlPlane's own name below 253, so the composed child name can overflow a
 	// CR that admission already accepted.
 	maxObjectNameBytes = 253
+
+	// maxServiceNameBytes is the apiserver's cap on a Service name. Unlike most
+	// object names it is a DNS-1035 label rather than a DNS-1123 subdomain, so it
+	// is far tighter than maxObjectNameBytes — and a service operator that names
+	// its API Service after its CR inherits the tighter bound.
+	maxServiceNameBytes = 63
 
 	// catalogEntryChildNameOverhead is the longest fixed part of a child catalog
 	// Endpoint name, "{cp}-catalog-{type}-{interface}", i.e. everything except the
@@ -671,6 +684,19 @@ const glanceChildNameOverhead = len("-glance")
 // gates on it.
 const GlanceServiceAccountName = "glance"
 
+// PlacementServiceAccountName is the spec.korc.serviceAccounts entry the
+// Placement projection consumes; the defaulting webhook injects it and the
+// reconciler gates on it.
+const PlacementServiceAccountName = "placement"
+
+// placementChildNameOverhead is the fixed part of the projected Placement child
+// CR name, "{cp}-placement". The budget it eats into is neither the apiserver's
+// 253-byte metadata.name cap nor a bound of the Placement CRD (which declines to
+// set one), but the API Service the placement operator names after the CR: it
+// applies subResourceName(placement) — the bare CR name, untruncated — and a
+// Service name is a DNS-1035 label, capped at maxServiceNameBytes.
+const placementChildNameOverhead = len("-placement")
+
 // validateGlanceChildName enforces that the Glance child this ControlPlane would
 // project carries a name the Glance CRD's own validating webhook admits.
 // Without it a longer ControlPlane admits cleanly and reconcileGlance then fails
@@ -697,6 +723,36 @@ func validateGlanceChildName(cp *ControlPlane) field.ErrorList {
 			"ControlPlane name must be at most %d characters when spec.services.glance is set",
 		n, glancev1alpha1.MaxGlanceNameLength, glancev1alpha1.MaxCronJobNameLength,
 		glancev1alpha1.MaxGlanceNameLength-glanceChildNameOverhead,
+	))}
+}
+
+// validatePlacementChildName enforces that the Placement child this ControlPlane
+// would project carries a name the placement operator can name its API Service
+// after. Without it a longer ControlPlane admits cleanly, the Placement CR is
+// created (the CRD sets no bound of its own), and the placement operator then
+// fails on every reconcile applying a Service whose metadata.name exceeds the
+// DNS-1035 label cap: PlacementReady parks on WaitingForPlacement, the
+// ControlPlane never reaches Ready, and metadata.name is immutable — so the only
+// recovery is deleting and recreating the whole control plane.
+//
+// It is a create-and-newly-enabled rule rather than part of validatePlacement,
+// which every update re-runs, for the same reason as its Glance sibling: the
+// ControlPlane name is immutable, so on a routine update the rule could only ever
+// fire against a CR a pre-upgrade operator already admitted — including the
+// finalizer-removal update that completes its deletion.
+func validatePlacementChildName(cp *ControlPlane) field.ErrorList {
+	if cp.Spec.Services.Placement == nil {
+		return nil
+	}
+	n := len(cp.Name) + placementChildNameOverhead
+	if n <= maxServiceNameBytes {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(field.NewPath("metadata", "name"), cp.Name, fmt.Sprintf(
+		"the projected Placement child CR name would be %d characters; the placement operator names its API "+
+			"Service after the CR and Kubernetes caps Service names at %d, so the ControlPlane name must be at "+
+			"most %d characters when spec.services.placement is set",
+		n, maxServiceNameBytes, maxServiceNameBytes-placementChildNameOverhead,
 	))}
 }
 
@@ -782,7 +838,8 @@ func validateGlance(cp *ControlPlane) field.ErrorList {
 		glPath, gl.ImportPlugins, gl.Staging,
 	)...)
 	allErrs = append(allErrs, validateGlanceBackends(cp, glPath.Child("backends"))...)
-	allErrs = append(allErrs, validateGlanceServiceAccount(cp)...)
+	allErrs = append(allErrs, validateProjectedServiceAccount(
+		cp, GlanceServiceAccountName, "Glance", cp.GlanceNamespace())...)
 
 	return allErrs
 }
@@ -880,7 +937,9 @@ func warnInsecureGlancePublicEndpoint(cp *ControlPlane) admission.Warnings {
 // purpose), so surfacing them together keeps a gateway-less deployment from
 // downgrading a bearer-token path silently.
 func insecurePublicEndpointWarnings(cp *ControlPlane) admission.Warnings {
-	return append(warnInsecureHorizonPublicEndpoint(cp), warnInsecureGlancePublicEndpoint(cp)...)
+	warnings := warnInsecureHorizonPublicEndpoint(cp)
+	warnings = append(warnings, warnInsecureGlancePublicEndpoint(cp)...)
+	return append(warnings, warnInsecurePlacementPublicEndpoint(cp)...)
 }
 
 // glanceImportFilteringWarnings surfaces the two admissible-but-misleading
@@ -956,47 +1015,194 @@ func validateGlanceBackends(cp *ControlPlane, backendsPath *field.Path) field.Er
 	return allErrs
 }
 
-// validateGlanceServiceAccount is the defense-in-depth twin of the defaulting
-// webhook's glance service-account injection: a services.glance CR must carry a
-// spec.korc.serviceAccounts entry named "glance" (the Glance projection gates on
-// it for [keystone_authtoken] token validation). The defaulting webhook injects
-// it; requiring it here catches a webhook-bypassed CR that dropped it. When
-// Glance is placed in a dedicated namespace the entry must TARGET that namespace,
-// since its consumer credentials Secret is delivered through that namespace's
-// tenant store; when Glance is co-located with the ControlPlane the entry must
-// leave targetNamespace empty or name the ControlPlane's own namespace.
-func validateGlanceServiceAccount(cp *ControlPlane) field.ErrorList {
+// validateProjectedServiceAccount is the defense-in-depth twin of the defaulting
+// webhook's per-service service-account injection: a CR declaring services.<svc>
+// must carry the spec.korc.serviceAccounts entry named after that service (its
+// projection gates on the entry for [keystone_authtoken] token validation). The
+// defaulting webhook injects it; requiring it here catches a webhook-bypassed CR
+// that dropped it. When the service is placed in a dedicated namespace the entry
+// must TARGET that namespace, since its consumer credentials Secret is delivered
+// through that namespace's tenant store; when the service is co-located with the
+// ControlPlane the entry must leave targetNamespace empty or name the
+// ControlPlane's own namespace.
+//
+// accountName is both the serviceAccounts[] entry name and the services.<svc>
+// field name; displayName is the service's prose name for the messages;
+// serviceNamespace is the namespace the service is placed in (cp.<Svc>Namespace()).
+func validateProjectedServiceAccount(cp *ControlPlane, accountName, displayName, serviceNamespace string) field.ErrorList {
 	var allErrs field.ErrorList
 	saPath := field.NewPath("spec", "korc", "serviceAccounts")
 
 	index := -1
 	for i := range cp.Spec.KORC.ServiceAccounts {
-		if cp.Spec.KORC.ServiceAccounts[i].Name == GlanceServiceAccountName {
+		if cp.Spec.KORC.ServiceAccounts[i].Name == accountName {
 			index = i
 			break
 		}
 	}
 	if index < 0 {
-		return field.ErrorList{field.Required(saPath,
-			`a service account named "glance" is required when services.glance is set; the defaulting webhook `+
-				"injects it so Glance can validate the [keystone_authtoken] tokens it receives")}
+		return field.ErrorList{field.Required(saPath, fmt.Sprintf(
+			"a service account named %q is required when services.%s is set; the defaulting webhook injects it "+
+				"so %s can validate the [keystone_authtoken] tokens it receives",
+			accountName, accountName, displayName,
+		))}
 	}
 
 	targetNamespace := cp.Spec.KORC.ServiceAccounts[index].TargetNamespace
 	tnPath := saPath.Index(index).Child("targetNamespace")
-	glanceNamespace := cp.GlanceNamespace()
 	switch {
-	case glanceNamespace != cp.Namespace && targetNamespace != glanceNamespace:
+	case serviceNamespace != cp.Namespace && targetNamespace != serviceNamespace:
 		allErrs = append(allErrs, field.Invalid(tnPath, targetNamespace, fmt.Sprintf(
-			"must equal the namespace Glance is placed in (%q): the glance service account's consumer "+
-				"credentials Secret is delivered through that namespace's tenant store", glanceNamespace,
+			"must equal the namespace %s is placed in (%q): the %s service account's consumer "+
+				"credentials Secret is delivered through that namespace's tenant store",
+			displayName, serviceNamespace, accountName,
 		)))
-	case glanceNamespace == cp.Namespace && targetNamespace != "" && targetNamespace != cp.Namespace:
-		allErrs = append(allErrs, field.Invalid(tnPath, targetNamespace,
-			"must be empty or the ControlPlane's own namespace when Glance is co-located with the ControlPlane"))
+	case serviceNamespace == cp.Namespace && targetNamespace != "" && targetNamespace != cp.Namespace:
+		allErrs = append(allErrs, field.Invalid(tnPath, targetNamespace, fmt.Sprintf(
+			"must be empty or the ControlPlane's own namespace when %s is co-located with the ControlPlane",
+			displayName)))
 	}
 
 	return allErrs
+}
+
+// validatePlacement enforces the rules on the services.placement block. It
+// mirrors the declarative constraints as defense-in-depth for callers that
+// bypass CRD schema admission (the gateway hostname shape and the image
+// tag/digest XOR) and adds the rules the CRD schema cannot express: the public
+// endpoint's origin shape and its agreement with the gateway
+// (validatePlacementPublicEndpoint), and the requirement that the placement
+// service account the defaulting webhook injects is present (and, when Placement
+// is placed in a dedicated namespace, targets it).
+//
+// The projected-child-name bound lives in validatePlacementChildName, which runs
+// only on create and on the update that newly enables Placement.
+//
+// The cross-field rule that services.placement is forbidden in External mode
+// lives in validateKeystoneMode with the rest of the External-mode matrix; the
+// extraConfig rules live in the two extraConfig admission families, which walk
+// every declared service block at once.
+func validatePlacement(cp *ControlPlane) field.ErrorList {
+	pl := cp.Spec.Services.Placement
+	if pl == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	plPath := field.NewPath("spec", "services", "placement")
+
+	// When a gateway is configured, its hostname must be set and usable as the
+	// host of the derived public endpoint. Mirrors the MinLength=1 marker on
+	// commonv1.GatewaySpec.Hostname.
+	if g := pl.Gateway; g != nil {
+		hostnamePath := plPath.Child("gateway", "hostname")
+		if g.Hostname == "" {
+			allErrs = append(allErrs, field.Required(hostnamePath,
+				"must be set when a gateway is configured"))
+		} else if err := validateGatewayHostname(hostnamePath, g.Hostname); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	}
+
+	// When the Placement image is overridden, mirror the ImageSpec tag/digest XOR
+	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
+	if img := pl.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+		allErrs = append(allErrs, field.Invalid(plPath.Child("image"), img,
+			"exactly one of image.tag or image.digest must be set"))
+	}
+
+	allErrs = append(allErrs, validatePlacementPublicEndpoint(plPath, pl)...)
+	allErrs = append(allErrs, validateProjectedServiceAccount(
+		cp, PlacementServiceAccountName, "Placement", cp.PlacementNamespace())...)
+
+	return allErrs
+}
+
+// validatePlacementPublicEndpoint enforces the rules on
+// services.placement.publicEndpoint that the CRD markers cannot express. The
+// value is advertised VERBATIM as the K-ORC public placement catalog Endpoint:
+// the URL every compute service resolves to read and write its allocations, and
+// sends its scoped Keystone token (X-Auth-Token) to. Unlike the keystone
+// override it is projected into no child CR, so no downstream webhook re-checks
+// it: whatever admission accepts here is what lands in the Keystone catalog.
+//
+//   - Shape, as defense-in-depth alongside the ^https?:// Pattern marker:
+//     "https://" alone matches the pattern and stays under the 512-byte cap, yet
+//     registers a hostless URL no client can resolve.
+//   - A bare origin, with no path, query or fragment. The Pattern marker anchors
+//     only the prefix, so "https://placement.example.com?utm=1" is schema-legal;
+//     the Placement API is served at the root and clients append the API path to
+//     the catalog URL, yielding "https://placement.example.com?utm=1/resource_providers"
+//     and a 404 on every allocation call. A single trailing slash is tolerated:
+//     OpenStack clients normalize the catalog endpoint before appending.
+//   - With a gateway configured the listener terminates TLS, so the externally
+//     observed scheme is https, the same rule the Glance public endpoint applies.
+//     An http endpoint is also a token leak: the scoped Keystone token rides
+//     every allocation call, and a compute service places allocations on every
+//     instance boot.
+//   - With a gateway configured the host must equal gateway.hostname. The
+//     Gateway listener is what routes that hostname to the Placement Service, so
+//     a divergent host advertises an endpoint that never reaches the API,
+//     failing client-side with no status condition and no admission error naming
+//     the cause. The port may still differ: Gateway API hostnames carry none, so
+//     an API published off 443 has to spell the port out here.
+func validatePlacementPublicEndpoint(plPath *field.Path, pl *ServicePlacementSpec) field.ErrorList {
+	if pl.PublicEndpoint == "" {
+		return nil
+	}
+	pePath := plPath.Child("publicEndpoint")
+	u, err := validateHTTPURL(pePath, pl.PublicEndpoint)
+	if err != nil {
+		return field.ErrorList{err}
+	}
+
+	var errs field.ErrorList
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		errs = append(errs, field.Invalid(pePath, pl.PublicEndpoint,
+			"must be a bare origin (scheme://host[:port]) with no path, query, or fragment: the Placement API is "+
+				"served at the root and clients append the API path to the catalog endpoint"))
+	}
+
+	g := pl.Gateway
+	if g == nil || g.Hostname == "" {
+		return errs
+	}
+
+	if u.Scheme != "https" {
+		errs = append(errs, field.Invalid(pePath, pl.PublicEndpoint,
+			"scheme must be https when services.placement.gateway is configured (the Gateway listener terminates "+
+				"TLS): every allocation call sends the caller's scoped Keystone token to this endpoint"))
+	}
+	if u.Hostname() != g.Hostname {
+		errs = append(errs, field.Invalid(pePath, pl.PublicEndpoint,
+			fmt.Sprintf("host %q must equal services.placement.gateway.hostname %q: the Gateway listener routes that "+
+				"hostname to the Placement API, so the catalog would direct compute services to a host that never "+
+				"reaches it", u.Hostname(), g.Hostname)))
+	}
+	return errs
+}
+
+// warnInsecurePlacementPublicEndpoint surfaces a cleartext placement endpoint
+// that validatePlacementPublicEndpoint cannot reject: without a gateway
+// Placement is published by some other means, and a plain-http endpoint is a
+// legal, if unwise, development setup that the ^https?:// CRD Pattern
+// deliberately allows. The downgrade must never be silent, though: every
+// allocation call carries the caller's scoped Keystone token to this URL, and
+// that bearer token grants the caller's full API privileges, not just placement
+// access.
+func warnInsecurePlacementPublicEndpoint(cp *ControlPlane) admission.Warnings {
+	pl := cp.Spec.Services.Placement
+	if pl == nil || pl.PublicEndpoint == "" {
+		return nil
+	}
+	if u, err := url.Parse(pl.PublicEndpoint); err != nil || u.Scheme != "http" {
+		return nil
+	}
+	return admission.Warnings{fmt.Sprintf(
+		"spec.services.placement.publicEndpoint %q uses http://: it is advertised as the public placement catalog "+
+			"endpoint, so every allocation call would deliver the caller's scoped Keystone token in cleartext. "+
+			"Use https://.",
+		pl.PublicEndpoint,
+	)}
 }
 
 // externalAuthURLIsPlaintext reports whether raw is an http:// (non-TLS) endpoint.
@@ -1103,7 +1309,9 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 	// DECLARED block: an absent assignment means "stay in the ControlPlane's
 	// namespace", and the webhook must never invent a placement. Mirrors the
 	// +kubebuilder:default=Managed marker on ServiceNamespaceSpec.Lifecycle.
-	for _, ns := range []*ServiceNamespaceSpec{keystoneNamespaceBlock(obj), horizonNamespaceBlock(obj), glanceNamespaceBlock(obj)} {
+	for _, ns := range []*ServiceNamespaceSpec{
+		keystoneNamespaceBlock(obj), horizonNamespaceBlock(obj), glanceNamespaceBlock(obj), placementNamespaceBlock(obj),
+	} {
 		if ns != nil && ns.Lifecycle == "" {
 			ns.Lifecycle = ServiceNamespaceLifecycleManaged
 		}
@@ -1183,6 +1391,20 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 				defaultCacheLeaves(cache, obj.Name+DedicatedGlanceCacheClusterRefSuffix)
 			}
 		}
+		if pl := placementDedicatedBlock(obj); pl != nil {
+			if db := pl.Database; db != nil {
+				defaultDatabaseLeaves(db, obj.Name+DedicatedPlacementDatabaseClusterRefSuffix)
+				// A dedicated MANAGED Placement database is Static-only for the same
+				// reason the Keystone one is (see above): no per-instance OpenBao
+				// engine role exists. Materialize the mode; validate() rejects Dynamic.
+				if db.ClusterRef != nil && db.CredentialsMode == "" {
+					db.CredentialsMode = commonv1.CredentialsModeStatic
+				}
+			}
+			if cache := pl.Cache; cache != nil {
+				defaultCacheLeaves(cache, obj.Name+DedicatedPlacementCacheClusterRefSuffix)
+			}
+		}
 	}
 
 	// K-ORC admin-credential defaults. cloudCredentialsRef.secretName defaults to
@@ -1233,38 +1455,56 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 		appCred.Rotation.Mode = RotationModePasswordDriven
 	}
 
-	// Inject the glance service account when services.glance is declared and the
-	// operator has not already declared one. A later reconciler package gates the
-	// Glance projection on a spec.korc.serviceAccounts entry named "glance", so a
-	// minimal services.glance CR must work without the operator hand-wiring the
-	// account. The role is "service", NOT "member": Keystone's SRBAC default for
-	// identity:validate_token requires role "service", and the account exists so
-	// Glance can validate the [keystone_authtoken] tokens it receives. The
-	// injection runs before the userName-defaulting loop below so the entry picks
-	// up UserName defaulting, and it targets the namespace Glance is placed in so
-	// its consumer credentials Secret is delivered through that namespace's tenant
-	// store. Idempotent: a pre-existing "glance" entry (operator- or
-	// previously-injected) is left untouched.
-	if obj.Spec.Services.Glance != nil {
-		hasGlance := false
+	// Inject the service account of every declared service the operator has not
+	// already declared one for. A later reconciler package gates each service's
+	// projection on its spec.korc.serviceAccounts entry, so a minimal
+	// services.<service> CR must work without the operator hand-wiring the account.
+	// The role is "service", NOT "member": Keystone's SRBAC default for
+	// identity:validate_token requires role "service", and the accounts exist so
+	// the services can validate the [keystone_authtoken] tokens they receive. The
+	// injection runs before the userName-defaulting loop below so the entries pick
+	// up UserName defaulting, and each targets the namespace its service is placed
+	// in so its consumer credentials Secret is delivered through that namespace's
+	// tenant store. The table order is the injection order, so a ControlPlane
+	// declaring several services grows its entries deterministically. Idempotent: a
+	// pre-existing entry (operator- or previously-injected) is left untouched.
+	for _, inject := range []struct {
+		declared    bool
+		name        string
+		projectName string
+		namespace   string
+	}{
+		{obj.Spec.Services.Glance != nil, GlanceServiceAccountName, "service", obj.GlanceNamespace()},
+		// Placement CREATES "service-placement", its own project rather than the
+		// "service" project the glance entry creates: each create:true entry projects
+		// a managed Project of its own, so two entries naming one project would have
+		// each adopt the other's Keystone row — which validateServiceAccounts rejects
+		// outright.
+		{obj.Spec.Services.Placement != nil, PlacementServiceAccountName, "service-placement", obj.PlacementNamespace()},
+	} {
+		if !inject.declared {
+			continue
+		}
+		declared := false
 		for i := range obj.Spec.KORC.ServiceAccounts {
-			if obj.Spec.KORC.ServiceAccounts[i].Name == GlanceServiceAccountName {
-				hasGlance = true
+			if obj.Spec.KORC.ServiceAccounts[i].Name == inject.name {
+				declared = true
 				break
 			}
 		}
-		if !hasGlance {
-			var targetNamespace string
-			if ns := obj.GlanceNamespace(); ns != obj.Namespace {
-				targetNamespace = ns
-			}
-			obj.Spec.KORC.ServiceAccounts = append(obj.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
-				Name:            GlanceServiceAccountName,
-				Project:         ServiceAccountProjectSpec{Name: "service", Create: true},
-				Roles:           []string{"service"},
-				TargetNamespace: targetNamespace,
-			})
+		if declared {
+			continue
 		}
+		var targetNamespace string
+		if inject.namespace != obj.Namespace {
+			targetNamespace = inject.namespace
+		}
+		obj.Spec.KORC.ServiceAccounts = append(obj.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
+			Name:            inject.name,
+			Project:         ServiceAccountProjectSpec{Name: inject.projectName, Create: true},
+			Roles:           []string{"service"},
+			TargetNamespace: targetNamespace,
+		})
 	}
 
 	// serviceAccounts[i].userName defaults to serviceAccounts[i].name: the K-ORC
@@ -1309,6 +1549,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	allErrs = append(allErrs, ownershipErrs...)
 	allErrs = append(allErrs, catalogErrs...)
 	allErrs = append(allErrs, validateGlanceChildName(obj)...)
+	allErrs = append(allErrs, validatePlacementChildName(obj)...)
 	if err := newInvalidIfErrs(obj, allErrs); err != nil {
 		return warnings, err
 	}
@@ -1331,7 +1572,12 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 // migrations are forward-only. Spec errors, immutability errors, and the
 // downgrade error are accumulated into a single Invalid response so a reviewer
 // sees all problems at once.
-func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *ControlPlane) (admission.Warnings, error) {
+//
+// It finally re-runs the cluster-wide namespace-claim check when — and only
+// when — this update changed the claim set, because the declared-before carve-out
+// in validateServiceNamespacesImmutable lets an UPDATE introduce a claim the
+// create-only check never saw.
+func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *ControlPlane) (admission.Warnings, error) {
 	warnings := insecurePublicEndpointWarnings(newObj)
 	warnings = append(warnings, glanceImportFilteringWarnings(newObj)...)
 
@@ -1356,15 +1602,32 @@ func (w *ControlPlaneWebhook) ValidateUpdate(_ context.Context, oldObj, newObj *
 		allErrs = append(allErrs, catalogErrs...)
 	}
 
-	// The projected-Glance-name bound re-runs only when this update is what
-	// enables Glance: it is derived from the immutable ControlPlane name, so on
-	// any other update it could only reject a CR that was already admitted with
-	// Glance on — including the finalizer-removal update that deletes it.
+	// The projected-child-name bounds re-run only when this update is what enables
+	// the service: they are derived from the immutable ControlPlane name, so on any
+	// other update they could only reject a CR that was already admitted with the
+	// service on — including the finalizer-removal update that deletes it.
 	if oldObj.Spec.Services.Glance == nil {
 		allErrs = append(allErrs, validateGlanceChildName(newObj)...)
 	}
+	if oldObj.Spec.Services.Placement == nil {
+		allErrs = append(allErrs, validatePlacementChildName(newObj)...)
+	}
 
-	return warnings, newInvalidIfErrs(newObj, allErrs)
+	if err := newInvalidIfErrs(newObj, allErrs); err != nil {
+		return warnings, err
+	}
+
+	// The tenant-isolation check is no longer create-only: the declared-before
+	// carve-out in validateServiceNamespacesImmutable admits an update that assigns
+	// a namespace to a service the ControlPlane did not declare before, so an UPDATE
+	// can introduce a claim ValidateCreate never saw. Re-run it whenever the claim
+	// set changed — and only then, so an unrelated update neither pays for the
+	// cluster-wide List nor is retroactively rejected by a claim that landed after
+	// this ControlPlane was admitted.
+	if !slices.Equal(oldObj.DedicatedServiceNamespaces(), newObj.DedicatedServiceNamespaces()) {
+		return warnings, w.validateNamespaceClaims(ctx, newObj)
+	}
+	return warnings, nil
 }
 
 // validate accumulates all spec validation errors for cp.
@@ -1533,6 +1796,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	}
 
 	allErrs = append(allErrs, validateGlance(cp)...)
+	allErrs = append(allErrs, validatePlacement(cp)...)
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
 	allErrs = append(allErrs, validateServiceAccounts(cp)...)
 	allErrs = append(allErrs, validateDedicatedBackingServices(cp)...)
@@ -1568,6 +1832,9 @@ func declaredServiceNamespaces(cp *ControlPlane) []serviceNamespaceAssignment {
 	}
 	if ns := glanceNamespaceBlock(cp); ns != nil {
 		out = append(out, serviceNamespaceAssignment{path: svcPath.Child("glance", "namespace"), ns: ns})
+	}
+	if ns := placementNamespaceBlock(cp); ns != nil {
+		out = append(out, serviceNamespaceAssignment{path: svcPath.Child("placement", "namespace"), ns: ns})
 	}
 	return out
 }
@@ -1646,9 +1913,13 @@ func validateServiceNamespaces(cp *ControlPlane) field.ErrorList {
 // injected uncached API reader — a service namespace can be claimed from any
 // namespace, so a namespace-scoped List would miss the claim it must find.
 //
-// It runs on CREATE only: the assignments are immutable afterwards
-// (validateServiceNamespacesImmutable), so no UPDATE can introduce a new claim.
-// A nil w.Client skips the check, mirroring validateUniqueInNamespace.
+// It runs on CREATE, and on the UPDATEs that change the claim set: the
+// assignments of a service declared on the old revision are frozen
+// (validateServiceNamespacesImmutable), but that freeze carves out the service
+// being ADDED by this update, whose namespace assignment is therefore a claim
+// admission has not seen before. ValidateUpdate re-runs the check for exactly
+// those updates. A nil w.Client skips the check, mirroring
+// validateUniqueInNamespace.
 func (w *ControlPlaneWebhook) validateNamespaceClaims(ctx context.Context, obj *ControlPlane) error {
 	if w.Client == nil {
 		return nil
@@ -1760,6 +2031,13 @@ func declaredDedicatedBackingServices(cp *ControlPlane) []dedicatedBackingServic
 			cache: gl.Cache,
 		})
 	}
+	if pl := placementDedicatedBlock(cp); pl != nil {
+		out = append(out, dedicatedBackingServices{
+			path:  svcPath.Child("placement", "dedicatedBackingServices"),
+			db:    pl.Database,
+			cache: pl.Cache,
+		})
+	}
 	return out
 }
 
@@ -1867,15 +2145,16 @@ func validateDedicatedBackingServices(cp *ControlPlane) field.ErrorList {
 //
 // A Static override is always admitted, and an empty override (inherit) is a no-op.
 // The External-mode forbid on services.keystone.databaseCredentialsMode lives in
-// validateKeystoneMode with the rest of the External-mode matrix (glance is
-// forbidden entirely in External mode, so it needs no such rule).
+// validateKeystoneMode with the rest of the External-mode matrix (glance and
+// placement are forbidden entirely in External mode, so they need no such rule).
 func validateServiceCredentialsModeOverrides(cp *ControlPlane) field.ErrorList {
 	var allErrs field.ErrorList
 	svcPath := field.NewPath("spec", "services")
 
 	// The shared database is managed exactly when it names a clusterRef. A nil
 	// infrastructure block (only reachable in External mode, which forbids the
-	// keystone override via CEL and forbids glance entirely) counts as not managed.
+	// keystone override via CEL and forbids glance and placement entirely) counts
+	// as not managed.
 	sharedManaged := cp.Spec.Infrastructure != nil && cp.Spec.Infrastructure.Database.ClusterRef != nil
 
 	check := func(svc string, mode string, dedicatedDB *commonv1.DatabaseSpec) {
@@ -1902,6 +2181,9 @@ func validateServiceCredentialsModeOverrides(cp *ControlPlane) field.ErrorList {
 	}
 	if gl := cp.Spec.Services.Glance; gl != nil {
 		check("glance", gl.DatabaseCredentialsMode, cp.DedicatedGlanceDatabase())
+	}
+	if pl := cp.Spec.Services.Placement; pl != nil {
+		check("placement", pl.DatabaseCredentialsMode, cp.DedicatedPlacementDatabase())
 	}
 
 	return allErrs
@@ -2050,6 +2332,10 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 		if cp.Spec.Services.Glance != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("services", "glance"),
 				"forbidden when services.keystone.mode is External (Glance needs its own External-mode design)"))
+		}
+		if cp.Spec.Services.Placement != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("services", "placement"),
+				"forbidden when services.keystone.mode is External (Placement needs its own External-mode design)"))
 		}
 
 		return allErrs
@@ -2289,9 +2575,40 @@ func validateCacheImmutable(fldPath *field.Path, oldCache, newCache *commonv1.Ca
 	return allErrs
 }
 
+// serviceDeclaredBefore reports whether oldObj already carried the named service
+// before this update: declared in spec (declaredInSpec), or — for a service
+// DROPPED from spec whose projected child the ControlPlane preserves by default —
+// still reported under that name in status.services.
+//
+// It is the gate both transition freezes below carve their "this is the service's
+// CREATE, not a move" exception on, and the spec half alone is not enough: a
+// shared-backed service drops cleanly, so "the service is absent from the old
+// spec" conflates a service that never existed with one that was dropped a moment
+// ago and is now coming back. Re-adding the latter with a dedicated block (or in
+// another namespace) is the transition the freeze forbids — the preserved child
+// would be re-pointed at a freshly projected, empty instance, stranding the schema
+// it was running on — while re-adding it shared is the same no-op it always was.
+//
+// status.services is derived from spec, so the controller prunes the entry once it
+// has observed the drop: the check holds for as long as the ControlPlane still
+// reports the service, which is the window a spec edited back and forth actually
+// lands in. Closing it for good needs a durable record of "this service was
+// projected", which the API does not carry today.
+func serviceDeclaredBefore(oldObj *ControlPlane, declaredInSpec bool, service string) bool {
+	if declaredInSpec {
+		return true
+	}
+	for _, s := range oldObj.Status.Services {
+		if s.Name == service {
+			return true
+		}
+	}
+	return false
+}
+
 // dedicatedTransitionMessage is the single message every shared<->dedicated
-// presence freeze reports, so the four sites (the per-service block and each
-// backing-service class within it) cannot drift apart.
+// presence freeze reports, so the sites (the per-service block and each
+// backing-service class within it, for each service) cannot drift apart.
 const dedicatedTransitionMessage = "switching a service between shared and dedicated backing services on a live " +
 	"ControlPlane is not yet supported; remove and recreate the ControlPlane to change it"
 
@@ -2314,37 +2631,70 @@ const dedicatedTransitionMessage = "switching a service between shared and dedic
 // data migration) is a reserved future feature, and an immutable CEL marker could
 // never be relaxed to a gated transition later. This mirrors the keystone-mode
 // transition gating above.
+//
+// Every arm is gated on serviceDeclaredBefore. The accessors conflate "the
+// service is not declared at all" with "the service shares the
+// ControlPlane-wide instances", so without the gate an update that ADDS a
+// previously-undeclared service with a dedicated block reads as a
+// shared->dedicated switch and is rejected with an offer to remove and recreate
+// the whole ControlPlane — destroying the databases of the services already
+// running on it. Nothing is being switched there: the service is being created,
+// exactly as it would have been at ControlPlane create time. This mirrors the
+// spec.infrastructure presence-flip carve-out, which likewise compares the
+// leaves only when the block is present on BOTH revisions. Dropping a
+// dedicated-backed service still hits the freeze; a shared-backed one drops
+// cleanly (the per-service deletion annotations govern whether its child comes
+// down with it), which is why the gate must not key on spec alone — see
+// serviceDeclaredBefore.
 func validateDedicatedBackingServicesImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 	var allErrs field.ErrorList
 	svcPath := field.NewPath("spec", "services")
 
-	ksPath := svcPath.Child("keystone", "dedicatedBackingServices")
-	oldKS := keystoneDedicatedBlock(oldObj)
-	newKS := keystoneDedicatedBlock(newObj)
-	if (oldKS == nil) != (newKS == nil) {
-		allErrs = append(allErrs, field.Invalid(ksPath, newKS, dedicatedTransitionMessage))
-	} else if oldKS != nil && newKS != nil {
-		allErrs = append(allErrs, validateDedicatedDatabase(ksPath.Child("database"), oldKS.Database, newKS.Database)...)
-		allErrs = append(allErrs, validateDedicatedCache(ksPath.Child("cache"), oldKS.Cache, newKS.Cache)...)
+	if serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Keystone != nil, "keystone") {
+		ksPath := svcPath.Child("keystone", "dedicatedBackingServices")
+		oldKS := keystoneDedicatedBlock(oldObj)
+		newKS := keystoneDedicatedBlock(newObj)
+		if (oldKS == nil) != (newKS == nil) {
+			allErrs = append(allErrs, field.Invalid(ksPath, newKS, dedicatedTransitionMessage))
+		} else if oldKS != nil && newKS != nil {
+			allErrs = append(allErrs, validateDedicatedDatabase(ksPath.Child("database"), oldKS.Database, newKS.Database)...)
+			allErrs = append(allErrs, validateDedicatedCache(ksPath.Child("cache"), oldKS.Cache, newKS.Cache)...)
+		}
 	}
 
-	hzPath := svcPath.Child("horizon", "dedicatedBackingServices")
-	oldHZ := horizonDedicatedBlock(oldObj)
-	newHZ := horizonDedicatedBlock(newObj)
-	if (oldHZ == nil) != (newHZ == nil) {
-		allErrs = append(allErrs, field.Invalid(hzPath, newHZ, dedicatedTransitionMessage))
-	} else if oldHZ != nil && newHZ != nil {
-		allErrs = append(allErrs, validateDedicatedCache(hzPath.Child("cache"), oldHZ.Cache, newHZ.Cache)...)
+	if serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Horizon != nil, "horizon") {
+		hzPath := svcPath.Child("horizon", "dedicatedBackingServices")
+		oldHZ := horizonDedicatedBlock(oldObj)
+		newHZ := horizonDedicatedBlock(newObj)
+		if (oldHZ == nil) != (newHZ == nil) {
+			allErrs = append(allErrs, field.Invalid(hzPath, newHZ, dedicatedTransitionMessage))
+		} else if oldHZ != nil && newHZ != nil {
+			allErrs = append(allErrs, validateDedicatedCache(hzPath.Child("cache"), oldHZ.Cache, newHZ.Cache)...)
+		}
 	}
 
-	glPath := svcPath.Child("glance", "dedicatedBackingServices")
-	oldGL := glanceDedicatedBlock(oldObj)
-	newGL := glanceDedicatedBlock(newObj)
-	if (oldGL == nil) != (newGL == nil) {
-		allErrs = append(allErrs, field.Invalid(glPath, newGL, dedicatedTransitionMessage))
-	} else if oldGL != nil && newGL != nil {
-		allErrs = append(allErrs, validateDedicatedDatabase(glPath.Child("database"), oldGL.Database, newGL.Database)...)
-		allErrs = append(allErrs, validateDedicatedCache(glPath.Child("cache"), oldGL.Cache, newGL.Cache)...)
+	if serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Glance != nil, "glance") {
+		glPath := svcPath.Child("glance", "dedicatedBackingServices")
+		oldGL := glanceDedicatedBlock(oldObj)
+		newGL := glanceDedicatedBlock(newObj)
+		if (oldGL == nil) != (newGL == nil) {
+			allErrs = append(allErrs, field.Invalid(glPath, newGL, dedicatedTransitionMessage))
+		} else if oldGL != nil && newGL != nil {
+			allErrs = append(allErrs, validateDedicatedDatabase(glPath.Child("database"), oldGL.Database, newGL.Database)...)
+			allErrs = append(allErrs, validateDedicatedCache(glPath.Child("cache"), oldGL.Cache, newGL.Cache)...)
+		}
+	}
+
+	if serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Placement != nil, "placement") {
+		plPath := svcPath.Child("placement", "dedicatedBackingServices")
+		oldPL := placementDedicatedBlock(oldObj)
+		newPL := placementDedicatedBlock(newObj)
+		if (oldPL == nil) != (newPL == nil) {
+			allErrs = append(allErrs, field.Invalid(plPath, newPL, dedicatedTransitionMessage))
+		} else if oldPL != nil && newPL != nil {
+			allErrs = append(allErrs, validateDedicatedDatabase(plPath.Child("database"), oldPL.Database, newPL.Database)...)
+			allErrs = append(allErrs, validateDedicatedCache(plPath.Child("cache"), oldPL.Cache, newPL.Cache)...)
+		}
 	}
 
 	return allErrs
@@ -2405,7 +2755,21 @@ func validateServiceNamespacesImmutable(oldObj, newObj *ControlPlane) field.Erro
 	var allErrs field.ErrorList
 	svcPath := field.NewPath("spec", "services")
 
-	freeze := func(path *field.Path, oldNS, newNS *ServiceNamespaceSpec) {
+	// declaredBefore (serviceDeclaredBefore) gates the whole freeze: assigning a
+	// namespace to a service the ControlPlane did not carry on the old revision is
+	// that service's CREATE, not a move. There is no live service, no backing
+	// service, and no credential material scoped to an old namespace — so the
+	// "remove and recreate the ControlPlane" remedy the message offers would destroy
+	// the services already running on it to onboard one more.
+	//
+	// The carve-out does not weaken the tenant-isolation check: because it lets an
+	// update introduce a namespace CLAIM, ValidateUpdate re-runs
+	// validateNamespaceClaims whenever the claim set changed, so a newly assigned
+	// namespace is still checked against every other ControlPlane's claims.
+	freeze := func(path *field.Path, declaredBefore bool, oldNS, newNS *ServiceNamespaceSpec) {
+		if !declaredBefore {
+			return
+		}
 		switch {
 		case (oldNS == nil) != (newNS == nil):
 			allErrs = append(allErrs, field.Invalid(path, newNS, serviceNamespaceTransitionMessage))
@@ -2424,9 +2788,18 @@ func validateServiceNamespacesImmutable(oldObj, newObj *ControlPlane) field.Erro
 		}
 	}
 
-	freeze(svcPath.Child("keystone", "namespace"), keystoneNamespaceBlock(oldObj), keystoneNamespaceBlock(newObj))
-	freeze(svcPath.Child("horizon", "namespace"), horizonNamespaceBlock(oldObj), horizonNamespaceBlock(newObj))
-	freeze(svcPath.Child("glance", "namespace"), glanceNamespaceBlock(oldObj), glanceNamespaceBlock(newObj))
+	freeze(svcPath.Child("keystone", "namespace"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Keystone != nil, "keystone"),
+		keystoneNamespaceBlock(oldObj), keystoneNamespaceBlock(newObj))
+	freeze(svcPath.Child("horizon", "namespace"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Horizon != nil, "horizon"),
+		horizonNamespaceBlock(oldObj), horizonNamespaceBlock(newObj))
+	freeze(svcPath.Child("glance", "namespace"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Glance != nil, "glance"),
+		glanceNamespaceBlock(oldObj), glanceNamespaceBlock(newObj))
+	freeze(svcPath.Child("placement", "namespace"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Placement != nil, "placement"),
+		placementNamespaceBlock(oldObj), placementNamespaceBlock(newObj))
 
 	return allErrs
 }

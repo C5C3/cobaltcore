@@ -2298,7 +2298,7 @@ func TestIntegration_GlanceServiceAccountInjection(t *testing.T) {
 
 	// A managed ControlPlane with services.glance set and NO serviceAccounts of its
 	// own: the defaulting webhook must inject the glance account BEFORE the
-	// validating webhook's defense-in-depth check (validateGlanceServiceAccount)
+	// validating webhook's defense-in-depth check (validateProjectedServiceAccount)
 	// runs, or admission would reject the CR for the missing account.
 	cp := integrationManagedControlPlane("cp-glance-inject", ns.Name)
 	cp.Spec.Services.Glance = integrationGlanceService()

@@ -4587,6 +4587,880 @@ func TestValidateUpdate_RejectsGlanceDedicatedPresenceFlip(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("glance.dedicatedBackingServices"))
 }
 
+// --- services.placement ---
+
+// placementControlPlane returns a managed ControlPlane with a minimal placement
+// block AND the placement service account the defaulting webhook injects, so the
+// tests below start from an admissible baseline (the validating webhook's
+// defense-in-depth check requires that account) and vary only the field (or the
+// INI content) under test. The shared infrastructure stays brownfield (the
+// validControlPlane baseline).
+func placementControlPlane() *ControlPlane {
+	cp := validControlPlane()
+	cp.Name = "cp"
+	cp.Spec.Services.Placement = &ServicePlacementSpec{}
+	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
+		Name:    "placement",
+		Project: ServiceAccountProjectSpec{Name: "service-placement", Create: true},
+		Roles:   []string{"service"},
+	}}
+	return cp
+}
+
+// TestDefault_PlacementServiceNamespaceLifecycle verifies a declared placement
+// namespace assignment takes the Managed lifecycle default, exactly as the
+// keystone/horizon/glance ones do.
+func TestDefault_PlacementServiceNamespaceLifecycle(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Placement = &ServicePlacementSpec{Namespace: &ServiceNamespaceSpec{Name: "placement"}}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services.Placement.Namespace.Lifecycle).To(Equal(ServiceNamespaceLifecycleManaged))
+}
+
+// TestDefault_PlacementDedicatedBackingServicesLeaves verifies a declared
+// placement dedicated block takes the same leaf defaults as the shared one, with
+// a managed clusterRef name DERIVED from the ControlPlane and credentialsMode
+// materialized to Static (a dedicated managed database cannot draw engine-issued
+// credentials).
+func TestDefault_PlacementDedicatedBackingServicesLeaves(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Name = "prod"
+	cp.Spec.Services.Placement = &ServicePlacementSpec{
+		DedicatedBackingServices: &PlacementDedicatedBackingServicesSpec{
+			Database: &commonv1.DatabaseSpec{},
+			Cache:    &commonv1.CacheSpec{},
+		},
+	}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	db := cp.Spec.Services.Placement.DedicatedBackingServices.Database
+	g.Expect(db.ClusterRef).NotTo(BeNil())
+	g.Expect(db.ClusterRef.Name).To(Equal("prod" + DedicatedPlacementDatabaseClusterRefSuffix))
+	g.Expect(db.Database).To(Equal(DefaultDatabaseName))
+	g.Expect(db.SecretRef.Name).To(Equal(DefaultDatabaseSecretName))
+	g.Expect(db.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic),
+		"a dedicated managed database is Static-only: no per-instance OpenBao engine role exists")
+
+	cache := cp.Spec.Services.Placement.DedicatedBackingServices.Cache
+	g.Expect(cache.ClusterRef).NotTo(BeNil())
+	g.Expect(cache.ClusterRef.Name).To(Equal("prod" + DedicatedPlacementCacheClusterRefSuffix))
+	g.Expect(cache.Backend).To(Equal(DefaultCacheBackend))
+
+	// Idempotent on the dedicated leaves too.
+	before := cp.DeepCopy()
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services).To(Equal(before.Spec.Services))
+}
+
+// TestDefault_InjectsPlacementServiceAccount verifies the defaulting webhook
+// injects the placement service account when services.placement is declared:
+// name, project, role "service" (SRBAC identity:validate_token, NOT member),
+// empty targetNamespace when co-located, and UserName defaulted (the injection
+// precedes the userName loop). The project is "service-placement", the account's
+// own: each create:true entry projects a managed Project, so sharing glance's
+// "service" project would have each adopt the other's Keystone row.
+func TestDefault_InjectsPlacementServiceAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Placement = &ServicePlacementSpec{}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	placement := findServiceAccount(cp, "placement")
+	g.Expect(placement).NotTo(BeNil(), "the defaulting webhook must inject a placement service account")
+	g.Expect(placement.Project.Name).To(Equal("service-placement"),
+		"the placement account creates a project of its own, not the one the glance account creates")
+	g.Expect(placement.Project.Create).To(BeTrue())
+	g.Expect(placement.Roles).To(Equal([]string{"service"}),
+		`the role must be "service" (SRBAC identity:validate_token), not "member"`)
+	g.Expect(placement.TargetNamespace).To(BeEmpty(),
+		"a co-located Placement leaves the account targetNamespace empty")
+	g.Expect(placement.UserName).To(Equal("placement"),
+		"the injected entry is defaulted before the userName loop, so it gets UserName")
+}
+
+// TestDefault_PlacementServiceAccountInjectionIsIdempotent verifies applying
+// Default twice injects the placement account exactly once.
+func TestDefault_PlacementServiceAccountInjectionIsIdempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Placement = &ServicePlacementSpec{}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	count := 0
+	for _, sa := range cp.Spec.KORC.ServiceAccounts {
+		if sa.Name == "placement" {
+			count++
+		}
+	}
+	g.Expect(count).To(Equal(1), "Default twice must not inject two placement accounts")
+}
+
+// TestDefault_PreservesUserDeclaredPlacementServiceAccount verifies an
+// operator-declared placement account is left untouched — no second injection,
+// and its project and roles are preserved.
+func TestDefault_PreservesUserDeclaredPlacementServiceAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Placement = &ServicePlacementSpec{}
+	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
+		Name:     "placement",
+		UserName: "placement-svc",
+		Project:  ServiceAccountProjectSpec{Name: "allocations", Create: false},
+		Roles:    []string{"admin"},
+	}}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	count := 0
+	for _, sa := range cp.Spec.KORC.ServiceAccounts {
+		if sa.Name == "placement" {
+			count++
+		}
+	}
+	g.Expect(count).To(Equal(1), "an operator-declared placement account must not trigger a second injection")
+	placement := findServiceAccount(cp, "placement")
+	g.Expect(placement.UserName).To(Equal("placement-svc"))
+	g.Expect(placement.Project).To(Equal(ServiceAccountProjectSpec{Name: "allocations", Create: false}))
+	g.Expect(placement.Roles).To(Equal([]string{"admin"}))
+}
+
+// TestDefault_DoesNotInjectPlacementServiceAccountWhenPlacementUnset verifies a
+// ControlPlane without services.placement grows no placement account.
+func TestDefault_DoesNotInjectPlacementServiceAccountWhenPlacementUnset(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(findServiceAccount(cp, "placement")).To(BeNil())
+}
+
+// TestDefault_PlacementServiceAccountTargetsDedicatedNamespace verifies the
+// injected account targets the namespace Placement is placed in when that
+// differs from the ControlPlane's own, so its consumer credentials Secret rides
+// that namespace's tenant store.
+func TestDefault_PlacementServiceAccountTargetsDedicatedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Placement = &ServicePlacementSpec{
+		Namespace: &ServiceNamespaceSpec{Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged},
+	}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	placement := findServiceAccount(cp, "placement")
+	g.Expect(placement).NotTo(BeNil())
+	g.Expect(placement.TargetNamespace).To(Equal("placement"),
+		"a Placement placed in a dedicated namespace delivers its credentials there")
+}
+
+// TestDefault_InjectsGlanceAndPlacementServiceAccounts pins the two injections
+// side by side: glance first, then placement, each creating a project of its
+// own. Two create:true entries naming ONE project are rejected outright (each
+// managed Project would adopt the other's Keystone row), so a ControlPlane
+// running both services has to come out of defaulting admissible.
+func TestDefault_InjectsGlanceAndPlacementServiceAccounts(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Name = "cp"
+	cp.Spec.Services.Glance = validGlanceSpec()
+	cp.Spec.Services.Placement = &ServicePlacementSpec{}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	names := make([]string, 0, len(cp.Spec.KORC.ServiceAccounts))
+	for _, sa := range cp.Spec.KORC.ServiceAccounts {
+		names = append(names, sa.Name)
+	}
+	g.Expect(names).To(Equal([]string{"glance", "placement"}),
+		"the injections run in a fixed order, so the stored spec is deterministic")
+	g.Expect(findServiceAccount(cp, "glance").Project.Name).To(Equal("service"))
+	g.Expect(findServiceAccount(cp, "placement").Project.Name).To(Equal("service-placement"))
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a defaulted glance+placement ControlPlane must be admissible: the two accounts create different projects")
+}
+
+// TestValidateCreate_AcceptsPlacementControlPlane pins the admissible baseline.
+func TestValidateCreate_AcceptsPlacementControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	_, err := w.ValidateCreate(context.Background(), placementControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsPlacementWithoutServiceAccount pins the
+// defense-in-depth for the injection: a webhook-bypassed CR that dropped the
+// placement account is rejected.
+func TestValidateCreate_RejectsPlacementWithoutServiceAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := placementControlPlane()
+	cp.Spec.KORC.ServiceAccounts = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`a service account named "placement" is required`))
+}
+
+// TestValidateCreate_RejectsPlacementServiceAccountTargetNamespaceMismatch pins
+// that a Placement placed in a dedicated namespace requires its account to
+// target that namespace.
+func TestValidateCreate_RejectsPlacementServiceAccountTargetNamespaceMismatch(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := placementControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
+		Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "openstack"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("must equal the namespace Placement is placed in"))
+}
+
+// TestValidateCreate_RejectsPlacementServiceAccountTargetNamespaceWhenColocated
+// covers the other arm of the namespace-claim switch: a co-located Placement has
+// no tenant store anywhere but the ControlPlane's own namespace, so an account
+// targeting a third namespace could never have its consumer credentials Secret
+// delivered.
+func TestValidateCreate_RejectsPlacementServiceAccountTargetNamespaceWhenColocated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := placementControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "somewhere-else"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(
+		"must be empty or the ControlPlane's own namespace when Placement is co-located with the ControlPlane"))
+}
+
+// TestValidateCreate_AcceptsPlacementInDedicatedNamespace pins the accepting
+// side: the account targets the namespace Placement is placed in.
+func TestValidateCreate_AcceptsPlacementInDedicatedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := placementControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
+		Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "placement"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_PlacementPublicEndpointMustBeURL covers the
+// defense-in-depth URL parse behind the coarse ^https?:// pattern. The value is
+// advertised verbatim as the public placement catalog Endpoint and is projected
+// into no child CR, so nothing downstream re-checks it: "https://" is
+// schema-legal and would register a hostless URL no client can resolve.
+func TestValidateCreate_PlacementPublicEndpointMustBeURL(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, endpoint := range map[string]string{
+		"missing host": "https://",
+		"wrong scheme": "ftp://placement.example.com",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := placementControlPlane()
+			cp.Spec.Services.Placement.PublicEndpoint = endpoint
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.placement.publicEndpoint"))
+		})
+	}
+}
+
+// TestValidateCreate_PlacementPublicEndpointMustBeABareOrigin covers the shapes
+// the ^https?:// Pattern marker lets through and validateHTTPURL happily parses.
+// The Placement API is served at the root and clients append the API path to the
+// catalog endpoint, so "https://placement.example.com?utm=1" yields
+// "https://placement.example.com?utm=1/resource_providers" and 404s every
+// allocation call.
+//
+// The gateway is deliberately left unset in each case: the rule holds on the
+// gateway-less path too, which is where the scheme/host rules stop applying.
+func TestValidateCreate_PlacementPublicEndpointMustBeABareOrigin(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, endpoint := range map[string]string{
+		"query":    "https://placement.example.com?utm=1",
+		"fragment": "https://placement.example.com#top",
+		"path":     "https://placement.example.com/placement",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := placementControlPlane()
+			cp.Spec.Services.Placement.PublicEndpoint = endpoint
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.placement.publicEndpoint"))
+			g.Expect(err.Error()).To(ContainSubstring("must be a bare origin"))
+		})
+	}
+}
+
+// TestValidateCreate_PlacementPublicEndpointMustAgreeWithGateway pins the two
+// cross-field rules. An http endpoint behind a TLS-terminating listener ships the
+// caller's scoped Keystone token in cleartext on every allocation call; a
+// divergent host advertises a catalog URL the Gateway listener never routes,
+// which fails client-side with nothing on the ControlPlane recording why.
+func TestValidateCreate_PlacementPublicEndpointMustAgreeWithGateway(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	gateway := func() *commonv1.GatewaySpec {
+		return &commonv1.GatewaySpec{
+			Hostname:  "placement.example.com",
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		}
+	}
+
+	t.Run("divergent host", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.Services.Placement.Gateway = gateway()
+		cp.Spec.Services.Placement.PublicEndpoint = "https://allocations.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.placement.publicEndpoint"))
+		g.Expect(err.Error()).To(ContainSubstring(
+			`must equal services.placement.gateway.hostname "placement.example.com"`))
+	})
+
+	t.Run("http scheme behind a TLS-terminating gateway", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.Services.Placement.Gateway = gateway()
+		cp.Spec.Services.Placement.PublicEndpoint = "http://placement.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("scheme must be https"))
+	})
+
+	t.Run("matching host with a non-default port", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.Services.Placement.Gateway = gateway()
+		cp.Spec.Services.Placement.PublicEndpoint = "https://placement.example.com:8443"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred(),
+			"Gateway API hostnames carry no port, so the port is the reason the override exists")
+	})
+
+	t.Run("trailing slash", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.Services.Placement.Gateway = gateway()
+		cp.Spec.Services.Placement.PublicEndpoint = "https://placement.example.com/"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred(), "clients normalize the catalog endpoint before appending the API path")
+	})
+
+	t.Run("wildcard gateway hostname", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.Services.Placement.Gateway = gateway()
+		cp.Spec.Services.Placement.Gateway.Hostname = "*.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.placement.gateway.hostname"))
+	})
+}
+
+// TestValidateCreate_WarnsOnCleartextPlacementPublicEndpoint covers the
+// gateway-less placement service, where an http endpoint is a legal (if unwise)
+// development setup the CRD Pattern deliberately allows. Every allocation call
+// sends a scoped Keystone token to that URL, so the downgrade must at least be
+// surfaced.
+func TestValidateCreate_WarnsOnCleartextPlacementPublicEndpoint(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("http warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.Services.Placement.PublicEndpoint = "http://placement.example.com"
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(HaveLen(1))
+		g.Expect(warnings[0]).To(ContainSubstring("scoped Keystone token"))
+	})
+
+	t.Run("https is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.Services.Placement.PublicEndpoint = "https://placement.example.com"
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(BeEmpty())
+	})
+}
+
+// TestValidateCreate_RejectsPlacementImageTagDigestXOR pins the defense-in-depth
+// mirror of the commonv1.ImageSpec XValidation rule for callers that bypass CRD
+// schema admission.
+func TestValidateCreate_RejectsPlacementImageTagDigestXOR(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, img := range map[string]*commonv1.ImageSpec{
+		"neither tag nor digest": {Repository: "ghcr.io/c5c3/placement"},
+		"both tag and digest": {
+			Repository: "ghcr.io/c5c3/placement",
+			Tag:        "2025.2",
+			Digest:     "sha256:" + strings.Repeat("a", 64),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := placementControlPlane()
+			cp.Spec.Services.Placement.Image = img
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.placement.image"))
+			g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest must be set"))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsPlacementInExternalMode verifies the webhook
+// cross-field forbid, mirroring services.glance: no Keystone workload is
+// deployed, so Placement has no identity to validate its tokens against.
+func TestValidateCreate_RejectsPlacementInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Services.Placement = &ServicePlacementSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.placement"))
+	g.Expect(err.Error()).To(ContainSubstring("forbidden when services.keystone.mode is External"))
+}
+
+// TestValidateCreate_RejectsPlacementNamespaceClaimedByOtherControlPlane mirrors
+// the tenant-key claim rule for the placement service namespace.
+func TestValidateCreate_RejectsPlacementNamespaceClaimedByOtherControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	incumbent := validControlPlane()
+	incumbent.Name = "other"
+	incumbent.Namespace = "placement"
+	c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).WithObjects(incumbent).Build()
+	w := &ControlPlaneWebhook{Client: c}
+
+	cp := placementControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
+		Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "placement"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.placement.namespace.name"))
+	g.Expect(err.Error()).To(ContainSubstring(`already occupied by ControlPlane "other"`))
+}
+
+// TestValidateUpdate_RejectsPlacementNamespaceChange pins the create-only freeze
+// on the placement namespace assignment.
+func TestValidateUpdate_RejectsPlacementNamespaceChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := placementControlPlane()
+	oldCP.Namespace = "openstack"
+	oldCP.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
+		Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Placement.Namespace.Name = "placement-2"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.placement.namespace.name"))
+	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+}
+
+// TestValidateCreate_RejectsPlacementDedicatedDatabaseDynamic confirms
+// placement's dedicated database goes through the shared dedicated-backing
+// validation: the Dynamic-credentials rule (no per-instance OpenBao engine role)
+// applies to it exactly as to keystone's.
+func TestValidateCreate_RejectsPlacementDedicatedDatabaseDynamic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := placementControlPlane()
+	cp.Spec.Services.Placement.DedicatedBackingServices = &PlacementDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef:      &corev1.LocalObjectReference{Name: "cp-placement-db"},
+			CredentialsMode: commonv1.CredentialsModeDynamic,
+			Database:        "placement",
+			SecretRef:       commonv1.SecretRefSpec{Name: "placement-db"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("credentialsMode Dynamic is not supported on a dedicated database"))
+	g.Expect(err.Error()).To(ContainSubstring("placement.dedicatedBackingServices.database"))
+}
+
+// TestValidateUpdate_RejectsPlacementDedicatedPresenceFlip pins the transition
+// freeze on the placement dedicated block: a live service cannot be moved
+// between shared and dedicated backing services.
+func TestValidateUpdate_RejectsPlacementDedicatedPresenceFlip(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := placementControlPlane()
+	newCP := placementControlPlane()
+	newCP.Spec.Services.Placement.DedicatedBackingServices = &PlacementDedicatedBackingServicesSpec{
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-placement-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+		},
+	}
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
+	g.Expect(err.Error()).To(ContainSubstring("placement.dedicatedBackingServices"))
+}
+
+// TestValidateUpdate_AcceptsAddingAServiceWithDedicatedBackingServices pins the
+// other side of the freeze: ADDING a service that was not declared before is that
+// service's create, not a shared->dedicated switch. The accessors return nil for
+// both states, so without the declared-before gate the update is rejected with an
+// offer to remove and recreate the whole ControlPlane — destroying the databases
+// of the services already running on it to onboard one more.
+func TestValidateUpdate_AcceptsAddingAServiceWithDedicatedBackingServices(t *testing.T) {
+	tests := []struct {
+		name string
+		add  func(cp *ControlPlane)
+	}{
+		{
+			name: "placement",
+			add: func(cp *ControlPlane) {
+				pl := placementControlPlane()
+				cp.Spec.Services.Placement = pl.Spec.Services.Placement
+				cp.Spec.Services.Placement.DedicatedBackingServices = &PlacementDedicatedBackingServicesSpec{
+					Database: &commonv1.DatabaseSpec{
+						ClusterRef: &corev1.LocalObjectReference{Name: "cp-placement-db"},
+						Database:   "placement",
+						SecretRef:  commonv1.SecretRefSpec{Name: "placement-db"},
+					},
+				}
+				cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, pl.Spec.KORC.ServiceAccounts...)
+			},
+		},
+		{
+			name: "glance",
+			add: func(cp *ControlPlane) {
+				gl := glanceControlPlane()
+				cp.Spec.Services.Glance = gl.Spec.Services.Glance
+				cp.Spec.Services.Glance.DedicatedBackingServices = &GlanceDedicatedBackingServicesSpec{
+					Cache: &commonv1.CacheSpec{
+						ClusterRef: &corev1.LocalObjectReference{Name: "cp-glance-cache"},
+						Backend:    commonv1.DefaultCacheBackend,
+					},
+				}
+				cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, gl.Spec.KORC.ServiceAccounts...)
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			oldCP := validControlPlane()
+			oldCP.Name = "cp"
+			newCP := oldCP.DeepCopy()
+			tc.add(newCP)
+
+			_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+}
+
+// TestValidateUpdate_AcceptsAddingPlacementInADedicatedNamespace is the namespace
+// twin of the dedicated-backing carve-out: assigning a namespace to a service the
+// ControlPlane did not declare before is that service's create, so there is no
+// live service, no backing service, and no credential material stranded in an old
+// namespace for the move freeze to protect.
+func TestValidateUpdate_AcceptsAddingPlacementInADedicatedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := validControlPlane()
+	oldCP.Name = "cp"
+	oldCP.Namespace = "openstack"
+
+	pl := placementControlPlane()
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Placement = pl.Spec.Services.Placement
+	newCP.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
+		Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	newCP.Spec.KORC.ServiceAccounts = append(newCP.Spec.KORC.ServiceAccounts, pl.Spec.KORC.ServiceAccounts...)
+	newCP.Spec.KORC.ServiceAccounts[len(newCP.Spec.KORC.ServiceAccounts)-1].TargetNamespace = "placement"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateUpdate_RejectsClaimingANamespaceAnotherControlPlaneOccupies closes
+// the UPDATE path into the tenant-isolation check. The declared-before carve-out
+// admits an update that ADDS a service with a namespace assignment, so the
+// create-only claim check no longer sees every claim: without the re-check two
+// ControlPlanes could end up owning one namespace — the tenant key the OpenBao
+// paths, the database-engine role, and the templated eso-tenant policy are all
+// scoped by — and each would then park on the fixed-name tenant objects the other
+// already owns and may not adopt.
+func TestValidateUpdate_RejectsClaimingANamespaceAnotherControlPlaneOccupies(t *testing.T) {
+	// The ControlPlane doing the update: no placement, no claim of its own.
+	newcomer := func() *ControlPlane {
+		cp := validControlPlane()
+		cp.Name = "cp-b"
+		cp.Namespace = "openstack-b"
+		return cp
+	}
+	// The update under test: onboard placement into namespace ns.
+	addPlacementIn := func(cp *ControlPlane, ns string) {
+		pl := placementControlPlane()
+		cp.Spec.Services.Placement = pl.Spec.Services.Placement
+		cp.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
+			Name: ns, Lifecycle: ServiceNamespaceLifecycleExternal,
+		}
+		cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, pl.Spec.KORC.ServiceAccounts...)
+		cp.Spec.KORC.ServiceAccounts[len(cp.Spec.KORC.ServiceAccounts)-1].TargetNamespace = ns
+	}
+
+	t.Run("a namespace an incumbent already claims", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		incumbent := validControlPlane()
+		incumbent.Name = "cp-a"
+		incumbent.Namespace = "openstack-a"
+		incumbent.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+			Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged,
+		}
+		oldCP := newcomer()
+		c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).
+			WithObjects(incumbent, oldCP.DeepCopy()).Build()
+		w := &ControlPlaneWebhook{Client: c}
+
+		newCP := oldCP.DeepCopy()
+		addPlacementIn(newCP, "images")
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.placement.namespace.name"))
+		g.Expect(err.Error()).To(ContainSubstring(`already occupied by ControlPlane "cp-a"`))
+	})
+
+	t.Run("an unclaimed namespace stays admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		incumbent := validControlPlane()
+		incumbent.Name = "cp-a"
+		incumbent.Namespace = "openstack-a"
+		oldCP := newcomer()
+		c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).
+			WithObjects(incumbent, oldCP.DeepCopy()).Build()
+		w := &ControlPlaneWebhook{Client: c}
+
+		newCP := oldCP.DeepCopy()
+		addPlacementIn(newCP, "placement")
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateUpdate_RejectsReAddingADroppedService pins that the declared-before
+// carve-out is a carve-out for a service's CREATE, not a two-update path around
+// the transition freezes. A shared-backed service drops from spec cleanly and its
+// projected child is preserved by default, so keying the gate on the old SPEC
+// alone would admit exactly what the freeze forbids on the next update: the
+// running child re-pointed at a freshly projected, empty database — or at another
+// namespace — with the schema it was running on stranded and no way back, since
+// every route out then hits the freeze. status.services still reports the dropped
+// service, so the gate engages.
+func TestValidateUpdate_RejectsReAddingADroppedService(t *testing.T) {
+	// The revision left behind by dropping spec.services.placement from a
+	// ControlPlane that ran Placement on the shared backing services.
+	dropped := func() *ControlPlane {
+		cp := validControlPlane()
+		cp.Name = "cp"
+		cp.Namespace = "openstack"
+		cp.Status.Services = []ServiceStatus{
+			{Name: "keystone", Ready: true},
+			{Name: "placement", Ready: true},
+		}
+		return cp
+	}
+	readd := func(cp *ControlPlane) *ServicePlacementSpec {
+		pl := placementControlPlane()
+		cp.Spec.Services.Placement = pl.Spec.Services.Placement
+		cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, pl.Spec.KORC.ServiceAccounts...)
+		return cp.Spec.Services.Placement
+	}
+
+	t.Run("with dedicated backing services", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w := &ControlPlaneWebhook{}
+		oldCP := dropped()
+		newCP := oldCP.DeepCopy()
+		readd(newCP).DedicatedBackingServices = &PlacementDedicatedBackingServicesSpec{
+			Database: &commonv1.DatabaseSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "cp-placement-db"},
+				Database:   "placement",
+				SecretRef:  commonv1.SecretRefSpec{Name: "placement-db"},
+			},
+		}
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
+		g.Expect(err.Error()).To(ContainSubstring("placement.dedicatedBackingServices"))
+	})
+
+	t.Run("in another namespace", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w := &ControlPlaneWebhook{}
+		oldCP := dropped()
+		newCP := oldCP.DeepCopy()
+		readd(newCP).Namespace = &ServiceNamespaceSpec{
+			Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
+		}
+		newCP.Spec.KORC.ServiceAccounts[len(newCP.Spec.KORC.ServiceAccounts)-1].TargetNamespace = "placement"
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+	})
+
+	t.Run("on the shared backing services it stays admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		w := &ControlPlaneWebhook{}
+		oldCP := dropped()
+		newCP := oldCP.DeepCopy()
+		readd(newCP)
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateUpdate_RejectsDroppingAPlacementNamespaceAssignment pins that the
+// declared-before carve-out does not weaken the move freeze: a live Placement
+// still cannot shed its namespace assignment. reconcilePlacement's preserve path
+// relies on PlacementNamespace() still resolving to the namespace the generator
+// it tears down actually lives in.
+func TestValidateUpdate_RejectsDroppingAPlacementNamespaceAssignment(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := placementControlPlane()
+	oldCP.Namespace = "openstack"
+	oldCP.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
+		Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	oldCP.Spec.KORC.ServiceAccounts[0].TargetNamespace = "placement"
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Placement.Namespace = nil
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+}
+
+// The projected Placement child is bounded far below the 253-byte object-name
+// cap: the placement operator names its API Service after the CR, and a Service
+// name is a DNS-1035 label Kubernetes caps at 63 characters. Without this guard
+// the ControlPlane admits, the Placement CR is created, and the placement
+// operator then fails to apply the Service on every pass — with metadata.name
+// immutable, recovery means recreating the whole control plane.
+func TestValidateCreate_RejectsOverlongProjectedPlacementChildName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	maxCPName := maxServiceNameBytes - placementChildNameOverhead
+
+	atLimit := placementControlPlane()
+	atLimit.Name = strings.Repeat("c", maxCPName)
+	_, err := w.ValidateCreate(context.Background(), atLimit)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a name whose projected Placement child still fits must be accepted")
+
+	tooLong := placementControlPlane()
+	tooLong.Name = strings.Repeat("c", maxCPName+1)
+	_, err = w.ValidateCreate(context.Background(), tooLong)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("projected Placement child CR name would be"))
+
+	// Without services.placement no Placement child is projected, so the bound
+	// does not apply — the ControlPlane keeps the full 253-byte budget.
+	noPlacement := validControlPlane()
+	noPlacement.Name = strings.Repeat("c", maxCPName+1)
+	_, err = w.ValidateCreate(context.Background(), noPlacement)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// Enabling Placement on an existing over-long ControlPlane is the one update that
+// can newly violate the bound, so it is rejected; every other update on a CR that
+// already carried Placement — including the finalizer removal that completes its
+// deletion — must still pass, because metadata.name is immutable and a rejection
+// would wedge it in Terminating.
+func TestValidateUpdate_ProjectedPlacementChildNameBoundIsNewlyEnabledOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	overlong := strings.Repeat("c", maxServiceNameBytes-placementChildNameOverhead+1)
+
+	withoutPlacement := validControlPlane()
+	withoutPlacement.Name = overlong
+	enabling := placementControlPlane()
+	enabling.Name = overlong
+
+	_, err := w.ValidateUpdate(context.Background(), withoutPlacement, enabling)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("projected Placement child CR name would be"))
+
+	grandfathered := placementControlPlane()
+	grandfathered.Name = overlong
+	grandfathered.Finalizers = []string{"c5c3.io/finalizer"}
+	deleting := grandfathered.DeepCopy()
+	deleting.Finalizers = nil
+
+	_, err = w.ValidateUpdate(context.Background(), grandfathered, deleting)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"an over-long grandfathered ControlPlane must stay updatable, or its deletion never completes")
+}
+
 // --- per-service databaseCredentialsMode override (issue #683) ---
 
 // TestValidateCreate_RejectsKeystoneCredentialsModeOverrideDynamicOnDedicated pins
@@ -4634,6 +5508,29 @@ func TestValidateCreate_RejectsGlanceCredentialsModeOverrideDynamicOnDedicated(t
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("services.glance.databaseCredentialsMode"))
+	g.Expect(err.Error()).To(ContainSubstring(
+		"Dynamic is not supported as an override on a service with a dedicated database",
+	))
+}
+
+// TestValidateCreate_RejectsPlacementCredentialsModeOverrideDynamicOnDedicated is
+// the placement mirror of the keystone dedicated-database rejection above.
+func TestValidateCreate_RejectsPlacementCredentialsModeOverrideDynamicOnDedicated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := placementControlPlane()
+	cp.Spec.Services.Placement.DatabaseCredentialsMode = commonv1.CredentialsModeDynamic
+	cp.Spec.Services.Placement.DedicatedBackingServices = &PlacementDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-placement-db"},
+			Database:   "placement",
+			SecretRef:  commonv1.SecretRefSpec{Name: "placement-db"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.placement.databaseCredentialsMode"))
 	g.Expect(err.Error()).To(ContainSubstring(
 		"Dynamic is not supported as an override on a service with a dedicated database",
 	))
@@ -4782,16 +5679,6 @@ func TestValidateCreate_RejectsUnknownGlanceExtraConfigOption(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[DEFAULT][workerz]"))
 	g.Expect(err.Error()).To(ContainSubstring("no such option in the glance 2025.2 option catalog"))
-}
-
-// placementControlPlane returns a managed ControlPlane with a minimal placement
-// block, so the extraConfig tests below start from an admissible baseline and
-// vary only the INI content under test.
-func placementControlPlane() *ControlPlane {
-	cp := validControlPlane()
-	cp.Name = "cp"
-	cp.Spec.Services.Placement = &ServicePlacementSpec{}
-	return cp
 }
 
 // TestValidateCreate_RejectsUnknownPlacementExtraConfigOption pins the placement
@@ -5295,6 +6182,11 @@ func TestValidateCreate_FailsOpenOnCatalogLessRelease(t *testing.T) {
 	cp.Spec.Services.Placement = &ServicePlacementSpec{
 		ExtraConfig: map[string]map[string]string{"placement": {"randomize_allocation_candidates": "true"}},
 	}
+	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
+		Name:    "placement",
+		Project: ServiceAccountProjectSpec{Name: "service-placement", Create: true},
+		Roles:   []string{"service"},
+	})
 
 	warnings, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -5391,6 +6283,11 @@ func TestValidateUpdate_ExtraConfigCatalogGating(t *testing.T) {
 		oldCP := staleInvalid()
 		newCP := staleInvalid()
 		newCP.Spec.Services.Placement = &ServicePlacementSpec{}
+		newCP.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
+			Name:    "placement",
+			Project: ServiceAccountProjectSpec{Name: "service-placement", Create: true},
+			Roles:   []string{"service"},
+		}}
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).To(HaveOccurred())
