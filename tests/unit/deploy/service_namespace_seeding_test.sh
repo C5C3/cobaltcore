@@ -72,17 +72,25 @@ STUB
   chmod +x "$dir/kubectl"
 }
 
-# make_kubectl_full <dir> <glance_ns> <glance_dedicated_db>
-# A kubectl stub that answers EVERY lookup setup-database-tenant.sh makes so both
-# the keystone AND the glance legs run to completion — the bao writes reach
-# OpenBao via `kubectl exec ... openbao-0`, which the stub swallows. The
-# ControlPlane declares Glance (spec.services.glance non-empty); its service
-# namespace resolves to <glance_ns> (empty defaults to the ControlPlane
-# namespace) and it declares a dedicated glance database only when
-# <glance_dedicated_db> is non-empty. Keystone stays namespace-unassigned, so its
-# role is keyed on the ControlPlane namespace.
+# make_kubectl_full <dir> <glance_declared> <glance_ns> <glance_dedicated_db> \
+#                         <placement_declared> <placement_ns> <placement_dedicated_db>
+# A kubectl stub that answers EVERY lookup setup-database-tenant.sh makes so the
+# keystone, glance AND placement legs all run to completion — the bao writes reach
+# OpenBao via `kubectl exec ... openbao-0`, which the stub swallows.
+#
+# <glance_declared> / <placement_declared> are the presence gate the script reads
+# first: a non-empty value makes `{.spec.services.<svc>}` resolve to a non-empty
+# object, an empty one makes it resolve to nothing so the service is UNDECLARED.
+# That distinction has to be modelled separately from the namespace, because an
+# empty <svc>_ns means "declared but not placed in a namespace of its own" — the
+# service still gets an engine role, keyed on the ControlPlane namespace.
+#
+# <glance_dedicated_db> / <placement_dedicated_db> declare a dedicated database
+# for that service when non-empty (Static-only, so no engine role). Keystone stays
+# namespace-unassigned, so its role is keyed on the ControlPlane namespace.
 make_kubectl_full() {
-  local dir="$1" glance_ns="$2" glance_dedicated_db="$3"
+  local dir="$1" glance_declared="$2" glance_ns="$3" glance_dedicated_db="$4"
+  local placement_declared="$5" placement_ns="$6" placement_dedicated_db="$7"
   mkdir -p "$dir"
   cat >"$dir/kubectl" <<STUB
 #!/bin/bash
@@ -107,7 +115,26 @@ if [[ "\$*" == *"jsonpath={.spec.services.glance.namespace.name}"* ]]; then
 fi
 if [[ "\$*" == *"jsonpath={.spec.services.glance}"* ]]; then
   # A non-empty object marks Glance as declared; its exact shape is irrelevant.
-  printf 'map[namespace:map[name:%s]]' "${glance_ns}"
+  # An undeclared Glance prints nothing, which is what the script's -z gate reads.
+  if [[ -n "${glance_declared}" ]]; then
+    printf 'map[namespace:map[name:%s]]' "${glance_ns}"
+  fi
+  exit 0
+fi
+if [[ "\$*" == *"jsonpath={.spec.services.placement.dedicatedBackingServices.database}"* ]]; then
+  printf '%s' "${placement_dedicated_db}"
+  exit 0
+fi
+if [[ "\$*" == *"jsonpath={.spec.services.placement.namespace.name}"* ]]; then
+  printf '%s' "${placement_ns}"
+  exit 0
+fi
+if [[ "\$*" == *"jsonpath={.spec.services.placement}"* ]]; then
+  # A non-empty object marks Placement as declared; its exact shape is irrelevant.
+  # An undeclared Placement prints nothing, which the script's -z gate reads.
+  if [[ -n "${placement_declared}" ]]; then
+    printf 'map[namespace:map[name:%s]]' "${placement_ns}"
+  fi
   exit 0
 fi
 if [[ "\$*" == *"jsonpath={.spec.infrastructure.database.clusterRef.name}"* ]]; then
@@ -207,7 +234,7 @@ test_db_tenant_provisions_glance_on_the_glance_namespace() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Glance declared, placed in its own "images" namespace, no dedicated database.
-  make_kubectl_full "$tmp" "images" ""
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -233,7 +260,7 @@ test_db_tenant_defaults_glance_to_the_controlplane_namespace() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Glance declared but not placed in a namespace of its own: role follows the CP.
-  make_kubectl_full "$tmp" "" ""
+  make_kubectl_full "$tmp" "yes" "" "" "yes" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -255,7 +282,7 @@ test_db_tenant_skips_glance_with_a_dedicated_database() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Glance declared WITH a dedicated database — Static-only, so no engine role.
-  make_kubectl_full "$tmp" "images" "glance-db"
+  make_kubectl_full "$tmp" "yes" "images" "glance-db" "yes" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -264,6 +291,110 @@ test_db_tenant_skips_glance_with_a_dedicated_database() {
     "$output" "skipping the glance database-engine tenant"
   assert_not_contains "no glance engine role is written for a dedicated database" \
     "$output" "database/mariadb/roles/glance-"
+  assert_contains "keystone is still provisioned" \
+    "$output" "database/mariadb/roles/keystone-openstack"
+}
+
+# ---------------------------------------------------------------------------
+# Test: the placement engine role follows the Placement service namespace
+# ---------------------------------------------------------------------------
+test_db_tenant_provisions_placement_on_the_placement_namespace() {
+  echo "Test: setup-database-tenant.sh keys the placement engine role on the Placement namespace"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # Placement declared, placed in its own "compute" namespace, no dedicated database.
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" ""
+
+  local output
+  output="$(run_db_tenant "$tmp" "openstack" "cp")"
+
+  assert_contains "the placement engine role is keyed on the Placement service namespace" \
+    "$output" "database/mariadb/roles/placement-compute"
+  assert_contains "the placement MariaDB is read from the Placement service namespace" \
+    "$output" "openstack-db.compute.svc:3306"
+  assert_contains "keystone is still provisioned on the ControlPlane namespace" \
+    "$output" "database/mariadb/roles/keystone-openstack"
+  assert_not_contains "the placement role must not be keyed on the ControlPlane namespace" \
+    "$output" "roles/placement-openstack"
+}
+
+# ---------------------------------------------------------------------------
+# Test: an unplaced Placement defaults its engine role to the ControlPlane namespace
+# ---------------------------------------------------------------------------
+test_db_tenant_defaults_placement_to_the_controlplane_namespace() {
+  echo "Test: setup-database-tenant.sh defaults the placement role to the ControlPlane namespace"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # Placement declared but not placed in a namespace of its own: role follows the CP.
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "" ""
+
+  local output
+  output="$(run_db_tenant "$tmp" "openstack" "cp")"
+
+  assert_contains "an unplaced Placement keeps the ControlPlane-namespace role" \
+    "$output" "database/mariadb/roles/placement-openstack"
+  assert_contains "the placement MariaDB is read from the ControlPlane namespace" \
+    "$output" "openstack-db.openstack.svc:3306"
+}
+
+# ---------------------------------------------------------------------------
+# Test: a dedicated placement database skips the placement engine leg
+# ---------------------------------------------------------------------------
+test_db_tenant_skips_placement_with_a_dedicated_database() {
+  echo "Test: setup-database-tenant.sh skips the placement leg for a dedicated placement database"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # Placement declared WITH a dedicated database — Static-only, so no engine role.
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "placement-db"
+
+  local output
+  output="$(run_db_tenant "$tmp" "openstack" "cp")"
+
+  assert_contains "the dedicated-database placement leg is skipped, loudly" \
+    "$output" "skipping the placement database-engine tenant"
+  assert_not_contains "no placement engine role is written for a dedicated database" \
+    "$output" "database/mariadb/roles/placement-"
+  assert_contains "keystone is still provisioned" \
+    "$output" "database/mariadb/roles/keystone-openstack"
+}
+
+# ---------------------------------------------------------------------------
+# Test: a Keystone-only ControlPlane runs neither optional service leg
+# ---------------------------------------------------------------------------
+# The presence gate is what keeps the loop from provisioning an engine tenant for
+# a service the ControlPlane never declared — writing a role, a policy and a
+# connection for a schema nothing will ever connect to, against a MariaDB that
+# need not even exist in that namespace.
+test_db_tenant_skips_undeclared_services() {
+  echo "Test: setup-database-tenant.sh skips glance and placement when neither is declared"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # Neither optional service declared: both presence lookups resolve empty.
+  make_kubectl_full "$tmp" "" "" "" "" "" ""
+
+  local output
+  output="$(run_db_tenant "$tmp" "openstack" "cp")"
+
+  assert_contains "the undeclared glance leg is skipped, loudly" \
+    "$output" "ControlPlane declares no spec.services.glance"
+  assert_contains "the undeclared placement leg is skipped, loudly" \
+    "$output" "ControlPlane declares no spec.services.placement"
+  assert_not_contains "no glance engine role is written for an undeclared service" \
+    "$output" "database/mariadb/roles/glance-"
+  assert_not_contains "no placement engine role is written for an undeclared service" \
+    "$output" "database/mariadb/roles/placement-"
   assert_contains "keystone is still provisioned" \
     "$output" "database/mariadb/roles/keystone-openstack"
 }
@@ -321,6 +452,10 @@ test_db_tenant_defaults_to_the_controlplane_namespace
 test_db_tenant_provisions_glance_on_the_glance_namespace
 test_db_tenant_defaults_glance_to_the_controlplane_namespace
 test_db_tenant_skips_glance_with_a_dedicated_database
+test_db_tenant_provisions_placement_on_the_placement_namespace
+test_db_tenant_defaults_placement_to_the_controlplane_namespace
+test_db_tenant_skips_placement_with_a_dedicated_database
+test_db_tenant_skips_undeclared_services
 test_seeder_rejects_a_malformed_identity
 
 echo ""

@@ -1289,9 +1289,10 @@ openbao_bootstrap() {
 # Ready. This is the stage-(b) tenant-onboarding step (#439): managed-mode
 # Keystone draws engine-issued credentials from database/mariadb/creds/keystone-
 # <ns>-<cp>, which only exist after setup-database-tenant.sh configures the role.
-# setup-database-tenant.sh now ALSO provisions the glance engine connection+role
-# (database/mariadb/creds/glance-<ns>) when the ControlPlane declares Glance on
-# the shared managed database, so this single call onboards both services.
+# setup-database-tenant.sh ALSO provisions the glance and placement engine
+# connection+role pairs (database/mariadb/creds/<service>-<ns>) when the
+# ControlPlane declares those services on the shared managed database, so this
+# single call onboards every service tenant.
 #
 # Arguments:
 #   $1 — ControlPlane namespace
@@ -1308,11 +1309,12 @@ openbao_onboard_database_tenant() {
   # Wait on the MariaDB in EVERY namespace setup-database-tenant.sh will read a
   # root credential from, not just the ControlPlane's. Each service leg of that
   # script resolves its own service namespace and hard-exits when that namespace's
-  # MariaDB root Secret is missing, so a ControlPlane that places Keystone or
-  # Glance in a namespace of its own provisions a SECOND openstack-db there on an
-  # independent timeline. Waiting only on the ControlPlane's namespace lets the
-  # Keystone leg succeed and the Glance leg exit 1 — a partially applied
-  # onboarding, with the operator already primed to flip Glance to Dynamic.
+  # MariaDB root Secret is missing, so a ControlPlane that places Keystone,
+  # Glance, or Placement in a namespace of its own provisions a SECOND
+  # openstack-db there on an independent timeline. Waiting only on the
+  # ControlPlane's namespace lets the Keystone leg succeed and the Glance leg
+  # exit 1 — a partially applied onboarding, with the operator already primed to
+  # flip Glance to Dynamic.
   #
   # The namespaces are resolved from the live CR with the same defaults the
   # operator projects (an unset namespace block means the ControlPlane's own) and
@@ -1330,13 +1332,16 @@ openbao_onboard_database_tenant() {
   candidates+=("$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
     -o 'jsonpath={.spec.services.keystone.namespace.name}' 2>/dev/null || true)")
 
-  if [[ -n "$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
-      -o 'jsonpath={.spec.services.glance}' 2>/dev/null || true)" &&
-    -z "$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
-      -o 'jsonpath={.spec.services.glance.dedicatedBackingServices.database}' 2>/dev/null || true)" ]]; then
-    candidates+=("$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
-      -o 'jsonpath={.spec.services.glance.namespace.name}' 2>/dev/null || true)")
-  fi
+  local svc
+  for svc in glance placement; do
+    if [[ -n "$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
+        -o "jsonpath={.spec.services.${svc}}" 2>/dev/null || true)" &&
+      -z "$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
+        -o "jsonpath={.spec.services.${svc}.dedicatedBackingServices.database}" 2>/dev/null || true)" ]]; then
+      candidates+=("$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
+        -o "jsonpath={.spec.services.${svc}.namespace.name}" 2>/dev/null || true)")
+    fi
+  done
 
   for ns in "${candidates[@]}"; do
     [[ -z "${ns}" ]] && continue
