@@ -162,6 +162,8 @@ jobs:
               - 'operators/c5c3/**'
               - 'operators/keystone/**'
               - 'operators/horizon/**'
+              - 'operators/glance/**'
+              - 'operators/placement/**'
               - 'tests/e2e/c5c3/**'
               # The federated suite lives outside tests/e2e/ so the per-CR
               # e2e-operator matrix leg does not sweep it up. It therefore needs
@@ -1469,9 +1471,11 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
             ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
             ${{ env.IMAGE_PREFIX }}/glance-operator:dev
+            ${{ env.IMAGE_PREFIX }}/placement-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
             ${{ env.IMAGE_PREFIX }}/horizon:2025.2
             ${{ env.IMAGE_PREFIX }}/glance:2025.2
+            ${{ env.IMAGE_PREFIX }}/placement:2025.2
             ${{ env.IMAGE_PREFIX }}/tempest:2025.2
       - name: Load images into kind
         run: |
@@ -1479,9 +1483,11 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Prepare the shared infra (TLS, OpenBao + per-CR seeding, ESO store) and
       # suspend the Flux ControlPlane stack; the operators are deployed below.
@@ -1522,6 +1528,14 @@ jobs:
           OPERATOR: glance
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
           NAMESPACE: glance-system
+      # placement-operator before c5c3-operator so the Placement CRD exists
+      # before c5c3-operator projects the Placement child.
+      - name: Deploy placement-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: placement
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
+          NAMESPACE: placement-system
       - name: Deploy c5c3-operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -1644,6 +1658,11 @@ jobs:
       # only the CRDs are needed — the glance-operator itself stays undeployed.
       - name: Install Glance CRDs watched by the c5c3-operator
         run: kubectl apply -f operators/glance/helm/glance-operator/crds/
+      # The c5c3 manager also watches the Placement kind. The suite's CR
+      # declares no services.placement, so only the CRD is needed; the
+      # placement-operator itself stays undeployed.
+      - name: Install Placement CRDs watched by the c5c3-operator
+        run: kubectl apply -f operators/placement/helm/placement-operator/crds/
       - name: Deploy c5c3-operator
         run: hack/ci-deploy-operator.sh
         env:
@@ -1760,6 +1779,11 @@ jobs:
       # the CRDs are needed — the glance-operator itself stays undeployed.
       - name: Install Glance CRDs watched by the c5c3-operator
         run: kubectl apply -f operators/glance/helm/glance-operator/crds/
+      # The c5c3 manager also watches the Placement kind. External mode forbids
+      # services.placement, so only the CRD is needed; the placement-operator
+      # itself stays undeployed.
+      - name: Install Placement CRDs watched by the c5c3-operator
+        run: kubectl apply -f operators/placement/helm/placement-operator/crds/
       - name: Deploy c5c3-operator
         run: hack/ci-deploy-operator.sh
         env:
