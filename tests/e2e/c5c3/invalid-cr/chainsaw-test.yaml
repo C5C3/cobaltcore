@@ -576,6 +576,46 @@ spec:
             ($error != null): true
             (contains($error, 'services.glance.importPlugins.injectMetadata.properties')): true
             (contains($error, 'property name must not contain a colon')): true
+    # services.placement in External mode is rejected by the webhook (cross-field,
+    # mirrors services.glance): no Keystone workload is deployed, so Placement
+    # needs its own External-mode design.
+    - apply:
+        file: 66-external-with-placement.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.placement')): true
+            (contains($error, 'forbidden when services.keystone.mode is External')): true
+    # services.placement.publicEndpoint must be an http(s) URL (CRD pattern,
+    # mirroring services.glance.publicEndpoint): the value is advertised verbatim
+    # as the public placement catalog Endpoint.
+    - apply:
+        file: 67-placement-public-endpoint-not-a-url.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.placement.publicEndpoint')): true
+            (contains($error, 'should match')): true
+    # services.placement.publicEndpoint must name the same host as the gateway
+    # (webhook-only): the listener routes that hostname to the Placement API, so a
+    # divergent host advertises a catalog endpoint that never reaches it.
+    - apply:
+        file: 68-placement-public-endpoint-host-mismatch.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.placement.publicEndpoint')): true
+            (contains($error, 'must equal services.placement.gateway.hostname')): true
+    # databaseCredentialsMode Dynamic on the Placement service with a DEDICATED
+    # database is rejected by the webhook, mirroring the keystone and glance cases
+    # above.
+    - apply:
+        file: 69-placement-override-dynamic-on-dedicated.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.placement.databaseCredentialsMode')): true
+            (contains($error, 'Dynamic is not supported as an override on a service with a dedicated database')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

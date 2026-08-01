@@ -54,6 +54,7 @@ LICENSE_HEADER = """\
 #   {keystone}            the spec.services.keystone body (indent 6) or "" for nil
 #   {horizon}             the spec.services.horizon entry (indent 4) or ""
 #   {glance}              the spec.services.glance entry (indent 4) or ""
+#   {placement}           the spec.services.placement entry (indent 4) or ""
 #
 # korc.adminCredential.applicationCredential is intentionally omitted: the
 # defaulting webhook materializes it (rotation.mode etc.) before the CRD's
@@ -67,7 +68,7 @@ spec:
   openStackRelease: "2025.2"
 {global_extra_config}{infrastructure}  services:
     keystone:
-{keystone}{horizon}{glance}  korc:
+{keystone}{horizon}{glance}{placement}  korc:
     adminCredential:
       cloudCredentialsRef:
         cloudName: admin
@@ -146,6 +147,7 @@ class Fixture:
     infrastructure: str = ""
     horizon: str = ""
     glance: str = ""
+    placement: str = ""
     # The spec.globalExtraConfig block (indent 2, trailing newline) or "".
     global_extra_config: str = ""
     # The spec.korc.serviceAccounts block (indent 4, trailing newline) or "".
@@ -159,6 +161,7 @@ class Fixture:
             keystone=self.keystone,
             horizon=self.horizon,
             glance=self.glance,
+            placement=self.placement,
             service_accounts=self.service_accounts,
         )
         comment_lines = "".join(f"# {line}\n" for line in self.comment.splitlines())
@@ -1196,6 +1199,80 @@ FIXTURES: tuple[Fixture, ...] = (
             + "        injectMetadata:\n"
             + "          properties:\n"
             + '            "hw:disk_bus": virtio\n'
+        ),
+    ),
+    # --- per-service Placement (still the create-rejection matrix) ---
+    Fixture(
+        filename="66-external-with-placement.yaml",
+        comment=(
+            "services.placement set in External mode is forbidden by the webhook (cross-field,\n"
+            "mirrors services.glance): Placement needs its own External-mode design. Every\n"
+            "ServicePlacementSpec field is optional, so the empty block is valid and the ONLY\n"
+            "violation is the cross-field forbid."
+        ),
+        name="cp-external-with-placement",
+        placement="    placement: {}\n",
+    ),
+    Fixture(
+        filename="67-placement-public-endpoint-not-a-url.yaml",
+        comment=(
+            "services.placement.publicEndpoint with a non-http(s) scheme violates the CRD\n"
+            "pattern. The value is advertised verbatim as the public placement catalog\n"
+            "Endpoint, so an unusable scheme could never serve the compute services that\n"
+            "place their allocations through it."
+        ),
+        name="cp-placement-bad-endpoint",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        placement=(
+            "    placement:\n"
+            "      publicEndpoint: ftp://placement.example.com\n"
+        ),
+    ),
+    Fixture(
+        filename="68-placement-public-endpoint-host-mismatch.yaml",
+        comment=(
+            "services.placement.publicEndpoint must name the same host as\n"
+            "services.placement.gateway.hostname. The Gateway listener is what routes that\n"
+            "hostname to the Placement API, so a divergent host advertises a catalog endpoint\n"
+            "that never reaches it. The value is projected into no child CR, so this webhook\n"
+            "is the only gate on the URL every compute service resolves to place its\n"
+            "allocations."
+        ),
+        name="cp-placement-endpoint-host-mismatch",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        placement=(
+            "    placement:\n"
+            "      gateway:\n"
+            "        hostname: placement.example.com\n"
+            "        parentRef:\n"
+            "          name: openstack-gw\n"
+            "      publicEndpoint: https://allocations.example.com\n"
+        ),
+    ),
+    Fixture(
+        filename="69-placement-override-dynamic-on-dedicated.yaml",
+        comment=(
+            "databaseCredentialsMode Dynamic on the Placement service is rejected by the\n"
+            "webhook when Placement declares a DEDICATED database, mirroring the Keystone and\n"
+            "Glance cases: the override retargets the shared database this service does not\n"
+            "use, and a dedicated database is Static-only. The defaulting webhook injects the\n"
+            "placement service account, so the only violation is the credentials-mode override."
+        ),
+        name="cp-override-dynamic-dedicated-pl",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        placement=(
+            "    placement:\n"
+            "      databaseCredentialsMode: Dynamic\n"
+            "      dedicatedBackingServices:\n"
+            "        database:\n"
+            "          clusterRef:\n"
+            "            name: cp-dedicated-db\n"
+            "          database: placement\n"
+            "          secretRef:\n"
+            "            name: placement-db\n"
         ),
     ),
 )
