@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# databaseCredentialsMode Dynamic on the Placement service is rejected by the
+# webhook when Placement declares a DEDICATED database, mirroring the Keystone and
+# Glance cases: the override retargets the shared database this service does not
+# use, and a dedicated database is Static-only. The defaulting webhook injects the
+# placement service account, so the only violation is the credentials-mode override.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-override-dynamic-dedicated-pl
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    placement:
+      databaseCredentialsMode: Dynamic
+      dedicatedBackingServices:
+        database:
+          clusterRef:
+            name: cp-dedicated-db
+          database: placement
+          secretRef:
+            name: placement-db
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
