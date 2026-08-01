@@ -139,6 +139,106 @@ func TestManagedCatalogRows_ImageRow(t *testing.T) {
 	})
 }
 
+// TestManagedCatalogRows_PlacementRow covers the placement catalog row on the same
+// terms as the image row: absent when services.placement is unset, present with the
+// generic CR names and both interfaces when it is set — the internal endpoint always
+// advertises the in-cluster Placement Service URL, while the public one shares that
+// URL without a gateway, flips to the gateway hostname when exposed, and prefers an
+// explicit services.placement.publicEndpoint over both.
+func TestManagedCatalogRows_PlacementRow(t *testing.T) {
+	t.Run("absent when placement unset", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane() // services.placement unset
+		rows := managedCatalogRows(cp)
+		g.Expect(rows).To(HaveLen(1), "with no placement service the catalog is the identity row alone")
+		g.Expect(rows[0].serviceType).To(Equal("identity"))
+	})
+
+	t.Run("present with generic names and both interfaces when set", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.Services.Placement = &c5c3v1alpha1.ServicePlacementSpec{}
+
+		rows := managedCatalogRows(cp)
+		g.Expect(rows).To(HaveLen(2), "the placement row joins the identity row")
+
+		placementRow := rows[1]
+		g.Expect(placementRow.serviceType).To(Equal("placement"))
+		g.Expect(placementRow.serviceName).To(Equal("placement"))
+		g.Expect(placementRow.crName).To(Equal("cp-placement-service"))
+
+		// The internal endpoint is registered first, the public one second.
+		g.Expect(placementRow.endpoints).To(HaveLen(2), "the placement row registers both interfaces")
+		internal, public := placementRow.endpoints[0], placementRow.endpoints[1]
+		g.Expect(internal.iface).To(Equal("internal"))
+		g.Expect(internal.crName).To(Equal("cp-placement-endpoint-internal"))
+		g.Expect(public.iface).To(Equal("public"))
+		g.Expect(public.crName).To(Equal("cp-placement-endpoint-public"))
+
+		// Without a gateway the public URL equals the internal in-cluster URL (both
+		// interfaces are registered at birth to avoid a later catalog migration).
+		wantInternal := "http://cp-placement.default.svc:8778"
+		g.Expect(internal.url).To(Equal(wantInternal))
+		g.Expect(public.url).To(Equal(wantInternal),
+			"without a gateway the public endpoint shares the in-cluster URL")
+	})
+
+	t.Run("public URL flips to the gateway hostname when exposed", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.Services.Placement = &c5c3v1alpha1.ServicePlacementSpec{
+			Gateway: &commonv1.GatewaySpec{
+				ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+				Hostname:  "placement.example.com",
+			},
+		}
+
+		rows := managedCatalogRows(cp)
+		g.Expect(rows).To(HaveLen(2))
+		internal, public := rows[1].endpoints[0], rows[1].endpoints[1]
+		g.Expect(internal.url).To(Equal("http://cp-placement.default.svc:8778"),
+			"the internal endpoint stays in-cluster even when the public one is exposed")
+		g.Expect(public.url).To(Equal("https://placement.example.com"),
+			"the public endpoint prefers the gateway hostname, with no path suffix")
+	})
+
+	t.Run("explicit publicEndpoint wins over the gateway hostname", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.Services.Placement = &c5c3v1alpha1.ServicePlacementSpec{
+			Gateway: &commonv1.GatewaySpec{
+				ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+				Hostname:  "placement.example.com",
+			},
+			PublicEndpoint: "https://placement.127-0-0-1.nip.io:8443",
+		}
+
+		rows := managedCatalogRows(cp)
+		g.Expect(rows).To(HaveLen(2))
+		internal, public := rows[1].endpoints[0], rows[1].endpoints[1]
+		g.Expect(internal.url).To(Equal("http://cp-placement.default.svc:8778"),
+			"the internal endpoint stays in-cluster even when the public one is exposed")
+		g.Expect(public.url).To(Equal("https://placement.127-0-0-1.nip.io:8443"),
+			"the override is the only way to advertise a non-443 external port")
+	})
+
+	t.Run("publicEndpoint without a gateway still wins", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.Services.Placement = &c5c3v1alpha1.ServicePlacementSpec{
+			PublicEndpoint: "https://placement.127-0-0-1.nip.io:8443",
+		}
+
+		rows := managedCatalogRows(cp)
+		g.Expect(rows).To(HaveLen(2))
+		internal, public := rows[1].endpoints[0], rows[1].endpoints[1]
+		g.Expect(internal.url).To(Equal("http://cp-placement.default.svc:8778"),
+			"the internal endpoint stays in-cluster")
+		g.Expect(public.url).To(Equal("https://placement.127-0-0-1.nip.io:8443"),
+			"the override wins even without a gateway, matching keystonePublicEndpoint semantics")
+	})
+}
+
 // TestManagedCatalogBuilders_IdentityShapeUnchanged is the refactor-equivalence
 // lock: the builders must render the identity Service/Endpoint field-for-field as
 // the pre-refactor inline literals did, so the live K-ORC CRs (and the catalog

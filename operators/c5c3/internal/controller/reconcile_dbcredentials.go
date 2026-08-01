@@ -541,6 +541,140 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 	return r.waitDBCredentialExternalSecret(ctx, cp)
 }
 
+// ensureServiceDBCredential projects the DB-credential objects of one
+// keystone-independent service (Glance, Placement) and, in Dynamic mode, holds
+// its projection until an engine-issued credential has actually landed. service
+// is the display name spliced into every condition reason, message, and log line,
+// so the shared flow surfaces per-service in the ControlPlane status;
+// conditionType is that service's readiness condition.
+//
+// halt reports that the caller must stop its reconcile pass and return the
+// returned result and error unchanged — the condition is already set. A false
+// halt means the credential is in place and the child may be projected.
+//
+// Callers only reach here for a MANAGED database (ClusterRef non-nil): a
+// brownfield one carries a user-supplied credential out-of-band, so there is
+// nothing for the operator to project. The effective mode decides the projection:
+// Dynamic (the managed-shared default) provisions the ESO VaultDynamicSecret
+// generator plus its ServiceAccount and mTLS client Certificate and an
+// ExternalSecret that draws from the generator; Static (opt-out) projects the
+// KV-backed ExternalSecret and tears down any dynamic objects left from a prior
+// Dynamic deployment.
+//
+// DYNAMIC READINESS GATE. Projecting credentialsMode: Dynamic onto the child
+// tells the service operator to read its MySQL username from the materialised
+// Secret and to stop asserting the static User/Grant — so it must not happen
+// until an engine-issued credential actually exists. Without this gate the flip
+// is unattended and fails OPEN: an operator upgrade rolls out on its own (Flux),
+// while the engine role behind the generator is only provisioned by
+// setup-database-tenant.sh, a manual onboarding step. The service would then be
+// pointed at a credential that never lands — and, on a migration, at whatever
+// stale username the retired Static seed left in the Secret. Gating here keeps a
+// not-yet-onboarded ControlPlane stalled with a diagnosable readiness condition
+// instead: the child is left untouched, so an existing one keeps running on
+// Static until the credential lands.
+//
+// Keystone reaches the same outcome through reconcileDBCredentials, whose wait
+// halts the whole pipeline before these sub-reconcilers can run; they have no
+// equivalent upstream gate because their credentials are keystone-independent.
+func (r *ControlPlaneReconciler) ensureServiceDBCredential(ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+	t dbCredentialTarget, dynamic bool, service, conditionType string,
+) (result ctrl.Result, halt bool, err error) {
+	logger := log.FromContext(ctx)
+
+	if dynamic {
+		err = r.ensureDynamicDBCredentialObjects(ctx, cp, t)
+	} else {
+		r.deleteDynamicDBCredentialObjects(ctx, cp, t)
+		err = r.ensureUnownedOrOwned(ctx, cp, dbCredentialStaticExternalSecret(t))
+	}
+	if err != nil {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionType,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             service + "DBCredentialError",
+			Message:            fmt.Sprintf("ensuring %s DB credential: %v", service, err),
+		})
+		return ctrl.Result{}, true, err
+	}
+	if !dynamic {
+		return ctrl.Result{}, false, nil
+	}
+
+	exists, ready, err := secrets.WaitForExternalSecret(ctx, r.Client,
+		types.NamespacedName{Namespace: t.namespace, Name: t.secretName})
+	if err != nil {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionType,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             service + "DBCredentialError",
+			Message:            fmt.Sprintf("checking %s DB credential ExternalSecret: %v", service, err),
+		})
+		return ctrl.Result{}, true, err
+	}
+	if !ready {
+		logger.Info(fmt.Sprintf("%s DB credential ExternalSecret not ready, deferring %s projection", service, service),
+			"exists", exists)
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionType,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "WaitingFor" + service + "DBCredential",
+			Message: fmt.Sprintf("%s DB credential ExternalSecret %q is not yet Ready: credentialsMode "+
+				"Dynamic draws engine-issued credentials from OpenBao path %q, which only exists once the "+
+				"database-engine tenant has been onboarded (deploy/openbao/bootstrap/setup-database-tenant.sh); "+
+				"%s projection deferred until the credential lands",
+				service, t.secretName, t.credsPath, service),
+		})
+		return ctrl.Result{RequeueAfter: dbCredentialsRequeueAfter}, true, nil
+	}
+
+	// Ready is a statement about ESO's LAST SYNC, not about what the target Secret
+	// holds right now. The Static->Dynamic flip create-or-updates the ExternalSecret
+	// in place (same name, same target Secret), so on a migrated cluster the Ready it
+	// reports can still be the one the retired Static sync left behind — over a
+	// Secret that still carries the static seed's username. Flipping the child on
+	// that signal stops the service operator asserting the static User/Grant the
+	// service was running on and hands it a DSN for a login the engine never issued
+	// (the retired bootstrap seeded the bare service name, while the static login is
+	// the child CR's name): an outage behind a Ready=True condition, recoverable only
+	// by the manual Secret deletion the migration guide prescribes. Requiring an
+	// engine-issued username makes the operator hold the flip until the generator's
+	// first sync actually lands, so that guide step is a shortcut rather than the
+	// only thing standing between a migration and an outage.
+	username, engineIssued, err := r.dbCredentialEngineIssuedUsername(ctx, t)
+	if err != nil {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionType,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             service + "DBCredentialError",
+			Message:            fmt.Sprintf("reading %s DB credential Secret: %v", service, err),
+		})
+		return ctrl.Result{}, true, err
+	}
+	if !engineIssued {
+		logger.Info(fmt.Sprintf("%s DB credential Secret carries no engine-issued username, deferring %s projection",
+			service, service), "username", username)
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionType,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "WaitingFor" + service + "DBCredential",
+			Message: fmt.Sprintf("%s DB credential Secret %q does not carry an engine-issued username "+
+				"(found %q); credentialsMode Dynamic needs one minted at OpenBao path %q. On a Static->Dynamic "+
+				"migration the ExternalSecret is updated in place and can keep reporting Ready from its previous "+
+				"Static sync, leaving the retired static seed in the Secret — delete the Secret so ESO "+
+				"re-materialises it from the generator. %s projection deferred until the credential lands",
+				service, t.secretName, username, t.credsPath, service),
+		})
+		return ctrl.Result{RequeueAfter: dbCredentialsRequeueAfter}, true, nil
+	}
+	return ctrl.Result{}, false, nil
+}
+
 // ensureDynamicDBCredentialObjects create-or-updates the ServiceAccount, mTLS
 // client Certificate, VaultDynamicSecret generator, and generator-backed
 // ExternalSecret that materialise engine-issued DB credentials — all in the

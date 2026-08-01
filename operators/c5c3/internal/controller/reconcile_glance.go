@@ -17,14 +17,12 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
@@ -257,120 +255,14 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 	// Ensure the DB-credential objects BEFORE the child so the Secret it references
 	// exists when the glance-operator resolves it. Managed only: a brownfield
 	// database (ClusterRef nil) carries a user-supplied credential out-of-band, so
-	// there is nothing for the operator to project. The effective mode decides the
-	// projection: Dynamic (the managed-shared default) provisions the ESO
-	// VaultDynamicSecret generator plus its ServiceAccount and mTLS client
-	// Certificate and an ExternalSecret that draws from the generator; Static
-	// (opt-out) projects the KV-backed ExternalSecret and tears down any dynamic
-	// objects left from a prior Dynamic deployment.
+	// there is nothing for the operator to project. In Dynamic mode the shared
+	// helper also holds the projection until an engine-issued credential has landed
+	// (see ensureServiceDBCredential).
 	if database.ClusterRef != nil {
-		var err error
-		target := glanceDBCredentialTarget(cp)
-		if dynamic {
-			err = r.ensureDynamicDBCredentialObjects(ctx, cp, target)
-		} else {
-			r.deleteDynamicDBCredentialObjects(ctx, cp, target)
-			err = r.ensureUnownedOrOwned(ctx, cp, dbCredentialStaticExternalSecret(target))
-		}
-		if err != nil {
-			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-				Type:               conditionTypeGlanceReady,
-				Status:             metav1.ConditionFalse,
-				ObservedGeneration: cp.Generation,
-				Reason:             "GlanceDBCredentialError",
-				Message:            fmt.Sprintf("ensuring Glance DB credential: %v", err),
-			})
-			return ctrl.Result{}, err
-		}
-
-		// DYNAMIC READINESS GATE. Projecting credentialsMode: Dynamic onto the
-		// child tells the glance-operator to read its MySQL username from the
-		// materialised Secret and to stop asserting the static User/Grant — so it
-		// must not happen until an engine-issued credential actually exists. Without
-		// this gate the flip is unattended and fails OPEN: an operator upgrade rolls
-		// out on its own (Flux), while the engine role behind the generator is only
-		// provisioned by setup-database-tenant.sh, a manual onboarding step. Glance
-		// would then be pointed at a credential that never lands — and, on a
-		// migration, at whatever stale username the retired Static seed left in the
-		// Secret. Gating here keeps a not-yet-onboarded ControlPlane stalled with a
-		// diagnosable GlanceReady=False instead: the child is left untouched, so an
-		// existing one keeps running on Static until the credential lands.
-		//
-		// Keystone reaches the same outcome through reconcileDBCredentials, whose
-		// wait halts the whole pipeline before reconcileGlance can run; Glance has no
-		// equivalent upstream gate because its credential is keystone-independent.
-		if dynamic {
-			exists, ready, err := secrets.WaitForExternalSecret(ctx, r.Client,
-				types.NamespacedName{Namespace: target.namespace, Name: target.secretName})
-			if err != nil {
-				conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-					Type:               conditionTypeGlanceReady,
-					Status:             metav1.ConditionFalse,
-					ObservedGeneration: cp.Generation,
-					Reason:             "GlanceDBCredentialError",
-					Message:            fmt.Sprintf("checking Glance DB credential ExternalSecret: %v", err),
-				})
-				return ctrl.Result{}, err
-			}
-			if !ready {
-				logger.Info("Glance DB credential ExternalSecret not ready, deferring Glance projection",
-					"exists", exists)
-				conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-					Type:               conditionTypeGlanceReady,
-					Status:             metav1.ConditionFalse,
-					ObservedGeneration: cp.Generation,
-					Reason:             "WaitingForGlanceDBCredential",
-					Message: fmt.Sprintf("Glance DB credential ExternalSecret %q is not yet Ready: credentialsMode "+
-						"Dynamic draws engine-issued credentials from OpenBao path %q, which only exists once the "+
-						"database-engine tenant has been onboarded (deploy/openbao/bootstrap/setup-database-tenant.sh); "+
-						"Glance projection deferred until the credential lands",
-						target.secretName, glanceDBDynamicCredsPathFor(cp)),
-				})
-				return ctrl.Result{RequeueAfter: dbCredentialsRequeueAfter}, nil
-			}
-
-			// Ready is a statement about ESO's LAST SYNC, not about what the target
-			// Secret holds right now. The Static->Dynamic flip create-or-updates the
-			// ExternalSecret in place (same name, same target Secret), so on a
-			// migrated cluster the Ready it reports can still be the one the retired
-			// Static sync left behind — over a Secret that still carries the static
-			// seed's username. Flipping the child on that signal stops the
-			// glance-operator asserting the static User/Grant Glance was running on
-			// and hands it a DSN for a login the engine never issued (the retired
-			// bootstrap seeded username=glance, while the static login is the Glance
-			// CR name): an outage behind GlanceReady=True, recoverable only by the
-			// manual Secret deletion the migration guide prescribes. Requiring an
-			// engine-issued username makes the operator hold the flip until the
-			// generator's first sync actually lands, so that guide step is a shortcut
-			// rather than the only thing standing between a migration and an outage.
-			username, engineIssued, err := r.dbCredentialEngineIssuedUsername(ctx, target)
-			if err != nil {
-				conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-					Type:               conditionTypeGlanceReady,
-					Status:             metav1.ConditionFalse,
-					ObservedGeneration: cp.Generation,
-					Reason:             "GlanceDBCredentialError",
-					Message:            fmt.Sprintf("reading Glance DB credential Secret: %v", err),
-				})
-				return ctrl.Result{}, err
-			}
-			if !engineIssued {
-				logger.Info("Glance DB credential Secret carries no engine-issued username, deferring Glance projection",
-					"username", username)
-				conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-					Type:               conditionTypeGlanceReady,
-					Status:             metav1.ConditionFalse,
-					ObservedGeneration: cp.Generation,
-					Reason:             "WaitingForGlanceDBCredential",
-					Message: fmt.Sprintf("Glance DB credential Secret %q does not carry an engine-issued username "+
-						"(found %q); credentialsMode Dynamic needs one minted at OpenBao path %q. On a Static->Dynamic "+
-						"migration the ExternalSecret is updated in place and can keep reporting Ready from its previous "+
-						"Static sync, leaving the retired static seed in the Secret — delete the Secret so ESO "+
-						"re-materialises it from the generator. Glance projection deferred until the credential lands",
-						target.secretName, username, glanceDBDynamicCredsPathFor(cp)),
-				})
-				return ctrl.Result{RequeueAfter: dbCredentialsRequeueAfter}, nil
-			}
+		res, halt, err := r.ensureServiceDBCredential(ctx, cp, glanceDBCredentialTarget(cp),
+			dynamic, "Glance", conditionTypeGlanceReady)
+		if halt {
+			return res, err
 		}
 	}
 

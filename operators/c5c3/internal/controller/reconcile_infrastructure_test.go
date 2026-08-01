@@ -1196,3 +1196,99 @@ func TestManagedInfraInstances_GlanceDedicatedBackingServices(t *testing.T) {
 	g.Expect(byName).To(HaveKey("MariaDB/openstack-db"))
 	g.Expect(byName).To(HaveKey("Memcached/openstack-memcached"))
 }
+
+// --- Placement: a fourth database + cache consumer ---
+
+// TestManagedInfraInstances_PlacementEnumeratedOnlyWhenDeclared pins the
+// no-consumer-no-instance rule for Placement: an undeclared Placement enumerates
+// nothing, and a co-located declared Placement resolves to the SAME shared
+// database and cache as Keystone, so the entries dedup away rather than
+// provisioning a second set.
+func TestManagedInfraInstances_PlacementEnumeratedOnlyWhenDeclared(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	// Without services.placement: only Keystone's shared database and cache.
+	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2))
+
+	// With services.placement sharing the ControlPlane's namespace: Placement
+	// resolves to the same shared instances, so the (kind, namespace, name) dedup
+	// collapses them — still two.
+	cp.Spec.Services.Placement = &c5c3v1alpha1.ServicePlacementSpec{}
+	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2),
+		"a co-located Placement shares Keystone's instances, so nothing new is enumerated")
+}
+
+// TestManagedInfraInstances_PlacementDedicatedNamespaceMaterializesInstances
+// verifies backing services follow Placement into a namespace of its own: the
+// shared block materializes a second database and cache in the Placement
+// namespace, distinct from Keystone's in the ControlPlane's namespace.
+func TestManagedInfraInstances_PlacementDedicatedNamespaceMaterializesInstances(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+		Placement: &c5c3v1alpha1.ServicePlacementSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "compute"},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	instances := r.managedInfraInstances(cp)
+	type instancePlacement struct{ kind, name, namespace string }
+	got := make([]instancePlacement, 0, len(instances))
+	for _, inst := range instances {
+		got = append(got, instancePlacement{inst.kind, inst.name, inst.namespace})
+	}
+	g.Expect(got).To(ConsistOf(
+		instancePlacement{"MariaDB", "openstack-db", "openstack"},
+		instancePlacement{"Memcached", "openstack-memcached", "openstack"},
+		instancePlacement{"MariaDB", "openstack-db", "compute"},
+		instancePlacement{"Memcached", "openstack-memcached", "compute"},
+	), "Placement placed apart materializes the shared block a second time in its namespace")
+}
+
+// TestManagedInfraInstances_PlacementDedicatedBackingServices verifies a Placement
+// that opts into a dedicated database is enumerated as its own instance (declared
+// at the dedicated path), while its still-shared cache dedups against Keystone's.
+func TestManagedInfraInstances_PlacementDedicatedBackingServices(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+		Placement: &c5c3v1alpha1.ServicePlacementSpec{
+			DedicatedBackingServices: &c5c3v1alpha1.PlacementDedicatedBackingServicesSpec{
+				Database: &commonv1.DatabaseSpec{
+					ClusterRef: &corev1.LocalObjectReference{Name: "cp-placement-db"},
+					Database:   "placement",
+					SecretRef:  commonv1.SecretRefSpec{Name: "placement-db"},
+					Replicas:   1,
+				},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	instances := r.managedInfraInstances(cp)
+	byName := make(map[string]infraInstance, len(instances))
+	for _, inst := range instances {
+		byName[inst.kind+"/"+inst.name] = inst
+	}
+	g.Expect(byName).To(HaveKey("MariaDB/cp-placement-db"))
+	g.Expect(byName["MariaDB/cp-placement-db"].declaredAt).To(
+		Equal("spec.services.placement.dedicatedBackingServices.database"),
+	)
+	// Keystone still shares the ControlPlane database, and Placement's own cache is
+	// not dedicated — so it resolves to (and dedups against) the shared cache
+	// Keystone consumes.
+	g.Expect(byName).To(HaveKey("MariaDB/openstack-db"))
+	g.Expect(byName).To(HaveKey("Memcached/openstack-memcached"))
+}
