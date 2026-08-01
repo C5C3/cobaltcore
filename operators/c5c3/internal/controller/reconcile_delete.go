@@ -13,6 +13,7 @@ import (
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
@@ -151,6 +152,18 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 			orcChildObject{newService, glanceCatalogServiceName(cp)},
 			orcChildObject{newEndpoint, glanceCatalogEndpointName(cp, "internal")},
 			orcChildObject{newEndpoint, glanceCatalogEndpointName(cp, "public")},
+		)
+	}
+
+	// The same preserved-orphan cover for the placement catalog row: a placement
+	// removal without the deletion opt-in leaves the row standing, so its names are
+	// enumerated unconditionally here and torn down with the ControlPlane.
+	if cp.Spec.Services.Placement == nil {
+		objs = append(
+			objs,
+			orcChildObject{newService, placementCatalogServiceName(cp)},
+			orcChildObject{newEndpoint, placementCatalogEndpointName(cp, "internal")},
+			orcChildObject{newEndpoint, placementCatalogEndpointName(cp, "public")},
 		)
 	}
 
@@ -693,7 +706,7 @@ func (r *ControlPlaneReconciler) teardownDedicatedNamespaces(
 
 // crossNamespaceServiceChildren returns the service children the ControlPlane
 // placed in namespace: the Keystone child when the Keystone service is assigned
-// there, the Horizon child likewise, and the Glance child likewise. Each is
+// there, and the Horizon, Glance, and Placement children likewise. Each is
 // matched by its deterministic name; ownership is re-checked against the live
 // object before anything is deleted.
 func crossNamespaceServiceChildren(cp *c5c3v1alpha1.ControlPlane, namespace string) []client.Object {
@@ -711,6 +724,11 @@ func crossNamespaceServiceChildren(cp *c5c3v1alpha1.ControlPlane, namespace stri
 	if cp.GlanceNamespace() == namespace {
 		children = append(children, &glancev1alpha1.Glance{
 			ObjectMeta: metav1.ObjectMeta{Name: glanceName(cp), Namespace: namespace},
+		})
+	}
+	if cp.PlacementNamespace() == namespace {
+		children = append(children, &placementv1alpha1.Placement{
+			ObjectMeta: metav1.ObjectMeta{Name: placementName(cp), Namespace: namespace},
 		})
 	}
 	return children
@@ -818,7 +836,7 @@ func (r *ControlPlaneReconciler) deleteManagedNamespace(
 // nothing cascades and every object has to be named. The set is deterministic
 // (every name is derived from the ControlPlane), so nothing has to be discovered:
 // the backing services, the admin-password and Keystone DB-credential material, the
-// Glance DB-credential ExternalSecret, and the tenant-store trio.
+// Glance and Placement DB-credential material, and the tenant-store trio.
 //
 // The tenant-store trio goes LAST: the service children deleted before this ran
 // their own ESO cleanup through that store, and an ESO PushSecret cannot purge its
@@ -892,6 +910,23 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 			unstructuredIn(certificateGVK, glanceDBCredentialClientCertName(cp)),
 			&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 				Name: glanceDBCredentialServiceAccountName, Namespace: namespace,
+			}},
+		)
+	}
+	// The Placement credential material, which follows the Placement service, in the
+	// same four shapes as Glance's above.
+	if cp.PlacementNamespace() == namespace {
+		objs = append(
+			objs,
+			&esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: placementDBCredentialSecretName(cp), Namespace: namespace,
+			}},
+			&esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: placementDBCredentialSecretName(cp), Namespace: namespace,
+			}},
+			unstructuredIn(certificateGVK, placementDBCredentialClientCertName(cp)),
+			&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name: placementDBCredentialServiceAccountName, Namespace: namespace,
 			}},
 		)
 	}

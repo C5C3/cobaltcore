@@ -200,10 +200,11 @@ type managedCatalogServiceRow struct {
 // rows are never renamed (see managedCatalogServiceRow). When spec.services.glance
 // is set a second row registers the image (Glance) service under the generic
 // naming convention, with an internal and a public Endpoint (D6 — both interfaces
-// from the start so no later catalog migration is needed). A further service is
-// added here as another row, not by copying the builder call sites. It is
-// mode-independent: reconcileDelete enumerates the same rows to tear down the CRs
-// in both keystone modes.
+// from the start so no later catalog migration is needed), and when
+// spec.services.placement is set a placement row joins on the same terms. A
+// further service is added here as another row, not by copying the builder call
+// sites. It is mode-independent: reconcileDelete enumerates the same rows to tear
+// down the CRs in both keystone modes.
 func managedCatalogRows(cp *c5c3v1alpha1.ControlPlane) []managedCatalogServiceRow {
 	rows := []managedCatalogServiceRow{{
 		serviceType: "identity",
@@ -223,6 +224,17 @@ func managedCatalogRows(cp *c5c3v1alpha1.ControlPlane) []managedCatalogServiceRo
 			endpoints: []managedCatalogEndpointRow{
 				{iface: "internal", crName: glanceCatalogEndpointName(cp, "internal"), url: glanceEndpointURL(cp)},
 				{iface: "public", crName: glanceCatalogEndpointName(cp, "public"), url: glanceCatalogURL(cp)},
+			},
+		})
+	}
+	if cp.Spec.Services.Placement != nil {
+		rows = append(rows, managedCatalogServiceRow{
+			serviceType: "placement",
+			serviceName: "placement",
+			crName:      placementCatalogServiceName(cp),
+			endpoints: []managedCatalogEndpointRow{
+				{iface: "internal", crName: placementCatalogEndpointName(cp, "internal"), url: placementEndpointURL(cp)},
+				{iface: "public", crName: placementCatalogEndpointName(cp, "public"), url: placementCatalogURL(cp)},
 			},
 		})
 	}
@@ -392,4 +404,36 @@ func glanceCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
 		return fmt.Sprintf("https://%s", gw.Hostname)
 	}
 	return glanceEndpointURL(cp)
+}
+
+// placementCatalogServiceName / placementCatalogEndpointName return the
+// deterministic names of the owned K-ORC Service/Endpoint CRs registering the
+// placement catalog entry, under the generic naming convention (see
+// managedCatalogServiceRow): "{cp}-placement-service" and, per interface,
+// "{cp}-placement-endpoint-{iface}".
+func placementCatalogServiceName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cp.Name + "-placement-service"
+}
+
+func placementCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) string {
+	return cp.Name + "-placement-endpoint-" + iface
+}
+
+// placementCatalogURL returns the URL registered for the K-ORC placement catalog
+// PUBLIC Endpoint. Like the image row, the placement service registers both a
+// public and an internal endpoint from the start; the internal endpoint always
+// advertises the in-cluster Service URL (placementEndpointURL), while the public
+// one prefers an explicit services.placement.publicEndpoint (the only way to
+// advertise a non-443 external port), then the externally routable gateway
+// hostname ("https://{gateway.hostname}"), and falls back to that same in-cluster
+// URL when Placement is not exposed via a Gateway. Unlike keystoneCatalogURL there
+// is no "/v3" path suffix — the Placement API is served at the root.
+func placementCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
+	if pe := cp.Spec.Services.Placement.PublicEndpoint; pe != "" {
+		return pe
+	}
+	if gw := cp.Spec.Services.Placement.Gateway; gw != nil {
+		return fmt.Sprintf("https://%s", gw.Hostname)
+	}
+	return placementEndpointURL(cp)
 }

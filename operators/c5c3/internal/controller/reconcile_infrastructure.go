@@ -349,6 +349,14 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 		addCache(effectiveGlanceCache(cp), glanceNS, glanceCacheDeclaredAt(cp))
 	}
 
+	// Placement's database and cache are gated on the DECLARATION for the same
+	// no-consumer-no-instance reason as Glance's above.
+	if cp.Spec.Services.Placement != nil {
+		placementNS := cp.PlacementNamespace()
+		addDatabase(effectivePlacementDatabase(cp), placementNS, placementDatabaseDeclaredAt(cp))
+		addCache(effectivePlacementCache(cp), placementNS, placementCacheDeclaredAt(cp))
+	}
+
 	return instances
 }
 
@@ -386,6 +394,20 @@ func glanceDatabaseDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 func glanceCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 	if cp.DedicatedGlanceCache() != nil {
 		return "spec.services.glance.dedicatedBackingServices.cache"
+	}
+	return "spec.infrastructure.cache"
+}
+
+func placementDatabaseDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedPlacementDatabase() != nil {
+		return "spec.services.placement.dedicatedBackingServices.database"
+	}
+	return "spec.infrastructure.database"
+}
+
+func placementCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedPlacementCache() != nil {
+		return "spec.services.placement.dedicatedBackingServices.cache"
 	}
 	return "spec.infrastructure.cache"
 }

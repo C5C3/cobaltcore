@@ -92,6 +92,30 @@ func effectiveGlanceCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec {
 	return nil
 }
 
+// effectivePlacementDatabase resolves the database instance the Placement service
+// connects to.
+func effectivePlacementDatabase(cp *c5c3v1alpha1.ControlPlane) *commonv1.DatabaseSpec {
+	if db := cp.DedicatedPlacementDatabase(); db != nil {
+		return db
+	}
+	if cp.Spec.Infrastructure != nil {
+		return &cp.Spec.Infrastructure.Database
+	}
+	return nil
+}
+
+// effectivePlacementCache resolves the cache instance the Placement service
+// connects to.
+func effectivePlacementCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec {
+	if cache := cp.DedicatedPlacementCache(); cache != nil {
+		return cache
+	}
+	if cp.Spec.Infrastructure != nil {
+		return &cp.Spec.Infrastructure.Cache
+	}
+	return nil
+}
+
 // intervalToCron converts a rotation interval into a cron expression suitable
 // for a Kubernetes CronJob schedule.
 //
