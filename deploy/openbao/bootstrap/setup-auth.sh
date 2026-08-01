@@ -183,17 +183,13 @@ main() {
   # (as the per-cluster ESO roles above are pre-created) gets the auth half of
   # that onboarding out of the way.
   #
-  # The ENGINE half is still open: setup-database-tenant.sh writes the
-  # database/mariadb connection+role pair per service and has a keystone and a
-  # glance branch but no placement one, so database/mariadb/creds/placement-<ns>
-  # — the exact path placement-db-dynamic grants — does not resolve yet.
-  # Kubernetes auth would succeed and the ACL would permit the read, but OpenBao
-  # answers 404 and the Placement CR parks on WaitingForDBCredentials. That
-  # branch cannot be written before the ControlPlane CRD grows
-  # spec.services.placement (the field it gates on) and the c5c3 operator grows
-  # the credential generator whose role-name derivation it must mirror; it
-  # belongs in that same change, so onboarding placement dynamic credentials
-  # needs a second bootstrap pass after it.
+  # The ENGINE half is per ControlPlane: setup-database-tenant.sh carries a
+  # placement branch that writes the database/mariadb connection+role pair behind
+  # database/mariadb/creds/placement-<ns>, the exact path placement-db-dynamic
+  # grants. That branch is gated on the live CR's spec.services.placement and
+  # skipped for a dedicated placement database, whereas this auth role is
+  # presence-independent: it grants nothing on its own, so the cluster-wide
+  # bootstrap writes it once instead of per tenant onboarding.
   log "Writing placement-db role on kubernetes/management..."
   bao_exec bao write "auth/kubernetes/management/role/placement-db" \
     bound_service_account_names=placement-db-creds \

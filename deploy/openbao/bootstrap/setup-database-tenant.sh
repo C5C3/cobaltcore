@@ -5,7 +5,7 @@
 
 # setup-database-tenant.sh — Provision the per-tenant MariaDB database-engine
 # connection and role for one MANAGED ControlPlane's per-service DB users
-# (Keystone always; Glance when it shares the managed database).
+# (Keystone always; Glance and Placement when they share the managed database).
 #
 # MODE: this is a managed-database onboarding step. An External-mode ControlPlane
 # (spec.services.keystone.mode: External) has NO managed database — the c5c3
@@ -28,11 +28,13 @@
 #       service database and auto-revokes them at lease end.
 #
 # It ALWAYS provisions the Keystone pair. It also provisions a Glance pair when
-# the ControlPlane declares spec.services.glance on the SHARED managed database;
-# a Glance that declares a dedicated database
-# (spec.services.glance.dedicatedBackingServices.database) is Static-only and is
-# skipped here. Each service's pair is keyed and root-resolved independently in
-# ITS OWN service namespace, so Glance's engine plumbing is keystone-independent.
+# the ControlPlane declares spec.services.glance on the SHARED managed database,
+# and a Placement pair under the same condition for spec.services.placement; a
+# service that declares a dedicated database
+# (spec.services.<service>.dedicatedBackingServices.database) is Static-only and
+# is skipped here. Each service's pair is keyed and root-resolved independently in
+# ITS OWN service namespace, so the Glance and Placement engine plumbing is
+# keystone-independent.
 #
 # The role is keyed on the KEYSTONE SERVICE NAMESPACE alone — the namespace the
 # MariaDB lives in and the generator's ServiceAccount authenticates from. That is
@@ -240,33 +242,36 @@ main() {
   keystone_db="$(get_controlplane_field '{.spec.infrastructure.database.database}' 'keystone')"
   provision_service_tenant keystone "${keystone_ns}" "${keystone_mariadb}" "${keystone_db}"
 
-  # --- Glance (only on the shared managed database) ---------------------------
-  # Glance gets its OWN keystone-independent engine pair when the ControlPlane
-  # declares spec.services.glance. A Glance that declares a dedicated database
-  # (spec.services.glance.dedicatedBackingServices.database) is Static-only —
-  # there is no engine role for a dedicated glance DB — so it is skipped.
+  # --- Glance, Placement (only on the shared managed database) ----------------
+  # Each of these services gets its OWN keystone-independent engine pair when the
+  # ControlPlane declares spec.services.<service>. A service that declares a
+  # dedicated database (spec.services.<service>.dedicatedBackingServices.database)
+  # is Static-only — there is no engine role for a dedicated service DB — so it is
+  # skipped. Its service namespace defaults to the ControlPlane's own namespace
+  # and is spec.services.<service>.namespace.name when the service is placed in a
+  # namespace of its own; its MariaDB is the shared managed cluster resolved in
+  # THAT namespace, and its database name is the fixed '<service>' schema.
   #
-  # MUST STAY IN SYNC: the glance-<namespace> role name below is the derivation
-  # glanceDBDynamicRoleFor asserts in
-  # operators/c5c3/internal/controller/reconcile_glance_dbcredentials.go, and the
-  # fixed 'glance' database name mirrors defaultGlanceDatabaseName in
-  # operators/c5c3/internal/controller/reconcile_glance.go.
-  if [[ -n "$(get_controlplane_field '{.spec.services.glance}' '')" ]]; then
-    if [[ -n "$(get_controlplane_field '{.spec.services.glance.dedicatedBackingServices.database}' '')" ]]; then
-      log "ControlPlane declares a dedicated glance database (Static-only) — skipping the glance database-engine tenant."
-    else
-      # The glance service namespace defaults to the ControlPlane's own namespace
-      # and is spec.services.glance.namespace.name when Glance is placed in a
-      # namespace of its own; its MariaDB is the shared managed cluster resolved
-      # in THAT namespace, and its database name is the fixed 'glance' schema.
-      local glance_ns glance_mariadb
-      glance_ns="$(get_controlplane_field '{.spec.services.glance.namespace.name}' "${CP_NS}")"
-      glance_mariadb="$(get_controlplane_field '{.spec.infrastructure.database.clusterRef.name}' 'openstack-db')"
-      provision_service_tenant glance "${glance_ns}" "${glance_mariadb}" "glance"
+  # MUST STAY IN SYNC: the <service>-<namespace> role name below is the derivation
+  # glanceDBDynamicRoleFor / placementDBDynamicRoleFor assert in
+  # operators/c5c3/internal/controller/reconcile_<service>_dbcredentials.go, and
+  # the fixed database name mirrors defaultGlanceDatabaseName /
+  # defaultPlacementDatabaseName in
+  # operators/c5c3/internal/controller/reconcile_<service>.go.
+  local svc svc_ns svc_mariadb
+  for svc in glance placement; do
+    if [[ -z "$(get_controlplane_field "{.spec.services.${svc}}" '')" ]]; then
+      log "ControlPlane declares no spec.services.${svc} — skipping the ${svc} database-engine tenant."
+      continue
     fi
-  else
-    log "ControlPlane declares no spec.services.glance — skipping the glance database-engine tenant."
-  fi
+    if [[ -n "$(get_controlplane_field "{.spec.services.${svc}.dedicatedBackingServices.database}" '')" ]]; then
+      log "ControlPlane declares a dedicated ${svc} database (Static-only) — skipping the ${svc} database-engine tenant."
+      continue
+    fi
+    svc_ns="$(get_controlplane_field "{.spec.services.${svc}.namespace.name}" "${CP_NS}")"
+    svc_mariadb="$(get_controlplane_field '{.spec.infrastructure.database.clusterRef.name}' 'openstack-db')"
+    provision_service_tenant "${svc}" "${svc_ns}" "${svc_mariadb}" "${svc}"
+  done
 
   log "=== Done ==="
 }
