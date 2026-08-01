@@ -456,10 +456,11 @@ func TestGlanceNamespace(t *testing.T) {
 	}
 }
 
-// TestDedicatedServiceNamespacesIncludesGlance asserts the Glance assignment is
-// enumerated alongside keystone and horizon, in the stable keystone→horizon→
-// glance order, and that co-located services collapse to a single entry (services
-// sharing a namespace share its backing services and tenant store).
+// TestDedicatedServiceNamespacesIncludesGlance asserts the Glance and Placement
+// assignments are enumerated alongside keystone and horizon, in the stable
+// keystone→horizon→glance→placement order, and that co-located services collapse
+// to a single entry (services sharing a namespace share its backing services and
+// tenant store).
 func TestDedicatedServiceNamespacesIncludesGlance(t *testing.T) {
 	cpIn := func(services ServicesSpec) *ControlPlane {
 		return &ControlPlane{
@@ -480,13 +481,21 @@ func TestDedicatedServiceNamespacesIncludesGlance(t *testing.T) {
 			want: []string{"images"},
 		},
 		{
-			name: "each service in its own namespace enumerates in keystone→horizon→glance order",
+			name: "each service in its own namespace enumerates in keystone→horizon→glance→placement order",
 			cp: cpIn(ServicesSpec{
-				Keystone: &ServiceKeystoneSpec{Namespace: &ServiceNamespaceSpec{Name: "identity"}},
-				Horizon:  &ServiceHorizonSpec{Namespace: &ServiceNamespaceSpec{Name: "dashboard"}},
-				Glance:   &ServiceGlanceSpec{Namespace: &ServiceNamespaceSpec{Name: "images"}},
+				Keystone:  &ServiceKeystoneSpec{Namespace: &ServiceNamespaceSpec{Name: "identity"}},
+				Horizon:   &ServiceHorizonSpec{Namespace: &ServiceNamespaceSpec{Name: "dashboard"}},
+				Glance:    &ServiceGlanceSpec{Namespace: &ServiceNamespaceSpec{Name: "images"}},
+				Placement: &ServicePlacementSpec{Namespace: &ServiceNamespaceSpec{Name: "placement"}},
 			}),
-			want: []string{"identity", "dashboard", "images"},
+			want: []string{"identity", "dashboard", "images", "placement"},
+		},
+		{
+			name: "placement takes a namespace of its own",
+			cp: cpIn(ServicesSpec{
+				Placement: &ServicePlacementSpec{Namespace: &ServiceNamespaceSpec{Name: "placement"}},
+			}),
+			want: []string{"placement"},
 		},
 		{
 			name: "glance co-located with keystone yields one entry",
@@ -495,6 +504,21 @@ func TestDedicatedServiceNamespacesIncludesGlance(t *testing.T) {
 				Glance:   &ServiceGlanceSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
 			}),
 			want: []string{"shared-ns"},
+		},
+		{
+			name: "placement co-located with glance yields one entry",
+			cp: cpIn(ServicesSpec{
+				Glance:    &ServiceGlanceSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
+				Placement: &ServicePlacementSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
+			}),
+			want: []string{"shared-ns"},
+		},
+		{
+			name: "a placement assignment naming the ControlPlane namespace contributes nothing",
+			cp: cpIn(ServicesSpec{
+				Placement: &ServicePlacementSpec{Namespace: &ServiceNamespaceSpec{Name: "openstack"}},
+			}),
+			want: nil,
 		},
 	}
 	for _, tc := range tests {
@@ -615,5 +639,149 @@ func TestServiceGlanceSpecDeepCopy(t *testing.T) {
 	clone.Backends[0].S3.Bucket = "other"
 	if spec.Backends[0].S3.Bucket != "images" {
 		t.Errorf("DeepCopy aliased the backend S3 block: source bucket changed to %q", spec.Backends[0].S3.Bucket)
+	}
+}
+
+// TestPlacementNamespace exercises the nil-safe namespace resolver for the
+// Placement service across the states the accessor can be in: no service block
+// and a block without an assignment (both default to the ControlPlane's
+// namespace), a webhook-bypass empty name (also a fallback), and an explicit
+// assignment.
+func TestPlacementNamespace(t *testing.T) {
+	cpIn := func(placement *ServicePlacementSpec) *ControlPlane {
+		return &ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+			Spec:       ControlPlaneSpec{Services: ServicesSpec{Placement: placement}},
+		}
+	}
+	tests := []struct {
+		name string
+		cp   *ControlPlane
+		want string
+	}{
+		{"no placement block defaults to the ControlPlane namespace", cpIn(nil), "openstack"},
+		{"placement block without an assignment defaults to the ControlPlane namespace", cpIn(&ServicePlacementSpec{}), "openstack"},
+		{"an empty assignment name falls back to the ControlPlane namespace", cpIn(&ServicePlacementSpec{Namespace: &ServiceNamespaceSpec{}}), "openstack"},
+		{"placement takes a namespace of its own", cpIn(&ServicePlacementSpec{Namespace: &ServiceNamespaceSpec{Name: "placement"}}), "placement"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cp.PlacementNamespace(); got != tc.want {
+				t.Errorf("PlacementNamespace() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDedicatedPlacementBackingServicesAccessors exercises the nil-safe reads for
+// the Placement service across the states it can be in: no service block
+// (services.placement nil), a block that shares the ControlPlane-wide instances
+// (dedicatedBackingServices nil), and one that opted into a dedicated database, a
+// dedicated cache, or both.
+func TestDedicatedPlacementBackingServicesAccessors(t *testing.T) {
+	tests := []struct {
+		name         string
+		cp           *ControlPlane
+		wantDatabase bool
+		wantCache    bool
+	}{
+		{
+			name: "no placement block",
+			cp:   &ControlPlane{},
+		},
+		{
+			name: "placement shares the ControlPlane-wide instances",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Placement: &ServicePlacementSpec{},
+			}}},
+		},
+		{
+			name: "placement takes a dedicated database only",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Placement: &ServicePlacementSpec{
+					DedicatedBackingServices: &PlacementDedicatedBackingServicesSpec{
+						Database: &commonv1.DatabaseSpec{Database: "placement"},
+					},
+				},
+			}}},
+			wantDatabase: true,
+		},
+		{
+			name: "placement takes a dedicated cache only",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Placement: &ServicePlacementSpec{
+					DedicatedBackingServices: &PlacementDedicatedBackingServicesSpec{
+						Cache: &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+					},
+				},
+			}}},
+			wantCache: true,
+		},
+		{
+			name: "placement takes both dedicated instances",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Placement: &ServicePlacementSpec{
+					DedicatedBackingServices: &PlacementDedicatedBackingServicesSpec{
+						Database: &commonv1.DatabaseSpec{Database: "placement"},
+						Cache:    &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+					},
+				},
+			}}},
+			wantDatabase: true,
+			wantCache:    true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cp.DedicatedPlacementDatabase() != nil; got != tc.wantDatabase {
+				t.Errorf("DedicatedPlacementDatabase() present = %v, want %v", got, tc.wantDatabase)
+			}
+			if got := tc.cp.DedicatedPlacementCache() != nil; got != tc.wantCache {
+				t.Errorf("DedicatedPlacementCache() present = %v, want %v", got, tc.wantCache)
+			}
+		})
+	}
+}
+
+// TestServicePlacementSpecDeepCopy verifies the curated Placement subset
+// round-trips through DeepCopy with independent storage, in particular the
+// extraConfig map and the dedicated-backing-services pointer: the reconciler
+// DeepCopies the projected spec onto the Placement child, so an aliased nested
+// map here would let a child projection mutate the ControlPlane spec it was
+// derived from.
+func TestServicePlacementSpecDeepCopy(t *testing.T) {
+	replicas := int32(2)
+	spec := ServicePlacementSpec{
+		Replicas:    &replicas,
+		Image:       &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/placement", Tag: "2026.1"},
+		ExtraConfig: map[string]map[string]string{"placement": {"randomize_allocation_candidates": "true"}},
+		DedicatedBackingServices: &PlacementDedicatedBackingServicesSpec{
+			Database: &commonv1.DatabaseSpec{Database: "placement"},
+		},
+		Namespace: &ServiceNamespaceSpec{Name: "placement"},
+	}
+
+	clone := spec.DeepCopy()
+	if clone.Replicas == spec.Replicas {
+		t.Errorf("DeepCopy did not allocate a new *int32 for Replicas")
+	}
+	if clone.Image == spec.Image {
+		t.Errorf("DeepCopy did not allocate a new *ImageSpec for Image")
+	}
+	if clone.DedicatedBackingServices == spec.DedicatedBackingServices {
+		t.Errorf("DeepCopy did not allocate a new *PlacementDedicatedBackingServicesSpec")
+	}
+	if clone.DedicatedBackingServices.Database == spec.DedicatedBackingServices.Database {
+		t.Errorf("DeepCopy did not allocate a new *DatabaseSpec for the dedicated database")
+	}
+	if clone.Namespace == spec.Namespace {
+		t.Errorf("DeepCopy did not allocate a new *ServiceNamespaceSpec for Namespace")
+	}
+
+	// Mutating the clone's nested extraConfig section must not touch the source.
+	clone.ExtraConfig["placement"]["randomize_allocation_candidates"] = "false"
+	if spec.ExtraConfig["placement"]["randomize_allocation_candidates"] != "true" {
+		t.Errorf("DeepCopy aliased the nested extraConfig section: source value changed to %q",
+			spec.ExtraConfig["placement"]["randomize_allocation_candidates"])
 	}
 }

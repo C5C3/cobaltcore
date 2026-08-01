@@ -150,8 +150,8 @@ type InfrastructureSpec struct {
 }
 
 // ServicesSpec declares the per-service configuration of the control plane.
-// Keystone, Horizon, and Glance are modeled today; additional services are added
-// as optional pointer fields as the operator grows.
+// Keystone, Horizon, Glance, and Placement are modeled today; additional
+// services are added as optional pointer fields as the operator grows.
 type ServicesSpec struct {
 	// Keystone configures the Keystone service projected by the reconciler.
 	// Optional: a ControlPlane with services.keystone unset manages no Keystone
@@ -179,6 +179,16 @@ type ServicesSpec struct {
 	// previously-projected Glance child.
 	// +optional
 	Glance *ServiceGlanceSpec `json:"glance,omitempty"`
+
+	// Placement configures the Placement service projected by the reconciler.
+	// Optional: a ControlPlane with services.placement unset manages no placement
+	// service and the reconciler reports PlacementReady as not-managed. The
+	// projection is gated on KeystoneReady — the placement service authenticates
+	// against the ControlPlane's Keystone child, so it is only created once that
+	// child is ready. Flipping this from set to nil deletes the
+	// previously-projected Placement child.
+	// +optional
+	Placement *ServicePlacementSpec `json:"placement,omitempty"`
 }
 
 // ServiceKeystoneSpec is a CURATED LOCAL subset of the knobs the ControlPlane
@@ -1114,6 +1124,135 @@ type GlanceDedicatedBackingServicesSpec struct {
 	Cache *commonv1.CacheSpec `json:"cache,omitempty"`
 }
 
+// ServicePlacementSpec is a CURATED LOCAL subset of the knobs the ControlPlane
+// exposes for the Placement service, mirroring the ServiceKeystoneSpec and
+// ServiceGlanceSpec DECISION above: the reconciler (L2) PROJECTS this struct
+// into a Placement CR; the database, cache, and Keystone endpoint of that
+// Placement CR are DERIVED from the ControlPlane (infrastructure.* and the
+// Keystone child's naming convention) rather than set by the user here, and the
+// L1 api package stays free of a dependency on the placement module.
+//
+// The subset is smaller than the Glance one because Placement keeps its whole
+// state in its database and serves it over HTTP: there are no image stores to
+// curate and no scratch space to bound, so nothing here corresponds to the
+// backends, import-filtering, staging, or image-cache blocks of
+// ServiceGlanceSpec.
+type ServicePlacementSpec struct {
+	// Replicas overrides the number of Placement API replicas. When nil the
+	// reconciler applies the Placement operator's own default (3).
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Image optionally overrides the Placement container image. When nil the
+	// reconciler derives the image from spec.openStackRelease.
+	// +optional
+	Image *commonv1.ImageSpec `json:"image,omitempty"`
+
+	// Gateway optionally exposes the projected Placement API externally via a
+	// Gateway API HTTPRoute. When nil (the default) the reconciler does NOT
+	// project a gateway and the Placement API is reachable in-cluster only.
+	// +optional
+	Gateway *commonv1.GatewaySpec `json:"gateway,omitempty"`
+
+	// PublicEndpoint is the externally routable Placement endpoint URL
+	// (e.g. "https://placement.127-0-0-1.nip.io:8443"). It is used ONLY for the
+	// K-ORC public placement catalog Endpoint; unlike the keystone override it is
+	// projected into no child CR — the Placement child's keystoneEndpoint is
+	// Keystone's endpoint, a separate concern. When empty and Gateway is set, the
+	// reconciler derives "https://{gateway.hostname}" (the default-443 form); set
+	// it explicitly when the externally reachable port differs (e.g. a kind
+	// host-port mapping like :8443), since the port cannot be derived from the
+	// hostname alone. The pattern and the 512-character bound mirror
+	// ServiceKeystoneSpec.PublicEndpoint, whose value flows into the same K-ORC
+	// Endpoint URL field.
+	//
+	// The keystone override is re-validated on the projected Keystone child; this
+	// one is projected nowhere, so the validating webhook is the only gate on the
+	// URL that every compute service resolves to place its allocations. It
+	// therefore enforces what the markers cannot: a parseable bare origin (no
+	// path, query, or fragment — the Placement API is served at the root), and,
+	// whenever a gateway is configured, an https scheme and a host equal to
+	// gateway.hostname. Without a gateway an http:// value stays legal for
+	// development but raises an admission warning.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:Pattern=`^https?://`
+	PublicEndpoint string `json:"publicEndpoint,omitempty"`
+
+	// DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
+	// for THIS service on the managed SHARED database, so a staged migration can run
+	// Placement on one mode while another service stays on the other. Empty (the
+	// default) inherits the ControlPlane-wide mode; it is deliberately NOT
+	// materialized by the defaulting webhook, so "inherit" stays distinguishable
+	// from an explicit override. A dedicated per-service database is Static-only
+	// (its own credentialsMode lives in dedicatedBackingServices.database, where the
+	// webhook already rejects Dynamic), so a Dynamic override on a service that
+	// declares one is rejected; Dynamic also requires the shared database to be
+	// managed (clusterRef set), mirroring the commonv1.DatabaseSpec contract, so a
+	// Dynamic override on a brownfield shared database is rejected too. A Static
+	// override is always admitted.
+	// +optional
+	// +kubebuilder:validation:Enum=Static;Dynamic
+	DatabaseCredentialsMode string `json:"databaseCredentialsMode,omitempty"`
+
+	// ExtraConfig is a free-form INI block for the Placement service. It is merged
+	// key by key with spec.globalExtraConfig — sections unioned, this per-service
+	// value winning per key — and the merged result is projected onto the
+	// Placement child's spec.extraConfig.
+	// +optional
+	ExtraConfig map[string]map[string]string `json:"extraConfig,omitempty"`
+
+	// DedicatedBackingServices opts the Placement service out of the
+	// ControlPlane-wide shared instances declared in spec.infrastructure and gives
+	// it backing services of its own. Omitting it (the default) keeps Placement on
+	// the ControlPlane's shared database cluster and cache, isolated only logically
+	// (its own logical database, its own credentials). See
+	// PlacementDedicatedBackingServicesSpec.
+	// +optional
+	DedicatedBackingServices *PlacementDedicatedBackingServicesSpec `json:"dedicatedBackingServices,omitempty"`
+
+	// Namespace places the Placement service — and the backing services, secret
+	// store, and credential material that follow it — in a namespace of its own
+	// instead of the ControlPlane's. Omitting it (the default) keeps Placement in
+	// the ControlPlane's namespace. The assignment is create-only: the validating
+	// webhook freezes the block after creation (see ServiceNamespaceSpec), because
+	// moving a live service across namespaces would strand its database, its
+	// credential material, and its tenant store with no migration path.
+	// +optional
+	Namespace *ServiceNamespaceSpec `json:"namespace,omitempty"`
+}
+
+// PlacementDedicatedBackingServicesSpec declares the backing-service instances
+// the Placement service gets for itself instead of the ControlPlane-wide shared
+// ones. Placement consumes both a database and a cache, so it can take either or
+// both dedicated; a class left unset resolves to the ControlPlane-wide instance
+// in spec.infrastructure. See KeystoneDedicatedBackingServicesSpec for the full
+// contract.
+//
+// The block is optional, but must declare at least one class when present.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.database) || has(self.cache)",message="dedicatedBackingServices must declare at least one backing-service class (database, cache)"
+type PlacementDedicatedBackingServicesSpec struct {
+	// Database gives Placement its own database cluster instead of the shared
+	// spec.infrastructure.database. Managed (clusterRef) and brownfield (host)
+	// modes are both supported.
+	//
+	// A dedicated managed database uses credentialsMode Static (the webhook
+	// materializes it and rejects Dynamic): the OpenBao database engine is
+	// bootstrapped once per namespace against the shared cluster, so no engine role
+	// exists that could issue credentials for a dedicated instance. Seed and rotate
+	// the credential at the OpenBao source.
+	// +optional
+	Database *commonv1.DatabaseSpec `json:"database,omitempty"`
+
+	// Cache gives Placement its own cache instead of the shared
+	// spec.infrastructure.cache. Managed (clusterRef) and brownfield (servers)
+	// modes are both supported.
+	// +optional
+	Cache *commonv1.CacheSpec `json:"cache,omitempty"`
+}
+
 // KORCSpec configures the K-ORC (OpenStack Resource Controller) integration of
 // the control plane. It declares how the admin application credential
 // is bootstrapped and rotated and which bootstrap resources are reconciled.
@@ -1682,6 +1821,13 @@ func glanceDedicatedBlock(cp *ControlPlane) *GlanceDedicatedBackingServicesSpec 
 	return nil
 }
 
+func placementDedicatedBlock(cp *ControlPlane) *PlacementDedicatedBackingServicesSpec {
+	if pl := cp.Spec.Services.Placement; pl != nil {
+		return pl.DedicatedBackingServices
+	}
+	return nil
+}
+
 // DedicatedKeystoneDatabase returns the database instance declared FOR the
 // Keystone service alone, or nil when Keystone shares the ControlPlane-wide
 // instance (the default).
@@ -1730,6 +1876,25 @@ func (cp *ControlPlane) DedicatedGlanceCache() *commonv1.CacheSpec {
 	return nil
 }
 
+// DedicatedPlacementDatabase returns the database instance declared FOR the
+// Placement service alone, or nil when Placement shares the ControlPlane-wide
+// instance (the default).
+func (cp *ControlPlane) DedicatedPlacementDatabase() *commonv1.DatabaseSpec {
+	if b := placementDedicatedBlock(cp); b != nil {
+		return b.Database
+	}
+	return nil
+}
+
+// DedicatedPlacementCache returns the cache instance declared for the Placement
+// service alone, or nil when Placement shares the ControlPlane-wide instance.
+func (cp *ControlPlane) DedicatedPlacementCache() *commonv1.CacheSpec {
+	if b := placementDedicatedBlock(cp); b != nil {
+		return b.Cache
+	}
+	return nil
+}
+
 // keystoneNamespaceBlock / horizonNamespaceBlock are the single nil-safe walk of
 // the per-service namespace BLOCK, shared by the webhook (defaulting, claim and
 // immutability rules) and by the resolvers below. The webhook needs the block
@@ -1753,6 +1918,13 @@ func horizonNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
 func glanceNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
 	if gl := cp.Spec.Services.Glance; gl != nil {
 		return gl.Namespace
+	}
+	return nil
+}
+
+func placementNamespaceBlock(cp *ControlPlane) *ServiceNamespaceSpec {
+	if pl := cp.Spec.Services.Placement; pl != nil {
+		return pl.Namespace
 	}
 	return nil
 }
@@ -1789,6 +1961,16 @@ func (cp *ControlPlane) GlanceNamespace() string {
 	return cp.Namespace
 }
 
+// PlacementNamespace resolves the namespace the Placement service — and the
+// database, cache, tenant store, and credential material that follow it — is
+// placed in. See KeystoneNamespace.
+func (cp *ControlPlane) PlacementNamespace() string {
+	if ns := placementNamespaceBlock(cp); ns != nil && ns.Name != "" {
+		return ns.Name
+	}
+	return cp.Namespace
+}
+
 // DedicatedServiceNamespaces returns the namespaces the ControlPlane places
 // services in OUTSIDE its own, deduplicated by name and in a stable order
 // (keystone first). It is the enumeration every cross-namespace concern walks:
@@ -1803,7 +1985,7 @@ func (cp *ControlPlane) GlanceNamespace() string {
 func (cp *ControlPlane) DedicatedServiceNamespaces() []ServiceNamespaceSpec {
 	var out []ServiceNamespaceSpec
 	seen := map[string]struct{}{}
-	for _, ns := range []*ServiceNamespaceSpec{keystoneNamespaceBlock(cp), horizonNamespaceBlock(cp), glanceNamespaceBlock(cp)} {
+	for _, ns := range []*ServiceNamespaceSpec{keystoneNamespaceBlock(cp), horizonNamespaceBlock(cp), glanceNamespaceBlock(cp), placementNamespaceBlock(cp)} {
 		if ns == nil || ns.Name == "" || ns.Name == cp.Namespace {
 			continue
 		}
