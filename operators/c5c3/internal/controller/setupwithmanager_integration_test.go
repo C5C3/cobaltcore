@@ -93,8 +93,8 @@ func TestSetupWithManager_BothControllersStart(t *testing.T) {
 
 // TestBuildControlPlaneController_StartsWithoutServiceCRDs is the exact scenario
 // that crash-looped before #648: the c5c3-operator installed BEFORE its sibling
-// operators, so the Keystone/Horizon/Glance/GlanceBackend/KeystoneIdentityBackend
-// CRDs are unserved when the ControlPlane controller starts. Before the fix the
+// operators, so the Keystone/Horizon/Glance/GlanceBackend/KeystoneIdentityBackend/
+// Placement CRDs are unserved when the ControlPlane controller starts. Before the fix the
 // controller registered watches for those absent kinds, their informers never
 // synced, controller-runtime aborted on the CacheSyncTimeout, and the leader
 // crash-looped. With the discovery guard in buildControlPlaneController the
@@ -109,8 +109,8 @@ func TestBuildControlPlaneController_StartsWithoutServiceCRDs(t *testing.T) {
 
 	// The setup helper only returns once mgr.Start succeeded and every registered
 	// informer synced. A regression that re-registered a watch for one of the
-	// unserved Keystone/Horizon/Glance/GlanceBackend/KeystoneIdentityBackend kinds
-	// would leave that informer stuck, fail mgr.Start on the CacheSyncTimeout, and
+	// unserved Keystone/Horizon/Glance/GlanceBackend/KeystoneIdentityBackend/Placement
+	// kinds would leave that informer stuck, fail mgr.Start on the CacheSyncTimeout, and
 	// the shared harness (internal/common/testutil/envtest/manager.go) would surface
 	// the error via t.Errorf — so the crash-loop regression fails this test either
 	// way. The controller is wired through buildControlPlaneController (the same

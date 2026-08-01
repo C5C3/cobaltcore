@@ -48,6 +48,7 @@ import (
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
 )
 
 // Integration test timing constants. Polling is generous because every step
@@ -239,6 +240,16 @@ func integrationGlanceService() *c5c3v1alpha1.ServiceGlanceSpec {
 	}
 }
 
+// integrationPlacementService returns a valid services.placement block. Unlike
+// its Glance sibling it carries no curated sub-block: every ServicePlacementSpec
+// field is optional and the projection derives the whole child from the
+// ControlPlane, so the empty block is the minimal valid one. It is shared by the
+// full-chain projection test, the tail-group test, and the External-mode
+// rejection case, so the enabling shape is written once.
+func integrationPlacementService() *c5c3v1alpha1.ServicePlacementSpec {
+	return &c5c3v1alpha1.ServicePlacementSpec{}
+}
+
 // ensureReadyClusterSecretStore creates the cluster-scoped OpenBao-backed
 // ClusterSecretStore the DB-credential, admin-password and admin-credential
 // sub-reconcilers gate on (#476) and marks it Ready. It is idempotent across the
@@ -387,6 +398,28 @@ func simulateGlanceReadyWhenPresent(t testing.TB, ctx context.Context, c client.
 		Message: "simulated ready",
 	})
 	g.Expect(c.Status().Update(ctx, gl)).To(Succeed(), "set Glance Ready=True")
+}
+
+// simulatePlacementReadyWhenPresent waits for the projected Placement child, then
+// sets its aggregate Ready condition True so reconcilePlacement's mirror flips
+// PlacementReady (there is no placement-operator running in envtest). Mirrors
+// simulateGlanceReadyWhenPresent.
+func simulatePlacementReadyWhenPresent(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	pl := &placementv1alpha1.Placement{}
+	g.Eventually(func() error {
+		return c.Get(ctx, key, pl)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Placement child should be created")
+
+	meta.SetStatusCondition(&pl.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "AllReady",
+		Message: "simulated ready",
+	})
+	g.Expect(c.Status().Update(ctx, pl)).To(Succeed(), "set Placement Ready=True")
 }
 
 // simulateApplicationCredentialAvailableWhenPresent waits for the owned K-ORC
@@ -568,14 +601,57 @@ func simulateGlanceCatalogAvailableWhenPresent(t testing.TB, ctx context.Context
 	}
 }
 
+// simulatePlacementCatalogAvailableWhenPresent waits for the placement catalog row
+// reconcileCatalog projects when spec.services.placement is set — the placement
+// Service plus its internal and public Endpoints — and marks each Available
+// inline. CatalogReady gates on ALL catalog children reporting Available via
+// korcAvailableUpToDate, so the placement row must be resolved alongside the
+// identity and image rows before CatalogReady can flip True. It is a sibling of
+// simulateGlanceCatalogAvailableWhenPresent for the same reason that one is a
+// sibling of the identity helper: the placement-free tests must never wait on CRs
+// that are not projected.
+func simulatePlacementCatalogAvailableWhenPresent(t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	ns := childNamespace(cp)
+
+	svc := &orcv1alpha1.Service{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: placementCatalogServiceName(cp)}, svc)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "placement Service should be registered")
+	meta.SetStatusCondition(&svc.Status.Conditions, metav1.Condition{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		ObservedGeneration: svc.Generation,
+		Message:            "simulated available",
+	})
+	g.Expect(c.Status().Update(ctx, svc)).To(Succeed(), "set placement Service Available=True")
+
+	for _, iface := range []string{"internal", "public"} {
+		ep := &orcv1alpha1.Endpoint{}
+		g.Eventually(func() error {
+			return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: placementCatalogEndpointName(cp, iface)}, ep)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "placement %q Endpoint should be registered", iface)
+		meta.SetStatusCondition(&ep.Status.Conditions, metav1.Condition{
+			Type:               orcv1alpha1.ConditionAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             orcv1alpha1.ConditionReasonSuccess,
+			ObservedGeneration: ep.Generation,
+			Message:            "simulated available",
+		})
+		g.Expect(c.Status().Update(ctx, ep)).To(Succeed(), "set placement %q Endpoint Available=True", iface)
+	}
+}
+
 // simulateServiceAccountConvergedWhenPresent drives one declared service account
 // with one role through to convergence in envtest, where neither a K-ORC nor an ESO
-// controller runs. In dependency order it: resolves the collision User probe to
-// ABSENT (so the operator creates the managed User), marks the referenced Project
-// import, the managed User, the unmanaged Role import, and the managed
-// RoleAssignment Available, syncs the PushSecret, and materialises the consumer
-// Secret with the source password — the same round-trip the admin-credential
-// simulators perform.
+// controller runs. In dependency order it: resolves the collision Project probe of
+// a create:true account and the collision User probe to ABSENT (so the operator
+// creates the managed Project and User), marks the Project import, the managed
+// User, the unmanaged Role import, and the managed RoleAssignment Available, syncs
+// the PushSecret, and materialises the consumer Secret with the source password —
+// the same round-trip the admin-credential simulators perform.
 //
 // The K-ORC children (probe, project, user, roles) live in the child namespace;
 // the publish leg (PushSecret, source Secret, materialized Secret) lives in the
@@ -589,6 +665,25 @@ func simulateServiceAccountConvergedWhenPresent(
 	g := NewGomegaWithT(t)
 	ns := childNamespace(cp)
 	deliveryNS := serviceAccountDeliveryNamespace(cp, sa)
+
+	// An account that CREATES its project is probe-gated on the project first:
+	// ensureServiceAccountProject returns on the pending probe before the user leg
+	// runs, so the User probe below does not exist until this one is resolved. An
+	// account that only references an existing project (create:false, the shape the
+	// other callers pass) projects no project probe at all.
+	if sa.Project.Create {
+		projectProbe := &orcv1alpha1.Project{}
+		g.Eventually(func() error {
+			return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: serviceAccountProjectProbeRef(cp, sa)}, projectProbe)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the service-account Project probe should be created")
+		meta.SetStatusCondition(&projectProbe.Status.Conditions, metav1.Condition{
+			Type:    orcv1alpha1.ConditionAvailable,
+			Status:  metav1.ConditionFalse,
+			Reason:  orcv1alpha1.ConditionReasonProgressing,
+			Message: korcImportPendingExternalMarker,
+		})
+		g.Expect(c.Status().Update(ctx, projectProbe)).To(Succeed(), "mark the Project probe absent")
+	}
 
 	// Resolve the collision User probe to ABSENT: Available=False on the
 	// "created externally" marker is what korcImportPendingExternal reads as "no
@@ -605,9 +700,10 @@ func simulateServiceAccountConvergedWhenPresent(
 	})
 	g.Expect(c.Status().Update(ctx, probe)).To(Succeed(), "mark the User probe absent")
 
-	// Referenced Project import → Available (korcAvailableUpToDate needs a matching
-	// ObservedGeneration; the operator re-applies an identical spec, a no-op that
-	// leaves the generation stable).
+	// The project handle — the referenced import, or the managed Project the
+	// resolved probe above unblocked → Available (korcAvailableUpToDate needs a
+	// matching ObservedGeneration; the operator re-applies an identical spec, a
+	// no-op that leaves the generation stable).
 	project := &orcv1alpha1.Project{}
 	g.Eventually(func() error {
 		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: serviceAccountProjectRef(cp, sa)}, project)
@@ -825,6 +921,38 @@ func simulateGlanceDBCredentialSyncWhenPresent(
 		To(Succeed(), "simulate per-CP Glance DB credential ExternalSecret sync")
 }
 
+// simulatePlacementDBCredentialSyncWhenPresent is the Placement twin of
+// simulateGlanceDBCredentialSyncWhenPresent: it waits for the operator-created
+// Placement DB-credential ExternalSecret, simulates the ESO sync, and materialises
+// the Secret behind it with an ENGINE-ISSUED username. reconcilePlacement gates the
+// Dynamic projection on both halves for the same reason reconcileGlance does — a
+// Static->Dynamic flip updates the ExternalSecret in place, so its Ready can still
+// be the retired Static sync's — and the engine-issued username here is
+// deliberately not the static seed's "placement".
+func simulatePlacementDBCredentialSyncWhenPresent(
+	t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	placementNS, name := cp.PlacementNamespace(), placementDBCredentialSecretName(cp)
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: placementNS, Name: name}, &esov1.ExternalSecret{})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"operator must create the per-CP Placement DB-credential ExternalSecret")
+
+	g.Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: placementNS},
+		Data: map[string][]byte{
+			"username": []byte(engineIssuedUsernamePrefix + "kubernetes-placement-abc123-1750000000"),
+			"password": []byte("engine-issued-password"),
+		},
+	})).To(Succeed(), "materialise the engine-issued Placement DB credential ESO would have written")
+
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c, client.ObjectKey{Namespace: placementNS, Name: name})).
+		To(Succeed(), "simulate per-CP Placement DB credential ExternalSecret sync")
+}
+
 // TestIntegration_FullReconcile_ManagedToReady drives a managed-mode ControlPlane
 // through every sub-reconciler to the aggregate Ready=True, simulating each
 // external dependency's readiness in dependency order. It is the single primary
@@ -848,14 +976,27 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
 
 	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
-	// Horizon and Glance are enabled HERE (not in the shared fixture) so only this
-	// full-chain test — which simulates the Horizon child in Phase 2.5 and the
-	// Glance child (plus its catalog row and GlanceBackend) in Phases 5/6 — carries
-	// the extra services; the gate-focused tests reusing the fixture would otherwise
-	// wedge at the unsimulated Horizon/Glance steps.
+	// Horizon, Glance and Placement are enabled HERE (not in the shared fixture) so
+	// only this full-chain test — which simulates the Horizon child in Phase 2.5, the
+	// Glance child (plus its catalog row and GlanceBackend) in Phases 5/6, and the
+	// Placement child (plus its catalog row) in Phases 5/7 — carries the extra
+	// services; the gate-focused tests reusing the fixture would otherwise wedge at
+	// the unsimulated steps.
 	cp := integrationManagedControlPlane("cp", ns.Name)
 	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{}
 	cp.Spec.Services.Glance = integrationGlanceService()
+	cp.Spec.Services.Placement = integrationPlacementService()
+
+	// Both halves of the extraConfig merge, so Phase 7 can assert the projected
+	// Placement child carries the union: a global-only section plus a
+	// placement-only one. Both options are in every enabled service's option
+	// catalog and owned by no operator, so admission takes them without a warning.
+	cp.Spec.GlobalExtraConfig = map[string]map[string]string{
+		"cors": {"allowed_origin": "https://dashboard.example.com"},
+	}
+	cp.Spec.Services.Placement.ExtraConfig = map[string]map[string]string{
+		"placement_database": {"max_pool_size": "10"},
+	}
 
 	// Declare one service account with a role so the ServiceAccounts sub-reconciler
 	// projects the managed User/Project, the unmanaged Role import, and the managed
@@ -863,7 +1004,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// This declared "glance" entry deliberately pre-empts the defaulting webhook's
 	// auto-injection (injection fires only when no "glance" entry exists), so the
 	// "member"-role assertions in Phase 5.5 stay valid; the injection itself is
-	// covered by TestIntegration_GlanceServiceAccountInjection.
+	// covered by TestIntegration_GlanceServiceAccountInjection. No "placement" entry
+	// is declared, so the webhook injects that one and Phase 7 projects its service
+	// user from the account the operator never had to hand-wire.
 	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
 		Name:    "glance",
 		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
@@ -884,6 +1027,13 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 
 	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR")
 	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	// The API server returns the defaulted spec, so cp now carries the injected
+	// placement account appended after the declared glance one.
+	g.Expect(cp.Spec.KORC.ServiceAccounts).To(HaveLen(2),
+		"the defaulting webhook must inject the placement service account beside the declared glance one")
+	placementSA := cp.Spec.KORC.ServiceAccounts[1]
+	g.Expect(placementSA.Name).To(Equal("placement"))
 
 	// --- Phase 1: Infrastructure (MariaDB + Memcached). ---
 	simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-db", Namespace: ns.Name})
@@ -989,20 +1139,25 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	simulateCloudsYamlMaterializedWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Phase 5: Catalog. With services.glance set, reconcileCatalog projects the
-	// identity row (Service + public Endpoint) AND the image row (Service + internal
-	// and public Endpoints); CatalogReady gates on ALL of them reporting Available,
-	// so simulate the K-ORC actuator marking both rows Available before waiting. ---
+	// --- Phase 5: Catalog. With services.glance and services.placement set,
+	// reconcileCatalog projects the identity row (Service + public Endpoint), the
+	// image row and the placement row (Service + internal and public Endpoints
+	// each); CatalogReady gates on ALL of them reporting Available, so simulate the
+	// K-ORC actuator marking every row Available before waiting. ---
 	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
 	simulateGlanceCatalogAvailableWhenPresent(t, ctx, c, cp)
+	simulatePlacementCatalogAvailableWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Phase 5.5: Service accounts. The declared account projects a managed
-	// User/Project, an unmanaged Role import, and a managed RoleAssignment; envtest
-	// runs neither K-ORC nor ESO, so drive the whole round-trip here, assert the two
-	// role CRs exist with the expected policies, then wait for ServiceAccountsReady. ---
+	// --- Phase 5.5: Service accounts. Each account projects a managed User/Project,
+	// an unmanaged Role import, and a managed RoleAssignment; envtest runs neither
+	// K-ORC nor ESO, so drive the whole round-trip for both the declared glance
+	// account and the injected placement one (whose project is CREATED, so it is
+	// probe-gated on the project too), assert the two role CRs of the glance account
+	// exist with the expected policies, then wait for ServiceAccountsReady. ---
 	sa := cp.Spec.KORC.ServiceAccounts[0]
 	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, sa, "member")
+	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, placementSA, "service")
 	roleImport := &orcv1alpha1.Role{}
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: serviceAccountRoleImportRef(cp, "member")}, roleImport)).
 		To(Succeed(), "the unmanaged Role import must be projected")
@@ -1128,6 +1283,128 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	simulateGlanceReadyWhenPresent(t, ctx, c, glanceKey)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeGlanceReady, metav1.ConditionTrue, itEventuallyTimeout)
 
+	// --- Phase 7: Placement child (the pipeline tail, after Glance). Projection is
+	// gated on KeystoneReady, on the injected placement service account's
+	// per-account readiness (driven in Phase 5.5), and on the Dynamic-default
+	// credential, so open that third gate first and then assert the operator-derived
+	// shape of the child before simulating readiness. ---
+	simulatePlacementDBCredentialSyncWhenPresent(t, ctx, c, cp)
+
+	placementKey := client.ObjectKey{Name: placementName(cp), Namespace: ns.Name}
+	projectedPlacement := &placementv1alpha1.Placement{}
+	g.Eventually(func() error {
+		return c.Get(ctx, placementKey, projectedPlacement)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"Placement child should be projected once KeystoneReady and the placement service account are ready")
+
+	// Release and image: the canonical repository with the release-derived tag.
+	g.Expect(projectedPlacement.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(projectedPlacement.Spec.Image.Repository).To(Equal(defaultPlacementRepository))
+	g.Expect(projectedPlacement.Spec.Image.Tag).To(Equal("2025.2"), "Placement image tag must derive from openStackRelease")
+
+	// extraConfig: globalExtraConfig unioned with the per-service block.
+	g.Expect(projectedPlacement.Spec.ExtraConfig).To(Equal(map[string]map[string]string{
+		"cors":               {"allowed_origin": "https://dashboard.example.com"},
+		"placement_database": {"max_pool_size": "10"},
+	}), "the projected extraConfig is the merge of globalExtraConfig and services.placement.extraConfig")
+
+	// Database: the shared managed cluster, the fixed "placement" logical schema,
+	// and the operator-owned engine-issued DB credential (Dynamic is the default on
+	// the managed shared database, mirroring Keystone with placement-scoped objects).
+	g.Expect(projectedPlacement.Spec.Database.ClusterRef).NotTo(BeNil(), "Placement database clusterRef must be wired")
+	g.Expect(projectedPlacement.Spec.Database.ClusterRef.Name).To(Equal("openstack-db"))
+	g.Expect(projectedPlacement.Spec.Database.Database).To(Equal("placement"))
+	g.Expect(projectedPlacement.Spec.Database.SecretRef.Name).To(Equal(placementDBCredentialSecretName(cp)),
+		"managed Placement DB secretRef must point at the operator-owned per-CP Placement DB-credential Secret")
+	g.Expect(projectedPlacement.Spec.Database.SecretRef.Key).To(Equal("password"))
+	g.Expect(projectedPlacement.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeDynamic),
+		"the projected Placement DB credential defaults to Dynamic (engine-issued)")
+
+	// Cache: the shared managed Memcached.
+	g.Expect(projectedPlacement.Spec.Cache.ClusterRef).NotTo(BeNil(), "Placement cache clusterRef must be wired")
+	g.Expect(projectedPlacement.Spec.Cache.ClusterRef.Name).To(Equal("openstack-memcached"))
+
+	// Keystone endpoint: derived TOP-DOWN from the naming convention (the same URL
+	// K-ORC authenticates against), never read from the Keystone child's status.
+	g.Expect(projectedPlacement.Spec.KeystoneEndpoint).To(
+		Equal(fmt.Sprintf("http://%s.%s.svc:5000/v3", keystoneName(cp), ns.Name)),
+		"keystoneEndpoint must be the cluster-local Keystone Service URL",
+	)
+	g.Expect(projectedPlacement.Spec.KeystonePublicEndpoint).To(BeEmpty(),
+		"this fixture exposes Keystone nowhere externally, so the child falls back to the internal endpoint")
+
+	g.Expect(projectedPlacement.Spec.Region).To(Equal(c5c3v1alpha1.DefaultRegion),
+		"the region the defaulting webhook materialized reaches the child")
+
+	// Service user: the identity of the INJECTED placement account (its own
+	// service-placement project) and that account's materialized consumer Secret.
+	g.Expect(projectedPlacement.Spec.ServiceUser.Username).To(Equal("placement"))
+	g.Expect(projectedPlacement.Spec.ServiceUser.ProjectName).To(Equal("service-placement"))
+	g.Expect(projectedPlacement.Spec.ServiceUser.SecretRef.Name).
+		To(Equal(serviceAccountCredentialsSecretName(cp, placementSA)),
+			"Placement service-user password must read the placement service account's materialized consumer Secret")
+	g.Expect(projectedPlacement.Spec.ServiceUser.SecretRef.Key).To(Equal("password"))
+
+	// The ControlPlane's RESOLVED store selection, so the child never falls back to
+	// its own shared-cluster-store default.
+	g.Expect(projectedPlacement.Spec.SecretStoreRef).NotTo(BeNil(), "the resolved store ref must be projected")
+	g.Expect(projectedPlacement.Spec.SecretStoreRef.Kind).To(Equal(commonv1.SecretStoreKindNamespaced))
+	g.Expect(projectedPlacement.Spec.SecretStoreRef.Name).To(Equal(esoTenantStoreName))
+
+	g.Expect(projectedPlacement.Spec.Deployment.Replicas).To(Equal(commonv1.DefaultReplicas),
+		"replicas fall back to the shared operator default when services.placement sets none")
+	g.Expect(projectedPlacement.Spec.APIServer).To(BeNil(),
+		"spec.apiServer is deliberately unset — the child-side uWSGI defaults stay authoritative")
+
+	// The child is co-located with the ControlPlane, so ownership is a controller
+	// owner reference rather than the labels a cross-namespace child carries.
+	placementOwner := metav1.GetControllerOf(projectedPlacement)
+	g.Expect(placementOwner).NotTo(BeNil(), "Placement child must be controller-owned by the ControlPlane")
+	g.Expect(placementOwner.Kind).To(Equal("ControlPlane"))
+	g.Expect(placementOwner.Name).To(Equal(cp.Name))
+
+	// The Dynamic-mode Placement DB-credential ExternalSecret draws from the per-CP
+	// VaultDynamicSecret generator (dataFrom.sourceRef.generatorRef) and carries no
+	// static Data refs.
+	placementDBCredES := &esov1.ExternalSecret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: placementDBCredentialSecretName(cp)}, placementDBCredES)).
+		To(Succeed(), "operator must create the per-CP Placement DB-credential ExternalSecret")
+	g.Expect(placementDBCredES.Spec.Data).To(BeEmpty(),
+		"the Dynamic Placement DB-credential ExternalSecret carries no static Data refs")
+	g.Expect(placementDBCredES.Spec.DataFrom).NotTo(BeEmpty(),
+		"the Dynamic Placement DB-credential ExternalSecret must declare a generatorRef")
+	g.Expect(placementDBCredES.Spec.DataFrom[0].SourceRef).NotTo(BeNil())
+	g.Expect(placementDBCredES.Spec.DataFrom[0].SourceRef.GeneratorRef).NotTo(BeNil())
+	g.Expect(placementDBCredES.Spec.DataFrom[0].SourceRef.GeneratorRef.Kind).To(Equal("VaultDynamicSecret"))
+	placementESOwner := metav1.GetControllerOf(placementDBCredES)
+	g.Expect(placementESOwner).NotTo(BeNil(),
+		"Placement DB-credential ExternalSecret must be controller-owned by the ControlPlane")
+	g.Expect(placementESOwner.Name).To(Equal(cp.Name))
+
+	// The per-CP Placement VaultDynamicSecret generator reads this tenant's
+	// placement creds path with role placement-db, authenticating with the
+	// placement-db-creds SA and the mTLS client Certificate — all in the placement
+	// namespace.
+	placementVDS := &esgenv1alpha1.VaultDynamicSecret{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: placementDBCredentialSecretName(cp)}, placementVDS)).
+		To(Succeed(), "operator must create the per-CP Placement VaultDynamicSecret generator")
+	g.Expect(placementVDS.Spec.Path).To(Equal("database/mariadb/creds/placement-" + ns.Name))
+	g.Expect(placementVDS.Spec.Provider.Auth.Kubernetes.Role).To(Equal(placementDBDynamicVaultRole))
+	g.Expect(metav1.GetControllerOf(placementVDS)).NotTo(BeNil(),
+		"Placement VaultDynamicSecret must be owned by the ControlPlane")
+
+	placementDBCredSA := &corev1.ServiceAccount{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: placementDBCredentialServiceAccountName}, placementDBCredSA)).
+		To(Succeed(), "operator must create the Placement generator's ServiceAccount in the placement namespace")
+
+	placementDBCredCert := &unstructured.Unstructured{}
+	placementDBCredCert.SetGroupVersionKind(certificateGVK)
+	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: placementDBCredentialClientCertName(cp)}, placementDBCredCert)).
+		To(Succeed(), "operator must create the Placement generator's mTLS client Certificate in the placement namespace")
+
+	simulatePlacementReadyWhenPresent(t, ctx, c, placementKey)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypePlacementReady, metav1.ConditionTrue, itEventuallyTimeout)
+
 	// --- Aggregate: Ready=True. ---
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeReady, metav1.ConditionTrue, itEventuallyTimeout)
 
@@ -1145,6 +1422,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		conditionTypeCatalogReady,
 		conditionTypeServiceAccountsReady,
 		conditionTypeGlanceReady,
+		conditionTypePlacementReady,
 		conditionTypeReady,
 	} {
 		cond := meta.FindStatusCondition(final.Status.Conditions, condType)
@@ -1161,14 +1439,18 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		"status.observedGeneration should match the CR generation")
 
 	// status.services reports one entry per configured service, all ready, in the
-	// stable order setServicesStatus produces (keystone, horizon, glance).
-	g.Expect(final.Status.Services).To(HaveLen(3), "three services are configured (keystone, horizon, glance)")
+	// stable order setServicesStatus produces (keystone, horizon, glance, placement).
+	g.Expect(final.Status.Services).To(HaveLen(4),
+		"four services are configured (keystone, horizon, glance, placement)")
 	g.Expect(final.Status.Services[0].Name).To(Equal("keystone"))
 	g.Expect(final.Status.Services[0].Ready).To(BeTrue())
 	g.Expect(final.Status.Services[1].Name).To(Equal("horizon"))
 	g.Expect(final.Status.Services[1].Ready).To(BeTrue())
 	g.Expect(final.Status.Services[2].Name).To(Equal("glance"))
 	g.Expect(final.Status.Services[2].Ready).To(BeTrue())
+	g.Expect(final.Status.Services[3].Name).To(Equal("placement"))
+	g.Expect(final.Status.Services[3].Ready).To(BeTrue())
+	g.Expect(final.Status.Services[3].Release).To(Equal("2025.2"))
 
 	// Every condition records the generation it was observed against.
 	for _, cond := range final.Status.Conditions {
@@ -1272,6 +1554,30 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 			"both image Endpoint interfaces advertise the in-cluster Glance API URL (no gateway in this fixture)")
 	}
 
+	// Placement catalog: the managed placement Service and both interface
+	// Endpoints, on the same k-orc-clouds-yaml credential. The Placement API is
+	// served at the root, so the URL carries no path suffix, and with no gateway in
+	// this fixture the public interface has not diverged from the in-cluster one.
+	plSvc := &orcv1alpha1.Service{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: placementCatalogServiceName(final), Namespace: ns.Name}, plSvc)).
+		To(Succeed(), "get projected placement Service CR")
+	g.Expect(plSvc.Spec.Resource).NotTo(BeNil())
+	g.Expect(plSvc.Spec.Resource.Type).To(Equal("placement"), "Service type must be placement")
+	g.Expect(plSvc.Spec.CloudCredentialsRef.SecretName).To(Equal(korcCloudsYamlSecretName))
+
+	wantPlacementURL := fmt.Sprintf("http://%s.%s.svc:8778", placementName(final), ns.Name)
+	for _, iface := range []string{"internal", "public"} {
+		plEP := &orcv1alpha1.Endpoint{}
+		g.Expect(c.Get(ctx, types.NamespacedName{Name: placementCatalogEndpointName(final, iface), Namespace: ns.Name}, plEP)).
+			To(Succeed(), "get projected placement %q Endpoint CR", iface)
+		g.Expect(plEP.Spec.Resource).NotTo(BeNil())
+		g.Expect(plEP.Spec.Resource.Interface).To(Equal(iface), "Endpoint interface must be %q", iface)
+		g.Expect(string(plEP.Spec.Resource.ServiceRef)).To(Equal(placementCatalogServiceName(final)),
+			"placement Endpoint serviceRef must reference the placement Service CR")
+		g.Expect(plEP.Spec.Resource.URL).To(Equal(wantPlacementURL),
+			"both placement Endpoint interfaces advertise the in-cluster Placement API URL (no gateway in this fixture)")
+	}
+
 	// --- Per-CR OpenBao RemoteKey lock. ---
 	//
 	// On the single-ControlPlane path the admin app-credential PushSecret must
@@ -1292,17 +1598,18 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 // TestIntegration_UnreadyHorizonDoesNotParkBootstrap locks the tail-group
 // isolation contract: a dashboard (Horizon) child that never becomes Ready must
 // NOT park the identity bootstrap (KORC, AdminCredential, Catalog,
-// ServiceAccounts) or the image service (Glance). Under the old short-circuiting
-// chain the reconcile stalled at the unready Horizon step and never reached the
-// members behind it; the sequential tail group instead attempts every member on
-// each pass and lets each one self-gate, so everything except HorizonReady
-// converges while HorizonReady — and with it the aggregate Ready — stays False.
+// ServiceAccounts), the image service (Glance), or Placement at the tail. Under
+// the old short-circuiting chain the reconcile stalled at the unready Horizon step
+// and never reached the members behind it; the sequential tail group instead
+// attempts every member on each pass and lets each one self-gate, so everything
+// except HorizonReady converges while HorizonReady — and with it the aggregate
+// Ready — stays False.
 //
 // The test drives the full phased bring-up exactly as
 // TestIntegration_FullReconcile_ManagedToReady does but NEVER simulates the
 // Horizon child ready, then asserts the admin ApplicationCredential is still
-// minted and every sub-condition except HorizonReady (GlanceReady included)
-// reaches True.
+// minted and every sub-condition except HorizonReady (GlanceReady and
+// PlacementReady included) reaches True.
 func TestIntegration_UnreadyHorizonDoesNotParkBootstrap(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -1320,15 +1627,18 @@ func TestIntegration_UnreadyHorizonDoesNotParkBootstrap(t *testing.T) {
 	// (envtest has no ESO controller).
 	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
 
-	// Enable Horizon and Glance on the managed CR exactly as the full-chain test
-	// does — but this test deliberately never simulates the Horizon child ready.
+	// Enable Horizon, Glance and Placement on the managed CR exactly as the
+	// full-chain test does — but this test deliberately never simulates the Horizon
+	// child ready.
 	cp := integrationManagedControlPlane("cp", ns.Name)
 	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{}
 	cp.Spec.Services.Glance = integrationGlanceService()
+	cp.Spec.Services.Placement = integrationPlacementService()
 
 	// Declare the glance service account (project "service", role "member") so the
 	// ServiceAccounts sub-reconciler projects the managed User/Project, the
-	// unmanaged Role import, and the managed RoleAssignment.
+	// unmanaged Role import, and the managed RoleAssignment. The placement account
+	// is left to the defaulting webhook, as in the full-chain test.
 	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
 		Name:    "glance",
 		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
@@ -1403,27 +1713,37 @@ func TestIntegration_UnreadyHorizonDoesNotParkBootstrap(t *testing.T) {
 	simulateCloudsYamlMaterializedWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Phase 5: Catalog (identity + image rows). ---
+	// --- Phase 5: Catalog (identity + image + placement rows). ---
 	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
 	simulateGlanceCatalogAvailableWhenPresent(t, ctx, c, cp)
+	simulatePlacementCatalogAvailableWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Phase 5.5: Service accounts. ---
+	// --- Phase 5.5: Service accounts (the declared glance one and the injected
+	// placement one). ---
 	sa := cp.Spec.KORC.ServiceAccounts[0]
 	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, sa, "member")
+	g.Expect(cp.Spec.KORC.ServiceAccounts).To(HaveLen(2),
+		"the defaulting webhook must inject the placement service account beside the declared glance one")
+	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, cp.Spec.KORC.ServiceAccounts[1], "service")
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeServiceAccountsReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Phase 6: Glance child (the last tail-group member). ---
+	// --- Phase 6: Glance child. ---
 	simulateGlanceDBCredentialSyncWhenPresent(t, ctx, c, cp)
 	simulateGlanceReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: glanceName(cp), Namespace: ns.Name})
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeGlanceReady, metav1.ConditionTrue, itEventuallyTimeout)
 
+	// --- Phase 7: Placement child (the last tail-group member). ---
+	simulatePlacementDBCredentialSyncWhenPresent(t, ctx, c, cp)
+	simulatePlacementReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: placementName(cp), Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypePlacementReady, metav1.ConditionTrue, itEventuallyTimeout)
+
 	// --- Final assertion: every sub-condition except HorizonReady (GlanceReady,
-	// NamespacesReady and ESOTenantStoreReady included) is True, HorizonReady is
-	// False, and the aggregate Ready is False. This read is deterministic because
-	// updateStatus re-aggregates Ready on every status write, so once GlanceReady
-	// flips True the aggregate has already been recomputed against the still-False
-	// HorizonReady. ---
+	// PlacementReady, NamespacesReady and ESOTenantStoreReady included) is True,
+	// HorizonReady is False, and the aggregate Ready is False. This read is
+	// deterministic because updateStatus re-aggregates Ready on every status write,
+	// so once PlacementReady flips True the aggregate has already been recomputed
+	// against the still-False HorizonReady. ---
 	final := &c5c3v1alpha1.ControlPlane{}
 	g.Expect(c.Get(ctx, cpKey, final)).To(Succeed(), "get the ControlPlane after the phased bring-up")
 
@@ -2345,6 +2665,73 @@ func TestIntegration_GlanceServiceAccountInjection(t *testing.T) {
 	g.Expect(afterUpdate.Spec.KORC.ServiceAccounts[0].Name).To(Equal("glance"))
 }
 
+// TestIntegration_PlacementServiceAccountInjection is the Placement twin of
+// TestIntegration_GlanceServiceAccountInjection, on a ControlPlane that sets BOTH
+// services: the defaulting webhook must inject the glance account first and the
+// placement one after it, so a CR declaring both grows the two entries in a
+// deterministic order. The placement entry creates a project of its own
+// ("service-placement") rather than the "service" project the glance entry
+// creates, because two create:true entries naming one project would each adopt the
+// other's Keystone row. Injection is idempotent across a later UPDATE.
+func TestIntegration_PlacementServiceAccountInjection(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-placement-inject-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	// A managed ControlPlane with both services set and NO serviceAccounts of its
+	// own: the defaulting webhook must inject both accounts BEFORE the validating
+	// webhook's defense-in-depth check (validateProjectedServiceAccount, once per
+	// service) runs, or admission would reject the CR.
+	cp := integrationManagedControlPlane("cp-placement-inject", ns.Name)
+	cp.Spec.Services.Glance = integrationGlanceService()
+	cp.Spec.Services.Placement = integrationPlacementService()
+	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeEmpty(), "the fixture declares no service accounts")
+	g.Expect(c.Create(ctx, cp)).To(Succeed(),
+		"create managed ControlPlane with services.glance, services.placement and no serviceAccounts")
+
+	fetched := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed(), "re-fetch defaulted ControlPlane")
+	g.Expect(fetched.Spec.KORC.ServiceAccounts).To(HaveLen(2),
+		"the defaulting webhook must inject one service account per set service")
+	g.Expect(fetched.Spec.KORC.ServiceAccounts[0].Name).To(Equal("glance"),
+		"the glance account is injected first")
+
+	injected := fetched.Spec.KORC.ServiceAccounts[1]
+	g.Expect(injected.Name).To(Equal("placement"))
+	g.Expect(injected.Project.Name).To(Equal("service-placement"),
+		"the placement account creates a project of its own, not the glance account's")
+	g.Expect(injected.Project.Create).To(BeTrue(), "the service-placement project is created, not merely referenced")
+	g.Expect(injected.Roles).To(Equal([]string{"service"}),
+		"the injected role is 'service' (identity:validate_token), never 'member'")
+	g.Expect(injected.UserName).To(Equal("placement"), "userName defaults to the account name")
+
+	// Idempotency: an UPDATE touching an unrelated field must NOT inject a third
+	// entry. The reconciler writes status (bumping resourceVersion), so drive the
+	// update through an Eventually that re-fetches and retries on the inevitable
+	// conflict.
+	g.Eventually(func() error {
+		latest := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(cp), latest); err != nil {
+			return err
+		}
+		if latest.Labels == nil {
+			latest.Labels = map[string]string{}
+		}
+		latest.Labels["placement-injection-test"] = "touched"
+		return c.Update(ctx, latest)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "update an unrelated field")
+
+	afterPlacementUpdate := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), afterPlacementUpdate)).To(Succeed(), "re-fetch after the update")
+	g.Expect(afterPlacementUpdate.Spec.KORC.ServiceAccounts).To(HaveLen(2),
+		"a re-defaulting UPDATE must not inject a second placement service account")
+	g.Expect(afterPlacementUpdate.Spec.KORC.ServiceAccounts[1].Name).To(Equal("placement"))
+}
+
 // TestIntegration_CredentialRotation_ServiceAccountValidation pins the two CEL
 // rules on the CredentialRotation CRD (serviceAccount required exactly when the
 // target is serviceAccountPassword) against the real envtest API server. There is
@@ -2540,6 +2927,16 @@ func TestIntegration_ExternalMode_Rejections(t *testing.T) {
 			name: "webhook: services.glance set in External mode",
 			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
 				cp.Spec.Services.Glance = integrationGlanceService()
+			},
+		},
+		{
+			// services.placement is forbidden on the same terms as services.glance:
+			// validateKeystoneMode rejects it with "forbidden when
+			// services.keystone.mode is External (Placement needs its own
+			// External-mode design)", which the apiserver returns as an Invalid error.
+			name: "webhook: services.placement set in External mode",
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Placement = integrationPlacementService()
 			},
 		},
 		{

@@ -75,8 +75,9 @@ func SetupC5c3EnvTestWithController(
 // envtest loads come from crdDirs rather than the full built-in set.
 // SetupC5c3EnvTestWithController delegates here with crdDirectoryPaths() (the
 // full CRD set). Integration tests pass BaselineCRDDirectoryPaths() to model a
-// cluster missing the sibling service-operator CRDs (Keystone, Horizon, Glance),
-// proving the ControlPlane controller starts when those kinds are unserved.
+// cluster missing the sibling service-operator CRDs (Keystone, Horizon, Glance,
+// Placement), proving the ControlPlane controller starts when those kinds are
+// unserved.
 func SetupC5c3EnvTestWithControllerAndCRDs(
 	t testing.TB,
 	crdDirs []string,
