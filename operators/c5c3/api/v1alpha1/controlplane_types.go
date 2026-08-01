@@ -217,16 +217,16 @@ type ServicesSpec struct {
 //   - memcached.c5c3.io   => NO public Go module; L2 uses unstructured.Unstructured
 //
 // DECISION AMENDED (admission-time extraConfig validation): the api package now
-// ADDITIONALLY imports the three service api packages —
-// operators/keystone/api/v1alpha1, operators/glance/api/v1alpha1, and
-// operators/horizon/api/v1alpha1 — to reach their embedded option catalogs and
-// ownership registries, so the merged extraConfig is validated at admission
-// against the same catalogs the reconciler projects. This gives up only
-// package-level import purity, not a new module dependency: all three modules
-// have been direct requires in operators/c5c3/go.mod since the L2 reconciler
-// landed, so `go mod tidy` no longer prunes them. Reaching the catalogs in
-// place keeps them single-source rather than duplicating them into the api
-// package.
+// ADDITIONALLY imports the service api packages —
+// operators/keystone/api/v1alpha1, operators/glance/api/v1alpha1,
+// operators/horizon/api/v1alpha1, and operators/placement/api/v1alpha1 — to
+// reach their embedded option catalogs and ownership registries, so the merged
+// extraConfig is validated at admission against the same catalogs the
+// reconciler projects. This gives up only package-level import purity, not a
+// new module dependency: each of those modules is a direct require in
+// operators/c5c3/go.mod with a local replace, so `go mod tidy` keeps them.
+// Reaching the catalogs in place keeps them single-source rather than
+// duplicating them into the api package.
 //
 // Mode is the Managed|External discriminator (default Managed). In Managed mode
 // (or unset) the reconciler projects a full Keystone service exactly as before.

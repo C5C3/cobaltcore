@@ -4784,6 +4784,50 @@ func TestValidateCreate_RejectsUnknownGlanceExtraConfigOption(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("no such option in the glance 2025.2 option catalog"))
 }
 
+// placementControlPlane returns a managed ControlPlane with a minimal placement
+// block, so the extraConfig tests below start from an admissible baseline and
+// vary only the INI content under test.
+func placementControlPlane() *ControlPlane {
+	cp := validControlPlane()
+	cp.Name = "cp"
+	cp.Spec.Services.Placement = &ServicePlacementSpec{}
+	return cp
+}
+
+// TestValidateCreate_RejectsUnknownPlacementExtraConfigOption pins the placement
+// catalog leg from both sides: a per-service override the catalog does not
+// accept, and the cross-service reach of globalExtraConfig. [token] expiration
+// is a valid Keystone option, but placement has no [token] section, so declaring
+// placement rejects the global block against the PLACEMENT catalog.
+func TestValidateCreate_RejectsUnknownPlacementExtraConfigOption(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("in placement extraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.Services.Placement.ExtraConfig = map[string]map[string]string{
+			"placement": {"randomize_allocation_candidatez": "true"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(
+			"spec.services.placement.extraConfig[placement][randomize_allocation_candidatez]"))
+		g.Expect(err.Error()).To(ContainSubstring("no such option in the placement 2025.2 option catalog"))
+	})
+
+	t.Run("in globalExtraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.GlobalExtraConfig = map[string]map[string]string{"token": {"expiration": "3600"}}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][expiration]"))
+		g.Expect(err.Error()).To(ContainSubstring("no such section in the placement 2025.2 option catalog"))
+	})
+}
+
 // TestValidateCreate_RejectsUnknownOptionInBothBlocks pins the by-membership
 // attribution: an unknown key present in both the global and the per-service
 // block yields exactly two errors, one per contributing path.
@@ -4860,6 +4904,52 @@ func TestValidateCreate_ForbidsGlanceRejectedOwnedKey(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[import_filtering_opts][disallowed_hosts]"))
 		g.Expect(err.Error()).To(ContainSubstring("disallowed_hosts is managed via spec.importFiltering"))
+	})
+}
+
+// TestValidateCreate_ForbidsPlacementRejectedOwnedKey pins that a Rejected
+// placement owned key is Forbidden regardless of which block carries it. [api]
+// auth_strategy is the one to guard: the merged block has the last word, so
+// honoring noauth2 would put the API on the no-auth middleware, unauthenticated
+// from the moment the pods load the rendered file.
+func TestValidateCreate_ForbidsPlacementRejectedOwnedKey(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("in globalExtraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.GlobalExtraConfig = map[string]map[string]string{"api": {"auth_strategy": "noauth2"}}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[api][auth_strategy]"))
+		g.Expect(err.Error()).To(ContainSubstring(
+			"auth_strategy is managed via operator-computed and must not be set in extraConfig"))
+		g.Expect(err.Error()).To(ContainSubstring("noauth2 disables token validation entirely"))
+	})
+
+	t.Run("in placement extraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.Services.Placement.ExtraConfig = map[string]map[string]string{"api": {"auth_strategy": "noauth2"}}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.placement.extraConfig[api][auth_strategy]"))
+		g.Expect(err.Error()).To(ContainSubstring("must not be set in extraConfig"))
+	})
+
+	t.Run("deprecated DEFAULT alias in placement extraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.Services.Placement.ExtraConfig = map[string]map[string]string{
+			"DEFAULT": {"auth_strategy": "noauth2"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.placement.extraConfig[DEFAULT][auth_strategy]"))
+		g.Expect(err.Error()).To(ContainSubstring("the deprecated alias of [api] auth_strategy"))
 	})
 }
 
@@ -4968,6 +5058,16 @@ func TestValidateCreate_RejectsMalformedExtraConfigShape(t *testing.T) {
 		g.Expect(err.Error()).To(ContainSubstring("extraConfig section name must not be empty"))
 	})
 
+	t.Run("empty placement section name", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.Services.Placement.ExtraConfig = map[string]map[string]string{"": {"k": "v"}}
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.placement.extraConfig"))
+		g.Expect(err.Error()).To(ContainSubstring("extraConfig section name must not be empty"))
+	})
+
 	t.Run("empty horizon setting name", func(t *testing.T) {
 		g := NewGomegaWithT(t)
 		cp := validControlPlane()
@@ -5036,6 +5136,18 @@ func TestValidateCreate_RejectsExtraConfigINIInjection(t *testing.T) {
 		_, err := w.ValidateCreate(context.Background(), cp)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.services.glance.extraConfig[DEFAULT]"))
+		g.Expect(err.Error()).To(ContainSubstring("must not contain a newline or carriage return"))
+	})
+
+	t.Run("newline in placement value smuggles the auth strategy", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placementControlPlane()
+		cp.Spec.Services.Placement.ExtraConfig = map[string]map[string]string{
+			"DEFAULT": {"debug": "false\n[api]\nauth_strategy = noauth2"},
+		}
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.placement.extraConfig[DEFAULT][debug]"))
 		g.Expect(err.Error()).To(ContainSubstring("must not contain a newline or carriage return"))
 	})
 
@@ -5180,16 +5292,23 @@ func TestValidateCreate_FailsOpenOnCatalogLessRelease(t *testing.T) {
 	cp.Spec.OpenStackRelease = "2027.1"
 	cp.Spec.Services.Keystone.ExtraConfig = map[string]map[string]string{"token": {"expiration": "3600"}}
 	cp.Spec.Services.Glance.ExtraConfig = map[string]map[string]string{"cors": {"allowed_origin": "https://example.com"}}
+	cp.Spec.Services.Placement = &ServicePlacementSpec{
+		ExtraConfig: map[string]map[string]string{"placement": {"randomize_allocation_candidates": "true"}},
+	}
 
 	warnings, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(warnings).To(HaveLen(2))
+	g.Expect(warnings).To(HaveLen(3))
 	g.Expect(warnings).To(ContainElement(And(
 		ContainSubstring("keystone"),
 		ContainSubstring(`no catalog for release "2027.1"`),
 	)))
 	g.Expect(warnings).To(ContainElement(And(
 		ContainSubstring("glance"),
+		ContainSubstring(`no catalog for release "2027.1"`),
+	)))
+	g.Expect(warnings).To(ContainElement(And(
+		ContainSubstring("placement"),
 		ContainSubstring(`no catalog for release "2027.1"`),
 	)))
 }
@@ -5265,6 +5384,18 @@ func TestValidateUpdate_ExtraConfigCatalogGating(t *testing.T) {
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][providr]"))
+	})
+
+	t.Run("newly declaring placement re-validates and rejects", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := staleInvalid()
+		newCP := staleInvalid()
+		newCP.Spec.Services.Placement = &ServicePlacementSpec{}
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[token][providr]"))
+		g.Expect(err.Error()).To(ContainSubstring("no such section in the placement 2025.2 option catalog"))
 	})
 }
 
