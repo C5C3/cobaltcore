@@ -4,7 +4,7 @@
 
 # ControlPlane fixture for the dedicated-namespaces E2E test.
 #
-# It places its three services in namespaces of their OWN, per lifecycle:
+# It places its four services in namespaces of their OWN, per lifecycle:
 #
 #   - Keystone lands in @KEYSTONE_NS@ under the Managed lifecycle: the operator
 #     creates the namespace, stamps it with the ControlPlane's ownership labels,
@@ -19,11 +19,15 @@
 #     (@GLANCE_NS@) — the webhook accepts targetNamespace only when it names the
 #     ControlPlane's own or one of its dedicated service namespaces, so it must
 #     equal the dedicated glance namespace.
+#   - Placement lands in @PLACEMENT_NS@ under a THIRD Managed lifecycle, on the same
+#     terms as Glance: services.placement likewise makes the webhook inject the
+#     placement service account with its targetNamespace pinned to @PLACEMENT_NS@.
 #
-# The @KEYSTONE_NS@ / @HORIZON_NS@ / @GLANCE_NS@ tokens are substituted by the test
-# script from the ephemeral test namespace, so each run gets fresh, collision-free
-# namespace names. The CR itself carries NO metadata.namespace: chainsaw runs the
-# suite in its own ephemeral namespace and the test applies this CR into it.
+# The @KEYSTONE_NS@ / @HORIZON_NS@ / @GLANCE_NS@ / @PLACEMENT_NS@ tokens are
+# substituted by the test script from the ephemeral test namespace, so each run gets
+# fresh, collision-free namespace names. The CR itself carries NO metadata.namespace:
+# chainsaw runs the suite in its own ephemeral namespace and the test applies this CR
+# into it.
 #
 # The SHARED infrastructure block is MANAGED (clusterRef), so the operator
 # provisions its backing services — and, because backing services follow the
@@ -81,6 +85,11 @@ spec:
             region: garage
             credentialsSecretRef:
               name: garage-s3-credentials
+    placement:
+      replicas: 1
+      namespace:
+        name: "@PLACEMENT_NS@"
+        lifecycle: Managed
   korc:
     adminCredential:
       cloudCredentialsRef:
