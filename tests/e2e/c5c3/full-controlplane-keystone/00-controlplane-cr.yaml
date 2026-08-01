@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # ControlPlane CR fixture for the full-controlplane-keystone E2E test. It drives
-# THREE services — keystone, horizon, and glance — through the full chain.
+# FOUR services — keystone, horizon, glance, and placement — through the full
+# chain.
 #
 # Managed mode: database and cache reference managed clusters by clusterRef, so
 # the c5c3-operator reconcileInfrastructure sub-reconciler projects an owned
@@ -96,6 +97,11 @@ spec:
             region: garage
             credentialsSecretRef:
               name: garage-s3-credentials
+    # Placement takes the bare shape Keystone does: it needs no backends and no
+    # extra blocks, so a single API replica against the shared database and cache
+    # is the whole declaration.
+    placement:
+      replicas: 1
   globalPolicyOverrides:
     rules:
       "identity:list_users": "role:admin"
@@ -115,8 +121,11 @@ spec:
     # services.glance is set the defaulting webhook INJECTS the glance service
     # account (name glance, project service (create), role "service" — Keystone's
     # SRBAC default for identity:validate_token requires the "service" role) with
-    # its targetNamespace set to the Glance namespace. Exercising that injection on
-    # a live cluster is the point: the role projects as one unmanaged K-ORC Role
+    # its targetNamespace set to the Glance namespace, and services.placement adds
+    # the placement account on the same terms right after it (project
+    # service-placement, a project of its own). Exercising that injection on
+    # a live cluster is the point: each role projects as one unmanaged K-ORC Role
     # import plus one managed RoleAssignment; the chainsaw link asserts the injected
-    # entry and its RoleAssignment reaches Available, and the verify Job asserts the
-    # role is listed against the user in Keystone.
+    # entries at spec.korc.serviceAccounts[0] (glance) and [1] (placement) and that
+    # their RoleAssignments reach Available, and the verify Job asserts the role is
+    # listed against each user in Keystone.

@@ -29,11 +29,13 @@
 #                        (: the control-plane-namespace k-orc-clouds-yaml ExternalSecret is now OPERATOR-CREATED — per-CR, controller-owned — and the bootstrap clouds.yaml is operator-seeded; this test WAITS FOR, never pre-creates, them.)
 #   5. Catalog         — owned K-ORC Service ("…-identity-service") + Endpoint
 #                        ("…-identity-endpoint"); CatalogReady=True.
-#   5b. Service accts  — the INJECTED "glance" account (the CR declares none; the
-#                        defaulting webhook adds it) projects a managed User/Project,
-#                        an unmanaged K-ORC Role import, and a managed RoleAssignment
-#                        ("…-service-account-glance-assign-service-…");
-#                        ServiceAccountsReady=True and status.serviceAccounts[0].ready.
+#   5b. Service accts  — the INJECTED "glance" and "placement" accounts (the CR
+#                        declares none; the defaulting webhook adds both, glance
+#                        first) each project a managed User/Project, an unmanaged
+#                        K-ORC Role import, and a managed RoleAssignment
+#                        ("…-service-account-{glance,placement}-assign-service-…");
+#                        ServiceAccountsReady=True and status.serviceAccounts[0] /
+#                        [1] .ready.
 #   5c. Glance child   — owned Glance CR ("…-glance") with database/cache clusterRefs,
 #                        an engine-issued (Dynamic) DB credential drawn from the
 #                        OpenBao database engine, the derived Keystone endpoint, the
@@ -42,13 +44,22 @@
 #   5d. Image catalog  — owned K-ORC image Service ("…-image-service") + internal/public
 #                        Endpoints ("…-image-endpoint-{internal,public}"), both URLs the
 #                        in-cluster Glance API (no gateway in this fixture).
+#   5e. Placement child — owned Placement CR ("…-placement") on the same terms as the
+#                        Glance child: database/cache clusterRefs, an engine-issued
+#                        (Dynamic) DB credential, the derived Keystone endpoint, and
+#                        the injected service user; PlacementReady=True.
+#   5f. Placement cat. — owned K-ORC placement Service ("…-placement-service") +
+#                        internal/public Endpoints
+#                        ("…-placement-endpoint-{internal,public}"), both URLs the
+#                        in-cluster Placement API (no gateway in this fixture).
 #   6. Aggregate       — ControlPlane Ready=True (reason AllReady).
 #   7. API reachable   — Keystone /v3 returns HTTP 200; `openstack token issue`,
-#                        `openstack catalog list` (identity AND image), and an image
-#                        upload round-trip through the projected Glance endpoint into
-#                        the Garage S3 backend succeed using the materialised admin
-#                        clouds.yaml (proves the minted, pushed, re-materialised
-#                        application credential authenticates and both services work).
+#                        `openstack catalog list` (identity, image, AND placement), an
+#                        image upload round-trip through the projected Glance endpoint
+#                        into the Garage S3 backend, and a placement resource-class
+#                        listing succeed using the materialised admin clouds.yaml
+#                        (proves the minted, pushed, re-materialised application
+#                        credential authenticates and the services work).
 #
 # ── DECISION: belt-and-braces presence guard + single consolidated script ────
 # Ambiguity: the task says "follow tests/e2e/keystone/basic-deployment
@@ -139,6 +150,10 @@ spec:
           IMG_SVC_CR="${CP_NAME}-image-service"
           IMG_EP_INT="${CP_NAME}-image-endpoint-internal"
           IMG_EP_PUB="${CP_NAME}-image-endpoint-public"
+          PLACEMENT_CR="${CP_NAME}-placement"
+          PLACEMENT_SVC_CR="${CP_NAME}-placement-service"
+          PLACEMENT_EP_INT="${CP_NAME}-placement-endpoint-internal"
+          PLACEMENT_EP_PUB="${CP_NAME}-placement-endpoint-public"
           CLOUDS_SECRET=k-orc-clouds-yaml
 
           # ── Presence guard ──────────────────────────────
@@ -176,6 +191,7 @@ spec:
             horizons.horizon.openstack.c5c3.io \
             glances.glance.openstack.c5c3.io \
             glancebackends.glance.openstack.c5c3.io \
+            placements.placement.openstack.c5c3.io \
             applicationcredentials.openstack.k-orc.cloud \
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \
@@ -206,8 +222,13 @@ spec:
           if ! kubectl get pods -A -l app.kubernetes.io/name=glance-operator --no-headers 2>/dev/null | grep -q .; then
             gate_absent "no glance-operator is running; the cluster carries the stack's CRDs only."
           fi
-          echo "OK: c5c3 + K-ORC + keystone + glance CRDs, OpenBao store, and running"
-          echo "    keystone-operator and glance-operator present — running the full ControlPlane → Keystone chain."
+          # Same for the placement-operator: it drives the projected Placement child
+          # to Ready, so probe for its running pods (any namespace), not just its schema.
+          if ! kubectl get pods -A -l app.kubernetes.io/name=placement-operator --no-headers 2>/dev/null | grep -q .; then
+            gate_absent "no placement-operator is running; the cluster carries the stack's CRDs only."
+          fi
+          echo "OK: c5c3 + K-ORC + keystone + glance + placement CRDs, OpenBao store, and running"
+          echo "    keystone-operator, glance-operator, and placement-operator present — running the full ControlPlane → Keystone chain."
 
           # ── Helpers ────────────────────────────────────────────────────────
           # Poll a ControlPlane status condition to True. Implemented as an
@@ -464,31 +485,48 @@ spec:
           assert_eq "K-ORC identity Endpoint owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of endpoints.openstack.k-orc.cloud "${EP_CR}")"
 
-          # ── Link 5b: service accounts (INJECTED glance account) ────────────
+          # ── Link 5b: service accounts (INJECTED glance + placement accounts) ─
           # The CR fixture declares NO serviceAccounts — whenever services.glance
           # is set the defaulting webhook INJECTS the glance account (name glance,
-          # project service (create), role "service"). Asserting the entry landed on
-          # spec.korc.serviceAccounts[0] proves the injection ran on this live
-          # cluster. The injected account projects a managed User/Project, an
-          # unmanaged K-ORC Role import, and a managed RoleAssignment whose name
-          # embeds the deterministic role slug for "service" (base "service" + "-" +
-          # the first 8 hex of sha256("service")). ServiceAccountsReady gates on all
-          # of them Available AND the OpenBao password round-trip, and
-          # status.serviceAccounts[0].ready mirrors that per-account convergence.
+          # project service (create), role "service"), and services.placement adds
+          # the placement account right after it (project service-placement, a
+          # per-service project of its own). Asserting the entries landed on
+          # spec.korc.serviceAccounts[0] and [1] proves the injection ran — in that
+          # order — on this live cluster. Each injected account projects a managed
+          # User/Project, an unmanaged K-ORC Role import, and a managed
+          # RoleAssignment whose name embeds the deterministic role slug for
+          # "service" (base "service" + "-" + the first 8 hex of sha256("service")),
+          # so both assignment names carry the SAME slug and differ only in the
+          # account segment. ServiceAccountsReady gates on all of them Available AND
+          # the OpenBao password round-trip, and status.serviceAccounts[i].ready
+          # mirrors that per-account convergence.
           assert_eq "webhook injected the glance service account (spec.korc.serviceAccounts[0].name)" "glance" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[0].name}')"
           assert_eq "injected glance account bound to the \"service\" role" "service" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[0].roles[0]}')"
+          assert_eq "webhook injected the placement service account (spec.korc.serviceAccounts[1].name)" "placement" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[1].name}')"
+          assert_eq "injected placement account bound to the \"service\" role" "service" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[1].roles[0]}')"
           SA_ASSIGN="${CP_NAME}-service-account-glance-assign-service-9df6b026"
+          PLACEMENT_SA_ASSIGN="${CP_NAME}-service-account-placement-assign-service-9df6b026"
           wait_cp_condition ServiceAccountsReady 600
           assert_eq "status.serviceAccounts[0].ready" "true" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.serviceAccounts[0].ready}')"
+          assert_eq "status.serviceAccounts[1].ready" "true" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.serviceAccounts[1].ready}')"
           kubectl get roleassignments.openstack.k-orc.cloud "${SA_ASSIGN}" -n "${CP_NS}" >/dev/null
           assert_eq "RoleAssignment ${SA_ASSIGN} Available" "True" \
             "$(kubectl get roleassignments.openstack.k-orc.cloud "${SA_ASSIGN}" -n "${CP_NS}" \
               -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
           assert_eq "RoleAssignment owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of roleassignments.openstack.k-orc.cloud "${SA_ASSIGN}")"
+          kubectl get roleassignments.openstack.k-orc.cloud "${PLACEMENT_SA_ASSIGN}" -n "${CP_NS}" >/dev/null
+          assert_eq "RoleAssignment ${PLACEMENT_SA_ASSIGN} Available" "True" \
+            "$(kubectl get roleassignments.openstack.k-orc.cloud "${PLACEMENT_SA_ASSIGN}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
+          assert_eq "placement RoleAssignment owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of roleassignments.openstack.k-orc.cloud "${PLACEMENT_SA_ASSIGN}")"
 
           # ── Link 5c: Glance child (gated on KeystoneReady + service account) ─
           # GlanceReady mirrors the child's Ready, which requires the real
@@ -588,14 +626,101 @@ spec:
           assert_eq "image public Endpoint URL is the in-cluster Glance API" "${IMG_URL}" \
             "$(kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
 
+          # ── Link 5e: Placement child (gated on KeystoneReady + service acct) ─
+          # PlacementReady mirrors the child's Ready, which requires the real
+          # placement-api Deployment + db-sync against MariaDB — this is the live
+          # end-to-end proof the envtest chain simulates.
+          wait_cp_condition PlacementReady 600
+          assert_eq "Placement image tag derived from openStackRelease" "2025.2" \
+            "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
+          assert_eq "Placement database clusterRef wired to infra" "openstack-db" \
+            "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
+          assert_eq "Placement logical database is placement" "placement" \
+            "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.database}')"
+          assert_eq "Placement DB secretRef points at the projected DB-credential Secret" "${CP_NAME}-placement-db-credentials" \
+            "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.secretRef.name}')"
+          assert_eq "Placement projected with Dynamic credentialsMode" "Dynamic" \
+            "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.credentialsMode}')"
+
+          # ── Assert the Placement DB credential is generator-backed ──────────
+          # Named after the projected Placement CR: <cp>-placement-db-credentials.
+          # Like Glance's, the placement dynamic objects are ensured INSIDE the
+          # Keystone-gated reconcilePlacement rather than pre-gate like Keystone's,
+          # so these assertions sit after PlacementReady. That ordering is sound
+          # because reconcilePlacement gates the child on this ExternalSecret
+          # reporting Ready AND on the Secret behind it carrying an engine-issued
+          # username (WaitingForPlacementDBCredential) before it projects
+          # credentialsMode Dynamic. The username check below re-asserts that
+          # end-to-end against a real ESO+OpenBao, not just the operator's gate.
+          PLACEMENT_DB_SECRET="${PLACEMENT_CR}-db-credentials"
+          assert_eq "Placement DB-credential ExternalSecret uses a VaultDynamicSecret generator" "VaultDynamicSecret" \
+            "$(kubectl get externalsecret "${PLACEMENT_DB_SECRET}" -n "${CP_NS}" \
+              -o "jsonpath={.spec.dataFrom[0].sourceRef.generatorRef.kind}")"
+          assert_eq "Placement DB-credential ExternalSecret carries no static Data refs" "" \
+            "$(kubectl get externalsecret "${PLACEMENT_DB_SECRET}" -n "${CP_NS}" -o 'jsonpath={.spec.data}')"
+          kubectl get vaultdynamicsecret "${PLACEMENT_DB_SECRET}" -n "${CP_NS}" >/dev/null
+          # Placement shares the ControlPlane namespace in this suite, so the
+          # per-tenant engine role is placement-<CP_NS>.
+          assert_eq "Placement VaultDynamicSecret reads the placement engine-role creds path" "database/mariadb/creds/placement-${CP_NS}" \
+            "$(kubectl get vaultdynamicsecret "${PLACEMENT_DB_SECRET}" -n "${CP_NS}" -o 'jsonpath={.spec.path}')"
+          kubectl get serviceaccount placement-db-creds -n "${CP_NS}" >/dev/null
+          # The materialised Secret must carry the engine-issued username (a
+          # transient v-kube-... login), not the static "placement" user.
+          PLACEMENT_DB_USERNAME="$(kubectl get secret "${PLACEMENT_DB_SECRET}" -n "${CP_NS}" \
+            -o "jsonpath={.data.username}" | base64 -d)"
+          if [ "${PLACEMENT_DB_USERNAME}" = "placement" ] || [ -z "${PLACEMENT_DB_USERNAME}" ]; then
+            echo "ERROR: Placement DB-credential Secret username '${PLACEMENT_DB_USERNAME}' is not engine-issued"; exit 1
+          fi
+          echo "OK: Placement DB credential is engine-issued (username '${PLACEMENT_DB_USERNAME}')"
+          assert_eq "Placement cache clusterRef wired to infra" "openstack-memcached" \
+            "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.cache.clusterRef.name}')"
+          assert_eq "Placement keystoneEndpoint derived from the naming convention" \
+            "http://${KEYSTONE_CR}.${CP_NS}.svc:5000/v3" \
+            "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.keystoneEndpoint}')"
+          assert_eq "Placement service user derived from the injected account (username)" "placement" \
+            "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.username}')"
+          # The placement account creates a project of its OWN rather than sharing
+          # the "service" project the glance account creates.
+          assert_eq "Placement service user project" "service-placement" \
+            "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.projectName}')"
+          assert_eq "Placement service user secretRef" "${CP_NAME}-service-account-placement-credentials" \
+            "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.secretRef.name}')"
+          assert_eq "Placement CR owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of placements.placement.openstack.c5c3.io "${PLACEMENT_CR}")"
+
+          # ── Link 5f: placement catalog (Service + both Endpoints, owned) ────
+          # The placement service registers an internal AND a public Endpoint at
+          # birth like the image one; with no gateway in this fixture both URLs
+          # advertise the in-cluster Placement API Service.
+          kubectl get services.openstack.k-orc.cloud "${PLACEMENT_SVC_CR}" -n "${CP_NS}" >/dev/null
+          kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_INT}" -n "${CP_NS}" >/dev/null
+          kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_PUB}" -n "${CP_NS}" >/dev/null
+          assert_eq "K-ORC placement Service owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of services.openstack.k-orc.cloud "${PLACEMENT_SVC_CR}")"
+          assert_eq "K-ORC placement Service type" "placement" \
+            "$(kubectl get services.openstack.k-orc.cloud "${PLACEMENT_SVC_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.type}')"
+          PLACEMENT_URL="http://${PLACEMENT_CR}.${CP_NS}.svc:8778"
+          assert_eq "K-ORC placement internal Endpoint owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_INT}")"
+          assert_eq "placement internal Endpoint interface" "internal" \
+            "$(kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_INT}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.interface}')"
+          assert_eq "placement internal Endpoint URL is the in-cluster Placement API" "${PLACEMENT_URL}" \
+            "$(kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_INT}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
+          assert_eq "K-ORC placement public Endpoint owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_PUB}")"
+          assert_eq "placement public Endpoint interface" "public" \
+            "$(kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.interface}')"
+          assert_eq "placement public Endpoint URL is the in-cluster Placement API" "${PLACEMENT_URL}" \
+            "$(kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
+
           # ── Link 6: aggregate Ready=True ───────────────────────────────────
           wait_cp_condition Ready 300
           assert_eq "Aggregate Ready reason" "AllReady" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
 
-          # ── Link 6a: status.services[] reports all three services ready ────
-          # keystone [0], horizon [1], glance [2] — the stable order
-          # setServicesStatus emits.
+          # ── Link 6a: status.services[] reports all four services ready ─────
+          # keystone [0], horizon [1], glance [2], placement [3] — the stable
+          # order setServicesStatus emits.
           assert_eq "status.services[0] is keystone" "keystone" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[0].name}')"
           assert_eq "status.services[0] keystone ready" "true" \
@@ -608,6 +733,10 @@ spec:
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[2].name}')"
           assert_eq "status.services[2] glance ready" "true" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[2].ready}')"
+          assert_eq "status.services[3] is placement" "placement" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[3].name}')"
+          assert_eq "status.services[3] placement ready" "true" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[3].ready}')"
 
           # ── Link 6b: dynamic DB credential engine (no-static / revoke / iso) ─
           # Per-tenant role is keyed on the namespace alone (dbDynamicRoleFor /
@@ -738,7 +867,9 @@ spec:
             || { echo "ERROR: identity (keystone) service not listed in the catalog"; exit 1; }
           grep -qi "image" <<<"${VERIFY_LOGS}" \
             || { echo "ERROR: image (glance) service not listed in the catalog"; exit 1; }
-          echo "OK: token issued, identity + image services catalogued, and image round-trip passed — full chain verified."
+          grep -qi "placement" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: placement service not listed in the catalog"; exit 1; }
+          echo "OK: token issued, identity + image + placement services catalogued, and the image and placement round-trips passed — full chain verified."
     catch:
     - script:
         shell: bash
@@ -766,6 +897,14 @@ spec:
           kubectl get serviceaccount glance-db-creds -n openstack 2>&1 || true
           echo "=== glance-operator logs (last 200 lines) ==="
           kubectl logs -n glance-system -l app.kubernetes.io/name=glance-operator --tail=200 --all-containers 2>&1 || true
+          echo "=== Placement child ==="
+          kubectl get placements.placement.openstack.c5c3.io -n openstack 2>&1 || true
+          kubectl describe placements.placement.openstack.c5c3.io controlplane-keystone-placement -n openstack 2>&1 || true
+          kubectl describe externalsecret controlplane-keystone-placement-db-credentials -n openstack 2>&1 || true
+          kubectl describe vaultdynamicsecret controlplane-keystone-placement-db-credentials -n openstack 2>&1 || true
+          kubectl get serviceaccount placement-db-creds -n openstack 2>&1 || true
+          echo "=== placement-operator logs (last 200 lines) ==="
+          kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --tail=200 --all-containers 2>&1 || true
           echo "=== OpenBao logs (last 100 lines) ==="
           kubectl logs -n openbao-system -l app.kubernetes.io/name=openbao --tail=100 --all-containers 2>&1 || true
           echo "=== c5c3-operator logs (last 200 lines) ==="

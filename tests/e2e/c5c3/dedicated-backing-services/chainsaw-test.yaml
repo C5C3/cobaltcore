@@ -122,6 +122,7 @@ spec:
             horizons.horizon.openstack.c5c3.io \
             glances.glance.openstack.c5c3.io \
             glancebackends.glance.openstack.c5c3.io \
+            placements.placement.openstack.c5c3.io \
             applicationcredentials.openstack.k-orc.cloud \
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \

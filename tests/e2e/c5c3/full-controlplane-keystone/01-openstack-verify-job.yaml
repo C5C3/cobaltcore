@@ -7,12 +7,14 @@
 # clouds.yaml (the minted, OpenBao-round-tripped application credential
 # delivered to the per-CR k-orc-clouds-yaml Secret by the credential chain) and
 # runs `openstack token issue` + `openstack catalog list` to prove the
-# credential actually works end-to-end and BOTH the identity and image services
-# are catalogued. It also lists the role assignments of the INJECTED "glance"
-# service account and greps for the "service" role, proving the RoleAssignment
-# landed in Keystone, and uploads a real image through the projected Glance
-# endpoint into the Garage S3 backend, waits for it to reach "active", and
-# deletes it — proving the image service works end-to-end, not just catalogued.
+# credential actually works end-to-end and that the identity, image, and
+# placement services are catalogued. It also lists the role assignments of the
+# INJECTED "glance" and "placement" service accounts and greps for the "service"
+# role, proving the RoleAssignments landed in Keystone, uploads a real image
+# through the projected Glance endpoint into the Garage S3 backend, waits for it
+# to reach "active", and deletes it — proving the image service works
+# end-to-end, not just catalogued — and lists the placement resource classes
+# through the projected Placement endpoint for the same reason.
 #
 # the orc-system copy of k-orc-clouds-yaml was removed; the
 # operator now materialises the per-CR k-orc-clouds-yaml Secret ONLY into the
@@ -57,9 +59,14 @@ spec:
               openstack --os-cloud admin catalog list
               echo "== image service catalogued =="
               openstack --os-cloud admin catalog list | grep -qi image
+              echo "== placement service catalogued =="
+              openstack --os-cloud admin catalog list | grep -qi placement
               echo "== openstack --os-cloud admin role assignment list --names --user glance =="
               openstack --os-cloud admin role assignment list --names --user glance
               openstack --os-cloud admin role assignment list --user glance --names -f value -c Role | grep -qx service
+              echo "== openstack --os-cloud admin role assignment list --names --user placement =="
+              openstack --os-cloud admin role assignment list --names --user placement
+              openstack --os-cloud admin role assignment list --user placement --names -f value -c Role | grep -qx service
               echo "== image upload round-trip =="
               # The projected K-ORC catalog rows carry no region — K-ORC's
               # EndpointResourceSpec has no region field — while the mounted
@@ -80,6 +87,15 @@ spec:
               test "${STATUS}" = "active" || { echo "ERROR: uploaded image status '${STATUS}' != active"; exit 1; }
               OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin image delete e2e-upload
               echo "OK: image uploaded to the projected endpoint, reached active, and was deleted"
+              echo "== placement API round-trip =="
+              # The projected placement catalog rows carry no region either — the
+              # same K-ORC constraint documented above — so the osc-placement
+              # commands run against the region-stripped copy too. `resource class
+              # list` is a read-only call through the projected Placement endpoint:
+              # it proves the API answers an authenticated request, not just that
+              # the endpoint is catalogued.
+              OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin resource class list
+              echo "OK: placement answered a resource-class listing through the projected endpoint"
           volumeMounts:
             - name: clouds
               mountPath: /etc/openstack
