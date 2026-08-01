@@ -357,12 +357,13 @@ ControlPlane. See the
 
 ## Step 5 — Watch the chain reconcile
 
-The aggregate `Ready` flips to `True` once all 12 sub-conditions are met, in
-dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady` gates on
-`KeystoneReady` plus `ServiceAccountsReady`; the K-ORC branch runs alongside):
+The aggregate `Ready` flips to `True` once all 13 sub-conditions are met, in
+dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady` and
+`PlacementReady` gate on `KeystoneReady` plus `ServiceAccountsReady`; the K-ORC
+branch runs alongside):
 
 ```
-NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → ServiceAccountsReady → GlanceReady
+NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → ServiceAccountsReady → GlanceReady → PlacementReady
 ```
 
 ```bash

@@ -13,6 +13,7 @@ import (
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
@@ -96,6 +97,7 @@ var subConditionTypes = []string{
 	conditionTypeKeystoneReady,
 	conditionTypeHorizonReady,
 	conditionTypeGlanceReady,
+	conditionTypePlacementReady,
 	conditionTypeKORCReady,
 	conditionTypeAdminCredentialReady,
 	conditionTypeAdminPasswordReady,
@@ -132,6 +134,7 @@ type ControlPlaneReconciler struct {
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glancebackends,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=placement.openstack.c5c3.io,resources=placements,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;projects;roles;roleassignments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
@@ -216,14 +219,14 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// genuinely feeds the next: a later step applying before its predecessor
 	// converged would fail or wedge.
 	//
-	// The tail is a RunSequentialGroup of six independent projections (Horizon,
-	// KORC, AdminCredential, Catalog, ServiceAccounts, Glance). Running every
-	// member on every pass is safe: every member runs each pass, its condition
-	// always persists, the members' requeues aggregate to the shortest member
-	// interval, and one member's failure no longer suppresses its peers (member
-	// errors are joined). A still-converging Horizon therefore no longer parks
-	// KORC, the AdminCredential/Catalog/ServiceAccounts identity bootstrap, or
-	// Glance.
+	// The tail is a RunSequentialGroup of seven independent projections (Horizon,
+	// KORC, AdminCredential, Catalog, ServiceAccounts, Glance, Placement).
+	// Running every member on every pass is safe: every member runs each pass,
+	// its condition always persists, the members' requeues aggregate to the
+	// shortest member interval, and one member's failure no longer suppresses its
+	// peers (member errors are joined). A still-converging Horizon therefore no
+	// longer parks KORC, the AdminCredential/Catalog/ServiceAccounts identity
+	// bootstrap, Glance, or Placement.
 	//
 	// Correctness rests on each member gating itself on the conditions it
 	// consumes rather than on its position in the chain — the prefix's
@@ -235,7 +238,7 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	//
 	// Onboarding rule: a future service whose projection is independent of the
 	// others joins the tail group rather than the blocking prefix — and MUST
-	// carry its own condition gate, following the five gated members rather than
+	// carry its own condition gate, following the six gated members rather than
 	// KORC.
 	//
 	// Either phase's outcome funnels through updateStatus, so conditions and
@@ -308,6 +311,14 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				// tokens against the Keystone child).
 				{Name: "Glance", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcileGlance(ctx, &cp)
+				}},
+				// Placement is gated exactly like Glance: on the placement
+				// service account's per-account readiness, which
+				// reconcileServiceAccounts computes into status in this same
+				// pass, and on KeystoneReady — Placement validates tokens
+				// against the Keystone child.
+				{Name: "Placement", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcilePlacement(ctx, &cp)
 				}},
 			})
 		}},
@@ -423,6 +434,10 @@ const horizonServiceKey = "horizon"
 // image service.
 const glanceServiceKey = "glance"
 
+// placementServiceKey is the key under which status.services reports the
+// Placement service.
+const placementServiceKey = "placement"
+
 // setServicesStatus records status.services and status.updatePhase on every
 // status write (#476). Both fields were declared on ControlPlaneStatus but never
 // written. status.updatePhase is fixed at Idle until the release-update state
@@ -437,8 +452,8 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 	// ControlPlane (spec.services.keystone set). When unset the ControlPlane
 	// manages no Keystone, so status.services stays empty rather than reporting a
 	// service that does not exist.
-	// One entry per configured service (keystone, horizon, glance), in a stable
-	// order; unmanaged services are omitted rather than reported as a
+	// One entry per configured service (keystone, horizon, glance, placement), in
+	// a stable order; unmanaged services are omitted rather than reported as a
 	// service that does not exist.
 	var services []c5c3v1alpha1.ServiceStatus
 	if cp.Spec.Services.Keystone != nil {
@@ -459,6 +474,13 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    glanceServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeGlanceReady),
+			Release: cp.Spec.OpenStackRelease,
+		})
+	}
+	if cp.Spec.Services.Placement != nil {
+		services = append(services, c5c3v1alpha1.ServiceStatus{
+			Name:    placementServiceKey,
+			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypePlacementReady),
 			Release: cp.Spec.OpenStackRelease,
 		})
 	}
@@ -792,8 +814,9 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b
 		// other's objects. The Namespace leg installs a cluster-wide Namespace
 		// informer, so the predicate is what keeps that informer from waking the
 		// mapper on every namespace event in the cluster. (The Keystone, Horizon,
-		// Glance and GlanceBackend cross-namespace legs belong to this group too but
-		// are registered under the discovery guard below, co-located with their Owns.)
+		// Glance, GlanceBackend and Placement cross-namespace legs belong to this
+		// group too but are registered under the discovery guard below, co-located
+		// with their Owns.)
 		Watches(&mariadbv1alpha1.MariaDB{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
 		Watches(memcached, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
 		Watches(&esov1.ExternalSecret{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
@@ -812,6 +835,7 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b
 		&horizonv1alpha1.Horizon{},
 		&glancev1alpha1.Glance{},
 		&glancev1alpha1.GlanceBackend{},
+		&placementv1alpha1.Placement{},
 	} {
 		if isServed(obj) {
 			b = b.Owns(obj).

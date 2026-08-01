@@ -26,6 +26,7 @@ import (
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 )
@@ -44,6 +45,9 @@ var scheme = bootstrap.NewScheme(
 	// Glance CR (and GlanceBackend) — the ControlPlane reconciler projects and
 	// Owns a Glance child plus its GlanceBackend children.
 	glancev1alpha1.AddToScheme,
+	// Placement CR — the ControlPlane reconciler projects and Owns a Placement
+	// child.
+	placementv1alpha1.AddToScheme,
 	// MariaDB CR — projected and Owned by reconcileInfrastructure.
 	mariadbv1alpha1.AddToScheme,
 	// ESO PushSecret (v1alpha1) and ClusterSecretStore/ExternalSecret (v1) — the

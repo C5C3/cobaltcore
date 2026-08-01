@@ -1036,7 +1036,7 @@ namespace's tenant-store policy). `status.serviceAccounts[].secretName` /
 | `conditions` | `[]metav1.Condition` | Latest available observations of the control-plane state. Each condition carries an `observedGeneration`. See [Status Conditions](#status-conditions). |
 | `observedGeneration` | `int64` | The `.metadata.generation` the controller last reconciled, so a stale status is distinguishable from a current one. |
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
-| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with one entry per managed service in a stable order — `keystone`, then `horizon`, then `glance` — each present only when its `spec.services.<svc>` is set. Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` condition and its `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported. See [ServiceStatus](#servicestatus). |
+| `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with one entry per managed service in a stable order — `keystone`, then `horizon`, then `glance`, then `placement` — each present only when its `spec.services.<svc>` is set. Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` condition and its `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported. See [ServiceStatus](#servicestatus). |
 | `catalog` | [`*CatalogStatus`](#catalogstatus) | Observed state of the External-mode catalog imports. Nil in Managed mode, where the control plane creates the catalog entries rather than importing them. See [CatalogStatus](#catalogstatus). |
 | `serviceAccounts` | `[]ServiceAccountStatus` | Observed state of the declared service accounts, keyed by `name` (`listType=map`). The discoverability half of the consumption contract: `secretName` names the materialized Secret each account's password is read from. See [ServiceAccountStatus](#serviceaccountstatus). |
 
@@ -1723,19 +1723,21 @@ source of truth; call sites reference the constants rather than inline literals.
 
 The sub-reconcilers run in dependency order; a stage that has not converged
 requeues and stops the chain, so later conditions are never computed against a
-half-built earlier stage. Six stages additionally gate **explicitly** on an
+half-built earlier stage. Seven stages additionally gate **explicitly** on an
 earlier condition being `True` (`reconcileKeystone` on `InfrastructureReady`,
-`reconcileHorizon` on `KeystoneReady`, `reconcileGlance` on `KeystoneReady` — and
-on the injected `glance` service account — `reconcileAdminCredential` on
-`KORCReady`, `reconcileCatalog` and `reconcileServiceAccounts` on
-`AdminCredentialReady`). `reconcileGlance` runs **last**, after
-`reconcileServiceAccounts`, because it gates on the per-account readiness that
+`reconcileHorizon` on `KeystoneReady`, `reconcileGlance` and
+`reconcilePlacement` on `KeystoneReady` — and on their injected `glance` /
+`placement` service accounts — `reconcileAdminCredential` on `KORCReady`,
+`reconcileCatalog` and `reconcileServiceAccounts` on `AdminCredentialReady`).
+`reconcileGlance` and `reconcilePlacement` run **last**, after
+`reconcileServiceAccounts`, because they gate on the per-account readiness that
 stage computes into status in the same pass:
 
 ```
 NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady
   → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady
   → AdminCredentialReady → CatalogReady → ServiceAccountsReady → GlanceReady
+  → PlacementReady
 ```
 
 `ESOTenantStoreReady` runs ahead of every store-consuming stage because it
@@ -1996,7 +1998,7 @@ Set by `setReadyCondition`.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `AllReady` | All twelve sub-conditions above are `True`. |
+| `True` | `AllReady` | All thirteen sub-conditions above are `True`. |
 | `False` | `NotAllReady` | One or more sub-conditions are not `True`. |
 
 ---
