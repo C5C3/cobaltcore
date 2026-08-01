@@ -25,6 +25,7 @@ import (
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
 )
 
 // SkipIfEnvTestUnavailable re-exports the common skip guard for envtest-based
@@ -98,9 +99,9 @@ func SetupC5c3EnvTestWithControllerAndCRDs(
 // crdDirectoryPaths returns the absolute CRD directories envtest loads for a
 // ControlPlane integration test, resolved relative to this
 // source file via runtime.Caller(0):
-//   - the sibling service-operator CRDs (Keystone, Horizon, Glance — and with
-//     them GlanceBackend and KeystoneIdentityBackend) the reconciler Owns as
-//     children.
+//   - the sibling service-operator CRDs (Keystone, Horizon, Glance, Placement —
+//     and with them GlanceBackend and KeystoneIdentityBackend) the reconciler Owns
+//     as children.
 //   - BaselineCRDDirectoryPaths(): the c5c3 CRDs plus every shared fake CRD dir
 //     (mariadb-operator, memcached-operator, external-secrets, cert-manager,
 //     k-orc, ...) so the external operator kinds the reconciler create-or-updates
@@ -110,8 +111,9 @@ func crdDirectoryPaths() []string {
 	keystoneCRDDir := filepath.Join(base, "..", "..", "..", "keystone", "config", "crd", "bases")
 	horizonCRDDir := filepath.Join(base, "..", "..", "..", "horizon", "config", "crd", "bases")
 	glanceCRDDir := filepath.Join(base, "..", "..", "..", "glance", "config", "crd", "bases")
+	placementCRDDir := filepath.Join(base, "..", "..", "..", "placement", "config", "crd", "bases")
 
-	dirs := []string{keystoneCRDDir, horizonCRDDir, glanceCRDDir}
+	dirs := []string{keystoneCRDDir, horizonCRDDir, glanceCRDDir, placementCRDDir}
 	return append(dirs, BaselineCRDDirectoryPaths()...)
 }
 
@@ -122,9 +124,9 @@ func crdDirectoryPaths() []string {
 //   - c5c3 CRDs (controlplanes, credentialrotations, secretaggregates).
 //   - every shared fake CRD dir under internal/common/testutil/fake_crds/*.
 //
-// The sibling service-operator CRDs (Keystone, Horizon, Glance — and with them
-// GlanceBackend and KeystoneIdentityBackend) are DELIBERATELY absent, so tests
-// can prove the ControlPlane controller starts when those kinds are unserved.
+// The sibling service-operator CRDs (Keystone, Horizon, Glance, Placement — and
+// with them GlanceBackend and KeystoneIdentityBackend) are DELIBERATELY absent, so
+// tests can prove the ControlPlane controller starts when those kinds are unserved.
 // K-ORC IS served — its fake CRDs are part of the common fake dirs — because the
 // K-ORC kinds are Owned unconditionally as hard dependencies (see optionalWatchObjects
 // in crd_presence.go): the manager would fail to start without them. Tests therefore
@@ -179,6 +181,7 @@ func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 		keystonev1alpha1.AddToScheme,
 		horizonv1alpha1.AddToScheme,
 		glancev1alpha1.AddToScheme,
+		placementv1alpha1.AddToScheme,
 		esov1.AddToScheme,
 		esov1alpha1.AddToScheme,
 		esgenv1alpha1.AddToScheme,

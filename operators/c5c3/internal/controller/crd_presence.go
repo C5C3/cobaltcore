@@ -12,6 +12,7 @@ import (
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -23,10 +24,10 @@ import (
 )
 
 // The ControlPlane reconciler watches kinds owned by sibling service operators —
-// Keystone, Horizon and Glance. controller-runtime installs a shared informer for
-// each watched kind and blocks manager start until every informer has synced; on a
-// cluster missing one of those CRDs the informer never syncs, the manager fails start
-// after CacheSyncTimeout, and the leader crash-loops. The helpers here let
+// Keystone, Horizon, Glance and Placement. controller-runtime installs a shared
+// informer for each watched kind and blocks manager start until every informer has
+// synced; on a cluster missing one of those CRDs the informer never syncs, the manager
+// fails start after CacheSyncTimeout, and the leader crash-loops. The helpers here let
 // SetupWithManager register the fragile watches only when their CRD is actually
 // served, so a slimmed-down install (Keystone-only, no Glance) starts clean. The
 // infrastructure hard dependencies — MariaDB, Memcached, the ESO kinds and the eight
@@ -69,6 +70,7 @@ func optionalWatchObjects() []client.Object {
 		&glancev1alpha1.Glance{},
 		&glancev1alpha1.GlanceBackend{},
 		&keystonev1alpha1.KeystoneIdentityBackend{},
+		&placementv1alpha1.Placement{},
 	}
 }
 

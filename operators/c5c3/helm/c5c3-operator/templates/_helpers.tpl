@@ -162,6 +162,21 @@ coordination.k8s.io/leases rule required for leader election.
     - update
     - patch
     - delete
+# placement.openstack.c5c3.io - placements
+# The ControlPlane reconciler projects and Owns a Placement child. Placement has
+# no satellite kind, so placements is the single operator-written child kind.
+- apiGroups:
+    - placement.openstack.c5c3.io
+  resources:
+    - placements
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
 # openstack.k-orc.cloud - applicationcredentials, services, endpoints, users,
 # domains, projects, roles, roleassignments. Minted/owned by reconcileKORC and
 # reconcileCatalog; users + domains are imported (unmanaged) so the admin

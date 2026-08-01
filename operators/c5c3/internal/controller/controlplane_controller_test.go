@@ -163,6 +163,50 @@ func TestSetServicesStatus_GlanceEntry(t *testing.T) {
 	g.Expect(findServiceStatus(cp.Status.Services, "glance")).To(BeNil())
 }
 
+// TestSetServicesStatus_PlacementEntry extends the status projection to the
+// fourth service: services.placement produces a "placement" entry whose readiness
+// tracks the PlacementReady sub-condition, and an unmanaged Placement is omitted.
+func TestSetServicesStatus_PlacementEntry(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2025.2",
+			Services: c5c3v1alpha1.ServicesSpec{
+				Keystone:  &c5c3v1alpha1.ServiceKeystoneSpec{},
+				Horizon:   &c5c3v1alpha1.ServiceHorizonSpec{},
+				Glance:    &c5c3v1alpha1.ServiceGlanceSpec{},
+				Placement: &c5c3v1alpha1.ServicePlacementSpec{},
+			},
+		},
+	}
+
+	setServicesStatus(cp)
+	g.Expect(cp.Status.Services).To(HaveLen(4))
+	// Stable order: keystone, horizon, glance, placement.
+	g.Expect(cp.Status.Services[3].Name).To(Equal("placement"))
+	g.Expect(cp.Status.Services[3].Ready).To(BeFalse(),
+		"placement is not Ready while PlacementReady is absent")
+	g.Expect(cp.Status.Services[3].Release).To(Equal("2025.2"))
+
+	// PlacementReady True flips only the placement entry.
+	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypePlacementReady))
+	setServicesStatus(cp)
+	placement := findServiceStatus(cp.Status.Services, "placement")
+	g.Expect(placement).NotTo(BeNil())
+	g.Expect(placement.Ready).To(BeTrue())
+	g.Expect(findServiceStatus(cp.Status.Services, "glance").Ready).To(BeFalse(),
+		"PlacementReady must not flip a peer service entry")
+
+	// An unmanaged placement is omitted rather than reported, and the remaining
+	// entries keep their positions.
+	cp.Spec.Services.Placement = nil
+	setServicesStatus(cp)
+	g.Expect(cp.Status.Services).To(HaveLen(3))
+	g.Expect(findServiceStatus(cp.Status.Services, "placement")).To(BeNil())
+	g.Expect(cp.Status.Services[2].Name).To(Equal("glance"))
+}
+
 // findServiceStatus returns a pointer to the ServiceStatus entry with the given
 // name, or nil when the listType=map status.services list has no such entry.
 func findServiceStatus(services []c5c3v1alpha1.ServiceStatus, name string) *c5c3v1alpha1.ServiceStatus {
