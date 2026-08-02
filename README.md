@@ -11,11 +11,12 @@ the Keystone Operator to the c5c3-operator orchestration layer — built with Op
 and Kubebuilder.
 
 The implementation follows a Keystone-first strategy: the Keystone Operator serves as the reference implementation
-establishing patterns for all subsequent operators. The c5c3-operator is implemented with Keystone-only orchestration,
-ready to be extended for additional services later.
+establishing patterns for all subsequent operators. The c5c3-operator orchestrates Keystone, Horizon, Glance,
+and Placement children from one ControlPlane resource.
 
 The architecture is organized as a Go Workspace monorepo with a shared library (`internal/common/`), individual
-operator modules (`operators/keystone/`, `operators/c5c3/`), container image builds (`images/`), declarative
+operator modules (`operators/keystone/`, `operators/horizon/`, `operators/glance/`, `operators/placement/`,
+`operators/c5c3/`), container image builds (`images/`), declarative
 infrastructure deployment manifests (`deploy/`), and comprehensive tests at every level (unit, envtest integration,
 Chainsaw E2E).
 

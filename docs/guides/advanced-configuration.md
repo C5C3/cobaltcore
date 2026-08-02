@@ -121,10 +121,11 @@ cache) is set — never both — for both `database` and `cache`.
 
 The `ControlPlane` exposes the same free-form configuration escape hatch the
 service CRs carry, at two levels. `spec.globalExtraConfig` applies to every
-INI-configured service the control plane declares (Keystone and Glance today).
-`spec.services.<svc>.extraConfig` sets one service's own block. Both take the INI
-`map[section][key] = value` shape the child renders into its service config
-(`keystone.conf`, `glance-api.conf`). The dashboard is the exception:
+INI-configured service the control plane declares (Keystone, Glance, and
+Placement today). `spec.services.<svc>.extraConfig` sets one service's own block.
+Both take the INI `map[section][key] = value` shape the child renders into its
+service config (`keystone.conf`, `glance-api.conf`, `placement.conf`). The
+dashboard is the exception:
 `spec.services.horizon.extraConfig` is a flat map of Django settings, covered in
 [Horizon settings are flat, not INI](#horizon-settings-are-flat-not-ini).
 
@@ -136,7 +137,8 @@ metadata:
   namespace: openstack
 spec:
   openStackRelease: "2025.2"
-  # Applied to every INI service the control plane declares (Keystone, Glance):
+  # Applied to every INI service the control plane declares (Keystone, Glance,
+  # Placement):
   globalExtraConfig:
     database:
       pool_timeout: "30"
@@ -167,9 +169,10 @@ render `30`, inherited from the global block.
 
 The option catalog that guards a service CR's own `spec.extraConfig` guards the
 merged result here too, so a global key must be valid against **every** declared
-INI service's catalog. Because `spec.globalExtraConfig` reaches Glance as well, a
-Keystone-only option placed there is rejected while `services.glance` is declared;
-the fix is to move that key to `spec.services.keystone.extraConfig`.
+INI service's catalog. Because `spec.globalExtraConfig` reaches Glance and
+Placement as well, a Keystone-only option placed there is rejected while
+`services.glance` or `services.placement` is declared; the fix is to move that
+key to `spec.services.keystone.extraConfig`.
 
 ### Horizon settings are flat, not INI
 
@@ -186,8 +189,8 @@ Both a CEL rule and the webhook reject it, with the message
 `services.keystone.extraConfig is forbidden when services.keystone.mode is External`.
 `spec.globalExtraConfig` stays legal but inert in External mode, the same posture
 `spec.globalPolicyOverrides` holds, since no INI-configured workload consumes it.
-Glance and Horizon are forbidden entirely in External mode, so their blocks
-cannot appear at all.
+Glance, Horizon, and Placement are forbidden entirely in External mode, so their
+blocks cannot appear at all.
 
 ### Admission checks
 
@@ -451,8 +454,8 @@ logging levels, oslo.messaging tuning, experimental Keystone flags —
 `spec.extraConfig` takes a `map[section][key] = value` that is rendered into the
 generated `keystone.conf`.
 
-For the INI-file services (Keystone, Glance) the operator renders configuration
-through a single precedence chain: `plugins < operator defaults <
+For the INI-file services (Keystone, Glance, Placement) the operator renders
+configuration through a single precedence chain: `plugins < operator defaults <
 spec.extraConfig`. Each stage is merged key-wise, so a plugin section cannot
 shadow an operator-computed value, the operator defaults win over any colliding
 plugin section, and `spec.extraConfig` is the only door past the operator's own

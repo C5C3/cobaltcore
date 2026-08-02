@@ -24,14 +24,14 @@ plain API-server shape.
 | `openStackRelease` | `string` | yes | The OpenStack release the operator deploys and drives; pattern `^\d{4}\.[12]$` (the `YYYY.N` cadence, `N` ∈ {1,2}). It governs install and upgrade schema tracking: `status.installedRelease` is promoted to this value after a successful db-sync. Kept separate from the image tag so digest-pinned images still resolve a schema. It selects no launch mode: placement runs the same uWSGI command and renders the same option names on every supported release |
 | `deployment` | `DeploymentSpec` | no | Shared pod-level knobs: `replicas` (default 3), `resources` (defaults: 512Mi request / 1Gi limit memory, 100m/500m CPU), `terminationGracePeriodSeconds`, `preStopSleepSeconds`, `strategy`, `topologySpreadConstraints`, `priorityClassName` |
 | `image` | `ImageSpec` | yes | Container image. `tag` and `digest` are mutually exclusive and one of the two is required (shared CEL rule, re-checked by the webhook) |
-| `database` | `DatabaseSpec` | yes | MariaDB connection, rendered into `[placement_database]`. One of `clusterRef` (managed) or `host` (brownfield), never both; plus `database`, `secretRef`, and the optional `port`, `credentialsMode`, and `tls`. `credentialsMode` selects how the credential in `secretRef` is provisioned: `Static` (the default) keeps a long-lived password and has the operator manage the MariaDB `User`/`Grant` CRs, `Dynamic` takes short-lived engine-issued credentials and manages neither. `Dynamic` requires `clusterRef`. The mutual-exclusivity and Dynamic-requires-clusterRef rules are inherited from `commonv1.DatabaseSpec` |
-| `cache` | `CacheSpec` | yes | Memcached backing the keystonemiddleware token cache, rendered as `[keystone_authtoken] memcached_servers`. One of `clusterRef` (managed) or `servers` (brownfield), never both. `backend` is webhook-defaulted to `dogpile.cache.pymemcache` |
+| `database` | `DatabaseSpec` | yes | MariaDB connection, rendered into `[placement_database]`. One of `clusterRef` (managed) or `host` (brownfield), never both; plus `database`, `secretRef`, and the optional `port`, `credentialsMode`, and `tls`. `credentialsMode` selects how the credential in `secretRef` is provisioned: `Static` (the default) keeps a long-lived password and has the operator manage the MariaDB `User`/`Grant` CRs, `Dynamic` takes short-lived engine-issued credentials and manages neither. `Dynamic` requires `clusterRef`. The mutual-exclusivity and Dynamic-requires-clusterRef rules are inherited from `commonv1.DatabaseSpec`, and so are `replicas` (default 3, minimum 1) and `storageSize` (default `100Gi`): both sit in the schema, but only the c5c3 operator's managed-mode projection reads them, so the Placement operator ignores whatever they say |
+| `cache` | `CacheSpec` | yes | Memcached backing the keystonemiddleware token cache, rendered as `[keystone_authtoken] memcached_servers`. One of `clusterRef` (managed) or `servers` (brownfield), never both. `backend` is webhook-defaulted to `dogpile.cache.pymemcache`. `replicas` (default 3) is inherited from `commonv1.CacheSpec` on the same terms as the database counterparts: schema-visible, honoured by the c5c3 operator's managed-mode projection, ignored here (`cache.ResolveServers` addresses the cluster by its `clusterRef` name alone) |
 | `keystoneEndpoint` | `string` | yes | The Keystone auth URL rendered as `[keystone_authtoken] auth_url`; must match `^https?://` and parse with a host. keystonemiddleware validates a token against it server-side on every authenticated request, so it must be reachable from inside the cluster: use the cluster-local Service URL, not an externally routable address |
 | `keystonePublicEndpoint` | `string` | no | The browser-facing Keystone base URL rendered as `[keystone_authtoken] www_authenticate_uri`, the address a 401 points unauthenticated clients at; must match `^https?://` when set. When empty the operator falls back to `keystoneEndpoint` at render time (see `EffectiveKeystonePublicEndpoint`), which holds only when the internal and public Keystone URLs coincide |
 | `serviceUser` | [`ServiceUserSpec`](#serviceuserspec) | yes | The Keystone service account Placement authenticates as, and the Secret holding its password |
 | `region` | `string` | no | The Keystone region (`[keystone_authtoken] region_name`); when empty the option is omitted and Placement uses the catalog's default region |
 | `apiServer` | [`*APIServerSpec`](#apiserverspec) | no | uWSGI process tuning. When nil the reconciler applies the same defaults the webhook writes into a present block |
-| `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute forwarding to the `{name}` Service on port 8778; requires `hostname` and `parentRef.name`, and takes an optional `path` (default `/`). Removing the block deletes the HTTPRoute |
+| `gateway` | `*GatewaySpec` | no | External exposure via a Gateway API HTTPRoute forwarding to the `{name}` Service on port 8778; requires `hostname` and `parentRef.name`, and takes an optional `path` (default `/`) and an optional `annotations` map, copied verbatim onto the generated HTTPRoute's metadata for implementation-specific settings such as rate limits or CORS (the route timeout stays operator-managed). Removing the block deletes the HTTPRoute |
 | `networkPolicy` | `*NetworkPolicySpec` | no | Ingress restricted to TCP 8778 from the listed sources; egress auto-derived (DNS, the database, the Keystone endpoint's port, and the cache), with `additionalEgress` appended after it. At least one ingress source is required (fail-closed) |
 | `autoscaling` | `*AutoscalingSpec` | no | HPA bounds and CPU/memory utilization targets. At least one of `targetCPUUtilization` or `targetMemoryUtilization` is required, and an unset `minReplicas` resolves to `spec.deployment.replicas` |
 | `logging` | `*LoggingSpec` | no | oslo.log derivation: `format` (`text`/`json`), `level`, `debug`, `perLoggerLevels`. Materialized by the defaulting webhook to `text`/`INFO`/`debug: false`. The `json` format ships a `logging.conf` in the config ConfigMap and points `[DEFAULT] log_config_append` at it |
@@ -54,7 +54,8 @@ supply the password Secret reference.
 
 Each of the four identity fields is rendered verbatim into
 `[keystone_authtoken]`, so the validating webhook rejects a newline or carriage
-return in any of them.
+return in any of them. `spec.region` lands in the same section through the same
+renderer and goes through the same check.
 
 ### APIServerSpec
 
@@ -82,7 +83,7 @@ the default `true`, so only an explicit `false` conflicts with a set timeout.
 | `harakiri` | `*int32` (Minimum=1) | no | — | Per-request worker lifetime cap (`--harakiri`, seconds). Omitted from the command when nil, with no hidden default. The webhook requires `harakiri < terminationGracePeriodSeconds − preStopSleepSeconds`, so the worst-case per-request kill fits inside the drain window |
 | `httpKeepAliveTimeout` | `*int32` (Minimum=1) | no | — | Idle timeout of keep-alive connections (`--http-keepalive-timeout`, seconds). Omitted when nil; zero is rejected to avoid the unbounded interpretation |
 
-The two hardcoded defaults live in `placement_webhook.go`
+The three hardcoded defaults live in `placement_webhook.go`
 (`DefaultUWSGIProcesses`, `DefaultUWSGIThreads`, `DefaultUWSGIHTTPKeepAlive`) and
 are what the reconciler falls back to when `spec.apiServer` or
 `spec.apiServer.uwsgi` is nil, so a CR that bypassed the defaulting webhook
@@ -121,6 +122,13 @@ implicit `minReplicas` default from `deployment.replicas`), network-policy
 ingress, gateway hostname and `parentRef.name`, resource requests-vs-limits,
 PriorityClass existence, and topology-spread selectors (matching the `placement`
 and instance labels).
+
+One check is placement's own. `spec.region` and the four `serviceUser` identity
+fields are each rejected for a newline or carriage return, because the renderer
+writes them into `[keystone_authtoken]` verbatim and a newline would smuggle a
+whole extra option past the ownership and catalog gates. The two Keystone
+endpoint fields need no entry: `url.Parse` already refuses control bytes for
+them.
 
 `spec.extraConfig` is a preserve-unknown-fields map CEL cannot constrain, so its
 guards are webhook-only: an empty section name or option key, a newline or

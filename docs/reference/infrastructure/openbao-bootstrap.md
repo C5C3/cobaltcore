@@ -111,15 +111,18 @@ deploy/
 │       ├── push-ceph-keys.hcl          PushSecret policy for Ceph keys
 │       ├── ci-cd-provisioner.hcl       CI/CD pipeline provisioning policy
 │       ├── keystone-db-dynamic.hcl     Per-tenant dynamic DB credential read policy
+│       ├── placement-db-dynamic.hcl    Per-tenant dynamic Placement DB credential read policy
 │       └── pki-issuer.hcl             cert-manager PKI issuing policy
 ├── eso/
 │   ├── kustomization.yaml              Kustomize entrypoint (renders ONLY the ClusterSecretStore)
 │   └── clustersecretstore.yaml         ClusterSecretStore for OpenBao
 ├── kind/
-│   └── infrastructure/                 kind-overlay-only ExternalSecret shims (standalone flows)
+│   └── infrastructure/                 kind-overlay-only shims (standalone flows)
 │       ├── keystone-admin-externalsecret.yaml        Secret keystone-admin
 │       ├── mariadb-root-password-externalsecret.yaml Secret mariadb-root-password
-│       └── keystone-db-externalsecret.yaml           Secret keystone-db
+│       ├── keystone-db-externalsecret.yaml           Secret keystone-db
+│       ├── placement-db-externalsecret.yaml          Secret placement-db
+│       └── placement-nip-io-tls-certificate.yaml     Certificate placement-nip-io-tls
 └── flux-system/
     ├── releases/
     │   └── openbao.yaml                HelmRelease for OpenBao HA cluster
@@ -160,7 +163,7 @@ on the successful completion of the previous step:
 3. setup-auth.sh            Configure Kubernetes auth + AppRole
        │
        ▼
-4. setup-policies.sh        Apply 9 HCL least-privilege policies
+4. setup-policies.sh        Apply 11 HCL least-privilege policies
        │
        ▼
 5. write-bootstrap-secrets.sh  Generate and seed initial passwords
@@ -312,8 +315,8 @@ one ControlPlane per namespace makes it a unique, collision-free tenant key).
 ### setup-database-tenant.sh
 
 **Purpose:** Provision the per-tenant `database` engine connection and role for one
-managed ControlPlane's per-service DB users — Keystone always, and Glance when it
-shares the managed database.
+managed ControlPlane's per-service DB users — Keystone always, and Glance and
+Placement each when they share the managed database.
 
 **File:** `deploy/openbao/bootstrap/setup-database-tenant.sh`
 
@@ -420,33 +423,38 @@ Each Kubernetes auth mount creates a role named `eso-<cluster>` that binds to th
 `external-secrets` service account in the `external-secrets` namespace. The role is
 linked to the corresponding `eso-<cluster>` policy.
 
-The management mount additionally carries a `keystone-db` and a `glance-db` role,
-each bound to a fixed per-ControlPlane ServiceAccount (`keystone-db-creds` /
-`glance-db-creds`, any namespace) and linked to its own dynamic-credential policy
-(`keystone-db-dynamic` / `glance-db-dynamic`). The c5c3 operator's per-ControlPlane
-`VaultDynamicSecret` generators authenticate with them to read short-lived DB
-credentials at `database/mariadb/creds/keystone-{namespace}` and
-`database/mariadb/creds/glance-{namespace}` respectively. Both roles deliberately
-bind `namespaces="*"` so any ControlPlane namespace may authenticate; the fixed
-SA name is what tells the two roles apart (a `glance-db-creds` token can never
-read a Keystone creds path, or vice versa), and cross-tenant isolation is
-enforced by each policy, which templates the readable path to the caller's own
+The management mount additionally carries a `keystone-db`, a `glance-db`, and a
+`placement-db` role, each bound to a fixed per-ControlPlane ServiceAccount
+(`keystone-db-creds` / `glance-db-creds` / `placement-db-creds`, any namespace)
+and linked to its own dynamic-credential policy (`keystone-db-dynamic` /
+`glance-db-dynamic` / `placement-db-dynamic`). The c5c3 operator's
+per-ControlPlane `VaultDynamicSecret` generators authenticate with them to read
+short-lived DB credentials at `database/mariadb/creds/keystone-{namespace}`,
+`database/mariadb/creds/glance-{namespace}`, and
+`database/mariadb/creds/placement-{namespace}` respectively. All three roles
+deliberately bind `namespaces="*"` so any ControlPlane namespace may
+authenticate; the fixed SA name is what tells them apart (a `glance-db-creds`
+token can never read a Keystone creds path, or vice versa), and cross-tenant
+isolation is enforced by each policy, which templates the readable path to the caller's own
 `service_account_namespace` (an exact match — a token minted in one namespace
 cannot read another namespace's path).
 
-Unlike the `eso-<cluster>` roles, the `keystone-db` and `glance-db` token TTLs are
-pinned to the database engine's `max_ttl` (`DB_CREDS_MAX_TTL`, 72h): OpenBao
+Unlike the `eso-<cluster>` roles, the `keystone-db`, `glance-db`, and
+`placement-db` token TTLs are pinned to the database engine's `max_ttl`
+(`DB_CREDS_MAX_TTL`, 72h): OpenBao
 revokes a dynamic-secret lease together with the auth token that minted it, so a
 token shorter than the lease silently caps the effective credential lifetime at
 the token's — with an eso-style 1h token, every issued DB credential died after
 ~1h while the ExternalSecret refresh only re-mints every 24h, dropping the
 ephemeral MySQL user under a running service. The longer-lived token is bounded by
-the read-only `keystone-db-dynamic` / `glance-db-dynamic` policy.
+the read-only `keystone-db-dynamic` / `glance-db-dynamic` / `placement-db-dynamic`
+policy.
 
 | Mount Path | Role | Bound SA | Bound NS | Policy | TTL | Max TTL |
 | --- | --- | --- | --- | --- | --- | --- |
 | `kubernetes/management` | `keystone-db` | `keystone-db-creds` | `*` | `keystone-db-dynamic` | 72h | 72h |
 | `kubernetes/management` | `glance-db` | `glance-db-creds` | `*` | `glance-db-dynamic` | 72h | 72h |
+| `kubernetes/management` | `placement-db` | `placement-db-creds` | `*` | `placement-db-dynamic` | 72h | 72h |
 | `kubernetes/management` | `eso-tenant` | `eso-tenant-auth` | `*` | `eso-tenant` | 1h | 4h |
 
 The management mount also carries an `eso-tenant` role — the per-ControlPlane
@@ -493,11 +501,12 @@ change. The `KUBERNETES_MANAGEMENT_ACCESSOR` placeholder in the templated
 policies is substituted with the live `kubernetes/management` auth-mount accessor
 at apply time.
 
-Three policies are **namespace-templated** rather than statically scoped, so a
+Four policies are **namespace-templated** rather than statically scoped, so a
 single policy backs every tenant while confining each token to its own namespace:
 
 - `keystone-db-dynamic` — read on the caller's own dynamic Keystone DB-credential path.
 - `glance-db-dynamic` — read on the caller's own dynamic Glance DB-credential path.
+- `placement-db-dynamic` — read on the caller's own dynamic Placement DB-credential path.
 - `eso-tenant` — the per-ControlPlane ESO identity and the **sole write path**
   for per-ControlPlane Keystone key material: read on the caller's own
   `openstack/keystone/{ns}/*` and `bootstrap/{ns}/*` subtrees, and
@@ -613,6 +622,7 @@ Ceph client key for Nova and Nova compute configuration, not broader secret path
 | `pki-issuer` | `pki/issue/*`, `pki/sign/*` | `create`, `update` | cert-manager PKI certificate issuing |
 | `keystone-db-dynamic` | <code v-pre>database/mariadb/creds/keystone-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Keystone DB credential reads (bound to the `keystone-db` role). The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard), so a token minted in one namespace cannot read another tenant's creds path. Read-only: a dynamic engine has no static password to push, so the deferred `push-keystone-db.hcl` is unnecessary and not created (#439). |
 | `glance-db-dynamic` | <code v-pre>database/mariadb/creds/glance-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Glance DB credential reads (bound to the `glance-db` role) — the Glance analogue of `keystone-db-dynamic`, and fully keystone-independent. The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard), so a token minted in one namespace cannot read another tenant's creds path. Read-only: a dynamic engine has no static password to push. |
+| `placement-db-dynamic` | <code v-pre>database/mariadb/creds/placement-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Placement DB credential reads (bound to the `placement-db` role), on the same terms as the Glance policy. The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard). The `placement-db-creds` SA name is what keeps a Placement generator off a Keystone creds path when both services share a namespace. Read-only: a dynamic engine has no static password to push. |
 
 **Note:** `ci-cd-provisioner` intentionally lacks `delete` capability. The CI/CD
 pipeline can create, update, and read secrets but cannot delete them, preventing
@@ -723,6 +733,7 @@ deployment-specific.
 | `{controlplane.Name}-keystone-admin-credentials` | `openstack` | `bootstrap/{ns}/{name}-keystone/admin` (default `bootstrap/openstack/controlplane-keystone/admin`) | `password` | `{controlplane.Name}-keystone-admin-credentials` | `password` |
 | `{controlplane.Name}-keystone-db-credentials` | `openstack` | Dynamic (default): generator-backed via `VaultDynamicSecret` reading `database/mariadb/creds/keystone-{ns}` (no KV remote path); Static opt-out: `openstack/keystone/{ns}/{name}/db` | `username`, `password` | `{controlplane.Name}-keystone-db-credentials` | `username`, `password` |
 | `{controlplane.Name}-glance-db-credentials` | `openstack` | Dynamic (default): generator-backed via `VaultDynamicSecret` reading `database/mariadb/creds/glance-{ns}` (no KV remote path); Static opt-out: `openstack/glance/{ns}/{name}/db` | `username`, `password` | `{controlplane.Name}-glance-db-credentials` | `username`, `password` |
+| `{controlplane.Name}-placement-db-credentials` | `openstack` | Dynamic (default): generator-backed via `VaultDynamicSecret` reading `database/mariadb/creds/placement-{ns}` (no KV remote path); Static opt-out: `openstack/placement/{ns}/{name}/db` | `username`, `password` | `{controlplane.Name}-placement-db-credentials` | `username`, `password` |
 | `keystone-admin` (kind only) | `openstack` | `bootstrap/openstack/controlplane-keystone/admin` | `password` | `keystone-admin` | `password` |
 | `mariadb-root-password` (kind only) | `openstack` | `infrastructure/mariadb` | `root-password` | `mariadb-root-password` | `password` |
 | `keystone-db` (kind only) | `openstack` | `openstack/keystone/openstack/standalone/db` | `username`, `password` | `keystone-db` | `username`, `password` |

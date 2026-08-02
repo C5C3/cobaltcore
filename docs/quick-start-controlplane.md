@@ -168,7 +168,7 @@ spec:
       # Drop publicEndpoint on the default port 443 — the operator then derives
       # https://placement.127-0-0-1.nip.io from the gateway hostname.
       publicEndpoint: https://placement.127-0-0-1.nip.io:8443
-      # Exposed through the same shared Envoy Gateway, via the fourth HTTPS
+      # Exposed through the same shared Envoy Gateway, via the sixth HTTPS
       # listener the kind overlay adds for placement.127-0-0-1.nip.io.
       gateway:
         parentRef:
@@ -219,7 +219,7 @@ its own, `service-placement`; each `create: true` entry projects a managed
 Project, so two entries naming one project would collide. Database and cache
 derive from `spec.infrastructure` the same way Glance's do, and on the managed
 shared database the DB credential is engine-issued too, from the tenant Step 4
-onboards. The `gateway` block puts the API on the fourth HTTPS listener the kind
+onboards. The `gateway` block puts the API on the sixth HTTPS listener the kind
 overlay adds, `placement.127-0-0-1.nip.io`, and `publicEndpoint` carries the
 `:8443` host port into the public placement catalog row. A `PlacementReady`
 condition joins the chain next to `GlanceReady`, gated the same way, and
@@ -297,7 +297,7 @@ spec:
       publicEndpoint: https://placement.127-0-0-1.nip.io:8443
       gateway:
         parentRef:
-          name: openstack-gw          # same Gateway; fourth listener
+          name: openstack-gw          # same Gateway; sixth listener
         hostname: placement.127-0-0-1.nip.io
   korc:
     adminCredential:

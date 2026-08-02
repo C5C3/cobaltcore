@@ -14,9 +14,9 @@ layer — built with the Operator SDK (Go), controller-runtime, and Kubebuilder.
 The implementation follows a Keystone-first strategy. The Keystone operator is
 the reference implementation that establishes the patterns — CRD layout,
 sub-reconciler chain, webhooks, finalizers, instrumentation — replicated by
-every subsequent service operator. Horizon and Glance are already onboarded on
-the same scaffolding, and the c5c3-operator ties the services together into a
-single ControlPlane resource.
+every subsequent service operator. Horizon, Glance, and Placement are already
+onboarded on the same scaffolding, and the c5c3-operator ties the services
+together into a single ControlPlane resource.
 
 ## Start here
 
@@ -32,8 +32,9 @@ single ControlPlane resource.
 - **Operators.** Service operators following a shared sub-reconciler pattern,
   with [Keystone](./reference/keystone/) as the reference implementation and the
   [c5c3-operator](./reference/c5c3/controlplane-crd.md) as the ControlPlane
-  orchestration layer. [Horizon](./reference/horizon/) and
-  [Glance](./reference/glance/) are onboarded on the same conventions.
+  orchestration layer. [Horizon](./reference/horizon/),
+  [Glance](./reference/glance/), and [Placement](./reference/placement/) are
+  onboarded on the same conventions.
 - **Shared library.** Common types, conditions, config rendering, and
   Kubernetes helpers in `internal/common/`, plus the Helm chart, operator
   packaging, and rotation scripts. See the
