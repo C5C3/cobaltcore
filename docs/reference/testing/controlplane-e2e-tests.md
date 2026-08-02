@@ -103,17 +103,55 @@ each link on the previous one:
    OpenBao → operator-created per-CR `k-orc-clouds-yaml` ExternalSecret Ready;
    `AdminCredentialReady=True`.
 5. **Catalog** — owned K-ORC Service and Endpoint; `CatalogReady=True`.
+
+5b. **Service accounts** — the `glance` and `placement` accounts the defaulting
+   webhook injects (the CR declares none) each project a managed User and
+   Project, an unmanaged K-ORC Role import, and a managed RoleAssignment;
+   `ServiceAccountsReady=True` and both `status.serviceAccounts[i].ready`.
+
+5c. **Glance child** — owned Glance CR (`controlplane-keystone-glance`) with
+   database/cache clusterRefs, an engine-issued (Dynamic) DB credential, the
+   derived Keystone endpoint, the injected `glance` service user, and its
+   `controlplane-keystone-glance-default` GlanceBackend against the Garage S3
+   bucket; `GlanceReady=True`.
+
+5d. **Image catalog** — owned K-ORC image Service
+   (`controlplane-keystone-image-service`) plus an internal and a public
+   Endpoint (`controlplane-keystone-image-endpoint-{internal,public}`). With no
+   gateway in this fixture, both URLs advertise the in-cluster Glance API.
+
+5e. **Placement child** — owned Placement CR
+   (`controlplane-keystone-placement`) with database/cache clusterRefs wired to
+   the infra CRs, the derived Keystone endpoint, the injected `placement`
+   service user, and `spec.database.credentialsMode: Dynamic`;
+   `PlacementReady=True`. Its DB credential is checked the way Keystone's is: a
+   `controlplane-keystone-placement-db-credentials` ExternalSecret backed by a
+   `VaultDynamicSecret` generator, with no static `data` refs, and a
+   materialised Secret carrying an engine-issued username.
+
+5f. **Placement catalog** — owned K-ORC placement Service
+   (`controlplane-keystone-placement-service`) plus an internal and a public
+   Endpoint (`controlplane-keystone-placement-endpoint-{internal,public}`).
+   With no gateway in this fixture, both URLs advertise the in-cluster
+   Placement API.
+
 6. **Aggregate** — `Ready=True` with reason `AllReady`.
+
 6b. **Dynamic DB credential engine** — no static DB password remains at rest (the
    retired per-CR KV path is absent, AC 2/6); an engine-issued credential
    authenticates against MariaDB and is rejected after `bao lease revoke` (AC 3);
    and an unrelated lease survives another's revoke while the ControlPlane stays
    Ready (AC 4 single-tenant isolation).
+
 7. **API reachable** — Keystone `/v3` returns HTTP 200, and a verify Job runs
    `openstack token issue` and `openstack catalog list` (using the `openstack`
    CLI bundled in the tempest image) against the materialised admin
    clouds.yaml, proving the minted, pushed, re-materialised application
-   credential actually authenticates.
+   credential actually authenticates. The same Job greps the catalog for a
+   placement row and calls `openstack resource class list` through the
+   projected placement endpoint. That call reads a copy of clouds.yaml with the
+   `region_name` line stripped, because the projected catalog rows carry no
+   region.
 
 ### external-keystone
 
