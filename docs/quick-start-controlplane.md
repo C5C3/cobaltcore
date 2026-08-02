@@ -12,7 +12,7 @@ SPDX-License-Identifier: Apache-2.0
 This guide takes a single **c5c3 ControlPlane** CR from `git clone` to an authenticated
 Keystone API call. Compared with the [Quick Start](./quick-start.md), the
 c5c3-operator now provisions the `MariaDB`, `Memcached`, `Keystone`, `Horizon`,
-and `Glance` children, mints the admin application credential through
+`Glance`, and `Placement` children, mints the admin application credential through
 [K-ORC](https://github.com/k-orc/openstack-resource-controller), mirrors it to
 OpenBao, and registers the identity catalog.
 
@@ -21,7 +21,7 @@ OpenBao, and registers the identity catalog.
 Same toolchain as the [Quick Start](./quick-start.md), plus:
 
 - `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
-- The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 6
+- The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 6, plus the [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) plugin for the placement check in the same step
 - A stable internet connection while `make deploy-infra` clones K-ORC from GitHub
 - Roughly 8 GB RAM, 2 CPU cores, and 10 GB of free disk for a laptop-sized kind cluster
 - `yq` v4.x on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
@@ -68,7 +68,7 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 
 `WITH_CONTROLPLANE=true` brings up the shared infrastructure and then the
 ControlPlane operator stack (keystone-operator, horizon-operator,
-glance-operator, K-ORC, c5c3-operator) from the published charts — but **not** the `ControlPlane` CR
+glance-operator, placement-operator, K-ORC, c5c3-operator) from the published charts — but **not** the `ControlPlane` CR
 itself; you create and apply that in Step 3. In this mode the ControlPlane provisions its own MariaDB/Memcached
 (managed mode), so deploy-infra does not create the shared ones. `KIND_HOST_PORT=8443`
 maps the Gateway to a non-privileged host port for macOS; on Linux with rootful
@@ -163,6 +163,17 @@ spec:
             region: garage
             credentialsSecretRef:
               name: garage-s3-credentials
+    placement:
+      replicas: 1
+      # Drop publicEndpoint on the default port 443 — the operator then derives
+      # https://placement.127-0-0-1.nip.io from the gateway hostname.
+      publicEndpoint: https://placement.127-0-0-1.nip.io:8443
+      # Exposed through the same shared Envoy Gateway, via the fourth HTTPS
+      # listener the kind overlay adds for placement.127-0-0-1.nip.io.
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: placement.127-0-0-1.nip.io
 ```
 
 ```bash
@@ -195,9 +206,24 @@ Glance can validate the Keystone tokens it receives; its database and cache
 derive from `spec.infrastructure`, exactly like Keystone's. On the managed
 shared database its DB credential is engine-issued and auto-rotated exactly like
 Keystone's — short-lived leases from the OpenBao database engine, and the Step 4
-onboarding provisions the engine tenant for both services. A `GlanceReady`
-condition joins the chain — gating on `KeystoneReady` plus that injected service
-account — and `status.services` gains a third entry.
+onboarding provisions the engine tenant for all three database services
+(keystone, glance, and placement). A `GlanceReady` condition joins the chain —
+gating on `KeystoneReady` plus that injected service account — and
+`status.services` gains a third entry.
+
+The `placement` block projects a Placement child, `controlplane-placement`: the
+API deployment, its own logical schema on the shared MariaDB, and a Keystone
+service user. The defaulting webhook injects a `placement` service account into
+`spec.korc.serviceAccounts` (user `placement`, role `service`) with a project of
+its own, `service-placement`; each `create: true` entry projects a managed
+Project, so two entries naming one project would collide. Database and cache
+derive from `spec.infrastructure` the same way Glance's do, and on the managed
+shared database the DB credential is engine-issued too, from the tenant Step 4
+onboards. The `gateway` block puts the API on the fourth HTTPS listener the kind
+overlay adds, `placement.127-0-0-1.nip.io`, and `publicEndpoint` carries the
+`:8443` host port into the public placement catalog row. A `PlacementReady`
+condition joins the chain next to `GlanceReady`, gated the same way, and
+`status.services` gains a fourth entry.
 
 Applying the CR is not the end of the manual work: a hand-applied ControlPlane
 needs the one-time OpenBao onboarding in Step 4 before the chain can progress
@@ -266,6 +292,13 @@ spec:
             region: garage
             credentialsSecretRef:
               name: garage-s3-credentials
+    placement:
+      replicas: 1
+      publicEndpoint: https://placement.127-0-0-1.nip.io:8443
+      gateway:
+        parentRef:
+          name: openstack-gw          # same Gateway; fourth listener
+        hostname: placement.127-0-0-1.nip.io
   korc:
     adminCredential:
       cloudCredentialsRef:
@@ -287,6 +320,14 @@ spec:
           create: true
         roles:
           - service                  # Keystone SRBAC default for identity:validate_token
+      - name: placement              # injected because services.placement is set
+        userName: placement          # defaults to the account name
+        project:
+          name: service-placement    # its own project: two create:true entries
+                                     # cannot name the same Keystone project
+          create: true
+        roles:
+          - service
 ```
 
 </details>
@@ -423,6 +464,7 @@ sudo sh -c 'cat >> /etc/hosts <<EOF
 127.0.0.1 keystone.127-0-0-1.nip.io
 127.0.0.1 horizon.127-0-0-1.nip.io
 127.0.0.1 glance.127-0-0-1.nip.io
+127.0.0.1 placement.127-0-0-1.nip.io
 EOF'
 ```
 
@@ -460,8 +502,8 @@ openstack --insecure token issue
 > `foo-keystone-admin-credentials` instead.
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
-> and drop both `publicEndpoint` lines (keystone and glance) from the CR in
-> Step 3.
+> and drop all three `publicEndpoint` lines (keystone, glance, and placement)
+> from the CR in Step 3.
 
 ### Upload a first image
 
@@ -506,12 +548,39 @@ A run aborted before the final `delete` leaves `first-image` behind; delete it
 
 ::: warning Leave OS_REGION_NAME unset
 Do **not** add `OS_REGION_NAME` to the host exports: the projected K-ORC
-catalog rows carry no region, so a region-scoped lookup finds no image
-endpoint and the upload fails with `public endpoint for image service in
-RegionOne region not found`. Keystone's own bootstrap registers RegionOne
-identity rows, so identity is unaffected — only the region-less image endpoint
-needs the filter left clear.
+catalog rows carry no region, image and placement alike, so a region-scoped
+lookup finds no endpoint. The upload fails with `public endpoint for image
+service in RegionOne region not found`, the placement call with the same message
+under its own service name. Keystone's own bootstrap registers RegionOne
+identity rows, so identity is unaffected. Only the projected rows need the
+filter left clear.
 :::
+
+### List placement resource classes
+
+With the same `OS_*` variables still exported, confirm the Placement service
+reached the catalog:
+
+```bash
+openstack --insecure catalog list
+```
+
+A `placement` row proves the ControlPlane registered both endpoints: the
+in-cluster one at `http://controlplane-placement.openstack.svc:8778` and the
+public one at `https://placement.127-0-0-1.nip.io:8443`, the `publicEndpoint`
+from Step 3. Then ask the API for its resource classes:
+
+```bash
+openstack --insecure resource class list
+```
+
+The call is read-only and Placement answers it only for an authenticated
+request, so a listing of the standard classes (`VCPU`, `MEMORY_MB` and `DISK_GB`
+among them) covers the catalog row, the gateway listener, and the service user's
+token validation in one command. It needs the `osc-placement` plugin from the
+prerequisites; without it the `openstack` CLI rejects `resource class list` as
+an unknown command. `OS_REGION_NAME` has to stay unset here as well, for the
+reason above.
 
 ### Open the Horizon dashboard
 
@@ -552,4 +621,6 @@ make teardown-infra
   sub-reconciler ordering and gating semantics.
 - [Glance Operator](./reference/glance/index.md) — the projected Image service,
   its `GlanceBackend` stores, and the reconciler chain.
+- [Placement Operator](./reference/placement/index.md) — the projected Placement
+  service, its CRD surface, and the reconciler chain.
 - [Quick Start](./quick-start.md) — the compact per-service Keystone path.
