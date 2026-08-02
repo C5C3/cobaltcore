@@ -9,6 +9,7 @@
 # password from the pre-seeded keystone-admin Secret (both
 # deploy/kind/infrastructure). Placement owns no store backend, so the CR is the
 # only fixture the suite applies.
+# region placement-cr
 apiVersion: placement.openstack.c5c3.io/v1alpha1
 kind: Placement
 metadata:
@@ -39,3 +40,4 @@ spec:
     secretRef:
       name: keystone-admin
       key: password
+# endregion placement-cr
