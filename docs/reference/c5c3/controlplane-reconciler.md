@@ -97,6 +97,7 @@ can interact with the typed child CRDs:
 | `k8s.io/client-go/kubernetes/scheme` | `clientgoscheme.AddToScheme` | core Kubernetes types (`Secret`, `Event`) |
 | `github.com/c5c3/forge/operators/c5c3/api/v1alpha1` | `c5c3v1alpha1.AddToScheme` | `ControlPlane`, `CredentialRotation`, `SecretAggregate` (own API) |
 | `github.com/c5c3/forge/operators/keystone/api/v1alpha1` | `keystonev1alpha1.AddToScheme` | `Keystone` (projected and owned child) |
+| `github.com/c5c3/forge/operators/placement/api/v1alpha1` | `placementv1alpha1.AddToScheme` | `Placement` (projected and owned child) |
 | `github.com/mariadb-operator/mariadb-operator` | `mariadbv1alpha1.AddToScheme` | `MariaDB` (projected and owned child) |
 | `github.com/external-secrets/external-secrets` | `esov1alpha1.SchemeBuilder` | `PushSecret` (admin-credential mirror) |
 | `github.com/external-secrets/external-secrets` | `esov1.SchemeBuilder` | `ExternalSecret`, `ClusterSecretStore`, `SecretStore` (K-ORC clouds.yaml gate + per-ControlPlane store selection) |
@@ -126,6 +127,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Horizon` | `Owns()` | Re-reconciles when the projected Horizon dashboard child status changes |
 | `Glance` | `Owns()` | Re-reconciles when the projected Glance image-service child status changes |
 | `GlanceBackend` | `Owns()` | Re-reconciles when a projected GlanceBackend child status changes |
+| `Placement` | `Owns()` | Re-reconciles when the projected Placement child status changes |
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
 | K-ORC `Endpoint` | `Owns()` | Re-reconciles when the public identity Endpoint changes |
@@ -136,7 +138,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Secret` | `Watches()` | Maps Secret events to referencing ControlPlane CRs via the `ControlPlaneSecretNameIndexKey` field indexer (`secretToControlPlaneMapper`) |
 | `ClusterSecretStore` | `Watches()` | Per-ref fan-out via `storeToControlPlaneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind): a status change on a cluster-scoped store enqueues only the ControlPlanes whose effective `spec.secretStoreRef` resolves to it |
 | `SecretStore` | `Watches()` | The namespaced twin, scoped to the store's own namespace, so a ControlPlane pinned to a per-tenant `SecretStore` reacts to its backend health (`storeToControlPlaneMapper` for the namespaced kind) |
-| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `MariaDB` / `Memcached` / `ExternalSecret` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
+| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `Placement` / `MariaDB` / `Memcached` / `ExternalSecret` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
 
 The `Secret` watch uses `Watches()` with a `MapFunc` rather than `Owns()`
 because the admin-password Secret
@@ -219,6 +221,7 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `k8s.mariadb.com` | `mariadbs` | get, list, watch, create, update, patch, delete |
 | `memcached.c5c3.io` | `memcacheds` | get, list, watch, create, update, patch, delete |
 | `keystone.openstack.c5c3.io` | `keystones` | get, list, watch, create, update, patch, delete |
+| `placement.openstack.c5c3.io` | `placements` | get, list, watch, create, update, patch, delete |
 | `openstack.k-orc.cloud` | `applicationcredentials`, `services`, `endpoints` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
@@ -1206,6 +1209,117 @@ unowned, and the finalizer sweeps it by those labels.
 | projected Glance spec rejected (HTTP 422 Invalid) | False | `GlanceProjectionRejected` | returns the error; the projection violates a Glance CRD/webhook rule — reconcile the ControlPlane spec to a valid projection to recover |
 | Glance create/update fails | False | `GlanceError` | returns the error |
 | Glance child Ready | True | `GlanceReady` | — |
+
+### reconcilePlacement
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_placement.go`, `reconcile_placement_dbcredentials.go` |
+| Condition | `PlacementReady` |
+| Gate | `KeystoneReady == True` (Placement validates every token against the Keystone child) **and** the injected `placement` service account being Ready |
+| Projects / Owns | one `Placement` child named `{controlplane.Name}-placement` (`placementNameSuffix`) in `cp.PlacementNamespace()`; and, on a managed database only, the per-ControlPlane DB-credential objects in the Placement service namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `placement-db-creds`, an mTLS client Certificate `{controlplane.Name}-placement-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/placement-{placement-namespace}` (auth role `placement-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-placement-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/placement/{placement-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.placement` is set |
+| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `placement` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed; `infraRequeueAfter` = **15s** while the child is not Ready |
+
+`reconcilePlacement` runs after `reconcileServiceAccounts` (and after
+`reconcileGlance`, last in the pipeline) because it gates on the per-account
+readiness that stage computes into status in the same pass. It is optional:
+`spec.services.placement` unset means this ControlPlane manages no placement
+service, and the sub-reconciler reports `PlacementReady=True` /
+`PlacementNotManaged` so the aggregate is not blocked (staged adoption). A
+previously-projected child is **preserved** unless the ControlPlane opts in with
+`c5c3.io/allow-placement-deletion: "true"`; with the annotation set, the child,
+its DB-credential ExternalSecret, the Dynamic-mode generator objects, and the
+placement catalog K-ORC CRs are deleted. Each object is only removed when this
+ControlPlane still owns it, so a foreign object colliding on a name is left
+alone.
+
+The credential minter comes down either way. On the preserve branch the
+`VaultDynamicSecret`, its client Certificate, and the `placement-db-creds`
+ServiceAccount are torn down before the condition is written: a live generator
+keeps issuing a fresh MySQL user with all privileges on the `placement` schema at
+every refresh interval, for a service this ControlPlane has been told it no
+longer manages, behind a `PlacementReady=True` condition that surfaces none of
+it.
+
+When managed, the projection follows the same thin discipline as its Keystone,
+Horizon, and Glance siblings, reusing the ControlPlane's own specs so Placement
+points at the same backing services:
+
+- **Image:** repository defaults to `ghcr.io/c5c3/placement` with the tag derived
+  from `spec.openStackRelease`; `spec.services.placement.image` overrides the
+  whole image reference when set.
+- **Database:** a DeepCopy of the **effective** database
+  (`effectivePlacementDatabase`: Placement's
+  [dedicated](./controlplane-crd.md#dedicatedbackingservices) database when it
+  opted into one, the shared `spec.infrastructure.database` otherwise) with its
+  logical database name forced to `placement`, so its schema stays isolated from
+  Keystone's on a shared cluster. In managed mode (`clusterRef` set) the
+  `secretRef` is repointed at the operator-owned
+  `{controlplane.Name}-placement-db-credentials` Secret (key `password`), and the
+  projected `credentialsMode` is the **effective** mode: `Dynamic`
+  (engine-issued) by default on the managed shared database, drawn from the
+  engine role `placement-{placement-ns}` that `setup-database-tenant.sh`
+  provisions, flipped to `Static` by the shared-block opt-out or the per-service
+  `services.placement.databaseCredentialsMode` override, and always `Static` for
+  a dedicated placement database (fail-closed even when the stored mode says
+  otherwise). A brownfield database keeps the user-supplied `secretRef` and
+  `credentialsMode`.
+- **Cache:** a DeepCopy of the **effective** cache (`effectivePlacementCache`).
+- **Keystone endpoint:** `keystoneEndpoint` is derived top-down via
+  `placementKeystoneEndpoint(cp)`, **always** the cluster-local
+  `{controlplane.Name}-keystone` Service URL (the same URL K-ORC authenticates
+  against) and never the external `publicEndpoint` or gateway hostname, because
+  Placement validates tokens server-side and the pods have to reach it
+  in-cluster. `keystonePublicEndpoint` is a pass-through of the Keystone
+  service's own public endpoint (empty when Keystone is not externally exposed,
+  in which case the child falls back to the internal URL).
+- **Service user:** derived from the auto-injected `placement` service account,
+  its `username`, project, and user/project domains, with the password read from
+  the account's materialized consumer Secret
+  `{controlplane.Name}-service-account-placement-credentials`.
+- **ExtraConfig:** `spec.globalExtraConfig` merged with
+  `services.placement.extraConfig` (the per-service value winning key by key),
+  assigned unconditionally so clearing the ControlPlane block reverts the child
+  instead of pinning the last projected value.
+- **Gateway / Replicas / SecretStoreRef / Region:** `gateway` is a DeepCopy of
+  `spec.services.placement.gateway` (a nil source clears it, tearing the
+  HTTPRoute down); `replicas` defaults to `commonv1.DefaultReplicas`, overridden
+  by `spec.services.placement.replicas`; the resolved store selection and
+  `spec.region` are projected through. `spec.apiServer` is deliberately **not**
+  set, so the child-side uWSGI defaults stay authoritative.
+
+The DB-credential objects are ensured **before** the child, so the Secret it
+references exists when the placement operator resolves it. They are ensured for a
+managed database only: a brownfield one carries a user-supplied credential
+out-of-band, leaving nothing to project. In `Dynamic` mode the projection is held
+(`WaitingForPlacementDBCredential`) until the generator-backed ExternalSecret
+reports Ready **and** the Secret it targets carries an engine-issued username, so
+an existing child keeps its current mode rather than being handed a DSN for a
+login the engine never issued.
+
+The placement catalog entry, a `placement`-type K-ORC `Service` with an internal
+and a public `Endpoint`, is registered by
+[`reconcileCatalog`](#reconcilecatalog) rather than here; unsetting
+`spec.services.placement` with the deletion annotation set sweeps those CRs along
+with the child.
+
+A child placed outside the ControlPlane's namespace
+(`services.placement.namespace`) carries no owner reference: it is stamped with
+the ownership labels and applied unowned, and the finalizer sweeps it by those
+labels.
+
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| `spec.services.placement` unset | True | `PlacementNotManaged` | staged adoption; a previously-projected child is preserved unless `c5c3.io/allow-placement-deletion: "true"` is set, but its dynamic DB-credential generator, ServiceAccount, and client Certificate are torn down either way, so no credential minter outlives the service |
+| `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Placement CR is projected while Keystone is unready |
+| no `placement` service account declared | False | `ServiceAccountNotDeclared` | admission was bypassed (the defaulting webhook injects it); fails loud rather than projecting a Placement with no Keystone user |
+| `placement` service account not yet Ready | False | `WaitingForServiceAccount` | requeue 10s; deferred until its Keystone user and password are provisioned |
+| DB-credential ensure fails (Dynamic generator objects or Static ExternalSecret) | False | `PlacementDBCredentialError` | returns the error (managed database only) |
+| Dynamic DB credential not yet materialised | False | `WaitingForPlacementDBCredential` | requeue 10s; the message names the `database/mariadb/creds/placement-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant, or the non-engine-issued username it found in the target Secret |
+| Placement child not yet Ready | False | `WaitingForPlacement` | requeue 15s |
+| projected Placement spec rejected (HTTP 422 Invalid) | False | `PlacementProjectionRejected` | returns the error; the projection violates a Placement CRD/webhook rule, so reconcile the ControlPlane spec to a valid projection to recover |
+| Placement create/update fails | False | `PlacementError` | returns the error |
+| Placement child Ready | True | `PlacementReady` | — |
 
 ### reconcileKORC
 
@@ -2228,6 +2342,7 @@ The `condition_type` label is resolved from the package-private
 | `Infrastructure` | `InfrastructureReady` |
 | `DBCredentials` | `DBCredentialsReady` |
 | `Keystone` | `KeystoneReady` |
+| `Placement` | `PlacementReady` |
 | `KORC` | `KORCReady` |
 | `AdminCredential` | `AdminCredentialReady` |
 | `AdminPassword` | `AdminPasswordReady` |
@@ -2345,6 +2460,8 @@ operators/c5c3/
     │   ├── reconcile_horizon.go                reconcileHorizon projection (dashboard + WebSSO/MultiDomain)
     │   ├── reconcile_glance.go                 reconcileGlance projection (Glance + GlanceBackend
     │   │                                        children, DB-credential ExternalSecret)
+    │   ├── reconcile_placement.go              reconcilePlacement projection (Placement child)
+    │   ├── reconcile_placement_dbcredentials.go Placement DB-credential names, OpenBao paths, mode
     │   ├── reconcile_korc.go                   reconcileKORC (AC mint/re-mint, drift detection)
     │   ├── reconcile_admincredential.go        reconcileAdminCredential (assemble + push + re-push
     │   │                                        nudges, semantic clouds.yaml gate)
@@ -2371,6 +2488,8 @@ operators/c5c3/
     │   ├── reconcile_keystone_test.go          Keystone projection tests
     │   ├── reconcile_horizon_test.go           Horizon projection tests
     │   ├── reconcile_glance_test.go            Glance projection tests
+    │   ├── reconcile_placement_test.go         Placement projection tests
+    │   ├── reconcile_placement_dbcredentials_test.go Placement DB-credential tests
     │   ├── reconcile_korc_test.go              K-ORC mint/re-mint tests
     │   ├── reconcile_admincredential_test.go   AdminCredential tests
     │   ├── reconcile_catalog_test.go           Catalog (managed-mode) tests

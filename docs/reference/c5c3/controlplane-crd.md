@@ -311,14 +311,16 @@ that adopts a pre-existing MariaDB/Memcached leaves its topology untouched.
 ## ServicesSpec
 
 Declares the per-service configuration of the control plane. Today
-Keystone, the Horizon dashboard, and the Glance image service are modeled;
-additional services are added as fields as the operator grows.
+Keystone, the Horizon dashboard, the Glance image service, and the Placement
+service are modeled; additional services are added as fields as the operator
+grows.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `keystone` | [`*ServiceKeystoneSpec`](#servicekeystonespec) | No | `nil` | Configuration for the Keystone service projected by the reconciler. Optional: when unset, this ControlPlane manages no Keystone service (staged adoption, or an externally-managed Keystone) and `KeystoneReady` is reported as not-managed. Flipping it from set to `nil` **preserves** the previously-projected Keystone child by default — deleting it would cascade to the child's irreplaceable `<name>-credential-keys` Secret (and its OpenBao backup), so an accidental unset is fail-safe. Set the `c5c3.io/allow-keystone-deletion: "true"` annotation on the ControlPlane to opt in to deleting the child on unset. |
 | `horizon` | [`*ServiceHorizonSpec`](#servicehorizonspec) | No | `nil` | Configuration for the Horizon dashboard projected by the reconciler. Optional: when unset, this ControlPlane manages no dashboard and `HorizonReady` is reported as not-managed (`HorizonNotManaged`), so the aggregate `Ready` is not blocked. **Forbidden in External mode** — the dashboard needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Horizon child by default; set the `c5c3.io/allow-horizon-deletion: "true"` annotation to opt in to deleting the child on unset. |
 | `glance` | [`*ServiceGlanceSpec`](#serviceglancespec) | No | `nil` | Configuration for the Glance image service projected by the reconciler. Optional: when unset, this ControlPlane manages no image service and `GlanceReady` is reported as not-managed (`GlanceNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** — Glance validates every token against the ControlPlane's Keystone child. **Forbidden in External mode** — Glance needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Glance child by default; set the `c5c3.io/allow-glance-deletion: "true"` annotation to opt in to deleting the child (and its `GlanceBackend` children and DB-credential ExternalSecret) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation — preserving a running service does not imply preserving a credential minter. |
+| `placement` | [`*ServicePlacementSpec`](#serviceplacementspec) | No | `nil` | Configuration for the Placement service projected by the reconciler. Optional: when unset, this ControlPlane manages no placement service and `PlacementReady` is reported as not-managed (`PlacementNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Placement validates every token against the ControlPlane's Keystone child) and on the injected `placement` service account being Ready. **Forbidden in External mode**: Placement needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Placement child by default; set the `c5c3.io/allow-placement-deletion: "true"` annotation to opt in to deleting the child (with its DB-credential ExternalSecret and the placement catalog CRs) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation, so no credential minter outlives the service. |
 
 ---
 
@@ -476,6 +478,61 @@ select.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `name` | `string` | Yes | — | The referenced Secret's name. `MinLength` 1, `MaxLength` 253. |
+
+---
+
+## ServicePlacementSpec
+
+A **curated local subset** of the knobs the ControlPlane exposes for the
+Placement service, mirroring `ServiceKeystoneSpec` and `ServiceGlanceSpec`. The
+reconciler (L2) **projects** it into a
+[`Placement`](../placement/placement-crd.md) CR; the database, cache, and
+Keystone endpoint of that child are **derived** from the ControlPlane
+(`infrastructure.*` and the Keystone child's naming convention) rather than set
+here. `spec.apiServer` on the child is deliberately **not** projected, so the
+placement operator's own uWSGI defaults stay authoritative.
+
+The subset is smaller than the Glance one because Placement keeps its whole state
+in its database and serves it over HTTP: there are no image stores to curate and
+no scratch space to bound, so nothing here corresponds to the `backends`,
+`importFiltering`, `staging`, or `imageCache` blocks of
+[`ServiceGlanceSpec`](#serviceglancespec).
+
+Forbidden entirely when `services.keystone.mode` is `External` (Placement needs
+its own External-mode design), so, like `ServiceGlanceSpec`, none of its fields
+carry per-field External-mode forbid-rules.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `replicas` | `*int32` | No | `nil` | Overrides the number of Placement API replicas. When `nil` the reconciler applies the Placement operator's own default (3). Minimum 1. |
+| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Placement container image. When `nil` the reconciler derives `ghcr.io/c5c3/placement:{spec.openStackRelease}`. |
+| `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Placement API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the Placement API is reachable in-cluster only. When a `gateway` is set its `hostname` must be non-empty, enforced at admission by the validating webhook (see [Validation Rules](#validation-rules)). |
+| `publicEndpoint` | `string` | No | `""` | Externally routable Placement endpoint URL (e.g. `https://placement.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public placement catalog Endpoint, the URL every compute service resolves to place its allocations; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the Placement API is served at the root and clients append the API path to the catalog URL), and be at most 512 characters; a single trailing slash is tolerated. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every allocation call carries the caller's scoped Keystone token to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
+| `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Placement on one mode while another service stays on the other. Empty (the default) **inherits** the shared mode, and is deliberately **not** materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when Placement declares a [dedicated](#dedicatedbackingservices) database (dedicated is `Static`-only; set `dedicatedBackingServices.database.credentialsMode` instead, see [Credential modes](#credential-modes)) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. |
+| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the Placement service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the Placement child's `spec.extraConfig`. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block; the always-rejected owned keys are `[keystone_authtoken] password` and `auth_strategy` in both of its spellings (`[api]`, which Placement reads, and the deprecated `[DEFAULT]` alias oslo.config still honors). See [ExtraConfig admission checks](#extraconfig-admission-checks). |
+| `dedicatedBackingServices` | [`*PlacementDedicatedBackingServicesSpec`](#dedicatedbackingservices) | No | `nil` (shares the ControlPlane-wide instances) | Opts Placement **out** of the shared `spec.infrastructure` instances and gives it a `database` and/or `cache` of its own. Placement consumes both classes, so it can take either or both dedicated; a declared block must name at least one. |
+| `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the Placement service, and the database, cache, secret store, and credential material that follow it, in a namespace of its own. Create-only: the validating webhook freezes the block after creation. See [Service Namespaces](#service-namespaces). |
+
+Setting `services.placement` makes the defaulting webhook inject a `placement`
+entry into [`spec.korc.serviceAccounts`](#serviceaccountspec): project
+`service-placement` with `create: true`, role `service`, and a
+`targetNamespace` naming the namespace Placement is placed in whenever that
+differs from the ControlPlane's. That account is the Keystone user the projected
+child authenticates as, so the validating webhook also requires it. A CR that
+reaches admission without the entry is rejected instead of projecting a Placement
+with no service user.
+
+Setting `services.placement` bounds the ControlPlane's own name too. The
+projected child is `{controlplane.Name}-placement`, and the placement operator
+names its API Service after the CR without truncating, so the composed name has
+to fit the 63-byte cap Kubernetes puts on a Service name: the ControlPlane name
+may be at most **53 characters** while `services.placement` is set. The Placement
+CRD declares no `metadata.name` bound of its own, so without this rule an
+overlong name reaches the placement operator, which then fails to apply the
+Service on every reconcile: `PlacementReady` parks on `WaitingForPlacement`, and
+`metadata.name` is immutable, so the only recovery is recreating the whole
+control plane. The rule runs on create and on the update that newly enables
+Placement.
 
 ---
 
