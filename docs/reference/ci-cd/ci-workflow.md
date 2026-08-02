@@ -1413,9 +1413,10 @@ to `CODECOV_TOKEN`. This prevents CI from failing due to upload issues on forks.
 
 The `flag_management` section in `.codecov.yml` links CI-uploaded flags to coverage tracking
 rules. Flags follow the `[unit|integration]-<target>` naming convention, matching the CI
-matrix targets (`common`, `keystone`, `c5c3`). Each flag has `carryforward: true`, which
-ensures that when only a subset of flags is uploaded (e.g., only one operator changed), the
-missing flags carry forward their last-known coverage instead of reducing the total.
+matrix targets (`common`, `keystone`, `c5c3`, `horizon`, `glance`, `placement`). Each flag
+has `carryforward: true`, which ensures that when only a subset of flags is uploaded (e.g.,
+only one operator changed), the missing flags carry forward their last-known coverage
+instead of reducing the total.
 
 Defined flags:
 
@@ -1424,10 +1425,14 @@ Defined flags:
 | `unit-common` | `internal/common/` | `test` job, `common` matrix leg |
 | `unit-keystone` | `operators/keystone/` | `test` job, `keystone` matrix leg |
 | `unit-c5c3` | `operators/c5c3/` | `test` job, `c5c3` matrix leg |
+| `unit-horizon` | `operators/horizon/` | `test` job, `horizon` matrix leg |
+| `unit-glance` | `operators/glance/` | `test` job, `glance` matrix leg |
 | `unit-placement` | `operators/placement/` | `test` job, `placement` matrix leg |
 | `integration-common` | `internal/common/` | `test-integration` job, `common` matrix leg |
 | `integration-keystone` | `operators/keystone/` | `test-integration` job, `keystone` matrix leg |
 | `integration-c5c3` | `operators/c5c3/` | `test-integration` job, `c5c3` matrix leg |
+| `integration-horizon` | `operators/horizon/` | `test-integration` job, `horizon` matrix leg |
+| `integration-glance` | `operators/glance/` | `test-integration` job, `glance` matrix leg |
 | `integration-placement` | `operators/placement/` | `test-integration` job, `placement` matrix leg |
 
 ### Component Thresholds
