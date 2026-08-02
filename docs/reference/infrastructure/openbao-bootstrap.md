@@ -111,6 +111,7 @@ deploy/
 │       ├── push-ceph-keys.hcl          PushSecret policy for Ceph keys
 │       ├── ci-cd-provisioner.hcl       CI/CD pipeline provisioning policy
 │       ├── keystone-db-dynamic.hcl     Per-tenant dynamic DB credential read policy
+│       ├── glance-db-dynamic.hcl       Per-tenant dynamic Glance DB credential read policy
 │       ├── placement-db-dynamic.hcl    Per-tenant dynamic Placement DB credential read policy
 │       └── pki-issuer.hcl             cert-manager PKI issuing policy
 ├── eso/
