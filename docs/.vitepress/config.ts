@@ -77,6 +77,16 @@ export default defineConfig({
               { text: 'Migrate Glance DB to Dynamic Credentials', link: '/guides/glance/migrate-glance-db-to-dynamic-credentials' },
             ],
           },
+          {
+            text: 'Placement',
+            collapsed: true,
+            items: [
+              { text: 'Enable Placement Operator Metrics', link: '/guides/placement/enable-placement-operator-metrics' },
+              { text: 'Enable Placement Operator NetworkPolicy', link: '/guides/placement/enable-placement-operator-networkpolicy' },
+              { text: 'Migrate Placement DB to Dynamic Credentials', link: '/guides/placement/migrate-placement-db-to-dynamic-credentials' },
+              { text: 'Standalone Placement', link: '/guides/placement/standalone-placement' },
+            ],
+          },
         ],
       },
       {
@@ -119,6 +129,17 @@ export default defineConfig({
               { text: 'Controller Events', link: '/reference/glance/glance-events' },
               { text: 'Reconciler Architecture', link: '/reference/glance/glance-reconciler' },
               { text: 'Upgrade Flow', link: '/reference/glance/glance-upgrade-flow' },
+            ],
+          },
+          {
+            text: 'Placement',
+            link: '/reference/placement/',
+            collapsed: true,
+            items: [
+              { text: 'Overview', link: '/reference/placement/' },
+              { text: 'CRD', link: '/reference/placement/placement-crd' },
+              { text: 'Controller Events', link: '/reference/placement/placement-events' },
+              { text: 'Reconciler Architecture', link: '/reference/placement/placement-reconciler' },
             ],
           },
           {
