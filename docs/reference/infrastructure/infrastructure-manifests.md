@@ -38,6 +38,7 @@ deploy/
     │   ├── openbao.yaml                  OpenBao HA Raft cluster
     │   ├── keystone-operator.yaml        Keystone Operator (from c5c3-charts)
     │   ├── glance-operator.yaml          Glance Operator (from c5c3-charts)
+    │   ├── placement-operator.yaml       Placement Operator (from c5c3-charts)
     │   ├── k-orc.yaml                    K-ORC OpenStack Resource Controller
     │   ├── c5c3-operator.yaml            c5c3-operator ControlPlane orchestrator (from c5c3-charts)
     │   └── chaos-mesh.yaml               Chaos Mesh (kind-only addon — see "Kind Overlay Demo Addons")
@@ -195,6 +196,7 @@ mariadb-operator-crds     (no dependencies)
 ├── openbao               dependsOn: cert-manager
 ├── keystone-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets
 ├── glance-operator       dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator
+├── placement-operator    dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator
 └── c5c3-operator         dependsOn: keystone-operator, external-secrets, mariadb-operator, memcached-operator
 ```
 
@@ -566,6 +568,7 @@ Each HelmRelease `sourceRef.name` must match a HelmRepository `metadata.name` in
 | `garage-operator` | `garage-operator` | `sources/garage-operator.yaml` |
 | `keystone-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `glance-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
+| `placement-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `c5c3-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 
 `k-orc` is not in this table: it is a Flux `Kustomization` whose `sourceRef` is the
@@ -884,17 +887,17 @@ The base kustomization uses `apiVersion: kustomize.config.k8s.io/v1beta1` and in
 namespaces, the FluxInstance CR, HelmRepository sources, and HelmRelease operators.
 These resources do not depend on any custom CRDs.
 
-**Resource count:** 22 files producing 33 Kubernetes resources.
+**Resource count:** 24 files producing 37 Kubernetes resources.
 
 | Category | Count | Resources |
 | --- | --- | --- |
-| Namespace | 12 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, garage-system, keystone-system, glance-system, openstack, openbao-system, c5c3-system, orc-system |
+| Namespace | 14 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, garage-system, keystone-system, horizon-system, glance-system, placement-system, openstack, openbao-system, c5c3-system, orc-system |
 | FluxInstance | 1 | flux (drives the flux-operator) |
 | HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community, garage-operator |
 | GitRepository | 1 | k-orc |
-| HelmRelease | 11 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, garage-operator, openbao, keystone-operator, glance-operator, c5c3-operator |
+| HelmRelease | 13 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, garage-operator, openbao, keystone-operator, horizon-operator, glance-operator, placement-operator, c5c3-operator |
 | Kustomization | 1 | k-orc |
-| **Total** | **33** | |
+| **Total** | **37** | |
 
 The `chaos-mesh` HelmRepository, HelmRelease, and Namespace ship in the
 kind-only opt-in overlay at `deploy/kind/chaos-mesh/` and are not

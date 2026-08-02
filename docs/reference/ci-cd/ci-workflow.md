@@ -312,7 +312,7 @@ Timeout: 8 minutes.
 
 ### test
 
-Runs unit tests with a matrix strategy over `[common, keystone, c5c3]`.
+Runs unit tests with a matrix strategy over `[common, keystone, c5c3, horizon, glance, placement]`.
 Each matrix leg tests a single target — either `internal/common` or one operator — producing
 a single coverage profile uploaded to Codecov under a dedicated flag.
 
@@ -329,7 +329,7 @@ a single coverage profile uploaded to Codecov under a dedicated flag.
 strategy:
   fail-fast: false
   matrix:
-    target: [common, keystone, c5c3]
+    target: [common, keystone, c5c3, horizon, glance, placement]
 ```
 
 The `common` leg runs `make test-common` (producing `cover-unit-common.out`). Operator legs
@@ -349,7 +349,7 @@ coverage data is not lost.
 
 ### test-integration
 
-Runs envtest-based integration tests with a matrix strategy over `[common, keystone, c5c3]`
+Runs envtest-based integration tests with a matrix strategy over `[common, keystone, c5c3, horizon, glance, placement]`
 and coverage uploaded to Codecov. Requires `setup-envtest` to
 download kubebuilder assets (kube-apiserver, etcd) for the test API server.
 
@@ -367,7 +367,7 @@ download kubebuilder assets (kube-apiserver, etcd) for the test API server.
 strategy:
   fail-fast: false
   matrix:
-    target: [common, keystone, c5c3]
+    target: [common, keystone, c5c3, horizon, glance, placement]
 ```
 
 The `common` leg runs `make test-integration-common` (producing
@@ -1424,9 +1424,11 @@ Defined flags:
 | `unit-common` | `internal/common/` | `test` job, `common` matrix leg |
 | `unit-keystone` | `operators/keystone/` | `test` job, `keystone` matrix leg |
 | `unit-c5c3` | `operators/c5c3/` | `test` job, `c5c3` matrix leg |
+| `unit-placement` | `operators/placement/` | `test` job, `placement` matrix leg |
 | `integration-common` | `internal/common/` | `test-integration` job, `common` matrix leg |
 | `integration-keystone` | `operators/keystone/` | `test-integration` job, `keystone` matrix leg |
 | `integration-c5c3` | `operators/c5c3/` | `test-integration` job, `c5c3` matrix leg |
+| `integration-placement` | `operators/placement/` | `test-integration` job, `placement` matrix leg |
 
 ### Component Thresholds
 

@@ -365,6 +365,12 @@ grants. The markers therefore add `core/namespaces` with
 │  ║  │ reconcileGlance          │  Project the Glance image-service child CR       ║ │
 │  ║  │  (gate: KS + glance SA)  │  Sets: GlanceReady (not-managed when unset)      ║ │
 │  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
+│  ║           │                                                                    ║ │
+│  ║           ▼                                                                    ║ │
+│  ║  ┌──────────────────────────┐                                                  ║ │
+│  ║  │ reconcilePlacement       │  Project the Placement child CR                  ║ │
+│  ║  │ (gate: KS + placement SA)│  Sets: PlacementReady (not-managed when unset)   ║ │
+│  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
 │  ║                                                                                ║ │
 │  ║  member requeues → ShortestRequeue · member errors → errors.Join               ║ │
 │  ╚═══════════╤════════════════════════════════════════════════════════════════════╝ │
@@ -396,7 +402,7 @@ in `instrumenter.Instrument` (see
 error counter are emitted under a stable `sub_reconciler` label.
 
 **Phase 2 — the tail group.** Horizon, KORC, AdminCredential, Catalog,
-ServiceAccounts and Glance are the six named members of one
+ServiceAccounts, Glance and Placement are the seven named members of one
 `commonreconcile.RunSequentialGroup`, embedded as the pipeline's final **bare
 (unnamed)** `Step`. The group members self-instrument through
 `instrumenter.Instrument` — following the keystone self-instrumenting-group
@@ -406,7 +412,9 @@ pass and never short-circuits: each member self-gates on the conditions it needs
 (Horizon on `KeystoneReady`; KORC until the admin-password Secret is readable;
 AdminCredential on `KORCReady`; Catalog and ServiceAccounts on
 `AdminCredentialReady`; Glance on `KeystoneReady` and the glance service
-account's per-account readiness), so running all of them each pass is safe.
+account's per-account readiness; Placement on `KeystoneReady` and the placement
+service account's per-account readiness), so running all of them each pass is
+safe.
 
 ```go
 pipeline := []commonreconcile.Step{
@@ -422,7 +430,8 @@ pipeline := []commonreconcile.Step{
         return commonreconcile.RunSequentialGroup(ctx, instrumenter.Instrument,
             []commonreconcile.Step{
                 {Name: "Horizon", Fn: /* ... */},
-                // KORC, AdminCredential, Catalog, ServiceAccounts, Glance
+                // KORC, AdminCredential, Catalog, ServiceAccounts, Glance,
+                // Placement
             })
     }},
 }
@@ -439,8 +448,8 @@ This guarantees:
 2. **Group (phase 2) — every member runs each pass.** No member's non-zero
    result or error prevents a later member from running, so a still-converging
    or failing Horizon no longer parks KORC, the
-   AdminCredential/Catalog/ServiceAccounts identity bootstrap, or Glance. Each
-   member's condition therefore always persists.
+   AdminCredential/Catalog/ServiceAccounts identity bootstrap, Glance, or
+   Placement. Each member's condition therefore always persists.
 3. **Group result aggregation.** When no member errors, the group result is the
    **shortest** member requeue (`commonreconcile.ShortestRequeue`) and the error
    is nil. When one or more members error, the group returns `ctrl.Result{}`
@@ -1637,7 +1646,7 @@ OpenBao:
 | File | `reconcile_catalog.go` (Managed), `reconcile_catalog_external.go` (External) |
 | Condition | `CatalogReady` |
 | Gate | `AdminCredentialReady == True`, **and** every catalog child reports `Available` |
-| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`), plus — when `spec.services.glance` is set — an image `Service` (`{controlplane.Name}-image-service`) with an internal **and** a public `Endpoint` (`{controlplane.Name}-image-endpoint-internal` / `{controlplane.Name}-image-endpoint-public`). External mode: the same identity `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, plus one managed `Service`/`Endpoint` set per declared entry (`{controlplane.Name}-catalog-{type}[-{interface}]`). All in `childNamespace(cp)` |
+| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`), plus — when `spec.services.glance` is set — an image `Service` (`{controlplane.Name}-image-service`) with an internal **and** a public `Endpoint` (`{controlplane.Name}-image-endpoint-internal` / `{controlplane.Name}-image-endpoint-public`), and the same pair of interfaces for a placement `Service` (`{controlplane.Name}-placement-service`, Endpoints `{controlplane.Name}-placement-endpoint-internal` / `{controlplane.Name}-placement-endpoint-public`) when `spec.services.placement` is set. External mode: the same identity `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, plus one managed `Service`/`Endpoint` set per declared entry (`{controlplane.Name}-catalog-{type}[-{interface}]`). All in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while gated, while a child is not yet Available, or on a terminal K-ORC failure |
 
 `reconcileCatalog` drives `CatalogReady`. Everything up to and including the
@@ -1670,6 +1679,18 @@ naming convention rather than identity's legacy CR names. Every child is project
 idempotently via Server-Side Apply under the shared field manager
 (`forge-operator`).
 
+`spec.services.placement` adds a further row on the same terms: a `placement`-type
+`Service` named `placement`, again with both Endpoints. The `internal` one
+advertises the in-cluster Placement API Service URL
+`http://{controlplane.Name}-placement.<placement-namespace>.svc:8778`
+(`placementEndpointURL`); the `public` one resolves through the same preference
+order as Glance's (`placementCatalogURL`: an explicit
+`services.placement.publicEndpoint`, then `https://{gateway.hostname}`, then that
+in-cluster URL). The Placement API is served at the root too, so there is no path
+suffix, and the CR names follow the generic convention:
+`{controlplane.Name}-placement-service` and
+`{controlplane.Name}-placement-endpoint-{interface}`.
+
 Registering the child CRs only instructs K-ORC to create the catalog entries — it
 does not mean they exist in Keystone — so `CatalogReady` is gated on both children
 reporting `Available` for their current generation (`korcAvailableUpToDate`, which
@@ -1687,7 +1708,7 @@ surfaced as the distinct `CatalogFailed` reason instead of a false-positive Read
 | Endpoint create/update fails | False | `EndpointError` | returns the error |
 | a catalog entry's Service/Endpoint reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s (Service before its Endpoints, so the root stuck dependency surfaces) |
 | a catalog entry's Service/Endpoint registered but not yet Available | False | `WaitingForCatalog` | requeue 10s |
-| every catalog entry registered and Available | True | `CatalogRegistered` | message counts the registered entries — identity always, plus the image (Glance) entry when `spec.services.glance` is set |
+| every catalog entry registered and Available | True | `CatalogRegistered` | message counts the registered entries — identity always, plus the image (Glance) entry when `spec.services.glance` is set and the placement entry when `spec.services.placement` is set |
 
 #### External mode — import-first
 

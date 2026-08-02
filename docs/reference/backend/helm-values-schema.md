@@ -7,7 +7,8 @@ quadrant: backend
 
 Reference documentation for the `values.schema.json` JSON Schema that validates
 the Helm chart values of every forge operator — **keystone-operator** and
-**c5c3-operator**, plus the glance-operator and horizon-operator siblings. Helm
+**c5c3-operator**, plus the glance-operator, horizon-operator, and
+placement-operator siblings. Helm
 enforces this schema automatically during `helm install`, `helm upgrade`,
 `helm lint`, and `helm template`.
 
@@ -28,6 +29,7 @@ Each chart ships its own generated copy of the schema:
 | c5c3-operator | `operators/c5c3/helm/c5c3-operator/values.schema.json` |
 | glance-operator | `operators/glance/helm/glance-operator/values.schema.json` |
 | horizon-operator | `operators/horizon/helm/horizon-operator/values.schema.json` |
+| placement-operator | `operators/placement/helm/placement-operator/values.schema.json` |
 
 ::: warning Generated file
 This schema is generated from the shared source in
@@ -59,11 +61,11 @@ to a chart version, so it is not repeated here.
 Every chart exposes the same core value keys. Three keys are conditional on what
 a chart actually ships, so they are present only where they apply:
 
-| Key | keystone-operator | c5c3-operator | glance-operator | horizon-operator |
-| --- | :---: | :---: | :---: | :---: |
-| `image`, `replicas`, `resources`, `rbac`, `leaderElection`, `webhook`, `metrics`, `logging`, `monitoring`, `serviceAccount`, `controller`, `nameOverride`, `fullnameOverride` | Yes | Yes | Yes | Yes |
-| `networkPolicy` | Yes | — | Yes | Yes |
-| `federation` | Yes | — | — | — |
+| Key | keystone-operator | c5c3-operator | glance-operator | horizon-operator | placement-operator |
+| --- | :---: | :---: | :---: | :---: | :---: |
+| `image`, `replicas`, `resources`, `rbac`, `leaderElection`, `webhook`, `metrics`, `logging`, `monitoring`, `serviceAccount`, `controller`, `nameOverride`, `fullnameOverride` | Yes | Yes | Yes | Yes | Yes |
+| `networkPolicy` | Yes | — | Yes | Yes | Yes |
+| `federation` | Yes | — | — | — | — |
 
 - `networkPolicy` is emitted for every chart that ships a
   `templates/networkpolicy.yaml` (all service operators); the c5c3-operator does
@@ -171,9 +173,9 @@ See [How to enable the Keystone operator metrics endpoint](../../guides/keystone
 
 The `networkPolicy` block (default-off operator pod hardening with fail-closed
 render guards) is validated by the schema on every chart that ships a
-`templates/networkpolicy.yaml` — keystone-operator, glance-operator, and
-horizon-operator. The c5c3-operator does not ship the template, so the key is
-rejected there. Its fields are documented in
+`templates/networkpolicy.yaml` — keystone-operator, glance-operator,
+horizon-operator, and placement-operator. The c5c3-operator does not ship the
+template, so the key is rejected there. Its fields are documented in
 [Keystone Operator NetworkPolicy](../keystone/keystone-operator-networkpolicy.md).
 
 ### federation
@@ -290,8 +292,8 @@ Schema validation is tested with helm-unittest in
 
 The schema above is shared; the shipped **defaults** differ only where a chart
 does not carry a key. The table below is the practical values summary for the
-two operators this reference centres on. The glance-operator and horizon-operator
-follow the keystone-operator defaults — including `controller.maxConcurrentReconciles: 2`
+two operators this reference centres on. The glance-operator, horizon-operator, and
+placement-operator follow the keystone-operator defaults — including `controller.maxConcurrentReconciles: 2`
 — and differ only by their own `image.repository`, their `webhook.enabled`
 description, and by carrying no `federation` key (see the
 [applicability matrix](#per-operator-applicability)).

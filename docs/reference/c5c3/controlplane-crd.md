@@ -9,7 +9,7 @@ Reference documentation for the c5c3-operator ControlPlane Custom Resource
 Definition. The ControlPlane CRD is the top-level aggregate that
 projects an OpenStack control plane: it owns the shared infrastructure
 references (database, cache), a curated set of per-service specs (today:
-Keystone, Horizon, and Glance), and the K-ORC (OpenStack Resource Controller)
+Keystone, Horizon, Glance, and Placement), and the K-ORC (OpenStack Resource Controller)
 integration that
 bootstraps and rotates the admin application credential. The reconciler (L2)
 materializes this aggregate into the individual per-service CRs — see the
@@ -203,8 +203,8 @@ status:
 | `infrastructure` | [`*InfrastructureSpec`](#infrastructurespec) | Conditional | managed-mode defaulted | Shared backing services (database, cache) the control plane's services connect to. **Required** when `services.keystone.mode` is `Managed` (or unset, or `services.keystone` unset) — the defaulting webhook materializes a managed-mode `database`/`cache` when omitted, and the validating webhook rejects a non-External ControlPlane without it. **Forbidden** in **External** mode (an External ControlPlane provisions no backing services; phase 2 relaxes this to optional). The mode-conditional required/forbidden rule is webhook-enforced because CEL cannot span `spec.infrastructure` and `spec.services.keystone`; see [InfrastructureSpec](#infrastructurespec) and [Validation Rules](#validation-rules). |
 | `services` | [`ServicesSpec`](#servicesspec) | Yes | — | Per-service configuration projected into the individual service CRs. |
 | `globalPolicyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
-| `globalExtraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections (`section` → `key` → `value`) applied to every INI-configured service the control plane declares (Keystone and Glance today). Merged **key by key** with each service's own `extraConfig`: sections are unioned, the per-service value wins per key, and a global key with no per-service counterpart stays effective, before the merged result is projected onto that service's child. **Never** applies to Horizon, which renders flat Django settings rather than INI. Legal but **inert** in External mode, the same posture as `globalPolicyOverrides`. Admission validates the merged result per declared INI service against that service's option catalog and operator-owned-key registry — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
-| `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` (defaults to the shared cluster store `openbao-cluster-store`) | Selects the External Secrets store the control plane routes its ExternalSecrets and backup PushSecrets through, and is **projected onto the Keystone and Horizon children** — so operators normally set the store here rather than on the individual service CRs. **Mutable:** switching stores is supported — the operator moves the fernet/credential key material in place, never re-creating it. When omitted, defaults to the shared cluster-scoped `ClusterSecretStore` named `openbao-cluster-store`, so existing deployments are unchanged; set `{kind: SecretStore, name: <store>}` to reach OpenBao as a per-tenant identity resolved in the ControlPlane's own namespace. See [SecretStoreRefSpec](#secretstorerefspec). |
+| `globalExtraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections (`section` → `key` → `value`) applied to every INI-configured service the control plane declares (Keystone, Glance, and Placement today). Merged **key by key** with each service's own `extraConfig`: sections are unioned, the per-service value wins per key, and a global key with no per-service counterpart stays effective, before the merged result is projected onto that service's child. **Never** applies to Horizon, which renders flat Django settings rather than INI. Legal but **inert** in External mode, the same posture as `globalPolicyOverrides`. Admission validates the merged result per declared INI service against that service's option catalog and operator-owned-key registry — see [ExtraConfig admission checks](#extraconfig-admission-checks). |
+| `secretStoreRef` | [`*commonv1.SecretStoreRefSpec`](#secretstorerefspec) | No | `nil` (defaults to the shared cluster store `openbao-cluster-store`) | Selects the External Secrets store the control plane routes its ExternalSecrets and backup PushSecrets through, and is **projected onto the Keystone, Horizon, Glance, and Placement children** — so operators normally set the store here rather than on the individual service CRs. **Mutable:** switching stores is supported — the operator moves the fernet/credential key material in place, never re-creating it. When omitted, defaults to the shared cluster-scoped `ClusterSecretStore` named `openbao-cluster-store`, so existing deployments are unchanged; set `{kind: SecretStore, name: <store>}` to reach OpenBao as a per-tenant identity resolved in the ControlPlane's own namespace. See [SecretStoreRefSpec](#secretstorerefspec). |
 | `korc` | [`KORCSpec`](#korcspec) | No | defaulted | K-ORC integration used to bootstrap and rotate the admin application credential and any declared bootstrap resources. Optional — the defaulting webhook fills `adminCredential` (cloudCredentialsRef, passwordSecretRef, applicationCredential restriction/rotation) from well-known defaults when omitted. |
 
 ### SecretStoreRefSpec
@@ -222,9 +222,9 @@ named `openbao-cluster-store`, so existing deployments are unchanged. Set
 always resolved in the ControlPlane's own namespace (there is no namespace
 field). The field is **mutable** — switching stores is supported, and the
 operator moves the fernet/credential key material in place rather than
-re-creating it. Its value is **projected onto the Keystone and Horizon
-children**, so operators normally set it on the ControlPlane rather than on the
-individual service CRs.
+re-creating it. Its value is **projected onto the Keystone, Horizon, Glance, and
+Placement children**, so operators normally set it on the ControlPlane rather
+than on the individual service CRs.
 
 ---
 
@@ -630,11 +630,13 @@ same path as a shared instance:
 
 On the managed **shared** database, `credentialsMode: Dynamic` — short-lived,
 engine-issued credentials from the OpenBao database engine — is the **default**
-for **both** Keystone and Glance. Glance is no longer forced onto `Static`: it
-now carries its own glance-scoped engine role, `glance-db-dynamic` policy, and
-`glance-db` auth role (`deploy/openbao/bootstrap/setup-database-tenant.sh` /
-`setup-auth.sh` / `deploy/openbao/policies/glance-db-dynamic.hcl`), exactly the
-way Keystone does.
+for every database consumer: Keystone, Glance, and Placement. Glance is no
+longer forced onto `Static`. It carries a glance-scoped engine role, the
+`glance-db-dynamic` policy, and the `glance-db` auth role; Placement carries the
+same three under its own names (`placement-{namespace}`, `placement-db-dynamic`,
+`placement-db`). Both sets come from
+`deploy/openbao/bootstrap/setup-database-tenant.sh` and `setup-auth.sh`, with
+the policies under `deploy/openbao/policies/`, the way Keystone's do.
 
 The mode is resolved from ControlPlane-wide to per-service:
 
@@ -1284,7 +1286,7 @@ truth.
 | `DatabaseSpec` | `infrastructure.database` | [Keystone CRD → DatabaseSpec](../keystone/keystone-crd.md#databasespec) |
 | `CacheSpec` | `infrastructure.cache` | [Keystone CRD → CacheSpec](../keystone/keystone-crd.md#cachespec) |
 | `SecretRefSpec` | `korc.adminCredential.passwordSecretRef` | [Keystone CRD → SecretRefSpec](../keystone/keystone-crd.md#secretrefspec) |
-| `SecretStoreRefSpec` | `secretStoreRef` (projected onto the Keystone and Horizon children) | [Keystone CRD → SecretStoreRefSpec](../keystone/keystone-crd.md#secretstorerefspec) |
+| `SecretStoreRefSpec` | `secretStoreRef` (projected onto the Keystone, Horizon, Glance, and Placement children) | [Keystone CRD → SecretStoreRefSpec](../keystone/keystone-crd.md#secretstorerefspec) |
 | `PolicySpec` | `globalPolicyOverrides`, `services.keystone.policyOverrides` | [Keystone CRD → PolicySpec](../keystone/keystone-crd.md#policyspec) |
 
 > **Note on `DatabaseSpec.tls` / `CacheSpec`:** the `commonv1` shapes carry the
