@@ -54,7 +54,13 @@ hdr()  { echo; echo "=== $* ==="; }
 # the check would otherwise flag. Example for a thin-profile service that
 # ships no NetworkPolicy template of its own:
 #   horizon:P3:networkpolicy_test.yaml
+#
+# placement:P10:maintenance-cronjob — `placement-manage` ships no purge,
+# archive, or cleanup subcommand, and the placement schema does not
+# soft-delete, so there is no backlog of dead rows to reclaim and the operator
+# projects no maintenance CronJob. Recorded in docs/reference/placement/index.md.
 ALLOWED_DEVIATIONS="
+placement:P10:maintenance-cronjob
 "
 
 allowed() { # allowed <svc> <check> <item>
