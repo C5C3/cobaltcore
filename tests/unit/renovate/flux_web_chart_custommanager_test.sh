@@ -129,8 +129,8 @@ test_package_rules_cover_flux_web() {
   echo "Test: packageRules disable major bumps and automerge minor/patch for deploy/kind/base/flux-web.yaml"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (5 checks skipped)"
-    SKIP=$((SKIP + 5))
+    echo "  SKIP: jq not installed (6 checks skipped)"
+    SKIP=$((SKIP + 6))
     return
   fi
 
@@ -164,7 +164,7 @@ test_package_rules_cover_flux_web() {
 
   if [ -z "$minor_rule" ]; then
     echo "  FAIL: no packageRule scoping minor/patch flux-operator updates to deploy/kind/base/flux-web.yaml"
-    FAIL=$((FAIL + 3))
+    FAIL=$((FAIL + 4))
     return
   fi
 
@@ -177,6 +177,14 @@ test_package_rules_cover_flux_web() {
   assert_eq "minor/patch flux-operator rule for flux-web.yaml waits minimumReleaseAge=3 days" \
     "3 days" \
     "$(jq -r '.minimumReleaseAge' <<<"$minor_rule")"
+
+  # The lockstep tests/unit/deploy/kind_base_flux_web_test.sh asserts is
+  # only reachable because both pins move in one PR. Without the group,
+  # a minor bump opens two PRs and each one alone fails that derived-range
+  # assertion, so neither can go green.
+  assert_eq "minor/patch flux-operator rule groups flux-web.yaml and deploy-infra.sh into one PR" \
+    "flux-operator" \
+    "$(jq -r '.groupName' <<<"$minor_rule")"
 }
 
 # --- Run ---
