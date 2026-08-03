@@ -173,7 +173,8 @@
       "depNameTemplate": "controlplaneio-fluxcd/flux-operator",
       "datasourceTemplate": "github-releases",
       "packageNameTemplate": "controlplaneio-fluxcd/flux-operator",
-      "versioningTemplate": "semver"
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "npm"
     },
     {
       "customType": "regex",

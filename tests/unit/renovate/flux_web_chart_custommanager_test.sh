@@ -52,8 +52,8 @@ test_custom_manager_regex_captures_chart_pin() {
   echo "Test: customManagers regex matches chart version input in deploy/kind/base/flux-web.yaml"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (5 checks skipped)"
-    SKIP=$((SKIP + 5))
+    echo "  SKIP: jq not installed (6 checks skipped)"
+    SKIP=$((SKIP + 6))
     return
   fi
 
@@ -68,7 +68,7 @@ test_custom_manager_regex_captures_chart_pin() {
 
   if [ -z "$entry" ]; then
     echo "  FAIL: no customManagers entry with managerFilePatterns targeting deploy/kind/base/flux-web.yaml"
-    FAIL=$((FAIL + 5))
+    FAIL=$((FAIL + 6))
     return
   fi
 
@@ -80,9 +80,13 @@ test_custom_manager_regex_captures_chart_pin() {
     "github-releases" \
     "$(jq -r '.datasourceTemplate' <<<"$entry")"
 
-  assert_eq "customManagers.versioningTemplate is semver" \
-    "semver" \
+  assert_eq "customManagers.versioningTemplate is npm" \
+    "npm" \
     "$(jq -r '.versioningTemplate' <<<"$entry")"
+
+  assert_eq "customManagers.extractVersionTemplate strips the release v prefix" \
+    '^v(?<version>.+)$' \
+    "$(jq -r '.extractVersionTemplate' <<<"$entry")"
 
   # Extract the chart `version` input from flux-web.yaml verbatim, then
   # confirm the matchStrings regex captures the same value via Perl (which
