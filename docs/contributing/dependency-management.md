@@ -52,10 +52,16 @@ The custom managers cover:
 - **kind deploy components** — `flux-web.yaml`, `envoy-gateway.yaml`, and `headlamp.yaml` under `deploy/kind/base/`.
 - **K-ORC Flux source** — the `ref.tag` of the K-ORC `GitRepository` in `deploy/flux-system/sources/k-orc.yaml` (github-releases). This closes a drift gap: without it the Flux-applied K-ORC CRDs could fall behind the Renovate-tracked `k-orc/openstack-resource-controller` Go module the operator compiles against.
 - **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`.
+- **`renovate-config-validator` pin** — the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
 
 Major updates are **disabled** for all custom-regex managers — these touch deploy-time
 CRDs, the OpenStack release matrix, and build tooling where a major bump always needs
-human-driven coordination.
+human-driven coordination. The `renovate-config-validator` pin is the one exception: it
+has to follow the major the hosted bot runs, or the validator silently stops checking
+`renovate.json` against the schema that bot enforces. That pin is never automerged
+either — the validator run is the only check that exercises the new release, so a bump
+must not be able to approve itself into a `test-shell` job that runs on `main` and on
+`v*` tag pushes.
 
 Separately, the native `nix` manager keeps the development flake fresh: it maintains
 `flake.lock` (the pinned `nixpkgs` revision) via lock-file maintenance, opening a grouped

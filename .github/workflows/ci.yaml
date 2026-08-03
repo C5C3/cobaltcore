@@ -321,7 +321,6 @@ jobs:
   # of skipping their kustomize-build checks. The renovate/ tests pull
   # renovate-config-validator via npx, taking ~30s on a cold runner.
   test-shell:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:

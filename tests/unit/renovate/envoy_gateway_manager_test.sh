@@ -9,9 +9,17 @@
 #   - a paired packageRule set that disables majors and automerges minor/patch
 #     with minimumReleaseAge=3 days, groupName=envoy-gateway
 #
-# Prefers `renovate-config-validator` when available (via npx); otherwise
-# performs a regex-only validation using Perl (which speaks the same PCRE
-# syntax Renovate uses).
+# The matchStrings regex is replayed with Perl, which speaks the same
+# PCRE-style syntax Renovate uses.
+#
+# Schema validation of renovate.json via `renovate-config-validator`
+# (which transitively pulls Renovate via npx) is intentionally NOT run
+# from this per-feature test to keep local / CI loops fast: the validator
+# fetches the Renovate package on every invocation and taking that hit
+# once per feature touching renovate.json multiplies the cost linearly.
+# The validation is centralised in the sibling
+# tests/unit/renovate/fluxoperator_custommanager_test.sh, which runs
+# against the same renovate.json file.
 #
 # Usage: bash tests/unit/renovate/envoy_gateway_manager_test.sh
 
@@ -30,32 +38,11 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
 CHART_FILE="$PROJECT_ROOT/deploy/kind/base/envoy-gateway.yaml"
 
-# --- Test 1: renovate.json passes renovate-config-validator when available
-#             ---
-test_renovate_config_valid() {
-  echo "Test: renovate.json validates via renovate-config-validator"
+# NOTE renovate-config-validator schema check is run by the sibling
+# tests/unit/renovate/fluxoperator_custommanager_test.sh over the same
+# renovate.json — see the header of this file.
 
-  if ! command -v npx >/dev/null 2>&1; then
-    echo "  SKIP: npx not installed (1 check skipped)"
-    SKIP=$((SKIP + 1))
-    return
-  fi
-
-  local output status=0
-  output="$(cd "$PROJECT_ROOT" && npx --yes --package renovate@latest -- \
-    renovate-config-validator renovate.json 2>&1)" || status=$?
-
-  if [ "$status" -ne 0 ]; then
-    echo "  FAIL: renovate-config-validator rejected renovate.json"
-    echo "$output" | head -40
-    FAIL=$((FAIL + 1))
-    return
-  fi
-  echo "  PASS: renovate-config-validator accepted renovate.json"
-  PASS=$((PASS + 1))
-}
-
-# --- Test 2: the envoy-gateway customManager entry captures the chart
+# --- Test 1: the envoy-gateway customManager entry captures the chart
 #             version lower bound from deploy/kind/base/envoy-gateway.yaml
 #             ---
 test_custom_manager_regex_captures_version() {
@@ -131,7 +118,7 @@ test_custom_manager_regex_captures_version() {
     "$expected_value" "$captured"
 }
 
-# --- Test 3: the ENVOY_GATEWAY_VERSION customManager entry captures the CRD
+# --- Test 2: the ENVOY_GATEWAY_VERSION customManager entry captures the CRD
 #             asset pin from hack/deploy-infra.sh
 #             ---
 test_deploy_infra_pin_manager_captures_version() {
@@ -193,7 +180,7 @@ test_deploy_infra_pin_manager_captures_version() {
     "$expected_value" "$captured"
 }
 
-# --- Test 4: packageRules for envoy-gateway disable majors and automerge
+# --- Test 3: packageRules for envoy-gateway disable majors and automerge
 #             minor/patch with minimumReleaseAge=3 days, groupName=envoy-gateway
 #             ---
 test_package_rules_disable_majors_and_group() {
@@ -261,7 +248,6 @@ test_package_rules_disable_majors_and_group() {
 }
 
 # --- Run ---
-test_renovate_config_valid
 test_custom_manager_regex_captures_version
 test_deploy_infra_pin_manager_captures_version
 test_package_rules_disable_majors_and_group
