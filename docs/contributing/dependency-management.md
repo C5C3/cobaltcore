@@ -38,6 +38,13 @@ native managers cannot see. Auto-merge (patch/minor, 3-day cooldown) is wired **
 onto the custom-regex managers; native-manager PRs always wait for a human merge
 (`config:recommended` does not auto-merge, and no top-level `automerge` is set).
 
+Renovate performs the merge itself: `platformAutomerge` is set to `false` at the top
+level, so an automergeable PR never goes to GitHub's own auto-merge. Renovate merges
+it once every check on the PR head has succeeded, because `ignoreTests` is left unset.
+Note for operators: `main` currently defines no required status checks, and GitHub's
+auto-merge waits for required checks alone. Tightening branch protection is a
+repository-settings change and cannot be made from files in this repository.
+
 The custom managers cover:
 
 - **OpenStack release refs** — git tags in `releases/*/source-refs.yaml` and PyPI pins in `releases/*/test-refs.yaml`.
@@ -352,9 +359,9 @@ modules.
 
 ### Required checks before merge
 
-Renovate auto-merge fires only after the full required-checks set is
-green. The set is enforced by branch protection on `main`; the most
-load-bearing for dependency PRs are:
+Renovate performs the merge itself (`platformAutomerge` is disabled) and
+waits until every check on the PR has succeeded. The checks below are the
+ones to watch when merging a dependency PR by hand:
 
 - `lint`, `format-check`, `govulncheck`
 - `test` (all three modules)
@@ -363,9 +370,9 @@ load-bearing for dependency PRs are:
 - `helm-validate` (when chart files change)
 - `build-e2e-images` (when image or workflow files change)
 
-For a manual merge, wait for the same checks even if Renovate's
-auto-merge would have skipped any of them due to path filters — the
-filters are an optimization, not an exemption.
+Renovate's gate covers every check that runs on the PR. A path filter
+can keep a job from starting at all; a manual merge holds itself to the
+same bar and treats such a job as unverified, not as passed.
 
 ---
 
