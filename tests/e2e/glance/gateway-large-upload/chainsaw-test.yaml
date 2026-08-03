@@ -54,6 +54,38 @@
 # web-download contract is proven by the tempest suite, which runs against a
 # real Keystone.
 #
+# ── DECISION: every request carries its own timeout ──────────────────
+# Nothing here that talks to the cluster runs unbounded, and the reason is a
+# property of the transport rather than of any one leg. The sibling glance
+# suites churn the shared Gateway under chainsaw's `parallel: 4`; an Envoy pod
+# replaced mid-flight drops the established connection's conntrack entry rather
+# than resetting it, and every leg here talks to a route that renders
+# `timeouts.request: "4h"`. An unbounded curl therefore blocks on recv() until
+# the kernel gives up on TCP retransmits — roughly a quarter of an hour, longer
+# than any step cap below. One such hang consumes a whole step inside its first
+# attempt, so the enclosing retry loop never reaches attempt 2 and none of the
+# diagnostics that name the cause ever print: the run reports chainsaw's
+# generic script-timeout and nothing else.
+#
+# `kubectl exec` has the same hole and no client-side flag that closes it:
+# `--request-timeout` governs the initial POST, not the SPDY stream it upgrades
+# to, and the kubelet only reaps an idle stream after
+# `--streaming-connection-idle-timeout` (4h by default). Wrapping a bare exec in
+# a retry loop only survives a failing dial — a dial that succeeds and then
+# stalls still eats the step, which is the likelier outcome on a node that has
+# just absorbed two 512 MiB writes. coreutils `timeout` is the only bound
+# available, so every exec below runs under it.
+#
+# The bounds are tiered by what the request does — 5s for a healthcheck GET, 10s
+# for a metadata call, 30s for an exec, 300s for a throttled 512 MiB body that
+# is expected to complete (~64s at 8 MiB/s, so the bound only fires on a hang),
+# and 120s for leg 3's, which is expected to die mid-flight instead.
+#
+# A bound only buys a diagnostic if the step holding it outlives every bound
+# ahead of it, so each step's `timeout:` is derived from the SUM of the bounds
+# it contains — each request counted at its bound, never at its expected
+# duration — and each step carries that arithmetic next to the loops it covers.
+#
 # ── Scope gating — runtime presence checks ──────────────────────────
 # The preflight probes for `GatewayClass/envoy`, `Gateway/openstack-gw`, and the
 # `glances.glance.openstack.c5c3.io` CRD. If any is absent it exits 0 with a
@@ -69,9 +101,12 @@ metadata:
   name: glance-gateway-large-upload
 spec:
   # Two 512 MiB transfers at 8 MiB/s plus a rollout and an eviction window make
-  # the envelope generous. The inner `kubectl wait` and poll bounds stay below
-  # the per-step caps so a failure surfaces as a targeted diagnostic rather than
-  # chainsaw's generic script-timeout kill.
+  # the envelope generous. Every step below overrides the `exec` default with a
+  # cap that exceeds the SUM of the bounds inside it, so a failure surfaces as a
+  # targeted diagnostic rather than chainsaw's generic script-timeout kill.
+  # Those caps are worst-case ceilings, not budgets: a passing run spends a
+  # fraction of them, and `execution.failFast` means at most one step ever
+  # approaches its own.
   timeouts:
     assert: 8m
     exec: 10m
@@ -211,9 +246,13 @@ spec:
         selector: app.kubernetes.io/name=gateway-helm
         tail: 200
   # ── Step 3 (leg 1): a throttled 512 MiB PUT through the Gateway ───
+  # 14m covers the sum of this step's bounds, each request counted at its bound:
+  # the healthcheck loop at 15 x (5s + 2s) = 105s, the 512 MiB dd (~15s), the
+  # 10s create, the 300s PUT and the 315s status loop below — 745s, leaving
+  # ~95s of slack.
   - try:
     - script:
-        timeout: 10m
+        timeout: 14m
         shell: bash
         content: |
           set -euo pipefail
@@ -241,7 +280,8 @@ spec:
           # sibling gateway-quick-start-smoke suite uses.
           CODE=""
           for attempt in $(seq 1 15); do
-            CODE="$(curl -sk -o /dev/null -w '%{http_code}' "$BASE/healthcheck" || true)"
+            CODE="$(curl -sk --connect-timeout 5 --max-time 5 \
+              -o /dev/null -w '%{http_code}' "$BASE/healthcheck" || true)"
             [ "$CODE" = "200" ] && break
             echo "healthcheck attempt $attempt: HTTP $CODE (retrying in 2s)"
             sleep 2
@@ -250,7 +290,8 @@ spec:
 
           dd if=/dev/urandom of="$TMP/upload.img" bs=1M count=512 status=none
 
-          CODE="$(curl -sk -o "$TMP/create.json" -w '%{http_code}' \
+          CODE="$(curl -sk --connect-timeout 5 --max-time 10 \
+            -o "$TMP/create.json" -w '%{http_code}' \
             -X POST "$BASE/v2/images" -H 'Content-Type: application/json' \
             -d '{"name":"upload-leg","disk_format":"raw","container_format":"bare"}' || true)"
           if [ "$CODE" != "201" ]; then
@@ -269,7 +310,8 @@ spec:
           # 504 from Envoy, so the elapsed-time assertion below is part of the
           # contract, not decoration: a fast transfer would prove nothing.
           START="$(date +%s)"
-          CODE="$(curl -sk -o "$TMP/put.body" -w '%{http_code}' \
+          CODE="$(curl -sk --connect-timeout 5 --max-time 300 \
+            -o "$TMP/put.body" -w '%{http_code}' \
             -X PUT --limit-rate 8M -T "$TMP/upload.img" \
             -H 'Content-Type: application/octet-stream' \
             "$BASE/v2/images/$ID/file" || true)"
@@ -289,11 +331,21 @@ spec:
             exit 1
           fi
 
-          # 60 polls x 5s = 5m: the S3 store still has to absorb 512 MiB after
-          # the last byte arrives.
+          # 5m of polling: the S3 store still has to absorb 512 MiB after the
+          # last byte arrives. The 5m is a deadline rather than an iteration
+          # count, because with a per-read timeout an iteration costs 5s or 15s
+          # depending on whether the read stalls, and `60 x 5s` would then be a
+          # bound this loop cannot honour — 60 stalled reads would run 15m, past
+          # this step's cap, and the diagnostic below would never print. The
+          # deadline is tested at the top of the loop, so an iteration entered
+          # one second before it still runs to completion: the honest bound is
+          # 300s + one stalled read + one sleep = 315s, which is the figure the
+          # step cap above is derived from.
           STATUS=""
-          for _ in $(seq 1 60); do
-            curl -sk -o "$TMP/img.json" "$BASE/v2/images/$ID" || true
+          DEADLINE=$(( $(date +%s) + 300 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            curl -sk --connect-timeout 5 --max-time 10 \
+              -o "$TMP/img.json" "$BASE/v2/images/$ID" || true
             STATUS="$(jfield "$TMP/img.json" status)"
             [ "$STATUS" = "active" ] && break
             sleep 5
@@ -334,9 +386,11 @@ spec:
         selector: app.kubernetes.io/name=gateway-helm
         tail: 100
   # ── Step 4 (leg 2): a staged upload lands on the bounded volume ───
+  # 18m covers the sum of this step's bounds — the arithmetic sits next to the
+  # status-read loop below, where the loops it counts are.
   - try:
     - script:
-        timeout: 10m
+        timeout: 18m
         shell: bash
         content: |
           set -euo pipefail
@@ -355,11 +409,25 @@ spec:
               "$1" "$2" 2>/dev/null || true
           }
 
-          CODE="$(curl -sk -o "$TMP/create.json" -w '%{http_code}' \
-            -X POST "$BASE/v2/images" -H 'Content-Type: application/json' \
-            -d '{"name":"stage-leg","disk_format":"raw","container_format":"bare"}' || true)"
+          # This leg's first request, and unlike leg 1's create it has no
+          # healthcheck ahead of it to prove the path answers within 5s — it is
+          # issued straight after leg 1 pushed 512 MiB through the same
+          # glance-api pod into the S3 store. Bounding it without retrying it
+          # would turn one slow answer into a hard failure that
+          # `execution.failFast` escalates into the whole run, so retry it the
+          # way leg 3's create already is.
+          CODE=""
+          for attempt in $(seq 1 5); do
+            CODE="$(curl -sk --connect-timeout 5 --max-time 10 \
+              -o "$TMP/create.json" -w '%{http_code}' \
+              -X POST "$BASE/v2/images" -H 'Content-Type: application/json' \
+              -d '{"name":"stage-leg","disk_format":"raw","container_format":"bare"}' || true)"
+            [ "$CODE" = "201" ] && break
+            echo "create attempt $attempt: HTTP ${CODE:-000} (retrying in 4s)"
+            sleep 4
+          done
           if [ "$CODE" != "201" ]; then
-            echo "ERROR: POST /v2/images returned HTTP $CODE (expected 201)"
+            echo "ERROR: POST /v2/images returned HTTP ${CODE:-000} (expected 201)"
             head -c 2048 "$TMP/create.json" 2>/dev/null || true
             echo
             exit 1
@@ -375,7 +443,8 @@ spec:
           # the DOCUMENTED ASSUMPTION there).
           dd if=/dev/urandom of="$TMP/upload.img" bs=1M count=512 status=none
           START="$(date +%s)"
-          CODE="$(curl -sk -o "$TMP/stage.body" -w '%{http_code}' \
+          CODE="$(curl -sk --connect-timeout 5 --max-time 300 \
+            -o "$TMP/stage.body" -w '%{http_code}' \
             -X PUT --limit-rate 8M -T "$TMP/upload.img" \
             -H 'Content-Type: application/octet-stream' \
             "$BASE/v2/images/$ID/stage" || true)"
@@ -401,17 +470,44 @@ spec:
           # basic-deployment suites pin the volume and its mount.
           POD="$(kubectl get pods -n openstack \
             -l app.kubernetes.io/instance=glance-upload -o name | head -1)"
-          STAGED="$(kubectl exec -n openstack "${POD#pod/}" -- \
+          STAGED="$(timeout 30 kubectl exec -n openstack "${POD#pod/}" -- \
             stat -c %s "/var/lib/glance/staging/$ID" 2>/dev/null || true)"
           if [ "$STAGED" != "536870912" ]; then
             echo "ERROR: staged file is '${STAGED:-<absent>}' bytes, want 536870912"
-            kubectl exec -n openstack "${POD#pod/}" -- ls -l /var/lib/glance/staging/ 2>&1 || true
+            timeout 30 kubectl exec -n openstack "${POD#pod/}" -- ls -l /var/lib/glance/staging/ 2>&1 || true
             exit 1
           fi
-          curl -sk -o "$TMP/img.json" "$BASE/v2/images/$ID" || true
-          STATUS="$(jfield "$TMP/img.json" status)"
-          if [ "$STATUS" != "uploading" ]; then
-            echo "ERROR: image $ID is '${STATUS:-<unknown>}', want uploading"
+          # A single status read tolerates no transport failure: sibling suites
+          # churn the shared Gateway during their teardown, and one dropped
+          # response failed this leg in CI with no evidence of its cause. Poll
+          # like leg 3 does (15 x 4s): the 204 from PUT /stage has already set
+          # the status to `uploading`, so this waits out dropped requests, not
+          # a slow store.
+          #
+          # This step runs two such loops in sequence, and both plus the staging
+          # read below have to fit inside one cap — otherwise the delete
+          # diagnostic never prints, which is the exact failure these retries
+          # exist to remove. So the step's 18m is the sum of every bound in it,
+          # each request counted at its bound rather than at what it costs when
+          # it answers: the create loop at 5 x (10s + 4s) = 70s, the 512 MiB dd
+          # (~15s), the 300s PUT, the 30s stat exec, this loop and the delete
+          # loop below at 15 x (10s + 4s) = 210s each, and the staging read's
+          # 5 x (30s + 4s) = 170s — 1005s, leaving ~75s of slack.
+          CODE=""
+          STATUS=""
+          for attempt in $(seq 1 15); do
+            CODE="$(curl -sk --connect-timeout 5 --max-time 10 \
+              -o "$TMP/img.json" -w '%{http_code}' "$BASE/v2/images/$ID" || true)"
+            STATUS="$(jfield "$TMP/img.json" status)"
+            [ "$CODE" = "200" ] && [ "$STATUS" = "uploading" ] && break
+            echo "status read attempt $attempt: HTTP ${CODE:-000} (retrying in 4s)"
+            sleep 4
+          done
+          if [ "$CODE" != "200" ] || [ "$STATUS" != "uploading" ]; then
+            echo "ERROR: image $ID is '${STATUS:-<unknown>}', want uploading (last HTTP ${CODE:-000})"
+            echo "--- last image body (first 2KB) ---"
+            head -c 2048 "$TMP/img.json" 2>/dev/null || true
+            echo
             exit 1
           fi
           echo "OK: 512 MiB staged through the Gateway in ${ELAPSED}s, $STAGED bytes on the staging volume"
@@ -419,15 +515,92 @@ spec:
           # Deleting the image must release the staged bytes — and leg 3 needs
           # the volume empty again, so its 64Mi bound is breached by its own
           # upload alone.
-          CODE="$(curl -sk -o /dev/null -w '%{http_code}' -X DELETE "$BASE/v2/images/$ID" || true)"
-          if [ "$CODE" != "204" ]; then
-            echo "ERROR: DELETE /v2/images/$ID returned HTTP $CODE (expected 204)"
+          # One request tolerates no transport failure either — retry like the
+          # status read above, same per-request bound and the same shared
+          # budget, capturing the body as evidence. A 404 is success only from
+          # the second attempt on: it means an earlier attempt deleted the image
+          # server-side and only its response was dropped in transit. On the
+          # first attempt a 404 is a genuinely wrong state — this leg read the
+          # image one request earlier.
+          CODE=""
+          DELETED=""
+          for attempt in $(seq 1 15); do
+            CODE="$(curl -sk --connect-timeout 5 --max-time 10 \
+              -o "$TMP/delete.body" -w '%{http_code}' \
+              -X DELETE "$BASE/v2/images/$ID" || true)"
+            if [ "$CODE" = "204" ]; then
+              DELETED="yes"
+              break
+            fi
+            if [ "$CODE" = "404" ] && [ "$attempt" -gt 1 ]; then
+              echo "OK: DELETE attempt $attempt answered 404 — an earlier attempt already"
+              echo "    deleted the image and its response was dropped in transit"
+              DELETED="yes"
+              break
+            fi
+            if [ "$CODE" = "404" ]; then
+              echo "ERROR: DELETE /v2/images/$ID returned HTTP 404 on the first attempt —"
+              echo "       the image this leg read one request earlier is missing"
+              echo "--- response body (first 2KB) ---"
+              head -c 2048 "$TMP/delete.body" 2>/dev/null || true
+              echo
+              exit 1
+            fi
+            echo "delete attempt $attempt: HTTP ${CODE:-000} (retrying in 4s)"
+            sleep 4
+          done
+          if [ -z "$DELETED" ]; then
+            echo "ERROR: DELETE /v2/images/$ID never answered 204 (last HTTP ${CODE:-000})"
+            echo "--- last response body (first 2KB) ---"
+            head -c 2048 "$TMP/delete.body" 2>/dev/null || true
+            echo
             exit 1
           fi
-          if kubectl exec -n openstack "${POD#pod/}" -- test -e "/var/lib/glance/staging/$ID" 2>/dev/null; then
-            echo "ERROR: the staged file survived the image delete"
+          # Read the volume back for real rather than branching on the exec's
+          # exit status: a `test -e` that returns non-zero because the pod was
+          # replaced, or because the API server refused the exec, is
+          # indistinguishable from the file being gone — and this probe is the
+          # only backstop for the 404 heuristic above, which concludes "already
+          # deleted" from a response the transport may have shaped. A stale
+          # $POD is an error, not a pass: re-resolving it would land on a fresh
+          # pod whose staging emptyDir is empty for reasons that have nothing
+          # to do with the delete.
+          #
+          # Retried for the same reason the two requests above are: `kubectl
+          # exec` opens a SPDY stream the API server proxies to the kubelet, and
+          # on a node that has just absorbed two 512 MiB writes under
+          # `parallel: 4` that upgrade fails transiently ("error dialing
+          # backend", "unable to upgrade connection"). Making the probe fatal
+          # without retrying it would trade a silent pass for a flake that
+          # `execution.failFast` escalates into the whole run. The retry alone
+          # would not be enough — it only survives a failing dial, and a dial
+          # that succeeds and then stalls holds the stream until the kubelet's
+          # 4h idle timeout — so each attempt runs under `timeout` as well (see
+          # the DECISION on per-request bounds at the top).
+          LEFT=""
+          READ_OK=""
+          for attempt in $(seq 1 5); do
+            if LEFT="$(timeout 30 kubectl exec -n openstack "${POD#pod/}" -- \
+                ls /var/lib/glance/staging/ 2>&1)"; then
+              READ_OK="yes"
+              break
+            fi
+            echo "staging read attempt $attempt failed (retrying in 4s)"
+            sleep 4
+          done
+          if [ -z "$READ_OK" ]; then
+            echo "ERROR: could not read the staging volume after the delete, so"
+            echo "       'the staged bytes were released' cannot be concluded"
+            echo "$LEFT"
             exit 1
           fi
+          case "$LEFT" in
+            *"$ID"*)
+              echo "ERROR: the staged file survived the image delete"
+              echo "$LEFT"
+              exit 1
+              ;;
+          esac
           echo "OK: image delete released the staged bytes"
     catch:
     - script:
@@ -445,9 +618,17 @@ spec:
           echo "=== events (last 30) ==="
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 5 (leg 3): the staging bound contains a runaway upload ───
+  # 29m covers the sum of this step's bounds, each request counted at its bound:
+  # the projection loop at 30 x 5s = 150s, the 2m rollout wait, the healthcheck
+  # loop at 15 x (5s + 2s) = 105s, the 512 MiB dd (~15s), three overflow
+  # attempts at (10s create + 120s PUT + 30s du exec + 5s sleep) = 495s, the
+  # eviction poll at 30 x 10s = 300s, the 2m Available wait, and the closing
+  # status loop at 10 x (3 x 10s + 4s) = 340s — 1645s, leaving ~95s of slack.
+  # The status loop reads up to three image records per round, so its ceiling
+  # grew with the count; its wall-clock patience grew with it (340s, was 210s).
   - try:
     - script:
-        timeout: 10m
+        timeout: 29m
         shell: bash
         content: |
           set -euo pipefail
@@ -494,7 +675,8 @@ spec:
           # calling the API (Envoy's xDS push trails pod readiness).
           CODE=""
           for attempt in $(seq 1 15); do
-            CODE="$(curl -sk -o /dev/null -w '%{http_code}' "$BASE/healthcheck" || true)"
+            CODE="$(curl -sk --connect-timeout 5 --max-time 5 \
+              -o /dev/null -w '%{http_code}' "$BASE/healthcheck" || true)"
             [ "$CODE" = "200" ] && break
             echo "healthcheck attempt $attempt: HTTP $CODE (retrying in 2s)"
             sleep 2
@@ -518,58 +700,92 @@ spec:
           # (seen in CI). The fallbacks still catch the window where the
           # 8 MiB/s throttle has breached 64Mi (about eight seconds in)
           # but kubelet's ~10 s housekeeping tick has not yet evicted.
+          #
+          # That expectation is also why this PUT is bounded tighter than legs
+          # 1 and 2's: running to completion costs ~64s at the client's 8 MiB/s
+          # throttle and this one is not expected to get that far, so 120s still
+          # only fires on a hang — while three attempts at the other legs' 300s
+          # would push this step's cap past the CI job's own budget.
           dd if=/dev/urandom of="$TMP/upload.img" bs=1M count=512 status=none
+
+          # The three cluster probes, run after every attempt — after one whose
+          # create failed just as much as after one whose PUT ran. A create that
+          # fails IS a symptom of the breach rather than evidence against it:
+          # the pod kubelet is busy evicting is the one that would have answered
+          # it, so skipping the probes on that path makes the loop blindest at
+          # the exact moment the answer is sitting in the cluster (seen in CI —
+          # the pod was Evicted 22s before the loop reported "never breached").
           BREACHED=""
-          ID=""
+          probe_breach() {
+            local n="$1" evicted pod staged
+            evicted="$(kubectl get pods -n openstack \
+              -l app.kubernetes.io/instance=glance-upload \
+              -o 'jsonpath={range .items[?(@.status.reason=="Evicted")]}{.metadata.name}{"\n"}{end}' \
+              2>/dev/null | head -1 || true)"
+            if [ -n "$evicted" ]; then
+              echo "OK: pod $evicted is already Evicted — the 64Mi bound is breached"
+              BREACHED="yes"
+              return
+            fi
+            pod="$(kubectl get pods -n openstack \
+              -l app.kubernetes.io/instance=glance-upload \
+              --field-selector=status.phase=Running -o name 2>/dev/null | head -1)"
+            if [ -z "$pod" ]; then
+              echo "OK: no Running glance-api pod — the eviction is already in flight"
+              BREACHED="yes"
+              return
+            fi
+            staged="$(timeout 30 kubectl exec -n openstack "${pod#pod/}" -- \
+              du -sb /var/lib/glance/staging 2>/dev/null | cut -f1 || true)"
+            case "$staged" in *[!0-9]*|"") staged=0;; esac
+            if [ "$staged" -gt 67108864 ]; then
+              echo "OK: the staging volume holds $staged bytes — the 64Mi bound is breached"
+              BREACHED="yes"
+              return
+            fi
+            echo "attempt $n: staging holds only $staged bytes — no breach"
+            echo "         visible yet; retrying in 5s"
+          }
+
+          IDS=""
           for attempt in $(seq 1 3); do
-            CODE="$(curl -sk -o "$TMP/create.json" -w '%{http_code}' \
+            CODE="$(curl -sk --connect-timeout 5 --max-time 10 \
+              -o "$TMP/create.json" -w '%{http_code}' \
               -X POST "$BASE/v2/images" -H 'Content-Type: application/json' \
               -d '{"name":"overflow-leg","disk_format":"raw","container_format":"bare"}' || true)"
             if [ "$CODE" != "201" ]; then
-              echo "attempt $attempt: POST /v2/images returned HTTP $CODE — retrying in 5s"
+              echo "attempt $attempt: POST /v2/images returned HTTP $CODE"
+              probe_breach "$attempt"
+              [ -n "$BREACHED" ] && break
               sleep 5
               continue
             fi
             ID="$(jfield "$TMP/create.json" id)"
             [ -n "$ID" ] || { echo "ERROR: image create response carries no id"; cat "$TMP/create.json"; exit 1; }
-            CODE="$(curl -sk -o "$TMP/stage.body" -w '%{http_code}' \
+            IDS="${IDS:+$IDS }$ID"
+            CODE="$(curl -sk --connect-timeout 5 --max-time 120 \
+              -o "$TMP/stage.body" -w '%{http_code}' \
               -X PUT --limit-rate 8M -T "$TMP/upload.img" \
               -H 'Content-Type: application/octet-stream' \
               "$BASE/v2/images/$ID/stage" || true)"
             echo "attempt $attempt: overflow PUT /stage ended with HTTP '${CODE:-000}'"
-            EVICTED_NOW="$(kubectl get pods -n openstack \
-              -l app.kubernetes.io/instance=glance-upload \
-              -o 'jsonpath={range .items[?(@.status.reason=="Evicted")]}{.metadata.name}{"\n"}{end}' \
-              2>/dev/null | head -1 || true)"
-            if [ -n "$EVICTED_NOW" ]; then
-              echo "OK: pod $EVICTED_NOW is already Evicted — the 64Mi bound is breached"
-              BREACHED="yes"
-              break
-            fi
-            POD="$(kubectl get pods -n openstack \
-              -l app.kubernetes.io/instance=glance-upload \
-              --field-selector=status.phase=Running -o name 2>/dev/null | head -1)"
-            if [ -z "$POD" ]; then
-              echo "OK: no Running glance-api pod — the eviction is already in flight"
-              BREACHED="yes"
-              break
-            fi
-            STAGED="$(kubectl exec -n openstack "${POD#pod/}" -- \
-              du -sb /var/lib/glance/staging 2>/dev/null | cut -f1 || true)"
-            case "$STAGED" in *[!0-9]*|"") STAGED=0;; esac
-            if [ "$STAGED" -gt 67108864 ]; then
-              echo "OK: the staging volume holds $STAGED bytes — the 64Mi bound is breached"
-              BREACHED="yes"
-              break
-            fi
-            echo "attempt $attempt: staging holds only $STAGED bytes — the transfer died"
-            echo "         before the volume filled; retrying in 5s"
+            probe_breach "$attempt"
+            [ -n "$BREACHED" ] && break
             sleep 5
           done
-          if [ -z "$BREACHED" ]; then
-            echo "ERROR: three staged uploads never breached the 64Mi bound, so the"
-            echo "       eviction contract cannot be asserted."
+          if [ -z "$IDS" ]; then
+            echo "ERROR: no image was created in three attempts, so nothing was ever"
+            echo "       staged and the eviction contract cannot be asserted."
             exit 1
+          fi
+          if [ -z "$BREACHED" ]; then
+            # Not a failure on its own, and it must not short-circuit the poll
+            # below. kubelet evicts on a ~10s housekeeping tick, so the breach
+            # can land after the last attempt's probe; the eviction poll is the
+            # contract's real assertion and fails loudly by itself when nothing
+            # was contained.
+            echo "NOTE: no probe caught the breach in flight — deferring to the"
+            echo "      eviction poll below."
           fi
 
           # 30 polls x 10s = 5m.
@@ -597,32 +813,49 @@ spec:
             deployment/glance-upload -n openstack --timeout=2m
           echo "OK: the glance-api Deployment is Available again"
 
-          # The killed import must not have produced a usable image. The record
-          # has to be read back for real: an unreachable API also yields an
-          # empty status, and concluding "not active" from that would turn a
-          # dead endpoint into a green run. Retry until the API answers.
-          STATUS=""
-          for _ in $(seq 1 15); do
-            curl -sk -o "$TMP/img.json" "$BASE/v2/images/$ID" || true
-            STATUS="$(jfield "$TMP/img.json" status)"
-            [ -n "$STATUS" ] && break
+          # The killed import must not have produced a usable image. Every
+          # record the loop created is read back for real: an unreachable API
+          # also yields an empty status, and concluding "not active" from that
+          # would turn a dead endpoint into a green run. All of them are
+          # checked, not just the last: an attempt whose create succeeded and
+          # whose PUT then died still owns a record, and the attempt that
+          # breached the bound is not always the one that ended the loop.
+          #
+          # One poll covers every image, because what it waits out is the API's
+          # post-eviction recovery — a property of the endpoint, not of an
+          # individual record. 10 x (3 x 10s + 4s) = 340s.
+          UNREAD="$IDS"
+          for _ in $(seq 1 10); do
+            STILL=""
+            for IMG in $UNREAD; do
+              curl -sk --connect-timeout 5 --max-time 10 \
+                -o "$TMP/img-$IMG.json" "$BASE/v2/images/$IMG" || true
+              [ -n "$(jfield "$TMP/img-$IMG.json" status)" ] || STILL="${STILL:+$STILL }$IMG"
+            done
+            UNREAD="$STILL"
+            [ -z "$UNREAD" ] && break
             sleep 4
           done
-          if [ -z "$STATUS" ]; then
-            echo "ERROR: the API never returned a readable record for image $ID,"
-            echo "       so 'never went active' cannot be concluded."
-            head -c 2048 "$TMP/img.json" 2>/dev/null || true
-            echo
+          if [ -n "$UNREAD" ]; then
+            echo "ERROR: the API never returned a readable record for image(s)"
+            echo "       $UNREAD — so 'never went active' cannot be concluded."
+            for IMG in $UNREAD; do
+              head -c 2048 "$TMP/img-$IMG.json" 2>/dev/null || true
+              echo
+            done
             exit 1
           fi
-          if [ "$STATUS" = "active" ]; then
-            echo "ERROR: image $ID reached active despite the staging bound —"
-            echo "       the oversized import was not contained."
-            head -c 2048 "$TMP/img.json" 2>/dev/null || true
-            echo
-            exit 1
-          fi
-          echo "OK: image $ID never went active (status '${STATUS:-<unknown>}')"
+          for IMG in $IDS; do
+            STATUS="$(jfield "$TMP/img-$IMG.json" status)"
+            if [ "$STATUS" = "active" ]; then
+              echo "ERROR: image $IMG reached active despite the staging bound —"
+              echo "       the oversized import was not contained."
+              head -c 2048 "$TMP/img-$IMG.json" 2>/dev/null || true
+              echo
+              exit 1
+            fi
+            echo "OK: image $IMG never went active (status '$STATUS')"
+          done
     catch:
     - script:
         shell: bash
