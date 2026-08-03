@@ -45,8 +45,10 @@
 # then browse http://localhost:9080
 #
 # Version pin: `spec.inputs[0].version` is a SemVer range locked to the
-# minor track of `FLUX_OPERATOR_VERSION` in hack/deploy-infra.sh (today
-# v0.56.0 → 0.56.x). Bump both together when upgrading the operator.
+# minor track of `FLUX_OPERATOR_VERSION` in hack/deploy-infra.sh.
+# Renovate bumps both pins in one grouped PR: a minor release rewrites
+# the range, patch releases float inside it.
+# tests/unit/deploy/kind_base_flux_web_test.sh asserts the lockstep.
 #
 ---
 apiVersion: fluxcd.controlplane.io/v1

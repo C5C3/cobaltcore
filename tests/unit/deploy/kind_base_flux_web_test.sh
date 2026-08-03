@@ -130,10 +130,10 @@ test_kustomize_build_emits_resourceset() {
   assert_eq "HelmRelease spec.values.fullnameOverride is flux-web" "flux-web" "$hr_fullname_override"
 }
 
-# --- Test 3: chart version pin is a SemVer range locked to the minor
-#             track shipped by hack/deploy-infra.sh ---
-test_chart_version_pin_is_semver_range() {
-  echo "Test: ResourceSet spec.inputs[0].version is 0.56.x and matches FLUX_OPERATOR_VERSION minor track"
+# --- Test 3: the chart version pin is the SemVer range derived from the
+#             FLUX_OPERATOR_VERSION minor track in hack/deploy-infra.sh ---
+test_chart_version_pin_matches_deploy_infra_minor_track() {
+  echo "Test: ResourceSet spec.inputs[0].version equals the minor track derived from FLUX_OPERATOR_VERSION"
 
   if [[ ! -f "$FLUX_WEB_FILE" ]]; then
     echo "  FAIL: $FLUX_WEB_FILE does not exist"
@@ -141,18 +141,75 @@ test_chart_version_pin_is_semver_range() {
     return
   fi
 
-  if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed (1 check skipped)"
-    SKIP=$((SKIP + 1))
-  else
-    local version
-    version="$(yq -r '.spec.inputs[0].version' "$FLUX_WEB_FILE" 2>/dev/null | head -n1)"
-    assert_eq "spec.inputs[0].version pins the 0.56.x SemVer range" "0.56.x" "$version"
+  # Guard with || true so a missing line doesn't abort the script under pipefail.
+  local raw
+  raw="$( { grep -E '^FLUX_OPERATOR_VERSION="v' "$DEPLOY_INFRA_SH" || true; } | head -n1)"
+  if [[ -z "$raw" ]]; then
+    echo "  FAIL: no FLUX_OPERATOR_VERSION=\"v...\" line found in hack/deploy-infra.sh"
+    FAIL=$((FAIL + 2))
+    return
   fi
 
-  assert_file_contains "hack/deploy-infra.sh still declares FLUX_OPERATOR_VERSION=\"v0.56.0\"" \
-    "$DEPLOY_INFRA_SH" \
-    'FLUX_OPERATOR_VERSION="v0.56.0"'
+  local value semver_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
+  value="$(printf '%s\n' "$raw" | sed -E 's/^FLUX_OPERATOR_VERSION="//; s/"$//')"
+  if [[ ! "$value" =~ $semver_re ]]; then
+    echo "  FAIL: FLUX_OPERATOR_VERSION value '$value' does not match $semver_re"
+    FAIL=$((FAIL + 2))
+    return
+  fi
+  echo "  PASS: hack/deploy-infra.sh declares FLUX_OPERATOR_VERSION as a vMAJOR.MINOR.PATCH tag"
+  PASS=$((PASS + 1))
+
+  # v<major>.<minor>.<patch> pins the operator; the chart range floats the patch.
+  local expected_range
+  expected_range="$(printf '%s\n' "$value" | sed -E 's/^v([0-9]+)\.([0-9]+)\.[0-9]+$/\1.\2.x/')"
+
+  # Without yq the lockstep must still be asserted — skipping it here would
+  # leave the whole test green while verifying nothing about the two pins
+  # the file header says move together.
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  NOTE: yq not installed, asserting the derived range via awk"
+    # Read the first entry under `inputs:` rather than scanning the whole
+    # file: the yq path below asserts on spec.inputs[0], and a file-wide
+    # match would accept the derived range on a second entry while
+    # inputs[0] — the pin Flux actually resolves — drifts a minor ahead.
+    #
+    # Extract the value, not the rendered line: the yq path compares the
+    # parsed version, so comparing indentation, quote style and key order
+    # here would let the same file pass on a host with yq and fail on the
+    # test-shell runner without it — pointing the diff at whitespace
+    # instead of at a version mismatch.
+    local first_input
+    first_input="$(awk '
+      /^  inputs:$/ { f = 1; next }
+      f && !/^    / && !/^[[:space:]]*$/ { exit }
+      f && /^    - / { if (++entry > 1) exit }
+      f && entry == 1 && /version:/ {
+        sub(/^.*version:[[:space:]]*/, "")
+        gsub(/["'"'"']/, "")
+        print
+        exit
+      }
+    ' "$FLUX_WEB_FILE")"
+    assert_eq "deploy/kind/base/flux-web.yaml spec.inputs[0].version matches the FLUX_OPERATOR_VERSION minor track in hack/deploy-infra.sh" \
+      "$expected_range" \
+      "$first_input"
+    return
+  fi
+
+  # No 2>/dev/null: a yq that errors out (flag handling changed by a bump,
+  # unreadable file) must read as a tool failure, not as an empty version
+  # that points the mismatch message at the YAML.
+  local raw_version
+  if ! raw_version="$(yq -r '.spec.inputs[0].version' "$FLUX_WEB_FILE")"; then
+    echo "  FAIL: yq could not read .spec.inputs[0].version from $FLUX_WEB_FILE"
+    FAIL=$((FAIL + 1))
+    return
+  fi
+
+  assert_eq "deploy/kind/base/flux-web.yaml spec.inputs[0].version matches the FLUX_OPERATOR_VERSION minor track in hack/deploy-infra.sh" \
+    "$expected_range" \
+    "${raw_version%%$'\n'*}"
 }
 
 # --- Test 4: kind kustomization lists flux-web.yaml after headlamp.yaml ---
@@ -254,7 +311,7 @@ test_production_kustomization_unchanged() {
 # --- Run ---
 test_spdx_header
 test_kustomize_build_emits_resourceset
-test_chart_version_pin_is_semver_range
+test_chart_version_pin_matches_deploy_infra_minor_track
 test_kustomization_lists_flux_web
 test_production_overlay_has_no_flux_web
 test_production_kustomization_unchanged
