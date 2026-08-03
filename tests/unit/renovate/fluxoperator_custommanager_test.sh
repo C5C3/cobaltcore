@@ -25,6 +25,17 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 
 RENOVATE_FILE="$PROJECT_ROOT/renovate.json"
+
+# Pin the validator: test-shell also runs on the push runs for main and
+# v* tags, so `renovate@latest` would fetch and execute an unreviewed
+# Renovate release inside the release pipeline, and a breaking release
+# would turn main red at a commit that changed nothing. Bumped by the
+# renovatebot/renovate customManagers entry in renovate.json, whose
+# packageRule never automerges — the run below is the only check that
+# exercises the new release, so a bump must not approve itself. This is
+# the single pin in the suite; the sibling tests deliberately do not
+# repeat the validator run (and therefore not the constant either).
+RENOVATE_VALIDATOR_VERSION="44.8.0"
 DEPLOY_INFRA_FILE="$PROJECT_ROOT/hack/deploy-infra.sh"
 
 # --- Test 1: renovate.json passes renovate-config-validator ---
@@ -38,7 +49,7 @@ test_renovate_config_valid() {
   fi
 
   local output status=0
-  output="$(cd "$PROJECT_ROOT" && npx --yes --package renovate@latest -- \
+  output="$(cd "$PROJECT_ROOT" && npx --yes --package "renovate@${RENOVATE_VALIDATOR_VERSION}" -- \
     renovate-config-validator renovate.json 2>&1)" || status=$?
 
   if [ "$status" -ne 0 ]; then

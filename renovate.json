@@ -306,6 +306,19 @@
       ],
       "datasourceTemplate": "docker",
       "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/tests/unit/renovate/.*_test\\.sh$/"
+      ],
+      "matchStrings": [
+        "RENOVATE_VALIDATOR_VERSION=\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "renovate",
+      "datasourceTemplate": "npm",
+      "packageNameTemplate": "renovate",
+      "versioningTemplate": "npm"
     }
   ],
   "packageRules": [
@@ -592,6 +605,15 @@
       "groupName": "nix flake inputs",
       "automerge": false,
       "minimumReleaseAge": "3 days"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["tests/unit/renovate/**.sh"],
+      "matchPackageNames": ["renovate"],
+      "matchUpdateTypes": ["major", "minor", "patch"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "renovate-config-validator"
     }
   ]
 }

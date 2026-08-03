@@ -40,8 +40,11 @@ The workflow triggers on three event types:
 | `push` | `tags: ["v*"]` | Runs on every v-prefixed tag push (triggers publish and release jobs) |
 | `pull_request` | `branches: [main]`, `types: [opened, synchronize, reopened, labeled]` | Runs on every pull request targeting main; includes `labeled` type to support on-demand chaos via `run-chaos` label |
 
-Gate, test, and E2E jobs run **only on `pull_request` events** — every one of them
-carries a `github.event_name == 'pull_request'` guard. Pushes to `main` and tag pushes
+Most gate, test, and E2E jobs run **only on `pull_request` events** — they each carry a
+`github.event_name == 'pull_request'` guard. `test-shell` is the exception. It carries no
+guard and also runs on pushes to `main` and on tag pushes. A breakage that lands on `main`
+therefore turns main's own run red at the commit that caused it, instead of surfacing on
+the next PR branch. Otherwise, pushes to `main` and tag pushes
 (`v*`) run only the publish and release jobs (`build-and-push`,
 `merge-operator-images`, `helm-push`, `github-release`): the merged commit's PR was
 already green, so the E2E suite is not re-run on push
@@ -96,16 +99,17 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 ## Job Dependency DAG
 
 The workflow defines 27 jobs organised in a directed acyclic graph. Every gate, test,
-and E2E job additionally carries a `github.event_name == 'pull_request'` guard; the
-publish and release jobs run only on push events:
+and E2E job except `test-shell` additionally carries a
+`github.event_name == 'pull_request'` guard; the publish and release jobs run only on
+push events:
 
 ```
-Gate Jobs (pull requests only):
+Gate Jobs (pull requests; test-shell also on push):
   lint ────────────────────────┐   (go == 'true')
   format-check                 │   (go == 'true')
   shellcheck ──────────────────┤   (always on PRs)
   feature-ids                  │   (always on PRs)
-  test-shell                   │   (always on PRs)
+  test-shell                   │   (PRs + push: main, tags)
   verify-codegen ──────────────┤   (go == 'true')
   verify-invalid-cr-fixtures ──┤   (always on PRs)
   chainsaw-lint ───────────────┤   (always on PRs)
@@ -295,12 +299,14 @@ Timeout: 8 minutes.
 ### test-shell
 
 Runs every shell unit test under `tests/unit/` (hack/, deploy/, docs/,
-renovate/). Tests read repo files only — no cluster, no untrusted input —
-so the job is unconditional and finishes in well under a minute on a cold
-runner. Tests that depend on `yq` or `kustomize` are written to skip
-gracefully when those tools are missing; the job installs `kustomize`
-explicitly so the deploy/ overlay assertions run their full check set
-(`yq` is preinstalled on ubuntu-latest).
+renovate/). The job carries no event guard, so it runs on pull requests and
+on the push runs for `main` and `v*` tags: a breakage that lands on `main`
+fails main's own run. Tests read repo files only (no cluster, no untrusted
+input) and the job finishes in about a minute on a cold runner. Tests that
+depend on `yq` or `kustomize` are written to skip gracefully when those
+tools are missing; the job installs `kustomize` explicitly so the deploy/
+overlay assertions run their full check set (`yq` is preinstalled on
+ubuntu-latest).
 
 | Step | Action | Details |
 | --- | --- | --- |
