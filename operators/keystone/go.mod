@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	github.com/c5c3/forge/internal/common v0.0.0
 	github.com/cert-manager/cert-manager v1.20.2
-	github.com/external-secrets/external-secrets/apis v0.0.0-20260726151249-4eca63684042
+	github.com/external-secrets/external-secrets/apis v0.0.0-20260803120615-8552ed8d11d1
 	github.com/go-logr/logr v1.4.4
 	github.com/gophercloud/gophercloud/v2 v2.13.0
 	github.com/mariadb-operator/mariadb-operator v0.38.1
@@ -71,7 +71,7 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.44.0 // indirect
-	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
