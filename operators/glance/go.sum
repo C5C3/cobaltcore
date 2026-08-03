@@ -22,6 +22,8 @@ github.com/external-secrets/external-secrets/apis v0.0.0-20260710155933-68826f87
 github.com/external-secrets/external-secrets/apis v0.0.0-20260710155933-68826f87b4ff/go.mod h1:zXVGT+XN1hPJm8itkjbPBo1+HP9BoS+uqMq5u6KbCWc=
 github.com/external-secrets/external-secrets/apis v0.0.0-20260726151249-4eca63684042 h1:g2lk13BC8+ykvKl5tn+MEofkWuJTwC4p5Yhs8ZZdeMI=
 github.com/external-secrets/external-secrets/apis v0.0.0-20260726151249-4eca63684042/go.mod h1:yKY59TxWUEYFRopB3zrry4R6x74IkYalwIzGsaRzoxU=
+github.com/external-secrets/external-secrets/apis v0.0.0-20260803120615-8552ed8d11d1 h1:zBPFIHWrr/ehYVlrqQ1OujZNmSqMpKJiw5dhlJzUDtI=
+github.com/external-secrets/external-secrets/apis v0.0.0-20260803120615-8552ed8d11d1/go.mod h1:5GcFUHfOeptmLo4hCGlzWQf50wGxTszFJGuMN3IlkhE=
 github.com/fsnotify/fsnotify v1.9.0 h1:2Ml+OJNzbYCTzsxtv8vKSFD9PbJjmhYF14k/jKC7S9k=
 github.com/fsnotify/fsnotify v1.9.0/go.mod h1:8jBTzvmWwFyi3Pb8djgCCO5IBqzKJ/Jwo8TRcHyHii0=
 github.com/fxamacker/cbor/v2 v2.9.1 h1:2rWm8B193Ll4VdjsJY28jxs70IdDsHRWgQYAI80+rMQ=
@@ -156,6 +158,8 @@ golang.org/x/term v0.44.0 h1:0rLvDRCtNj0gZkyIXhCyOb2OAzEhLVqc4B+hrsBhrmc=
 golang.org/x/term v0.44.0/go.mod h1:7ze4MdzUzLXpSAoFP1H0bOI9aXDqveSvatT5vKcFh2Y=
 golang.org/x/text v0.39.0 h1:UbZz4pLOvn600D6Oh6GGEI6VAmndrEBLv8/6BEXzyus=
 golang.org/x/text v0.39.0/go.mod h1:3UwRclnC2g0TU9x8PZiyfOajCd1zaUNHF9cvqcQZ+ZM=
+golang.org/x/text v0.40.0 h1:Ub2Z6/xjgF1WrYQz2nuITOEegKFtiIy+rieRJ5lHZKs=
+golang.org/x/text v0.40.0/go.mod h1:hpnzDAfGV753zIKo+wk3u1bVKCGPbrnF7+7LBF/UHVY=
 golang.org/x/time v0.15.0 h1:bbrp8t3bGUeFOx08pvsMYRTCVSMk89u4tKbNOZbp88U=
 golang.org/x/time v0.15.0/go.mod h1:Y4YMaQmXwGQZoFaVFk4YpCt4FLQMYKZe9oeV/f4MSno=
 golang.org/x/tools v0.47.0 h1:7Kn5x/d1svx/PzryTsqeoZN4TZwqeH5pGWjefhLi/1Q=

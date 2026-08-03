@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/cert-manager/cert-manager v1.20.2
-	github.com/external-secrets/external-secrets/apis v0.0.0-20260726151249-4eca63684042
+	github.com/external-secrets/external-secrets/apis v0.0.0-20260803120615-8552ed8d11d1
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.24.0
@@ -70,7 +70,7 @@ require (
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.44.0 // indirect
-	golang.org/x/text v0.39.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
