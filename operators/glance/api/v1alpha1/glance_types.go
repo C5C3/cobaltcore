@@ -327,59 +327,9 @@ type APIServerSpec struct {
 	Workers *int32 `json:"workers,omitempty"`
 }
 
-// UWSGISpec defines the uWSGI application server parameters.
-// Exposed as an optional pointer field on APIServerSpec (spec.apiServer.uwsgi) so
-// that Glance CRs without it continue to work with hardcoded defaults in the
-// reconciler. The cross-field CEL rule mirrors the validating webhook:
-// httpKeepAliveTimeout is only meaningful when httpKeepAlive is true, otherwise
-// the --http-keepalive-timeout flag is never emitted.
-// +kubebuilder:validation:XValidation:rule="!has(self.httpKeepAliveTimeout) || !has(self.httpKeepAlive) || self.httpKeepAlive",message="httpKeepAliveTimeout may only be set when httpKeepAlive is true"
-type UWSGISpec struct {
-	// Processes is the number of uWSGI worker processes.
-	// The default literal mirrors DefaultUWSGIProcesses in glance_webhook.go.
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default=2
-	Processes int32 `json:"processes,omitempty"`
-
-	// Threads is the number of threads per uWSGI worker process.
-	// The default literal mirrors DefaultUWSGIThreads in glance_webhook.go.
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:default=1
-	Threads int32 `json:"threads,omitempty"`
-
-	// HTTPKeepAlive enables the --http-keepalive flag on the uWSGI process.
-	// When false, the flag is omitted from the command. It is a nil-preserving
-	// pointer so "unset" is representable: the defaulting webhook restores the
-	// documented default (true, DefaultUWSGIHTTPKeepAlive in glance_webhook.go)
-	// when the pointer is nil, and the reconciler falls back to the same default
-	// for CRs that bypass the webhook. An explicit false is honored verbatim.
-	// +optional
-	HTTPKeepAlive *bool `json:"httpKeepAlive,omitempty"`
-
-	// Harakiri caps the per-request worker lifetime (seconds) via the uWSGI
-	// --harakiri flag. A request blocked longer than this bound is
-	// killed so a single stuck DB lookup cannot prevent other in-flight
-	// requests from completing cleanly before graceful shutdown ends. When
-	// nil, the --harakiri flag is omitted from the uWSGI command entirely
-	// (no hidden default is injected). The webhook additionally requires
-	// harakiri < terminationGracePeriodSeconds - preStopSleepSeconds so the
-	// shutdown envelope is consistent.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	Harakiri *int32 `json:"harakiri,omitempty"`
-
-	// HTTPKeepAliveTimeout bounds the idle timeout (seconds) of keep-alive
-	// connections via the uWSGI --http-keepalive-timeout flag.
-	// A bounded timeout forces clients to reconnect through the Service so
-	// they never reuse a socket to a removed pod. When nil, the flag is
-	// omitted from the uWSGI command. Zero is rejected to avoid the
-	// unbounded-timeout interpretation. A value at or below
-	// preStopSleepSeconds is recommended so idle sockets have closed before
-	// SIGTERM reaches uWSGI.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	HTTPKeepAliveTimeout *int32 `json:"httpKeepAliveTimeout,omitempty"`
-}
+// UWSGISpec is aliased to the shared commonv1 definition (see the
+// DeploymentSpec alias block above for the rationale).
+type UWSGISpec = commonv1.UWSGISpec
 
 // ImportFilteringSpec constrains the URIs the web-download image-import method
 // may fetch from, rendered as the [import_filtering_opts] group in

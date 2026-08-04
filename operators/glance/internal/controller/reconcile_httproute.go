@@ -106,7 +106,7 @@ func buildGlanceHTTPRoute(glance *glancev1alpha1.Glance) *gatewayv1.HTTPRoute {
 		// It bounds duration, not concurrency, and is NOT what keeps the
 		// Glance API from wedging. The rule matches a single "/" prefix, so
 		// it covers every Glance path, while a glance-api pod serves
-		// DefaultUWSGIProcesses x DefaultUWSGIThreads = 2 concurrent requests
+		// commonv1.DefaultUWSGIProcesses x commonv1.DefaultUWSGIThreads = 2 concurrent requests
 		// with --harakiri opt-in and off by default — at DefaultReplicas,
 		// six slots for the whole service. Nothing in front of them caps
 		// concurrent requests: this operator renders no BackendTrafficPolicy,

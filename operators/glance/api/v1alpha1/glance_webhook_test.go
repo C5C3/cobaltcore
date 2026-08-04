@@ -139,8 +139,8 @@ func TestGlanceDefault_UWSGISemantics(t *testing.T) {
 	zero.Spec.OpenStackRelease = "2026.1"
 	zero.Spec.APIServer = &APIServerSpec{UWSGI: &UWSGISpec{}}
 	g.Expect(w.Default(context.Background(), zero)).To(gomega.Succeed())
-	g.Expect(zero.Spec.APIServer.UWSGI.Processes).To(gomega.Equal(DefaultUWSGIProcesses))
-	g.Expect(zero.Spec.APIServer.UWSGI.Threads).To(gomega.Equal(DefaultUWSGIThreads))
+	g.Expect(zero.Spec.APIServer.UWSGI.Processes).To(gomega.Equal(commonv1.DefaultUWSGIProcesses))
+	g.Expect(zero.Spec.APIServer.UWSGI.Threads).To(gomega.Equal(commonv1.DefaultUWSGIThreads))
 	g.Expect(zero.Spec.APIServer.UWSGI.HTTPKeepAlive).To(gomega.HaveValue(gomega.BeTrue()))
 
 	// Explicit httpKeepAlive=false is preserved (nil-preserving pointer).
