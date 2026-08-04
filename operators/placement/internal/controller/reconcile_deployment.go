@@ -7,7 +7,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -61,10 +60,6 @@ const (
 // 2026.1 declares no WSGI script at all; the two paths must stay in lockstep
 // with the image.
 const placementWSGIScriptPath = "/var/lib/openstack/bin/placement-api"
-
-// uwsgiLogFormat is the uWSGI --log-format literal shared with the sibling
-// operators so every request line reaches stderr in the same shape.
-const uwsgiLogFormat = "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
 
 // Pod-template annotation keys stamped with content digests so an env-var-
 // consumed credential change rolls the Deployment (the value is not
@@ -309,13 +304,10 @@ func placementRootProbeHandler() corev1.ProbeHandler {
 	}
 }
 
-// placementUWSGICommand constructs the uWSGI container command from the given
-// apiServer spec, mirroring keystone's uwsgiCommand flag-by-flag. When apiServer
-// or apiServer.uwsgi is nil the webhook defaults (processes=2, threads=1,
-// httpKeepAlive=true) apply. Fixed flags (--http, --log-master, --log-format,
-// --wsgi-file, --master, --lazy-apps, --need-app, --processes, --threads) are
-// always included; --http-keepalive[-timeout] and --harakiri are conditional on
-// the uWSGI spec exactly as keystone emits them.
+// placementUWSGICommand constructs the uWSGI container command for the
+// Placement API container from the given apiServer spec. Token emission and
+// default resolution are owned by deployment.BuildUWSGICommand; this function
+// only assembles the placement parameters.
 //
 // There is deliberately no --pyargv. The hand-shipped WSGI entry
 // (placementWSGIScriptPath) calls init_application() with no arguments and
@@ -323,54 +315,16 @@ func placementRootProbeHandler() corev1.ProbeHandler {
 // would be parsed by nothing and silently ignored. The config location travels
 // in the OS_PLACEMENT_CONFIG_DIR env var instead.
 func placementUWSGICommand(apiServer *placementv1alpha1.APIServerSpec) []string {
-	processes := placementv1alpha1.DefaultUWSGIProcesses
-	threads := placementv1alpha1.DefaultUWSGIThreads
-	httpKeepAlive := placementv1alpha1.DefaultUWSGIHTTPKeepAlive
-
 	var uwsgi *placementv1alpha1.UWSGISpec
 	if apiServer != nil {
 		uwsgi = apiServer.UWSGI
 	}
-	if uwsgi != nil {
-		processes = uwsgi.Processes
-		threads = uwsgi.Threads
-		// HTTPKeepAlive is a nil-preserving *bool: nil means "unset", which keeps
-		// the default (true); an explicit true/false is honored verbatim.
-		if uwsgi.HTTPKeepAlive != nil {
-			httpKeepAlive = *uwsgi.HTTPKeepAlive
-		}
-	}
 
-	cmd := []string{
-		"uwsgi",
-		"--http", fmt.Sprintf(":%d", placementAPIPort),
-	}
-	if httpKeepAlive {
-		cmd = append(cmd, "--http-keepalive")
-		if uwsgi != nil && uwsgi.HTTPKeepAliveTimeout != nil {
-			cmd = append(cmd, "--http-keepalive-timeout", strconv.Itoa(int(*uwsgi.HTTPKeepAliveTimeout)))
-		}
-	}
-	// Unconditional: makes uWSGI master logging always-on so request lines reach
-	// stderr in every configuration, regardless of keep-alive.
-	cmd = append(
-		cmd,
-		"--log-master",
-		"--log-format", uwsgiLogFormat,
-	)
-	cmd = append(
-		cmd,
-		"--wsgi-file", placementWSGIScriptPath,
-		"--master",
-		"--lazy-apps",
-		"--need-app",
-		"--processes", strconv.Itoa(int(processes)),
-		"--threads", strconv.Itoa(int(threads)),
-	)
-	if uwsgi != nil && uwsgi.Harakiri != nil {
-		cmd = append(cmd, "--harakiri", strconv.Itoa(int(*uwsgi.Harakiri)))
-	}
-	return cmd
+	return deployment.BuildUWSGICommand(deployment.UWSGICommandParams{
+		UWSGI:        uwsgi,
+		Bind:         fmt.Sprintf(":%d", placementAPIPort),
+		WSGIFilePath: placementWSGIScriptPath,
+	})
 }
 
 // placementDBTLSEnabled reports whether the Placement CR requests TLS to the

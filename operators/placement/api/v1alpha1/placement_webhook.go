@@ -16,7 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -30,30 +29,13 @@ import (
 	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
 )
 
-// uWSGI defaults applied by the defaulting webhook (Processes/Threads/
-// HTTPKeepAlive) and the reconciler (when spec.apiServer.uwsgi is nil). They are
-// the single source of truth so the webhook and the reconciler cannot drift; the
-// +kubebuilder:default markers on UWSGISpec keep the same literals in sync
-// separately (markers cannot reference Go constants).
-const (
-	// DefaultUWSGIProcesses is the uWSGI worker-process count materialized when
-	// spec.apiServer.uwsgi.processes is zero.
-	DefaultUWSGIProcesses int32 = 2
-	// DefaultUWSGIThreads is the per-worker thread count materialized when
-	// spec.apiServer.uwsgi.threads is zero.
-	DefaultUWSGIThreads int32 = 1
-	// DefaultUWSGIHTTPKeepAlive is the --http-keepalive default restored when
-	// spec.apiServer.uwsgi.httpKeepAlive is nil (unset).
-	DefaultUWSGIHTTPKeepAlive = true
-)
-
 // Placement-specific container memory defaults, replacing the shared 256Mi/512Mi
-// baseline. The API container runs DefaultUWSGIProcesses preforked workers, each
-// carrying its own interpreter, SQLAlchemy session pool and oslo stack, so the
-// container footprint is a multiple of a single worker's rather than one
-// interpreter's. 512Mi request / 1Gi limit keeps that multiple inside the limit
-// and matches the budget the sibling glance-api container gets. CPU keeps the
-// shared defaults.
+// baseline. The API container runs commonv1.DefaultUWSGIProcesses preforked
+// workers, each carrying its own interpreter, SQLAlchemy session pool and oslo
+// stack, so the container footprint is a multiple of a single worker's rather
+// than one interpreter's. 512Mi request / 1Gi limit keeps that multiple inside
+// the limit and matches the budget the sibling glance-api container gets. CPU
+// keeps the shared defaults.
 var (
 	defaultPlacementMemoryRequest = resource.MustParse("512Mi")
 	defaultPlacementMemoryLimit   = resource.MustParse("1Gi")
@@ -149,22 +131,11 @@ func (w *PlacementWebhook) Default(_ context.Context, obj *Placement) error {
 	}
 
 	// Default zero-valued sub-fields of spec.apiServer.uwsgi when the block is
-	// non-nil. When the pointer is nil, do nothing — the reconciler uses the same
-	// constants as its hardcoded defaults. HTTPKeepAlive is a nil-preserving
-	// *bool, so "unset" is distinguishable from an explicit false: the webhook
-	// restores the documented default (true) only when the pointer is nil, and
-	// leaves an explicit true/false untouched.
-	if obj.Spec.APIServer != nil && obj.Spec.APIServer.UWSGI != nil {
-		u := obj.Spec.APIServer.UWSGI
-		if u.Processes == 0 {
-			u.Processes = DefaultUWSGIProcesses
-		}
-		if u.Threads == 0 {
-			u.Threads = DefaultUWSGIThreads
-		}
-		if u.HTTPKeepAlive == nil {
-			u.HTTPKeepAlive = ptr.To(DefaultUWSGIHTTPKeepAlive)
-		}
+	// non-nil. The leaf defaults are applied by the commonv1.UWSGISpec Default
+	// method so they cannot drift across operators; a nil pointer is a no-op
+	// there — the reconciler uses the same constants as its hardcoded defaults.
+	if obj.Spec.APIServer != nil {
+		obj.Spec.APIServer.UWSGI.Default()
 	}
 	return nil
 }
