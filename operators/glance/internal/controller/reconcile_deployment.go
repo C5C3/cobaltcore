@@ -7,7 +7,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -85,10 +84,6 @@ const (
 	// into the API container and the cache-maintenance sidecar alike.
 	imageCacheVolumeName = "image-cache"
 )
-
-// uwsgiLogFormat is the uWSGI --log-format literal shared with the sibling
-// operators so every request line reaches stderr in the same shape.
-const uwsgiLogFormat = "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
 
 // glanceUWSGIPyargv is the argument vector uWSGI forwards to the WSGI entry
 // script via --pyargv: both oslo.config --config-dir entries (the immutable
@@ -679,68 +674,26 @@ func glanceUsesUWSGI(glance *glancev1alpha1.Glance) bool {
 	return rel.Year > 2026 || (rel.Year == 2026 && rel.Minor >= 1)
 }
 
-// glanceUWSGICommand constructs the uWSGI container command from the given
-// apiServer spec, mirroring keystone's uwsgiCommand flag-by-flag. When apiServer
-// or apiServer.uwsgi is nil the webhook defaults (processes=2, threads=1,
-// httpKeepAlive=true) apply. Fixed flags (--http, --wsgi-file, --master,
-// --lazy-apps, --need-app, --pyargv, and the always-on request logging) are
-// always included; --http-keepalive[-timeout] and --harakiri are conditional on
-// the uWSGI spec exactly as keystone emits them.
+// glanceUWSGICommand constructs the uWSGI container command for the Glance API
+// container from the given apiServer spec. Token emission and default
+// resolution are owned by deployment.BuildUWSGICommand; this function only
+// assembles the glance parameters.
 func glanceUWSGICommand(apiServer *glancev1alpha1.APIServerSpec) []string {
-	processes := glancev1alpha1.DefaultUWSGIProcesses
-	threads := glancev1alpha1.DefaultUWSGIThreads
-	httpKeepAlive := glancev1alpha1.DefaultUWSGIHTTPKeepAlive
-
 	var uwsgi *glancev1alpha1.UWSGISpec
 	if apiServer != nil {
 		uwsgi = apiServer.UWSGI
 	}
-	if uwsgi != nil {
-		processes = uwsgi.Processes
-		threads = uwsgi.Threads
-		// HTTPKeepAlive is a nil-preserving *bool: nil means "unset", which keeps
-		// the default (true); an explicit true/false is honored verbatim.
-		if uwsgi.HTTPKeepAlive != nil {
-			httpKeepAlive = *uwsgi.HTTPKeepAlive
-		}
-	}
 
-	cmd := []string{
-		"uwsgi",
-		"--http", fmt.Sprintf(":%d", glanceAPIPort),
+	return deployment.BuildUWSGICommand(deployment.UWSGICommandParams{
+		UWSGI: uwsgi,
+		Bind:  fmt.Sprintf(":%d", glanceAPIPort),
 		// Glance streams image uploads and downloads with chunked transfer
 		// encoding, so uWSGI must accept chunked request bodies and re-chunk
 		// responses. These two flags are always on regardless of the tuning knobs.
-		"--http-auto-chunked",
-		"--http-chunked-input",
-	}
-	if httpKeepAlive {
-		cmd = append(cmd, "--http-keepalive")
-		if uwsgi != nil && uwsgi.HTTPKeepAliveTimeout != nil {
-			cmd = append(cmd, "--http-keepalive-timeout", strconv.Itoa(int(*uwsgi.HTTPKeepAliveTimeout)))
-		}
-	}
-	// Unconditional: makes uWSGI master logging always-on so request lines reach
-	// stderr in every configuration, regardless of keep-alive.
-	cmd = append(
-		cmd,
-		"--log-master",
-		"--log-format", uwsgiLogFormat,
-	)
-	cmd = append(
-		cmd,
-		"--wsgi-file", glanceWSGIScriptPath,
-		"--master",
-		"--lazy-apps",
-		"--need-app",
-		"--processes", strconv.Itoa(int(processes)),
-		"--threads", strconv.Itoa(int(threads)),
-		"--pyargv", glanceUWSGIPyargv,
-	)
-	if uwsgi != nil && uwsgi.Harakiri != nil {
-		cmd = append(cmd, "--harakiri", strconv.Itoa(int(*uwsgi.Harakiri)))
-	}
-	return cmd
+		ArgsAfterHTTP: []string{"--http-auto-chunked", "--http-chunked-input"},
+		WSGIFilePath:  glanceWSGIScriptPath,
+		TrailingArgs:  []string{"--pyargv", glanceUWSGIPyargv},
+	})
 }
 
 // glanceDBTLSEnabled reports whether the Glance CR requests TLS to the database;

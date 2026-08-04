@@ -21,7 +21,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -35,28 +34,14 @@ import (
 	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
 )
 
-// uWSGI defaults applied by the defaulting webhook (Processes/Threads/
-// HTTPKeepAlive) and the reconciler (when spec.apiServer.uwsgi is nil). They are
-// the single source of truth so the webhook and the reconciler cannot drift; the
-// +kubebuilder:default markers on UWSGISpec keep the same literals in sync
-// separately (markers cannot reference Go constants).
 const (
-	// DefaultUWSGIProcesses is the uWSGI worker-process count materialized when
-	// spec.apiServer.uwsgi.processes is zero.
-	DefaultUWSGIProcesses int32 = 2
-	// DefaultUWSGIThreads is the per-worker thread count materialized when
-	// spec.apiServer.uwsgi.threads is zero.
-	DefaultUWSGIThreads int32 = 1
-	// DefaultUWSGIHTTPKeepAlive is the --http-keepalive default restored when
-	// spec.apiServer.uwsgi.httpKeepAlive is nil (unset).
-	DefaultUWSGIHTTPKeepAlive = true
 	// DefaultEventletWorkers is the eventlet [DEFAULT] workers count materialized
 	// when spec.apiServer.workers is nil below release 2026.1. It is the eventlet
-	// analog of DefaultUWSGIProcesses: without it the eventlet glance-api server
-	// falls back to its own default of one worker per host CPU, which ignores the
-	// pod's CPU limit and overruns the memory limit under load. Pinning it keeps
-	// the worker count — and thus the memory footprint — deterministic, matching
-	// keystone's bounded process count.
+	// analog of commonv1.DefaultUWSGIProcesses: without it the eventlet glance-api
+	// server falls back to its own default of one worker per host CPU, which
+	// ignores the pod's CPU limit and overruns the memory limit under load.
+	// Pinning it keeps the worker count — and thus the memory footprint —
+	// deterministic, matching keystone's bounded process count.
 	DefaultEventletWorkers int32 = 2
 )
 
@@ -374,22 +359,11 @@ func (w *GlanceWebhook) Default(_ context.Context, obj *Glance) error {
 	}
 
 	// Default zero-valued sub-fields of spec.apiServer.uwsgi when the block is
-	// non-nil. When the pointer is nil, do nothing — the reconciler uses
-	// hardcoded defaults for the active launch mode. HTTPKeepAlive is a
-	// nil-preserving *bool, so "unset" is distinguishable from an explicit
-	// false: the webhook restores the documented default (true) only when the
-	// pointer is nil, and leaves an explicit true/false untouched.
-	if obj.Spec.APIServer != nil && obj.Spec.APIServer.UWSGI != nil {
-		u := obj.Spec.APIServer.UWSGI
-		if u.Processes == 0 {
-			u.Processes = DefaultUWSGIProcesses
-		}
-		if u.Threads == 0 {
-			u.Threads = DefaultUWSGIThreads
-		}
-		if u.HTTPKeepAlive == nil {
-			u.HTTPKeepAlive = ptr.To(DefaultUWSGIHTTPKeepAlive)
-		}
+	// non-nil. The leaf defaults are applied by the commonv1.UWSGISpec Default
+	// method so they cannot drift across operators; a nil pointer is a no-op
+	// there — the reconciler uses hardcoded defaults for the active launch mode.
+	if obj.Spec.APIServer != nil {
+		obj.Spec.APIServer.UWSGI.Default()
 	}
 	return nil
 }

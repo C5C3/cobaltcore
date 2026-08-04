@@ -151,8 +151,8 @@ func TestGlanceUWSGICommand_KeepAliveDisabledDropsTimeout(t *testing.T) {
 	apiServer := &glancev1alpha1.APIServerSpec{
 		UWSGI: &glancev1alpha1.UWSGISpec{
 			// A webhook-defaulted spec that explicitly disables keep-alive.
-			Processes:            glancev1alpha1.DefaultUWSGIProcesses,
-			Threads:              glancev1alpha1.DefaultUWSGIThreads,
+			Processes:            commonv1.DefaultUWSGIProcesses,
+			Threads:              commonv1.DefaultUWSGIThreads,
 			HTTPKeepAlive:        ptr.To(false),
 			HTTPKeepAliveTimeout: ptr.To(int32(30)),
 		},
