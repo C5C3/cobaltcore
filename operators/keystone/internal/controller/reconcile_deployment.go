@@ -615,83 +615,30 @@ func apiSelector(keystone *keystonev1alpha1.Keystone, narrowSelector bool) map[s
 	return selectorLabels(keystone)
 }
 
-// uwsgiCommand constructs the uWSGI container command from the given spec.
-// When uwsgi is nil, hardcoded defaults (processes=2, threads=1,
-// httpKeepAlive=true) are used. Fixed flags (--http, --wsgi-file,
-// --master, --lazy-apps, --need-app, --pyargv) are always included regardless
-// of configuration.
+// uwsgiCommand constructs the uWSGI container command for the Keystone API
+// container. Token emission and default resolution are owned by
+// deployment.BuildUWSGICommand; this function only assembles the keystone
+// parameters.
 //
-// federationActive rebinds uWSGI to 127.0.0.1:5000 — only the sidecar may
-// reach it, so no in-cluster client can bypass the header-stripping proxy —
-// and appends --buffer-size 65535: the spike measured claim headers plus the
-// ~4 KiB client-cookie session blowing the 4096-byte default (502s).
-//
-// Optional graceful-termination tuning when UWSGISpec.Harakiri is
-// non-nil, "--harakiri <n>" is appended so a single stuck request cannot hold
-// a worker past the shutdown envelope. When HTTPKeepAliveTimeout is
-// non-nil AND httpKeepAlive is true, "--http-keepalive-timeout <n>" is
-// appended so idle keep-alive sockets close before SIGTERM. The
-// timeout flag is silently dropped when keep-alive is disabled — the flag has
-// no meaning without the parent feature, and the webhook rejects this
-// combination at admission.
-//
-// Always-on uWSGI request logging "--log-master" and
-// "--log-format <literal>" are appended unconditionally between the
-// --http-keepalive[-timeout] block and --wsgi-file so request lines reach
-// stderr in every configuration, including when keep-alive is disabled.
+// federationActive rebinds uWSGI to 127.0.0.1:5000 so only the sidecar may
+// reach it and no in-cluster client can bypass the header-stripping proxy, and
+// appends --buffer-size 65535: the spike measured claim headers plus the ~4 KiB
+// client-cookie session blowing the 4096-byte default (502s).
 func uwsgiCommand(uwsgi *keystonev1alpha1.UWSGISpec, federationActive bool) []string {
-	processes := keystonev1alpha1.DefaultUWSGIProcesses
-	threads := keystonev1alpha1.DefaultUWSGIThreads
-	httpKeepAlive := keystonev1alpha1.DefaultUWSGIHTTPKeepAlive
-
-	if uwsgi != nil {
-		processes = uwsgi.Processes
-		threads = uwsgi.Threads
-		// HTTPKeepAlive is a nil-preserving *bool: nil means "unset", which keeps
-		// the default (true); an explicit true/false is honored verbatim.
-		if uwsgi.HTTPKeepAlive != nil {
-			httpKeepAlive = *uwsgi.HTTPKeepAlive
-		}
-	}
-
 	bind := ":5000"
+	var argsAfterHTTP []string
 	if federationActive {
 		bind = "127.0.0.1:5000"
+		argsAfterHTTP = []string{"--buffer-size", strconv.Itoa(uwsgiFederationBufferSize)}
 	}
-	cmd := []string{
-		"uwsgi",
-		"--http", bind,
-	}
-	if federationActive {
-		cmd = append(cmd, "--buffer-size", strconv.Itoa(uwsgiFederationBufferSize))
-	}
-	if httpKeepAlive {
-		cmd = append(cmd, "--http-keepalive")
-		if uwsgi != nil && uwsgi.HTTPKeepAliveTimeout != nil {
-			cmd = append(cmd, "--http-keepalive-timeout", strconv.Itoa(int(*uwsgi.HTTPKeepAliveTimeout)))
-		}
-	}
-	// Unconditional: makes uWSGI master logging always-on so request
-	// lines reach stderr in every configuration, regardless of keep-alive
-	cmd = append(
-		cmd,
-		"--log-master",
-		"--log-format", "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))",
-	)
-	cmd = append(
-		cmd,
-		"--wsgi-file", "/var/lib/openstack/bin/keystone-wsgi-public",
-		"--master",
-		"--lazy-apps",
-		"--need-app",
-		"--processes", strconv.Itoa(int(processes)),
-		"--threads", strconv.Itoa(int(threads)),
-		"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/",
-	)
-	if uwsgi != nil && uwsgi.Harakiri != nil {
-		cmd = append(cmd, "--harakiri", strconv.Itoa(int(*uwsgi.Harakiri)))
-	}
-	return cmd
+
+	return deployment.BuildUWSGICommand(deployment.UWSGICommandParams{
+		UWSGI:         uwsgi,
+		Bind:          bind,
+		ArgsAfterHTTP: argsAfterHTTP,
+		WSGIFilePath:  "/var/lib/openstack/bin/keystone-wsgi-public",
+		TrailingArgs:  []string{"--pyargv=--config-dir=/etc/keystone/keystone.conf.d/"},
+	})
 }
 
 // priorityClassName returns the priority class name for the Keystone API pods.
