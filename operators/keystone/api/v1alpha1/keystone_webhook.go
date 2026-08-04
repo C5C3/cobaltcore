@@ -15,7 +15,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -80,16 +79,6 @@ const (
 	// into. It is the single source of truth shared by Default() and the
 	// webhook validation enum so the baseline cannot drift across call sites.
 	DefaultDatabaseTLSMode = "require"
-
-	// DefaultUWSGIProcesses / DefaultUWSGIThreads / DefaultUWSGIHTTPKeepAlive are
-	// the uWSGI defaults applied by the defaulting webhook (Processes/Threads)
-	// and the reconciler (uwsgiCommand, when spec.uwsgi is nil). They are the
-	// single source of truth so the webhook and reconcile_deployment.go cannot
-	// drift; the +kubebuilder:default markers on UWSGISpec keep the same literals
-	// in sync separately (markers cannot reference Go constants).
-	DefaultUWSGIProcesses     int32 = 2
-	DefaultUWSGIThreads       int32 = 1
-	DefaultUWSGIHTTPKeepAlive       = true
 
 	// DefaultAdminPasswordMinLength is the floor for the generated admin-password
 	// length. It is the single source of truth shared by the webhook
@@ -178,22 +167,11 @@ func (w *KeystoneWebhook) Default(_ context.Context, obj *Keystone) error {
 			pr.PasswordLength = DefaultPasswordRotationLength
 		}
 	}
-	// Default zero-valued sub-fields of spec.uwsgi when non-nil.
-	// When the pointer is nil, do nothing — the reconciler uses hardcoded defaults.
-	// HTTPKeepAlive is now a nil-preserving *bool, so "unset" is distinguishable
-	// from an explicit false: the webhook restores the documented default (true)
-	// only when the pointer is nil, and leaves an explicit true/false untouched.
-	if obj.Spec.UWSGI != nil {
-		if obj.Spec.UWSGI.Processes == 0 {
-			obj.Spec.UWSGI.Processes = DefaultUWSGIProcesses
-		}
-		if obj.Spec.UWSGI.Threads == 0 {
-			obj.Spec.UWSGI.Threads = DefaultUWSGIThreads
-		}
-		if obj.Spec.UWSGI.HTTPKeepAlive == nil {
-			obj.Spec.UWSGI.HTTPKeepAlive = ptr.To(DefaultUWSGIHTTPKeepAlive)
-		}
-	}
+	// Default zero-valued sub-fields of spec.uwsgi when non-nil. The leaf
+	// defaults are applied by the commonv1.UWSGISpec Default method so they
+	// cannot drift across operators; a nil pointer is a no-op there — the
+	// reconciler uses the same constants as its hardcoded defaults.
+	obj.Spec.UWSGI.Default()
 	// Default zero-valued sub-fields of spec.logging.
 	// When the pointer is nil, materialize the production baseline so downstream
 	// reconciler code dereferences spec.logging unconditionally (mirrors the
