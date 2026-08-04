@@ -132,8 +132,8 @@ func TestPlacementDefault_UWSGISemantics(t *testing.T) {
 	zero := validPlacement()
 	zero.Spec.APIServer = &APIServerSpec{UWSGI: &UWSGISpec{}}
 	g.Expect(w.Default(context.Background(), zero)).To(gomega.Succeed())
-	g.Expect(zero.Spec.APIServer.UWSGI.Processes).To(gomega.Equal(DefaultUWSGIProcesses))
-	g.Expect(zero.Spec.APIServer.UWSGI.Threads).To(gomega.Equal(DefaultUWSGIThreads))
+	g.Expect(zero.Spec.APIServer.UWSGI.Processes).To(gomega.Equal(commonv1.DefaultUWSGIProcesses))
+	g.Expect(zero.Spec.APIServer.UWSGI.Threads).To(gomega.Equal(commonv1.DefaultUWSGIThreads))
 	g.Expect(zero.Spec.APIServer.UWSGI.HTTPKeepAlive).To(gomega.HaveValue(gomega.BeTrue()))
 
 	// An apiServer block without uwsgi is left alone: the nested pointer stays

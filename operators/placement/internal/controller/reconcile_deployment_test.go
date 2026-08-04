@@ -94,7 +94,7 @@ func TestPlacementUWSGICommand_NilAPIServerUsesDefaults(t *testing.T) {
 	g.Expect(cmd).To(ContainElement("--log-master"))
 	logFormat, ok := argAfter(cmd, "--log-format")
 	g.Expect(ok).To(BeTrue())
-	g.Expect(logFormat).To(Equal(uwsgiLogFormat))
+	g.Expect(logFormat).To(Equal(deployment.UWSGILogFormat))
 }
 
 // TestPlacementUWSGICommand_EmptyAPIServerUsesDefaults covers the spec shape a
@@ -148,8 +148,8 @@ func TestPlacementUWSGICommand_KeepAliveDisabledDropsTimeout(t *testing.T) {
 
 	apiServer := &placementv1alpha1.APIServerSpec{
 		UWSGI: &placementv1alpha1.UWSGISpec{
-			Processes:            placementv1alpha1.DefaultUWSGIProcesses,
-			Threads:              placementv1alpha1.DefaultUWSGIThreads,
+			Processes:            commonv1.DefaultUWSGIProcesses,
+			Threads:              commonv1.DefaultUWSGIThreads,
 			HTTPKeepAlive:        ptr.To(false),
 			HTTPKeepAliveTimeout: ptr.To(int32(30)),
 		},

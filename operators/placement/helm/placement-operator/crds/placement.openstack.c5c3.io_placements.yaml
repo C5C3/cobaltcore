@@ -72,7 +72,7 @@ spec:
                         description: |-
                           Harakiri caps the per-request worker lifetime (seconds) via the uWSGI
                           --harakiri flag. A request blocked longer than this bound is
-                          killed so a single stuck DB lookup cannot prevent other in-flight
+                          killed so a single stuck request cannot prevent other in-flight
                           requests from completing cleanly before graceful shutdown ends. When
                           nil, the --harakiri flag is omitted from the uWSGI command entirely
                           (no hidden default is injected). The webhook additionally requires
@@ -85,11 +85,10 @@ spec:
                         description: |-
                           HTTPKeepAlive enables the --http-keepalive flag on the uWSGI process.
                           When false, the flag is omitted from the command. It is a nil-preserving
-                          pointer so "unset" is representable: the defaulting webhook restores the
-                          documented default (true, DefaultUWSGIHTTPKeepAlive in
-                          placement_webhook.go) when the pointer is nil, and the reconciler falls
-                          back to the same default for CRs that bypass the webhook. An explicit false
-                          is honored verbatim.
+                          pointer so "unset" is representable: the owning operator's defaulting
+                          webhook restores the documented default (true) when the pointer is nil,
+                          and the reconciler falls back to the same default for CRs that bypass the
+                          webhook. An explicit false is honored verbatim.
                         type: boolean
                       httpKeepAliveTimeout:
                         description: |-
@@ -106,17 +105,14 @@ spec:
                         type: integer
                       processes:
                         default: 2
-                        description: |-
-                          Processes is the number of uWSGI worker processes.
-                          The default literal mirrors DefaultUWSGIProcesses in placement_webhook.go.
+                        description: Processes is the number of uWSGI worker processes.
                         format: int32
                         minimum: 1
                         type: integer
                       threads:
                         default: 1
-                        description: |-
-                          Threads is the number of threads per uWSGI worker process.
-                          The default literal mirrors DefaultUWSGIThreads in placement_webhook.go.
+                        description: Threads is the number of threads per uWSGI worker
+                          process.
                         format: int32
                         minimum: 1
                         type: integer
