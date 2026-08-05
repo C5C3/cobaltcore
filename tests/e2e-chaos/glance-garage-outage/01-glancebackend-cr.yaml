@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Default S3 image store for the glance-chaos-garage CR. It points at the
+# Default S3 image store for the glance-garage-chaos CR. It points at the
 # in-cluster Garage S3 endpoint on the pre-created glance-images bucket with
 # SigV4 region "garage"; credentials come from the ESO-synced
 # garage-s3-credentials Secret. The NetworkChaos partition (02-networkchaos.yaml)
@@ -11,15 +11,15 @@
 apiVersion: glance.openstack.c5c3.io/v1alpha1
 kind: GlanceBackend
 metadata:
-  name: glance-chaos-garage-s3
+  name: glance-garage-chaos-s3
   namespace: openstack
 spec:
   glanceRef:
-    name: glance-chaos-garage
+    name: glance-garage-chaos
   type: S3
   isDefault: true
   s3:
-    host: http://garage.openstack.svc.cluster.local:3900
+    host: http://garage.shared-services.svc.cluster.local:3900
     bucket: glance-images
     region: garage
     credentialsSecretRef:

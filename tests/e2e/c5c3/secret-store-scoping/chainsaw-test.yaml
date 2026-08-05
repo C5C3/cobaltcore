@@ -74,7 +74,7 @@ spec:
           TENANT_NS="${NAMESPACE}"
           STORE_NAME=openbao-tenant-store
 
-          BAO_NS="openbao-system"
+          BAO_NS="shared-services"
           BAO_POD="openbao-0"
           BAO_ADDR="https://127.0.0.1:8200"
           VAULT_CACERT="/openbao/tls/ca.crt"
@@ -458,6 +458,6 @@ spec:
           echo "=== external-secrets controller logs (last 100 lines) ==="
           kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=100 --all-containers 2>&1 || true
           echo "=== OpenBao logs (last 100 lines) ==="
-          kubectl logs -n openbao-system openbao-0 --tail=100 2>&1 || true
+          kubectl logs -n shared-services openbao-0 --tail=100 2>&1 || true
           echo "=== Events ($NAMESPACE, last 30) ==="
           kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

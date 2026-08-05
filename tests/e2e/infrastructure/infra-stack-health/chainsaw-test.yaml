@@ -89,7 +89,7 @@ spec:
           kind: StatefulSet
           metadata:
             name: openbao
-            namespace: openbao-system
+            namespace: shared-services
           status:
             (readyReplicas >= `1`): true
   # ── Step 3: Infrastructure CRs ─────────────────────────────────────────

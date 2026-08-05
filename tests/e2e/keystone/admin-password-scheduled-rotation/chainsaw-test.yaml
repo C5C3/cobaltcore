@@ -63,7 +63,7 @@ spec:
           # nor the production keystone-admin ExternalSecret reads it. That
           # isolation is why this suite is parallel-safe; see the DECISION block
           # in 00-keystone-cr.yaml.
-          BAO_NS="openbao-system"
+          BAO_NS="shared-services"
           POD="openbao-0"
           SECRET="openbao-init-keys"
           BAO_ADDR="https://127.0.0.1:8200"
@@ -248,7 +248,7 @@ spec:
             -o jsonpath='{.data.password}' 2>/dev/null || true)
 
           # Capture the OpenBao value BEFORE the rotation (the seeded initial pw).
-          BAO_NS="openbao-system"
+          BAO_NS="shared-services"
           BAO_POD="openbao-0"
           BAO_SECRET="openbao-init-keys"
           BAO_ADDR="https://127.0.0.1:8200"
@@ -484,8 +484,8 @@ spec:
             kubectl logs -n "$ns" -l app.kubernetes.io/name=keystone-operator \
               --all-containers --tail=200 --previous 2>&1 || true
           done
-          echo "=== OpenBao logs (openbao-system/openbao-0) ==="
-          kubectl logs -n openbao-system openbao-0 --tail=200 2>&1 || true
+          echo "=== OpenBao logs (shared-services/openbao-0) ==="
+          kubectl logs -n shared-services openbao-0 --tail=200 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
   # ── Step 5: Assert Ready=True maintained after rotation ────────────────

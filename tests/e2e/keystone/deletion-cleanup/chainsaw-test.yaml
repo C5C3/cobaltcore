@@ -250,17 +250,17 @@ spec:
   # and exit non-zero so chainsaw still fails loudly on an operator
   # regression.
   #
-  # Namespace note: the OpenBao server runs in openbao-system (see
+  # Namespace note: the OpenBao server runs in shared-services (see
   # deploy/flux-system/releases/openbao.yaml:14 and
   # deploy/openbao/bootstrap/common.sh:17). The task spec reference to
-  # "namespace openbao" is stale — openbao-system is the authoritative
+  # "namespace openbao" is stale — shared-services is the authoritative
   # target used by the HelmRelease and bootstrap scripts.
   - try:
     - script:
         timeout: 60s
         content: |
           set -u
-          BAO_NS="openbao-system"
+          BAO_NS="shared-services"
           POD="openbao-0"
           SECRET="openbao-init-keys"
           BAO_ADDR="https://127.0.0.1:8200"
@@ -316,8 +316,8 @@ spec:
     - script:
         content: |
           echo "=== openbao pods ==="
-          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao 2>&1 || true
+          kubectl get pods -n shared-services -l app.kubernetes.io/name=openbao 2>&1 || true
           echo "=== openbao logs (last 100 lines) ==="
-          kubectl logs -n openbao-system -l app.kubernetes.io/name=openbao --tail=100 2>&1 || true
+          kubectl logs -n shared-services -l app.kubernetes.io/name=openbao --tail=100 2>&1 || true
           echo "=== external-secrets controller logs (last 200 lines) ==="
           kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=200 2>&1 || true
