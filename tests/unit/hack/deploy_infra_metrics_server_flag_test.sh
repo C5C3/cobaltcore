@@ -163,7 +163,7 @@ test_metrics_server_kustomize_is_gated() {
 # Test 7: metrics-server appended to helm-release wait list
 # The Phase 3 wait list must NOT statically include metrics-server; it must be
 # appended dynamically inside the WITH_METRICS_SERVER gate, after the
-# kube-prometheus-stack append, so the relative ordering of the seven base
+# kube-prometheus-stack append, so the relative ordering of the nine base
 # releases is preserved.
 # ---------------------------------------------------------------------------
 test_metrics_server_appended_dynamically() {
@@ -175,11 +175,11 @@ test_metrics_server_appended_dynamically() {
     "$DEPLOY_INFRA_SH" \
     'envoy-gateway metrics-server'
 
-  # The base array must preserve the eight non-opt-in releases in order.
+  # The base array must preserve the nine non-opt-in releases in order.
   assert_file_contains \
-    "helm_releases array preserves the eight non-opt-in releases in the documented order" \
+    "helm_releases array preserves the nine non-opt-in releases in the documented order" \
     "$DEPLOY_INFRA_SH" \
-    'helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator)'
+    'helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator openbao-operator)'
 
   # The dynamic append must be guarded by WITH_METRICS_SERVER.
   assert_file_contains \
