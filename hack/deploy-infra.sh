@@ -2312,6 +2312,53 @@ main() {
       keystone-admin keystone-db mariadb-root-password
   fi
 
+  # Proving OpenBao instance (deploy/kind/infrastructure/openbao-instance.yaml).
+  # Same apply-before-dependency reason as the Garage block below: Step 5 applies
+  # the CR before Step 7 seeds its unseal key in OpenBao.
+  #
+  # The adoption choreography exists because the openbao-operator blind-creates
+  # the fixed-name Secret openbao-instance-unseal-key (Immutable, random key) on
+  # its first reconcile, and accepts a pre-existing one only against an ownership
+  # proof. The overlay therefore applies the CR paused; here the seeded key is
+  # synced into that Secret, the proof is attached, and only then is the CR
+  # un-paused, so the operator adopts the key custodied in the management
+  # OpenBao.
+  #
+  # The proof is a controller ownerReference to the CR, NOT the operator's
+  # openbao.org/owner-uid annotation. The operator accepts either one, but its
+  # own ValidatingAdmissionPolicy openbao-lock-managed-resource-mutations
+  # reserves that annotation for its own ServiceAccounts and denies every other
+  # writer — clusterwide, at failurePolicy: Fail, and without restricting itself
+  # to resources the operator already manages. An annotate here is rejected, so
+  # the ownerReference is the only proof this script can attach.
+  #
+  # This runs BEFORE the Garage block and its readiness wait is collected after
+  # it: the instance depends on nothing Garage provides, and everything the
+  # un-pause starts (image pull, PVC bind, the two cert-manager Secrets,
+  # self-init, unseal) is wall-clock on every deploy otherwise.
+  #
+  # The ExternalSecret is refreshPolicy: CreatedOnce, so this annotation only
+  # breaks ESO's backoff from the Step 5 apply against a still-sealed OpenBao —
+  # it cannot re-materialize the key of a live instance (that would seal it
+  # permanently).
+  log "Forcing openbao-instance unseal-key ExternalSecret sync..."
+  kubectl annotate externalsecret/openbao-instance-unseal-key -n openstack \
+    "force-sync=${now}" --overwrite || true
+  wait_for_externalsecrets "openstack" "${EXTERNALSECRET_TIMEOUT}" \
+    openbao-instance-unseal-key
+
+  # Attach the ownership proof to the ESO-materialized Secret so the operator
+  # adopts it, then un-pause. The ExternalSecret is creationPolicy: Orphan for
+  # exactly this reason: an object carries at most one controller
+  # ownerReference, so ESO must leave that slot free.
+  local openbao_instance_uid
+  openbao_instance_uid=$(kubectl get openbaocluster openbao-instance -n openstack \
+    -o jsonpath='{.metadata.uid}')
+  kubectl patch secret openbao-instance-unseal-key -n openstack --type merge \
+    -p "{\"metadata\":{\"ownerReferences\":[{\"apiVersion\":\"openbao.org/v1alpha1\",\"kind\":\"OpenBaoCluster\",\"name\":\"openbao-instance\",\"uid\":\"${openbao_instance_uid}\",\"controller\":true,\"blockOwnerDeletion\":true}]}}"
+  kubectl patch openbaocluster openbao-instance -n openstack --type merge \
+    -p '{"spec":{"paused":false}}'
+
   # Garage object store (S3 backend for the Glance e2e suites). Its
   # GarageCluster/GarageBucket/GarageKey CRs and the two ESO ExternalSecrets are
   # applied on BOTH paths — they are not among the MariaDB/Memcached/standalone-
@@ -2344,6 +2391,12 @@ main() {
   kubectl wait garagecluster/garage -n openstack \
     --for=jsonpath='{.status.phase}'=Running --timeout="${POD_TIMEOUT}s"
   log "GarageCluster CR is Running."
+
+  # Collect the readiness of the proving OpenBao instance un-paused above.
+  log "Waiting for the OpenBaoCluster CR to become Available..."
+  kubectl wait openbaocluster/openbao-instance -n openstack \
+    --for=condition=Available --timeout="${POD_TIMEOUT}s"
+  log "OpenBaoCluster CR is Available."
 
   if [[ "${WITH_CONTROLPLANE}" != "true" ]]; then
     # Trigger MariaDB operator re-reconciliation.
