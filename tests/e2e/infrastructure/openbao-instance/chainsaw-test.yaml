@@ -1,0 +1,342 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the proving OpenBaoCluster instance
+# (deploy/kind/infrastructure/openbao-instance.yaml) and the openbao-operator
+# that manages it. Auto-discovered by the e2e-infra job, which runs
+# `chainsaw test tests/e2e/infrastructure/` after `make deploy-infra`.
+#
+# Covers:
+#   - openbao-operator Deployment available + its HelmRelease Ready
+#   - The unseal-key ExternalSecret SecretSynced AND the instance's adoption of
+#     the Secret it materialized: the custody chain from the seed in the
+#     management OpenBao through the shared cluster store into the Secret the
+#     operator actually mounts as this instance's seal
+#   - The OpenBaoCluster reporting Available with readyReplicas 1
+#   - The consumer path a managed Barbican secret store needs, end to end: a
+#     Kubernetes-auth login with a ServiceAccount token, reading the barbican
+#     AppRole role ID, minting a secret ID, a rejected login with a wrong
+#     secret ID, a real AppRole login, and a KV v2 write plus read-back on the
+#     barbican/ mount. Self-init revokes the root token, so Kubernetes auth is
+#     the only entry the suite has, which is exactly the entry Barbican gets
+#   - Restart survival: after an operator-driven rolling restart the replacement
+#     pod comes back unsealed by itself. The suite issues no unseal command
+#     anywhere, which is what makes it a proof of the static seal
+#
+# Suites run with parallel: 4 (tests/e2e/chainsaw-config.yaml). This is the only
+# suite that touches the proving instance, so the restart in the last step
+# cannot disturb a sibling suite.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: openbao-instance
+spec:
+  # Extended assert timeout (~5min) for operator startup, the two cert-manager
+  # Certificates the instance waits for, and the StatefulSet/PVC the
+  # OpenBaoCluster drives.
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Operator Deployment + HelmRelease ───────────────────────────
+  # The chart's fullname helper renders the Deployment as
+  # "openbao-operator-controller" for a release named openbao-operator.
+  # Single-tenant mode (tenancy.mode: single) renders the controller only, no
+  # provisioner Deployment.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: openbao-operator-controller
+            namespace: openbao-operator-system
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        resource:
+          apiVersion: helm.toolkit.fluxcd.io/v2
+          kind: HelmRelease
+          metadata:
+            name: openbao-operator
+            namespace: openbao-operator-system
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+  # ── Step 2: Unseal-key ExternalSecret + its adoption ────────────────────
+  # Reads bootstrap/openstack/openbao-instance/unseal-key from the management
+  # OpenBao through the shared cluster store. SecretSynced proves the seed
+  # reached a Secret; the ownership check below proves it reached THIS
+  # instance's seal. Without it the suite would still pass on a Secret the
+  # operator blind-created with a random key of its own, and every later step —
+  # including the restart survival in Step 5 — would pass with it.
+  - try:
+    - assert:
+        resource:
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata:
+            name: openbao-instance-unseal-key
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: SecretSynced
+    - script:
+        content: |
+          set -eu
+          # The Secret must be the one ESO materialized, not one the operator
+          # blind-created with a key of its own. ESO stamps this label on every
+          # target it writes, whatever the creationPolicy; the ownerReference it
+          # would otherwise set is not available as the marker here, because the
+          # OpenBaoCluster holds that slot (see below).
+          ES_MANAGED="$(kubectl get secret openbao-instance-unseal-key -n openstack \
+            -o 'jsonpath={.metadata.labels.reconcile\.external-secrets\.io/managed}')"
+          if [ "${ES_MANAGED}" != "true" ]; then
+            echo "ERROR: the mounted unseal Secret was not materialized by ESO (managed label '${ES_MANAGED}')"
+            exit 1
+          fi
+          # ...and the instance must have adopted exactly that Secret. The
+          # operator accepts a controller ownerReference carrying the CR's UID as
+          # its ownership proof; its openbao.org/owner-uid annotation is the
+          # other accepted form, but the operator's own ValidatingAdmissionPolicy
+          # reserves that one for its ServiceAccounts, so the deploy attaches
+          # this one.
+          CR_UID="$(kubectl get openbaocluster openbao-instance -n openstack \
+            -o 'jsonpath={.metadata.uid}')"
+          SECRET_UID="$(kubectl get secret openbao-instance-unseal-key -n openstack \
+            -o "jsonpath={.metadata.ownerReferences[?(@.controller==true)].uid}")"
+          if [ -z "${CR_UID}" ] || [ "${SECRET_UID}" != "${CR_UID}" ]; then
+            echo "ERROR: the ESO-materialized unseal Secret is not adopted by the instance (controller owner uid '${SECRET_UID}' vs CR uid '${CR_UID}')"
+            exit 1
+          fi
+          echo "OK: the instance adopted the ESO-materialized unseal Secret (ESO-managed, controller ownerReference matches the CR)"
+  # ── Step 3: OpenBaoCluster instance CR ──────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: openbao.org/v1alpha1
+          kind: OpenBaoCluster
+          metadata:
+            name: openbao-instance
+            namespace: openstack
+          status:
+            (conditions[?type == 'Available']):
+            - status: "True"
+            readyReplicas: 1
+  # ── Step 4: Kubernetes auth to AppRole to KV round-trip ─────────────────
+  # Every OpenBao call runs through `kubectl exec` into the instance pod with
+  # the CLI env the bootstrap scripts use against the shared instance
+  # (BAO_ADDR, VAULT_CACERT on the mounted trust bundle). The server
+  # certificate carries no loopback IP SAN — such a SAN authenticates whatever
+  # listens on localhost rather than this instance — so the loopback connection
+  # is verified against the operator's own SAN via VAULT_TLS_SERVER_NAME. No
+  # probe pod and no probe image: unlike the garage-health S3 step this suite
+  # adds no digest-pinned, Renovate-managed fixture.
+  #
+  # The negative path is first-class. A login with the real role ID and a wrong
+  # secret ID must fail AND hand out nothing, otherwise the round-trip below
+  # would prove nothing about the AppRole credentials it just minted.
+  - try:
+    - script:
+        timeout: 3m
+        content: |
+          set -eu
+          BAO_NS=openstack
+          BAO_POD=openbao-instance-0
+          BAO_ADDR="https://127.0.0.1:8200"
+          VAULT_CACERT="/etc/bao/tls/ca.crt"
+          VAULT_TLS_SERVER_NAME="openbao-cluster-openbao-instance.local"
+
+          # bao_exec <token> <args...> runs the bao CLI in the instance pod.
+          # Tokens travel in the environment and are never echoed.
+          bao_exec() {
+            _token="$1"
+            shift
+            kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+              env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" \
+                  VAULT_TLS_SERVER_NAME="${VAULT_TLS_SERVER_NAME}" \
+                  BAO_TOKEN="${_token}" "$@"
+          }
+
+          # 1. Kubernetes auth. The JWT is handed to the exec'd shell as an
+          #    environment variable rather than interpolated into the bao
+          #    command line. The role is audience-bound, so the token is minted
+          #    for openbao-instance rather than the pod default audience.
+          JWT="$(kubectl create token openbao-instance-provisioner -n "${BAO_NS}" \
+            --audience=openbao-instance)"
+          PTOKEN="$(kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+            env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" \
+                VAULT_TLS_SERVER_NAME="${VAULT_TLS_SERVER_NAME}" JWT="${JWT}" \
+            sh -c 'bao write -field=token auth/kubernetes/login role=provisioner jwt="$JWT"')"
+          if [ -z "${PTOKEN}" ]; then
+            echo "ERROR: Kubernetes auth role provisioner returned no token"
+            exit 1
+          fi
+          echo "OK: Kubernetes auth issued a provisioner token for ServiceAccount openbao-instance-provisioner"
+
+          # 2. Read the barbican AppRole role ID with that token.
+          ROLE_ID="$(bao_exec "${PTOKEN}" \
+            bao read -field=role_id auth/approle/role/barbican/role-id)"
+          if [ -z "${ROLE_ID}" ]; then
+            echo "ERROR: auth/approle/role/barbican/role-id returned nothing"
+            exit 1
+          fi
+          echo "OK: provisioner read the barbican AppRole role ID"
+
+          # 3. Mint a secret ID. The mint takes no payload, hence -force.
+          SECRET_ID="$(bao_exec "${PTOKEN}" \
+            bao write -force -field=secret_id auth/approle/role/barbican/secret-id)"
+          if [ -z "${SECRET_ID}" ]; then
+            echo "ERROR: minting a barbican AppRole secret ID returned nothing"
+            exit 1
+          fi
+          echo "OK: provisioner minted a barbican AppRole secret ID"
+
+          # 4. Negative path: the real role ID with a well-formed but wrong
+          #    secret ID. The CLI reports the rejection on stderr, so that line
+          #    in the step log is expected.
+          if OUT="$(kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+            env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" \
+                VAULT_TLS_SERVER_NAME="${VAULT_TLS_SERVER_NAME}" \
+                ROLE_ID="${ROLE_ID}" \
+            sh -c 'bao write -field=token auth/approle/login role_id="$ROLE_ID" secret_id=00000000-0000-0000-0000-000000000000')"; then
+            echo "ERROR: AppRole login with a wrong secret ID succeeded"
+            exit 1
+          fi
+          if [ -n "${OUT}" ]; then
+            echo "ERROR: the rejected AppRole login still emitted a token"
+            exit 1
+          fi
+          echo "OK: AppRole login with a wrong secret ID was rejected and emitted no token"
+
+          # 5. Real AppRole login with the minted pair.
+          ATOKEN="$(kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+            env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" \
+                VAULT_TLS_SERVER_NAME="${VAULT_TLS_SERVER_NAME}" \
+                ROLE_ID="${ROLE_ID}" SECRET_ID="${SECRET_ID}" \
+            sh -c 'bao write -field=token auth/approle/login role_id="$ROLE_ID" secret_id="$SECRET_ID"')"
+          if [ -z "${ATOKEN}" ]; then
+            echo "ERROR: AppRole login with the minted secret ID returned no token"
+            exit 1
+          fi
+          echo "OK: AppRole login with the minted secret ID issued a token"
+
+          # 6. KV v2 round-trip on the barbican/ mount with the AppRole token.
+          #    The probe value carries the current epoch second and the shell
+          #    PID so a re-run cannot pass on a stale read ($RANDOM is a
+          #    bashism and chainsaw runs these scripts under sh).
+          PROBE_PATH="barbican/e2e/openbao-instance"
+          PROBE_VALUE="probe-$(date +%s)-$$"
+          bao_exec "${ATOKEN}" bao kv put "${PROBE_PATH}" probe="${PROBE_VALUE}" >/dev/null
+          READ_BACK="$(bao_exec "${ATOKEN}" bao kv get -field=probe "${PROBE_PATH}")"
+          if [ "${READ_BACK}" != "${PROBE_VALUE}" ]; then
+            echo "ERROR: read-back mismatch on ${PROBE_PATH}: wrote '${PROBE_VALUE}', read '${READ_BACK}'"
+            exit 1
+          fi
+          echo "OK: the AppRole token wrote and read back ${PROBE_PATH} on the barbican/ mount"
+  # ── Step 5: Restart survival ────────────────────────────────────────────
+  # Replace the instance pod and prove the replacement comes back unsealed. The
+  # step issues NO unseal command, and neither does anything else in this
+  # suite: the static seal reads its key from the mounted Secret on its own.
+  #
+  # The restart is driven through spec.runtime.restartAt on the CR, not through
+  # `kubectl delete pod`. The operator ships a ValidatingAdmissionPolicy
+  # (openbao-lock-managed-resource-mutations) that denies CREATE/UPDATE/DELETE
+  # on every resource carrying app.kubernetes.io/managed-by=openbao-operator
+  # plus an openbao.org/ label, for every principal except its own
+  # ServiceAccounts and a fixed list of kube system controllers — so a direct
+  # delete of the instance pod is rejected at admission, whatever RBAC the
+  # caller holds. restartAt is the operator's own restart primitive: it lands as
+  # a Pod template annotation, which makes a new StatefulSet revision, and the
+  # statefulset controller (exempt in that policy) does the replacing.
+  #
+  # The replacement is identified by a CHANGED pod UID. A bare
+  # `kubectl wait --for=condition=Ready` right after the patch can match the
+  # still-terminating pod, and the OpenBaoCluster condition lags the rollout
+  # the same way, so both are polled instead of asserted once.
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          BAO_NS=openstack
+          BAO_POD=openbao-instance-0
+          BAO_ADDR="https://127.0.0.1:8200"
+          VAULT_CACERT="/etc/bao/tls/ca.crt"
+          VAULT_TLS_SERVER_NAME="openbao-cluster-openbao-instance.local"
+
+          OLD_UID="$(kubectl get pod "${BAO_POD}" -n "${BAO_NS}" \
+            -o 'jsonpath={.metadata.uid}')"
+          if [ -z "${OLD_UID}" ]; then
+            echo "ERROR: pod ${BAO_NS}/${BAO_POD} not found"
+            exit 1
+          fi
+          # A restart is triggered by a CHANGE of the value, so a re-run of this
+          # suite against the same cluster needs a value the previous run cannot
+          # have written. Second resolution is enough: the suite runs once per
+          # chainsaw invocation, and the CI job's three invocations are whole
+          # deploy-infra runs apart.
+          kubectl patch openbaocluster openbao-instance -n "${BAO_NS}" \
+            --type=merge \
+            -p "{\"spec\":{\"runtime\":{\"restartAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}}"
+
+          # 40 polls x 5s = 200s for the pod and 12 x 5s = 60s for the CR,
+          # inside the 5m step timeout together with the rollout above.
+          # One GET per poll, not one per field: three round-trips would both
+          # eat the budget the sleeps are sized against (so a failing run would
+          # be killed by the step timeout before it prints its own diagnosis)
+          # and mix fields read across the replacement boundary.
+          NEW_UID=""
+          PHASE=""
+          READY=""
+          for _ in $(seq 1 40); do
+            STATE="$(kubectl get pod "${BAO_POD}" -n "${BAO_NS}" -o \
+              "jsonpath={.metadata.uid} {.status.phase} {.status.conditions[?(@.type=='Ready')].status}" \
+              2>/dev/null || true)"
+            NEW_UID="$(printf '%s' "${STATE}" | cut -d' ' -f1)"
+            PHASE="$(printf '%s' "${STATE}" | cut -d' ' -f2)"
+            READY="$(printf '%s' "${STATE}" | cut -d' ' -f3)"
+            if [ -n "${NEW_UID}" ] && [ "${NEW_UID}" != "${OLD_UID}" ] &&
+               [ "${PHASE}" = "Running" ] && [ "${READY}" = "True" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "${NEW_UID}" ] || [ "${NEW_UID}" = "${OLD_UID}" ] ||
+             [ "${PHASE}" != "Running" ] || [ "${READY}" != "True" ]; then
+            echo "ERROR: ${BAO_POD} did not come back (uid '${NEW_UID}', phase '${PHASE}', ready '${READY}')"
+            kubectl get pod "${BAO_POD}" -n "${BAO_NS}" -o wide || true
+            exit 1
+          fi
+          echo "OK: ${BAO_POD} was recreated with a new pod UID and is Ready again"
+
+          AVAILABLE=""
+          for _ in $(seq 1 12); do
+            AVAILABLE="$(kubectl get openbaocluster openbao-instance -n "${BAO_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='Available')].status}" 2>/dev/null || true)"
+            if [ "${AVAILABLE}" = "True" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ "${AVAILABLE}" != "True" ]; then
+            echo "ERROR: OpenBaoCluster openbao-instance reports Available='${AVAILABLE}' after the restart"
+            exit 1
+          fi
+          echo "OK: OpenBaoCluster openbao-instance is Available again"
+
+          # `bao status` exits non-zero while the instance is sealed, so the
+          # exit code is tolerated and the JSON body decides. jq is not part of
+          # the openbao image; grep on the JSON is.
+          STATUS_JSON="$(kubectl exec -n "${BAO_NS}" "${BAO_POD}" -- \
+            env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" \
+                VAULT_TLS_SERVER_NAME="${VAULT_TLS_SERVER_NAME}" \
+            bao status -format=json || true)"
+          if ! echo "${STATUS_JSON}" | grep -Eq '"sealed"[[:space:]]*:[[:space:]]*false'; then
+            echo "ERROR: ${BAO_POD} is not unsealed after the restart"
+            echo "${STATUS_JSON}"
+            exit 1
+          fi
+          echo "OK: ${BAO_POD} came back unsealed without any unseal command"
