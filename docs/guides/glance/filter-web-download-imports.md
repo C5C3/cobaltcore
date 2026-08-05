@@ -88,7 +88,7 @@ shorthand encoding of one is refused outright, and a name is accepted only if
 it resolves as an absolute FQDN. That last point matters in-cluster — the
 lookup appends a trailing dot, which defeats the pod's `resolv.conf` search
 list, so an in-cluster mirror must be named in full
-(`garage.openstack.svc.cluster.local`, not `garage`).
+(`garage.shared-services.svc.cluster.local`, not `garage`).
 
 A submitted URI the filter refuses never reaches the fetch: the import call
 returns `400` with Glance's own message naming the URI, before any staging space
@@ -208,11 +208,11 @@ is exactly what the default posture is there to refuse:
 
 ```bash
 openstack --insecure image import --method web-download \
-  --uri http://garage.openstack.svc.cluster.local:3900/glance-images/demo.img filter-demo
+  --uri http://garage.shared-services.svc.cluster.local:3900/glance-images/demo.img filter-demo
 ```
 
 ```
-URI for web-download does not pass filtering: http://garage.openstack.svc.cluster.local:3900/glance-images/demo.img
+URI for web-download does not pass filtering: http://garage.shared-services.svc.cluster.local:3900/glance-images/demo.img
 ```
 
 The call fails synchronously with `400` — a filter rejection, not a network or

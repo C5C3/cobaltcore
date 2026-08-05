@@ -206,9 +206,9 @@ Open <http://localhost:8080> and paste the token.
 **OpenBao** (root token from `openbao-init-keys`):
 
 ```bash
-kubectl get secret openbao-init-keys -n openbao-system \
+kubectl get secret openbao-init-keys -n shared-services \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token'
-kubectl port-forward svc/openbao -n openbao-system 8200:8200
+kubectl port-forward svc/openbao -n shared-services 8200:8200
 ```
 
 The listener enforces mutual TLS, so the browser must present a client

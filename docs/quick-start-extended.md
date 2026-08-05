@@ -249,7 +249,7 @@ cert-manager          cert-manager-*         Ready
 mariadb-system        mariadb-operator-*     Ready
 memcached-system      memcached-operator-*   Ready
 external-secrets      external-secrets-*     Ready
-openbao-system        openbao-0              Ready (unsealed; kind overlay enables the UI on :8200 — see Step 4b)
+shared-services       openbao-0              Ready (unsealed; kind overlay enables the UI on :8200 — see Step 4b)
 openstack             openstack-db-*         Ready (MariaDB cluster)
 openstack             openstack-memcached-*  Ready (Memcached cluster)
 headlamp-system       headlamp-*             Starting (kind-only demo UI, not waited on)
@@ -500,10 +500,11 @@ Raft config. Forward the client port and log in with the root token that
 `make deploy-infra` already seeded into the cluster:
 
 ```bash
-kubectl port-forward svc/openbao -n openbao-system 8200:8200
+kubectl port-forward svc/openbao -n shared-services 8200:8200
 ```
 
-> **Service selection:** `kubectl get svc -n openbao-system` lists two services —
+> **Service selection:** `kubectl get svc -n shared-services` lists both OpenBao
+> services (alongside the Garage ones sharing that namespace) —
 > forward `svc/openbao` (the client `ClusterIP` service that also fronts the UI),
 > **not** `svc/openbao-internal` (the headless Service used for Raft peer
 > discovery between OpenBao pods).
@@ -511,7 +512,7 @@ kubectl port-forward svc/openbao -n openbao-system 8200:8200
 In a second terminal, extract the root token from the `openbao-init-keys` Secret:
 
 ```bash
-export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
+export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
 echo "$BAO_TOKEN"
 ```
@@ -529,11 +530,11 @@ Build a PKCS#12 bundle from the `openbao-client-tls` Secret. Its keypair is sign
 (not SANs) on client auth, so this certificate is accepted:
 
 ```bash
-kubectl get secret openbao-client-tls -n openbao-system \
+kubectl get secret openbao-client-tls -n shared-services \
   -o jsonpath='{.data.tls\.crt}' | base64 -d > openbao-client.crt
-kubectl get secret openbao-client-tls -n openbao-system \
+kubectl get secret openbao-client-tls -n shared-services \
   -o jsonpath='{.data.tls\.key}' | base64 -d > openbao-client.key
-kubectl get secret openbao-client-tls -n openbao-system \
+kubectl get secret openbao-client-tls -n shared-services \
   -o jsonpath='{.data.ca\.crt}'  | base64 -d > openbao-ca.crt
 # The passphrase only protects this throwaway local .p12 during the browser
 # import — it is not an OpenBao credential, so pick any value you like.

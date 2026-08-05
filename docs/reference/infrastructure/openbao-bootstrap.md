@@ -6,8 +6,9 @@ quadrant: infrastructure
 # OpenBao Bootstrap Procedure
 
 Reference documentation for the OpenBao deployment and bootstrap procedure.
-OpenBao is deployed as a 3-replica HA Raft cluster via FluxCD HelmRelease, then
-initialized and configured through a sequence of idempotent bootstrap scripts. The
+OpenBao is deployed as a 3-replica HA Raft cluster via FluxCD HelmRelease
+into the `shared-services` namespace, then initialized and configured through
+a sequence of idempotent bootstrap scripts. The
 scripts provision secret engines, authentication backends, least-privilege policies, and
 initial credentials required by downstream services.
 
@@ -72,17 +73,17 @@ The following must be in place before running the bootstrap scripts:
 | cert-manager | Deployed and healthy (CRDs installed, webhook ready) |
 | Base manifests | `kubectl apply -k deploy/flux-system/` completed successfully |
 | Infrastructure manifests | `kubectl apply -k deploy/flux-system/infrastructure/` completed (includes openbao-tls Certificate) |
-| OpenBao pods | All 3 replicas (`openbao-0`, `openbao-1`, `openbao-2`) running in `openbao-system` namespace |
+| OpenBao pods | All 3 replicas (`openbao-0`, `openbao-1`, `openbao-2`) running in `shared-services` namespace |
 | CLI tools | `kubectl`, `jq` available on the operator workstation; `openssl` available inside the OpenBao pod (used for in-pod password generation) |
 
 **Verification commands:**
 
 ```bash
 # Confirm all 3 OpenBao pods are Running
-kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao
+kubectl get pods -n shared-services -l app.kubernetes.io/name=openbao
 
 # Confirm TLS certificate is ready
-kubectl get certificate openbao-tls -n openbao-system
+kubectl get certificate openbao-tls -n shared-services
 
 # Confirm cert-manager ClusterIssuer exists
 kubectl get clusterissuer selfsigned-cluster-issuer
@@ -225,7 +226,7 @@ cd deploy/openbao/bootstrap
 ./init-unseal.sh
 
 # Retrieve the root token from the Kubernetes Secret
-export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
+export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
 
 # Step 2-5: Run remaining scripts in order
@@ -254,7 +255,7 @@ export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
 | Key threshold | 3 |
 | Output format | JSON |
 | Target pods | `openbao-0`, `openbao-1`, `openbao-2` |
-| Namespace | `openbao-system` |
+| Namespace | `shared-services` |
 
 **Behavior:**
 
@@ -262,7 +263,7 @@ export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
    and parsing the `initialized` field from the JSON output.
 2. If not initialized: runs `bao operator init -key-shares=5 -key-threshold=3
    -format=json` and stores the full JSON output (containing unseal keys and root
-   token) as a Kubernetes Secret `openbao-init-keys` in the `openbao-system` namespace.
+   token) as a Kubernetes Secret `openbao-init-keys` in the `shared-services` namespace.
 3. If already initialized: retrieves existing unseal keys from the `openbao-init-keys`
    Secret.
 4. Iterates over all 3 pods (`openbao-0`, `openbao-1`, `openbao-2`) and unseals each
@@ -616,8 +617,8 @@ into the KV v2 secret engine.
 | `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | Keystone admin user password, scoped per **Managed-mode** ControlPlane. One entry per `KORC_CONTROLPLANES` identity; the default `openstack/controlplane` seeds `kv-v2/bootstrap/openstack/controlplane-keystone/admin`. |
 | `kv-v2/bootstrap/<namespace>/<horizon>/secret-key` | `secret-key` | Horizon Django `SECRET_KEY`, scoped per **Managed-mode** ControlPlane. One entry per `KORC_CONTROLPLANES` identity; the default seeds `kv-v2/bootstrap/openstack/controlplane-horizon/secret-key`, read by the kind-only `horizon-secret-key` ExternalSecret. |
 | `kv-v2/infrastructure/mariadb` | `root-password` | MariaDB root password |
-| `kv-v2/bootstrap/openstack/garage/admin-token` | `token` | Garage Admin API token — the operator authenticates to Garage's Admin API with it. Read by the kind-only `garage-admin-token` ExternalSecret (`GarageCluster.spec.admin.adminTokenSecretRef`). Seeded unconditionally (Garage is base infrastructure, not per-ControlPlane). |
-| `kv-v2/bootstrap/openstack/garage/s3-credentials` | `access-key-id`, `secret-access-key` | Garage S3 key pair, **imported** by the `GarageKey` (not minted by the operator). `access-key-id` is `GK`-prefixed (`@generate-gk`), as Garage requires. Read by the kind-only `garage-s3-credentials` ExternalSecret; Glance later reads the same path from its own namespace. |
+| `kv-v2/bootstrap/openstack/garage/admin-token` | `token` | Garage Admin API token — the operator authenticates to Garage's Admin API with it. Read by the kind-only `garage-admin-token` ExternalSecret in `shared-services` (`GarageCluster.spec.admin.adminTokenSecretRef`). Seeded unconditionally (Garage is base infrastructure, not per-ControlPlane). The `openstack` path segment names the consuming tenant, not the workload's namespace: Garage itself runs in `shared-services`. |
+| `kv-v2/bootstrap/openstack/garage/s3-credentials` | `access-key-id`, `secret-access-key` | Garage S3 key pair, **imported** by the `GarageKey` (not minted by the operator). `access-key-id` is `GK`-prefixed (`@generate-gk`), as Garage requires. Read by two kind-only `garage-s3-credentials` ExternalSecrets on this one path: the copy in `shared-services` feeds the `GarageKey` import, the copy in `openstack` serves the Glance consumers, which resolve `credentialsSecretRef` in their own namespace. |
 | `kv-v2/bootstrap/openstack/openbao-instance/unseal-key` | `key` | Static unseal key of the proving `OpenBaoCluster` (kind-only). Seeded unconditionally and **never rotated**: `write_secret_if_missing` guards the seed side and the consuming ExternalSecret's `refreshPolicy: CreatedOnce` guards the other, because a static seal whose key material changes seals the instance permanently. |
 | `kv-v2/openstack/keystone/openstack/standalone/db` | `username`, `password` | Static Keystone DB credential for **standalone** (non-ControlPlane) Keystone demos only (username is `keystone`), read by the kind-only `keystone-db` ExternalSecret. Brownfield-only. |
 
@@ -737,8 +738,8 @@ All secrets are stored under the `kv-v2/` mount point (KV version 2 engine).
 | `kv-v2/bootstrap/<namespace>/<keystone>/admin` | `password` | `write-bootstrap-secrets.sh` (per **Managed-mode** ControlPlane; default `.../openstack/controlplane-keystone/admin`) | Operator-created ExternalSecret `{controlplane.Name}-keystone-admin-credentials` (default `controlplane-keystone-admin-credentials`); on kind additionally the overlay's `keystone-admin` ExternalSecret (default identity) |
 | `kv-v2/bootstrap/<namespace>/<horizon>/secret-key` | `secret-key` | `write-bootstrap-secrets.sh` (per **Managed-mode** ControlPlane; default `.../openstack/controlplane-horizon/secret-key`) | On kind the overlay's `horizon-secret-key` ExternalSecret (default identity); per-CR ExternalSecrets in test namespaces |
 | `kv-v2/infrastructure/mariadb` | `root-password` | `write-bootstrap-secrets.sh` | On kind the overlay's `mariadb-root-password` ExternalSecret; in production a non-kind Flux MariaDB baseline provides the `mariadb-root-password` Secret itself |
-| `kv-v2/bootstrap/openstack/garage/admin-token` | `token` | `write-bootstrap-secrets.sh` (unconditional; Garage is base infra) | The kind overlay's `garage-admin-token` ExternalSecret → `GarageCluster.spec.admin.adminTokenSecretRef` |
-| `kv-v2/bootstrap/openstack/garage/s3-credentials` | `access-key-id` (`GK`-prefixed), `secret-access-key` | `write-bootstrap-secrets.sh` (unconditional) | The kind overlay's `garage-s3-credentials` ExternalSecret → `GarageKey.spec.importKey.secretRef`; Glance later reads the same path from its own namespace |
+| `kv-v2/bootstrap/openstack/garage/admin-token` | `token` | `write-bootstrap-secrets.sh` (unconditional; Garage is base infra) | The kind overlay's `garage-admin-token` ExternalSecret in `shared-services` → `GarageCluster.spec.admin.adminTokenSecretRef` |
+| `kv-v2/bootstrap/openstack/garage/s3-credentials` | `access-key-id` (`GK`-prefixed), `secret-access-key` | `write-bootstrap-secrets.sh` (unconditional) | The kind overlay's `garage-s3-credentials` ExternalSecret in `shared-services` → `GarageKey.spec.importKey.secretRef`, plus a second copy in `openstack` for the Glance consumers |
 | `kv-v2/bootstrap/openstack/openbao-instance/unseal-key` | `key` | `write-bootstrap-secrets.sh` (unconditional) | The kind overlay's `openbao-instance-unseal-key` ExternalSecret (`refreshPolicy: CreatedOnce`) → the Secret the openbao-operator mounts as the proving instance's static seal. Never rotated |
 | `kv-v2/openstack/keystone/openstack/standalone/db` | `username`, `password` | `write-bootstrap-secrets.sh` (standalone/brownfield only) | The kind overlay's `keystone-db` ExternalSecret, serving standalone (non-ControlPlane) Keystone demos |
 
@@ -805,8 +806,9 @@ Kubernetes.
 
 **Note:** The shared `openbao-cluster-store` is now namespace-restricted. Its
 `spec.conditions` (`deploy/eso/clustersecretstore.yaml`) limit which namespaces
-may reference it to `openstack` — the namespace that hosts the static
-infrastructure ExternalSecrets below. Per-ControlPlane Keystone key material is
+may reference it to `openstack` and `shared-services`. The first hosts the static
+infrastructure ExternalSecrets listed below; the second hosts the Garage ones that
+sit next to the object store. Per-ControlPlane Keystone key material is
 no longer read or written through this shared store; each ControlPlane uses its
 own namespaced `openbao-tenant-store` (backed by the per-tenant `eso-tenant`
 identity, provisioned by `setup-eso-tenant.sh`). The exact allowed namespace is
@@ -863,7 +865,7 @@ reads the exact key specified — the MariaDB CRD uses a standard
 
 | Property | Value |
 | --- | --- |
-| Target namespace | `openbao-system` |
+| Target namespace | `shared-services` |
 | Chart | `openbao` |
 | Version constraint | `>=0.5.0 <1.0.0` |
 | Source | `openbao` HelmRepository |
@@ -913,8 +915,8 @@ declared in `deploy/flux-system/infrastructure/openbao-client-tls-cert.yaml`:
 
 | Certificate | Secret | Consumer | Mount / Reference |
 | --- | --- | --- | --- |
-| `openbao-client-tls` | `openbao-client-tls` (namespace `openbao-system`) | OpenBao pods themselves — Raft `retry_join` peer auth + in-pod `bao` exec via `bootstrap/*.sh` | StatefulSet volume `client-tls` mounted read-only at `/openbao/client-tls`, distinct from the server-cert mount at `/openbao/tls` |
-| `eso-openbao-client-tls` | `eso-openbao-client-tls` (namespace `openbao-system`) | External Secrets Operator `ClusterSecretStore/openbao-cluster-store` | `spec.provider.vault.tls.certSecretRef` / `keySecretRef` (`deploy/eso/clustersecretstore.yaml`); Kubernetes-token `auth.kubernetes` block is unchanged — mTLS is purely a transport-layer admission gate |
+| `openbao-client-tls` | `openbao-client-tls` (namespace `shared-services`) | OpenBao pods themselves — Raft `retry_join` peer auth + in-pod `bao` exec via `bootstrap/*.sh` | StatefulSet volume `client-tls` mounted read-only at `/openbao/client-tls`, distinct from the server-cert mount at `/openbao/tls` |
+| `eso-openbao-client-tls` | `eso-openbao-client-tls` (namespace `shared-services`) | External Secrets Operator `ClusterSecretStore/openbao-cluster-store` | `spec.provider.vault.tls.certSecretRef` / `keySecretRef` (`deploy/eso/clustersecretstore.yaml`); Kubernetes-token `auth.kubernetes` block is unchanged — mTLS is purely a transport-layer admission gate |
 
 Both client Certificates carry `usages: ["client auth"]` and share the
 `openbao-tls` duration / `renewBefore` so server and client rotation cadences
@@ -928,11 +930,11 @@ the OpenBao listener does not verify SANs on client auth, only the issuing CA.
 | `openbao-0.openbao-internal` | DNS | `openbao-tls` (server) | `server auth` | StatefulSet pod 0 |
 | `openbao-1.openbao-internal` | DNS | `openbao-tls` (server) | `server auth` | StatefulSet pod 1 |
 | `openbao-2.openbao-internal` | DNS | `openbao-tls` (server) | `server auth` | StatefulSet pod 2 |
-| `openbao.openbao-system.svc` | DNS | `openbao-tls` (server) | `server auth` | Kubernetes Service endpoint |
+| `openbao.shared-services.svc` | DNS | `openbao-tls` (server) | `server auth` | Kubernetes Service endpoint |
 | `127.0.0.1` | IP | `openbao-tls` (server) | `server auth` | Pod-local loopback (bootstrap scripts, `bao_exec`) |
 | `::1` | IP | `openbao-tls` (server) | `server auth` | IPv6 loopback |
-| `openbao-client.openbao-system.svc` | DNS | `openbao-client-tls` | `client auth` | Identifier only; presented by OpenBao pods on Raft `retry_join` and in-pod `bao` exec. SANs are not verified by the listener for client auth — chain-to-CA is. |
-| `eso-openbao-client.openbao-system.svc` | DNS | `eso-openbao-client-tls` | `client auth` | Identifier only; presented by ESO `ClusterSecretStore/openbao-cluster-store` on every Vault call. SANs are not verified. |
+| `openbao-client.shared-services.svc` | DNS | `openbao-client-tls` | `client auth` | Identifier only; presented by OpenBao pods on Raft `retry_join` and in-pod `bao` exec. SANs are not verified by the listener for client auth — chain-to-CA is. |
+| `eso-openbao-client.shared-services.svc` | DNS | `eso-openbao-client-tls` | `client auth` | Identifier only; presented by ESO `ClusterSecretStore/openbao-cluster-store` on every Vault call. SANs are not verified. |
 
 ### Resource Limits
 
@@ -985,7 +987,7 @@ from `bao` CLI commands are propagated to stderr by `kubectl exec`.
 Verify the TLS certificate Secret exists and is populated:
 
 ```bash
-kubectl get secret openbao-tls -n openbao-system -o jsonpath='{.data.tls\.crt}' | wc -c
+kubectl get secret openbao-tls -n shared-services -o jsonpath='{.data.tls\.crt}' | wc -c
 ```
 
 If the Secret is empty or missing, check cert-manager logs:
@@ -1000,8 +1002,8 @@ If the `openbao-init-keys` Secret is deleted, the unseal keys cannot be recovere
 OpenBao must be completely redeployed (delete PVCs, delete pods, re-run init):
 
 ```bash
-kubectl delete pvc -n openbao-system -l app.kubernetes.io/name=openbao
-kubectl delete pods -n openbao-system -l app.kubernetes.io/name=openbao
+kubectl delete pvc -n shared-services -l app.kubernetes.io/name=openbao
+kubectl delete pods -n shared-services -l app.kubernetes.io/name=openbao
 # Wait for pods to restart, then re-run init-unseal.sh
 ```
 
@@ -1038,7 +1040,7 @@ Common causes:
 - ESO service account missing (verify `external-secrets` SA exists in `external-secrets` namespace)
 - TLS trust failure (verify `openbao-tls` Secret contains `ca.crt` key)
 - Missing client certificate: verify the `eso-openbao-client-tls`
-  Secret exists in `openbao-system` and the `ClusterSecretStore`
+  Secret exists in `shared-services` and the `ClusterSecretStore`
   `spec.provider.vault.tls.certSecretRef` / `keySecretRef` point at it. With
   `tls_require_and_verify_client_cert = true` on the listener, an absent or
   mis-referenced client cert appears as a generic TLS handshake error in the
@@ -1059,7 +1061,7 @@ because the handshake must fail:
 #   exit code 35/56 from curl with no body returned.
 # Exit code MUST be non-zero. A 200 OK from this command would indicate that
 # tls_require_and_verify_client_cert is NOT being enforced and is a P0 incident.
-kubectl exec -n openbao-system openbao-0 -- \
+kubectl exec -n shared-services openbao-0 -- \
   sh -c 'curl --cacert /openbao/tls/ca.crt -sS -o /dev/null \
              -w "http_code=%{http_code}\n" \
              https://127.0.0.1:8200/v1/sys/health; echo "exit=$?"'
@@ -1070,7 +1072,7 @@ Then confirm the same call succeeds **with** the client cert (this is what
 
 ```bash
 # Expected: http_code=200 (or 429 if standby), exit=0.
-kubectl exec -n openbao-system openbao-0 -- \
+kubectl exec -n shared-services openbao-0 -- \
   sh -c 'curl --cacert /openbao/tls/ca.crt \
              --cert   /openbao/client-tls/tls.crt \
              --key    /openbao/client-tls/tls.key \
@@ -1082,7 +1084,7 @@ If the first command unexpectedly returns `http_code=200`, the listener is not
 enforcing client-cert auth — re-check
 `deploy/flux-system/releases/openbao.yaml` for `tls_client_ca_file` and
 `tls_require_and_verify_client_cert = true`, and that the HelmRelease has
-reconciled (`kubectl get helmrelease openbao -n openbao-system`).
+reconciled (`kubectl get helmrelease openbao -n shared-services`).
 
 ## Related Resources
 

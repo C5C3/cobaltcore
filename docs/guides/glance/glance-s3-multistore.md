@@ -46,9 +46,10 @@ resource name in the examples below is one that devstack produces.
 
 The ControlPlane devstack ships an in-cluster, S3-compatible
 [Garage object store](../../reference/infrastructure/infrastructure-manifests.md#garage-object-store)
-so the multi-store flow is copy-pasteable against a kind cluster. It provides:
+in the `shared-services` namespace, so the multi-store flow is copy-pasteable
+against a kind cluster. It provides:
 
-- an S3 endpoint at `http://garage.openstack.svc.cluster.local:3900`
+- an S3 endpoint at `http://garage.shared-services.svc.cluster.local:3900`
   (path-style addressing, SigV4 region `garage`);
 - two pre-created buckets, `glance-images` (the store the devstack's `default`
   backend uses) and `glance-images-2` (the second store this guide attaches);
@@ -70,7 +71,7 @@ apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: glance-archive
-  namespace: openstack
+  namespace: shared-services
 spec:
   clusterRef:
     name: garage
@@ -80,7 +81,7 @@ apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: glance-archive-s3
-  namespace: openstack
+  namespace: shared-services
 spec:
   clusterRef:
     name: garage
@@ -91,7 +92,10 @@ spec:
 ```
 
 The garage-operator reconciles the bucket and materializes the key's S3
-credentials into a Secret you then point a backend's `credentialsSecretRef` at.
+credentials into a Secret in `shared-services`. A backend resolves
+`credentialsSecretRef` in the Glance service's own namespace, so the credentials
+have to reach `openstack` as well; the devstack does that with a second
+`ExternalSecret` reading the same OpenBao path.
 
 ## Step 2 — Attach the second store
 
@@ -113,7 +117,7 @@ spec:
           type: S3
           isDefault: true
           s3:
-            endpoint: http://garage.openstack.svc.cluster.local:3900
+            endpoint: http://garage.shared-services.svc.cluster.local:3900
             bucket: glance-images
             region: garage
             credentialsSecretRef:
@@ -122,7 +126,7 @@ spec:
           type: S3
           isDefault: false
           s3:
-            endpoint: http://garage.openstack.svc.cluster.local:3900
+            endpoint: http://garage.shared-services.svc.cluster.local:3900
             bucket: glance-images-2
             region: garage
             credentialsSecretRef:
@@ -357,7 +361,7 @@ spec:
   type: S3
   isDefault: true
   s3:
-    host: http://garage.openstack.svc.cluster.local:3900
+    host: http://garage.shared-services.svc.cluster.local:3900
     bucket: glance-images
     region: garage
     credentialsSecretRef:
@@ -374,7 +378,7 @@ spec:
   type: S3
   isDefault: false
   s3:
-    host: http://garage.openstack.svc.cluster.local:3900
+    host: http://garage.shared-services.svc.cluster.local:3900
     bucket: glance-images-2
     region: garage
     credentialsSecretRef:

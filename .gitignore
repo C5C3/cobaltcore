@@ -55,6 +55,10 @@ demo/
 *.pem
 *.key
 *.pfx
+# A dump of the OpenBao init Secret — root token plus every unseal share, in
+# plaintext. The migration procedure writes it outside the tree; this catches
+# the copy that lands here anyway.
+openbao-init-keys*
 
 # Build artifact: copied at deploy time from operators/keystone/dashboards/
 # (WITH_PROMETHEUS=true) so kustomize's configMapGenerator can reference it from

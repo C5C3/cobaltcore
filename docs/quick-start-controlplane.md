@@ -165,7 +165,7 @@ spec:
           type: S3
           isDefault: true
           s3:
-            endpoint: http://garage.openstack.svc.cluster.local:3900
+            endpoint: http://garage.shared-services.svc.cluster.local:3900
             bucket: glance-images
             region: garage
             credentialsSecretRef:
@@ -199,9 +199,9 @@ entry.
 
 The `glance` block makes the reconciler project the OpenStack Image service and
 one `GlanceBackend` child per `backends` entry — here a single S3 store on the
-in-cluster Garage object store. Garage and the ESO-synced
-`garage-s3-credentials` Secret ship with the Step 2 stack, so
-`credentialsSecretRef` resolves without extra wiring. The `gateway` block
+in-cluster Garage object store. Garage runs in `shared-services`; the Step 2
+stack also syncs a `garage-s3-credentials` Secret into `openstack`, which is
+where the Glance child resolves `credentialsSecretRef`. The `gateway` block
 exposes the image API through the same shared Envoy Gateway as Keystone and
 Horizon, on the third HTTPS listener the kind overlay adds for
 `glance.127-0-0-1.nip.io`, and `publicEndpoint` makes the public image catalog
@@ -294,7 +294,7 @@ spec:
           type: S3
           isDefault: true
           s3:
-            endpoint: http://garage.openstack.svc.cluster.local:3900
+            endpoint: http://garage.shared-services.svc.cluster.local:3900
             bucket: glance-images
             region: garage
             credentialsSecretRef:
@@ -362,7 +362,7 @@ reachable database):
 ```bash
 kubectl wait mariadb/openstack-db -n openstack --for=condition=Ready --timeout=10m
 
-export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
+export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
 deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
 unset BAO_TOKEN
