@@ -18,19 +18,23 @@
 #   1. write-bootstrap-secrets.sh seeds a GK-prefixed access/secret pair at
 #      bootstrap/openstack/garage/s3-credentials and an admin token at
 #      bootstrap/openstack/garage/admin-token.
-#   2. Two kind-only ExternalSecrets materialize them into the `openstack`
-#      namespace as Secrets garage-s3-credentials / garage-admin-token.
+#   2. Kind-only ExternalSecrets materialize them: garage-admin-token and one
+#      garage-s3-credentials copy into `shared-services`, where the
+#      GarageCluster and the GarageKey import consume them, plus a retained
+#      garage-s3-credentials copy in `openstack` for the Glance consumers. All
+#      of them read the same OpenBao paths through the shared cluster store.
 #   3. The GarageCluster reads the admin token via admin.adminTokenSecretRef;
 #      the GarageKey IMPORTS the pre-existing S3 pair via importKey.secretRef
 #      (rather than the operator minting a fresh key), so the key material never
-#      diverges from OpenBao. Glance later reads the identical OpenBao path from
-#      its own namespace through its tenant store.
+#      diverges from OpenBao. The Glance consumers reference the Secret
+#      garage-s3-credentials from their own namespace, which is what the
+#      retained `openstack` copy materializes.
 ---
 apiVersion: garage.rajsingh.info/v1beta2
 kind: GarageCluster
 metadata:
   name: garage
-  namespace: openstack
+  namespace: shared-services
 spec:
   # No spec.image: the Garage version rides the operator/chart releases Renovate
   # already tracks, so pinning our own image would add a customManager for no CI
@@ -66,7 +70,7 @@ apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: glance-images
-  namespace: openstack
+  namespace: shared-services
 spec:
   clusterRef:
     name: garage
@@ -79,7 +83,7 @@ apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageBucket
 metadata:
   name: glance-images-2
-  namespace: openstack
+  namespace: shared-services
 spec:
   clusterRef:
     name: garage
@@ -92,13 +96,14 @@ apiVersion: garage.rajsingh.info/v1beta1
 kind: GarageKey
 metadata:
   name: glance-s3
-  namespace: openstack
+  namespace: shared-services
 spec:
   clusterRef:
     name: garage
   # Import the pre-seeded OpenBao key pair rather than minting a new one. The
-  # secretRef namespace defaults to this GarageKey's namespace (openstack); the
-  # data-key names are pinned to match the garage-s3-credentials Secret.
+  # secretRef namespace defaults to this GarageKey's namespace
+  # (shared-services); the data-key names are pinned to match the
+  # garage-s3-credentials Secret.
   importKey:
     secretRef:
       name: garage-s3-credentials

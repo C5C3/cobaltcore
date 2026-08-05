@@ -11,8 +11,9 @@
 # NOT come along and nothing prunes what stays behind — `kubectl apply -k` does
 # not prune and the FluxInstance declares no spec.sync. Continuing would leave a
 # second, unsealed OpenBao serving every historical secret (root token and unseal
-# keys in plaintext) that nobody watches any more. The guard converts that silent
-# split-brain into a hard stop with the deletion command.
+# keys in plaintext) that nobody watches any more, and a Garage cluster still
+# holding the objects Glance's database points at. The guard converts that silent
+# split-brain into a hard stop with the deletion commands.
 #
 # Usage: bash tests/unit/hack/deploy_infra_relocation_guard_test.sh
 
@@ -120,7 +121,39 @@ test_retired_openbao_namespace_aborts() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: a clean cluster passes
+# Test 2: a retired GarageCluster in openstack aborts the run
+# ---------------------------------------------------------------------------
+test_retired_garage_cluster_aborts() {
+  echo "Test: check_relocated_infrastructure aborts when the openstack GarageCluster still exists"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  make_kubectl_stub "$tmp" "get garagecluster garage -n openstack"
+
+  local output exit_code
+  output="$(run_guard "$tmp")"
+  exit_code=$?
+
+  assert_nonzero_exit "the guard exits non-zero on a pre-relocation Garage cluster" "$exit_code"
+  assert_contains "the error names the retired GarageCluster" \
+    "$output" "GarageCluster 'garage' still exists in 'openstack'"
+  assert_contains "the error hands over the deletion command" \
+    "$output" "kubectl delete garagecluster garage -n openstack"
+  # An unfiltered `kubectl get pvc -n openstack` lists the MariaDB volume holding
+  # the Keystone database next to the Garage ones, under an instruction to delete
+  # from the list.
+  assert_contains "the PVC listing is scoped to the Garage volumes" \
+    "$output" "kubectl get pvc -n openstack | grep garage"
+  # The OpenBao half must not fire on its own evidence: this cluster has already
+  # taken the OpenBao move, only the Garage one is outstanding.
+  assert_not_contains "the guard reports only what it actually found" \
+    "$output" "namespace 'openbao-system' still exists"
+}
+
+# ---------------------------------------------------------------------------
+# Test 3: a clean cluster passes
 # ---------------------------------------------------------------------------
 test_clean_cluster_passes() {
   echo "Test: check_relocated_infrastructure is a no-op on a clean cluster"
@@ -142,7 +175,41 @@ test_clean_cluster_passes() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: an unreadable cluster aborts instead of passing green
+# Test 4: an unregistered garagecluster Kind is still a clean cluster
+# ---------------------------------------------------------------------------
+test_unregistered_garage_kind_passes() {
+  echo "Test: check_relocated_infrastructure treats an unregistered GarageCluster Kind as absent"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # The guard runs before Step 5 installs any CRD, so on a fresh cluster the
+  # GarageCluster lookup misses with a discovery error rather than a NotFound.
+  cat >"$tmp/kubectl" <<'STUB'
+#!/bin/bash
+args="$*"
+case "$args" in
+  *garagecluster*)
+    echo 'error: the server doesn'"'"'t have a resource type "garagecluster"' >&2 ;;
+  *)
+    echo "Error from server (NotFound): ${args} not found" >&2 ;;
+esac
+exit 1
+STUB
+  chmod +x "$tmp/kubectl"
+
+  local output exit_code
+  output="$(run_guard "$tmp")"
+  exit_code=$?
+
+  assert_eq "the guard exits 0 when the Kind was never registered" "0" "$exit_code"
+  assert_not_contains "the guard stays silent when the Kind was never registered" \
+    "$output" "ERROR:"
+}
+
+# ---------------------------------------------------------------------------
+# Test 5: an unreadable cluster aborts instead of passing green
 # ---------------------------------------------------------------------------
 test_unreachable_cluster_aborts() {
   echo "Test: check_relocated_infrastructure aborts when it cannot read the cluster"
@@ -168,7 +235,7 @@ test_unreachable_cluster_aborts() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 5: ALLOW_PRE_RELOCATION downgrades the abort to a warning
+# Test 6: ALLOW_PRE_RELOCATION downgrades the abort to a warning
 # ---------------------------------------------------------------------------
 test_allow_pre_relocation_overrides_abort() {
   echo "Test: ALLOW_PRE_RELOCATION=true continues against a pre-relocation cluster"
@@ -300,7 +367,9 @@ test_phase3_waits_on_qualified_openbao() {
 # Run
 # ---------------------------------------------------------------------------
 test_retired_openbao_namespace_aborts
+test_retired_garage_cluster_aborts
 test_clean_cluster_passes
+test_unregistered_garage_kind_passes
 test_unreachable_cluster_aborts
 test_allow_pre_relocation_overrides_abort
 test_duplicate_release_name_is_waitable

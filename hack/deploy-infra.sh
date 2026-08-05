@@ -1093,19 +1093,23 @@ relocated_object_exists() {
 # ---------------------------------------------------------------------------
 # check_relocated_infrastructure — Refuse to run against a pre-relocation stack.
 #
-# The shared OpenBao cluster moved out of openbao-system into shared-services.
-# Its raft store is a namespace-scoped StatefulSet PVC set, so the move does not
-# carry the data over: this script brings up an EMPTY cluster in shared-services
-# and nothing prunes what stays behind. `kubectl apply -k` (Step 3/5) does not
-# prune, and deploy/flux-system/fluxinstance.yaml declares no spec.sync, so Flux
-# never reconciles-and-prunes the repo either.
+# The shared OpenBao cluster moved out of openbao-system, and the Garage object
+# store out of openstack, into shared-services. Both keep their state in
+# namespace-scoped StatefulSet PVCs, so the move does not carry the data over:
+# this script brings up EMPTY volumes in shared-services and nothing prunes what
+# stays behind. `kubectl apply -k` (Step 3/5) does not prune, and
+# deploy/flux-system/fluxinstance.yaml declares no spec.sync, so Flux never
+# reconciles-and-prunes the repo either.
 #
-# Left in place, the retired namespace keeps a second, unsealed OpenBao serving
-# every historical secret on openbao.openbao-system.svc:8200, plus the plaintext
-# root token and all unseal keys in Secret openbao-init-keys and the server key
-# in openbao-tls — unowned, unrotated, and no longer watched by anyone, while ESO
-# is repointed at the new empty instance. Nothing about that degrades visibly, so
-# fail loudly here and let the operator delete it explicitly.
+# Left in place, the retired OpenBao namespace keeps a second, unsealed instance
+# serving every historical secret on openbao.openbao-system.svc:8200, plus the
+# plaintext root token and all unseal keys in Secret openbao-init-keys and the
+# server key in openbao-tls — unowned, unrotated, and no longer watched by
+# anyone, while ESO is repointed at the new empty instance. The retired
+# GarageCluster likewise keeps serving the objects Glance's database still points
+# at while Glance is repointed at empty buckets, so every image stays `active`
+# and every download 404s. Neither degrades visibly, so fail loudly here and let
+# the operator delete them explicitly.
 #
 # Runs after Step 1 (the cluster exists) and before Step 2 applies any manifest.
 # On a fresh cluster every lookup below reports the object missing and the
@@ -1124,6 +1128,20 @@ check_relocated_infrastructure() {
     log "       plaintext root token and unseal keys in Secret openbao-init-keys."
     log "       Delete it explicitly before rerunning:"
     log "         kubectl delete namespace openbao-system"
+  fi
+
+  if relocated_object_exists garagecluster garage -n openstack; then
+    stale=true
+    log "ERROR: GarageCluster 'garage' still exists in 'openstack'. The Garage object"
+    log "       store moved to 'shared-services' and its buckets are re-created empty"
+    log "       there. The old cluster keeps running on the objects Glance's database"
+    log "       still references, so leaving it costs node storage and makes every"
+    log "       pre-existing image report active while its download 404s."
+    log "       Delete it explicitly before rerunning, then remove the PVCs its"
+    log "       StatefulSet leaves behind — and ONLY those: this namespace also"
+    log "       holds the MariaDB volume carrying the Keystone database."
+    log "         kubectl delete garagecluster garage -n openstack"
+    log "         kubectl get pvc -n openstack | grep garage   # delete only these"
   fi
 
   if [[ "${stale}" == "true" ]]; then
@@ -2502,20 +2520,28 @@ main() {
     -p '{"spec":{"paused":false}}'
 
   # Garage object store (S3 backend for the Glance e2e suites). Its
-  # GarageCluster/GarageBucket/GarageKey CRs and the two ESO ExternalSecrets are
-  # applied on BOTH paths — they are not among the MariaDB/Memcached/standalone-
-  # shim resources the WITH_CONTROLPLANE overlay filter drops — so this
-  # readiness block runs unconditionally. The two ExternalSecrets read the
-  # OpenBao paths bootstrap/openstack/garage/{admin-token,s3-credentials} through
-  # the shared cluster store (re-validated above on both paths); force a re-sync
-  # now that OpenBao is up, the same reason as the standalone shims above.
+  # GarageCluster/GarageBucket/GarageKey CRs live in shared-services and are
+  # applied, like the three ESO ExternalSecrets below, on BOTH paths — they are
+  # not among the MariaDB/Memcached/standalone-shim resources the
+  # WITH_CONTROLPLANE overlay filter drops — so this readiness block runs
+  # unconditionally. garage-admin-token and garage-s3-credentials in
+  # shared-services feed the GarageCluster's admin token and the GarageKey
+  # import; the retained garage-s3-credentials in openstack serves the Glance
+  # consumers. All three read the OpenBao paths
+  # bootstrap/openstack/garage/{admin-token,s3-credentials} through the shared
+  # cluster store (re-validated above on both paths); force a re-sync now that
+  # OpenBao is up, the same reason as the standalone shims above.
   log "Forcing Garage ExternalSecret re-sync..."
   for es in garage-admin-token garage-s3-credentials; do
-    kubectl annotate "externalsecret/${es}" -n openstack \
+    kubectl annotate "externalsecret/${es}" -n shared-services \
       "force-sync=${now}" --overwrite || true
   done
-  wait_for_externalsecrets "openstack" "${EXTERNALSECRET_TIMEOUT}" \
+  kubectl annotate externalsecret/garage-s3-credentials -n openstack \
+    "force-sync=${now}" --overwrite || true
+  wait_for_externalsecrets "shared-services" "${EXTERNALSECRET_TIMEOUT}" \
     garage-admin-token garage-s3-credentials
+  wait_for_externalsecrets "openstack" "${EXTERNALSECRET_TIMEOUT}" \
+    garage-s3-credentials
 
   # The GarageCluster CR was applied in Step 5, before its admin-token Secret
   # existed (that Secret is materialized by the ExternalSecret above). The
@@ -2527,10 +2553,10 @@ main() {
   # sets no "Ready" status condition (only health conditions such as
   # QuorumAtRisk), so the wait keys on status.phase rather than a condition.
   log "Triggering GarageCluster re-reconciliation..."
-  kubectl patch garagecluster garage -n openstack --type merge \
+  kubectl patch garagecluster garage -n shared-services --type merge \
     -p "{\"metadata\":{\"annotations\":{\"deploy.c5c3.io/reconcile-trigger\":\"${now}\"}}}" || true
   log "Waiting for the GarageCluster CR to become Running..."
-  kubectl wait garagecluster/garage -n openstack \
+  kubectl wait garagecluster/garage -n shared-services \
     --for=jsonpath='{.status.phase}'=Running --timeout="${POD_TIMEOUT}s"
   log "GarageCluster CR is Running."
 
