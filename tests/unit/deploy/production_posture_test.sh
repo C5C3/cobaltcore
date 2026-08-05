@@ -34,7 +34,12 @@
 # openbao.yaml is therefore excluded from the byte-identity check.
 #
 # In addition, any net-new file under deploy/flux-system/sources/ must contain
-# ONLY HelmRepository objects (no HelmRelease / Gateway controller leakage).
+# ONLY Flux SOURCE objects — HelmRepository, OCIRepository, GitRepository — so
+# that no HelmRelease / Gateway controller leaks into the sources directory.
+# OCIRepository joined the list for the openbao-operator chart, which pins an
+# artifact digest (a HelmRepository can only carry a chart version, which does
+# not gate a re-pushed OCI tag); GitRepository is what sources/k-orc.yaml has
+# always been.
 #
 # Skipped when the run is not inside a git worktree (e.g., shipped tarballs)
 # or when origin/main is unavailable.
@@ -89,11 +94,11 @@ test_production_overlay_unchanged() {
   # remain byte-identical.
   local groups_label=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated, openbao.yaml edited in place, external-secrets.yaml edited in place, keystone-operator.yaml/horizon-operator.yaml edited in place for the image-digest valuesFrom, and the c5c3-operator.yaml/k-orc.yaml/garage-operator.yaml/glance-operator.yaml/placement-operator.yaml releases added)"
+    "deploy/flux-system/releases (excluding chaos-mesh.yaml relocated, openbao.yaml edited in place, external-secrets.yaml edited in place, keystone-operator.yaml/horizon-operator.yaml edited in place for the image-digest valuesFrom, and the c5c3-operator.yaml/k-orc.yaml/garage-operator.yaml/glance-operator.yaml/placement-operator.yaml/openbao-operator.yaml releases added)"
   )
   local groups_specs=(
     "deploy/flux-system/fluxinstance.yaml"
-    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/chaos-mesh.yaml :(exclude)deploy/flux-system/releases/openbao.yaml :(exclude)deploy/flux-system/releases/external-secrets.yaml :(exclude)deploy/flux-system/releases/c5c3-operator.yaml :(exclude)deploy/flux-system/releases/k-orc.yaml :(exclude)deploy/flux-system/releases/garage-operator.yaml :(exclude)deploy/flux-system/releases/keystone-operator.yaml :(exclude)deploy/flux-system/releases/horizon-operator.yaml :(exclude)deploy/flux-system/releases/glance-operator.yaml :(exclude)deploy/flux-system/releases/placement-operator.yaml"
+    "deploy/flux-system/releases :(exclude)deploy/flux-system/releases/chaos-mesh.yaml :(exclude)deploy/flux-system/releases/openbao.yaml :(exclude)deploy/flux-system/releases/external-secrets.yaml :(exclude)deploy/flux-system/releases/c5c3-operator.yaml :(exclude)deploy/flux-system/releases/k-orc.yaml :(exclude)deploy/flux-system/releases/garage-operator.yaml :(exclude)deploy/flux-system/releases/keystone-operator.yaml :(exclude)deploy/flux-system/releases/horizon-operator.yaml :(exclude)deploy/flux-system/releases/glance-operator.yaml :(exclude)deploy/flux-system/releases/placement-operator.yaml :(exclude)deploy/flux-system/releases/openbao-operator.yaml"
   )
 
   local diff_output=""
@@ -123,9 +128,9 @@ test_production_overlay_unchanged() {
 }
 
 # --- Test 2: any added file under deploy/flux-system/sources/ contains
-#             only HelmRepository objects ---
-test_added_sources_are_helmrepository_only() {
-  echo "Test: added deploy/flux-system/sources/* files contain only HelmRepository objects"
+#             only Flux source objects ---
+test_added_sources_are_flux_sources_only() {
+  echo "Test: added deploy/flux-system/sources/* files contain only Flux source objects"
 
   if ! preflight; then
     echo "  SKIP: git / origin/main unavailable (1 check skipped)"
@@ -152,12 +157,12 @@ test_added_sources_are_helmrepository_only() {
     if [[ ! -f "$abs" ]]; then
       continue
     fi
-    # Extract all `kind:` values from the file; any non-HelmRepository value
-    # is a policy violation.
+    # Extract all `kind:` values from the file; anything that is not a Flux
+    # chart/artifact source is a policy violation.
     local offending
-    offending="$(awk '/^kind:[[:space:]]+/{print $2}' "$abs" | grep -vE '^HelmRepository$' || true)"
+    offending="$(awk '/^kind:[[:space:]]+/{print $2}' "$abs" | grep -vE '^(HelmRepository|OCIRepository|GitRepository)$' || true)"
     if [[ -n "$offending" ]]; then
-      echo "  FAIL: $path contains non-HelmRepository kinds: $(echo "$offending" | tr '\n' ',' )"
+      echo "  FAIL: $path contains non-source kinds: $(echo "$offending" | tr '\n' ',' )"
       violations=$((violations + 1))
     fi
   done <<< "$added"
@@ -167,13 +172,13 @@ test_added_sources_are_helmrepository_only() {
     return
   fi
 
-  echo "  PASS: all added sources files contain only HelmRepository objects"
+  echo "  PASS: all added sources files contain only Flux source objects"
   PASS=$((PASS + 1))
 }
 
 # --- Run ---
 test_production_overlay_unchanged
-test_added_sources_are_helmrepository_only
+test_added_sources_are_flux_sources_only
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# openbao-operator (dc-tec/openbao-operator) manages OpenBaoCluster instance
+# CRs: static-seal auto-unseal, cert-manager TLS, declarative self-init, raft
+# snapshots, upgrade strategies. It delivers the per-service OpenBao instances
+# the Barbican secret store builds on and the in-repo proving instance
+# (deploy/kind/infrastructure/openbao-instance.yaml).
+#
+# The operator ships ValidatingAdmissionPolicies and requires Kubernetes >=
+# 1.33. It needs cert-manager for nothing itself, but the instance TLS
+# Certificates do, and the stack's dependency order keeps cert-manager first,
+# so this release dependsOn cert-manager (mirroring garage-operator).
+#
+# ACCEPTED RISK: openbao-operator is a young, single-maintainer, pre-1.0
+# (v0.4.x) project, and unlike garage-operator it sits in the PRODUCTION DATA
+# PATH of every future Barbican secret store. The bet is mitigated by the thin
+# consumed surface (one OpenBaoCluster CR shape), the operator-independent
+# brownfield attachment path on the shared instance, and the open fallback of
+# an in-repo openbao-helm-derived StatefulSet projection. Accepted with issue
+# #803 for the Barbican onboarding (#804).
+#
+# The chart carries no cosign signature Flux can verify, so no spec.verify
+# policy can gate it. It is therefore consumed through a DIGEST-PINNED
+# OCIRepository (deploy/flux-system/sources/openbao-operator.yaml) rather than
+# through a HelmRepository plus a version constraint as with garage-operator.
+# garage-operator's `>=x <1.0.0` range would install every future 0.x release of
+# an individual-owned GHCR namespace within one interval; an exact chart version
+# would still upgrade on its own whenever that tag is re-pushed with different
+# bytes, because Flux tracks the resolved artifact digest and not the tag
+# string. Pinning the digest is what puts a reviewer in front of every change to
+# what runs here — see the source manifest for the Renovate side of it.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: openbao-operator
+  namespace: openbao-operator-system
+spec:
+  interval: 30m
+  dependsOn:
+    - name: cert-manager
+      namespace: cert-manager
+  chartRef:
+    kind: OCIRepository
+    name: openbao-operator
+    namespace: flux-system
+  install:
+    crds: CreateReplace
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  # The chart defaults to multi-tenant mode, whose provisioner requires
+  # OpenBaoTenant namespace onboarding and applies restricted Pod Security
+  # labels to tenant namespaces. That is unacceptable for the shared openstack
+  # namespace, which hosts every OpenStack service workload. Single-tenant mode
+  # deploys only the controller, scoped to the one namespace the instance CRs
+  # live in.
+  #
+  # tenancy.mode alone does NOT put the controller in single-tenant mode. At
+  # chart 0.4.2 it selects the single-tenant ClusterRole and drops the
+  # provisioner Deployment, but the controller derives its own tenancy from the
+  # WATCH_NAMESPACE environment variable (empty means multi-tenant), and no
+  # chart template sets it. A controller left in multi-tenant mode waits for the
+  # RoleBinding openbao-operator-tenant-rolebinding that OpenBaoTenant
+  # onboarding creates, and pauses every reconcile until it appears — silently,
+  # at log level V(1), leaving the OpenBaoCluster with an empty status and no
+  # StatefulSet. controller.extraEnv is the chart's documented hook for it.
+  values:
+    tenancy:
+      mode: single
+      targetNamespace: openstack
+    controller:
+      extraEnv:
+        - name: WATCH_NAMESPACE
+          value: openstack

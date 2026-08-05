@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OCIRepository for the dc-tec/openbao-operator chart. Every other chart in this
+# stack rides an OCI-type HelmRepository; this one does not, because it is the
+# one chart that has to pin CONTENT rather than a version.
+#
+# `0.4.2` on oci://ghcr.io/dc-tec/charts is a MUTABLE tag. A HelmRepository plus
+# an exact chart.spec.version gates version drift only: Flux resolves the tag on
+# every interval and tracks the resulting artifact DIGEST, so re-pushing the tag
+# with different bytes produces a new revision and the HelmRelease upgrades
+# itself — no Git change, no reviewer, cluster-wide operator RBAC over the
+# namespace that holds the instance seal key. spec.verify is not an option
+# either: the publisher attaches a SLSA provenance attestation but no cosign
+# signature, so a verify policy would have nothing to check.
+#
+# ref.digest closes that: it takes precedence over every other ref field, so
+# Flux pulls this exact manifest and a re-pushed tag cannot change what runs.
+# ref.tag rides alongside it as the human-readable version and as Renovate's
+# lookup handle.
+#
+# Renovate's native flux manager does NOT cover this repo — its default file
+# pattern matches only gotk-components.yaml, which the flux-operator setup here
+# never produces — so every Flux pin is tracked by an explicit customManager.
+# The openbao-operator entry in renovate.json bumps tag and digest together in
+# one reviewed PR; tests/unit/renovate/openbao_operator_chart_custommanager_test.sh
+# guards that pairing.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: openbao-operator
+  namespace: flux-system
+spec:
+  interval: 1h
+  # Unlike a HelmRepository, the url of an OCIRepository is the chart artifact
+  # itself, not the registry namespace it lives in.
+  url: oci://ghcr.io/dc-tec/charts/openbao-operator
+  # `copy` hands the chart tarball to helm-controller unaltered, which is what a
+  # HelmRelease chartRef consumes; the default `extract` would unpack it.
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  ref:
+    tag: "0.4.2"
+    digest: "sha256:54406de2e67e62df4119e61b38efd61a82b6bb2954b1f8ff7e7f90fd03249638"
