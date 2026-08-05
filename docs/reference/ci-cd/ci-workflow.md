@@ -561,7 +561,7 @@ validates health of all operators, CRs, and ExternalSecrets.
 | 6 | `make deploy-infra` (re-run) | Unchanged-parameter re-run (no `SKIP_KIND_CREATE`) — exercises the script's existing-cluster detection |
 | 7 | `chainsaw test --report-name chainsaw-report-rerun` | Re-runs the full infrastructure suite to prove the healthy stack is left unchanged |
 | 8 | `make deploy-infra` with `WITH_METRICS_SERVER=true` | Additive re-run — the script's Phase-3 wait gates the new metrics-server HelmRelease on Ready |
-| 9 | `chainsaw test --report-name chainsaw-report-additive` | Scoped run over infra-stack-health, garage-health, flux-web-health, and no-prometheus-when-disabled; the metrics-server absence suite is deliberately excluded |
+| 9 | `chainsaw test --report-name chainsaw-report-additive` | Scoped run over infra-stack-health, garage-health, flux-web-health, no-prometheus-when-disabled, and openbao-instance; the metrics-server absence suite is deliberately excluded |
 | 10 | `hack/ci-dump-diagnostics.sh` (on failure) | Dumps HelmReleases, pods, events, Flux logs |
 | 11 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
 

@@ -293,7 +293,7 @@ of the `changes` job matches. It depends only on `changes` — not on the `lint`
 8. Re-run `make deploy-infra` with unchanged parameters (no `SKIP_KIND_CREATE`, exercises the script's existing-cluster detection)
 9. Re-run the full infrastructure suite (report `chainsaw-report-rerun`) to prove the healthy stack is left unchanged
 10. Re-run `make deploy-infra` with `WITH_METRICS_SERVER=true` (additive leg — the script's Phase-3 wait gates the new metrics-server HelmRelease on Ready)
-11. Run a scoped Chainsaw suite (report `chainsaw-report-additive`) over infra-stack-health, garage-health, flux-web-health, and no-prometheus-when-disabled, skipping the metrics-server absence suite it would now rightly fail
+11. Run a scoped Chainsaw suite (report `chainsaw-report-additive`) over infra-stack-health, garage-health, flux-web-health, no-prometheus-when-disabled, and openbao-instance, skipping the metrics-server absence suite it would now rightly fail
 12. Dump diagnostic info on failure (`kubectl get`, `flux logs` for troubleshooting)
 13. Upload JUnit report as workflow artifact (SHA-pinned `actions/upload-artifact`, `if: always()`)
 
@@ -340,6 +340,18 @@ Covers the Garage object store (the S3 backend for the Glance e2e suites):
 | 2 | Credential ExternalSecrets SecretSynced | `openstack` | `ExternalSecret` (x2) |
 | 3 | GarageCluster `Running`; GarageBucket / GarageKey `Ready` | `openstack` | `GarageCluster`, `GarageBucket`, `GarageKey` |
 | 4 | S3 put + list with the imported key over path-style HTTP | `openstack` | `script` (throwaway `aws-cli` pod) |
+
+**File:** `tests/e2e/infrastructure/openbao-instance/chainsaw-test.yaml`
+
+Covers the openbao-operator and the proving `OpenBaoCluster` instance:
+
+| # | Assertion | Namespace | Resource |
+| --- | --- | --- | --- |
+| 1 | openbao-operator Deployment ready + HelmRelease Ready | `openbao-operator-system` | `Deployment`, `HelmRelease` |
+| 2 | Unseal-key ExternalSecret SecretSynced, and the instance's `ownerReference` adoption of the Secret it materialized | `openstack` | `ExternalSecret`, `Secret`, `OpenBaoCluster` |
+| 3 | OpenBaoCluster `Available` with `readyReplicas: 1` | `openstack` | `OpenBaoCluster` |
+| 4 | Kubernetes auth to AppRole to KV v2 round-trip, including a rejected login with a wrong secret ID | `openstack` | `script` (`kubectl exec` into the instance pod) |
+| 5 | Pod deletion, then the replacement pod reports `sealed: false` without any unseal command | `openstack` | `script` (`kubectl exec` into the instance pod) |
 
 ## Pinned Tool Versions
 

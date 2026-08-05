@@ -648,7 +648,7 @@ jobs:
       # still absent.
       - name: Run scoped Chainsaw E2E tests after additive re-run
         run: |
-          chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-additive tests/e2e/infrastructure/infra-stack-health tests/e2e/infrastructure/garage-health tests/e2e/infrastructure/flux-web-health tests/e2e/infrastructure/no-prometheus-when-disabled
+          chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-additive tests/e2e/infrastructure/infra-stack-health tests/e2e/infrastructure/garage-health tests/e2e/infrastructure/flux-web-health tests/e2e/infrastructure/no-prometheus-when-disabled tests/e2e/infrastructure/openbao-instance
       # Use shared diagnostic dump script.  `always()` (matching every other
       # e2e job) also covers the timeout-cancellation path -- `failure()`
       # alone is skipped when timeout-minutes expires, discarding the cluster
