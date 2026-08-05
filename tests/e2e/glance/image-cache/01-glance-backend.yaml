@@ -23,7 +23,7 @@ spec:
   type: S3
   isDefault: true
   s3:
-    host: http://garage.openstack.svc.cluster.local:3900
+    host: http://garage.shared-services.svc.cluster.local:3900
     bucket: glance-images
     region: garage
     credentialsSecretRef:

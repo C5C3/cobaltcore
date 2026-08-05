@@ -44,7 +44,7 @@ spec:
           apiVersion: glance.openstack.c5c3.io/v1alpha1
           kind: Glance
           metadata:
-            name: glance-chaos-garage
+            name: glance-garage-chaos
             namespace: openstack
           status:
             (conditions[?type == 'BackendsReady']):
@@ -55,7 +55,7 @@ spec:
               reason: AllReady
     catch:
     - script:
-        content: ../diagnostics.sh baseline glance-chaos-garage --cr-kind=glance
+        content: ../diagnostics.sh baseline glance-garage-chaos --cr-kind=glance
   # ── Step 2: Baseline — a plain PUT lands data and the image goes active ──
   # Runs an in-cluster python client (the glance image ships python3): it creates
   # an image record, PUTs a small payload to the default store (no
@@ -84,7 +84,7 @@ spec:
             --command -- python3 -c '
           import json, sys, time, urllib.request, urllib.error
 
-          BASE = "http://glance-chaos-garage.openstack.svc:9292"
+          BASE = "http://glance-garage-chaos.openstack.svc:9292"
           NAME = "garage-baseline-probe"
 
           def fail(msg):
@@ -143,7 +143,7 @@ spec:
           echo "OK: baseline image PUT landed and went active"
     catch:
     - script:
-        content: ../diagnostics.sh baseline glance-chaos-garage --cr-kind=glance
+        content: ../diagnostics.sh baseline glance-garage-chaos --cr-kind=glance
   # ── Step 3: Inject NetworkChaos to partition Garage traffic ─────────────
   - try:
     - apply:
@@ -165,7 +165,7 @@ spec:
     - script:
         content: kubectl get networkchaos/partition-garage -n openstack -o yaml 2>&1 || true
     - script:
-        content: ../diagnostics.sh chaos glance-chaos-garage --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-chaos-garage
+        content: ../diagnostics.sh chaos glance-garage-chaos --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-garage-chaos
   # ── Step 4b: Assert fail-closed — writes fail while API + Ready stay up ──
   # The in-cluster probe proves three things at once while Garage is
   # partitioned: (1) GET /healthcheck stays 200 (the API keeps serving), (2) an
@@ -189,7 +189,7 @@ spec:
             --command -- python3 -c '
           import json, sys, time, urllib.request, urllib.error
 
-          BASE = "http://glance-chaos-garage.openstack.svc:9292"
+          BASE = "http://glance-garage-chaos.openstack.svc:9292"
 
           def fail(msg):
               print("FAIL: " + msg)
@@ -258,7 +258,7 @@ spec:
           apiVersion: glance.openstack.c5c3.io/v1alpha1
           kind: Glance
           metadata:
-            name: glance-chaos-garage
+            name: glance-garage-chaos
             namespace: openstack
           status:
             (conditions[?type == 'Ready']):
@@ -266,11 +266,11 @@ spec:
               reason: AllReady
     catch:
     - script:
-        content: ../diagnostics.sh chaos glance-chaos-garage --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-chaos-garage
+        content: ../diagnostics.sh chaos glance-garage-chaos --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-garage-chaos
     - script:
         content: kubectl get networkchaos/partition-garage -n openstack -o yaml 2>&1 || true
     - script:
-        content: kubectl get pods -n openstack -l garage.rajsingh.info/cluster=garage,garage.rajsingh.info/tier=storage -o wide 2>&1 || true
+        content: kubectl get pods -n shared-services -l garage.rajsingh.info/cluster=garage,garage.rajsingh.info/tier=storage -o wide 2>&1 || true
   # ── Step 5: Delete NetworkChaos to lift the partition ───────────────────
   - try:
     - delete:
@@ -280,11 +280,11 @@ spec:
           name: partition-garage
     catch:
     - script:
-        content: ../diagnostics.sh chaos glance-chaos-garage --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-chaos-garage
+        content: ../diagnostics.sh chaos glance-garage-chaos --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-garage-chaos
     - script:
         content: kubectl get networkchaos/partition-garage -n openstack -o yaml 2>&1 || true
     - script:
-        content: kubectl get pods -n openstack -l garage.rajsingh.info/cluster=garage,garage.rajsingh.info/tier=storage -o wide 2>&1 || true
+        content: kubectl get pods -n shared-services -l garage.rajsingh.info/cluster=garage,garage.rajsingh.info/tier=storage -o wide 2>&1 || true
   # ── Step 5b: Assert the failed-closed write stayed failed ───────────────
   # Step 4b accepts a bounded timeout as a fail-closed outcome, but a timeout
   # only proves the CLIENT gave up — glance's store client could still have
@@ -307,7 +307,7 @@ spec:
             --command -- python3 -c '
           import json, sys, time, urllib.request, urllib.error
 
-          BASE = "http://glance-chaos-garage.openstack.svc:9292"
+          BASE = "http://glance-garage-chaos.openstack.svc:9292"
           NAME = "garage-outage-failclosed"
 
           def fail(msg):
@@ -360,7 +360,7 @@ spec:
           echo "OK: the failed-closed image never became active"
     catch:
     - script:
-        content: ../diagnostics.sh chaos glance-chaos-garage --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-chaos-garage
+        content: ../diagnostics.sh chaos glance-garage-chaos --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-garage-chaos
   # ── Step 6: Assert recovery — a fresh PUT succeeds again ────────────────
   # Once the partition is lifted glance-api reaches Garage again; the retrying
   # probe uploads a fresh image and asserts it goes active, proving writes
@@ -379,7 +379,7 @@ spec:
             --command -- python3 -c '
           import json, sys, time, urllib.request, urllib.error
 
-          BASE = "http://glance-chaos-garage.openstack.svc:9292"
+          BASE = "http://glance-garage-chaos.openstack.svc:9292"
           NAME = "garage-recovery-probe"
 
           def fail(msg):
@@ -431,6 +431,6 @@ spec:
           echo "OK: image PUT succeeds again after the partition was lifted"
     catch:
     - script:
-        content: ../diagnostics.sh chaos glance-chaos-garage --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-chaos-garage
+        content: ../diagnostics.sh chaos glance-garage-chaos --cr-kind=glance --dep-label=app.kubernetes.io/name=glance-operator --dep-ns=glance-system --log-label=app.kubernetes.io/instance=glance-garage-chaos
     - script:
-        content: kubectl get pods -n openstack -l garage.rajsingh.info/cluster=garage,garage.rajsingh.info/tier=storage -o wide 2>&1 || true
+        content: kubectl get pods -n shared-services -l garage.rajsingh.info/cluster=garage,garage.rajsingh.info/tier=storage -o wide 2>&1 || true

@@ -67,7 +67,7 @@ spec:
         shell: bash
         content: |
           set -euo pipefail
-          BAO_NS="openbao-system"
+          BAO_NS="shared-services"
           BAO_POD="openbao-0"
           TENANT_NS="placement-pss-restricted-test"
           BAO_TOKEN="$(kubectl get secret openbao-init-keys -n "${BAO_NS}" \

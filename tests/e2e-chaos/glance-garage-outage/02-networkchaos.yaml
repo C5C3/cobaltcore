@@ -6,14 +6,14 @@
 #
 # The partition is enforced on the Garage (server) side on purpose. glance-api
 # does not connect to a Garage pod IP — it connects to the cluster-level S3 API
-# ClusterIP Service garage.openstack.svc.cluster.local:3900 (see the GlanceBackend
-# s3.host). chaos-mesh installs its drop rule inside the *selector* pods' network
-# namespace and matches the *target* pods by their pod IPs. If the rule were
-# installed on the glance-api (client) side, it would match Garage pod IPs — but
-# at that point the packet still carries the Service ClusterIP, because kube-proxy
-# only DNATs ClusterIP -> pod IP later, in the node's root namespace, after the
-# packet has left the pod. The rule would therefore never match and the partition
-# would be a no-op for Service-routed traffic.
+# ClusterIP Service garage.shared-services.svc.cluster.local:3900 (see the
+# GlanceBackend s3.host). chaos-mesh installs its drop rule inside the *selector*
+# pods' network namespace and matches the *target* pods by their pod IPs. If the
+# rule were installed on the glance-api (client) side, it would match Garage pod
+# IPs — but at that point the packet still carries the Service ClusterIP, because
+# kube-proxy only DNATs ClusterIP -> pod IP later, in the node's root namespace,
+# after the packet has left the pod. The rule would therefore never match and the
+# partition would be a no-op for Service-routed traffic.
 #
 # Installing the rule on the Garage storage pods and dropping traffic *from* the
 # glance-api pods works because, by the time the packet reaches the Garage
@@ -25,7 +25,9 @@
 # garage.rajsingh.info/tier=storage) is the faithful anchor: it is the exact
 # selector the cluster-level S3 API Service uses to pick its backends, so
 # partitioning those pods severs precisely the traffic the Service routes — no
-# more, no less.
+# more, no less. Garage runs in shared-services, so the selector names that
+# namespace while the target (glance-api) stays in openstack. This CR's own
+# namespace does not constrain selection: chaos-mesh selects cluster-wide.
 #
 # Duration is a safety net for auto-expiry if the test does not explicitly delete
 # the CR; step 5 lifts the partition explicitly. It must *exceed* the Chainsaw
@@ -44,7 +46,7 @@ spec:
   mode: all
   selector:
     namespaces:
-      - openstack
+      - shared-services
     labelSelectors:
       garage.rajsingh.info/cluster: garage
       garage.rajsingh.info/tier: storage
@@ -56,5 +58,5 @@ spec:
         - openstack
       labelSelectors:
         app.kubernetes.io/name: glance
-        app.kubernetes.io/instance: glance-chaos-garage
+        app.kubernetes.io/instance: glance-garage-chaos
   duration: "600s"

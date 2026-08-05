@@ -6,7 +6,7 @@
 # tests/e2e-chaos/unseal-openbao.sh — Re-unseal openbao-0 after a chaos pod-kill.
 #
 # The kind/E2E environment runs OpenBao single-replica with file/raft storage
-# and Shamir-key sealing (init keys live in Secret openbao-system/openbao-init-keys,
+# and Shamir-key sealing (init keys live in Secret shared-services/openbao-init-keys,
 # applied at bootstrap by hack/deploy-infra.sh::openbao_init_unseal). When a
 # chaos PodChaos action=pod-kill restarts the pod, the new instance starts
 # sealed and stays 0/1 Running indefinitely — there is no auto-unseal.
@@ -26,7 +26,7 @@ set -euo pipefail
 # into script env from the test's spec.namespace (openstack), which would
 # silently override a NAMESPACE default and make us look for openbao-0 in the
 # wrong namespace.
-BAO_NAMESPACE="${BAO_NAMESPACE:-openbao-system}"
+BAO_NAMESPACE="${BAO_NAMESPACE:-shared-services}"
 POD="${POD:-openbao-0}"
 SECRET_NAME="${SECRET_NAME:-openbao-init-keys}"
 BAO_ADDR="${BAO_ADDR:-https://127.0.0.1:8200}"

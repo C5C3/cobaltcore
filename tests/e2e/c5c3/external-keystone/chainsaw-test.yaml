@@ -127,8 +127,8 @@ spec:
           if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
             gate_absent "openbao-cluster-store ClusterSecretStore not present."
           fi
-          if ! kubectl get pod openbao-0 -n openbao-system >/dev/null 2>&1; then
-            gate_absent "openbao-system/openbao-0 not present."
+          if ! kubectl get pod openbao-0 -n shared-services >/dev/null 2>&1; then
+            gate_absent "shared-services/openbao-0 not present."
           fi
           # The CRDs alone no longer prove the stack: the e2e-operator (c5c3)
           # matrix leg installs every CRD the c5c3 controller watches WITHOUT
@@ -142,7 +142,7 @@ spec:
             gate_absent "no keystone-operator is running; this cluster carries the stack's CRDs only, not the full-stack job this suite is scoped to."
           fi
 
-          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n openbao-system \
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
             -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
           if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
             gate_absent "could not extract the OpenBao root token."
@@ -150,7 +150,7 @@ spec:
           # bao_exec runs a bao command inside openbao-0 with the mTLS client
           # material (the OpenBao listener requires a client cert in kind).
           bao_exec() {
-            kubectl exec -n openbao-system openbao-0 -- \
+            kubectl exec -n shared-services openbao-0 -- \
               env BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN="${BAO_TOKEN}" \
               VAULT_CACERT=/openbao/tls/ca.crt \
               VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
@@ -717,7 +717,7 @@ spec:
           echo "=== K-ORC controller logs (last 120) ==="
           kubectl logs -n orc-system -l app.kubernetes.io/name=openstack-resource-controller --tail=120 --all-containers 2>&1 || true
           echo "=== OpenBao logs (last 100) ==="
-          kubectl logs -n openbao-system openbao-0 --tail=100 2>&1 || true
+          kubectl logs -n shared-services openbao-0 --tail=100 2>&1 || true
           echo "=== Events (brownfield, last 30) ==="
           kubectl get events -n brownfield --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
     finally:

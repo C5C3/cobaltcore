@@ -5,8 +5,8 @@
 # PodChaos CR to kill an OpenBao pod.
 # One-shot pod-kill action — the StatefulSet controller will restart the pod.
 #
-# NOTE: OpenBao runs in openbao-system, NOT openstack. The selector
-# targets the openbao-system namespace explicitly. Chaos Mesh has
+# NOTE: OpenBao runs in shared-services, NOT openstack. The selector
+# targets the shared-services namespace explicitly. Chaos Mesh has
 # cluster-wide RBAC permissions enabling cross-namespace targeting.
 apiVersion: chaos-mesh.org/v1alpha1
 kind: PodChaos
@@ -18,7 +18,7 @@ spec:
   mode: one
   selector:
     namespaces:
-    - openbao-system
+    - shared-services
     labelSelectors:
       app.kubernetes.io/name: openbao
   gracePeriod: 0

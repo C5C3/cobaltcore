@@ -146,7 +146,7 @@ spec:
           # deploy hook already onboarded.
           kubectl wait mariadb/openstack-db -n "${CP_NS}" --for=condition=Ready --timeout=600s
           export BAO_TOKEN
-          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n openbao-system \
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
             -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
           if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
             echo "ERROR: could not extract OpenBao root token for tenant onboarding"; exit 1
@@ -207,6 +207,6 @@ spec:
           echo "=== c5c3-operator logs (last 100 lines) ==="
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=100 --all-containers 2>&1 || true
           echo "=== OpenBao logs (last 80 lines) ==="
-          kubectl logs -n openbao-system -l app.kubernetes.io/name=openbao --tail=80 --all-containers 2>&1 || true
+          kubectl logs -n shared-services -l app.kubernetes.io/name=openbao --tail=80 --all-containers 2>&1 || true
           echo "=== Events (openstack ns, last 30) ==="
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

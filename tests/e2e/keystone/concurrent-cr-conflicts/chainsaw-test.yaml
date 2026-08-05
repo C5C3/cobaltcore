@@ -112,7 +112,7 @@ spec:
         timeout: 90s
         content: |
           set -u
-          BAO_NS="openbao-system"
+          BAO_NS="shared-services"
           POD="openbao-0"
           SECRET="openbao-init-keys"
           BAO_ADDR="https://127.0.0.1:8200"
@@ -200,9 +200,9 @@ spec:
     - script:
         content: |
           echo "=== openbao pods ==="
-          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao 2>&1 || true
+          kubectl get pods -n shared-services -l app.kubernetes.io/name=openbao 2>&1 || true
           echo "=== openbao-0 logs ==="
-          kubectl logs -n openbao-system openbao-0 --tail=200 2>&1 || true
+          kubectl logs -n shared-services openbao-0 --tail=200 2>&1 || true
           echo "=== PushSecrets in $NAMESPACE ==="
           kubectl get pushsecrets.external-secrets.io -n $NAMESPACE -o wide 2>&1 || true
           echo "=== PushSecret details ==="

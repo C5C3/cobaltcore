@@ -50,7 +50,7 @@ spec:
           # Keystone admin credential with it). Re-seeded unconditionally every
           # run, so a leftover rotated value from a prior run is overwritten.
           # OpenBao access mirrors tests/e2e/keystone/deletion-cleanup.
-          BAO_NS="openbao-system"
+          BAO_NS="shared-services"
           POD="openbao-0"
           SECRET="openbao-init-keys"
           BAO_ADDR="https://127.0.0.1:8200"
@@ -197,7 +197,7 @@ spec:
           NEW_HASH=$(printf '%s' "$NEW_PASS" | sha256sum | cut -d' ' -f1)
           NEW_B64=$(printf '%s' "$NEW_PASS" | base64 | tr -d '\n')
 
-          BAO_NS="openbao-system"
+          BAO_NS="shared-services"
           BAO_POD="openbao-0"
           BAO_SECRET="openbao-init-keys"
           BAO_ADDR="https://127.0.0.1:8200"

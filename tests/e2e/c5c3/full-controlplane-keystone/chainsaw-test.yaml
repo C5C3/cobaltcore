@@ -312,7 +312,7 @@ spec:
           # onboard (e.g. a local WITH_CONTROLPLANE_CR=true run) is safe.
           kubectl wait mariadb/openstack-db -n "${CP_NS}" --for=condition=Ready --timeout=300s
           export BAO_TOKEN
-          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n openbao-system \
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
             -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
           if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
             echo "ERROR: could not extract OpenBao root token for tenant onboarding"; exit 1
@@ -321,7 +321,7 @@ spec:
           # material (mirrors deploy/openbao/bootstrap/common.sh); reused by the
           # revocation/isolation link below.
           bao_exec() {
-            kubectl exec -n openbao-system openbao-0 -- \
+            kubectl exec -n shared-services openbao-0 -- \
               env BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN="${BAO_TOKEN}" \
               VAULT_CACERT=/openbao/tls/ca.crt \
               VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
@@ -596,7 +596,7 @@ spec:
             "$(kubectl get glancebackends.glance.openstack.c5c3.io "${GLANCE_BACKEND}" -n "${CP_NS}" -o 'jsonpath={.spec.glanceRef.name}')"
           assert_eq "GlanceBackend is the default store" "true" \
             "$(kubectl get glancebackends.glance.openstack.c5c3.io "${GLANCE_BACKEND}" -n "${CP_NS}" -o 'jsonpath={.spec.isDefault}')"
-          assert_eq "GlanceBackend S3 host is the Garage endpoint" "http://garage.openstack.svc.cluster.local:3900" \
+          assert_eq "GlanceBackend S3 host is the Garage endpoint" "http://garage.shared-services.svc.cluster.local:3900" \
             "$(kubectl get glancebackends.glance.openstack.c5c3.io "${GLANCE_BACKEND}" -n "${CP_NS}" -o 'jsonpath={.spec.s3.host}')"
           assert_eq "GlanceBackend owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of glancebackends.glance.openstack.c5c3.io "${GLANCE_BACKEND}")"
@@ -906,7 +906,7 @@ spec:
           echo "=== placement-operator logs (last 200 lines) ==="
           kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --tail=200 --all-containers 2>&1 || true
           echo "=== OpenBao logs (last 100 lines) ==="
-          kubectl logs -n openbao-system -l app.kubernetes.io/name=openbao --tail=100 --all-containers 2>&1 || true
+          kubectl logs -n shared-services -l app.kubernetes.io/name=openbao --tail=100 --all-containers 2>&1 || true
           echo "=== c5c3-operator logs (last 200 lines) ==="
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
           echo "=== K-ORC controller logs (last 100 lines) ==="

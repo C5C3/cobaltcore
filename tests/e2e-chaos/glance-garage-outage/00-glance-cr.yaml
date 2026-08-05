@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Glance CR fixture for the Garage S3 outage chaos test. Unique name
-# (glance-chaos-garage) and database (glance_chaos_garage) to avoid conflicts
+# (glance-garage-chaos) and database (glance_garage_chaos) to avoid conflicts
 # with other test suites. A single default S3 store on the pre-created
 # glance-images bucket is attached by 01-glancebackend-cr.yaml.
 #
@@ -26,7 +26,7 @@
 apiVersion: glance.openstack.c5c3.io/v1alpha1
 kind: Glance
 metadata:
-  name: glance-chaos-garage
+  name: glance-garage-chaos
   namespace: openstack
 spec:
   openStackRelease: "2025.2"
@@ -38,7 +38,7 @@ spec:
   database:
     clusterRef:
       name: openstack-db
-    database: glance_chaos_garage
+    database: glance_garage_chaos
     secretRef:
       name: glance-db
   cache:

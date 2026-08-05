@@ -137,7 +137,7 @@ spec:
             --for=condition=Ready --timeout=300s
 
           export BAO_TOKEN
-          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n openbao-system \
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
             -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
           if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
             echo "ERROR: could not extract OpenBao root token for tenant onboarding"

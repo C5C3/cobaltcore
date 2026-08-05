@@ -216,7 +216,7 @@ spec:
             --env "AWS_SECRET_ACCESS_KEY=${SAK}" \
             --env "AWS_DEFAULT_REGION=garage" \
             --env "AWS_CONFIG_FILE=/tmp/aws-cfg" \
-            --command -- sh -c 'set -e; printf "[default]\ns3 =\n    addressing_style = path\n" > /tmp/aws-cfg; aws --endpoint-url http://garage.openstack.svc.cluster.local:3900 s3api list-objects-v2 --bucket glance-images-2'
+            --command -- sh -c 'set -e; printf "[default]\ns3 =\n    addressing_style = path\n" > /tmp/aws-cfg; aws --endpoint-url http://garage.shared-services.svc.cluster.local:3900 s3api list-objects-v2 --bucket glance-images-2'
           # 30 polls x 5s = 150s, inside the 3m step timeout (covers the digest-
           # pinned aws-cli image pull on a cold node).
           PHASE=""

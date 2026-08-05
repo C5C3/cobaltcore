@@ -113,8 +113,8 @@ spec:
           PATH_A="kv-v2/openstack/keystone/${NS_A}/${CP_A}/admin/app-credential"
           PATH_B="kv-v2/openstack/keystone/${NS_B}/${CP_B}/admin/app-credential"
 
-          # OpenBao server lives in openbao-system (deploy/openbao/bootstrap).
-          BAO_NS="openbao-system"
+          # OpenBao server lives in shared-services (deploy/openbao/bootstrap).
+          BAO_NS="shared-services"
           BAO_POD="openbao-0"
           BAO_SECRET="openbao-init-keys"
           BAO_ADDR="https://127.0.0.1:8200"
@@ -497,9 +497,9 @@ spec:
           echo "=== c5c3-operator logs (last 200 lines) ==="
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
           echo "=== openbao pods ==="
-          kubectl get pods -n openbao-system -l app.kubernetes.io/name=openbao 2>&1 || true
+          kubectl get pods -n shared-services -l app.kubernetes.io/name=openbao 2>&1 || true
           echo "=== openbao-0 logs (last 100 lines) ==="
-          kubectl logs -n openbao-system openbao-0 --tail=100 2>&1 || true
+          kubectl logs -n shared-services openbao-0 --tail=100 2>&1 || true
           echo "=== Events (tenant-a / tenant-b, last 30 each) ==="
           kubectl get events -n tenant-a --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
           kubectl get events -n tenant-b --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
