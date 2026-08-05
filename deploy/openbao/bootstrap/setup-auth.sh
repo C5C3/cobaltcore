@@ -232,6 +232,37 @@ main() {
     secret_id_ttl=8760h
   log "AppRole provisioner role written."
 
+  # The AppRole identity Barbican's vault_plugin logs in with on the brownfield
+  # leg, where Barbican attaches to this shared instance instead of a dedicated
+  # one. Minting a secret ID stays out of bootstrap: for the managed mode it is
+  # runtime work owned by the barbican-operator, and the brownfield e2e mints
+  # one at test time with the root-token `bao` exec it already has.
+  #
+  # secret_id_ttl is the only bound on a leaked secret ID — it carries no use
+  # count and no CIDR bound — so it is 30 days here rather than the year the
+  # older roles above use. It mirrors the barbican role of the proving instance
+  # (deploy/kind/infrastructure/openbao-instance.yaml).
+  #
+  # NO AUTOMATED RE-MINT EXISTS YET. Until the barbican-operator owns it, this
+  # TTL is a 30-day fuse on a hand-minted secret ID, and it burns silently:
+  # Barbican's vault_plugin holds one process-global AppRole session, so expiry
+  # surfaces as every secret-store operation failing at once with no metric to
+  # warn ahead of it. The re-mint procedure in
+  # docs/reference/infrastructure/openbao-bootstrap.md is the control in the
+  # meantime — an operator has to learn about the expiry from that procedure
+  # rather than from an outage.
+  #
+  # secret_id_num_uses is deliberately NOT set. castellan's Vault key manager
+  # re-logs in whenever its cached token ages out (token_ttl 1h), so any use cap
+  # would expire the credential mid-operation instead of bounding it.
+  log "Writing AppRole barbican role..."
+  bao_exec bao write auth/approle/role/barbican \
+    token_policies=barbican-secretstore \
+    token_ttl=1h \
+    token_max_ttl=4h \
+    secret_id_ttl=720h
+  log "AppRole barbican role written."
+
   log "=== Done ==="
 }
 
