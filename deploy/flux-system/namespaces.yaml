@@ -91,6 +91,14 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: orc-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  # openbao-operator-system hosts the openbao-operator controller; the name
+  # openbao-system is taken by the shared OpenBao instance, and keeping the
+  # operator out of it separates the shared-instance and operator lifecycles.
+  name: openbao-operator-system
 # The chaos-mesh Namespace lives in the opt-in overlay deploy/kind/chaos-mesh/,
 # not here, so the privileged PodSecurity label is created only when Chaos Mesh
 # is actually deployed.
