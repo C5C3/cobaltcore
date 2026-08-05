@@ -58,7 +58,7 @@ const (
 	// openBaoDefaultServer / openBaoDefaultKubernetesMount are the fallbacks used
 	// when the openbao-cluster-store's provider config cannot be read; they match
 	// deploy/eso/clustersecretstore.yaml.
-	openBaoDefaultServer          = "https://openbao.openbao-system.svc:8200"
+	openBaoDefaultServer          = "https://openbao.shared-services.svc:8200"
 	openBaoDefaultKubernetesMount = "kubernetes/management"
 	// openBaoCAIssuerName is the cluster-scoped cert-manager CA issuer that signs
 	// the per-ControlPlane client certificate (deploy/flux-system/infrastructure/openbao-ca-issuer.yaml).

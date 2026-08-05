@@ -13,7 +13,8 @@
 #   1. Add a new source file in sources/ (e.g., sources/openbao.yaml)
 #   2. Add a new release file in releases/ (e.g., releases/openbao.yaml)
 #   3. Add both paths to the resources list below
-#   4. Add the operator namespace to namespaces.yaml (e.g., openbao-system)
+#   4. Add the release's target namespace to namespaces.yaml (e.g., shared-services,
+#      where releases/openbao.yaml puts the OpenBao HelmRelease)
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

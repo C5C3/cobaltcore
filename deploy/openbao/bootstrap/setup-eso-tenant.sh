@@ -76,7 +76,7 @@ STORE_NAME="openbao-tenant-store"
 # signs the mTLS client certificate. These mirror the shared cluster store
 # (deploy/eso/clustersecretstore.yaml) and the DB-credential Certificate
 # (reconcile_dbcredentials.go); override via the environment for a mirror.
-OPENBAO_SERVER="${OPENBAO_SERVER:-https://openbao.openbao-system.svc:8200}"
+OPENBAO_SERVER="${OPENBAO_SERVER:-https://openbao.shared-services.svc:8200}"
 OPENBAO_CA_ISSUER="${OPENBAO_CA_ISSUER:-openbao-ca-issuer}"
 CERT_DURATION="${CERT_DURATION:-8760h}"
 CERT_RENEW_BEFORE="${CERT_RENEW_BEFORE:-720h}"

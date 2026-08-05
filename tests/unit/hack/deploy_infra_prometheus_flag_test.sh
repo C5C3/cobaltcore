@@ -209,7 +209,7 @@ test_kube_prometheus_stack_appended_dynamically() {
   assert_file_contains \
     "helm_releases array preserves the nine non-opt-in releases in the documented order" \
     "$DEPLOY_INFRA_SH" \
-    'helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator openbao-operator)'
+    'helm_releases=(prometheus-operator-crds shared-services/openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator openbao-operator)'
 
   # The dynamic append must be guarded by WITH_PROMETHEUS.
   assert_file_contains \

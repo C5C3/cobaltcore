@@ -49,7 +49,7 @@ STUB
 # NAMESPACE is exported to a chainsaw-style ephemeral test namespace on purpose:
 # chainsaw injects NAMESPACE=<test namespace> into every e2e script step, and
 # common.sh must resolve the OpenBao namespace from OPENBAO_NAMESPACE (or its
-# openbao-system default) instead of picking that injected value up.
+# shared-services default) instead of picking that injected value up.
 run_script() {
   local stub_dir="$1" ns="$2" cp="$3"
   (
@@ -105,8 +105,8 @@ test_injected_namespace_is_ignored() {
   local output
   output="$(run_script "$tmp" "tenant-a" "cp-a")"
 
-  assert_contains "OpenBao namespace stays on the openbao-system default" \
-    "$output" "Namespace : openbao-system"
+  assert_contains "OpenBao namespace stays on the shared-services default" \
+    "$output" "Namespace : shared-services"
   assert_not_contains "the injected test namespace never becomes the exec target" \
     "$output" "Namespace : chainsaw-fresh-piranha"
 }
