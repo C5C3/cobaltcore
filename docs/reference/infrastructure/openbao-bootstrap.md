@@ -96,7 +96,7 @@ deploy/
 │   ├── bootstrap/
 │   │   ├── common.sh                   Shared functions (log, bao_exec) sourced by all scripts
 │   │   ├── init-unseal.sh              Initialize and unseal the cluster
-│   │   ├── setup-secret-engines.sh     Enable KV v2, PKI, and MariaDB database engines
+│   │   ├── setup-secret-engines.sh     Enable KV v2 (kv-v2/, barbican/), PKI, and MariaDB database engines
 │   │   ├── setup-database-tenant.sh     Provision a per-ControlPlane DB engine connection + role
 │   │   ├── setup-eso-tenant.sh          Provision a per-ControlPlane ESO identity (SA + mTLS cert + namespaced SecretStore)
 │   │   ├── setup-auth.sh              Configure Kubernetes and AppRole auth
@@ -113,6 +113,7 @@ deploy/
 │       ├── keystone-db-dynamic.hcl     Per-tenant dynamic DB credential read policy
 │       ├── glance-db-dynamic.hcl       Per-tenant dynamic Glance DB credential read policy
 │       ├── placement-db-dynamic.hcl    Per-tenant dynamic Placement DB credential read policy
+│       ├── barbican-secretstore.hcl    Barbican secret-store policy on the KV v2 mount barbican/
 │       └── pki-issuer.hcl             cert-manager PKI issuing policy
 ├── eso/
 │   ├── kustomization.yaml              Kustomize entrypoint (renders ONLY the ClusterSecretStore)
@@ -164,7 +165,7 @@ on the successful completion of the previous step:
 3. setup-auth.sh            Configure Kubernetes auth + AppRole
        │
        ▼
-4. setup-policies.sh        Apply 11 HCL least-privilege policies
+4. setup-policies.sh        Apply 12 HCL least-privilege policies
        │
        ▼
 5. write-bootstrap-secrets.sh  Generate and seed initial passwords
@@ -289,7 +290,8 @@ requires the exported keys, so ensure they are recoverable before deletion.
 
 ### setup-secret-engines.sh
 
-**Purpose:** Enable the KV version 2, PKI, and MariaDB `database` secret engines.
+**Purpose:** Enable the KV version 2, PKI, and MariaDB `database` secret engines, plus
+the Barbican KV v2 mount.
 
 **File:** `deploy/openbao/bootstrap/setup-secret-engines.sh`
 
@@ -300,6 +302,7 @@ requires the exported keys, so ensure they are recoverable before deletion.
 | KV v2 | `kv-v2/` | `version=2` |
 | PKI | `pki/` | `max-lease-ttl=87600h` (10 years) |
 | database | `database/mariadb/` | mount only; per-tenant connections/roles are added later by `setup-database-tenant.sh` |
+| KV v2 | `barbican/` | `version=2`, enabled by `enable_barbican_kv`; the mount for the Barbican brownfield secret-store leg, where Barbican attaches to this shared instance instead of a dedicated one |
 
 **Idempotency:** Before enabling each engine, the script checks `bao secrets list
 -format=json` for the mount path. If the path already exists, the engine enable is
@@ -312,6 +315,13 @@ later by `setup-database-tenant.sh` once its MariaDB is Ready. The engine issues
 short-lived, auto-revoked Keystone service-DB credentials at
 `database/mariadb/creds/keystone-{namespace}` (keyed on the namespace alone —
 one ControlPlane per namespace makes it a unique, collision-free tenant key).
+
+**Barbican mount:** `enable_barbican_kv` enables a second KV v2 engine at `barbican/`,
+the path Barbican's `vault_plugin` reads and writes through castellan. It is the
+brownfield half of the Barbican secret store: the same mount name, policy name, and
+AppRole role name that the proving `OpenBaoCluster` self-initializes on a dedicated
+instance, so the two only differ in which instance Barbican points at. Like every other
+engine here the enable is guarded by a `bao secrets list` check.
 
 ### setup-database-tenant.sh
 
@@ -405,7 +415,7 @@ for the full procedure.
 ### setup-auth.sh
 
 **Purpose:** Configure Kubernetes authentication for 4 cluster contexts and AppRole
-authentication for CI/CD pipelines.
+authentication for CI/CD pipelines and the Barbican secret store.
 
 **File:** `deploy/openbao/bootstrap/setup-auth.sh`
 
@@ -480,6 +490,76 @@ their Kubernetes host and CA configuration is deferred until those clusters are 
 | Mount Path | Role | Policy | Token TTL | Max TTL | Secret ID TTL |
 | --- | --- | --- | --- | --- | --- |
 | `approle/` | `provisioner` | `ci-cd-provisioner` | 1h | 4h | `8760h` (1 year) |
+| `approle/` | `barbican` | `barbican-secretstore` | 1h | 4h | `720h` (30 days) |
+
+The `barbican` role is the identity Barbican's `vault_plugin` logs in with on the
+brownfield leg. Minting a secret ID stays out of bootstrap: for a managed deployment that
+is runtime work owned by the barbican-operator, and the brownfield e2e mints one at test
+time with the root-token `bao` exec it already has.
+
+A secret ID carries no use count and no CIDR bound, so `secret_id_ttl` is the only thing
+that bounds a leaked one. On the `barbican` role it is 30 days rather than the year the
+older `provisioner` role uses, matching the `barbican` role of the proving instance
+([OpenBao Proving Instance](./infrastructure-manifests.md#openbao-proving-instance)).
+
+**Re-minting the barbican secret ID.**
+Nothing re-mints the secret ID automatically yet — that becomes runtime work of the
+barbican-operator. Until then the 30-day TTL is a fuse on a hand-minted credential, and it
+burns silently: Barbican's `vault_plugin` holds one process-global AppRole session, so an
+expired secret ID surfaces as every secret-store operation failing at once, with no metric
+that warns ahead of it. Re-mint before the 30 days elapse, and after any Barbican
+deployment that has been running against a hand-minted credential for a month:
+
+```bash
+# BAO_TOKEN must be exported first — see Running the Full Bootstrap above.
+cd deploy/openbao/bootstrap
+source ./common.sh
+
+# The role ID is stable across re-mints; only the secret ID rotates.
+bao_exec bao read -field=role_id auth/approle/role/barbican/role-id
+
+# Mint a fresh secret ID straight into the Secret the deployment reads it from.
+# Replace <secret> and <namespace> with the Secret backing
+# vault_plugin.approle_secret_id. -force is required because the write carries
+# no data.
+kubectl create secret generic <secret> \
+  --namespace <namespace> \
+  --from-literal=approle_secret_id="$(bao_exec bao write \
+    -field=secret_id -force auth/approle/role/barbican/secret-id)" \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+The secret ID stays inside that pipeline on purpose. `bao_exec` is a `kubectl exec`, so
+printing the credential first would put it in the terminal's scrollback, in a recorded
+session, or — if the procedure is ever wrapped in automation — in job logs that outlive
+the 30-day TTL by a wide margin and are readable by everyone with access to them. The
+credential carries no use count and no CIDR bound, so that TTL is the only thing bounding
+a leaked copy.
+
+Restart the Barbican API pods afterwards: the plugin reads the credential once at process
+start.
+
+To see how much of the fuse is left, list the role's live secret-ID accessors and look one
+up — the response carries its `expiration_time`:
+
+```bash
+bao_exec bao list auth/approle/role/barbican/secret-id
+
+bao_exec bao write auth/approle/role/barbican/secret-id-accessor/lookup \
+  secret_id_accessor=<accessor-from-the-list-above>
+```
+
+Destroy the accessor of the credential the restarted pods no longer use, so a copy of the
+old secret ID cannot log in for the rest of its 30 days:
+
+```bash
+bao_exec bao write auth/approle/role/barbican/secret-id-accessor/destroy \
+  secret_id_accessor=<accessor-of-the-replaced-secret-id>
+```
+
+`secret_id_num_uses` is deliberately left unset on the role. castellan's Vault key manager
+re-logs in whenever its cached token ages out (`token_ttl` is 1h), so a use cap would
+expire the credential mid-operation rather than bound it.
 
 **Idempotency:** Before enabling each auth method, the script checks `bao auth list
 -format=json` for the mount path. If the path already exists, the auth enable is
@@ -538,6 +618,7 @@ into the KV v2 secret engine.
 | `kv-v2/infrastructure/mariadb` | `root-password` | MariaDB root password |
 | `kv-v2/bootstrap/openstack/garage/admin-token` | `token` | Garage Admin API token — the operator authenticates to Garage's Admin API with it. Read by the kind-only `garage-admin-token` ExternalSecret (`GarageCluster.spec.admin.adminTokenSecretRef`). Seeded unconditionally (Garage is base infrastructure, not per-ControlPlane). |
 | `kv-v2/bootstrap/openstack/garage/s3-credentials` | `access-key-id`, `secret-access-key` | Garage S3 key pair, **imported** by the `GarageKey` (not minted by the operator). `access-key-id` is `GK`-prefixed (`@generate-gk`), as Garage requires. Read by the kind-only `garage-s3-credentials` ExternalSecret; Glance later reads the same path from its own namespace. |
+| `kv-v2/bootstrap/openstack/openbao-instance/unseal-key` | `key` | Static unseal key of the proving `OpenBaoCluster` (kind-only). Seeded unconditionally and **never rotated**: `write_secret_if_missing` guards the seed side and the consuming ExternalSecret's `refreshPolicy: CreatedOnce` guards the other, because a static seal whose key material changes seals the instance permanently. |
 | `kv-v2/openstack/keystone/openstack/standalone/db` | `username`, `password` | Static Keystone DB credential for **standalone** (non-ControlPlane) Keystone demos only (username is `keystone`), read by the kind-only `keystone-db` ExternalSecret. Brownfield-only. |
 
 **Mode note:** `KORC_CONTROLPLANES` lists **Managed-mode** ControlPlane
@@ -591,7 +672,7 @@ password versions untouched.
 
 ## HCL Access Control Policies
 
-Ten HCL policies enforce least-privilege access for each consumer type. All policy
+Twelve HCL policies enforce least-privilege access for each consumer type. All policy
 paths under the KV v2 engine include the `data/` prefix, which is required by the
 OpenBao/Vault KV v2 API for read and write operations.
 
@@ -621,6 +702,7 @@ Ceph client key for Nova and Nova compute configuration, not broader secret path
 | `push-ceph-keys` | `kv-v2/data/ceph/*` | `create`, `update`, `read` | PushSecret for Ceph client keys |
 | `ci-cd-provisioner` | `kv-v2/data/*` (create/update/read), `kv-v2/metadata/*` (read/list) | `create`, `update`, `read`, `list` | CI/CD pipeline secret provisioning |
 | `pki-issuer` | `pki/issue/*`, `pki/sign/*` | `create`, `update` | cert-manager PKI certificate issuing |
+| `barbican-secretstore` | `barbican/data/*` (plus `barbican/metadata/*` without `delete`) | `create`, `read`, `update`, `delete`, `list` | Barbican's secret store on the shared instance, bound to the `barbican` AppRole role. The consumer is Barbican's `vault_plugin` via castellan, which speaks the Vault-compatible HTTP API that OpenBao keeps compatible. No `delete` on `metadata/`: in KV v2 that verb permanently destroys every version of a secret, the only in-store recovery path tenant key material has, while castellan deletes through `data/*` where the delete is a recoverable soft delete. Same grants as the `barbican-secretstore` policy the proving `OpenBaoCluster` self-initializes. |
 | `keystone-db-dynamic` | <code v-pre>database/mariadb/creds/keystone-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Keystone DB credential reads (bound to the `keystone-db` role). The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard), so a token minted in one namespace cannot read another tenant's creds path. Read-only: a dynamic engine has no static password to push, so the deferred `push-keystone-db.hcl` is unnecessary and not created (#439). |
 | `glance-db-dynamic` | <code v-pre>database/mariadb/creds/glance-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Glance DB credential reads (bound to the `glance-db` role) — the Glance analogue of `keystone-db-dynamic`, and fully keystone-independent. The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard), so a token minted in one namespace cannot read another tenant's creds path. Read-only: a dynamic engine has no static password to push. |
 | `placement-db-dynamic` | <code v-pre>database/mariadb/creds/placement-{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}</code> | `read` | Per-tenant dynamic Placement DB credential reads (bound to the `placement-db` role), on the same terms as the Glance policy. The path is scoped by ACL identity templating to the caller's own service-account namespace (exact match, no wildcard). The `placement-db-creds` SA name is what keeps a Placement generator off a Keystone creds path when both services share a namespace. Read-only: a dynamic engine has no static password to push. |
@@ -657,6 +739,7 @@ All secrets are stored under the `kv-v2/` mount point (KV version 2 engine).
 | `kv-v2/infrastructure/mariadb` | `root-password` | `write-bootstrap-secrets.sh` | On kind the overlay's `mariadb-root-password` ExternalSecret; in production a non-kind Flux MariaDB baseline provides the `mariadb-root-password` Secret itself |
 | `kv-v2/bootstrap/openstack/garage/admin-token` | `token` | `write-bootstrap-secrets.sh` (unconditional; Garage is base infra) | The kind overlay's `garage-admin-token` ExternalSecret → `GarageCluster.spec.admin.adminTokenSecretRef` |
 | `kv-v2/bootstrap/openstack/garage/s3-credentials` | `access-key-id` (`GK`-prefixed), `secret-access-key` | `write-bootstrap-secrets.sh` (unconditional) | The kind overlay's `garage-s3-credentials` ExternalSecret → `GarageKey.spec.importKey.secretRef`; Glance later reads the same path from its own namespace |
+| `kv-v2/bootstrap/openstack/openbao-instance/unseal-key` | `key` | `write-bootstrap-secrets.sh` (unconditional) | The kind overlay's `openbao-instance-unseal-key` ExternalSecret (`refreshPolicy: CreatedOnce`) → the Secret the openbao-operator mounts as the proving instance's static seal. Never rotated |
 | `kv-v2/openstack/keystone/openstack/standalone/db` | `username`, `password` | `write-bootstrap-secrets.sh` (standalone/brownfield only) | The kind overlay's `keystone-db` ExternalSecret, serving standalone (non-ControlPlane) Keystone demos |
 
 **Note:** The stage-(a) per-ControlPlane static path
