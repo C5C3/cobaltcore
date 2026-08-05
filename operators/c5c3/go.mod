@@ -9,7 +9,7 @@ require (
 	github.com/c5c3/forge/operators/keystone v0.0.0-00010101000000-000000000000
 	github.com/c5c3/forge/operators/placement v0.0.0-00010101000000-000000000000
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260803120615-8552ed8d11d1
-	github.com/k-orc/openstack-resource-controller/v2 v2.5.1-0.20260708153253-ef6119d9effa
+	github.com/k-orc/openstack-resource-controller/v2 v2.5.1-0.20260803003919-c22784ca3ff5
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.24.1
@@ -84,7 +84,7 @@ require (
 	sigs.k8s.io/gateway-api v1.6.1 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
-	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
+	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
 
 replace github.com/c5c3/forge/internal/common => ../../internal/common
