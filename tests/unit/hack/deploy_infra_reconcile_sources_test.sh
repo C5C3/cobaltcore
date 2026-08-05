@@ -30,28 +30,35 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # Helpers
 # ---------------------------------------------------------------------------
 
-# install_kubectl_stub <dir> <repos...>
+# install_kubectl_stub <dir> <helmrepositories> <ocirepositories>
 # Writes a stub `kubectl` into <dir> that:
-#   - on `kubectl get helmrepository ...`  → prints the space-joined <repos>
-#   - on `kubectl annotate helmrepository/<name> ...` → appends one line per
+#   - on `kubectl get helmrepository ...` → prints the space-joined
+#     <helmrepositories>
+#   - on `kubectl get ocirepository ...`  → prints the space-joined
+#     <ocirepositories>
+#   - on `kubectl annotate <kind>/<name> ...` → appends one line per
 #     invocation to ${KUBECTL_ANNOTATE_LOG}
 # All other invocations exit 0 silently. The stub captures argv into the log
 # in a fixed format so the test can assert on each annotate call.
 install_kubectl_stub() {
   local dir="$1"
-  shift
+  local helm_repos="$2"
+  local oci_repos="$3"
   mkdir -p "$dir"
-  local repos="$*"
   local log_file="${KUBECTL_ANNOTATE_LOG}"
 
   cat >"$dir/kubectl" <<STUB
 #!/bin/bash
 # Stub kubectl for tests/unit/hack/deploy_infra_reconcile_sources_test.sh.
 if [[ "\$1" == "get" && "\$2" == "helmrepository" ]]; then
-  printf '%s' "${repos}"
+  printf '%s' "${helm_repos}"
   exit 0
 fi
-if [[ "\$1" == "annotate" && "\$2" == helmrepository/* ]]; then
+if [[ "\$1" == "get" && "\$2" == "ocirepository" ]]; then
+  printf '%s' "${oci_repos}"
+  exit 0
+fi
+if [[ "\$1" == "annotate" && ( "\$2" == helmrepository/* || "\$2" == ocirepository/* ) ]]; then
   printf '%s\n' "annotate \$*" >>"${log_file}"
   exit 0
 fi
@@ -88,14 +95,14 @@ test_reconcile_annotates_each_repo() {
   KUBECTL_ANNOTATE_LOG="$tmp/annotate.log"
   : >"$KUBECTL_ANNOTATE_LOG"
 
-  install_kubectl_stub "$tmp" "bitnami fluxcd-community jetstack"
+  install_kubectl_stub "$tmp" "bitnami fluxcd-community jetstack" ""
 
   local output exit_code
   output="$(run_reconcile "$tmp")"
   exit_code=$?
 
   assert_eq "reconcile_helmrepository_sources exits 0 on happy path" "0" "$exit_code"
-  assert_contains "log line announces reconcile step" "$output" "Reconciling HelmRepository sources..."
+  assert_contains "log line announces reconcile step" "$output" "Reconciling Flux chart sources..."
 
   local annotate_count
   annotate_count="$(wc -l <"$KUBECTL_ANNOTATE_LOG" | tr -d ' ')"
@@ -120,7 +127,7 @@ test_reconcile_annotates_each_repo() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: empty list — when no HelmRepositories exist, no annotate is invoked
+# Test 2: empty list — when no chart sources exist, no annotate is invoked
 #
 # ---------------------------------------------------------------------------
 test_reconcile_empty_list_is_noop() {
@@ -133,18 +140,55 @@ test_reconcile_empty_list_is_noop() {
   KUBECTL_ANNOTATE_LOG="$tmp/annotate.log"
   : >"$KUBECTL_ANNOTATE_LOG"
 
-  install_kubectl_stub "$tmp" ""
+  install_kubectl_stub "$tmp" "" ""
 
   local output exit_code
   output="$(run_reconcile "$tmp")"
   exit_code=$?
 
   assert_eq "reconcile_helmrepository_sources exits 0 with empty list" "0" "$exit_code"
-  assert_contains "log line announces reconcile step" "$output" "Reconciling HelmRepository sources..."
+  assert_contains "log line announces reconcile step" "$output" "Reconciling Flux chart sources..."
 
   local annotate_count
   annotate_count="$(wc -l <"$KUBECTL_ANNOTATE_LOG" | tr -d ' ')"
-  assert_eq "kubectl annotate not invoked when no HelmRepositories exist" "0" "$annotate_count"
+  assert_eq "kubectl annotate not invoked when no chart sources exist" "0" "$annotate_count"
+}
+
+# ---------------------------------------------------------------------------
+# Test 3: OCIRepository sources are nudged too.
+#
+# A chart pinned by artifact digest is an OCIRepository, not a HelmRepository —
+# openbao-operator is the one such source in this stack, and it is hard-gated
+# by wait_for_helmreleases. If the nudge enumerated HelmRepositories only, a
+# failed first registry fetch would sit out the source's 1h interval while the
+# release wait ran into its timeout.
+# ---------------------------------------------------------------------------
+test_reconcile_annotates_ocirepositories() {
+  echo "Test: reconcile_helmrepository_sources annotates OCIRepository sources"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  KUBECTL_ANNOTATE_LOG="$tmp/annotate.log"
+  : >"$KUBECTL_ANNOTATE_LOG"
+
+  install_kubectl_stub "$tmp" "bitnami jetstack" "openbao-operator"
+
+  local output exit_code
+  output="$(run_reconcile "$tmp")"
+  exit_code=$?
+
+  assert_eq "reconcile_helmrepository_sources exits 0 with both source kinds" "0" "$exit_code"
+
+  local annotate_count
+  annotate_count="$(wc -l <"$KUBECTL_ANNOTATE_LOG" | tr -d ' ')"
+  assert_eq "kubectl annotate called once per source across both kinds" "3" "$annotate_count"
+
+  assert_file_contains "annotate invoked for the openbao-operator OCIRepository" \
+    "$KUBECTL_ANNOTATE_LOG" "ocirepository/openbao-operator"
+  assert_file_contains "annotate still invoked for HelmRepositories" \
+    "$KUBECTL_ANNOTATE_LOG" "helmrepository/bitnami"
 }
 
 # ---------------------------------------------------------------------------
@@ -152,6 +196,7 @@ test_reconcile_empty_list_is_noop() {
 # ---------------------------------------------------------------------------
 test_reconcile_annotates_each_repo
 test_reconcile_empty_list_is_noop
+test_reconcile_annotates_ocirepositories
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -418,22 +418,30 @@ wait_for_fluxinstance() {
 }
 
 # ---------------------------------------------------------------------------
-# reconcile_helmrepository_sources — Force a reconcile of every HelmRepository
-# in flux-system by annotating with reconcile.fluxcd.io/requestedAt — the
-# kubectl-only equivalent of `flux reconcile source helm`.
+# reconcile_helmrepository_sources — Force a reconcile of every Flux chart
+# source in flux-system by annotating with reconcile.fluxcd.io/requestedAt —
+# the kubectl-only equivalent of `flux reconcile source helm` / `... source oci`.
 #
-# A no-op when no HelmRepositories exist (the for-loop body simply does not
-# run). Each annotate failure is tolerated (`|| true`) so a transient API
-# error on one repo does not abort the whole bootstrap.
+# Both source kinds are covered. Most charts ride a HelmRepository, but a chart
+# pinned by artifact digest rather than by version is an OCIRepository
+# (openbao-operator), and it is hard-gated by wait_for_helmreleases below.
+# Leaving it out would let a failed first registry fetch sit out the source's
+# 1h interval while the release wait runs into its timeout.
+#
+# A no-op when no such sources exist (the for-loop body simply does not run).
+# Each annotate failure is tolerated (`|| true`) so a transient API error on
+# one source does not abort the whole bootstrap.
 # ---------------------------------------------------------------------------
 reconcile_helmrepository_sources() {
-  log "Reconciling HelmRepository sources..."
-  local repos
-  repos=$(kubectl get helmrepository -n flux-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
-  for repo in ${repos}; do
-    kubectl annotate "helmrepository/${repo}" \
-      "reconcile.fluxcd.io/requestedAt=$(date +%s%N)" \
-      --overwrite -n flux-system || true
+  log "Reconciling Flux chart sources..."
+  local kind names name
+  for kind in helmrepository ocirepository; do
+    names=$(kubectl get "${kind}" -n flux-system -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
+    for name in ${names}; do
+      kubectl annotate "${kind}/${name}" \
+        "reconcile.fluxcd.io/requestedAt=$(date +%s%N)" \
+        --overwrite -n flux-system || true
+    done
   done
 }
 
@@ -2052,10 +2060,11 @@ main() {
       --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
   fi
 
-  # Force-reconcile HelmRepository sources so chart indexes are available
-  # before HelmReleases attempt to resolve charts. Without this, the
-  # helm-controller may see unindexed sources and wait until the next
-  # reconcile interval (up to 1h) before retrying.
+  # Force-reconcile the Flux chart sources (HelmRepository and OCIRepository)
+  # so chart indexes and pinned artifacts are available before HelmReleases
+  # attempt to resolve charts. Without this, the helm-controller may see
+  # unindexed or unfetched sources and wait until the next reconcile interval
+  # (up to 1h) before retrying.
   reconcile_helmrepository_sources
 
   # Step 4: Wait for HelmReleases to become Ready (two phases)
@@ -2094,15 +2103,15 @@ main() {
   log "Phase 3: Waiting for remaining HelmReleases..."
   # Build the release list dynamically so chaos-mesh is only awaited when the
   # opt-in overlay was applied. The surviving non-chaos order is
-  # preserved exactly as before; garage-operator is appended as the last base
-  # release, and chaos-mesh after it, to avoid moving any other release's
-  # relative position.
-  local helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator)
+  # preserved exactly as before; garage-operator and openbao-operator are
+  # appended as the last base releases, and chaos-mesh after them, to avoid
+  # moving any other release's relative position.
+  local helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator openbao-operator)
   if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
     helm_releases+=(chaos-mesh)
   fi
   # kube-prometheus-stack is appended last so the relative
-  # ordering of the eight base releases (and chaos-mesh) is preserved exactly.
+  # ordering of the nine base releases (and chaos-mesh) is preserved exactly.
   local release_wait_timeout="${HELMRELEASE_TIMEOUT}"
   if [[ "${WITH_PROMETHEUS}" == "true" ]]; then
     helm_releases+=(kube-prometheus-stack)
@@ -2115,7 +2124,7 @@ main() {
     fi
   fi
   # metrics-server is appended last (after chaos-mesh and kube-prometheus-stack)
-  # so the relative ordering of the eight base releases is preserved exactly.
+  # so the relative ordering of the nine base releases is preserved exactly.
   if [[ "${WITH_METRICS_SERVER}" == "true" ]]; then
     helm_releases+=(metrics-server)
   fi
@@ -2159,6 +2168,9 @@ main() {
   # envoyproxies.gateway.envoyproxy.io is installed by the envoy-gateway
   # HelmRelease (Phase 3 above) and is required by the EnvoyProxy CR in
   # deploy/kind/infrastructure/envoy-nodeport.yaml.
+  # openbaoclusters.openbao.org is registered by the openbao-operator
+  # HelmRelease (Phase 3 above); waiting on it keeps the overlay apply from
+  # racing that registration.
   wait_for_crds "${POD_TIMEOUT}" \
     memcacheds.memcached.c5c3.io \
     clustersecretstores.external-secrets.io \
@@ -2167,7 +2179,8 @@ main() {
     envoyproxies.gateway.envoyproxy.io \
     garageclusters.garage.rajsingh.info \
     garagebuckets.garage.rajsingh.info \
-    garagekeys.garage.rajsingh.info
+    garagekeys.garage.rajsingh.info \
+    openbaoclusters.openbao.org
 
   # Invalidate kubectl's client-side discovery cache so that the newly
   # registered CRDs are visible to kubectl apply.

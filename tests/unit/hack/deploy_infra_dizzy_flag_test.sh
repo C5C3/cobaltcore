@@ -207,14 +207,14 @@ test_phase3_append_is_gated() {
   assert_file_not_contains \
     "deploy-infra.sh does not hard-code dizzy-victoria-metrics in the base wait list" \
     "$DEPLOY_INFRA_SH" \
-    'garage-operator dizzy-victoria-metrics'
+    'openbao-operator dizzy-victoria-metrics'
 
   # The base array line is pinned byte-for-byte (copied verbatim from the
   # script) so an accidental reorder or rename of a base release trips here.
   assert_file_contains \
     "helm_releases base array line is byte-identical to the expected literal" \
     "$DEPLOY_INFRA_SH" \
-    'local helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator)'
+    'local helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator openbao-operator)'
 
   # The dynamic append exists.
   assert_file_contains \

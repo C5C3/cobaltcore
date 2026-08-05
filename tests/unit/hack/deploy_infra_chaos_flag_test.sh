@@ -168,12 +168,12 @@ test_chaos_mesh_not_in_default_helm_releases() {
     "$DEPLOY_INFRA_SH" \
     'memcached-operator chaos-mesh envoy-gateway'
 
-  # The new dynamic array must include the eight non-chaos releases in order
+  # The new dynamic array must include the nine non-chaos releases in order
   # and append chaos-mesh inside the gate.
   assert_file_contains \
-    "helm_releases array preserves the eight non-chaos releases in the documented order" \
+    "helm_releases array preserves the nine non-chaos releases in the documented order" \
     "$DEPLOY_INFRA_SH" \
-    'helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator)'
+    'helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator openbao-operator)'
 
   assert_file_contains \
     "chaos-mesh is appended only inside the WITH_CHAOS_MESH gate" \
