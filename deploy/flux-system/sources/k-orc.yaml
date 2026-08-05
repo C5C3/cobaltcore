@@ -43,7 +43,7 @@ spec:
   interval: 1h
   url: https://github.com/k-orc/openstack-resource-controller
   ref:
-    commit: ef6119d9effa613c887b3540d4159469dce451d7
+    commit: c22784ca3ff51e5a126ad5fec000205ad43eb16c
   ignore: |
     # Vendor only the config/ kustomize base; skip the rest of the repo.
     /*
