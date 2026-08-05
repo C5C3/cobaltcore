@@ -214,17 +214,37 @@ spec:
           # keystone-operator to drive the projected Keystone to Ready, so
           # probe for its running pods (any namespace — the release namespace
           # differs per job), not just its schema.
-          if ! kubectl get pods -A -l app.kubernetes.io/name=keystone-operator --no-headers 2>/dev/null | grep -q .; then
+          #
+          # The probe captures via command substitution and retries; it must
+          # NOT be simplified back to `kubectl … 2>/dev/null | grep -q .`.
+          # Under pipefail that pipeline reads a transient apiserver error
+          # (stderr discarded, kubectl's exit never inspected) — or grep -q
+          # closing the pipe on the first of two replica lines, killing
+          # kubectl with EPIPE after the match — as "no pods", and the gate
+          # then fails a cluster that runs the full stack. Only a listing
+          # that stays empty across every attempt gates.
+          operator_running() { # <app.kubernetes.io/name label value>
+            local pods
+            for _ in 1 2 3 4 5; do
+              if pods="$(kubectl get pods -A -l "app.kubernetes.io/name=$1" --no-headers 2>/dev/null)" \
+                && [ -n "${pods}" ]; then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+          if ! operator_running keystone-operator; then
             gate_absent "no keystone-operator is running; the cluster carries the stack's CRDs only."
           fi
           # Same for the glance-operator: it drives the projected Glance child to
           # Ready, so probe for its running pods (any namespace), not just its schema.
-          if ! kubectl get pods -A -l app.kubernetes.io/name=glance-operator --no-headers 2>/dev/null | grep -q .; then
+          if ! operator_running glance-operator; then
             gate_absent "no glance-operator is running; the cluster carries the stack's CRDs only."
           fi
           # Same for the placement-operator: it drives the projected Placement child
           # to Ready, so probe for its running pods (any namespace), not just its schema.
-          if ! kubectl get pods -A -l app.kubernetes.io/name=placement-operator --no-headers 2>/dev/null | grep -q .; then
+          if ! operator_running placement-operator; then
             gate_absent "no placement-operator is running; the cluster carries the stack's CRDs only."
           fi
           echo "OK: c5c3 + K-ORC + keystone + glance + placement CRDs, OpenBao store, and running"
