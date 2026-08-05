@@ -231,7 +231,7 @@ func integrationGlanceService() *c5c3v1alpha1.ServiceGlanceSpec {
 			Type:      "S3",
 			IsDefault: true,
 			S3: &c5c3v1alpha1.GlanceBackendS3Spec{
-				Endpoint:             "http://garage.openstack.svc.cluster.local:3900",
+				Endpoint:             "http://garage.shared-services.svc.cluster.local:3900",
 				Bucket:               "glance-images",
 				Region:               "garage",
 				CredentialsSecretRef: c5c3v1alpha1.SecretNameRef{Name: "garage-s3-credentials"},
@@ -1239,7 +1239,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		"GlanceBackend must reference the projected Glance child by name")
 	g.Expect(projectedBackend.Spec.Type).To(Equal(glancev1alpha1.GlanceBackendTypeS3))
 	g.Expect(projectedBackend.Spec.S3).NotTo(BeNil())
-	g.Expect(projectedBackend.Spec.S3.Host).To(Equal("http://garage.openstack.svc.cluster.local:3900"),
+	g.Expect(projectedBackend.Spec.S3.Host).To(Equal("http://garage.shared-services.svc.cluster.local:3900"),
 		"the backends[] endpoint must project onto the child's spec.s3.host")
 	g.Expect(projectedBackend.Spec.IsDefault).To(BeTrue(), "the single backends[] entry is the default store")
 	backendOwner := metav1.GetControllerOf(projectedBackend)

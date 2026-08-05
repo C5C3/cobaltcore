@@ -175,13 +175,16 @@ main() {
 
   # Garage object store (S3 backend for the CI/e2e stack) — seeded
   # unconditionally, independent of KORC_CONTROLPLANES, because Garage is a
-  # base infrastructure component (not per-ControlPlane). Both paths sit under
-  # bootstrap/openstack/garage/ so they are readable today through the shared
-  # cluster store (the eso-management policy grants read on bootstrap/*) AND by
-  # an openstack-namespace tenant store later, which is what lets a same-
-  # namespace Glance read the identical s3-credentials path (per-dedicated-
-  # namespace delivery for Glance is deferred to the Glance onboarding, not
-  # this seed). No mark_eso_managed: no PushSecret targets these paths.
+  # base infrastructure component (not per-ControlPlane). Garage itself runs in
+  # the shared-services namespace, but both paths keep their
+  # bootstrap/openstack/garage/ prefix: that segment names the consuming tenant,
+  # not the workload's namespace. The prefix also reserves the s3-credentials
+  # path for a later openstack-namespace tenant store, which is what lets a
+  # same-namespace Glance read the identical pair (per-dedicated-namespace
+  # delivery for Glance is deferred to the Glance onboarding, not this seed).
+  # Both paths are readable today through the shared cluster store (the
+  # eso-management policy grants read on bootstrap/*). No mark_eso_managed: no
+  # PushSecret targets these paths.
   #
   # The admin token authenticates the operator to Garage's Admin API. The S3
   # pair is IMPORTED by the GarageKey, so the access key must be GK-prefixed
