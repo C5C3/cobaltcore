@@ -3,9 +3,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Idempotent script to enable OpenBao secret engines (KV v2, PKI, and the
-# MariaDB database secrets engine). Guards each enable operation by checking
-# whether the path already exists.
+# Idempotent script to enable OpenBao secret engines (KV v2, PKI, the MariaDB
+# database secrets engine, and the Barbican KV v2 mount). Guards each enable
+# operation by checking whether the path already exists.
 
 set -euo pipefail
 
@@ -92,6 +92,30 @@ enable_database() {
 }
 
 # ---------------------------------------------------------------------------
+# enable_barbican_kv
+# Enables the KV v2 secret engine at path barbican/. Skips if the path already
+# exists.
+#
+# This is the mount for the Barbican brownfield secret-store leg: the
+# attachment target Barbican's vault_plugin (via castellan) reads and writes
+# when a deployment attaches Barbican to this shared instance instead of a
+# dedicated one. It mirrors the barbican/ mount the proving instance self-inits
+# (deploy/kind/infrastructure/openbao-instance.yaml).
+# ---------------------------------------------------------------------------
+enable_barbican_kv() {
+  local path="barbican/"
+
+  if secrets_list | grep -qx "${path}"; then
+    log "Secret engine already enabled at ${path}. Skipping."
+    return 0
+  fi
+
+  log "Enabling KV v2 secret engine at ${path} ..."
+  bao_exec bao secrets enable -path=barbican -version=2 kv
+  log "KV v2 secret engine enabled at ${path}."
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 main() {
@@ -102,6 +126,7 @@ main() {
   enable_kv_v2
   enable_pki
   enable_database
+  enable_barbican_kv
 
   log "=== Done ==="
 }
