@@ -729,8 +729,9 @@ Deployment/Job/CronJob is identifiable. Mirrors the catch-block shape from
   namespace's OWN per-tenant `openbao-tenant-store` (provisioned by the Step-1
   script) and read namespace-scoped paths that the `eso-tenant` policy templates
   to that namespace. Since #606 the shared cluster store grants no read on the
-  `openstack/keystone/*` subtree and is namespace-restricted to `openstack`, so a
-  foreign namespace cannot reach the shared standalone paths through it; the
+  `openstack/keystone/*` subtree and is namespace-restricted to `openstack` and
+  `shared-services`, so a foreign namespace cannot reach the shared
+  standalone paths through it; the
   Step-1 script instead COPIES the shared `bootstrap/openstack/controlplane-keystone/admin`
   and `openstack/keystone/openstack/standalone/db` values into the namespace's own
   segment. Copying the shared DB value (whose `username` is `keystone`) is what

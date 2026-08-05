@@ -104,7 +104,7 @@ for the rationale.
 | ESO ExternalSecrets | `keystone-admin`, `keystone-db` synced in `openstack` namespace |
 | MariaDB instance | `openstack-db` MariaDB CR Ready in `openstack` namespace |
 | Memcached instance | `openstack-memcached` Memcached CR Ready in `openstack` namespace |
-| OpenBao instance | Running in `openbao-system` namespace |
+| OpenBao instance | Running in `shared-services` namespace |
 
 ## Running the Tests
 
@@ -268,8 +268,8 @@ the pattern used by `operator-pod-crash` and `api-pod-kill-pdb`.
 ExternalSecret sync failures, transitions `SecretsReady` to `False`, and recovers when
 OpenBao returns and ESO resumes syncing.
 
-**Cross-namespace targeting:** OpenBao runs in the `openbao-system` namespace, not
-`openstack`. The PodChaos CR is created in `openstack` but targets `openbao-system` via
+**Cross-namespace targeting:** OpenBao runs in the `shared-services` namespace, not
+`openstack`. The PodChaos CR is created in `openstack` but targets `shared-services` via
 `selector.namespaces`. Chaos Mesh has cluster-wide RBAC enabling this.
 
 **Steps:**
@@ -278,7 +278,7 @@ OpenBao returns and ESO resumes syncing.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-bao` with database `keystone_chaos_bao` |
 | 2 | Assert baseline | `assert` (5m) | SecretsReady=True and Ready=True with reason AllReady |
-| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-openbao` targeting `app.kubernetes.io/name: openbao` in `openbao-system` |
+| 3 | Inject PodChaos | `apply` | Applies `01-podchaos.yaml` — PodChaos `kill-openbao` targeting `app.kubernetes.io/name: openbao` in `shared-services` |
 | 4 | Assert degradation | `assert` (5m) | SecretsReady=False — ESO cannot reach OpenBao |
 | 5 | Delete PodChaos | `delete` | Removes PodChaos `kill-openbao` to lift the fault |
 | 6 | Assert recovery | `assert` (5m) | SecretsReady=True and Ready=True with reason AllReady |
@@ -286,7 +286,7 @@ OpenBao returns and ESO resumes syncing.
 **Fixtures:** `00-keystone-cr.yaml`, `01-podchaos.yaml`
 
 **Catch blocks:** Steps 2, 4, and 6 include catch blocks dumping Keystone CR status,
-OpenBao pod status (in `openbao-system`), Chaos Mesh experiment status, ESO ExternalSecret
+OpenBao pod status (in `shared-services`), Chaos Mesh experiment status, ESO ExternalSecret
 conditions (via `jsonpath='{.status.conditions}'`), operator logs (including `--previous`),
 and namespace events.
 
@@ -796,7 +796,7 @@ spec:
   mode: one
   selector:
     namespaces:
-    - <target-namespace>         # openstack or openbao-system
+    - <target-namespace>         # openstack or shared-services
     labelSelectors:
       app.kubernetes.io/name: <target>  # mariadb, memcached, openbao
   gracePeriod: 0
@@ -808,7 +808,7 @@ spec:
 | `mode` | `one` | Kills exactly one matching pod |
 | `gracePeriod` | `0` | Immediate kill (no graceful shutdown) |
 | `namespace` | `openstack` | CR lives in `openstack` even for cross-namespace targeting |
-| `selector.namespaces` | varies | `openstack` for MariaDB/Memcached, `openbao-system` for OpenBao |
+| `selector.namespaces` | varies | `openstack` for MariaDB/Memcached, `shared-services` for OpenBao |
 
 ### pod-failure action (SC-CHAOS-005)
 
@@ -944,7 +944,7 @@ tests/e2e-chaos/
 │   └── chainsaw-test.yaml            Test: Ready=True maintained (no regression)
 ├── openbao-pod-kill/                 SC-CHAOS-003: OpenBao pod kill
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-bao)
-│   ├── 01-podchaos.yaml              PodChaos targeting openbao in openbao-system
+│   ├── 01-podchaos.yaml              PodChaos targeting openbao in shared-services
 │   └── chainsaw-test.yaml            Test: SecretsReady=False → recovery
 ├── operator-pod-crash/               SC-CHAOS-004: Operator self-recovery
 │   ├── 00-keystone-cr.yaml           Keystone CR fixture (keystone-chaos-op)

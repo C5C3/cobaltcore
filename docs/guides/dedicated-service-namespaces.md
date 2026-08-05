@@ -135,7 +135,7 @@ third identity segment and is idempotent — paths that already exist are
 skipped:
 
 ```bash
-export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
+export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
 KORC_CONTROLPLANES="openstack/controlplane/openstack-internal" \
   deploy/openbao/bootstrap/write-bootstrap-secrets.sh
@@ -234,7 +234,7 @@ provisions the database-engine role `keystone-openstack-internal` accordingly:
 ```bash
 kubectl wait mariadb/openstack-db -n openstack-internal --for=condition=Ready --timeout=10m
 
-export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n openbao-system \
+export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
   -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')
 deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
 unset BAO_TOKEN

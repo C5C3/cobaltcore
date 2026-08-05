@@ -260,7 +260,7 @@ The deployment script supports configurable timeouts via environment variables:
 | `POD_TIMEOUT` | `300` | Seconds to wait for OpenBao pods Ready |
 | `EXTERNALSECRET_TIMEOUT` | `120` | Seconds to wait for ExternalSecrets synced |
 | `SKIP_KIND_CREATE` | `false` | Skip kind cluster creation (CI mode where cluster is pre-created) |
-| `OPENBAO_NAMESPACE` | `openbao-system` | OpenBao namespace (propagated to the bootstrap scripts, which resolve the same variable in `common.sh`). The generic `NAMESPACE` variable is deliberately ignored — chainsaw injects `NAMESPACE=<test namespace>` into e2e script steps |
+| `OPENBAO_NAMESPACE` | `shared-services` | OpenBao namespace (propagated to the bootstrap scripts, which resolve the same variable in `common.sh`). The generic `NAMESPACE` variable is deliberately ignored — chainsaw injects `NAMESPACE=<test namespace>` into e2e script steps |
 | `INSTALL_DIR` | `~/.local/bin` | Directory for `install-test-deps.sh` to install tools |
 | `WITH_CONTROLPLANE` | `false` | When `true`, the c5c3 `ControlPlane` provisions MariaDB/Memcached in managed mode: deploy-infra skips the shared MariaDB/Memcached CRs and seeds the per-CR OpenBao admin-password paths instead |
 | `CONTROLPLANE_OPERATORS` | `flux` | How the ControlPlane operator stack is provided (only when `WITH_CONTROLPLANE=true`). `flux` deploys the published c5c3-operator chart + K-ORC Flux source, un-suspends the keystone-, horizon-, glance-, and placement-operator releases, and pins the self-built operators' `:latest` images to their current digests via `hack/refresh-operator-image-digests.sh` (per-operator image-digest ConfigMaps consumed via `valuesFrom`; re-run with `make refresh-operator-digests` after a merge); `external` suspends the Flux stack and expects the operators to be deployed out of band (as the `e2e-controlplane` CI job does with local dev images + `hack/ci-deploy-korc.sh`) |
@@ -315,7 +315,7 @@ The test asserts readiness of all deployed components:
 | # | Assertion | Namespace | Resource |
 | --- | --- | --- | --- |
 | 1 | cert-manager Deployment ready | `cert-manager` | `Deployment` |
-| 2 | OpenBao StatefulSet ready | `openbao-system` | `StatefulSet` |
+| 2 | OpenBao StatefulSet ready | `shared-services` | `StatefulSet` |
 | 3 | ESO Deployment ready | `external-secrets` | `Deployment` |
 | 4 | MariaDB Operator Deployment ready | `mariadb-system` | `Deployment` |
 | 5 | Memcached Operator Deployment ready | `memcached-system` | `Deployment` |
@@ -337,9 +337,9 @@ Covers the Garage object store (the S3 backend for the Glance e2e suites):
 | # | Assertion | Namespace | Resource |
 | --- | --- | --- | --- |
 | 1 | garage-operator Deployment ready + HelmRelease Ready | `garage-system` | `Deployment`, `HelmRelease` |
-| 2 | Credential ExternalSecrets SecretSynced | `openstack` | `ExternalSecret` (x2) |
-| 3 | GarageCluster `Running`; GarageBucket / GarageKey `Ready` | `openstack` | `GarageCluster`, `GarageBucket`, `GarageKey` |
-| 4 | S3 put + list with the imported key over path-style HTTP | `openstack` | `script` (throwaway `aws-cli` pod) |
+| 2 | Credential ExternalSecrets SecretSynced: `garage-admin-token` and `garage-s3-credentials` beside the CRs, plus the retained `garage-s3-credentials` copy the Glance consumers read | `shared-services`, `openstack` | `ExternalSecret` (x3) |
+| 3 | GarageCluster `Running`; GarageBucket / GarageKey `Ready` | `shared-services` | `GarageCluster`, `GarageBucket`, `GarageKey` |
+| 4 | S3 put + list with the imported key over path-style HTTP; the probe pod stays in `openstack` and reaches Garage through `garage.shared-services.svc.cluster.local` | `openstack` | `script` (throwaway `aws-cli` pod) |
 
 **File:** `tests/e2e/infrastructure/openbao-instance/chainsaw-test.yaml`
 

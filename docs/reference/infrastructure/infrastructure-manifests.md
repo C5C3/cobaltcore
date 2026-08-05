@@ -78,11 +78,20 @@ created.
 | `horizon-system` | Horizon Operator controller (Horizon CRs and the operator-managed dashboard live in `openstack`) |
 | `glance-system` | Glance Operator controller (Glance/GlanceBackend CRs and the operator-managed payload live in `openstack`) |
 | `placement-system` | Placement Operator controller (Placement CRs and the operator-managed payload live in `openstack`) |
-| `openstack` | Infrastructure instance CRs (MariaDB cluster, Memcached cluster, Garage cluster; on kind also the OpenBao proving instance) |
-| `openbao-system` | OpenBao HA Raft cluster |
-| `openbao-operator-system` | openbao-operator controller. It stays out of `openbao-system` so the shared OpenBao cluster and the operator that manages per-service instances keep separate lifecycles |
+| `openstack` | Infrastructure instance CRs that exist to run the operators standalone (MariaDB cluster, Memcached cluster; on kind also the OpenBao proving instance and the shared Gateway) |
+| `shared-services` | Infrastructure consumed by more than one control plane: the OpenBao HA Raft cluster and the Garage object store |
+| `openbao-operator-system` | openbao-operator controller. It stays out of `shared-services` so the shared OpenBao cluster and the operator that manages per-service instances keep separate lifecycles |
 | `c5c3-system` | c5c3-operator controller; the `ControlPlane` and its child CRs are created in the `ControlPlane`'s own namespace |
 | `orc-system` | K-ORC (OpenStack Resource Controller) and its installer resources |
+
+`shared-services` is a trust zone, not just a placement bucket. It holds the
+credentials that unlock every other secret in the stack — `openbao-init-keys` (the root
+token and all Shamir unseal key shares, in plaintext), `openbao-tls`, and
+`eso-openbao-client-tls` — and it is on the `openbao-cluster-store` allow-list. Read
+access to Secrets in this namespace, whether through RBAC or through an `ExternalSecret`
+created there, is therefore equivalent to read access to the whole store. Garage is the
+one accepted co-tenant and holds neither grant; do not add a workload or a
+Secret-reading `Role` here without treating it as a security review.
 
 The `chaos-mesh` namespace is **not** part of the production base. It is created
 inline by the kind-only opt-in overlay at `deploy/kind/chaos-mesh/` when
@@ -94,6 +103,47 @@ helm-controller to create namespaces when installing charts. However, this does 
 when applying HelmRelease CRs via `kubectl apply -k` — the target namespace must already
 exist for the API server to accept namespaced resources. The explicit `Namespace` resources
 solve this chicken-and-egg problem.
+
+### Migrating a cluster deployed before the relocation
+
+The OpenBao cluster moved out of `openbao-system`, and Garage out of `openstack`, into
+`shared-services`. Both keep their state in namespace-scoped `StatefulSet` PVCs, so the
+move brings up **empty** volumes and leaves the originals running: `kubectl apply -k`
+does not prune, and the `FluxInstance` declares no `spec.sync`, so Flux does not either.
+An abandoned OpenBao keeps serving every historical secret alongside its plaintext root
+token, and an abandoned Garage keeps holding the objects Glance's database still points
+at while Glance is repointed at empty buckets.
+
+`make deploy-infra` refuses to run against such a cluster and names what to delete. On a
+cluster you do not intend to recreate, capture the old store first — `openbao-init-keys`
+holds the root token and every Shamir unseal-key share, and it has no second copy:
+
+```bash
+(umask 077 && kubectl get secret openbao-init-keys -n openbao-system -o yaml \
+  > ~/openbao-init-keys.backup.yaml)
+```
+
+That file carries the root token and every unseal share in the clear, so it unseals the
+retired instance forever and expires never. Keep it where you keep a root credential —
+outside the working tree, so a routine `git add -A` cannot stage it — and delete it once
+the secrets it protects have been re-applied at the source.
+
+Then delete both explicitly. The `openstack` namespace also holds the MariaDB volume
+carrying the Keystone database, so scope the PVC listing to Garage rather than deleting
+from an unfiltered one:
+
+```bash
+kubectl delete namespace openbao-system
+kubectl delete garagecluster garage -n openstack
+kubectl get pvc -n openstack | grep garage   # delete only these
+```
+
+Re-bootstrapping OpenBao afterwards re-seeds `bootstrap/*` from scratch, so any secret
+that was rotated in the old instance has to be re-applied at the source. To read those
+secrets out of the old instance before it goes away, run
+`ALLOW_PRE_RELOCATION=true make deploy-infra` instead: the guard downgrades to a warning
+and both stacks run side by side for a migration window. That defers the split-brain
+rather than resolving it — delete the retired stack once the new one serves.
 
 ## FluxInstance
 
@@ -391,7 +441,7 @@ are on by default — hence the `dependsOn: cert-manager` edge.
 **Accepted risk (decided 2026-07-15):** garage-operator is a young, single-maintainer,
 pre-1.0 (v0.6.x) project. It is accepted for **test infrastructure only** — never a
 production dependency of the operators — and the consuming surface is deliberately thin
-(three instance CRs plus two ExternalSecrets), so a later provider swap stays local to
+(three instance CRs plus three ExternalSecrets), so a later provider swap stays local to
 this layer.
 
 ### OpenBao Operator
@@ -477,7 +527,7 @@ decision.
 
 | Property | Value |
 | --- | --- |
-| Target namespace | `openbao-system` |
+| Target namespace | `shared-services` |
 | Chart | `openbao` |
 | Version constraint | `>=0.5.0 <1.0.0` |
 | Source | `openbao` HelmRepository |
@@ -524,8 +574,8 @@ immediately after `openbao-tls-cert.yaml`, so cert-manager reconciles them
 
 | Certificate | Secret (namespace) | Consumer | Reference |
 | --- | --- | --- | --- |
-| `openbao-client-tls` | `openbao-client-tls` (`openbao-system`) | OpenBao pods — Raft `retry_join` + in-pod `bao` exec | StatefulSet volume `client-tls` mounted at `/openbao/client-tls`; env vars `VAULT_CLIENT_CERT` / `VAULT_CLIENT_KEY` in every exec wrapper (`deploy/openbao/bootstrap/common.sh`, `init-unseal.sh`, `hack/deploy-infra.sh`) |
-| `eso-openbao-client-tls` | `eso-openbao-client-tls` (`openbao-system`) | ESO `ClusterSecretStore/openbao-cluster-store` | `spec.provider.vault.tls.certSecretRef` / `keySecretRef` in `deploy/eso/clustersecretstore.yaml`; `auth.kubernetes` block (mountPath `kubernetes/management`, role `eso-management`) is unchanged — mTLS is purely transport-layer |
+| `openbao-client-tls` | `openbao-client-tls` (`shared-services`) | OpenBao pods — Raft `retry_join` + in-pod `bao` exec | StatefulSet volume `client-tls` mounted at `/openbao/client-tls`; env vars `VAULT_CLIENT_CERT` / `VAULT_CLIENT_KEY` in every exec wrapper (`deploy/openbao/bootstrap/common.sh`, `init-unseal.sh`, `hack/deploy-infra.sh`) |
+| `eso-openbao-client-tls` | `eso-openbao-client-tls` (`shared-services`) | ESO `ClusterSecretStore/openbao-cluster-store` | `spec.provider.vault.tls.certSecretRef` / `keySecretRef` in `deploy/eso/clustersecretstore.yaml`; `auth.kubernetes` block (mountPath `kubernetes/management`, role `eso-management`) is unchanged — mTLS is purely transport-layer |
 
 Both client certs are issued from the same `openbao-ca-issuer` as
 `openbao-tls` (a CA-type ClusterIssuer defined in
@@ -855,7 +905,7 @@ shipped by the [memcached-operator](https://github.com/C5C3/memcached-operator) 
 **File:** `deploy/flux-system/infrastructure/garage.yaml`
 
 Four instance CRs (API group `garage.rajsingh.info`) declare the S3 object store the
-[garage-operator](#garage-operator) manages. All live in the `openstack` namespace:
+[garage-operator](#garage-operator) manages. All live in the `shared-services` namespace:
 
 | Kind | API version | Name | Purpose |
 | --- | --- | --- | --- |
@@ -875,21 +925,24 @@ single-node kind footprint. This is a **CI/dev fixture** — plain HTTP in-clust
 tier; production-grade multi-node/zone-aware guidance is out of scope.
 
 **Credential flow — OpenBao stays the single source of truth.** No key material is read
-back from Garage and there is no cross-namespace Secret plumbing:
+back from Garage, and no Secret is copied from one namespace to another: each consuming
+namespace gets its own ExternalSecret on the same OpenBao path.
 
 1. `write-bootstrap-secrets.sh` seeds an admin token at
    `bootstrap/openstack/garage/admin-token` and a `GK`-prefixed S3 access/secret pair at
    `bootstrap/openstack/garage/s3-credentials` (see the
-   [OpenBao bootstrap reference](./openbao-bootstrap.md#write-bootstrap-secretssh)).
-2. Two kind-only ExternalSecrets
+   [OpenBao bootstrap reference](./openbao-bootstrap.md#write-bootstrap-secretssh)). The
+   `openstack` segment names the consuming tenant, not the namespace Garage runs in.
+2. Kind-only ExternalSecrets
    (`deploy/kind/infrastructure/garage-{admin-token,s3-credentials}-externalsecret.yaml`)
-   materialize them into the `openstack` namespace through the shared
-   `openbao-cluster-store`.
+   materialize them through the shared `openbao-cluster-store`: `garage-admin-token` and
+   one `garage-s3-credentials` copy into `shared-services`, beside the CRs that read them,
+   and a second `garage-s3-credentials` copy into `openstack`.
 3. The `GarageCluster` reads the admin token via `spec.admin.adminTokenSecretRef`; the
    `GarageKey` **imports** the pre-existing S3 pair via `spec.importKey.secretRef` (rather
    than the operator minting a fresh key), so the key material never diverges from
-   OpenBao. Glance later reads the identical `s3-credentials` path from its own namespace
-   through its tenant store.
+   OpenBao. A `GlanceBackend` resolves its `credentialsSecretRef` in the Glance service's
+   own namespace, which is what the `openstack` copy serves.
 
 ### OpenBao Proving Instance
 
@@ -1153,7 +1206,7 @@ These resources do not depend on any custom CRDs.
 
 | Category | Count | Resources |
 | --- | --- | --- |
-| Namespace | 15 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, garage-system, keystone-system, horizon-system, glance-system, placement-system, openstack, openbao-system, openbao-operator-system, c5c3-system, orc-system |
+| Namespace | 15 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, garage-system, keystone-system, horizon-system, glance-system, placement-system, openstack, shared-services, openbao-operator-system, c5c3-system, orc-system |
 | FluxInstance | 1 | flux (drives the flux-operator) |
 | HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community, garage-operator |
 | OCIRepository | 1 | openbao-operator |
@@ -1272,8 +1325,9 @@ The manifest structure is designed for straightforward extension. Adding a new o
 2. **Add a release file** in `releases/` (e.g., `releases/openbao.yaml`) with the
    HelmRelease CR, `dependsOn` for cert-manager, and the standard install/upgrade settings
 3. **Add both paths** to the `resources` list in `kustomization.yaml`
-4. **Add the operator namespace** to `namespaces.yaml` (e.g., `openbao-system`) so the
-   namespace exists before `kubectl apply -k` creates the namespaced HelmRelease CR
+4. **Add the release's target namespace** to `namespaces.yaml` (e.g., `shared-services`,
+   where `releases/openbao.yaml` puts the OpenBao HelmRelease) so the namespace exists
+   before `kubectl apply -k` creates the namespaced HelmRelease CR
 
 The [garage-operator](#garage-operator) is the worked example of an **OCI-type
 third-party** operator following this recipe: step 1 adds an OCI HelmRepository
