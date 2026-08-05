@@ -12,8 +12,13 @@
 # best-effort.
 #
 # Strategy: source the script in a subshell (the BASH_SOURCE guard keeps main
-# from running) with recording docker/kubectl stubs prepended to PATH — the
-# same harness as the sibling deploy_infra_*_test.sh files.
+# from running) with recording docker/kubectl/curl stubs prepended to PATH —
+# the same harness as the sibling deploy_infra_*_test.sh files. The curl stub
+# is required: without it, resolve_image_digest_via_curl's fallback issues a
+# REAL network request to the registry, which succeeds for real published
+# images (e.g. ghcr.io/c5c3/keystone-operator) and silently masks the
+# "resolution genuinely fails" scenarios these tests exercise via
+# DOCKER_FAIL_FOR.
 #
 # Usage: bash tests/unit/hack/refresh_operator_image_digests_test.sh
 
@@ -42,9 +47,16 @@ PLACEMENT_DIGEST="sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 # ---------------------------------------------------------------------------
 
 # make_stubs <dir>
-# Recording docker/kubectl stubs.
+# Recording docker/kubectl/curl stubs.
 #   docker buildx imagetools inspect <ref> → prints the JSON-quoted per-image
 #     digest ("sha256:…"), or exits 1 when <ref> equals $DOCKER_FAIL_FOR.
+#   curl ... <registry>/v2/<repo>/manifests/<ref> → the resolve_image_digest_via_curl
+#     fallback's registry call: writes a Docker-Content-Digest response header
+#     and prints HTTP 200 for a known image, or a bodyless 404 when the image
+#     matches $DOCKER_FAIL_FOR (same variable as the docker stub, so a single
+#     env assignment fails digest resolution through BOTH code paths — the
+#     "genuinely unresolvable" scenario these tests exercise). No bearer-token
+#     challenge is simulated: the stub always answers the first request.
 #   kubectl get configmap <name> …         → prints the stored values payload
 #     for that ConfigMap when KUBECTL_CM_EXISTS=true, else nothing.
 #   kubectl apply -f -                     → records argv and captures stdin
@@ -59,6 +71,9 @@ make_stubs() {
 #!/bin/bash
 echo "docker $*" >> "$DOCKER_LOG"
 if [ "${1:-}" = "buildx" ] && [ "${2:-}" = "version" ]; then
+  if [ "${DOCKER_BUILDX_FAIL:-false}" = "true" ]; then
+    exit 1
+  fi
   exit 0
 fi
 if [ "${1:-}" = "buildx" ] && [ "${2:-}" = "imagetools" ] && [ "${3:-}" = "inspect" ]; then
@@ -76,6 +91,61 @@ if [ "${1:-}" = "buildx" ] && [ "${2:-}" = "imagetools" ] && [ "${3:-}" = "inspe
   esac
   exit 0
 fi
+exit 0
+STUB
+
+  cat >"$dir/curl" <<'STUB'
+#!/bin/bash
+echo "curl $*" >> "${CURL_LOG:-/dev/null}"
+
+headers_file=""
+url=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-D" ]; then
+    headers_file="$arg"
+  fi
+  case "$arg" in
+    http*://*) url="$arg" ;;
+  esac
+  prev="$arg"
+done
+
+if [ -z "$url" ]; then
+  # Bearer-token endpoint call: unreached by these tests since the manifest
+  # response below never challenges with a 401. Fail closed if it ever is.
+  exit 1
+fi
+
+# https://<registry>/v2/<repo>/manifests/<reference> → <repo>
+repo="$(printf '%s' "$url" | sed -E 's#https?://[^/]+/v2/(.*)/manifests/.*#\1#')"
+
+fail_repo=""
+if [ -n "${DOCKER_FAIL_FOR:-}" ]; then
+  # Strip the leading registry and trailing :tag from DOCKER_FAIL_FOR so it
+  # compares against the <repo> the URL was parsed down to above.
+  fail_repo="$(printf '%s' "${DOCKER_FAIL_FOR}" | sed -E 's#^[^/]+/##; s#:.*##')"
+fi
+
+if [ -n "$fail_repo" ] && [ "$repo" = "$fail_repo" ]; then
+  [ -n "$headers_file" ] && : > "$headers_file"
+  printf '404'
+  exit 0
+fi
+
+digest=""
+case "$repo" in
+  *keystone-operator*) digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ;;
+  *c5c3-operator*)     digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;
+  *horizon-operator*)  digest="sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" ;;
+  *glance-operator*)   digest="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" ;;
+  *placement-operator*) digest="sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" ;;
+esac
+
+if [ -n "$headers_file" ]; then
+  printf 'HTTP/1.1 200 OK\r\nDocker-Content-Digest: %s\r\n\r\n' "$digest" > "$headers_file"
+fi
+printf '200'
 exit 0
 STUB
 
@@ -107,7 +177,7 @@ fi
 exit 0
 STUB
 
-  chmod +x "$dir/docker" "$dir/kubectl"
+  chmod +x "$dir/docker" "$dir/curl" "$dir/kubectl"
 }
 
 # run_refresh <tmp dir> [env assignments...]
@@ -122,9 +192,10 @@ run_refresh() {
     done
     export PATH="$tmp/bin:$PATH"
     export DOCKER_LOG="$tmp/docker.log"
+    export CURL_LOG="$tmp/curl.log"
     export KUBECTL_APPLY_LOG="$tmp/apply.log"
     export KUBECTL_ANNOTATE_LOG="$tmp/annotate.log"
-    touch "$DOCKER_LOG" "$KUBECTL_APPLY_LOG" "$KUBECTL_ANNOTATE_LOG"
+    touch "$DOCKER_LOG" "$CURL_LOG" "$KUBECTL_APPLY_LOG" "$KUBECTL_ANNOTATE_LOG"
     # shellcheck source=/dev/null
     source "$REFRESH_SH"
     refresh_operator_image_digests
@@ -152,10 +223,13 @@ test_resolve_image_digest_success() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 2: resolve_image_digest fails when the registry is unreachable
+# Test 2: resolve_image_digest fails when both docker and its curl fallback
+# cannot resolve the image (the curl stub also fails for $DOCKER_FAIL_FOR —
+# see make_stubs — so this exercises the "genuinely unresolvable" case rather
+# than "docker fails, curl fallback quietly succeeds").
 # ---------------------------------------------------------------------------
 test_resolve_image_digest_failure() {
-  echo "Test: resolve_image_digest returns non-zero on inspect failure"
+  echo "Test: resolve_image_digest returns non-zero when docker and curl both fail"
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
@@ -163,7 +237,7 @@ test_resolve_image_digest_failure() {
 
   local out rc=0
   out=$(
-    export PATH="$tmp/bin:$PATH" DOCKER_LOG="$tmp/docker.log"
+    export PATH="$tmp/bin:$PATH" DOCKER_LOG="$tmp/docker.log" CURL_LOG="$tmp/curl.log"
     export DOCKER_FAIL_FOR="ghcr.io/c5c3/keystone-operator:latest"
     # shellcheck source=/dev/null
     source "$REFRESH_SH"
@@ -200,7 +274,28 @@ test_render_digest_configmap_yaml() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 4: the loop applies all five ConfigMaps and requests reconciles
+# Test 4: the fallback resolves digests via curl without Docker buildx
+# ---------------------------------------------------------------------------
+test_resolve_image_digest_fallback_to_curl() {
+  echo "Test: resolve_image_digest falls back to curl when docker buildx is unavailable"
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  make_stubs "$tmp/bin"
+
+  local digest
+  digest=$(
+    export PATH="$tmp/bin:$PATH" DOCKER_LOG="$tmp/docker.log" CURL_LOG="$tmp/curl.log" DOCKER_BUILDX_FAIL=true
+    # shellcheck source=/dev/null
+    source "$REFRESH_SH"
+    resolve_image_digest "ghcr.io/c5c3/keystone-operator:latest"
+  )
+  assert_eq "fallback digest resolved without Docker" "$KEYSTONE_DIGEST" "$digest"
+  assert_contains "curl fallback was used" "$(cat "$tmp/curl.log")" "v2/c5c3/keystone-operator/manifests/latest"
+}
+
+# ---------------------------------------------------------------------------
+# Test 5: the loop applies all five ConfigMaps and requests reconciles
 # ---------------------------------------------------------------------------
 test_refresh_applies_and_annotates_all_operators() {
   echo "Test: refresh applies 5 ConfigMaps and annotates 5 HelmReleases"
@@ -246,7 +341,7 @@ test_refresh_applies_and_annotates_all_operators() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 5: unchanged digests re-apply the ConfigMaps but skip the reconcile
+# Test 6: unchanged digests re-apply the ConfigMaps but skip the reconcile
 # ---------------------------------------------------------------------------
 test_refresh_skips_annotate_when_digest_unchanged() {
   echo "Test: unchanged digest skips the reconcile request"
@@ -264,7 +359,7 @@ test_refresh_skips_annotate_when_digest_unchanged() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 6: one unresolvable image does not block the others
+# Test 7: one unresolvable image does not block the others
 # ---------------------------------------------------------------------------
 test_refresh_continues_on_resolve_failure() {
   echo "Test: a per-image resolve failure warns, continues, and fails the exit code"
@@ -289,7 +384,7 @@ test_refresh_continues_on_resolve_failure() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 7: deploy-infra.sh calls the refresh only on the flux ControlPlane path
+# Test 8: deploy-infra.sh calls the refresh only on the flux ControlPlane path
 # ---------------------------------------------------------------------------
 test_deploy_infra_gates_refresh_call() {
   echo "Test: deploy-infra.sh gates the refresh call inside the flux branch, best-effort"
@@ -316,6 +411,7 @@ test_deploy_infra_gates_refresh_call() {
 test_resolve_image_digest_success
 test_resolve_image_digest_failure
 test_render_digest_configmap_yaml
+test_resolve_image_digest_fallback_to_curl
 test_refresh_applies_and_annotates_all_operators
 test_refresh_skips_annotate_when_digest_unchanged
 test_refresh_continues_on_resolve_failure

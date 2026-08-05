@@ -18,7 +18,10 @@ the local-build path, the production HelmRelease, E2E and Tempest, see
 
 ## Prerequisites
 
-- Docker Desktop running
+- A running container runtime:
+  - Docker Desktop, or
+  - Podman with its machine already running.
+
 - `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
 - OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the authenticated token check in Step 6
 - Pinned `kind`, `kubectl`, `Helm`, `jq` on `PATH`:
@@ -39,6 +42,13 @@ cd forge
 ```
 
 ## Step 2 — Cluster + infrastructure stack
+
+When using Podman, ensure its machine is already running and select Podman as
+kind's provider:
+
+```bash
+export KIND_EXPERIMENTAL_PROVIDER=podman
+```
 
 ```bash
 KIND_HOST_PORT=8443 make deploy-infra
@@ -81,6 +91,16 @@ kubectl wait helmrelease/keystone-operator -n keystone-system \
 ```bash
 RELEASE=2025.2
 docker pull ghcr.io/c5c3/keystone:${RELEASE}
+kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name forge
+```
+
+With Podman, keep `KIND_EXPERIMENTAL_PROVIDER=podman` exported from the
+Prerequisites step, pull the image into Podman's image store, and load it into
+the same kind provider:
+
+```bash
+RELEASE=2025.2
+podman pull ghcr.io/c5c3/keystone:${RELEASE}
 kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name forge
 ```
 
