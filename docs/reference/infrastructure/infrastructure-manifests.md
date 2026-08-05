@@ -24,6 +24,7 @@ deploy/
     │   ├── mariadb-operator.yaml         MariaDB Operator Helm chart registry
     │   ├── external-secrets.yaml         External Secrets Operator Helm chart registry
     │   ├── openbao.yaml                  OpenBao Helm chart registry
+    │   ├── openbao-operator.yaml         OpenBao Operator OCI chart artifact (digest-pinned OCIRepository)
     │   ├── c5c3-charts.yaml              C5C3 shared OCI chart registry
     │   ├── k-orc.yaml                    K-ORC (OpenStack Resource Controller) Helm chart registry
     │   ├── prometheus-community.yaml     Prometheus Community OCI chart registry
@@ -36,6 +37,7 @@ deploy/
     │   ├── external-secrets.yaml         External Secrets Operator
     │   ├── memcached-operator.yaml       Memcached Operator (from c5c3-charts)
     │   ├── openbao.yaml                  OpenBao HA Raft cluster
+    │   ├── openbao-operator.yaml         OpenBao Operator (per-service OpenBao instances)
     │   ├── keystone-operator.yaml        Keystone Operator (from c5c3-charts)
     │   ├── glance-operator.yaml          Glance Operator (from c5c3-charts)
     │   ├── placement-operator.yaml       Placement Operator (from c5c3-charts)
@@ -50,12 +52,16 @@ deploy/
         └── memcached.yaml                Memcached cluster for OpenStack
 ```
 
+The proving `OpenBaoCluster` instance is **not** part of this tree. It is CI/dev-only and
+lives at `deploy/kind/infrastructure/openbao-instance.yaml` — see
+[OpenBao Proving Instance](#openbao-proving-instance).
+
 All YAML files carry the SPDX Apache-2.0 license header (3 lines: copyright, blank
 comment, license identifier).
 
 ## Namespaces
 
-Twelve `Namespace` resources are defined in `namespaces.yaml` and included as the first
+Fifteen `Namespace` resources are defined in `namespaces.yaml` and included as the first
 entry in the base kustomization. Kustomize applies `Namespace` resources before other
 resource kinds, ensuring target namespaces exist before any namespaced resources are
 created.
@@ -69,9 +75,12 @@ created.
 | `memcached-system` | Memcached Operator |
 | `garage-system` | Garage Operator (S3 object store for the CI/e2e stack) |
 | `keystone-system` | Keystone Operator controller (workload CRs continue to live in `openstack`) |
+| `horizon-system` | Horizon Operator controller (Horizon CRs and the operator-managed dashboard live in `openstack`) |
 | `glance-system` | Glance Operator controller (Glance/GlanceBackend CRs and the operator-managed payload live in `openstack`) |
-| `openstack` | Infrastructure instance CRs (MariaDB cluster, Memcached cluster, Garage cluster) |
+| `placement-system` | Placement Operator controller (Placement CRs and the operator-managed payload live in `openstack`) |
+| `openstack` | Infrastructure instance CRs (MariaDB cluster, Memcached cluster, Garage cluster; on kind also the OpenBao proving instance) |
 | `openbao-system` | OpenBao HA Raft cluster |
+| `openbao-operator-system` | openbao-operator controller. It stays out of `openbao-system` so the shared OpenBao cluster and the operator that manages per-service instances keep separate lifecycles |
 | `c5c3-system` | c5c3-operator controller; the `ControlPlane` and its child CRs are created in the `ControlPlane`'s own namespace |
 | `orc-system` | K-ORC (OpenStack Resource Controller) and its installer resources |
 
@@ -142,6 +151,15 @@ namespace, and poll at `interval: 1h`.
 | `sources/prometheus-community.yaml` | `prometheus-community` | `oci://ghcr.io/prometheus-community/charts` | OCI |
 | `sources/garage-operator.yaml` | `garage-operator` | `oci://ghcr.io/rajsinghtech/charts` | OCI |
 
+**The openbao-operator chart is sourced from an OCIRepository, not a HelmRepository.**
+`sources/openbao-operator.yaml` addresses the chart artifact directly
+(`oci://ghcr.io/dc-tec/charts/openbao-operator`) and pins `spec.ref.digest` next to
+`spec.ref.tag`. A HelmRepository can only carry a chart *version*, and on a mutable OCI
+tag that gates version drift alone: Flux resolves the tag on every interval and tracks
+the resulting artifact digest, so a re-pushed tag upgrades the release with no Git change
+and no reviewer. See [OpenBao Operator](#openbao-operator) for why that matters for this
+particular chart.
+
 **K-ORC is sourced from Git, not Helm.** K-ORC publishes no Helm chart (its
 `github.io` page serves no Helm index), so `sources/k-orc.yaml` is a `GitRepository`
 — still `source.toolkit.fluxcd.io/v1`, in `flux-system`, polling at `interval: 1h`
@@ -159,13 +177,14 @@ OCI-type sources (`spec.type: oci`). `c5c3-charts` hosts internally-built operat
 charts (e.g., memcached-operator) in the GitHub Container Registry;
 `prometheus-community` hosts Prometheus community charts (e.g.,
 prometheus-operator-crds); `garage-operator` is the first **third-party** OCI-type
-source and hosts the upstream garage-operator chart. For every OCI-type source the
-registry URL is the chart *namespace* and the chart name lives in the HelmRelease's
-`chart.spec.chart`. All other repositories use standard HTTPS Helm registries.
+source and hosts the upstream garage-operator chart. For every OCI-type HelmRepository
+the registry URL is the chart *namespace* and the chart name lives in the HelmRelease's
+`chart.spec.chart` — the OCIRepository above is the exception, because it names one
+artifact. All other repositories use standard HTTPS Helm registries.
 
 ## HelmRelease Operators
 
-Eleven HelmRelease CRs deploy the infrastructure operators and CRD charts (K-ORC is
+Fourteen HelmRelease CRs deploy the infrastructure operators and CRD charts (K-ORC is
 applied separately via a Flux `Kustomization` — see
 [K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller)). All use
 `apiVersion: helm.toolkit.fluxcd.io/v2` and share these common settings:
@@ -193,8 +212,10 @@ mariadb-operator-crds     (no dependencies)
 ├── external-secrets      dependsOn: cert-manager
 ├── memcached-operator    dependsOn: cert-manager, prometheus-operator-crds
 ├── garage-operator       dependsOn: cert-manager
+├── openbao-operator      dependsOn: cert-manager
 ├── openbao               dependsOn: cert-manager
 ├── keystone-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets
+├── horizon-operator      dependsOn: cert-manager, memcached-operator, external-secrets, keystone-operator
 ├── glance-operator       dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator
 ├── placement-operator    dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator
 └── c5c3-operator         dependsOn: keystone-operator, external-secrets, mariadb-operator, memcached-operator
@@ -372,6 +393,83 @@ pre-1.0 (v0.6.x) project. It is accepted for **test infrastructure only** — ne
 production dependency of the operators — and the consuming surface is deliberately thin
 (three instance CRs plus two ExternalSecrets), so a later provider swap stays local to
 this layer.
+
+### OpenBao Operator
+
+**File:** `deploy/flux-system/releases/openbao-operator.yaml`
+
+| Property | Value |
+| --- | --- |
+| Target namespace | `openbao-operator-system` |
+| Chart | `openbao-operator` |
+| Version constraint | `0.4.2`, pinned by artifact digest |
+| Source | `openbao-operator` OCIRepository, referenced via `spec.chartRef` |
+| Dependencies | `cert-manager` in `cert-manager` namespace |
+
+The [openbao-operator](https://github.com/dc-tec/openbao-operator) manages
+`OpenBaoCluster` instances: static-seal auto-unseal, cert-manager TLS in External mode,
+declarative self-init, raft snapshots, and upgrade strategies. It delivers the
+per-service OpenBao instances a Barbican secret store builds on. The in-repo instance it
+manages is described under [OpenBao Proving Instance](#openbao-proving-instance). The
+shared management OpenBao ([OpenBao](#openbao) below) stays on the upstream Helm chart
+and is untouched by this operator.
+
+The chart ships ValidatingAdmissionPolicies and requires Kubernetes 1.33 or newer. The
+operator needs no certificate of its own from cert-manager, but the instance TLS
+Certificates do, and `dependsOn: cert-manager` keeps this release behind the same base
+layer as garage-operator.
+
+**Helm values:**
+
+| Key | Value | Purpose |
+| --- | --- | --- |
+| `tenancy.mode` | `single` | Deploy the controller alone, scoped to one namespace |
+| `tenancy.targetNamespace` | `openstack` | The namespace the instance CRs live in |
+| `controller.extraEnv[].WATCH_NAMESPACE` | `openstack` | What actually puts the controller in single-tenant mode |
+
+The chart defaults to multi-tenant mode, whose provisioner requires `OpenBaoTenant`
+onboarding per namespace and applies restricted Pod Security labels to the tenant
+namespaces it onboards. The shared `openstack` namespace cannot take those labels: it
+hosts every OpenStack service workload. Single-tenant mode leaves the provisioner out.
+
+`tenancy.mode` does not reach the controller. At chart 0.4.2 it selects the
+single-tenant `ClusterRole` and drops the provisioner `Deployment`, but the controller
+reads its own tenancy from the `WATCH_NAMESPACE` environment variable, and no chart
+template sets it. A controller that starts without `WATCH_NAMESPACE` runs multi-tenant
+and pauses every reconcile until the `openbao-operator-tenant-rolebinding` RoleBinding
+appears in the namespace, which only `OpenBaoTenant` onboarding creates. It logs that
+pause at `V(1)`, so the visible symptom is an `OpenBaoCluster` that keeps an empty status
+and never gets a `StatefulSet`. `controller.extraEnv` is the chart's documented hook, and
+the value must match `tenancy.targetNamespace`: the controller watches the first while
+the chart scopes its RBAC to the second.
+
+**Accepted risk (decided 2026-08-05):** openbao-operator is a young, single-maintainer,
+pre-1.0 (v0.4.x) project, and unlike garage-operator it sits in the production data path
+of every future Barbican secret store. Three things bound the exposure. The consumed
+surface is a single `OpenBaoCluster` CR shape. A Barbican secret store can also attach to
+the shared management OpenBao, where the bootstrap scripts provision the same mount,
+policy, and AppRole role without this operator taking part (see the
+[OpenBao bootstrap reference](./openbao-bootstrap.md)). And an in-repo StatefulSet
+projection derived from the openbao Helm chart stays available as a fallback. Accepted
+for the Barbican onboarding.
+
+**Why the chart is pinned by digest.** The chart carries no cosign signature Flux can
+verify, so no `spec.verify` policy can gate it, and the operator holds cluster-wide RBAC
+over the namespace that stores the instance seal key. Two weaker pins were rejected. The
+`>=x <1.0.0` range garage-operator uses would install every future 0.x release of an
+individual-owned GHCR namespace within the 30-minute reconcile interval. An exact chart
+version on a HelmRepository is not enough either: `0.4.2` is a mutable OCI tag, Flux
+tracks the resolved artifact digest rather than the tag string, and re-pushing that tag
+with different bytes would upgrade the release on its own — no Git change, no reviewer.
+Pinning `spec.ref.digest` on the OCIRepository is what makes every change to what runs
+here a reviewed commit.
+
+Renovate keeps that pin from becoming a freeze. Its native Flux manager does not cover
+this repository — the default file pattern matches only `gotk-components.yaml`, which the
+flux-operator setup never produces — so the pin is tracked by an explicit
+`customManagers` entry in `renovate.json` that rewrites the tag and the digest in the same
+pull request. The entry never automerges: every bump of this operator is a human
+decision.
 
 ### OpenBao
 
@@ -554,7 +652,9 @@ keystone-operator release above (a `c5c3-operator-image-digest` ConfigMap in
 ## HelmRelease–HelmRepository Cross-Reference
 
 Each HelmRelease `sourceRef.name` must match a HelmRepository `metadata.name` in
-`sources/`. This table shows the mapping:
+`sources/`. This table shows the mapping. The `openbao-operator` release is the one
+exception: it names its source through `spec.chartRef` instead, because that source is an
+OCIRepository.
 
 | HelmRelease | `sourceRef.name` | HelmRepository file |
 | --- | --- | --- |
@@ -566,7 +666,9 @@ Each HelmRelease `sourceRef.name` must match a HelmRepository `metadata.name` in
 | `memcached-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `openbao` | `openbao` | `sources/openbao.yaml` |
 | `garage-operator` | `garage-operator` | `sources/garage-operator.yaml` |
+| `openbao-operator` | `openbao-operator` (`chartRef`) | `sources/openbao-operator.yaml` |
 | `keystone-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
+| `horizon-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `glance-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `placement-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `c5c3-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
@@ -789,6 +891,166 @@ back from Garage and there is no cross-namespace Secret plumbing:
    OpenBao. Glance later reads the identical `s3-credentials` path from its own namespace
    through its tenant store.
 
+### OpenBao Proving Instance
+
+**File:** `deploy/kind/infrastructure/openbao-instance.yaml`
+
+Five resources declare the proving instance: the single-replica `OpenBaoCluster` that the
+[openbao-operator](#openbao-operator) manages, plus the TLS and RBAC objects it depends
+on. All live in the `openstack` namespace except the cluster-scoped ClusterRoleBinding:
+
+| Kind | API version | Name | Purpose |
+| --- | --- | --- | --- |
+| `Certificate` | `cert-manager.io/v1` | `openbao-instance-tls-server` | Server certificate for the API listener, carrying the SAN `openbao-cluster-openbao-instance.local` that the operator's External-mode validation requires |
+| `Certificate` | `cert-manager.io/v1` | `openbao-instance-tls-ca` | Delivers the trust-domain CA into the fixed-name Secret the operator reads (data key `ca.crt`) |
+| `ServiceAccount` | `v1` | `openbao-instance-provisioner` | Client identity the Kubernetes-auth role `provisioner` binds to |
+| `ClusterRoleBinding` | `rbac.authorization.k8s.io/v1` | `openbao-instance-auth-delegator` | Grants `system:auth-delegator` to the operator-created instance ServiceAccount `openbao-instance-serviceaccount` |
+| `OpenBaoCluster` | `openbao.org/v1alpha1` | `openbao-instance` | Profile `Development`, version `2.6.1`, one replica, 1Gi raft storage, TLS mode `External`, static seal, self-init enabled, applied `paused` |
+
+The instance runs in every kind deploy, so the primitives a managed Barbican secret store
+needs are exercised before Barbican itself lands: static-seal auto-unseal, cert-manager
+TLS in External mode, declarative self-init, and the AppRole and Kubernetes-auth methods
+a service and its operator log in with.
+
+**Why it is kind-only.** Everything above is a proving posture, not a production one. The
+`Development` profile is what keeps the instance on a single node — one replica, so no
+PodDisruptionBudget and no anti-affinity — and the static seal keeps its key material in
+a Secret in the shared `openstack` namespace. `Hardened`, the profile that forces an
+external-KMS unseal and three replicas, is the production control, and this instance
+deliberately opts out of it to exercise the static-seal path. Shipping that from
+`deploy/flux-system/infrastructure/` would put it, a cluster-scoped RBAC binding, and a
+self-initialized AppRole with no consumer into every production deployment. Only the
+[openbao-operator](#openbao-operator) itself ships in the production base; the
+production-shaped instance arrives with the Barbican onboarding.
+[`tests/unit/deploy/openbao_instance_overlay_test.sh`](https://github.com/c5c3/forge/blob/main/tests/unit/deploy/openbao_instance_overlay_test.sh)
+asserts both directions of that split.
+
+**Two Certificates, one trust domain.** The operator's External TLS contract reads two
+fixed-name Secrets, `<cluster>-tls-server` and `<cluster>-tls-ca`. cert-manager has no
+primitive that materializes a CA-only Secret in another namespace, so
+`openbao-instance-tls-ca` is a minimal Certificate that exists for one reason: every
+Secret issued by a CA-type ClusterIssuer carries the trust-domain CA in `ca.crt`. Its
+leaf keypair goes unused. Both Certificates are issued by `openbao-ca-issuer`, the same
+root as the management OpenBao's server and client certificates, so the server
+certificate chains directly to the CA the operator hands the instance. The operator
+mounts both Secrets and waits for them, but never rotates them; cert-manager owns the
+renewal.
+
+Because `openbao-ca-issuer` is also what the management OpenBao trusts as
+`tls_client_ca_file` behind `tls_require_and_verify_client_cert`, both Certificates pin
+`usages` to `digital signature`, `key encipherment`, and `server auth`. Without the pin
+cert-manager emits no EKU at all, and a certificate without an EKU passes client-auth
+verification — these Secrets live in the shared workload namespace, so they would be
+ready-made client identities for that mTLS gate. For the same reason the server
+certificate carries no loopback IP SAN: such a SAN authenticates whatever listens on
+localhost rather than this instance. In-pod clients connect over the loopback address and
+verify against the operator's own SAN by passing `VAULT_TLS_SERVER_NAME`.
+
+**TokenReview authority.** OpenBao validates a Kubernetes-auth login by issuing a
+TokenReview under the instance pod's own projected ServiceAccount token. The operator
+creates that ServiceAccount (`<cluster>-serviceaccount`), and neither the operator nor
+its chart grants it TokenReview, so `openbao-instance-auth-delegator` supplies the
+binding. Without it every login fails with 403 permission denied. The binding is
+overlay-owned while its subject is created and garbage-collected by the operator with the
+CR, so deleting the CR leaves it dangling — the operator exposes no way to point the
+instance at a ServiceAccount whose lifecycle the overlay controls, which is one more
+reason the instance stays out of the production overlay.
+
+**Unseal-key custody.** The management OpenBao is the root of trust for the static seal:
+
+1. `write-bootstrap-secrets.sh` seeds a generated key at
+   `bootstrap/openstack/openbao-instance/unseal-key` (key `key`), behind the
+   `write_secret_if_missing` guard.
+2. The ExternalSecret
+   `deploy/kind/infrastructure/openbao-instance-unseal-key-externalsecret.yaml` reads that
+   path through the shared `openbao-cluster-store` and materializes the Secret
+   `openbao-instance-unseal-key` in `openstack`. It is `refreshPolicy: CreatedOnce`: the
+   Secret is materialized once and never converged again. Its target is
+   `creationPolicy: Orphan`, which leaves the Secret's single controller `ownerReference`
+   slot free for step 4.
+3. The CR is applied with `spec.paused: true`. The operator blind-creates the same
+   fixed-name Secret with a random key on its first reconcile and adopts a pre-existing
+   one only against an ownership proof, so it must not run first.
+4. `hack/deploy-infra.sh` syncs the ExternalSecret, patches a controller `ownerReference`
+   to the CR onto the materialized Secret, un-pauses the CR, and later waits for condition
+   `Available`. The operator accepts either that reference or its
+   `openbao.org/owner-uid` annotation as proof, but the
+   `openbao-lock-managed-resource-mutations` ValidatingAdmissionPolicy the operator chart
+   ships reserves the annotation for the operator's own ServiceAccounts and denies every
+   other writer, so the reference is the only proof the deploy can attach.
+5. The operator adopts the Secret and mounts the key at `/etc/bao/unseal`, where the
+   static seal reads it on every start. Nothing ever sends an unseal command.
+
+The key is never rotated, and both ends enforce that rather than assume it: a static seal
+whose key material changes seals the instance permanently, with no path back to the
+stored data. `write_secret_if_missing` keeps the seed side from re-generating it, and
+`refreshPolicy: CreatedOnce` keeps the consuming side from re-materializing a changed
+seed — the case that arises when the management OpenBao loses its raft PVC and is
+re-seeded while the instance's own PVC survives. No PushSecret targets the path.
+
+> **Accepted risk (openbao-operator upstream).** The operator's adoption guard is metadata
+> carrying the CR's UID, and that UID is readable by any principal with
+> `get openbaocluster`. It is an ownership marker, not an ownership proof: anyone able to
+> create Secrets in the namespace before the instance first initializes can plant a seal
+> key of their choosing. Accepted because this instance is CI/dev-only; a production
+> instance must not depend on that guard.
+
+**Self-init surface.** The operator renders `spec.selfInit.requests` into OpenBao's
+initialize stanzas, which run once against freshly initialized storage; OpenBao revokes
+the root token afterwards. The list below is therefore the instance's complete permanent
+configuration:
+
+| Requests | Paths | Result |
+| --- | --- | --- |
+| `barbican_kv` | `sys/mounts/barbican` | KV v2 mount `barbican/` |
+| `barbican_secretstore_policy` | `sys/policies/acl/barbican-secretstore` | Policy `barbican-secretstore`: create/read/update/delete/list on `barbican/data/*`, and the same minus `delete` on `barbican/metadata/*` |
+| `approle_auth`, `barbican_approle_role` | `sys/auth/approle`, `auth/approle/role/barbican` | AppRole role `barbican` with `token_policies=barbican-secretstore`, `token_ttl=1h`, `token_max_ttl=4h`, `secret_id_ttl=720h` |
+| `kubernetes_auth`, `kubernetes_auth_config` | `sys/auth/kubernetes`, `auth/kubernetes/config` | Kubernetes auth mount, `kubernetes_host=https://kubernetes.default.svc` |
+| `provisioner_policy`, `provisioner_k8s_role` | `sys/policies/acl/provisioner`, `auth/kubernetes/role/provisioner` | Policy `provisioner` (read the barbican role ID, create the secret ID, the same `barbican/` data and metadata grants as above, read/update on `sys/mounts/barbican`) and the Kubernetes role bound to the `openbao-instance-provisioner` ServiceAccount in `openstack`, `audience=openbao-instance` |
+
+No policy grants `delete` on `barbican/metadata/*`. In KV v2 that verb permanently
+destroys every version of a secret and its metadata, which is the only in-store recovery
+mechanism tenant key material has; castellan's Vault key manager deletes through
+`barbican/data/*`, where the delete is a recoverable soft delete. `secret_id_ttl` is 30
+days rather than a year for a related reason: an AppRole secret ID carries no use count
+and no CIDR bound, so its TTL is the only thing that bounds a leaked one.
+
+The Kubernetes-auth role is audience-bound. Without `audience`, the role accepts any
+default-audience token of that ServiceAccount, including one auto-mounted into an
+unrelated pod; bound to `openbao-instance`, only a token minted deliberately for this
+instance logs in (`kubectl create token --audience=openbao-instance`). The ServiceAccount
+itself sets `automountServiceAccountToken: false`, since every consumer mints explicitly.
+
+> **Self-init is one-shot.** Changing the request list on a running instance changes
+> nothing. The stanzas only run against freshly initialized storage, so a different
+> configuration means recreating the instance: delete the CR **and** its PVC. Runtime
+> work (minting AppRole secret IDs, writing secrets) goes through the `provisioner` role
+> instead. Because that failure is silent — the CR reconciles, `Available` stays `True`,
+> and the new request is simply never applied —
+> [`tests/unit/deploy/openbao_instance_overlay_test.sh`](https://github.com/c5c3/forge/blob/main/tests/unit/deploy/openbao_instance_overlay_test.sh)
+> pins the request names, so an edit cannot land without confronting it.
+
+**Shared names with the brownfield leg.** The mount, policy, and role names (`barbican/`,
+`barbican-secretstore`, `barbican`) match the ones the bootstrap scripts provision on the
+shared management OpenBao (`enable_barbican_kv` in `setup-secret-engines.sh`,
+`deploy/openbao/policies/barbican-secretstore.hcl`, and the `barbican` AppRole role in
+`setup-auth.sh`; see the
+[OpenBao bootstrap reference](./openbao-bootstrap.md#setup-secret-enginessh)). A
+deployment that attaches Barbican to the shared instance instead of a dedicated one
+therefore differs only in which instance it points at.
+
+[`tests/e2e/infrastructure/openbao-instance/chainsaw-test.yaml`](https://github.com/c5c3/forge/blob/main/tests/e2e/infrastructure/openbao-instance/chainsaw-test.yaml)
+locks the whole path: the operator Deployment and its HelmRelease, the unseal-key
+ExternalSecret reporting `SecretSynced` **and** the instance's `ownerReference` adoption of
+the Secret it materialized, the CR reporting `Available`, a Kubernetes-auth login that reads
+the AppRole role ID and mints a secret ID, a rejected login with a wrong secret ID, and a
+KV v2 round-trip on `barbican/`. The last step triggers a rolling restart through
+`spec.runtime.restartAt` on the CR and waits for the replacement pod to come back unsealed.
+It does not delete the pod directly: the operator ships a `ValidatingAdmissionPolicy` that
+denies any mutation of the resources it manages, so a restart has to go through the parent
+CR. The suite issues no unseal command anywhere, which is what makes that step a proof of
+the static seal.
+
 ### Admin Credential Chain
 
 The c5c3-operator mints a single restricted admin Application Credential per cluster and
@@ -887,17 +1149,18 @@ The base kustomization uses `apiVersion: kustomize.config.k8s.io/v1beta1` and in
 namespaces, the FluxInstance CR, HelmRepository sources, and HelmRelease operators.
 These resources do not depend on any custom CRDs.
 
-**Resource count:** 24 files producing 37 Kubernetes resources.
+**Resource count:** 26 files producing 40 Kubernetes resources.
 
 | Category | Count | Resources |
 | --- | --- | --- |
-| Namespace | 14 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, garage-system, keystone-system, horizon-system, glance-system, placement-system, openstack, openbao-system, c5c3-system, orc-system |
+| Namespace | 15 | cert-manager, mariadb-system, external-secrets, monitoring, memcached-system, garage-system, keystone-system, horizon-system, glance-system, placement-system, openstack, openbao-system, openbao-operator-system, c5c3-system, orc-system |
 | FluxInstance | 1 | flux (drives the flux-operator) |
 | HelmRepository | 7 | cert-manager, mariadb-operator, external-secrets, openbao, c5c3-charts, prometheus-community, garage-operator |
+| OCIRepository | 1 | openbao-operator |
 | GitRepository | 1 | k-orc |
-| HelmRelease | 13 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, garage-operator, openbao, keystone-operator, horizon-operator, glance-operator, placement-operator, c5c3-operator |
+| HelmRelease | 14 | cert-manager, prometheus-operator-crds, mariadb-operator-crds, mariadb-operator, external-secrets, memcached-operator, garage-operator, openbao, openbao-operator, keystone-operator, horizon-operator, glance-operator, placement-operator, c5c3-operator |
 | Kustomization | 1 | k-orc |
-| **Total** | **37** | |
+| **Total** | **40** | |
 
 The `chaos-mesh` HelmRepository, HelmRelease, and Namespace ship in the
 kind-only opt-in overlay at `deploy/kind/chaos-mesh/` and are not
@@ -911,20 +1174,26 @@ The infrastructure kustomization includes CRD-dependent resources that require t
 operator CRDs to be installed first. This kustomization must be applied after the base
 kustomization and after operators have finished installing their CRDs.
 
-**Resource count:** 5 manifests producing 10 Kubernetes resources (the
-`db-ca-issuer.yaml` manifest declares two resources: a CA Certificate and the
-CA-type ClusterIssuer that signs from it; `garage.yaml` declares four).
+**Resource count:** 6 manifests producing 11 Kubernetes resources (the
+`db-ca-issuer.yaml` and `openbao-ca-issuer.yaml` manifests declare two resources each: a
+CA Certificate and the CA-type ClusterIssuer that signs from it; `garage.yaml` declares
+four).
 
 | Category | Count | Resources |
 | --- | --- | --- |
 | ClusterIssuer | 3 | `selfsigned-cluster-issuer`, `openstack-db-ca-issuer`, `openbao-ca-issuer` (all require cert-manager CRDs) |
-| Certificate | 2 | `openstack-db-ca`, `openbao-ca` — both CA keypair Secrets in the `cert-manager` namespace, signed by `selfsigned-cluster-issuer` |
+| Certificate (CA keypairs) | 2 | `openstack-db-ca`, `openbao-ca` — both CA keypair Secrets in the `cert-manager` namespace, signed by `selfsigned-cluster-issuer` |
 | MariaDB | 1 | `openstack-db` (requires mariadb-operator CRDs; TLS enabled per [MariaDB Galera Cluster](#mariadb-galera-cluster)) |
 | Memcached | 1 | `openstack-memcached` (requires memcached-operator CRDs) |
 | GarageCluster / GarageBucket / GarageKey | 4 | `garage`, `glance-images`, `glance-images-2`, `glance-s3` (require garage-operator CRDs; see [Garage Object Store](#garage-object-store)) |
-| **Total** | **10** | |
+| **Total** | **11** | |
 
-<!-- NOTE: count excludes openbao-tls-cert.yaml and the ../../eso overlay that
+The proving instance's own five resources (two Certificates, a ServiceAccount, a
+ClusterRoleBinding, and the `OpenBaoCluster`) are not counted here: they ship in the kind
+overlay — see [OpenBao Proving Instance](#openbao-proving-instance).
+
+<!-- NOTE: count excludes openbao-tls-cert.yaml, openbao-client-tls-cert.yaml,
+and the ../../eso overlay that
 the infrastructure kustomization also references. Those resources are documented
 in their own reference pages (reference/infrastructure/openbao-bootstrap.md and
 the ESO reference docs); a full audit of the kustomization resource list is out
@@ -939,8 +1208,8 @@ of scope here. -->
 kubectl apply -k deploy/flux-system/
 ```
 
-This applies 33 resources: 12 namespaces, 1 FluxInstance, 8 sources
-(7 HelmRepository + 1 GitRepository for K-ORC), 11 HelmRelease operators, and
+This applies 40 resources: 15 namespaces, 1 FluxInstance, 9 sources
+(8 HelmRepository + 1 GitRepository for K-ORC), 14 HelmRelease operators, and
 1 Kustomization (K-ORC). FluxCD resolves the dependency graph between
 HelmReleases and installs operators in the correct order. Wait for all operators to
 finish installing before proceeding to step 2.
@@ -956,9 +1225,9 @@ ClusterIssuer, the `openstack-db-ca-issuer` ClusterIssuer plus its backing CA
 `Certificate`, the `openbao-ca-issuer` ClusterIssuer plus
 its backing CA `Certificate`, the MariaDB Galera cluster, the
 Memcached cluster, and the Garage object store (`GarageCluster` / `GarageBucket` /
-`GarageKey`). These resources require CRDs that are installed by the operator
-HelmReleases in step 1. If CRDs are not yet available, the apply will fail — wait
-for the operators to finish installing and retry.
+`GarageKey`). These resources require CRDs that are installed
+by the operator HelmReleases in step 1. If CRDs are not yet available, the apply will
+fail — wait for the operators to finish installing and retry.
 
 > **`hack/deploy-infra.sh` ordering.** The end-to-end deploy script applies the
 > three TLS-prerequisite manifests (`cluster-issuer.yaml`, `openbao-tls-cert.yaml`,
@@ -1018,6 +1287,14 @@ Infrastructure instance CRs (e.g., a new database, cache, or object-store cluste
 the same pattern: add a file in `infrastructure/` and list it in
 `infrastructure/kustomization.yaml` (see [Garage Object Store](#garage-object-store) and
 its single-node kind patch for a multi-CR example).
+
+**Attaching a Barbican secret store.** Two targets are already provisioned. The shared
+management OpenBao carries the brownfield outputs from the bootstrap scripts: the KV v2
+mount `barbican/`, the policy `barbican-secretstore`, and the AppRole role `barbican`
+(see the [OpenBao bootstrap reference](./openbao-bootstrap.md)). For a dedicated instance,
+[OpenBao Proving Instance](#openbao-proving-instance) is the template: the same three
+names, self-initialized by the openbao-operator, plus the Kubernetes-auth role a service
+operator authenticates with to mint the AppRole secret ID.
 
 ## Design Decisions
 
