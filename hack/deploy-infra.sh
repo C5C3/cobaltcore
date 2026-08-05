@@ -90,6 +90,17 @@ KIND_HOST_PORT="${KIND_HOST_PORT:-443}"
 # an unset variable still takes the 1048576 default.
 NODE_NOFILE_LIMIT="${NODE_NOFILE_LIMIT-1048576}"
 
+# Escape hatch for check_relocated_infrastructure. The guard aborts on a cluster
+# that still carries the pre-relocation OpenBao namespace or GarageCluster, and
+# the documented way past it deletes them — which destroys openbao-init-keys (the
+# root token and every unseal-key share) and the raft PVCs behind it before the
+# replacement stack has been proven. Set ALLOW_PRE_RELOCATION=true to let the two
+# stacks coexist for a migration window instead: deploy-infra then warns and
+# continues, leaving the retired instances running so their secrets can be read
+# out first. This DEFERS the split-brain the guard describes, it does not resolve
+# it — delete the old stack once the new one serves.
+ALLOW_PRE_RELOCATION="${ALLOW_PRE_RELOCATION:-false}"
+
 # Gates the opt-in chaos-mesh kind overlay (deploy/kind/chaos-mesh) and the
 # host-side kernel-module load. Defaults to false so the kind Quick Start
 # stays minimal; set WITH_CHAOS_MESH=true to enable chaos-engineering tests
@@ -286,12 +297,12 @@ KEY_SHARES=5
 KEY_THRESHOLD=3
 # OPENBAO_NAMESPACE is the namespace the OpenBao server runs in. The bootstrap
 # scripts (deploy/openbao/bootstrap/) resolve the same OPENBAO_NAMESPACE env var
-# in common.sh (same 'openbao-system' default), so setting it once configures
+# in common.sh (same 'shared-services' default), so setting it once configures
 # both layers — the export below propagates it to the child scripts. The generic
 # NAMESPACE env var is deliberately NOT honored: chainsaw injects
 # NAMESPACE=<ephemeral test namespace> into every e2e script step, which must
 # not redirect where the bootstrap scripts exec their bao commands.
-OPENBAO_NAMESPACE="${OPENBAO_NAMESPACE:-openbao-system}"
+OPENBAO_NAMESPACE="${OPENBAO_NAMESPACE:-shared-services}"
 export OPENBAO_NAMESPACE
 BAO_ADDR="${BAO_ADDR:-https://127.0.0.1:8200}"
 VAULT_CACERT="${VAULT_CACERT:-/openbao/tls/ca.crt}"
@@ -312,6 +323,17 @@ log() {
 #
 # Polls every 10 seconds up to HELMRELEASE_TIMEOUT. Checks that every
 # HelmRelease across all namespaces has condition Ready with status True.
+#
+# Each argument is either a bare HelmRelease name — the namespace is then
+# resolved by an all-namespaces lookup — or an explicit 'namespace/name'.
+# Qualify an entry whenever the same name can legitimately exist twice at once:
+# ALLOW_PRE_RELOCATION=true does exactly that for 'openbao', which then runs in
+# both the retired openbao-system and the new shared-services. A bare lookup
+# returns BOTH namespaces, and every poll would query the two-line result as a
+# single namespace, fail RFC-1123 validation, and wait out the full timeout
+# before aborting a deploy that has already applied half the new stack. An
+# unqualified name that resolves to more than one namespace therefore fails
+# immediately, naming the namespaces, rather than deadlocking.
 # ---------------------------------------------------------------------------
 wait_for_helmreleases() {
   local timeout="$1"
@@ -324,11 +346,24 @@ wait_for_helmreleases() {
   while true; do
     local all_ready=true
 
-    for release in "${releases[@]}"; do
-      # Find the namespace for this HelmRelease
+    for entry in "${releases[@]}"; do
+      local release="${entry##*/}"
       local ns
-      ns=$(kubectl get helmrelease --all-namespaces -o json 2>/dev/null \
-        | jq -r --arg name "${release}" '.items[] | select(.metadata.name == $name) | .metadata.namespace' 2>/dev/null) || true
+      if [[ "${entry}" == */* ]]; then
+        ns="${entry%/*}"
+      else
+        # Find the namespace for this HelmRelease
+        ns=$(kubectl get helmrelease --all-namespaces -o json 2>/dev/null \
+          | jq -r --arg name "${release}" '.items[] | select(.metadata.name == $name) | .metadata.namespace' 2>/dev/null) || true
+
+        if [[ $(grep -c . <<<"${ns}" | tr -d ' ') -gt 1 ]]; then
+          log "ERROR: HelmRelease '${release}' exists in more than one namespace:"
+          log "         ${ns//$'\n'/, }"
+          log "       Waiting on the bare name cannot pick one. Pass the release as"
+          log "       'namespace/${release}', or delete the retired copy."
+          exit 1
+        fi
+      fi
 
       if [[ -z "${ns}" ]]; then
         log "  HelmRelease '${release}' not found yet."
@@ -1007,6 +1042,105 @@ preflight_checks() {
   fi
 
   log "Pre-flight checks passed."
+}
+
+# ---------------------------------------------------------------------------
+# relocated_object_exists — Probe one retired object for
+# check_relocated_infrastructure, treating only a definite miss as absence.
+#
+# Returns 0 when the object exists and 1 when the API server reports it — or,
+# for a CRD that was never installed, its whole resource type — as missing. Any
+# OTHER kubectl failure exits the script: a connection refused, an expired
+# credential, an RBAC denial on `get namespaces`, or a discovery error is not
+# evidence that the retired stack is gone, and silently reading it as such turns
+# the guard into a no-op exactly when it is needed. That is not hypothetical
+# here: the guard runs immediately after cap_node_nofile restarts containerd on
+# every kind node — taking the static kube-apiserver pod with it — and the
+# follow-up wait_for_node_ready is best-effort, logging a warning and returning 0
+# on timeout. Both lookups would then fail with connection refused and wave a
+# pre-relocation cluster straight through to Step 2.
+#
+# Arguments: the `kubectl get` arguments naming the object.
+# ---------------------------------------------------------------------------
+relocated_object_exists() {
+  local out rc
+  out="$(kubectl get "$@" 2>&1)"
+  rc=$?
+
+  if [[ ${rc} -eq 0 ]]; then
+    return 0
+  fi
+
+  # The three shapes in which the API server gives a DEFINITE negative answer:
+  # "not found" for an absent object, and — for the GarageCluster lookup on a
+  # cluster whose CRDs Step 5 has not installed yet, the clean-cluster case —
+  # either the client-side discovery miss ("doesn't have a resource type") or
+  # its server-side counterpart ("could not find the requested resource").
+  if grep -qiE "not found|doesn't have a resource type|could not find the requested resource" \
+    <<<"${out}"; then
+    return 1
+  fi
+
+  log "ERROR: cannot determine whether this cluster predates the shared-services"
+  log "       relocation — 'kubectl get $*' failed:"
+  log "         ${out}"
+  log "       Refusing to continue: an unreadable cluster is not an empty one, and"
+  log "       deploying on top of a pre-relocation stack leaves a second unsealed"
+  log "       OpenBao serving every historical secret. Restore access and rerun."
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
+# check_relocated_infrastructure — Refuse to run against a pre-relocation stack.
+#
+# The shared OpenBao cluster moved out of openbao-system into shared-services.
+# Its raft store is a namespace-scoped StatefulSet PVC set, so the move does not
+# carry the data over: this script brings up an EMPTY cluster in shared-services
+# and nothing prunes what stays behind. `kubectl apply -k` (Step 3/5) does not
+# prune, and deploy/flux-system/fluxinstance.yaml declares no spec.sync, so Flux
+# never reconciles-and-prunes the repo either.
+#
+# Left in place, the retired namespace keeps a second, unsealed OpenBao serving
+# every historical secret on openbao.openbao-system.svc:8200, plus the plaintext
+# root token and all unseal keys in Secret openbao-init-keys and the server key
+# in openbao-tls — unowned, unrotated, and no longer watched by anyone, while ESO
+# is repointed at the new empty instance. Nothing about that degrades visibly, so
+# fail loudly here and let the operator delete it explicitly.
+#
+# Runs after Step 1 (the cluster exists) and before Step 2 applies any manifest.
+# On a fresh cluster every lookup below reports the object missing and the
+# function is a no-op. ALLOW_PRE_RELOCATION=true downgrades the abort to a
+# warning for a migration window in which both stacks run side by side.
+# ---------------------------------------------------------------------------
+check_relocated_infrastructure() {
+  local stale=false
+
+  if relocated_object_exists namespace openbao-system; then
+    stale=true
+    log "ERROR: namespace 'openbao-system' still exists. The shared OpenBao cluster"
+    log "       moved to 'shared-services' and this is a clean-install change: the"
+    log "       raft store does NOT move with it, and nothing prunes the old one."
+    log "       The old namespace still holds a running, unsealed OpenBao plus the"
+    log "       plaintext root token and unseal keys in Secret openbao-init-keys."
+    log "       Delete it explicitly before rerunning:"
+    log "         kubectl delete namespace openbao-system"
+  fi
+
+  if [[ "${stale}" == "true" ]]; then
+    if [[ "${ALLOW_PRE_RELOCATION}" == "true" ]]; then
+      log "WARNING: ALLOW_PRE_RELOCATION=true — continuing against a pre-relocation"
+      log "         cluster. Both stacks now run side by side, which is the"
+      log "         split-brain described above; delete the retired one once its"
+      log "         secrets have been read out."
+      return 0
+    fi
+    log "Aborting: this cluster predates the shared-services relocation."
+    log "          Read the retired instance's secrets out BEFORE deleting it —"
+    log "          openbao-init-keys has no second copy. Set"
+    log "          ALLOW_PRE_RELOCATION=true to run both stacks side by side for a"
+    log "          migration window instead of deleting first."
+    exit 1
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1870,6 +2004,11 @@ main() {
   # (Keystone) scheduled later would otherwise OOM-crashloop. See #546.
   cap_node_nofile
 
+  # Reject a cluster deployed before the shared-services relocation. Runs here
+  # because it needs a reachable cluster (so not in preflight_checks) but must
+  # precede the first manifest apply in Step 2.
+  check_relocated_infrastructure
+
   # Opt-in transparent registry pull-through cache (#564). Bring up the registry
   # proxies (now that the `kind` network exists) and wire every node's containerd
   # at them, before any image is pulled. Both are best-effort and no-op unless
@@ -2105,8 +2244,11 @@ main() {
   # opt-in overlay was applied. The surviving non-chaos order is
   # preserved exactly as before; garage-operator and openbao-operator are
   # appended as the last base releases, and chaos-mesh after them, to avoid
-  # moving any other release's relative position.
-  local helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator openbao-operator)
+  # moving any other release's relative position. openbao is namespace-qualified
+  # because ALLOW_PRE_RELOCATION=true keeps the retired openbao-system copy
+  # alongside the new one, and a bare name matching two namespaces cannot be
+  # waited on.
+  local helm_releases=(prometheus-operator-crds shared-services/openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator openbao-operator)
   if [[ "${WITH_CHAOS_MESH}" == "true" ]]; then
     helm_releases+=(chaos-mesh)
   fi

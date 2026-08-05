@@ -214,7 +214,7 @@ test_phase3_append_is_gated() {
   assert_file_contains \
     "helm_releases base array line is byte-identical to the expected literal" \
     "$DEPLOY_INFRA_SH" \
-    'local helm_releases=(prometheus-operator-crds openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator openbao-operator)'
+    'local helm_releases=(prometheus-operator-crds shared-services/openbao mariadb-operator-crds mariadb-operator external-secrets memcached-operator envoy-gateway garage-operator openbao-operator)'
 
   # The dynamic append exists.
   assert_file_contains \

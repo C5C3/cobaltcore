@@ -53,7 +53,24 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: openbao-system
+  # shared-services hosts infrastructure consumed by more than one control
+  # plane: the shared OpenBao cluster and the Garage object store. Components
+  # that exist only to run the operators standalone (the static MariaDB and
+  # Memcached instances, the proving OpenBao instance, the kind Gateway) stay
+  # in openstack.
+  #
+  # TRUST ZONE. This namespace holds the credentials that unlock every other
+  # secret in the stack: openbao-init-keys (root token plus all Shamir unseal
+  # key shares, plaintext), openbao-tls (the server key) and
+  # eso-openbao-client-tls (the mTLS identity ESO presents on every OpenBao
+  # call). Namespace-scoped read access to Secrets here is therefore equivalent
+  # to read access to the whole store, and the namespace is on the
+  # openbao-cluster-store allow-list (deploy/eso/clustersecretstore.yaml), so an
+  # ExternalSecret created here reaches bootstrap/* as well. Do not co-locate a
+  # workload that needs either — and in particular do not grant a Role with
+  # `get secrets` in this namespace to anything but OpenBao itself. Garage is
+  # the one accepted co-tenant, and it is granted neither.
+  name: shared-services
 ---
 apiVersion: v1
 kind: Namespace
@@ -95,9 +112,10 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
-  # openbao-operator-system hosts the openbao-operator controller; the name
-  # openbao-system is taken by the shared OpenBao instance, and keeping the
-  # operator out of it separates the shared-instance and operator lifecycles.
+  # openbao-operator-system hosts the openbao-operator controller. The shared
+  # OpenBao instance runs in shared-services, and the operator keeps its own
+  # lifecycle namespace, which keeps the shared-instance and operator
+  # lifecycles separate.
   name: openbao-operator-system
 # The chaos-mesh Namespace lives in the opt-in overlay deploy/kind/chaos-mesh/,
 # not here, so the privileged PodSecurity label is created only when Chaos Mesh

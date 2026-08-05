@@ -11,7 +11,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: openbao-tls
-  namespace: openbao-system
+  namespace: shared-services
 spec:
   secretName: openbao-tls
   # 1-year lifetime reduces rotation frequency for the HA Raft cluster.
@@ -30,7 +30,7 @@ spec:
     - openbao-0.openbao-internal
     - openbao-1.openbao-internal
     - openbao-2.openbao-internal
-    - openbao.openbao-system.svc
+    - openbao.shared-services.svc
   ipAddresses:
     - 127.0.0.1
     - "::1"

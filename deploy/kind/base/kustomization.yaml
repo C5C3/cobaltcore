@@ -28,13 +28,13 @@ patches:
       version: v2
       kind: HelmRelease
       name: openbao
-      namespace: openbao-system
+      namespace: shared-services
     patch: |
       apiVersion: helm.toolkit.fluxcd.io/v2
       kind: HelmRelease
       metadata:
         name: openbao
-        namespace: openbao-system
+        namespace: shared-services
       spec:
         values:
           server:

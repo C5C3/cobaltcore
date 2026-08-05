@@ -34,7 +34,7 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: openbao-client-tls
-  namespace: openbao-system
+  namespace: shared-services
 spec:
   secretName: openbao-client-tls
   # Mirror openbao-tls-cert.yaml lifetimes so client + server rotation align
@@ -46,15 +46,15 @@ spec:
     kind: ClusterIssuer
   usages:
     - client auth
-  commonName: openbao-client.openbao-system.svc
+  commonName: openbao-client.shared-services.svc
   dnsNames:
-    - openbao-client.openbao-system.svc
+    - openbao-client.shared-services.svc
 ---
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: eso-openbao-client-tls
-  namespace: openbao-system
+  namespace: shared-services
 spec:
   secretName: eso-openbao-client-tls
   duration: 8760h
@@ -64,6 +64,6 @@ spec:
     kind: ClusterIssuer
   usages:
     - client auth
-  commonName: eso-openbao-client.openbao-system.svc
+  commonName: eso-openbao-client.shared-services.svc
   dnsNames:
-    - eso-openbao-client.openbao-system.svc
+    - eso-openbao-client.shared-services.svc
