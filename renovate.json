@@ -220,6 +220,33 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/deploy/flux-system/sources/openbao-operator\\.yaml$/"
+      ],
+      "matchStrings": [
+        "tag: \"(?<currentValue>[^\"]+)\"\\n\\s*digest: \"(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "depNameTemplate": "ghcr.io/dc-tec/charts/openbao-operator",
+      "datasourceTemplate": "docker",
+      "packageNameTemplate": "ghcr.io/dc-tec/charts/openbao-operator",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/deploy/kind/infrastructure/openbao-instance\\.yaml$/"
+      ],
+      "matchStrings": [
+        "\\n  version: \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "openbao/openbao",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "openbao/openbao",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/Makefile$/",
         "/\\.github/workflows/.*\\.yaml$/"
       ],
@@ -443,6 +470,30 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "k-orc"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/flux-system/sources/openbao-operator.yaml"],
+      "matchPackageNames": ["ghcr.io/dc-tec/charts/openbao-operator"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "openbao-operator chart"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/kind/infrastructure/openbao-instance.yaml"],
+      "matchPackageNames": ["openbao/openbao"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/kind/infrastructure/openbao-instance.yaml"],
+      "matchPackageNames": ["openbao/openbao"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "OpenBao instance version"
     },
     {
       "matchManagers": ["custom.regex"],
