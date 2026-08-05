@@ -67,6 +67,15 @@ resources:
   # names that hack/deploy-infra.sh filters out on the ControlPlane path).
   - garage-admin-token-externalsecret.yaml
   - garage-s3-credentials-externalsecret.yaml
+  # kind-only: the proving OpenBaoCluster for the openbao-operator primitives
+  # the Barbican onboarding builds on, plus the ExternalSecret that materializes
+  # its static unseal key (seeded in the management OpenBao) so the operator can
+  # adopt it instead of generating its own. Both sit in the openstack namespace
+  # and survive the WITH_CONTROLPLANE shim drop (neither is among the
+  # keystone-admin/keystone-db/mariadb-root-password names). The instance is
+  # CI/dev-only — see the posture rationale in its own file header.
+  - openbao-instance.yaml
+  - openbao-instance-unseal-key-externalsecret.yaml
 
 patches:
   # MariaDB: single replica, no Galera, no MaxScale, standard storage.

@@ -1,0 +1,319 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Proving OpenBaoCluster instance for the openbao-operator primitives the
+# Barbican onboarding (#804) builds on: static-seal auto-unseal, cert-manager
+# TLS in External mode, declarative self-init, and the AppRole + Kubernetes
+# auth pair a managed Barbican secret store needs.
+#
+# KIND-ONLY, deliberately. Every posture below is a proving posture, not a
+# production one: profile Development (one replica, so no PodDisruptionBudget
+# and no anti-affinity), a static seal whose key material sits in a Secret in
+# the shared openstack namespace, and 1Gi of raft storage on the kind default
+# storage class. The control that defends a production secret store is the
+# Hardened profile — external-KMS unseal and three replicas — which this
+# instance deliberately opts out of in order to exercise the static-seal path.
+# Shipping it from deploy/flux-system/infrastructure/ would put that posture,
+# plus a cluster-scoped RBAC binding and a self-init'd AppRole with no consumer,
+# into every production deployment. The Barbican onboarding is what introduces
+# the production-shaped instance; only the openbao-operator itself ships in the
+# production base (deploy/flux-system/releases/openbao-operator.yaml).
+#
+# Unseal-key custody: the management OpenBao (deploy/flux-system/releases/
+# openbao.yaml) is the root of trust for the instance's static seal.
+#   1. write-bootstrap-secrets.sh seeds a generated 32-byte key at
+#      bootstrap/openstack/openbao-instance/unseal-key.
+#   2. The ExternalSecret openbao-instance-unseal-key-externalsecret.yaml
+#      materializes it as the Secret openbao-instance-unseal-key ONCE
+#      (refreshPolicy: CreatedOnce — a re-materialized key seals the instance
+#      permanently), and this CR starts paused so the operator cannot
+#      blind-create that fixed-name Secret first.
+#   3. hack/deploy-infra.sh attaches a controller ownerReference to this CR on
+#      the materialized Secret and un-pauses the CR, so the operator adopts the
+#      seeded key.
+# The key is never rotated: a static seal that loses its key material seals the
+# instance permanently.
+#
+# ACCEPTED RISK (openbao-operator upstream): the operator's adoption guard for a
+# pre-existing unseal Secret is metadata carrying the CR's UID — either a
+# controller ownerReference or the openbao.org/owner-uid annotation — and that
+# UID is readable by any principal with `get openbaocluster`. It is an ownership
+# marker, not an ownership proof: anyone who can create Secrets in the namespace
+# before the instance first initializes can plant a seal key of their choosing.
+# Accepted here because this instance is CI/dev-only; a production instance must
+# not depend on that guard.
+#
+# self-init is ONE-SHOT. The operator renders spec.selfInit.requests into
+# OpenBao's initialize stanzas, which run once against the freshly initialized
+# storage, after which OpenBao revokes the root token. The list below is
+# therefore the complete permanent configuration of this instance: changing it
+# requires recreating the instance, which means deleting the CR AND its PVC.
+# tests/unit/deploy/openbao_instance_overlay_test.sh pins the request names so
+# an edit cannot land without confronting that. Anything a consumer needs at
+# runtime (minting AppRole secret IDs, writing secrets) goes through the
+# provisioner role below, not through this list.
+#
+# The mount, policy, and role names (barbican/, barbican-secretstore, barbican)
+# are deliberately identical to the ones the brownfield leg provisions on the
+# shared management OpenBao, so the two secret-store e2e legs of the Barbican
+# onboarding differ only in which instance they point at.
+---
+# Server certificate for the instance's API listener. The operator mounts it in
+# External mode and never rotates it; cert-manager owns the renewal.
+#
+# One trust domain backs every OpenBao transport certificate in this stack. The
+# server certificate must chain DIRECTLY to the CA the operator reads from the
+# openbao-instance-tls-ca Secret, which is why both Secrets carry material from
+# the same CA-type ClusterIssuer and no intermediate CA is introduced.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-instance-tls-server
+  namespace: openstack
+spec:
+  secretName: openbao-instance-tls-server
+  # Same 1-year lifetime and 30-day renewBefore as the management OpenBao's
+  # server certificate (openbao-tls-cert.yaml).
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: openbao-ca-issuer
+    kind: ClusterIssuer
+  # Pinned so the EKU is serverAuth alone. openbao-ca-issuer is the same CA the
+  # management OpenBao trusts as tls_client_ca_file behind
+  # tls_require_and_verify_client_cert, and a certificate with no EKU passes
+  # client-auth verification — this keypair lives in the shared openstack
+  # namespace, so without the pin it would be a ready-made client identity for
+  # that mTLS gate.
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  dnsNames:
+    # The operator's internal TLS server name. Its External-mode validation
+    # rejects a server certificate without this SAN, and the pod probes verify
+    # against it (-servername). In-pod clients (the e2e suite) connect over the
+    # loopback address and pass it as VAULT_TLS_SERVER_NAME; no loopback IP SAN
+    # is issued, because such a SAN authenticates "whatever listens on
+    # localhost" rather than this instance.
+    - openbao-cluster-openbao-instance.local
+    - openbao-instance.openstack.svc
+    # Pod DNS through the headless Service (openbao-instance-0 and friends).
+    - "*.openbao-instance.openstack.svc"
+    - openbao-instance-public.openstack.svc
+---
+# Trust bundle for the instance. The operator's External TLS contract reads the
+# CA from the FIXED-NAME Secret openbao-instance-tls-ca, data key ca.crt.
+# cert-manager has no primitive that materializes a CA-only Secret in another
+# namespace, so this minimal Certificate exists solely because every Secret
+# issued by the CA-type ClusterIssuer carries the trust-domain CA in ca.crt. The
+# leaf keypair in it is unused, and the Secret renews together with the CA.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openbao-instance-tls-ca
+  namespace: openstack
+spec:
+  secretName: openbao-instance-tls-ca
+  commonName: openbao-instance-tls-ca
+  duration: 8760h
+  renewBefore: 720h
+  issuerRef:
+    name: openbao-ca-issuer
+    kind: ClusterIssuer
+  # Same EKU pin as the server certificate above: the leaf goes unused, so the
+  # one thing that matters about it is that it cannot be replayed as a client
+  # identity against the management OpenBao's mTLS gate.
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+---
+# Client identity the Kubernetes-auth role "provisioner" (self-init below) binds
+# to. The e2e suite mints tokens for it with `kubectl create token`, and the
+# barbican-operator's runtime writer will use the same primitive.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openbao-instance-provisioner
+  namespace: openstack
+# Every consumer mints a token explicitly and for the openbao-instance audience,
+# so no pod ever needs the auto-mounted default-audience token this would
+# otherwise project.
+automountServiceAccountToken: false
+---
+# OpenBao validates Kubernetes-auth logins with a TokenReview issued under the
+# instance pod's own projected ServiceAccount token. The operator creates that
+# ServiceAccount (<cluster>-serviceaccount), but neither the operator nor its
+# chart grants it TokenReview, so without this binding every login fails with
+# 403 permission denied.
+#
+# The subject is created and garbage-collected by the operator with the CR while
+# this binding is overlay-owned, so deleting the CR leaves the binding dangling:
+# recreating a ServiceAccount under that exact name inherits cluster-wide
+# TokenReview. The operator does not expose the pod ServiceAccount name, so the
+# two lifecycles cannot be coupled here — another reason this instance stays out
+# of the production overlay.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: openbao-instance-auth-delegator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: openbao-instance-serviceaccount
+    namespace: openstack
+---
+apiVersion: openbao.org/v1alpha1
+kind: OpenBaoCluster
+metadata:
+  name: openbao-instance
+  namespace: openstack
+spec:
+  # The operator blind-creates the fixed-name unseal Secret (Immutable) on its
+  # first reconcile and adopts a pre-existing one only against an ownership
+  # proof. The key is custodied in the management OpenBao, so the CR must not
+  # reconcile before that key has been materialized: hack/deploy-infra.sh
+  # un-pauses it once the seeded key has synced and carries a controller
+  # ownerReference to this CR.
+  paused: true
+  # The Hardened profile forces an external-KMS unseal (and three replicas); the
+  # proving instance exercises exactly the static-seal path.
+  profile: Development
+  # The static seal needs OpenBao >= 2.4.0; the Barbican onboarding targets 2.6.
+  # The image resolves to docker.io/openbao/openbao:<version>. Renovate tracks
+  # this pin (github-releases openbao/openbao).
+  version: "2.6.1"
+  replicas: 1
+  storage:
+    # No storageClassName: the cluster default carries the raft storage, the
+    # same posture the kind overlay uses for the other single-node instances.
+    size: 1Gi
+  tls:
+    enabled: true
+    # External consumes the two fixed-name cert-manager Secrets above
+    # (openbao-instance-tls-server, openbao-instance-tls-ca). The operator
+    # mounts them and waits for both, but never rotates them.
+    mode: External
+  unseal:
+    # The key material contract is the fixed-name Secret
+    # openbao-instance-unseal-key, data key `key`, mounted at /etc/bao/unseal.
+    # unseal.credentialsSecretRef is only for KMS/transit provider credentials
+    # and is ignored for a static seal, so it stays unset. The key is custodied
+    # in the management OpenBao and materialized by this overlay's
+    # ExternalSecret (see the file header); rotating a static-seal key seals the
+    # instance permanently.
+    type: static
+  selfInit:
+    enabled: true
+    # Order matters: a mount or auth method is enabled before anything writes
+    # under it. Request names use underscores to satisfy the operator's
+    # ^[A-Za-z_][A-Za-z0-9_-]*$ name pattern.
+    requests:
+      - name: barbican_kv
+        operation: create
+        path: sys/mounts/barbican
+        secretEngine:
+          type: kv
+          options:
+            version: "2"
+      - name: barbican_secretstore_policy
+        operation: create
+        path: sys/policies/acl/barbican-secretstore
+        policy:
+          # No delete on metadata/: in KV v2 that verb permanently destroys
+          # every version of a secret and its metadata, which is the only
+          # in-store recovery mechanism tenant key material has. Castellan's
+          # Vault key manager deletes through the data path, where delete is a
+          # recoverable soft delete.
+          policy: |
+            path "barbican/data/*" {
+              capabilities = ["create", "read", "update", "delete", "list"]
+            }
+
+            path "barbican/metadata/*" {
+              capabilities = ["create", "read", "update", "list"]
+            }
+      - name: approle_auth
+        operation: create
+        path: sys/auth/approle
+        authMethod:
+          type: approle
+      # The AppRole identity Barbican's vault_plugin authenticates with. The
+      # TTLs mirror the AppRole role shape on the shared management OpenBao
+      # (deploy/openbao/bootstrap/setup-auth.sh). Minting the secret ID stays
+      # out of self-init: it is runtime work of the barbican-operator.
+      - name: barbican_approle_role
+        operation: create
+        path: auth/approle/role/barbican
+        data:
+          token_policies: "barbican-secretstore"
+          token_ttl: "1h"
+          token_max_ttl: "4h"
+          # 30 days, not a year: a secret ID is a bearer credential with no use
+          # count and no CIDR bound, so its TTL is the only thing that bounds a
+          # leaked one. No automated re-mint exists yet — the shared-instance
+          # twin (deploy/openbao/bootstrap/setup-auth.sh) carries the note on
+          # what that means operationally and why no use cap is set.
+          secret_id_ttl: "720h"
+      - name: kubernetes_auth
+        operation: create
+        path: sys/auth/kubernetes
+        authMethod:
+          type: kubernetes
+      # kubernetes_host is the only required setting: the instance pod's
+      # projected ServiceAccount token and the kube root CA are mounted at the
+      # standard path and supply the reviewer credentials. The authority to run
+      # a TokenReview comes from the auth-delegator binding above.
+      - name: kubernetes_auth_config
+        operation: update
+        path: auth/kubernetes/config
+        data:
+          kubernetes_host: "https://kubernetes.default.svc"
+      # The provisioner is the runtime writer: it hands out the barbican
+      # AppRole's credentials and can read and write the barbican/ KV mount.
+      # Its barbican/ grants are spelled out per KV v2 sub-path rather than as
+      # barbican/*, which would also cover destroy/ and the metadata delete that
+      # permanently removes every version of a secret.
+      - name: provisioner_policy
+        operation: create
+        path: sys/policies/acl/provisioner
+        policy:
+          policy: |
+            path "auth/approle/role/barbican/role-id" {
+              capabilities = ["read"]
+            }
+
+            path "auth/approle/role/barbican/secret-id" {
+              capabilities = ["create", "update"]
+            }
+
+            path "barbican/data/*" {
+              capabilities = ["create", "read", "update", "delete", "list"]
+            }
+
+            path "barbican/metadata/*" {
+              capabilities = ["create", "read", "update", "list"]
+            }
+
+            path "sys/mounts/barbican" {
+              capabilities = ["read", "update"]
+            }
+      - name: provisioner_k8s_role
+        operation: create
+        path: auth/kubernetes/role/provisioner
+        data:
+          bound_service_account_names: "openbao-instance-provisioner"
+          bound_service_account_namespaces: "openstack"
+          # Without an audience the role accepts any default-audience token of
+          # that ServiceAccount, including one auto-mounted into an unrelated
+          # pod. Bound to openbao-instance, only a token deliberately minted for
+          # this instance logs in (kubectl create token --audience).
+          audience: "openbao-instance"
+          token_policies: "provisioner"
+          token_ttl: "1h"
+          token_max_ttl: "4h"

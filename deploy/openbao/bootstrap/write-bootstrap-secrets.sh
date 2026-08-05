@@ -193,6 +193,20 @@ main() {
     "access-key-id=${GENERATED_GK_ACCESS_KEY}" \
     "secret-access-key=${GENERATED_PASSWORD}"
 
+  # Static unseal key of the proving OpenBao instance
+  # (deploy/kind/infrastructure/openbao-instance.yaml). This OpenBao stays the
+  # root of trust for it: the key is generated in-pod (@generate) and
+  # materialized into the openstack namespace by the kind-only ExternalSecret
+  # deploy/kind/infrastructure/openbao-instance-unseal-key-externalsecret.yaml,
+  # where the openbao-operator adopts it for the instance's static seal (see the
+  # adoption choreography in hack/deploy-infra.sh).
+  #
+  # write_secret_if_missing is the guard that keeps re-runs from rotating it: a
+  # static-seal key that changes seals the instance permanently. No
+  # mark_eso_managed: no PushSecret targets this path.
+  write_secret_if_missing "kv-v2/bootstrap/openstack/openbao-instance/unseal-key" \
+    "key=${GENERATED_PASSWORD}"
+
   # per-ControlPlane bootstrap seeding. For each MANAGED-mode
   # "<namespace>/<controlplane>" identity in KORC_CONTROLPLANES (default
   # "openstack/controlplane"), seed the per-CR Model B admin password and Horizon
