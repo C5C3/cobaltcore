@@ -136,7 +136,7 @@ func RecordSecretStoreRemint(store, namespace, trigger string) {
 // namespace from the per-CR collectors. The sub-reconciler metrics
 // intentionally carry no CR labels, so there is nothing to delete there. The
 // secret-store re-mint counter is keyed by the store CR rather than by its
-// parent Barbican, so the store controller's finalizer clears it through
+// parent Barbican, so the store controller clears it through
 // DeleteForBarbicanSecretStore.
 func DeleteForBarbican(name, namespace string) {
 	globalColls.deleteForBarbican(name, namespace)
@@ -144,8 +144,8 @@ func DeleteForBarbican(name, namespace string) {
 
 // DeleteForBarbicanSecretStore drops the re-mint series tagged with the given
 // BarbicanSecretStore name and namespace. The counter is keyed by the store CR,
-// so the store controller's finalizer clears it when the store goes away, not
-// when its parent Barbican does.
+// so the store controller clears it on the reconcile pass that observes the
+// deletion, not when its parent Barbican goes away.
 func DeleteForBarbicanSecretStore(store, namespace string) {
 	globalColls.deleteForBarbicanSecretStore(store, namespace)
 }
