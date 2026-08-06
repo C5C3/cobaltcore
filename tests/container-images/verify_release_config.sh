@@ -17,7 +17,7 @@ FAIL=0
 
 # Services that every release must register in source-refs.yaml and
 # extra-packages.yaml, each with a matching images/<service>/Dockerfile.
-SERVICES="keystone horizon glance placement"
+SERVICES="keystone horizon glance placement barbican"
 
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"

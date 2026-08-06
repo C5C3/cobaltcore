@@ -16,7 +16,7 @@ FAIL=0
 
 # Service images that inherit the generic user instead of creating their own.
 # python-base is checked separately: it is where the user is created.
-SERVICES="keystone horizon glance placement"
+SERVICES="keystone horizon glance placement barbican"
 
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
