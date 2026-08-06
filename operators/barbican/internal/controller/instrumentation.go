@@ -43,11 +43,11 @@ var subReconcilerConditionTypes = map[string]string{
 	"Config":             "SecretsReady",
 	"Database":           "DatabaseReady",
 	"Deployment":         "DeploymentReady",
-	"HTTPRoute":          "HTTPRouteReady",
-	"HealthCheck":        "BarbicanAPIReady",
+	"HTTPRoute":          conditionTypeHTTPRouteReady,
+	"HealthCheck":        conditionTypeBarbicanAPIReady,
 	"HPA":                "HPAReady",
-	"NetworkPolicy":      "NetworkPolicyReady",
-	"DBClean":            "DBCleanReady",
+	"NetworkPolicy":      conditionTypeNetworkPolicyReady,
+	"DBClean":            conditionTypeDBCleanReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error

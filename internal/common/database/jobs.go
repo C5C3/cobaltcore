@@ -39,8 +39,14 @@ type JobSetParams struct {
 	Image string
 	// ConfigMapName is the rendered config ConfigMap, mounted read-only at
 	// ConfigMountPath.
-	ConfigMapName   string
-	ConfigMountPath string
+	ConfigMapName string
+	// ConfigSecretName is the rendered config Secret, mounted read-only at
+	// ConfigMountPath, for a service whose whole configuration document is
+	// credential-bearing (barbican renders the vault plugin's approle_role_id
+	// into it). Callers set exactly one of the two; a non-empty
+	// ConfigSecretName wins.
+	ConfigSecretName string
+	ConfigMountPath  string
 	// Env are extra environment variables (typically the DB-connection URL
 	// override).
 	Env []corev1.EnvVar
@@ -77,6 +83,7 @@ func BuildJob(p JobSetParams, image, nameSuffix string, command []string, backof
 		ContainerName:     nameSuffix,
 		Command:           command,
 		ConfigMapName:     p.ConfigMapName,
+		ConfigSecretName:  p.ConfigSecretName,
 		ConfigMountPath:   p.ConfigMountPath,
 		Env:               p.Env,
 		ExtraVolumes:      p.ExtraVolumes,

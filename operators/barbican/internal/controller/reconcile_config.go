@@ -223,7 +223,7 @@ func barbicanPublicEndpoint(barbican *barbicanv1alpha1.Barbican) string {
 	if barbican.Spec.Gateway != nil {
 		return "https://" + barbican.Spec.Gateway.Hostname
 	}
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", subResourceName(barbican), barbican.Namespace, barbicanAPIPort)
+	return internalBarbicanURL(barbican)
 }
 
 // renderPasteINI renders barbican-api-paste.ini, mirroring the file the release's

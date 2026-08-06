@@ -113,6 +113,28 @@ func TestBuildJob_upgradePhasePinsImageAndSuffix(t *testing.T) {
 	g.Expect(*j.Spec.BackoffLimit).To(Equal(int32(4)))
 }
 
+// TestSyncJob_ConfigSecretMountedInsteadOfConfigMap covers the Secret-config
+// path: barbican renders its whole configuration — including the vault plugin's
+// approle_role_id — into a Secret, so the migration Job has to mount one.
+func TestSyncJob_ConfigSecretMountedInsteadOfConfigMap(t *testing.T) {
+	g := NewWithT(t)
+	p := JobSetParams{
+		InstanceName:     "barbican",
+		Namespace:        "openstack",
+		Image:            "registry.example.com/barbican:2026.1",
+		ConfigSecretName: "barbican-config-abc123",
+		ConfigMountPath:  "/etc/barbican",
+		SyncCommand:      []string{"barbican-manage", "db", "upgrade"},
+	}
+	j := SyncJob(p)
+
+	spec := j.Spec.Template.Spec
+	g.Expect(spec.Volumes).To(HaveLen(1))
+	g.Expect(spec.Volumes[0].ConfigMap).To(BeNil())
+	g.Expect(spec.Volumes[0].Secret.SecretName).To(Equal("barbican-config-abc123"))
+	g.Expect(spec.Containers[0].VolumeMounts[0].MountPath).To(Equal("/etc/barbican"))
+}
+
 // TestBuildJob_noExtras exercises the empty-extras edge path: a JobSetParams with
 // no ExtraVolumes/ExtraVolumeMounts, no Env, and no PriorityClass yields a plain
 // config-mounted Job with a single volume and mount.

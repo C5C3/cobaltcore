@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -225,14 +226,16 @@ func responseError(status int, message string) error {
 // testScheme registers the types the fake client resolves: core/apps (Secret,
 // ConfigMap, Deployment, ServiceAccount), the barbican API, the openbao.org API
 // the managed mode reads the instance from, the external-secrets v1 group the
-// credential gate reads to attribute a missing Secret, and the MariaDB types the
-// Barbican finalizer path tears down.
+// credential gate reads to attribute a missing Secret, the Gateway API types the
+// httproute step projects, and the MariaDB types the Barbican finalizer path
+// tears down.
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
 	_ = barbicanv1alpha1.AddToScheme(s)
 	_ = openbaov1alpha1.AddToScheme(s)
 	_ = esov1.SchemeBuilder.AddToScheme(s)
+	_ = gatewayv1.Install(s)
 	_ = mariadbv1alpha1.AddToScheme(s)
 	return s
 }

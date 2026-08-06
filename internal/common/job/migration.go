@@ -31,8 +31,14 @@ type MigrationJobParams struct {
 	Command []string
 	// ConfigMapName is the rendered config ConfigMap, mounted read-only at
 	// ConfigMountPath under the volume name "config".
-	ConfigMapName   string
-	ConfigMountPath string
+	ConfigMapName string
+	// ConfigSecretName is the rendered config Secret, mounted read-only at
+	// ConfigMountPath under the same volume name, for a service whose whole
+	// configuration document is credential-bearing and therefore rendered into a
+	// Secret instead of a ConfigMap. Callers set exactly one of the two; a
+	// non-empty ConfigSecretName wins.
+	ConfigSecretName string
+	ConfigMountPath  string
 	// Env are extra environment variables (for example the DB-connection URL).
 	Env []corev1.EnvVar
 	// ExtraVolumes and ExtraVolumeMounts are appended after the config volume
@@ -50,11 +56,24 @@ type MigrationJobParams struct {
 }
 
 // BuildMigrationJob constructs the shared migration-Job skeleton from p. It
-// mounts the config ConfigMap read-only at ConfigMountPath, then appends any
-// ExtraVolumes/ExtraVolumeMounts, so a caller with no extras gets a plain
-// config-mounted Job.
+// mounts the rendered config read-only at ConfigMountPath — from ConfigMapName,
+// or from ConfigSecretName when the service renders its configuration into a
+// Secret — then appends any ExtraVolumes/ExtraVolumeMounts, so a caller with no
+// extras gets a plain config-mounted Job.
 func BuildMigrationJob(p MigrationJobParams) *batchv1.Job {
 	backoffLimit := p.BackoffLimit
+	configSource := corev1.VolumeSource{
+		ConfigMap: &corev1.ConfigMapVolumeSource{
+			LocalObjectReference: corev1.LocalObjectReference{
+				Name: p.ConfigMapName,
+			},
+		},
+	}
+	if p.ConfigSecretName != "" {
+		configSource = corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{SecretName: p.ConfigSecretName},
+		}
+	}
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      p.Name,
@@ -81,14 +100,8 @@ func BuildMigrationJob(p MigrationJobParams) *batchv1.Job {
 						}},
 					}},
 					Volumes: []corev1.Volume{{
-						Name: "config",
-						VolumeSource: corev1.VolumeSource{
-							ConfigMap: &corev1.ConfigMapVolumeSource{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: p.ConfigMapName,
-								},
-							},
-						},
+						Name:         "config",
+						VolumeSource: configSource,
 					}},
 				},
 			},
