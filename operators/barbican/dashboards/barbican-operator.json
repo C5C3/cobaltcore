@@ -1,0 +1,362 @@
+{
+  "uid": "barbican-operator",
+  "title": "Barbican Operator",
+  "tags": ["barbican", "operator", "c5c3"],
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "timezone": "",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Reconcile duration p50/p95/p99 per sub_reconciler",
+      "description": "p50/p95/p99 wall-clock duration of Barbican sub-reconciler invocations, derived from barbican_operator_reconcile_duration_seconds_bucket. p50 tracks the steady-state hot path; p99 surfaces the tail a speedup roadmap must watch.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, sub_reconciler) (rate(barbican_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{sub_reconciler}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, sub_reconciler) (rate(barbican_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{sub_reconciler}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le, sub_reconciler) (rate(barbican_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{sub_reconciler}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Reconcile error rate per condition_type",
+      "description": "Rate of barbican_operator_reconcile_errors_total grouped by condition_type. A condition_type of UNKNOWN means a sub-reconciler reached the instrumenter without an entry in subReconcilerConditionTypes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (condition_type) (rate(barbican_operator_reconcile_errors_total[5m]))",
+          "legendFormat": "{{condition_type}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "db_sync duration p95 and failure rate",
+      "description": "Target A: p95 of barbican_operator_db_sync_duration_seconds_bucket per Barbican CR. Target B: failure rate of barbican_operator_db_sync_total{result=\"failed\"}.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^failures .*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ops"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, namespace, barbican) (rate(barbican_operator_db_sync_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{namespace}}/{{barbican}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (namespace, barbican) (rate(barbican_operator_db_sync_total{result=\"failed\"}[5m]))",
+          "legendFormat": "failures {{namespace}}/{{barbican}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "db_clean duration p95 and failure rate",
+      "description": "The db_sync twin for the recurring clean-up the DBClean sub-reconciler schedules. Target A: p95 of barbican_operator_db_clean_duration_seconds_bucket per Barbican CR. Target B: failure rate of barbican_operator_db_clean_total{result=\"failed\"}. A flat failure rate with no p95 samples means the CronJob is suspended or has not fired yet.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^failures .*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ops"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, namespace, barbican) (rate(barbican_operator_db_clean_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{namespace}}/{{barbican}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (namespace, barbican) (rate(barbican_operator_db_clean_total{result=\"failed\"}[5m]))",
+          "legendFormat": "failures {{namespace}}/{{barbican}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Secret-store AppRole re-mints per trigger",
+      "description": "Rate of barbican_operator_secretstore_remints_total split by trigger. A proactive re-mint replaced the AppRole secret ID before its TTL lapsed; a reactive one followed a credential OpenBao had already rejected. A rising reactive share means the rotation schedule keeps arriving late.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (trigger) (rate(barbican_operator_secretstore_remints_total[5m]))",
+          "legendFormat": "{{trigger}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (namespace, store, trigger) (rate(barbican_operator_secretstore_remints_total[5m]))",
+          "legendFormat": "{{namespace}}/{{store}} {{trigger}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "End-to-end reconcile duration (controller-runtime)",
+      "description": "p50/p95/p99 of controller_runtime_reconcile_time_seconds_bucket for the barbican and barbicansecretstore controllers. Unlike barbican_operator_reconcile_duration_seconds (which samples only the sub-reconcilers), this built-in histogram covers the whole Reconcile call — orchestration, status update, and watch handling — so it is the SLO signal for end-to-end reconcile latency.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, controller) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=~\"barbican|barbicansecretstore\"}[5m])))",
+          "legendFormat": "p50 {{controller}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, controller) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=~\"barbican|barbicansecretstore\"}[5m])))",
+          "legendFormat": "p95 {{controller}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le, controller) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=~\"barbican|barbicansecretstore\"}[5m])))",
+          "legendFormat": "p99 {{controller}}"
+        }
+      ]
+    }
+  ]
+}
