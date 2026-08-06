@@ -37,6 +37,12 @@ type UWSGICommandParams struct {
 	// ships.
 	WSGIFilePath string
 
+	// Module is the --module value: the "package.module:callable" import path of
+	// the WSGI application, for a service image that ships no entry script.
+	// Exactly one of WSGIFilePath and Module must be non-empty; Module renders
+	// --module in the position --wsgi-file occupies.
+	Module string
+
 	// TrailingArgs are raw tokens emitted after the --threads value and before
 	// --harakiri, for the per-service flags that configure the WSGI application
 	// itself. Nil or empty adds nothing.
@@ -61,9 +67,13 @@ type UWSGICommandParams struct {
 //     --threads;
 //   - the --harakiri cap when the spec sets a positive one, last in the command.
 //
-// Everything else comes from p and is emitted verbatim: the bind, the
-// --wsgi-file path, and the tokens in ArgsAfterHTTP and TrailingArgs. A service
-// that needs no extra flags gets none.
+// Everything else comes from p and is emitted verbatim: the bind, the launch
+// mode, and the tokens in ArgsAfterHTTP and TrailingArgs. A service that needs
+// no extra flags gets none.
+//
+// The launch mode is a single flag: --module p.Module when that field is set,
+// otherwise --wsgi-file p.WSGIFilePath. Neither flag is emitted with an empty
+// value, so params that set neither field render neither flag.
 //
 // Both keep-alive flags are dropped when keep-alive resolves false, even with
 // HTTPKeepAliveTimeout set: the timeout has no meaning without its parent
@@ -128,9 +138,17 @@ func BuildUWSGICommand(p UWSGICommandParams) []string {
 		"--log-master",
 		"--log-format", UWSGILogFormat,
 	)
+	// A service image ships either an entry script or an importable module, never
+	// both, and an empty value would make uWSGI fail to load any application at
+	// all — so each flag is emitted only with a value behind it.
+	switch {
+	case p.Module != "":
+		cmd = append(cmd, "--module", p.Module)
+	case p.WSGIFilePath != "":
+		cmd = append(cmd, "--wsgi-file", p.WSGIFilePath)
+	}
 	cmd = append(
 		cmd,
-		"--wsgi-file", p.WSGIFilePath,
 		"--master",
 		"--lazy-apps",
 		"--need-app",
