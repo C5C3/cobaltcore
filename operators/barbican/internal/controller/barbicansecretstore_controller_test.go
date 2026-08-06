@@ -14,6 +14,8 @@ import (
 	"time"
 
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	api "github.com/openbao/openbao/api/v2"
 	dto "github.com/prometheus/client_model/go"
@@ -32,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	"github.com/c5c3/forge/operators/barbican/internal/metrics"
 	"github.com/c5c3/forge/operators/barbican/internal/openbao"
@@ -220,13 +223,17 @@ func responseError(status int, message string) error {
 // --- fixtures --------------------------------------------------------------
 
 // testScheme registers the types the fake client resolves: core/apps (Secret,
-// ConfigMap, Deployment, ServiceAccount), the barbican API, and the
-// openbao.org API the managed mode reads the instance from.
+// ConfigMap, Deployment, ServiceAccount), the barbican API, the openbao.org API
+// the managed mode reads the instance from, the external-secrets v1 group the
+// credential gate reads to attribute a missing Secret, and the MariaDB types the
+// Barbican finalizer path tears down.
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
 	_ = barbicanv1alpha1.AddToScheme(s)
 	_ = openbaov1alpha1.AddToScheme(s)
+	_ = esov1.SchemeBuilder.AddToScheme(s)
+	_ = mariadbv1alpha1.AddToScheme(s)
 	return s
 }
 
@@ -408,10 +415,29 @@ func testBrownfieldSecret(data map[string][]byte) *corev1.Secret {
 	}
 }
 
-// testBarbican returns the parent Barbican CR a store attaches to.
+// testBarbican returns the parent Barbican CR a store attaches to. It is the
+// shared fixture of this package: the store tests use it as the projection
+// target, the parent-reconciler tests reconcile it, so it carries the Secret
+// references and the release/image/cache fields the Barbican pipeline reads.
 func testBarbican() *barbicanv1alpha1.Barbican {
 	return &barbicanv1alpha1.Barbican{
-		ObjectMeta: metav1.ObjectMeta{Name: testBarbicanName, Namespace: testNamespace, Generation: 1},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       testBarbicanName,
+			Namespace:  testNamespace,
+			UID:        types.UID("barbican-uid"),
+			Generation: 1,
+		},
+		Spec: barbicanv1alpha1.BarbicanSpec{
+			OpenStackRelease: "2026.1",
+			Image:            commonv1.ImageSpec{Repository: "ghcr.io/c5c3/barbican", Tag: "2026.1"},
+			Database: commonv1.DatabaseSpec{
+				Host: "db.example.com", Port: 3306, Database: "barbican",
+				SecretRef: commonv1.SecretRefSpec{Name: "barbican-db"},
+			},
+			Cache:            commonv1.CacheSpec{Backend: "dogpile.cache.pymemcache", Servers: []string{"mc:11211"}},
+			KeystoneEndpoint: "http://keystone.openstack.svc:5000",
+			ServiceUser:      barbicanv1alpha1.ServiceUserSpec{SecretRef: commonv1.SecretRefSpec{Name: "barbican-service-user"}},
+		},
 	}
 }
 

@@ -585,9 +585,9 @@ func (w *BarbicanWebhook) validate(ctx context.Context, b *Barbican, extra field
 	// Reject an extraConfig override of any Rejected owned key. The rejection list
 	// is driven by the owned-config-key registry's Rejected flag; for barbican it is
 	// [keystone_authtoken] password and the two [vault_plugin] credential keys, each
-	// inert at runtime (env-injected) but leaking credential material into the
-	// namespace-readable ConfigMap if rendered. Admission is the only gate before
-	// the credential reaches that ConfigMap, so this is a rejection, not a
+	// inert at runtime (env-injected) but copied into the rendered config Secret
+	// every API pod mounts if rendered. Admission is the only gate before the
+	// credential reaches that Secret, so this is a rejection, not a
 	// reported-but-honored override.
 	for _, e := range OwnedConfigKeys {
 		if !e.Rejected {

@@ -364,6 +364,15 @@ type BarbicanStatus struct {
 	// +optional
 	ProjectedSecretStores []string `json:"projectedSecretStores,omitempty"`
 
+	// ProjectedSecretStoreHosts are the server URLs the last valid projection
+	// resolved, recorded alongside ProjectedSecretStores. The egress set of an
+	// invalid projection is widened from this record rather than re-derived from
+	// the live store specs: spec.openBao.server.url is mutable and only
+	// scheme-checked, so re-deriving would let anyone who can write a store open
+	// an arbitrary destination-unrestricted egress port on the API pods.
+	// +optional
+	ProjectedSecretStoreHosts []string `json:"projectedSecretStoreHosts,omitempty"`
+
 	// TargetRelease is the spec.openStackRelease a release bump is converging to.
 	// It is set while the db-sync for that release runs and cleared once
 	// InstalledRelease equals the spec release.
