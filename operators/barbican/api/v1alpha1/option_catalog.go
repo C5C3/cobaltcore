@@ -24,21 +24,13 @@ var catalogFS embed.FS
 // initialization.
 var optionCatalogs = config.MustParseEmbeddedCatalogs(catalogFS)
 
-// CatalogExemptSections names the statically spelled sections the unknown-option
-// scan skips whole. It is empty, and that emptiness is a finding rather than a
-// placeholder: every fixed-name section the operator writes ([DEFAULT],
+// CatalogExemptSectionPrefixes names the section-name prefixes whose sections the
+// unknown-option scan skips whole. No statically spelled section needs an
+// exemption: every fixed-name section the operator writes ([DEFAULT],
 // [database], [keystone_authtoken], [secretstore], [vault_plugin], [queue] and
 // [oslo_policy]) is registered by barbican itself or by an oslo library, so both
-// generated catalogs enumerate all of them. The only sections no catalog can
-// enumerate are the per-store ones CatalogExemptSectionPrefixes covers. The
-// variable exists so a section that later escapes the catalog has a declared
-// place to go and so the ControlPlane guard reads the same pair of exemption
-// lists from every service package.
-var CatalogExemptSections = []string{}
-
-// CatalogExemptSectionPrefixes names the section-name prefixes whose sections the
-// unknown-option scan skips whole. The per-store [secretstore:<name>] sections
-// are named after the BarbicanSecretStore CRs attached to a Barbican, so no
+// generated catalogs enumerate all of them. The per-store [secretstore:<name>]
+// sections are named after the BarbicanSecretStore CRs attached to a Barbican, so no
 // release catalog can list them and no static exemption can spell them. The
 // shared config.CatalogExemptions.Sections set matches exact section names only,
 // so the validating webhook expands each prefix here against the section names

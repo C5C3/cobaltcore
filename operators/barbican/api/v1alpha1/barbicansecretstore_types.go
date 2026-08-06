@@ -20,8 +20,9 @@ const (
 	// secret ID (rendered into the vault plugin's approle_secret_id).
 	OpenBaoSecretIDKey = "secret-id"
 	// OpenBaoCAKey is the CA bundle Secret data key holding the PEM certificate
-	// that authenticates the OpenBao server (rendered into the vault plugin's
-	// vault_ca).
+	// that authenticates the OpenBao server. The operator mounts the bundle into
+	// the API pods and points the vault plugin's ssl_ca_crt_file at the mount
+	// path.
 	OpenBaoCAKey = "ca.crt"
 )
 
