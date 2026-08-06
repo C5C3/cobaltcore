@@ -10,19 +10,28 @@ import (
 	"context"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/database"
+	"github.com/c5c3/forge/internal/common/gateway"
+	"github.com/c5c3/forge/internal/common/healthcheck"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/watch"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
@@ -131,16 +140,20 @@ func registerBarbicanSecretStoreIndexes(ctx context.Context, indexer client.Fiel
 // NotRequired, or waiting — so a gateway-less or autoscaling-less cluster still
 // resolves the aggregate (the NotRequired paths report True), exactly as the
 // sibling operators aggregate their optional conditions.
+//
+// A condition is spelled out only where the owning sub-reconciler declares no
+// constant for it; the rest reference that constant, so a rename cannot leave a
+// stale literal behind here.
 var subConditionTypes = []string{
 	"SecretsReady",
 	"DatabaseReady",
 	conditionTypeSecretStoresReady,
 	"DeploymentReady",
-	"BarbicanAPIReady",
+	conditionTypeBarbicanAPIReady,
 	"HPAReady",
-	"NetworkPolicyReady",
-	"HTTPRouteReady",
-	"DBCleanReady",
+	conditionTypeNetworkPolicyReady,
+	conditionTypeHTTPRouteReady,
+	conditionTypeDBCleanReady,
 }
 
 // barbicanFinalizer blocks removal of a Barbican CR from etcd until the MariaDB
@@ -148,6 +161,15 @@ var subConditionTypes = []string{
 // teardown is triggered before the owner-ref chain disappears. It is the single
 // source of truth for Reconcile, the finalizer handler, and tests.
 const barbicanFinalizer = "barbican.openstack.c5c3.io/finalizer"
+
+// httpRouteGVK identifies the HTTPRoute kind the operator watches when Gateway
+// API is installed. Availability is probed at setup time via the shared
+// gateway.IsGVKAvailable RESTMapper probe.
+var httpRouteGVK = schema.GroupVersionKind{
+	Group:   gatewayv1.GroupVersion.Group,
+	Version: gatewayv1.GroupVersion.Version,
+	Kind:    "HTTPRoute",
+}
 
 // barbicanSkeleton bundles the shared controller-skeleton glue (Ready
 // aggregation, no-op-skipping status writes, config-failure marking) with
@@ -193,6 +215,10 @@ type BarbicanReconciler struct {
 	// bootstrap.ControllerOptions, so the zero value is safe.
 	MaxConcurrentReconciles int
 
+	// HTTPClient is the health-check client seam. Production leaves it nil so the
+	// health check uses http.DefaultClient; tests inject a stub transport.
+	HTTPClient healthcheck.HTTPDoer
+
 	// apiReader is set during SetupWithManager from mgr.GetAPIReader(): a direct,
 	// uncached reader. The deployment step latches the two-phase narrowing of the
 	// API Service selector on the live Service, and the informer cache can still
@@ -201,6 +227,18 @@ type BarbicanReconciler struct {
 	// construct the reconciler without a manager; those fall back to the
 	// (read-your-writes) fake client.
 	apiReader client.Reader
+
+	// gatewayAPIAvailable is set during SetupWithManager from the cluster's
+	// RESTMapper and indicates whether the gateway.networking.k8s.io/v1 HTTPRoute
+	// CRD is installed. When false, the controller skips the HTTPRoute watch
+	// entirely so it does not crash on a missing kind.
+	gatewayAPIAvailable bool
+
+	// healthProbeCache memoizes the last successful Barbican API probe per CR
+	// (shared TTL probe cache) so a steady-state reconcile does not fire a
+	// synchronous HTTP GET on every pass. The cache's internal mutex guards
+	// concurrent access under MaxConcurrentReconciles > 1.
+	healthProbeCache healthcheck.ProbeCache
 }
 
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicans,verbs=get;list;watch;create;update;patch;delete
@@ -272,30 +310,34 @@ func (r *BarbicanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // It is a method rather than a literal inside Reconcile so the drift guard can
 // enumerate the step names without running a reconcile.
 //
-// The chain is the credential-to-config half of the pipeline. The Database and
-// Deployment steps and the post-deployment parallel group (HTTPRoute,
-// HealthCheck, HPA, NetworkPolicy, DBClean) are appended by the following
-// commits; instrumentation.go already carries the complete step-name vocabulary,
-// so a step added there needs no instrumentation change.
+// The Secret/BarbicanSecretStore/MariaDB watch mappers still land in a following
+// commit; instrumentation.go already carries the complete step-name vocabulary,
+// so no step here needs an instrumentation change.
 func (r *BarbicanReconciler) pipelineSteps(barbican *barbicanv1alpha1.Barbican) []commonreconcile.Step {
-	// projection is the secret-store aggregation the config step renders from,
-	// the one value this half of the pipeline hands from one step to the next. The
-	// digests the Secrets and DBConnectionSecret steps return, and the config
-	// Secret name the Config step returns, are dropped until the deployment and
-	// database steps that consume them land.
-	var projection secretStoreProjection
+	// The values one sub-reconciler hands to a later one within a single
+	// reconcile pass, captured by the step closures. projection is the
+	// secret-store aggregation the config, deployment and networkpolicy steps
+	// read. configSecretName names the rendered config Secret the migration Job,
+	// the API pods and the clean-up CronJob mount. authtokenDigest and dsnDigest
+	// are the content digests of the service-user password and the assembled DSN;
+	// the deployment step stamps them into pod-template annotations so a rotated
+	// credential rolls the pods.
+	var (
+		projection                                   secretStoreProjection
+		configSecretName, authtokenDigest, dsnDigest string
+	)
 
 	return []commonreconcile.Step{
-		{Name: "Secrets", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			res, _, err := r.reconcileSecrets(ctx, barbican)
+		{Name: "Secrets", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
+			res, authtokenDigest, err = r.reconcileSecrets(ctx, barbican)
 			return res, err
 		}},
 		// reconcileDBConnectionSecret materialises the DB URL into the derived
 		// <barbican.Name>-db-connection Secret. It runs after Secrets (upstream
 		// credentials must be synced) and before Config; failures set
 		// SecretsReady=False, the same condition reconcileSecrets uses.
-		{Name: "DBConnectionSecret", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			res, _, err := r.reconcileDBConnectionSecret(ctx, barbican)
+		{Name: "DBConnectionSecret", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
+			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, barbican)
 			return res, err
 		}},
 		// reconcileSecretStores aggregates the attached, credential-ready
@@ -312,11 +354,84 @@ func (r *BarbicanReconciler) pipelineSteps(barbican *barbicanv1alpha1.Barbican) 
 		// Deployment's last-good Secret name instead of re-rendering. It self-marks
 		// SecretsReady=False on failure via markConfigFailed, so the wrapper only
 		// threads the result.
-		{Name: "Config", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			res, _, err := r.reconcileConfig(ctx, barbican, projection)
+		{Name: "Config", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
+			res, configSecretName, err = r.reconcileConfig(ctx, barbican, projection)
 			return res, err
 		}},
+		// reconcileDatabase provisions the schema, gates the requested OpenStack
+		// release against the installed one, and runs the db-sync Job against the
+		// rendered config.
+		{Name: "Database", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileDatabase(ctx, barbican, configSecretName)
+		}},
+		// reconcileDeployment projects the API Deployment, its Service, and the
+		// PodDisruptionBudget. It runs after Database so the pods only start once
+		// the schema they query exists, and creates nothing while the secret-store
+		// projection is invalid.
+		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileDeployment(ctx, barbican, projection, configSecretName, dsnDigest, authtokenDigest)
+		}},
+		// Once the Deployment/Service outputs are in place, HTTPRoute, HealthCheck,
+		// HPA, NetworkPolicy, and DBClean have no inter-dependency and run
+		// concurrently. Each member sets exactly one condition type; the group
+		// self-instruments its members, so this step carries no sub_reconciler
+		// name.
+		{Fn: func(ctx context.Context) (ctrl.Result, error) {
+			return r.reconcileParallelGroup(ctx, barbican, []commonreconcile.ParallelStep[*barbicanv1alpha1.Barbican]{
+				{
+					Name:          "HTTPRoute",
+					ConditionType: conditionTypeHTTPRouteReady,
+					Fn: func(ctx context.Context, b *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
+						return r.reconcileHTTPRoute(ctx, b)
+					},
+				},
+				{
+					Name:          "HealthCheck",
+					ConditionType: conditionTypeBarbicanAPIReady,
+					Fn: func(ctx context.Context, b *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
+						return r.reconcileHealthCheck(ctx, b)
+					},
+				},
+				{
+					Name:          "HPA",
+					ConditionType: "HPAReady",
+					Fn: func(ctx context.Context, b *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
+						return r.reconcileHPA(ctx, b)
+					},
+				},
+				{
+					Name:          "NetworkPolicy",
+					ConditionType: conditionTypeNetworkPolicyReady,
+					Fn: func(ctx context.Context, b *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
+						return r.reconcileNetworkPolicy(ctx, b, projection)
+					},
+				},
+				// The clean-up CronJob mounts the rendered config, so it belongs after
+				// the Config step — which the group already runs behind.
+				{
+					Name:          "DBClean",
+					ConditionType: conditionTypeDBCleanReady,
+					Fn: func(ctx context.Context, b *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
+						return r.reconcileDBClean(ctx, b, configSecretName)
+					},
+				},
+			})
+		}},
 	}
+}
+
+// reconcileParallelGroup runs the given sub-reconcilers concurrently, delegating
+// to the shared skeleton: each member operates on its own DeepCopy of the
+// Barbican CR, conditions from every member (including those that succeeded
+// before a peer failed) are merged back into the primary barbican, and on
+// success the shortest non-zero RequeueAfter is returned. Members instrument
+// individually via instrumenter.Instrument.
+func (r *BarbicanReconciler) reconcileParallelGroup(
+	ctx context.Context,
+	barbican *barbicanv1alpha1.Barbican,
+	subs []commonreconcile.ParallelStep[*barbicanv1alpha1.Barbican],
+) (ctrl.Result, error) {
+	return barbicanSkeleton.RunParallelGroup(ctx, barbican, instrumenter.Instrument, subs)
 }
 
 // reconcileDelete drives the finalizer cleanup when the Barbican CR is being
@@ -325,7 +440,7 @@ func (r *BarbicanReconciler) pipelineSteps(barbican *barbicanv1alpha1.Barbican) 
 // and, while at least one of them was still live (not yet issued a Delete),
 // holds the finalizer for one more pass so the schema teardown is triggered
 // before the owner-ref chain disappears. Once no live resource remains it drops
-// the per-CR metrics and releases the finalizer.
+// the per-CR metrics, evicts the health-probe cache, and releases the finalizer.
 func (r *BarbicanReconciler) reconcileDelete(ctx context.Context, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(barbican, barbicanFinalizer) {
 		return ctrl.Result{}, nil
@@ -360,6 +475,9 @@ func (r *BarbicanReconciler) reconcileDelete(ctx context.Context, barbican *barb
 		return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 	}
 	barbicanmetrics.DeleteForBarbican(barbican.Name, barbican.Namespace)
+	// Drop the per-CR health-probe cache so a CR recreated under the same
+	// name/namespace never serves a stale probe keyed on the deleted CR's UID.
+	r.healthProbeCache.Evict(key)
 	return ctrl.Result{}, nil
 }
 
@@ -382,18 +500,26 @@ func setReadyCondition(barbican *barbicanv1alpha1.Barbican) {
 }
 
 // SetupWithManager registers the BarbicanReconciler with the controller manager.
-// It registers BOTH the Barbican and BarbicanSecretStore field indexes (the
-// single registration site for both controllers, so this reconciler MUST be set
-// up before BarbicanSecretStoreReconciler) and wires the resources this half of
-// the pipeline owns.
+// It probes Gateway API availability, registers BOTH the Barbican and
+// BarbicanSecretStore field indexes (the single registration site for both
+// controllers, so this reconciler MUST be set up before
+// BarbicanSecretStoreReconciler), and wires the resources the pipeline owns.
 //
-// The Deployment, Service, PodDisruptionBudget, HorizontalPodAutoscaler,
-// NetworkPolicy, Job, CronJob and HTTPRoute ownerships, the Gateway API
-// availability probe, and the Secret/BarbicanSecretStore/MariaDB/SecretStore
-// watch mappers land with the workload and watch commits; only the config
-// Secret is owned here.
+// The Secret/BarbicanSecretStore/MariaDB/SecretStore watch mappers land with the
+// watch commit; only ownerships are wired here.
 func (r *BarbicanReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Detect whether the Gateway API CRD is installed. spec.gateway is optional,
+	// so the operator must run on clusters without Gateway API. Adding
+	// Owns(HTTPRoute) unconditionally would fail at Start with "no matches for
+	// kind HTTPRoute" when the CRD is missing, blocking every Barbican CR.
+	r.gatewayAPIAvailable = gateway.IsGVKAvailable(mgr.GetRESTMapper(), httpRouteGVK)
 	r.apiReader = mgr.GetAPIReader()
+	setupLog := ctrl.Log.WithName("barbican-setup")
+	if r.gatewayAPIAvailable {
+		setupLog.Info("Gateway API detected; enabling HTTPRoute watch and reconciliation")
+	} else {
+		setupLog.Info("Gateway API not installed; HTTPRoute watch disabled, spec.gateway will be rejected via HTTPRouteReady condition")
+	}
 
 	// Register the Barbican field indexer before the store indexes so a mapper
 	// added later can rely on it for its MatchingFields lookup.
@@ -408,7 +534,7 @@ func (r *BarbicanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return err
 	}
 
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		// Shared controller options: MaxConcurrentReconciles lets independent CRs
 		// reconcile in parallel, and the tuned RateLimiter caps per-item failure
 		// backoff at 30s (see bootstrap.ControllerOptions).
@@ -416,6 +542,18 @@ func (r *BarbicanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// Filter the CR's own status-only updates so Status().Update does not
 		// re-wake the controller (see watch.CRUpdatePredicate).
 		For(&barbicanv1alpha1.Barbican{}, builder.WithPredicates(watch.CRUpdatePredicate())).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Service{}).
 		Owns(&corev1.Secret{}).
-		Complete(r)
+		Owns(&policyv1.PodDisruptionBudget{}).
+		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
+		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&batchv1.Job{}).
+		Owns(&batchv1.CronJob{})
+
+	if r.gatewayAPIAvailable {
+		b = b.Owns(&gatewayv1.HTTPRoute{})
+	}
+
+	return b.Complete(r)
 }

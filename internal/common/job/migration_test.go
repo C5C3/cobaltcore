@@ -62,6 +62,23 @@ func TestBuildMigrationJob_BaseSpec(t *testing.T) {
 	g.Expect(spec.Volumes[0].ConfigMap.Name).To(gomega.Equal("keystone-config"))
 }
 
+// A service whose whole configuration document is credential-bearing renders it
+// into a Secret, so the config volume has to source from one. The Secret wins
+// over a ConfigMap name left in the params: a Job mounting an empty or wrong
+// ConfigMap would start a pod with no configuration at all.
+func TestBuildMigrationJob_ConfigSecretReplacesTheConfigMapVolume(t *testing.T) {
+	g := gomega.NewWithT(t)
+	p := migrationParams()
+	p.ConfigSecretName = "barbican-config-abc"
+
+	vols := BuildMigrationJob(p).Spec.Template.Spec.Volumes
+	g.Expect(vols).To(gomega.HaveLen(1))
+	g.Expect(vols[0].Name).To(gomega.Equal("config"))
+	g.Expect(vols[0].ConfigMap).To(gomega.BeNil())
+	g.Expect(vols[0].Secret).NotTo(gomega.BeNil())
+	g.Expect(vols[0].Secret.SecretName).To(gomega.Equal("barbican-config-abc"))
+}
+
 func TestBuildMigrationJob_ExtrasAppendedAndOverrides(t *testing.T) {
 	g := gomega.NewWithT(t)
 	p := migrationParams()

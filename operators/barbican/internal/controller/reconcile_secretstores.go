@@ -49,11 +49,17 @@ const (
 )
 
 // secretStoreCAFilePath is the in-pod path the vault plugin's ssl_ca_crt_file
-// points at. The deployment step projects the store's CA bundle
-// (projection.caSecretName under projection.caKey) into this directory, so the
-// rendered option and the mount layout stay in lockstep. The file name is the
-// contract data key, so the projected Secret needs no key remapping.
-const secretStoreCAFilePath = barbicanConfigDir + "secret-store-ca/" + barbicanv1alpha1.OpenBaoCAKey
+// points at, and the single source of truth for both the rendered option and the
+// mount layout: the deployment step derives the mount directory back from it
+// with path.Dir, so the file the plugin opens and the directory the bundle lands
+// in cannot drift apart. The file name is the contract data key, so a bundle
+// stored under it needs no key remapping.
+//
+// It sits outside barbicanConfigDir rather than under it, for the same reason
+// dbTLSMountPath does: barbicanConfigDir is itself the read-only config-Secret
+// mount, and the runtime cannot create a nested mountpoint inside a read-only
+// Secret tmpfs.
+const secretStoreCAFilePath = "/etc/barbican-secret-store-ca/" + barbicanv1alpha1.OpenBaoCAKey
 
 // secretStoreProjection is the result the secret-store sub-reconciler hands
 // downstream (the config, deployment and networkpolicy steps). A zero value
