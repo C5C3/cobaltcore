@@ -1618,6 +1618,17 @@ spec:
                   reconciled, so a stale status is distinguishable from a current one.
                 format: int64
                 type: integer
+              projectedSecretStoreHosts:
+                description: |-
+                  ProjectedSecretStoreHosts are the server URLs the last valid projection
+                  resolved, recorded alongside ProjectedSecretStores. The egress set of an
+                  invalid projection is widened from this record rather than re-derived from
+                  the live store specs: spec.openBao.server.url is mutable and only
+                  scheme-checked, so re-deriving would let anyone who can write a store open
+                  an arbitrary destination-unrestricted egress port on the API pods.
+                items:
+                  type: string
+                type: array
               projectedSecretStores:
                 description: |-
                   ProjectedSecretStores names the attached, credential-ready secret stores the

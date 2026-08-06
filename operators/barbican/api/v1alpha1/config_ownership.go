@@ -71,9 +71,9 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// from the OS_KEYSTONE_AUTHTOKEN__PASSWORD env override, so a file value is
 	// inert at runtime. It is Rejected: the validating webhook blocks an
 	// extraConfig override at admission rather than merely reporting it, because
-	// rendering it would leak the service password into the namespace-readable
-	// ConfigMap before the ExtraConfigHealthy condition could surface it.
-	{Section: "keystone_authtoken", Key: "password", Rejected: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the middleware password is env-injected via OS_KEYSTONE_AUTHTOKEN__PASSWORD; a file override is ignored at runtime and leaks credential material into a namespace-readable ConfigMap"},
+	// rendering it would copy the service password into the config Secret every
+	// API pod mounts, before the ExtraConfigHealthy condition could surface it.
+	{Section: "keystone_authtoken", Key: "password", Rejected: true, OwnedBy: "spec.serviceUser.secretRef", Impact: "the middleware password is env-injected via OS_KEYSTONE_AUTHTOKEN__PASSWORD; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 
 	// [secretstore] — the process-global store registry, derived from the
 	// BarbicanSecretStore CRs attached to this Barbican. stores_lookup_suffix is
@@ -97,16 +97,16 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// OS_VAULT_PLUGIN__APPROLE_SECRET_ID env override sourced from the store's
 	// credentials Secret, so a file value is inert at runtime. It is Rejected for
 	// the reason [keystone_authtoken] password is: rendering it would put the
-	// AppRole secret into the namespace-readable ConfigMap before the
+	// AppRole secret into the config Secret every API pod mounts, before the
 	// ExtraConfigHealthy condition could surface the override.
-	{Section: "vault_plugin", Key: "approle_secret_id", Rejected: true, OwnedBy: "the store's credentials Secret", Impact: "the AppRole secret ID is env-injected via OS_VAULT_PLUGIN__APPROLE_SECRET_ID; a file override is ignored at runtime and leaks credential material into a namespace-readable ConfigMap"},
+	{Section: "vault_plugin", Key: "approle_secret_id", Rejected: true, OwnedBy: "the store's credentials Secret", Impact: "the AppRole secret ID is env-injected via OS_VAULT_PLUGIN__APPROLE_SECRET_ID; a file override is ignored at runtime and copies credential material into the rendered config Secret"},
 	// root_token_id is the vault plugin's alternative to AppRole authentication.
 	// The operator never renders it, and it is registered here purely to close
 	// that path: it is Rejected because a root token in the rendered file both
-	// lands unbounded credentials in a namespace-readable ConfigMap and drops the
-	// mount-scoped policy the AppRole carries, and both are done the moment the
-	// pods load the file.
-	{Section: "vault_plugin", Key: "root_token_id", Rejected: true, OwnedBy: "operator-computed", Impact: "the operator authenticates the plugin through a mount-scoped AppRole; a root token replaces that with an unscoped credential written in plain text into a namespace-readable ConfigMap"},
+	// lands unbounded credentials in the config Secret every API pod mounts and
+	// drops the mount-scoped policy the AppRole carries, and both are done the
+	// moment the pods load the file.
+	{Section: "vault_plugin", Key: "root_token_id", Rejected: true, OwnedBy: "operator-computed", Impact: "the operator authenticates the plugin through a mount-scoped AppRole; a root token replaces that with an unscoped credential written in plain text into the rendered config Secret"},
 
 	// [queue] — barbican's asynchronous order processing. The operator renders
 	// enable false: the queue only moves work to a barbican-worker process, and
