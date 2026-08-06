@@ -5,7 +5,6 @@
 package v1alpha1
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/onsi/gomega"
@@ -86,14 +85,13 @@ func TestBarbicanOptionCatalogForRelease(t *testing.T) {
 }
 
 // TestBarbicanOptionCatalogs_OwnedSectionsAreEnumerated is the evidence behind
-// CatalogExemptSections being empty: every fixed section OwnedConfigKeys claims
-// is one both catalogs enumerate, so none of them needs a static exemption. The
-// per-store [secretstore:<name>] form is checked to be absent, since that is the
-// one shape only CatalogExemptSectionPrefixes can cover.
+// the absence of a statically spelled section exemption: every fixed section
+// OwnedConfigKeys claims is one both catalogs enumerate, so none of them needs
+// one. The per-store [secretstore:<name>] form is checked to be absent, since
+// that is the one shape only CatalogExemptSectionPrefixes can cover.
 func TestBarbicanOptionCatalogs_OwnedSectionsAreEnumerated(t *testing.T) {
 	g := gomega.NewWithT(t)
 
-	g.Expect(CatalogExemptSections).To(gomega.BeEmpty())
 	g.Expect(CatalogExemptSectionPrefixes).To(gomega.ConsistOf("secretstore:"))
 
 	for rel, catalog := range optionCatalogs {
@@ -155,7 +153,7 @@ func TestBarbicanOptionCatalog_ExemptionsCoverTheDynamicStores(t *testing.T) {
 		"kmip_plugin": {"host": "kmip.example.com"},
 	}
 
-	unknown, deprecated := catalog.FindUnknownOptions(extraConfig, webhookExemptions(extraConfig))
+	unknown, deprecated := catalog.FindUnknownOptions(extraConfig, catalogExemptions(extraConfig))
 
 	g.Expect(deprecated).To(gomega.ConsistOf(
 		config.DeprecatedOption{Section: "DEFAULT", Key: "logfile", Replacement: "[DEFAULT] log_file"},
@@ -164,25 +162,4 @@ func TestBarbicanOptionCatalog_ExemptionsCoverTheDynamicStores(t *testing.T) {
 		config.UnknownOption{Section: "kmip_plugin", Key: "host", SectionUnknown: true},
 		config.UnknownOption{Section: "queue", Key: "not_an_option"},
 	))
-}
-
-// webhookExemptions builds the exemption set the validating webhook feeds into
-// the unknown-option scan: the static sections, every section of extraConfig
-// matching a CatalogExemptSectionPrefixes entry, and the operator-owned keys.
-func webhookExemptions(extraConfig map[string]map[string]string) config.CatalogExemptions {
-	sections := make(map[string]struct{}, len(CatalogExemptSections))
-	for _, section := range CatalogExemptSections {
-		sections[section] = struct{}{}
-	}
-	for section := range extraConfig {
-		for _, prefix := range CatalogExemptSectionPrefixes {
-			if strings.HasPrefix(section, prefix) {
-				sections[section] = struct{}{}
-			}
-		}
-	}
-	return config.CatalogExemptions{
-		Sections: sections,
-		Keys:     config.KeyExemptionsFromRegistry(OwnedConfigKeys),
-	}
 }
