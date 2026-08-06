@@ -1,0 +1,50 @@
+{{/*
+The TokenRequest grant, bound one namespace at a time.
+
+When a BarbicanSecretStore names an OpenBaoCluster, the store controller mints a
+bound ServiceAccount token for that instance's "<instance>-provisioner" account
+and presents it to OpenBao's Kubernetes auth method. That needs create on the
+serviceaccounts/token subresource — and that verb cannot go into the operator's
+ClusterRole: RBAC has no way to express "only the provisioner accounts", so a
+cluster-wide grant lets anyone who reaches the operator's ServiceAccount mint a
+token for ANY ServiceAccount in the cluster, in the default audience, and act as
+it. One account bound to cluster-admin turns that into cluster takeover.
+
+Scoping it per namespace keeps the blast radius at the namespaces that actually
+run managed stores, which the administrator names explicitly. The list is empty
+by default: brownfield stores (spec.openBao.server) need no token at all, so the
+grant is only created once someone opts into managed provisioning.
+*/}}
+{{- range $namespace := .Values.rbac.secretStoreNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "operator-library.fullname" $ }}-tokenrequest
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "operator-library.labels" $ | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - serviceaccounts/token
+    verbs:
+      - create
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "operator-library.fullname" $ }}-tokenrequest
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "operator-library.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "operator-library.fullname" $ }}-tokenrequest
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "operator-library.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}

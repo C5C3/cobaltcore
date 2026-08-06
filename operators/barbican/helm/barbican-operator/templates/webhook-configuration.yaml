@@ -1,0 +1,14 @@
+{{- include "operator-library.webhookConfiguration" (dict
+      "root" .
+      "mutatingWebhookName" "mbarbican.kb.io"
+      "validatingWebhookName" "vbarbican.kb.io"
+      "mutatePath" "/mutate-barbican-openstack-c5c3-io-v1alpha1-barbican"
+      "validatePath" "/validate-barbican-openstack-c5c3-io-v1alpha1-barbican"
+      "apiGroup" "barbican.openstack.c5c3.io"
+      "resource" "barbicans"
+      "additionalWebhooks" (list (dict
+        "mutatingWebhookName" "mbarbicansecretstore.kb.io"
+        "validatingWebhookName" "vbarbicansecretstore.kb.io"
+        "mutatePath" "/mutate-barbican-openstack-c5c3-io-v1alpha1-barbicansecretstore"
+        "validatePath" "/validate-barbican-openstack-c5c3-io-v1alpha1-barbicansecretstore"
+        "resource" "barbicansecretstores"))) }}

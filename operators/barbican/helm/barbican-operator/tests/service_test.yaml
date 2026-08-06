@@ -1,0 +1,46 @@
+# Service unit tests.
+suite: Service
+templates:
+  - templates/service.yaml
+tests:
+  - it: should be of type ClusterIP
+    asserts:
+      - equal:
+          path: spec.type
+          value: ClusterIP
+
+  - it: should expose metrics port
+    asserts:
+      - contains:
+          path: spec.ports
+          content:
+            name: metrics
+            port: 8080
+            targetPort: 8080
+            protocol: TCP
+
+  - it: should expose webhook port when webhook is enabled
+    asserts:
+      - contains:
+          path: spec.ports
+          content:
+            name: webhook
+            port: 443
+            targetPort: 9443
+            protocol: TCP
+
+  - it: should not expose webhook port when webhook is disabled
+    set:
+      webhook:
+        enabled: false
+    asserts:
+      - lengthEqual:
+          path: spec.ports
+          count: 1
+      - notContains:
+          path: spec.ports
+          content:
+            name: webhook
+            port: 443
+            targetPort: 9443
+            protocol: TCP
