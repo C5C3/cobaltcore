@@ -57,3 +57,11 @@ placement:
     # is otherwise pure Python at runtime. Without this, uwsgi fails to load
     # (python-base ships no libpython3.12.so.1.0).
     - libpython3.12t64
+barbican:
+  pip_extras: []
+  pip_packages: []
+  apt_packages:
+    # uWSGI is compiled in venv-builder against the shared libpython; barbican
+    # is otherwise pure Python at runtime. Without this, uwsgi fails to load
+    # (python-base ships no libpython3.12.so.1.0).
+    - libpython3.12t64
