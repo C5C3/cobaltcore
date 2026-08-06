@@ -126,6 +126,18 @@ func IsPermissionDenied(err error) bool {
 	return hasStatusCode(err, http.StatusForbidden)
 }
 
+// IsInvalidCredentials reports whether err is an OpenBao response rejecting the
+// credentials that were presented, rather than a server the client could not
+// reach. It covers HTTP 400 and HTTP 403, because an AppRole login is answered
+// with 400 ("invalid role or secret ID") for a role ID or secret ID the server
+// does not accept — an expired or revoked secret ID above all — while a policy
+// gap on a path answers 403. The AppRole login probes branch on it: a rejected
+// credential is re-minted or reported as invalid, an unreachable server is
+// retried.
+func IsInvalidCredentials(err error) bool {
+	return hasStatusCode(err, http.StatusBadRequest) || IsPermissionDenied(err)
+}
+
 // IsNotFound reports whether err is an OpenBao response carrying HTTP 404,
 // which OpenBao returns both for an unmounted path and for a missing entry
 // under a mounted one.

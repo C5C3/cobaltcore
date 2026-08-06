@@ -348,6 +348,42 @@ func TestPermissionDeniedIsClassified(t *testing.T) {
 	g.Expect(IsNotFound(err)).To(gomega.BeFalse())
 }
 
+// TestInvalidCredentialsIsClassified pins the classification an AppRole login
+// probe depends on: a secret ID the server no longer accepts is answered with
+// 400, not 403, so the credential-rejection helper must cover it while the
+// policy-gap helper must not.
+func TestInvalidCredentialsIsClassified(t *testing.T) {
+	g := gomega.NewWithT(t)
+	f := newFakeServer(t, map[string]response{
+		"/v1/auth/approle/login": {
+			http.StatusBadRequest, `{"errors":["invalid role or secret ID"]}`,
+		},
+	})
+	c := newTestClient(t, f)
+
+	err := c.LoginAppRole(t.Context(), "role-id", "expired-secret-id")
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(IsInvalidCredentials(err)).To(gomega.BeTrue())
+	g.Expect(IsPermissionDenied(err)).To(gomega.BeFalse())
+	g.Expect(IsNotFound(err)).To(gomega.BeFalse())
+}
+
+// A 403 is a credential rejection too: the same helper covers the policy gap,
+// so a caller branching on it needs no second check.
+func TestPermissionDeniedIsInvalidCredentials(t *testing.T) {
+	g := gomega.NewWithT(t)
+	f := newFakeServer(t, map[string]response{
+		"/v1/auth/approle/login": {
+			http.StatusForbidden, `{"errors":["permission denied"]}`,
+		},
+	})
+	c := newTestClient(t, f)
+
+	err := c.LoginAppRole(t.Context(), "role-id", "revoked-secret-id")
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(IsInvalidCredentials(err)).To(gomega.BeTrue())
+}
+
 // TestMountExistsOnMissingMount pins the one method that swallows a 404: an
 // absent mount is the normal pre-provisioning state, not a failure.
 func TestMountExistsOnMissingMount(t *testing.T) {
