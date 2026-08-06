@@ -23,6 +23,7 @@ COPY operators/c5c3/go.mod operators/c5c3/go.sum ./operators/c5c3/
 COPY operators/horizon/go.mod operators/horizon/go.sum ./operators/horizon/
 COPY operators/glance/go.mod operators/glance/go.sum ./operators/glance/
 COPY operators/placement/go.mod operators/placement/go.sum ./operators/placement/
+COPY operators/barbican/go.mod operators/barbican/go.sum ./operators/barbican/
 
 RUN go mod download
 
@@ -35,6 +36,7 @@ COPY operators/c5c3/ ./operators/c5c3/
 COPY operators/horizon/ ./operators/horizon/
 COPY operators/glance/ ./operators/glance/
 COPY operators/placement/ ./operators/placement/
+COPY operators/barbican/ ./operators/barbican/
 
 # Build the selected operator's static binary from its main.go.
 WORKDIR /workspace/operators/${OPERATOR}
