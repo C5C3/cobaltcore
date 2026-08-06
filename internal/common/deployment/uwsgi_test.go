@@ -228,6 +228,113 @@ func TestBuildUWSGICommand_NilAndEmptySlicesAddNothing(t *testing.T) {
 	g.Expect(emptySlices).To(gomega.Equal(nilSlices))
 }
 
+// The launch mode is a single flag with a value behind it: --module for a
+// service image that ships an importable WSGI application, --wsgi-file for one
+// that ships an entry script. Params that set both fall to --module, params that
+// set neither get neither flag, and the wsgi-file shape the existing callers
+// pass renders token-for-token as it did before --module existed.
+func TestBuildUWSGICommand_LaunchMode(t *testing.T) {
+	cases := []struct {
+		name   string
+		params UWSGICommandParams
+		want   []string
+	}{
+		{
+			name: "module only",
+			params: UWSGICommandParams{
+				Bind:   ":9311",
+				Module: "barbican.wsgi.api:application",
+			},
+			want: []string{
+				"uwsgi",
+				"--http", ":9311",
+				"--http-keepalive",
+				"--log-master",
+				"--log-format", UWSGILogFormat,
+				"--module", "barbican.wsgi.api:application",
+				"--master",
+				"--lazy-apps",
+				"--need-app",
+				"--processes", "2",
+				"--threads", "1",
+			},
+		},
+		{
+			// Byte-identity pin for the shape the three existing callers pass: a
+			// zero-value Module must leave their command untouched.
+			name: "wsgi file only",
+			params: UWSGICommandParams{
+				Bind:         ":5000",
+				WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
+				TrailingArgs: []string{"--pyargv=--config-dir=/etc/svc/svc.conf.d/"},
+			},
+			want: []string{
+				"uwsgi",
+				"--http", ":5000",
+				"--http-keepalive",
+				"--log-master",
+				"--log-format", UWSGILogFormat,
+				"--wsgi-file", "/var/lib/openstack/bin/svc-wsgi",
+				"--master",
+				"--lazy-apps",
+				"--need-app",
+				"--processes", "2",
+				"--threads", "1",
+				"--pyargv=--config-dir=/etc/svc/svc.conf.d/",
+			},
+		},
+		{
+			// Neither flag may reach the container with an empty value: uWSGI would
+			// start a master that loads no application and answers every request 500.
+			name:   "neither set",
+			params: UWSGICommandParams{Bind: ":5000"},
+			want: []string{
+				"uwsgi",
+				"--http", ":5000",
+				"--http-keepalive",
+				"--log-master",
+				"--log-format", UWSGILogFormat,
+				"--master",
+				"--lazy-apps",
+				"--need-app",
+				"--processes", "2",
+				"--threads", "1",
+			},
+		},
+		{
+			// The field docs allow only one of the two, so this pins what a params
+			// struct that ignores the contract renders: --module wins, --wsgi-file is
+			// dropped rather than emitted alongside it.
+			name: "both set",
+			params: UWSGICommandParams{
+				Bind:         ":9311",
+				WSGIFilePath: "/var/lib/openstack/bin/svc-wsgi",
+				Module:       "barbican.wsgi.api:application",
+			},
+			want: []string{
+				"uwsgi",
+				"--http", ":9311",
+				"--http-keepalive",
+				"--log-master",
+				"--log-format", UWSGILogFormat,
+				"--module", "barbican.wsgi.api:application",
+				"--master",
+				"--lazy-apps",
+				"--need-app",
+				"--processes", "2",
+				"--threads", "1",
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(BuildUWSGICommand(tc.params)).To(gomega.Equal(tc.want))
+		})
+	}
+}
+
 // The four parameterizations the service operators pass today, pinned
 // token-for-token so a change to the emission order shows up here before it
 // reaches a running API container.
