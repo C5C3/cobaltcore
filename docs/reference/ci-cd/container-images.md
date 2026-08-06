@@ -21,11 +21,13 @@ ubuntu:noble
 │   │   ├── keystone     Stage 1 (build): install Keystone into virtualenv
 │   │   ├── horizon      Stage 1 (build): install Horizon, pre-build static assets
 │   │   ├── glance       Stage 1 (build): install Glance + glance_store[s3]
-│   │   └── placement    Stage 1 (build): install Placement, write WSGI entry
+│   │   ├── placement    Stage 1 (build): install Placement, write WSGI entry
+│   │   └── barbican     Stage 1 (build): install Barbican into virtualenv
 │   ├── keystone         Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── horizon          Stage 2 (runtime): copy virtualenv + static assets
 │   ├── glance           Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   └── placement        Stage 2 (runtime): copy virtualenv, add runtime apt packages
+│   ├── placement        Stage 2 (runtime): copy virtualenv, add runtime apt packages
+│   └── barbican         Stage 2 (runtime): copy virtualenv, add runtime apt packages
 ```
 
 The `venv-builder` image is used only as a build stage — it never runs in production.
@@ -339,6 +341,83 @@ The image stays config-free: placement locates its configuration via the
 hard gate — it verifies the CLIs, importability, the uWSGI entry script
 (present, executable, parsable, and its import target resolvable), that uwsgi
 runs, non-root execution, and the absence of build tools.
+
+### barbican
+
+**Location:** `images/barbican/Dockerfile`
+
+The Barbican service image uses the same two-stage build as Keystone. It ships
+no WSGI entry script at all. Both releases ship `barbican/wsgi/api.py` with a
+module-level `application`, so the barbican-operator launches uWSGI with the
+stock module path `barbican.wsgi.api:application` against config mounted at
+`/etc/barbican/`. Placement's entry script is written by hand because upstream
+ships no usable one, and glance carries the `glance-wsgi-api` shim because its
+stock module path ignores the operator's config layout. Barbican needs neither.
+
+**Stage 1 (`build`)** — extends `venv-builder`:
+
+- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` (both empty for barbican
+  today; the wiring mirrors the other service images so `extra-packages.yaml`
+  stays the single edit point)
+- Mounts `upper-constraints.txt` and the Barbican source tree via named build
+  contexts (`--build-context barbican=...` /
+  `--build-context upper-constraints=...`)
+- Installs Barbican into the virtualenv using `uv pip install --constraint`.
+  The `--prefix` install generates the console scripts from `setup.cfg`. It
+  skips only the PBR `wsgi_scripts` entry `barbican-wsgi-api`, which no
+  hand-written script replaces
+
+**Stage 2 (runtime)** — extends `python-base`:
+
+- Declares `ARG EXTRA_APT_PACKAGES`, which carries `libpython3.12t64`: the
+  venv-builder-compiled uwsgi binary links `libpython3.12.so.1.0`, which
+  python-base does not ship (the same rationale as glance, horizon, and
+  placement). Barbican is otherwise pure Python at runtime
+- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
+- Sets `USER openstack` for non-root execution
+
+The image stays config-free: the barbican-operator mounts `barbican.conf` and
+`barbican-api-paste.ini` under `/etc/barbican/`.
+
+**Runtime packages:**
+
+| Package | Purpose |
+| --- | --- |
+| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
+
+**Final image properties:**
+
+- Runs as `openstack` user (UID 42424, GID 42424)
+- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Virtualenv at `/var/lib/openstack` with all Barbican dependencies, including
+  the in-tree vault secret-store plugin and castellan
+- `barbican-manage` and `barbican-status` CLIs available via `PATH`
+- No WSGI entry script; the service is launched via the
+  `barbican.wsgi.api:application` module path
+
+**Unit tests:** barbican ships a `.stestr.conf`, so `hack/ci-run-unit-tests.sh`
+runs its suite under stestr (the default path, as for keystone).
+
+**Image contract check:** `tests/container-images/verify_barbican.sh` is the
+hard gate — it verifies the CLIs, importability, that the `vault_plugin` and
+`castellan.drivers` `vault` stevedore entry points load, that
+`barbican.wsgi.api` resolves and binds `application` to something other than
+the `None` sentinel, that uwsgi runs, non-root execution, and the absence of
+build tools. Both plugin halves are loaded through their entry-point metadata
+rather than imported by module path, because that is how barbican and
+castellan resolve them at runtime — an import would go green off the `.py`
+file on disk while the runtime lookup raises stevedore `NoMatches`. The WSGI
+check inspects the module instead of importing it: importing
+`barbican.wsgi.api` executes `get_api_wsgi_script()`, which reads paste config
+from `/etc/barbican/barbican-api-paste.ini`, absent from the bare image. So it
+pairs `importlib.util.find_spec` for the module path with an `ast.parse` of the
+module source for the `application` symbol. Both pinned releases open with
+`application = None` and only rebind it inside a `threading.Lock()` block, so
+the check walks into nested statement bodies but stops at every function,
+class and lambda boundary — uWSGI looks `application` up as a module global,
+and a binding in a nested scope is a different symbol. A module whose only
+module-level binding is that sentinel is rejected; otherwise uWSGI binds
+`application` to `None` and every request fails.
 
 ## Named Build Contexts
 
