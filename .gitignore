@@ -80,4 +80,5 @@ operators/c5c3/helm/c5c3-operator/charts/
 operators/horizon/helm/horizon-operator/charts/
 operators/glance/helm/glance-operator/charts/
 operators/placement/helm/placement-operator/charts/
+operators/barbican/helm/barbican-operator/charts/
 __pycache__/
