@@ -117,28 +117,6 @@ func TestBuildHorizonNetworkPolicy_GatewayPeerAppended(t *testing.T) {
 		To(HaveKeyWithValue("kubernetes.io/metadata.name", "envoy-gateway-system"))
 }
 
-func TestKeystoneEndpointPort_Table(t *testing.T) {
-	tests := []struct {
-		name     string
-		endpoint string
-		want     int32
-	}{
-		{name: "explicit port", endpoint: "http://keystone.default.svc:5000/v3", want: 5000},
-		{name: "http default", endpoint: "http://keystone.example.com/v3", want: 80},
-		{name: "https default", endpoint: "https://keystone.example.com/v3", want: 443},
-		{name: "unparseable falls back to 443", endpoint: "http://[::bad", want: 443},
-		{name: "out-of-range port falls back to scheme default", endpoint: "http://keystone:99999/v3", want: 80},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			h := testHorizon()
-			h.Spec.KeystoneEndpoint = tc.endpoint
-			g.Expect(keystoneEndpointPort(h)).To(Equal(tc.want))
-		})
-	}
-}
-
 func TestCacheEgressPorts_BrownfieldDedupesAndDefaults(t *testing.T) {
 	g := NewGomegaWithT(t)
 	h := testHorizon()

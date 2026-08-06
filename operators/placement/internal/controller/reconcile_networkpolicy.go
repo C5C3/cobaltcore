@@ -6,8 +6,6 @@ package controller
 
 import (
 	"context"
-	"net/url"
-	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -123,7 +121,8 @@ func buildPlacementNetworkPolicy(placement *placementv1alpha1.Placement, operato
 
 // buildAutoEgressRules constructs the auto-derived egress rules for DNS
 // (UDP+TCP 53), the database (TCP, port from the database spec), the Keystone
-// endpoint (TCP, port from keystoneEndpointPort), and the cache (TCP, ports from
+// endpoint (TCP, port from networkpolicy.KeystoneEndpointPort), and the cache
+// (TCP, ports from
 // the cache spec). Rule order is deterministic: DNS, database, keystone, cache.
 // The database and keystone rules are always emitted (Placement always has a
 // database and always validates tokens); the cache rule is emitted only when the
@@ -146,7 +145,7 @@ func buildAutoEgressRules(placement *placementv1alpha1.Placement) []networkingv1
 	// the kubelet probes and the operator health check — keep passing, because
 	// both target the unauthenticated version document. Port-only — destination
 	// unrestricted, matching the DB/cache egress posture.
-	keystonePort := intstr.FromInt32(keystoneEndpointPort(placement))
+	keystonePort := intstr.FromInt32(networkpolicy.KeystoneEndpointPort(placement.Spec.KeystoneEndpoint))
 	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
 		Ports: []networkingv1.NetworkPolicyPort{
 			{Protocol: &tcp, Port: &keystonePort},
@@ -161,27 +160,4 @@ func buildAutoEgressRules(placement *placementv1alpha1.Placement) []networkingv1
 	}
 
 	return rules
-}
-
-// keystoneEndpointPort returns the TCP port of spec.keystoneEndpoint: the
-// explicit URL port when present, otherwise 443 for https and 80 for http. An
-// unparseable URL (rejected by the webhook, but validation can be bypassed)
-// falls back to 443 — the fail-closed choice for an egress rule.
-func keystoneEndpointPort(placement *placementv1alpha1.Placement) int32 {
-	const maxPort = 65535
-	u, err := url.Parse(placement.Spec.KeystoneEndpoint)
-	if err != nil {
-		return 443
-	}
-	if portStr := u.Port(); portStr != "" {
-		// ParseInt with bitSize 32 bounds the result to int32; the explicit
-		// range check rejects non-port values before the conversion.
-		if n, err := strconv.ParseInt(portStr, 10, 32); err == nil && n > 0 && n <= maxPort {
-			return int32(n)
-		}
-	}
-	if u.Scheme == "http" {
-		return 80
-	}
-	return 443
 }
