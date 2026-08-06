@@ -102,7 +102,7 @@ func TestCacheEgressRule(t *testing.T) {
 	g.Expect(rule.Ports[0].Port.IntValue()).To(gomega.Equal(11211))
 }
 
-func TestS3EgressRule(t *testing.T) {
+func TestHostPortsEgressRule(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		hostURLs []string
@@ -118,10 +118,16 @@ func TestS3EgressRule(t *testing.T) {
 		{name: "all garbage", hostURLs: []string{"://nope", "not a url at all", "https://host:0"}, wantOK: false},
 		{name: "out of range port skipped", hostURLs: []string{"https://host:99999"}, wantOK: false},
 		{name: "mixed valid and invalid", hostURLs: []string{"https://host:3900", "://nope"}, wantOK: true, want: []int32{3900}},
+		{
+			name:     "mixed schemes deduped and sorted",
+			hostURLs: []string{"https://a:8200", "http://b", "https://c:8200", "https://d"},
+			wantOK:   true,
+			want:     []int32{80, 443, 8200},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := gomega.NewWithT(t)
-			rule, ok := S3EgressRule(tc.hostURLs)
+			rule, ok := HostPortsEgressRule(tc.hostURLs)
 			g.Expect(ok).To(gomega.Equal(tc.wantOK))
 			if !tc.wantOK {
 				g.Expect(rule).To(gomega.Equal(networkingv1.NetworkPolicyEgressRule{}))
@@ -134,6 +140,26 @@ func TestS3EgressRule(t *testing.T) {
 				got = append(got, p.Port.IntVal)
 			}
 			g.Expect(got).To(gomega.Equal(tc.want))
+		})
+	}
+}
+
+func TestKeystoneEndpointPort(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+		want     int32
+	}{
+		{name: "explicit port", endpoint: "http://keystone.default.svc:5000/v3", want: 5000},
+		{name: "http default", endpoint: "http://keystone.example.com/v3", want: 80},
+		{name: "https default", endpoint: "https://keystone.example.com/v3", want: 443},
+		{name: "unparseable falls back closed", endpoint: "http://[::bad", want: 443},
+		{name: "no scheme falls back closed", endpoint: "://nonsense", want: 443},
+		{name: "out-of-range port falls back to scheme default", endpoint: "http://keystone:99999/v3", want: 80},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(KeystoneEndpointPort(tc.endpoint)).To(gomega.Equal(tc.want))
 		})
 	}
 }

@@ -144,18 +144,19 @@ func CacheEgressPorts(cache commonv1.CacheSpec) []int32 {
 	return ports
 }
 
-// S3EgressRule returns the object-store egress rule (TCP, one port per distinct
-// endpoint parsed from hostURLs) and ok=true, or a zero rule and ok=false when
-// no entry yields a usable port. Each port is the URL's explicit port, or the
-// scheme default (443 for https, 80 for http) when none is given; entries that
-// fail to parse or carry no usable host or port (invalid or out-of-range ports)
-// are skipped. Destination is unrestricted, matching the DNS/database/cache
-// egress posture, because the backends are user-supplied external hosts.
+// HostPortsEgressRule returns the egress rule for a set of external hosts (TCP,
+// one port per distinct endpoint parsed from hostURLs) and ok=true, or a zero
+// rule and ok=false when no entry yields a usable port. Each port is the URL's
+// explicit port, or the scheme default (443 for https, 80 for http) when none is
+// given; entries that fail to parse or carry no usable host or port (invalid or
+// out-of-range ports) are skipped. Destination is unrestricted, matching the
+// DNS/database/cache egress posture, because the hosts are user-supplied and
+// external.
 //
 // Unlike CacheEgressPorts, which preserves input order, the ports are sorted
-// ascending: S3 backends come from an unordered set of backend CRs, so a stable
-// order keeps the rendered rule deterministic.
-func S3EgressRule(hostURLs []string) (networkingv1.NetworkPolicyEgressRule, bool) {
+// ascending: the hosts come from an unordered set of CRs, so a stable order
+// keeps the rendered rule deterministic.
+func HostPortsEgressRule(hostURLs []string) (networkingv1.NetworkPolicyEgressRule, bool) {
 	const maxPort = 65535
 	seen := make(map[int32]struct{}, len(hostURLs))
 	var ports []int32
@@ -196,10 +197,37 @@ func S3EgressRule(hostURLs []string) (networkingv1.NetworkPolicyEgressRule, bool
 	tcp := corev1.ProtocolTCP
 	rulePorts := make([]networkingv1.NetworkPolicyPort, 0, len(ports))
 	for i := range ports {
-		s3Port := intstr.FromInt32(ports[i])
-		rulePorts = append(rulePorts, networkingv1.NetworkPolicyPort{Protocol: &tcp, Port: &s3Port})
+		rulePort := intstr.FromInt32(ports[i])
+		rulePorts = append(rulePorts, networkingv1.NetworkPolicyPort{Protocol: &tcp, Port: &rulePort})
 	}
 	return networkingv1.NetworkPolicyEgressRule{Ports: rulePorts}, true
+}
+
+// KeystoneEndpointPort returns the TCP port of a Keystone endpoint URL: the
+// explicit URL port when present, otherwise 443 for https and 80 for http. An
+// unparseable URL (rejected by every operator's webhook, but validation can be
+// bypassed) falls back to 443 — the fail-closed choice for an egress rule.
+//
+// Every service operator emits the same port-only Keystone egress rule, and the
+// derivation is the same three-way decision in each: it lives here so the rule
+// cannot drift between them.
+func KeystoneEndpointPort(endpoint string) int32 {
+	const maxPort = 65535
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return 443
+	}
+	if portStr := u.Port(); portStr != "" {
+		// ParseInt with bitSize 32 bounds the result to int32; the explicit
+		// range check rejects non-port values before the conversion.
+		if n, err := strconv.ParseInt(portStr, 10, 32); err == nil && n > 0 && n <= maxPort {
+			return int32(n)
+		}
+	}
+	if u.Scheme == "http" {
+		return 80
+	}
+	return 443
 }
 
 // IngressPeersParams carries the inputs of IngressPeers: the user-declared

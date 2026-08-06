@@ -145,7 +145,7 @@ func buildAutoEgressRules(glance *glancev1alpha1.Glance, hosts []string) []netwo
 	// images through. Emitted only when at least one backend host yields a usable
 	// port; the destination is unrestricted because the hosts are user-supplied
 	// external endpoints.
-	if rule, ok := networkpolicy.S3EgressRule(hosts); ok {
+	if rule, ok := networkpolicy.HostPortsEgressRule(hosts); ok {
 		rules = append(rules, rule)
 	}
 

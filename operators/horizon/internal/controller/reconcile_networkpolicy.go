@@ -6,8 +6,6 @@ package controller
 
 import (
 	"context"
-	"net/url"
-	"strconv"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -121,8 +119,9 @@ func buildHorizonNetworkPolicy(horizon *horizonv1alpha1.Horizon, operatorNamespa
 }
 
 // buildAutoEgressRules constructs the auto-derived egress rules for DNS
-// (UDP+TCP 53), the Keystone endpoint (TCP, port from keystoneEndpointPort),
-// and the cache (TCP, ports from the cache spec). The dashboard has no database
+// (UDP+TCP 53), the Keystone endpoint (TCP, port from
+// networkpolicy.KeystoneEndpointPort), and the cache (TCP, ports from the cache
+// spec). The dashboard has no database
 // and no rotation CronJobs, so no DB or kube-apiserver egress is emitted. Rule
 // order is deterministic: DNS, keystone, cache.
 func buildAutoEgressRules(horizon *horizonv1alpha1.Horizon) []networkingv1.NetworkPolicyEgressRule {
@@ -134,7 +133,7 @@ func buildAutoEgressRules(horizon *horizonv1alpha1.Horizon) []networkingv1.Netwo
 	// Keystone egress: the dashboard authenticates every login against
 	// spec.keystoneEndpoint. Port-only — destination unrestricted, matching the
 	// keystone-operator's DB/cache egress posture.
-	keystonePort := intstr.FromInt32(keystoneEndpointPort(horizon))
+	keystonePort := intstr.FromInt32(networkpolicy.KeystoneEndpointPort(horizon.Spec.KeystoneEndpoint))
 	rules = append(rules, networkingv1.NetworkPolicyEgressRule{
 		Ports: []networkingv1.NetworkPolicyPort{
 			{Protocol: &tcp, Port: &keystonePort},
@@ -149,29 +148,6 @@ func buildAutoEgressRules(horizon *horizonv1alpha1.Horizon) []networkingv1.Netwo
 	}
 
 	return rules
-}
-
-// keystoneEndpointPort returns the TCP port of spec.keystoneEndpoint: the
-// explicit URL port when present, otherwise 443 for https and 80 for http. An
-// unparseable URL (rejected by the webhook, but validation can be bypassed)
-// falls back to 443 — the fail-closed choice for an egress rule.
-func keystoneEndpointPort(horizon *horizonv1alpha1.Horizon) int32 {
-	const maxPort = 65535
-	u, err := url.Parse(horizon.Spec.KeystoneEndpoint)
-	if err != nil {
-		return 443
-	}
-	if portStr := u.Port(); portStr != "" {
-		// ParseInt with bitSize 32 bounds the result to int32; the explicit
-		// range check rejects non-port values before the conversion.
-		if n, err := strconv.ParseInt(portStr, 10, 32); err == nil && n > 0 && n <= maxPort {
-			return int32(n)
-		}
-	}
-	if u.Scheme == "http" {
-		return 80
-	}
-	return 443
 }
 
 // cacheEgressPorts returns the distinct Memcached ports the dashboard pods must
