@@ -14,7 +14,9 @@ schema once and emits each chart's values.schema.json, layering the
 chart-specific pieces on top: the image repository default, the webhook
 description, and -- for keystone only -- the cidr/stringMap definitions, the
 NetworkPolicy property and its fail-closed constraint, and the federation
-metadata-allowlist property.
+metadata-allowlist property -- plus, for barbican only, the OpenBao egress
+block nested under the NetworkPolicy property and the per-namespace
+TokenRequest grant nested under rbac.
 
 Editing a shared field here regenerates both charts, so the two schemas cannot
 drift. Run via the Makefile:
@@ -372,6 +374,26 @@ NETWORK_POLICY = {
     },
 }
 
+OPEN_BAO_EGRESS = {
+    "type": "object",
+    "description": "OpenBao API egress for the operator pod. Rendered as a ports-only egress rule (TCP 8200) with no peer, because a brownfield BarbicanSecretStore names a user-supplied server whose address the chart cannot know",
+    "additionalProperties": False,
+    "properties": {
+        "enabled": {
+            "type": "boolean",
+            "description": "Permit TCP/8200 egress so the BarbicanSecretStore controller can reach the OpenBao server of every store it reconciles. Disable when no store uses a non-standard posture",
+            "default": True,
+        }
+    },
+}
+
+SECRET_STORE_NAMESPACES = {
+    "type": "array",
+    "description": "Namespaces the operator may mint bound ServiceAccount tokens in, rendered as one Role/RoleBinding pair per entry. A managed BarbicanSecretStore has the operator authenticate to its OpenBaoCluster as that instance's '<instance>-provisioner' ServiceAccount, which needs create on the serviceaccounts/token subresource in the account's namespace. Never granted cluster-wide: RBAC cannot restrict the verb to specific accounts, so a ClusterRole grant would let anyone reaching the operator ServiceAccount mint a token for any ServiceAccount in the cluster. Brownfield stores need no entry",
+    "items": {"type": "string", "minLength": 1},
+    "default": [],
+}
+
 FEDERATION = {
     "type": "object",
     "description": "Federation identity-provider metadata fetch (OIDC discovery documents and SAML IdP metadata) settings for the operator",
@@ -438,6 +460,7 @@ WEBHOOK_ENABLED_DESCRIPTIONS = {
     "horizon-operator": "Enable admission webhooks for Horizon CR validation and defaulting",
     "glance-operator": "Enable admission webhooks for Glance and GlanceBackend CR validation and defaulting",
     "placement-operator": "Enable admission webhooks for Placement CR validation and defaulting",
+    "barbican-operator": "Enable admission webhooks for Barbican and BarbicanSecretStore CR validation and defaulting",
 }
 
 
@@ -481,6 +504,8 @@ def discover_charts():
                 "webhook_enabled_description": WEBHOOK_ENABLED_DESCRIPTIONS[name],
                 "network_policy": (chart_dir / "templates" / "networkpolicy.yaml").exists(),
                 "federation": name == "keystone-operator",
+                "openbao_egress": name == "barbican-operator",
+                "secret_store_namespaces": name == "barbican-operator",
             }
         )
     return charts
@@ -493,11 +518,20 @@ def build_schema(chart):
     """Assemble one chart's full values schema from the shared blocks."""
     definitions = {"resourceQuantity": RESOURCE_QUANTITY}
 
+    rbac = RBAC
+    if chart["secret_store_namespaces"]:
+        # Copy rather than mutate: RBAC is shared across charts, and only this
+        # chart renders the per-namespace TokenRequest Role/RoleBinding.
+        rbac = dict(
+            RBAC,
+            properties=dict(RBAC["properties"], secretStoreNamespaces=SECRET_STORE_NAMESPACES),
+        )
+
     properties = {
         "image": image_property(chart["image_repository_default"]),
         "replicas": REPLICAS,
         "resources": RESOURCES,
-        "rbac": RBAC,
+        "rbac": rbac,
         "leaderElection": LEADER_ELECTION,
         "controller": CONTROLLER,
         "webhook": webhook_property(chart["webhook_enabled_description"]),
@@ -511,7 +545,15 @@ def build_schema(chart):
     if chart["network_policy"]:
         definitions["cidr"] = CIDR
         definitions["stringMap"] = STRING_MAP
-        properties["networkPolicy"] = NETWORK_POLICY
+        network_policy = NETWORK_POLICY
+        if chart["openbao_egress"]:
+            # Copy rather than mutate: NETWORK_POLICY is shared across charts,
+            # and only this chart's template renders the OpenBao egress rule.
+            network_policy = dict(
+                NETWORK_POLICY,
+                properties=dict(NETWORK_POLICY["properties"], openBao=OPEN_BAO_EGRESS),
+            )
+        properties["networkPolicy"] = network_policy
         all_of.append(NETWORK_POLICY_RULE)
 
     if chart["federation"]:

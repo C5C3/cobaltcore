@@ -1,0 +1,76 @@
+# Per-namespace TokenRequest grant tests.
+#
+# create on serviceaccounts/token cannot be narrowed to specific accounts by
+# resourceNames, so it is never part of the operator's ClusterRole (see
+# clusterrole_test.yaml). It is bound one namespace at a time instead, and only
+# for the namespaces an administrator names.
+suite: TokenRequest RBAC
+templates:
+  - templates/tokenrequest-rbac.yaml
+tests:
+  - it: should render nothing by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should render a Role and RoleBinding per listed namespace
+    set:
+      rbac:
+        secretStoreNamespaces:
+          - openstack
+          - tenant-a
+    asserts:
+      - hasDocuments:
+          count: 4
+
+  - it: should grant only create on serviceaccounts/token in the listed namespace
+    set:
+      rbac:
+        secretStoreNamespaces:
+          - openstack
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: metadata.namespace
+          value: openstack
+      - equal:
+          path: rules
+          value:
+            - apiGroups:
+                - ""
+              resources:
+                - serviceaccounts/token
+              verbs:
+                - create
+
+  - it: should bind the operator ServiceAccount from the release namespace
+    set:
+      rbac:
+        secretStoreNamespaces:
+          - tenant-a
+    release:
+      namespace: barbican-system
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: RoleBinding
+      - equal:
+          path: metadata.namespace
+          value: tenant-a
+      - equal:
+          path: roleRef.kind
+          value: Role
+      - equal:
+          path: roleRef.name
+          value: RELEASE-NAME-barbican-operator-tokenrequest
+      - equal:
+          path: subjects[0].kind
+          value: ServiceAccount
+      - equal:
+          path: subjects[0].name
+          value: RELEASE-NAME-barbican-operator
+      - equal:
+          path: subjects[0].namespace
+          value: barbican-system

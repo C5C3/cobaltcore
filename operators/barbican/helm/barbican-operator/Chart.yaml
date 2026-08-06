@@ -1,0 +1,19 @@
+apiVersion: v2
+name: barbican-operator
+description: A Helm chart for deploying the Barbican OpenStack key-management service operator
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+# The shared naming/label helpers and the Deployment skeleton live in the
+# operator-library library chart so they are defined once for all operator
+# charts. It is vendored into charts/ at package time (helm dependency build).
+dependencies:
+  - name: operator-library
+    version: 0.5.0
+    repository: "file://../../../shared/helm/operator-library"
+# Helm validates values against values.schema.json automatically.
+annotations:
+  artifacthub.io/prerelease: "true"
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial barbican-operator chart on the shared operator-library (deployment, Barbican and BarbicanSecretStore admission webhooks, RBAC, PDB, ServiceMonitor, opt-in NetworkPolicy with an OpenBao egress rule)
