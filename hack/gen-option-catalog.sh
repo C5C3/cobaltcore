@@ -36,7 +36,7 @@ Usage: hack/gen-option-catalog.sh [--check] <service> <release> [image-ref]
 
   --check       diff the generated catalog against the committed file instead
                 of writing it; non-zero exit on any difference.
-  service       keystone, glance, or placement.
+  service       keystone, glance, placement, or barbican.
   release       release directory name (e.g. 2025.2).
   image-ref     service image to extract from
                 (default: ghcr.io/c5c3/<service>:<release>).
@@ -74,13 +74,14 @@ if [[ -z "${SERVICE_REF}" || "${SERVICE_REF}" == "null" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Map the service to its oslo-config-generator config path and to the number
-#    of sections a complete extraction must yield. That floor catches a
-#    truncated generator run, and it is per service because a full run yields
-#    very different counts: keystone registers 44 sections and glance 30, so 10
-#    is a loose guard for both, while placement registers 8 (2025.2) and 9
-#    (2026.1).
+# 3. Map the service to its oslo-config-generator config path, to the number of
+#    sections a complete extraction must yield, and to the namespaces to drop
+#    from the generator config. That floor catches a truncated generator run,
+#    and it is per service because a full run yields very different counts:
+#    keystone registers 44 sections, glance 30 and barbican 22, so 10 is a loose
+#    guard for all three, while placement registers 8 (2025.2) and 9 (2026.1).
 # ---------------------------------------------------------------------------
+DROP_NAMESPACES=""
 case "${SERVICE}" in
   keystone)
     GEN_CONFIG_PATH="config-generator/keystone.conf"
@@ -93,6 +94,15 @@ case "${SERVICE}" in
   placement)
     GEN_CONFIG_PATH="etc/placement/config-generator.conf"
     MIN_SECTIONS=8
+    ;;
+  barbican)
+    GEN_CONFIG_PATH="etc/oslo-config-generator/barbican.conf"
+    MIN_SECTIONS=10
+    # barbican registers its kmip secret store unconditionally while the image
+    # ships no pykmip, and a namespace the image cannot import aborts the whole
+    # generator run. The catalog describes what the shipped image accepts, and a
+    # plugin the image cannot load accepts nothing.
+    DROP_NAMESPACES="barbican.plugin.secret_store.kmip"
     ;;
   *)
     echo "unsupported service ${SERVICE}: no oslo-config-generator config mapping" >&2
@@ -130,9 +140,16 @@ fi
 # ---------------------------------------------------------------------------
 # 5. Build the generator config: a [DEFAULT] header plus only the namespace
 #    lines from the upstream config (dropping output_file/wrap_width so the
-#    generator writes JSON to stdout). Commented namespaces are excluded.
+#    generator writes JSON to stdout). Commented namespaces are excluded, and so
+#    are the DROP_NAMESPACES entries: a namespace the image registers but cannot
+#    import aborts the whole generator run. A namespace the image does not
+#    register at all is left in and reaches the stevedore warning path in step 7.
 # ---------------------------------------------------------------------------
 NAMESPACE_LINES="$(grep -E '^[[:space:]]*namespace[[:space:]]*=' "${WORK_DIR}/upstream.conf" || true)"
+for NAMESPACE in ${DROP_NAMESPACES}; do
+  NAMESPACE_LINES="$(printf '%s\n' "${NAMESPACE_LINES}" |
+    grep -vE "^[[:space:]]*namespace[[:space:]]*=[[:space:]]*${NAMESPACE}[[:space:]]*$" || true)"
+done
 {
   echo "[DEFAULT]"
   printf '%s\n' "${NAMESPACE_LINES}"

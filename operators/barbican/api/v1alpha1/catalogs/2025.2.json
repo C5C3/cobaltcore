@@ -1,0 +1,391 @@
+{
+  "release": "2025.2",
+  "sections": {
+    "DEFAULT": {
+      "deprecated": {
+        "log_config": "[DEFAULT] log_config_append",
+        "logdir": "[DEFAULT] log_dir",
+        "logfile": "[DEFAULT] log_file",
+        "rpc_thread_pool_size": "[DEFAULT] executor_thread_pool_size"
+      },
+      "opts": [
+        "admin_role",
+        "allow_anonymous_access",
+        "backdoor_port",
+        "backdoor_socket",
+        "control_exchange",
+        "db_auto_create",
+        "debug",
+        "default_limit_paging",
+        "default_log_levels",
+        "executor_thread_pool_size",
+        "fatal_deprecations",
+        "graceful_shutdown_timeout",
+        "host_href",
+        "instance_format",
+        "instance_uuid_format",
+        "log_color",
+        "log_config_append",
+        "log_date_format",
+        "log_dir",
+        "log_file",
+        "log_options",
+        "log_rotate_interval",
+        "log_rotate_interval_type",
+        "log_rotation_type",
+        "logging_context_format_string",
+        "logging_debug_format_suffix",
+        "logging_default_format_string",
+        "logging_exception_prefix",
+        "logging_user_identity_format",
+        "max_allowed_request_size_in_bytes",
+        "max_allowed_secret_in_bytes",
+        "max_limit_paging",
+        "max_logfile_count",
+        "max_logfile_size_mb",
+        "publish_errors",
+        "rate_limit_burst",
+        "rate_limit_except_level",
+        "rate_limit_interval",
+        "rpc_ping_enabled",
+        "rpc_response_timeout",
+        "sql_pool_class",
+        "sql_pool_logging",
+        "syslog_log_facility",
+        "transport_url",
+        "use_journal",
+        "use_json",
+        "use_stderr",
+        "use_syslog",
+        "watch_log_file"
+      ]
+    },
+    "audit_middleware_notifications": {
+      "deprecated": {},
+      "opts": [
+        "driver",
+        "topics",
+        "transport_url",
+        "use_oslo_messaging"
+      ]
+    },
+    "cors": {
+      "deprecated": {},
+      "opts": [
+        "allow_credentials",
+        "allow_headers",
+        "allow_methods",
+        "allowed_origin",
+        "expose_headers",
+        "max_age"
+      ]
+    },
+    "crypto": {
+      "deprecated": {},
+      "opts": [
+        "enabled_crypto_plugins",
+        "namespace"
+      ]
+    },
+    "database": {
+      "deprecated": {},
+      "opts": [
+        "asyncio_connection",
+        "asyncio_slave_connection",
+        "backend",
+        "connection",
+        "connection_debug",
+        "connection_parameters",
+        "connection_recycle_time",
+        "connection_trace",
+        "db_inc_retry_interval",
+        "db_max_retries",
+        "db_max_retry_interval",
+        "db_retry_interval",
+        "max_overflow",
+        "max_pool_size",
+        "max_retries",
+        "mysql_sql_mode",
+        "mysql_wsrep_sync_wait",
+        "pool_timeout",
+        "retry_interval",
+        "slave_connection",
+        "sqlite_synchronous",
+        "use_db_reconnect"
+      ]
+    },
+    "dogtag_plugin": {
+      "deprecated": {},
+      "opts": [
+        "dogtag_host",
+        "dogtag_port",
+        "nss_db_path",
+        "nss_password",
+        "pem_path",
+        "plugin_name",
+        "retries"
+      ]
+    },
+    "healthcheck": {
+      "deprecated": {},
+      "opts": [
+        "allowed_source_ranges",
+        "backends",
+        "detailed",
+        "disable_by_file_path",
+        "disable_by_file_paths",
+        "enable_by_file_paths",
+        "ignore_proxied_requests",
+        "path"
+      ]
+    },
+    "keystone_authtoken": {
+      "deprecated": {
+        "auth_plugin": "[keystone_authtoken] auth_type",
+        "memcache_servers": "[keystone_authtoken] memcached_servers"
+      },
+      "opts": [
+        "auth_section",
+        "auth_type",
+        "auth_uri",
+        "auth_version",
+        "cache",
+        "cafile",
+        "certfile",
+        "delay_auth_decision",
+        "enforce_token_bind",
+        "http_connect_timeout",
+        "http_request_max_retries",
+        "include_service_catalog",
+        "insecure",
+        "interface",
+        "keyfile",
+        "memcache_password",
+        "memcache_pool_conn_get_timeout",
+        "memcache_pool_dead_retry",
+        "memcache_pool_maxsize",
+        "memcache_pool_socket_timeout",
+        "memcache_pool_unused_timeout",
+        "memcache_sasl_enabled",
+        "memcache_secret_key",
+        "memcache_security_strategy",
+        "memcache_tls_allowed_ciphers",
+        "memcache_tls_cafile",
+        "memcache_tls_certfile",
+        "memcache_tls_enabled",
+        "memcache_tls_keyfile",
+        "memcache_use_advanced_pool",
+        "memcache_username",
+        "memcached_servers",
+        "region_name",
+        "service_token_roles",
+        "service_token_roles_required",
+        "service_type",
+        "token_cache_time",
+        "www_authenticate_uri"
+      ]
+    },
+    "keystone_notifications": {
+      "deprecated": {},
+      "opts": [
+        "allow_requeue",
+        "control_exchange",
+        "enable",
+        "pool_name",
+        "thread_pool_size",
+        "topic",
+        "version"
+      ]
+    },
+    "oslo_messaging_kafka": {
+      "deprecated": {},
+      "opts": [
+        "compression_codec",
+        "consumer_group",
+        "enable_auto_commit",
+        "kafka_consumer_timeout",
+        "kafka_max_fetch_bytes",
+        "max_poll_records",
+        "producer_batch_size",
+        "producer_batch_timeout",
+        "sasl_mechanism",
+        "security_protocol",
+        "ssl_cafile",
+        "ssl_client_cert_file",
+        "ssl_client_key_file",
+        "ssl_client_key_password"
+      ]
+    },
+    "oslo_messaging_notifications": {
+      "deprecated": {},
+      "opts": [
+        "driver",
+        "retry",
+        "topics",
+        "transport_url"
+      ]
+    },
+    "oslo_messaging_rabbit": {
+      "deprecated": {
+        "kombu_reconnect_timeout": "[oslo_messaging_rabbit] kombu_missing_consumer_retry_timeout"
+      },
+      "opts": [
+        "amqp_auto_delete",
+        "amqp_durable_queues",
+        "conn_pool_min_size",
+        "conn_pool_ttl",
+        "direct_mandatory_flag",
+        "enable_cancel_on_failover",
+        "heartbeat_in_pthread",
+        "heartbeat_rate",
+        "heartbeat_timeout_threshold",
+        "hostname",
+        "kombu_compression",
+        "kombu_failover_strategy",
+        "kombu_missing_consumer_retry_timeout",
+        "kombu_reconnect_delay",
+        "kombu_reconnect_splay",
+        "processname",
+        "rabbit_ha_queues",
+        "rabbit_interval_max",
+        "rabbit_login_method",
+        "rabbit_qos_prefetch_count",
+        "rabbit_quorum_delivery_limit",
+        "rabbit_quorum_max_memory_bytes",
+        "rabbit_quorum_max_memory_length",
+        "rabbit_quorum_queue",
+        "rabbit_retry_backoff",
+        "rabbit_retry_interval",
+        "rabbit_stream_fanout",
+        "rabbit_transient_queues_ttl",
+        "rabbit_transient_quorum_queue",
+        "rpc_conn_pool_size",
+        "ssl",
+        "ssl_ca_file",
+        "ssl_cert_file",
+        "ssl_enforce_fips_mode",
+        "ssl_key_file",
+        "ssl_version",
+        "use_queue_manager"
+      ]
+    },
+    "oslo_middleware": {
+      "deprecated": {},
+      "opts": [
+        "enable_proxy_headers_parsing"
+      ]
+    },
+    "oslo_policy": {
+      "deprecated": {},
+      "opts": [
+        "enforce_new_defaults",
+        "enforce_scope",
+        "policy_default_rule",
+        "policy_dirs",
+        "policy_file",
+        "remote_content_type",
+        "remote_ssl_ca_crt_file",
+        "remote_ssl_client_crt_file",
+        "remote_ssl_client_key_file",
+        "remote_ssl_verify_server_crt",
+        "remote_timeout"
+      ]
+    },
+    "oslo_versionedobjects": {
+      "deprecated": {},
+      "opts": [
+        "fatal_exception_format_errors"
+      ]
+    },
+    "p11_crypto_plugin": {
+      "deprecated": {
+        "generate_iv": "[p11_crypto_plugin] aes_gcm_generate_iv",
+        "hmac_keywrap_mechanism": "[p11_crypto_plugin] hmac_mechanism"
+      },
+      "opts": [
+        "aes_gcm_generate_iv",
+        "always_set_cka_sensitive",
+        "encryption_mechanism",
+        "hmac_key_type",
+        "hmac_keygen_mechanism",
+        "hmac_label",
+        "hmac_mechanism",
+        "key_wrap_generate_iv",
+        "key_wrap_mechanism",
+        "library_path",
+        "login",
+        "mkek_label",
+        "mkek_length",
+        "os_locking_ok",
+        "pkek_cache_limit",
+        "pkek_cache_ttl",
+        "pkek_length",
+        "plugin_name",
+        "rw_session",
+        "seed_file",
+        "seed_length",
+        "slot_id",
+        "token_labels",
+        "token_serial_number"
+      ]
+    },
+    "queue": {
+      "deprecated": {},
+      "opts": [
+        "asynchronous_workers",
+        "enable",
+        "namespace",
+        "server_name",
+        "topic",
+        "version"
+      ]
+    },
+    "quotas": {
+      "deprecated": {},
+      "opts": [
+        "quota_cas",
+        "quota_consumers",
+        "quota_containers",
+        "quota_orders",
+        "quota_secrets"
+      ]
+    },
+    "retry_scheduler": {
+      "deprecated": {},
+      "opts": [
+        "initial_delay_seconds",
+        "periodic_interval_max_seconds"
+      ]
+    },
+    "secretstore": {
+      "deprecated": {},
+      "opts": [
+        "enable_multiple_secret_stores",
+        "enabled_secretstore_plugins",
+        "namespace",
+        "stores_lookup_suffix"
+      ]
+    },
+    "simple_crypto_plugin": {
+      "deprecated": {},
+      "opts": [
+        "kek",
+        "plugin_name"
+      ]
+    },
+    "vault_plugin": {
+      "deprecated": {},
+      "opts": [
+        "approle_role_id",
+        "approle_secret_id",
+        "kv_mountpoint",
+        "namespace",
+        "root_token_id",
+        "ssl_ca_crt_file",
+        "use_ssl",
+        "vault_url"
+      ]
+    }
+  },
+  "service": "barbican"
+}
