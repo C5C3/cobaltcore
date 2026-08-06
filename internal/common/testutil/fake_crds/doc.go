@@ -14,5 +14,6 @@
 //	k-orc/               — openstack.k-orc.cloud CRDs (ApplicationCredential, Service, Endpoint)
 //	mariadb-operator/    — k8s.mariadb.com CRDs (MariaDB, Database, Grant, User)
 //	memcached-operator/  — memcached.c5c3.io CRDs (Memcached)
+//	openbao-operator/    — openbao.org CRDs (OpenBaoCluster)
 //	rabbitmq-operator/   — rabbitmq.com CRDs (RabbitmqCluster)
 package fake_crds
