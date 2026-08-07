@@ -729,7 +729,7 @@ spec:
             fi
             pod="$(kubectl get pods -n openstack \
               -l app.kubernetes.io/instance=glance-upload \
-              --field-selector=status.phase=Running -o name 2>/dev/null | head -1)"
+              --field-selector=status.phase=Running -o name 2>/dev/null | head -1 || true)"
             if [ -z "$pod" ]; then
               echo "OK: no Running glance-api pod — the eviction is already in flight"
               BREACHED="yes"
