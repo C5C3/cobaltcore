@@ -104,12 +104,12 @@ test_sentinel_matrix_yields_only_the_fixed_union() {
   ops=$(run_resolve_step '{"operator":["__none__"]}' 'false')
 
   assert_not_contains "sentinel is filtered out of the build union" "$ops" "__none__"
-  assert_eq "only the fixed keystone/glance/placement union is built" \
+  assert_eq "only the fixed keystone/glance/placement/barbican union is built" \
     "keystone glance placement barbican" "$ops"
 }
 
 test_changed_operators_still_union_with_the_fixed_set() {
-  echo "Test: a real operator matrix still unions with keystone/glance/placement"
+  echo "Test: a real operator matrix still unions with keystone/glance/placement/barbican"
 
   local ops
   ops=$(run_resolve_step '{"operator":["keystone","horizon"]}' 'false')
