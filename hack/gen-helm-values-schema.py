@@ -388,10 +388,17 @@ OPEN_BAO_EGRESS = {
 }
 
 SECRET_STORE_NAMESPACES = {
-    "type": "array",
-    "description": "Namespaces the operator may mint bound ServiceAccount tokens in, rendered as one Role/RoleBinding pair per entry. A managed BarbicanSecretStore has the operator authenticate to its OpenBaoCluster as that instance's '<instance>-provisioner' ServiceAccount, which needs create on the serviceaccounts/token subresource in the account's namespace. Never granted cluster-wide: RBAC cannot restrict the verb to specific accounts, so a ClusterRole grant would let anyone reaching the operator ServiceAccount mint a token for any ServiceAccount in the cluster. Brownfield stores need no entry",
-    "items": {"type": "string", "minLength": 1},
-    "default": [],
+    "type": "object",
+    "description": "Namespaces the operator may mint bound ServiceAccount tokens in, keyed by namespace and valued with the ServiceAccount names that namespace's grant is restricted to (RBAC resourceNames on the serviceaccounts/token subresource). Rendered as one Role/RoleBinding pair per key. A managed BarbicanSecretStore has the operator authenticate to its OpenBaoCluster as that instance's '<instance>-provisioner' ServiceAccount, which needs create on the serviceaccounts/token subresource in the account's namespace. Never granted cluster-wide: a ClusterRole grant would let anyone reaching the operator ServiceAccount mint a token for a ServiceAccount in any namespace. Accounts are nested under their namespace rather than listed flat alongside it, so adding a second namespace cannot widen the grant in the first. Brownfield stores need no entry",
+    "additionalProperties": {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1},
+    },
+    # The key is a Namespace name, so an empty key is never valid: helm would
+    # default the namespaced Role/RoleBinding into the release Namespace and
+    # grant TokenRequest there instead of where the store lives.
+    "propertyNames": {"minLength": 1},
+    "default": {},
 }
 
 FEDERATION = {

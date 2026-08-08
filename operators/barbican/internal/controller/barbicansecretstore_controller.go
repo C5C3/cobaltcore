@@ -260,11 +260,11 @@ type BarbicanSecretStoreReconciler struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // The TokenRequest grant is namespace-bound, not part of the operator's
-// ClusterRole: the verb cannot be narrowed to the provisioner accounts by
-// resourceNames, so a cluster-wide grant would let anyone reaching this
-// operator's ServiceAccount mint a token for any ServiceAccount in the cluster.
-// The chart renders it as a Role/RoleBinding per rbac.secretStoreNamespaces
-// entry, so it is not expressible as a kubebuilder marker.
+// ClusterRole: a cluster-wide grant would let anyone reaching this operator's
+// ServiceAccount mint a token for a ServiceAccount in any namespace. The chart
+// renders it as a Role/RoleBinding per rbac.secretStoreNamespaces key, with
+// resourceNames narrowed to the accounts listed under that key, so it is not
+// expressible as a kubebuilder marker.
 // +kubebuilder:rbac:groups=openbao.org,resources=openbaoclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 
@@ -377,19 +377,20 @@ func (r *BarbicanSecretStoreReconciler) reconcileManaged(
 				fmt.Sprintf("waiting for the provisioner ServiceAccount %s/%s of OpenBaoCluster %q",
 					store.Namespace, saName, instanceName))
 		}
-		// A 403 is the DEFAULT state of a namespace nobody opted in: create on
-		// serviceaccounts/token cannot be narrowed to a single account, so the
-		// grant is never part of the operator ClusterRole and is rendered as one
-		// Role per rbac.secretStoreNamespaces entry — a list that defaults to
-		// empty. Reported on the condition rather than returned bare, which would
-		// leave ProvisioningReady absent and put the only evidence of the missing
-		// grant in the operator log while the store hot-loops on error backoff.
+		// A 403 is the DEFAULT state of a namespace nobody opted in: the grant is
+		// never part of the operator ClusterRole and is rendered as one Role per
+		// rbac.secretStoreNamespaces key, narrowed to the accounts listed under
+		// it — the map defaults to empty. Reported on the condition rather than
+		// returned bare, which would leave ProvisioningReady absent and put the
+		// only evidence of the missing grant in the operator log while the store
+		// hot-loops on error backoff.
 		if apierrors.IsForbidden(err) {
 			return r.fail(store, conditionTypeProvisioningReady, conditionReasonProvisioningDenied,
-				fmt.Sprintf("the operator may not mint a bound token for the provisioner ServiceAccount %s/%s: add %q "+
-					"to rbac.secretStoreNamespaces and upgrade the barbican-operator chart — the TokenRequest grant is "+
-					"namespace-scoped by design and is not part of the operator ClusterRole: %v",
-					store.Namespace, saName, store.Namespace, err))
+				fmt.Sprintf("the operator may not mint a bound token for the provisioner ServiceAccount %s/%s: add "+
+					"rbac.secretStoreNamespaces.%s = [%q], then upgrade the barbican-operator chart — the "+
+					"TokenRequest grant is namespace-scoped and account-scoped by design and is not part of the "+
+					"operator ClusterRole: %v",
+					store.Namespace, saName, store.Namespace, saName, err))
 		}
 		return false, ctrl.Result{}, err
 	}

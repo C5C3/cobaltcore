@@ -511,6 +511,45 @@ tests:
           of: Deployment
 
   # ---------------------------------------------------------------------------
+  # rbac.secretStoreNamespaces schema constraints
+  # ---------------------------------------------------------------------------
+  # The key IS the namespace the TokenRequest Role is rendered into. An empty
+  # key — what a template or a Flux postBuild substitution resolving to nothing
+  # produces — renders `namespace:` empty, and helm then defaults the Role and
+  # RoleBinding into the release namespace: the grant lands in barbican-system
+  # instead of where the managed store runs, and every store there 403s.
+  - it: should reject an empty namespace key
+    set:
+      rbac:
+        secretStoreNamespaces:
+          "":
+            - openbao-instance-provisioner
+    asserts:
+      - failedTemplate:
+          errorPattern: "invalid propertyName"
+
+  - it: should reject an empty ServiceAccount name
+    set:
+      rbac:
+        secretStoreNamespaces:
+          openstack:
+            - ""
+    asserts:
+      - failedTemplate:
+          errorPattern: "secretStoreNamespaces/openstack/0.*minLength"
+
+  - it: should accept a namespace keyed grant with two accounts
+    set:
+      rbac:
+        secretStoreNamespaces:
+          openstack:
+            - openbao-a-provisioner
+            - openbao-b-provisioner
+    asserts:
+      - isKind:
+          of: Deployment
+
+  # ---------------------------------------------------------------------------
   # logging schema constraints
   # ---------------------------------------------------------------------------
   - it: should reject non-boolean logging.development

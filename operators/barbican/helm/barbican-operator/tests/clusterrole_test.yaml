@@ -171,10 +171,10 @@ tests:
               - create
               - patch
 
-  # create on serviceaccounts/token cannot be scoped to specific accounts, so a
-  # cluster-wide grant would let anyone reaching the operator ServiceAccount mint
-  # a token for any ServiceAccount in the cluster. It is bound per namespace by
-  # templates/tokenrequest-rbac.yaml instead and must never appear here.
+  # A cluster-wide create on serviceaccounts/token would let anyone reaching the
+  # operator ServiceAccount mint a token for a ServiceAccount in any namespace.
+  # It is bound per namespace and narrowed to the named provisioner accounts by
+  # templates/tokenrequest-rbac.yaml instead, and must never appear here.
   - it: should not grant serviceaccounts/token cluster-wide
     asserts:
       - notContains:

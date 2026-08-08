@@ -32,16 +32,25 @@ rbac:
   # Deployment guide for the cluster-wide privilege-escalation trade-off.
   namespaceScoped: false
   # Namespaces the operator may mint bound ServiceAccount tokens in, as a
-  # Role/RoleBinding pair per entry. A managed BarbicanSecretStore (one that
-  # names spec.openBao.instanceRef) has the operator authenticate to the
-  # OpenBaoCluster as its "<instance>-provisioner" ServiceAccount, which needs
-  # create on the serviceaccounts/token subresource in the namespace that
-  # account lives in. List the namespaces that run managed stores here.
-  # It is empty by default and never granted cluster-wide: RBAC cannot restrict
-  # the verb to specific accounts, so a cluster-scoped grant would let anyone
-  # who reaches the operator ServiceAccount mint a token for any ServiceAccount
-  # in the cluster. Brownfield stores (spec.openBao.server) need no entry.
-  secretStoreNamespaces: []
+  # Role/RoleBinding pair per key. A managed BarbicanSecretStore (one that names
+  # spec.openBao.instanceRef) has the operator authenticate to the OpenBaoCluster
+  # as its "<instance>-provisioner" ServiceAccount, which needs create on the
+  # serviceaccounts/token subresource in the namespace that account lives in.
+  # Each namespace maps to the ServiceAccount names ITS grant is restricted to
+  # (RBAC resourceNames); the list must be non-empty or the chart refuses to
+  # render, because a Role without resourceNames covers every ServiceAccount in
+  # the namespace — in a shared tenant namespace that includes the ones reading
+  # database credentials and tenant secrets out of OpenBao. Nesting the accounts
+  # under their namespace is what keeps a second namespace from widening the
+  # grant in the first.
+  # It is empty by default and never granted cluster-wide: a cluster-scoped
+  # grant would let anyone who reaches the operator ServiceAccount mint a token
+  # for a ServiceAccount in any namespace. Brownfield stores
+  # (spec.openBao.server) need no entry.
+  #   secretStoreNamespaces:
+  #     openstack:
+  #       - openbao-instance-provisioner
+  secretStoreNamespaces: {}
 
 leaderElection:
   enabled: true
