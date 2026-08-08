@@ -22,6 +22,7 @@
 #   FILTER_horizon            — paths-filter output for horizon paths
 #   FILTER_glance             — paths-filter output for glance paths
 #   FILTER_placement          — paths-filter output for placement paths
+#   FILTER_barbican           — paths-filter output for barbican paths
 #   FILTER_docs               — paths-filter output for docs paths
 #   FILTER_helm               — paths-filter output for helm paths
 #   FILTER_e2e_infra          — paths-filter output for e2e-infra paths
