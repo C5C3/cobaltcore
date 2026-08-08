@@ -2160,15 +2160,15 @@ main() {
   if [[ "${WITH_CONTROLPLANE}" == "true" && "${CONTROLPLANE_OPERATORS}" == "flux" ]]; then
     # Deploy the full ControlPlane stack via Flux from the published c5c3-operator
     # chart and the K-ORC GitRepository/Kustomization. The kind base overlay
-    # suspends the keystone-, horizon-, glance- and placement-operator
-    # HelmReleases for the local-build E2E path; un-suspend all four here so the
+    # suspends the keystone-, horizon-, glance-, placement- and barbican-operator
+    # HelmReleases for the local-build E2E path; un-suspend all five here so the
     # c5c3-operator HelmRelease's dependsOn is satisfied and the projected
     # service CRs can reconcile. Without the glance-operator the Glance CRDs
     # never install and the c5c3-operator's controlplane cache never syncs, so
     # the ControlPlane CR stays status-less. c5c3-operator, k-orc, and the
     # c5c3-charts / k-orc sources are left un-suspended (the base applied them
     # active).
-    log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, horizon-operator, glance-operator, placement-operator, k-orc, c5c3-operator)."
+    log "WITH_CONTROLPLANE=true: deploying the c5c3 ControlPlane stack (keystone-operator, horizon-operator, glance-operator, placement-operator, barbican-operator, k-orc, c5c3-operator)."
     kubectl patch helmrelease keystone-operator -n keystone-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
     kubectl patch helmrelease horizon-operator -n horizon-system \
@@ -2176,6 +2176,8 @@ main() {
     kubectl patch helmrelease glance-operator -n glance-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
     kubectl patch helmrelease placement-operator -n placement-system \
+      --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
+    kubectl patch helmrelease barbican-operator -n barbican-system \
       --type merge -p '{"spec":{"suspend":false}}' 2>/dev/null || true
     # Pin the GHCR :latest operator images to their current digest so a
     # feature merged since the last deploy actually rolls out (the tag is
@@ -2317,6 +2319,7 @@ main() {
     enable_operator_servicemonitor horizon-operator horizon-system "${HELMRELEASE_TIMEOUT}"
     enable_operator_servicemonitor glance-operator glance-system "${HELMRELEASE_TIMEOUT}"
     enable_operator_servicemonitor placement-operator placement-system "${HELMRELEASE_TIMEOUT}"
+    enable_operator_servicemonitor barbican-operator barbican-system "${HELMRELEASE_TIMEOUT}"
   fi
 
   # Step 5: Apply infrastructure kustomize overlay (CRD-dependent resources)
