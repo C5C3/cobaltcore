@@ -318,7 +318,7 @@ Timeout: 8 minutes.
 
 ### test
 
-Runs unit tests with a matrix strategy over `[common, keystone, c5c3, horizon, glance, placement]`.
+Runs unit tests with a matrix strategy over `[common, keystone, c5c3, horizon, glance, placement, barbican]`.
 Each matrix leg tests a single target — either `internal/common` or one operator — producing
 a single coverage profile uploaded to Codecov under a dedicated flag.
 
@@ -335,7 +335,7 @@ a single coverage profile uploaded to Codecov under a dedicated flag.
 strategy:
   fail-fast: false
   matrix:
-    target: [common, keystone, c5c3, horizon, glance, placement]
+    target: [common, keystone, c5c3, horizon, glance, placement, barbican]
 ```
 
 The `common` leg runs `make test-common` (producing `cover-unit-common.out`). Operator legs
@@ -355,7 +355,7 @@ coverage data is not lost.
 
 ### test-integration
 
-Runs envtest-based integration tests with a matrix strategy over `[common, keystone, c5c3, horizon, glance, placement]`
+Runs envtest-based integration tests with a matrix strategy over `[common, keystone, c5c3, horizon, glance, placement, barbican]`
 and coverage uploaded to Codecov. Requires `setup-envtest` to
 download kubebuilder assets (kube-apiserver, etcd) for the test API server.
 
@@ -373,7 +373,7 @@ download kubebuilder assets (kube-apiserver, etcd) for the test API server.
 strategy:
   fail-fast: false
   matrix:
-    target: [common, keystone, c5c3, horizon, glance, placement]
+    target: [common, keystone, c5c3, horizon, glance, placement, barbican]
 ```
 
 The `common` leg runs `make test-integration-common` (producing
@@ -1419,10 +1419,10 @@ to `CODECOV_TOKEN`. This prevents CI from failing due to upload issues on forks.
 
 The `flag_management` section in `.codecov.yml` links CI-uploaded flags to coverage tracking
 rules. Flags follow the `[unit|integration]-<target>` naming convention, matching the CI
-matrix targets (`common`, `keystone`, `c5c3`, `horizon`, `glance`, `placement`). Each flag
-has `carryforward: true`, which ensures that when only a subset of flags is uploaded (e.g.,
-only one operator changed), the missing flags carry forward their last-known coverage
-instead of reducing the total.
+matrix targets (`common`, `keystone`, `c5c3`, `horizon`, `glance`, `placement`, `barbican`).
+Each flag has `carryforward: true`, which ensures that when only a subset of flags is
+uploaded (e.g., only one operator changed), the missing flags carry forward their
+last-known coverage instead of reducing the total.
 
 Defined flags:
 
@@ -1434,12 +1434,14 @@ Defined flags:
 | `unit-horizon` | `operators/horizon/` | `test` job, `horizon` matrix leg |
 | `unit-glance` | `operators/glance/` | `test` job, `glance` matrix leg |
 | `unit-placement` | `operators/placement/` | `test` job, `placement` matrix leg |
+| `unit-barbican` | `operators/barbican/` | `test` job, `barbican` matrix leg |
 | `integration-common` | `internal/common/` | `test-integration` job, `common` matrix leg |
 | `integration-keystone` | `operators/keystone/` | `test-integration` job, `keystone` matrix leg |
 | `integration-c5c3` | `operators/c5c3/` | `test-integration` job, `c5c3` matrix leg |
 | `integration-horizon` | `operators/horizon/` | `test-integration` job, `horizon` matrix leg |
 | `integration-glance` | `operators/glance/` | `test-integration` job, `glance` matrix leg |
 | `integration-placement` | `operators/placement/` | `test-integration` job, `placement` matrix leg |
+| `integration-barbican` | `operators/barbican/` | `test-integration` job, `barbican` matrix leg |
 
 ### Component Thresholds
 
