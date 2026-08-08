@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The replacement default store of the switch E2E test.
+#
+# Applied only after 01-store-a.yaml has been deleted: the sibling-uniqueness
+# webhook ignores Terminating siblings alone, and a store carries no finalizer, so
+# the delete has to have completed before this one is admitted. Its name differs
+# from store A's because the name is the [secretstore:<name>] section suffix the
+# rendered config carries, and the re-render is what the suite asserts.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbican-store-switch-b
+  namespace: openstack
+spec:
+  barbicanRef:
+    name: barbican-store-switch
+  type: OpenBao
+  isDefault: true
+  openBao:
+    instanceRef:
+      name: openbao-instance

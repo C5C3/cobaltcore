@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Barbican CR fixture for the basic-deployment E2E test (2025.2 release).
+# Managed mode: database via clusterRef to openstack-db (schema barbican_basic),
+# cache via clusterRef to openstack-memcached. The database credentials come from
+# the ESO-synced barbican-db Secret and the service-user password from the
+# pre-seeded keystone-admin Secret (both deploy/kind/infrastructure). Barbican
+# exits at start-up without a secret store, so 01-barbican-secretstore.yaml
+# attaches one before Ready can settle.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-basic
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican_basic
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

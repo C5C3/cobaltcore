@@ -1,0 +1,215 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a cross-release Barbican upgrade from 2025.2 to 2026.1.
+# Barbican migrates in a single pass: one db-sync Job runs barbican-manage db
+# upgrade, which applies every pending alembic revision. There is no
+# expand-migrate-contract phase machine and no status.upgradePhase field, and this
+# suite pins both absences as hard as it pins the upgrade itself.
+#   (1) Fresh deployment at 2025.2 reaches Ready=True/AllReady with
+#       installedRelease=2025.2 and installedImage on the :2025.2 tag
+#   (2) After patching spec.openStackRelease and spec.image.tag to 2026.1,
+#       installedRelease and installedImage converge on 2026.1, targetRelease is
+#       cleared, and Ready settles True/AllReady again
+#   (3) The db-sync Job re-runs on the :2026.1 image and succeeds
+#   (4) The Deployment flips to the :2026.1 image and the rollout completes
+#   (5) No db-expand/db-migrate/db-contract Job is ever created
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-release-upgrade
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Barbican CR at 2025.2 and its store ───────────────
+  - try:
+    - apply:
+        file: 00-barbican-cr.yaml
+    - apply:
+        file: 01-barbican-secretstore.yaml
+  # ── Step 2: Assert the pre-upgrade steady state ─────────────────────────
+  # installedImage records which image migrated the installed schema. It is what
+  # keeps the release gate honest for a digest-pinned image, and it is asserted on
+  # both legs so a bump that stopped updating it cannot pass.
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-release-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2025.2"
+            installedImage: ghcr.io/c5c3/barbican:2025.2
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: barbican-release-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: barbican-api
+                  image: ghcr.io/c5c3/barbican:2025.2
+          status:
+            (availableReplicas > `0`): true
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-release-upgrade -n $NAMESPACE -o yaml 2>&1 | tail -60 || true
+          echo "=== BarbicanSecretStore status ==="
+          kubectl get barbicansecretstore barbican-release-upgrade-store -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Barbican API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=barbican-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Patch release + image tag to trigger the upgrade ────────────
+  # targetRelease is deliberately NOT asserted here. It describes a bump in
+  # flight and nothing else: the release gate stamps it and the caller clears it
+  # again on the first reconcile after the db-sync Job succeeds. That makes it an
+  # EDGE an assertion has to catch, not a state it can converge on — the poll
+  # that arrives one interval late finds the field already cleared and the suite
+  # fails on a run where the operator did exactly the right thing. The stamping
+  # is pinned deterministically instead by
+  # TestReconcileDatabase_ReleaseBumpTracksTargetRelease
+  # (operators/barbican/internal/controller/reconcile_database_test.go), and the
+  # settled half — the field is empty once installedRelease caught up — is a
+  # converged state, asserted in step 4 below.
+  - try:
+    - patch:
+        file: 02-patch-upgrade.yaml
+  # ── Step 4: Assert the upgrade completes through the single db-sync ─────
+  - try:
+    # Gate on the settled end state first: installedRelease is promoted only
+    # after the db-sync Job succeeds, and the fresh Job flips DatabaseReady (and
+    # so Ready) back False until it completes, so a stable Ready=True/AllReady
+    # here means the whole flow has drained.
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-release-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            installedImage: ghcr.io/c5c3/barbican:2026.1
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        content: |
+          set -eu
+          echo "=== Verifying status.targetRelease is cleared ==="
+          # The field only describes a bump in flight, so once installedRelease
+          # equals the requested release it must be empty again. A value left here
+          # would report a CR heading somewhere it has already arrived.
+          TARGET=$(kubectl get barbican barbican-release-upgrade -n openstack \
+            -o jsonpath='{.status.targetRelease}')
+          if [ -n "$TARGET" ]; then
+            echo "ERROR: status.targetRelease is still set to '$TARGET'"
+            exit 1
+          fi
+          echo "OK: status.targetRelease is cleared"
+    - script:
+        timeout: 3m
+        content: |
+          set -eu
+          JOB=barbican-release-upgrade-db-sync
+          echo "=== Verifying the db-sync Job re-ran on :2026.1 ==="
+          # RunJob deletes and re-creates a completed Job in place when its
+          # pod-spec-hash changes, so the same-named db-sync Job is replaced on
+          # the :2026.1 image. Poll to ride out the delete/re-create window,
+          # then assert the current Job carries :2026.1 and succeeded.
+          for _ in $(seq 1 30); do
+            IMG=$(kubectl get job "$JOB" -n openstack \
+              -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
+            SUCC=$(kubectl get job "$JOB" -n openstack \
+              -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
+            case "$IMG" in
+            *:2026.1)
+              if [ "$SUCC" = "1" ]; then
+                echo "OK: $JOB at $IMG succeeded=$SUCC"
+                exit 0
+              fi
+              ;;
+            esac
+            sleep 5
+          done
+          echo "ERROR: $JOB did not reach :2026.1 succeeded=1 (image=$IMG succeeded=$SUCC)"
+          exit 1
+    - script:
+        content: |
+          set -eu
+          echo "=== Verifying no expand-migrate-contract phase Job exists ==="
+          # Barbican migrates in one pass. A phase Job here would mean the
+          # operator was wired to the phased flow, which for barbican runs
+          # migrations that barbican-manage does not implement.
+          for phase in expand migrate contract; do
+            JOB="barbican-release-upgrade-db-${phase}"
+            if kubectl get job "$JOB" -n openstack >/dev/null 2>&1; then
+              echo "ERROR: Job $JOB exists; barbican runs a single db-sync Job"
+              exit 1
+            fi
+            echo "OK: no Job $JOB"
+          done
+    # The Deployment now runs the :2026.1 image and the single-replica rollout
+    # has fully converged (updatedReplicas == replicas).
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: barbican-release-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: barbican-api
+                  image: ghcr.io/c5c3/barbican:2026.1
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-release-upgrade -n $NAMESPACE -o yaml 2>&1 | tail -60 || true
+          echo "=== Jobs ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Barbican API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=barbican-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

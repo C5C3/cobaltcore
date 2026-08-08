@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Barbican CR with spec.gateway for the HTTPRoute lifecycle test.
+# Managed mode (clusterRef openstack-db, schema barbican_httproute), same shape as
+# the basic-deployment fixture, plus the default secret store in
+# 02-barbican-secretstore.yaml: the operator creates no workload at all without
+# one, and the parallel group that owns the HTTPRoute runs behind the Deployment.
+#
+# The parentRef is deliberately non-existent so no real Gateway controller ever
+# writes its own RouteParentStatus slot and races the status merge-patch in the
+# acceptance-simulation step.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-httproute
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican_httproute
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  gateway:
+    parentRef:
+      name: not-a-real-gateway
+    hostname: barbican.e2e.example.com

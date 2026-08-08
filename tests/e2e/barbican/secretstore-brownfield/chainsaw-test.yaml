@@ -1,0 +1,176 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a brownfield (server-mode) BarbicanSecretStore.
+#
+# A brownfield store points at an OpenBao provisioned outside this operator, so
+# the operator only reads: it verifies the referenced credentials with a login and
+# a capability read and renders them into barbican.conf, and never creates a
+# mount, a policy or an AppRole. The suite therefore has to provision the AppRole
+# credentials itself, which tests/e2e/barbican/approle-credentials.sh does
+# against the proving instance.
+#
+# Covers:
+#   - CredentialsReady=True/CredentialsAvailable off the Secrets the helper wrote
+#   - ProvisioningReady is ABSENT: the condition belongs to managed mode, and the
+#     controller removes it from a brownfield store rather than reporting a
+#     provisioning step it never runs
+#   - The parent Barbican reaches Ready=True
+#   - The rendered config projects the store: a [secretstore:<name>] section
+#     carrying global_default, and a [vault_plugin] section pointing at the
+#     configured URL and the mounted CA bundle
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-secretstore-brownfield
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Materialize the brownfield AppRole credentials ──────────────
+  # Chainsaw runs scripts with the test directory as CWD, so the helper resolves
+  # relatively. It takes the target namespace explicitly: the injected $NAMESPACE
+  # is deliberately not read, so a suite in another namespace cannot get the
+  # Secrets written into the wrong one.
+  #
+  # The two Secrets it writes carry fixed names, which the sibling
+  # gateway-quick-start-smoke suite also uses in this namespace. They are left in
+  # place when the suite ends: deleting them would strand a parallel sibling
+  # mid-run, and a re-run refreshes them in place. The credentials stay valid
+  # across such a refresh, because an AppRole holds many secret IDs at once.
+  - try:
+    - script:
+        timeout: 3m
+        content: |
+          ../approle-credentials.sh openstack
+  # ── Step 2: Apply the Barbican CR and the brownfield store ──────────────
+  - try:
+    - apply:
+        file: 00-barbican-cr.yaml
+    - apply:
+        file: 01-barbican-secretstore.yaml
+  # ── Step 3: Assert the store validated its credentials ──────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: BarbicanSecretStore
+          metadata:
+            name: barbican-store-brownfield-store
+            namespace: openstack
+          status:
+            (conditions[?type == 'CredentialsReady']):
+            - status: "True"
+              reason: CredentialsAvailable
+            (conditions[?type == 'ConfigProjected']):
+            - status: "True"
+              reason: ConfigProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            # Managed mode's condition, removed rather than reported False: a
+            # brownfield store provisions nothing, so a ProvisioningReady here
+            # would either block the aggregate Ready forever or claim a step that
+            # never ran.
+            (length(conditions[?type == 'ProvisioningReady']) == `0`): true
+    catch:
+    - script:
+        content: |
+          echo "=== BarbicanSecretStore status ==="
+          kubectl get barbicansecretstore barbican-store-brownfield-store -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== credentials + CA Secrets ==="
+          kubectl get secret barbican-brownfield-approle openbao-instance-ca -n $NAMESPACE 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert the parent Barbican reached Ready ───────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-store-brownfield
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretStoresReady']):
+            - status: "True"
+              reason: AllStoresProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (contains(projectedSecretStores || `[]`, 'barbican-store-brownfield-store')): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: barbican-store-brownfield
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                # Brownfield mode names both Secrets itself, so the pods source
+                # the secret ID from the referenced credentials Secret and mount
+                # the referenced bundle.
+                (containers[0].env[?name == 'OS_VAULT_PLUGIN__APPROLE_SECRET_ID'].valueFrom.secretKeyRef.name | [0]): barbican-brownfield-approle
+                (volumes[?name == 'secret-store-ca'].secret.secretName | [0]): openbao-instance-ca
+          status:
+            (availableReplicas > `0`): true
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-store-brownfield -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Barbican API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=barbican-store-brownfield -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 2>&1 || true
+  # ── Step 5: Assert the config projection carries the store ─────────────
+  # The section is scoped with awk (header to next header) so the global_default
+  # line cannot be satisfied by a different store's section, and the plugin
+  # options are read out of [vault_plugin] the same way. vault_url is the URL the
+  # CR configured, not one derived from an instance name, and ssl_ca_crt_file is
+  # the in-pod path the referenced bundle is mounted at.
+  - try:
+    - script:
+        content: |
+          set -eu
+          SEC=$(kubectl get deploy barbican-store-brownfield -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].secret.secretName}')
+          test -n "$SEC"
+          kubectl get secret "$SEC" -n openstack -o 'jsonpath={.data.barbican\.conf}' \
+            | base64 -d > /tmp/barbican-store-brownfield.conf
+          awk '/^\[secretstore:barbican-store-brownfield-store\]$/{f=1;next} /^\[/{f=0} f' \
+            /tmp/barbican-store-brownfield.conf > /tmp/barbican-store-brownfield-section.ini
+          grep -q '^secret_store_plugin = vault_plugin$' /tmp/barbican-store-brownfield-section.ini
+          grep -q '^global_default = True$' /tmp/barbican-store-brownfield-section.ini
+          awk '/^\[vault_plugin\]$/{f=1;next} /^\[/{f=0} f' \
+            /tmp/barbican-store-brownfield.conf > /tmp/barbican-store-brownfield-vault-plugin.ini
+          grep -q '^vault_url = https://openbao-instance.openstack.svc:8200$' \
+            /tmp/barbican-store-brownfield-vault-plugin.ini
+          grep -q '^use_ssl = true$' /tmp/barbican-store-brownfield-vault-plugin.ini
+          grep -q '^kv_mountpoint = barbican$' /tmp/barbican-store-brownfield-vault-plugin.ini
+          grep -q '^ssl_ca_crt_file = /etc/barbican-secret-store-ca/ca.crt$' \
+            /tmp/barbican-store-brownfield-vault-plugin.ini
+          echo "OK: $SEC projects barbican-store-brownfield-store as the global default over TLS"
+    catch:
+    - script:
+        content: |
+          echo "=== rendered barbican.conf ==="
+          SEC=$(kubectl get deploy barbican-store-brownfield -n $NAMESPACE \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].secret.secretName}' 2>/dev/null || true)
+          if [ -n "$SEC" ]; then
+            kubectl get secret "$SEC" -n $NAMESPACE -o 'jsonpath={.data.barbican\.conf}' 2>&1 | base64 -d || true
+          fi
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 2>&1 || true

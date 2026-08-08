@@ -1,0 +1,177 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the optional HTTPRoute sub-reconciler.
+# Verifies the full lifecycle of spec.gateway driven by the Barbican CR:
+#   - Apply a Barbican CR with spec.gateway and assert the HTTPRoute is created
+#     with the expected ParentRef/Hostname/BackendRef (Barbican API port 9311)
+#     and that status.endpoint flips to the public gateway URL.
+#   - Before any Gateway controller reports Accepted, HTTPRouteReady is
+#     False with reason HTTPRouteNotAccepted.
+#   - Simulate a Gateway controller accepting the route by patching the
+#     parent status, then assert HTTPRouteReady flips True/HTTPRouteAccepted.
+#   - Unset spec.gateway and assert the HTTPRoute is deleted and
+#     HTTPRouteReady is True with reason HTTPRouteNotRequired.
+#
+# SCOPE: this suite covers the operator's HTTPRoute contract only — it patches
+# the Accepted condition itself rather than running a Gateway controller, so
+# nothing here proves traffic actually reaches the Barbican API. The
+# real-Gateway leg lives in the sibling
+# tests/e2e/barbican/gateway-quick-start-smoke/ suite, which drives kind host
+# :443 → NodePort → Envoy Gateway → HTTPRoute → Service → pod, mirroring the
+# keystone, horizon, glance and placement gateway-quick-start-smoke suites.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-httproute
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Install HTTPRoute CRD ──────────────────────────────────────
+  # The E2E cluster may not install a Gateway controller; apply the minimal
+  # CRD so the operator can create HTTPRoute objects and the test can patch
+  # their status.
+  - try:
+    - apply:
+        file: 00-httproute-crd.yaml
+  # ── Step 2: Apply the Barbican CR with spec.gateway and its store ───────
+  - try:
+    - apply:
+        file: 01-barbican-cr.yaml
+    - apply:
+        file: 02-barbican-secretstore.yaml
+  # ── Step 3: Assert HTTPRoute created with the expected spec ────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: barbican-httproute
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: barbican
+              app.kubernetes.io/instance: barbican-httproute
+              app.kubernetes.io/managed-by: barbican-operator
+          spec:
+            parentRefs:
+            - name: not-a-real-gateway
+            hostnames:
+            - barbican.e2e.example.com
+            rules:
+            - matches:
+              - path:
+                  type: PathPrefix
+                  value: /
+              backendRefs:
+              - name: barbican-httproute
+                port: 9311
+              # The rule carries no `timeouts` stanza: barbican answers short
+              # JSON requests and streams nothing, so the operator leaves the
+              # request cap to the gateway implementation's default
+              # (buildBarbicanHTTPRoute passes no RequestTimeout). The stub CRD
+              # above preserves unknown fields, so a timeout the operator started
+              # rendering would round-trip and show up as a diff against this
+              # assertion.
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== HTTPRoute ==="
+          kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert gateway-aware status.endpoint ───────────────────────
+  # The public endpoint carries no trailing slash: barbican concatenates it with
+  # the resource path when it builds the links in an API response.
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-httproute
+            namespace: openstack
+          status:
+            endpoint: https://barbican.e2e.example.com
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "False"
+              reason: HTTPRouteNotAccepted
+  # ── Step 5: Simulate Gateway controller accepting the HTTPRoute ────────
+  - try:
+    - script:
+        content: |
+          kubectl patch httproute barbican-httproute -n $NAMESPACE \
+            --subresource=status --type=merge -p '{
+              "status": {
+                "parents": [{
+                  "parentRef": {"name": "not-a-real-gateway"},
+                  "controllerName": "e2e.example.com/fake-gateway-controller",
+                  "conditions": [{
+                    "type": "Accepted",
+                    "status": "True",
+                    "reason": "Accepted",
+                    "message": "Simulated Accepted condition for E2E test",
+                    "lastTransitionTime": "2026-08-08T00:00:00Z",
+                    "observedGeneration": 1
+                  }]
+                }]
+              }
+            }'
+  # ── Step 6: Assert HTTPRouteReady=True/HTTPRouteAccepted ───────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-httproute
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteAccepted
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== HTTPRoute ==="
+          kubectl get httproute -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Unset spec.gateway ─────────────────────────────────────────
+  - try:
+    - patch:
+        file: 03-patch-remove-gateway.yaml
+  # ── Step 8: Assert HTTPRoute deleted and NotRequired ───────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-httproute
+            namespace: openstack
+          status:
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+    - script:
+        content: |
+          # Verify HTTPRoute no longer exists.
+          if kubectl get httproute barbican-httproute -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: HTTPRoute should have been deleted"
+            exit 1
+          fi
+          echo "PASS: HTTPRoute correctly deleted"

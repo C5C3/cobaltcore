@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Minimal Barbican CR fixture for the Gateway quick-start smoke test — the key
+# manager counterpart to tests/e2e/keystone/gateway-quick-start-smoke,
+# tests/e2e/horizon/gateway-quick-start-smoke,
+# tests/e2e/glance/gateway-quick-start-smoke and
+# tests/e2e/placement/gateway-quick-start-smoke.
+#
+# This smoke test exercises the end-to-end TLS + Gateway data-plane path:
+# `curl -k https://barbican.127-0-0-1.nip.io/healthcheck` must return HTTP 200.
+# That requires a Barbican CR whose spec.gateway produces an HTTPRoute attaching
+# to the kind overlay's `openstack-gw` Gateway on its `https-barbican` listener.
+# The hostname MUST match that listener's hostname AND the dnsName of its
+# Certificate, so the listener's TLS Secret matches the SNI the client presents.
+#
+# Name-collision avoidance: chainsaw-config.yaml sets `execution.parallel: 4`,
+# so this fixture uses a unique CR name (`barbican-smoke`) to avoid clashing with
+# the sibling barbican suites that share the `openstack` namespace and the
+# backing services (`openstack-db`, `openstack-memcached`, `openbao-instance`)
+# and on HTTPRoute object names inside the `openstack` namespace. No other
+# barbican suite attaches to the nip.io Gateway hostname, so a root-path route
+# does not conflict.
+#
+# The `/healthcheck` endpoint is the oslo healthcheck app the paste composite
+# routes outside the authtoken pipeline, so it answers 200 without a live
+# Keystone or a database round-trip; keystoneEndpoint therefore points at the
+# cluster-local convention URL and the smoke needs no running Keystone — exactly
+# like the barbican basic-deployment fixture.
+#
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-smoke
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican_smoke
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: barbican.127-0-0-1.nip.io
+    path: /

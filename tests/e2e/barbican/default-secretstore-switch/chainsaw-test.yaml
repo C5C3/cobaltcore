@@ -1,0 +1,240 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Barbican default-secret-store switch contract.
+#
+# The [vault_plugin] section is process-global, so at most one OpenBao store may
+# be attached to a Barbican and the validating webhook rejects a second one. A
+# switch is therefore delete-then-create, not an isDefault handover between two
+# live stores, and this suite walks that sequence to lock two invariants:
+#
+#   - No default: clearing store A's isDefault leaves zero credential-ready
+#     defaults, so SecretStoresReady goes False/NoDefaultSecretStore and the
+#     config is NOT re-rendered — the running Deployment keeps mounting the
+#     last-good config Secret and keeps its replicas serving.
+#   - Re-render: deleting store A and creating store B as the default renders a
+#     NEW content-hashed config Secret whose [secretstore:barbican-store-switch-b]
+#     section carries global_default, and Ready returns True.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-default-secretstore-switch
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Barbican CR and store A ───────────────────────────
+  - try:
+    - apply:
+        file: 00-barbican-cr.yaml
+    - apply:
+        file: 01-store-a.yaml
+  # ── Step 2: Assert Ready with store A as the default ───────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-store-switch
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretStoresReady']):
+            - status: "True"
+              reason: AllStoresProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: barbican-store-switch
+            namespace: openstack
+          spec:
+            replicas: 1
+          status:
+            readyReplicas: 1
+            updatedReplicas: 1
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-store-switch -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== BarbicanSecretStore status ==="
+          kubectl get barbicansecretstore barbican-store-switch-a -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Capture the last-good config Secret ────────────────────────
+  # The Deployment's config volume names the content-hashed Secret. Both the name
+  # and the observed readyReplicas are captured (to /tmp, read back in step 4)
+  # after asserting the initial render promotes store A to the global default.
+  - try:
+    - script:
+        content: |
+          set -eu
+          SEC=$(kubectl get deploy barbican-store-switch -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].secret.secretName}')
+          test -n "$SEC"
+          READY=$(kubectl get deploy barbican-store-switch -n openstack \
+            -o 'jsonpath={.status.readyReplicas}')
+          test -n "$READY"
+          printf '%s' "$SEC" > /tmp/barbican-store-switch-config-before
+          printf '%s' "$READY" > /tmp/barbican-store-switch-ready-before
+          echo "before config Secret: $SEC"
+          echo "before readyReplicas: $READY"
+          kubectl get secret "$SEC" -n openstack -o 'jsonpath={.data.barbican\.conf}' \
+            | base64 -d > /tmp/barbican-store-switch-before.conf
+          awk '/^\[secretstore:barbican-store-switch-a\]$/{f=1;next} /^\[/{f=0} f' \
+            /tmp/barbican-store-switch-before.conf | grep -q '^global_default = True$'
+          echo "OK: initial render promotes barbican-store-switch-a; name and replica count captured"
+  # ── Step 4: Clear store A's default → no default, last-good retained ───
+  - try:
+    - patch:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: BarbicanSecretStore
+          metadata:
+            name: barbican-store-switch-a
+            namespace: openstack
+          spec:
+            isDefault: false
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-store-switch
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretStoresReady']):
+            - status: "False"
+              reason: NoDefaultSecretStore
+            # The workload is not rebuilt while the projection is invalid, so the
+            # deployment step reports the wait rather than tearing the pods down.
+            (conditions[?type == 'DeploymentReady']):
+            - status: "False"
+              reason: WaitingForSecretStores
+    - script:
+        content: |
+          set -eu
+          BEFORE_SEC=$(cat /tmp/barbican-store-switch-config-before)
+          BEFORE_READY=$(cat /tmp/barbican-store-switch-ready-before)
+          SEC=$(kubectl get deploy barbican-store-switch -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].secret.secretName}')
+          READY=$(kubectl get deploy barbican-store-switch -n openstack \
+            -o 'jsonpath={.status.readyReplicas}')
+          echo "config:        before=$BEFORE_SEC now=$SEC"
+          echo "readyReplicas: before=$BEFORE_READY now=$READY"
+          if [ "$SEC" != "$BEFORE_SEC" ]; then
+            echo "ERROR: config Secret changed with no default secret store (expected last-good retention)"
+            exit 1
+          fi
+          if [ "$READY" != "$BEFORE_READY" ]; then
+            echo "ERROR: readyReplicas moved from $BEFORE_READY to $READY; the last-good config must keep serving"
+            exit 1
+          fi
+          kubectl get secret "$SEC" -n openstack -o 'jsonpath={.data.barbican\.conf}' \
+            | base64 -d > /tmp/barbican-store-switch-retained.conf
+          awk '/^\[secretstore:barbican-store-switch-a\]$/{f=1;next} /^\[/{f=0} f' \
+            /tmp/barbican-store-switch-retained.conf | grep -q '^global_default = True$'
+          echo "OK: last-good config retained (still promotes barbican-store-switch-a) and the pods keep serving"
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-store-switch -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== BarbicanSecretStore status ==="
+          kubectl get barbicansecretstore barbican-store-switch-a -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Delete store A ─────────────────────────────────────────────
+  # Deletion comes before the replacement is applied, not after: the
+  # sibling-uniqueness webhook ignores a Terminating sibling only, and a store
+  # holds no finalizer, so a store B applied while A still existed would be
+  # rejected at admission.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: BarbicanSecretStore
+          name: barbican-store-switch-a
+          namespace: openstack
+  # ── Step 6: Create store B → re-render and recover ─────────────────────
+  - try:
+    - apply:
+        file: 02-store-b.yaml
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-store-switch
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretStoresReady']):
+            - status: "True"
+              reason: AllStoresProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (contains(projectedSecretStores || `[]`, 'barbican-store-switch-b')): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: barbican-store-switch
+            namespace: openstack
+          spec:
+            replicas: 1
+          status:
+            readyReplicas: 1
+            updatedReplicas: 1
+    - script:
+        content: |
+          set -eu
+          BEFORE_SEC=$(cat /tmp/barbican-store-switch-config-before)
+          SEC=$(kubectl get deploy barbican-store-switch -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].secret.secretName}')
+          echo "config: before=$BEFORE_SEC now=$SEC"
+          if [ "$SEC" = "$BEFORE_SEC" ]; then
+            echo "ERROR: config Secret did not change after promoting barbican-store-switch-b to default"
+            exit 1
+          fi
+          kubectl get secret "$SEC" -n openstack -o 'jsonpath={.data.barbican\.conf}' \
+            | base64 -d > /tmp/barbican-store-switch-after.conf
+          awk '/^\[secretstore:barbican-store-switch-b\]$/{f=1;next} /^\[/{f=0} f' \
+            /tmp/barbican-store-switch-after.conf | grep -q '^global_default = True$'
+          if grep -q '^\[secretstore:barbican-store-switch-a\]$' /tmp/barbican-store-switch-after.conf; then
+            echo "ERROR: the re-rendered config still carries the deleted store's section"
+            exit 1
+          fi
+          echo "OK: re-rendered to $SEC promoting barbican-store-switch-b, with store A's section dropped"
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-store-switch -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== BarbicanSecretStore status ==="
+          kubectl get barbicansecretstore barbican-store-switch-b -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Barbican API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=barbican-store-switch -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

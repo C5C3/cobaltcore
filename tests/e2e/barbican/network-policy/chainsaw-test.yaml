@@ -1,0 +1,158 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the NetworkPolicy sub-reconciler.
+#
+# SCOPE CAVEAT: the default CI CNI (kindnet) does NOT enforce NetworkPolicy,
+# so this suite validates the rendered policy object (ingress on the Barbican
+# API port 9311, auto-derived DNS/database/keystone/cache/OpenBao egress) and its
+# lifecycle, not actual traffic enforcement — same scope as the
+# keystone/horizon/glance/placement network-policy suites.
+#
+# The auto-derived egress order is deterministic (DNS, database, keystone, cache,
+# OpenBao):
+#   - DNS      UDP+TCP 53
+#   - database TCP 3306 (spec.database default port)
+#   - keystone TCP 5000 (parsed from spec.keystoneEndpoint)
+#   - cache    TCP 11211 (managed memcached)
+#   - OpenBao  TCP 8200 (parsed from the projected secret store's server URL)
+# The last rule is the barbican-specific one: the vault plugin stores every secret
+# on that server, and the port comes from the store projection rather than from
+# the CR — a store nobody has authenticated yet opens no port at all.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-network-policy
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Barbican CR with networkPolicy and its store ──────
+  - try:
+    - apply:
+        file: 00-barbican-cr.yaml
+    - apply:
+        file: 01-barbican-secretstore.yaml
+  # ── Step 2: Assert NetworkPolicy created with the expected rules ───────
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyReady
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: barbican-netpol
+            namespace: openstack
+          spec:
+            # The selector carries no component key, so the policy covers the
+            # API pods, the db-sync pods and the db-clean pods alike — without
+            # the DNS and database egress, barbican-manage cannot reach the
+            # schema it migrates and cleans.
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: barbican
+                app.kubernetes.io/instance: barbican-netpol
+            policyTypes:
+            - Ingress
+            - Egress
+            ingress:
+            - ports:
+              - protocol: TCP
+                port: 9311
+            egress:
+            - ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+            - ports:
+              - protocol: TCP
+                port: 3306
+            - ports:
+              - protocol: TCP
+                port: 5000
+            - ports:
+              - protocol: TCP
+                port: 11211
+            - ports:
+              - protocol: TCP
+                port: 8200
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== BarbicanSecretStore status ==="
+          kubectl get barbicansecretstore barbican-netpol-store -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== NetworkPolicy ==="
+          kubectl get networkpolicy barbican-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Add a second ingress source and assert it lands ────────────
+  # Peer arithmetic: the operator appends one peer per declared ingress source
+  # plus one for its own Namespace (so the operator's health check reaches the
+  # API). One source therefore renders 2 peers and the patched two sources
+  # render 3 — `>= 3` is what distinguishes "the patch landed" from "the policy
+  # is unchanged".
+  - try:
+    - patch:
+        file: 02-patch-update-ingress.yaml
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: barbican-netpol
+            namespace: openstack
+          spec:
+            ingress:
+            - (length(from) >= `3`): true
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== NetworkPolicy ==="
+          kubectl get networkpolicy barbican-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Disable networkPolicy and assert deletion ──────────────────
+  - try:
+    - patch:
+        file: 03-patch-disable-networkpolicy.yaml
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+    - script:
+        content: |
+          if kubectl get networkpolicy barbican-netpol -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: NetworkPolicy should have been deleted"
+            exit 1
+          fi
+          echo "PASS: NetworkPolicy correctly deleted"
