@@ -5,7 +5,8 @@
 
 # setup-database-tenant.sh — Provision the per-tenant MariaDB database-engine
 # connection and role for one MANAGED ControlPlane's per-service DB users
-# (Keystone always; Glance and Placement when they share the managed database).
+# (Keystone always; Glance, Placement, and Barbican when they share the managed
+# database).
 #
 # MODE: this is a managed-database onboarding step. An External-mode ControlPlane
 # (spec.services.keystone.mode: External) has NO managed database — the c5c3
@@ -29,12 +30,12 @@
 #
 # It ALWAYS provisions the Keystone pair. It also provisions a Glance pair when
 # the ControlPlane declares spec.services.glance on the SHARED managed database,
-# and a Placement pair under the same condition for spec.services.placement; a
-# service that declares a dedicated database
-# (spec.services.<service>.dedicatedBackingServices.database) is Static-only and
-# is skipped here. Each service's pair is keyed and root-resolved independently in
-# ITS OWN service namespace, so the Glance and Placement engine plumbing is
-# keystone-independent.
+# and Placement and Barbican pairs under the same condition for
+# spec.services.placement and spec.services.barbican; a service that declares a
+# dedicated database (spec.services.<service>.dedicatedBackingServices.database)
+# is Static-only and is skipped here. Each service's pair is keyed and
+# root-resolved independently in ITS OWN service namespace, so the Glance,
+# Placement, and Barbican engine plumbing is keystone-independent.
 #
 # The role is keyed on the KEYSTONE SERVICE NAMESPACE alone — the namespace the
 # MariaDB lives in and the generator's ServiceAccount authenticates from. That is
@@ -242,7 +243,7 @@ main() {
   keystone_db="$(get_controlplane_field '{.spec.infrastructure.database.database}' 'keystone')"
   provision_service_tenant keystone "${keystone_ns}" "${keystone_mariadb}" "${keystone_db}"
 
-  # --- Glance, Placement (only on the shared managed database) ----------------
+  # --- Glance, Placement, Barbican (only on the shared managed database) ------
   # Each of these services gets its OWN keystone-independent engine pair when the
   # ControlPlane declares spec.services.<service>. A service that declares a
   # dedicated database (spec.services.<service>.dedicatedBackingServices.database)
@@ -252,14 +253,25 @@ main() {
   # namespace of its own; its MariaDB is the shared managed cluster resolved in
   # THAT namespace, and its database name is the fixed '<service>' schema.
   #
-  # MUST STAY IN SYNC: the <service>-<namespace> role name below is the derivation
-  # glanceDBDynamicRoleFor / placementDBDynamicRoleFor assert in
+  # MUST STAY IN SYNC (glance, placement): the <service>-<namespace> role name
+  # below is the derivation glanceDBDynamicRoleFor / placementDBDynamicRoleFor
+  # assert in
   # operators/c5c3/internal/controller/reconcile_<service>_dbcredentials.go, and
   # the fixed database name mirrors defaultGlanceDatabaseName /
   # defaultPlacementDatabaseName in
   # operators/c5c3/internal/controller/reconcile_<service>.go.
+  #
+  # BARBICAN HAS NO COUNTERPART YET, deliberately. The c5c3 operator carries no
+  # barbican reconciler and the ControlPlane API has no spec.services.barbican,
+  # so the presence gate below always skips this leg on a live CR — it is the
+  # engine half of the onboarding, pre-wired next to the presence-independent
+  # barbican-db auth role in setup-auth.sh. What it fixes for the reconciler that
+  # lands later is the contract, not the behaviour: the schema is 'barbican' and
+  # the role is barbican-<namespace>, and the c5c3-side constants have to be
+  # written to match. Until then only the mocked-CR unit tests in
+  # tests/unit/deploy/service_namespace_seeding_test.sh reach this iteration.
   local svc svc_ns svc_mariadb
-  for svc in glance placement; do
+  for svc in glance placement barbican; do
     if [[ -z "$(get_controlplane_field "{.spec.services.${svc}}" '')" ]]; then
       log "ControlPlane declares no spec.services.${svc} — skipping the ${svc} database-engine tenant."
       continue

@@ -1449,8 +1449,8 @@ openbao_bootstrap() {
 # Ready. This is the stage-(b) tenant-onboarding step (#439): managed-mode
 # Keystone draws engine-issued credentials from database/mariadb/creds/keystone-
 # <ns>-<cp>, which only exist after setup-database-tenant.sh configures the role.
-# setup-database-tenant.sh ALSO provisions the glance and placement engine
-# connection+role pairs (database/mariadb/creds/<service>-<ns>) when the
+# setup-database-tenant.sh ALSO provisions the glance, placement, and barbican
+# engine connection+role pairs (database/mariadb/creds/<service>-<ns>) when the
 # ControlPlane declares those services on the shared managed database, so this
 # single call onboards every service tenant.
 #
@@ -1470,7 +1470,7 @@ openbao_onboard_database_tenant() {
   # root credential from, not just the ControlPlane's. Each service leg of that
   # script resolves its own service namespace and hard-exits when that namespace's
   # MariaDB root Secret is missing, so a ControlPlane that places Keystone,
-  # Glance, or Placement in a namespace of its own provisions a SECOND
+  # Glance, Placement, or Barbican in a namespace of its own provisions a SECOND
   # openstack-db there on an independent timeline. Waiting only on the
   # ControlPlane's namespace lets the Keystone leg succeed and the Glance leg
   # exit 1 — a partially applied onboarding, with the operator already primed to
@@ -1493,7 +1493,7 @@ openbao_onboard_database_tenant() {
     -o 'jsonpath={.spec.services.keystone.namespace.name}' 2>/dev/null || true)")
 
   local svc
-  for svc in glance placement; do
+  for svc in glance placement barbican; do
     if [[ -n "$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
         -o "jsonpath={.spec.services.${svc}}" 2>/dev/null || true)" &&
       -z "$(kubectl get controlplane "${cp_name}" -n "${cp_ns}" \
