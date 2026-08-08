@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second OpenBao store attached to the same Barbican as 20-openbao-unique-base.
+# The vault plugin reads its server URL, its credentials, and its mount from
+# the process-global [vault_plugin] section every store in one barbican.conf
+# shares, so a second store would not get a second server: whichever section
+# rendered last would decide where the other store's secrets are written. The
+# validating webhook's sibling List rejects it. Applied AFTER
+# 20-openbao-unique-base.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-unique-b
+spec:
+  barbicanRef:
+    name: barbican-unique
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance

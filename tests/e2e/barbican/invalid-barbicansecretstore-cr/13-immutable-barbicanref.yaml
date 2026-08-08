@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Update of the barbicanstore-immutable-ref base CR that re-points
+# spec.barbicanRef.name. The spec-level CEL transition rule
+# (self.barbicanRef.name == oldSelf.barbicanRef.name) rejects the change on
+# UPDATE: re-pointing would leave the old Barbican with a store nothing
+# manages anymore and race the config projection on the new one.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-immutable-ref
+spec:
+  barbicanRef:
+    name: barbican-repointed
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance

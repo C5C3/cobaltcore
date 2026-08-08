@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A managed store (instanceRef) naming a kvMountpoint other than barbican
+# violates the mount CEL rule on OpenBaoStoreSpec; validateStoreUnion mirrors
+# it. The self-init contract provisions exactly one mount and the minted
+# AppRole policy is scoped to it, so any other mount is a path the store's own
+# credentials can neither read nor write.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-foreign-mount
+spec:
+  barbicanRef:
+    name: barbican
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance
+    kvMountpoint: secrets

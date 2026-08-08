@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A spec.extraOptions value carrying a newline is rejected by the validating
+# webhook. The renderer writes `key = value` verbatim into the process-global
+# [vault_plugin] section, so the newline injects a root_token_id line — the
+# credential the denylist exists to keep out of the rendered file, reached
+# through a key that is on no list at all.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-option-control-char
+spec:
+  barbicanRef:
+    name: barbican
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance
+  extraOptions:
+    max_retries: "3\nroot_token_id = hvs.example-root-token"

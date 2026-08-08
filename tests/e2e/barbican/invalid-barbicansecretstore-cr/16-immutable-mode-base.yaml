@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid brownfield base store for the mode-immutability pair. It is applied
+# FIRST and must SUCCEED; 17-immutable-mode reuses this name so it is applied
+# as an UPDATE.
+#
+# The brownfield half is the base, not the update. chainsaw applies an existing
+# object as a merge patch, so the update adds its branch without removing this
+# one, and the transition rule under test is keyed on has(instanceRef): only a
+# base that lacks instanceRef makes that predicate flip on the UPDATE. The
+# keystone database-mode pair (tests/e2e/keystone/invalid-cr) is oriented the
+# same way for the same reason.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-immutable-mode
+spec:
+  barbicanRef:
+    name: barbican-immutable-mode
+  type: OpenBao
+  openBao:
+    server:
+      url: https://openbao.example.com:8200
+      credentialsSecretRef:
+        name: barbican-openbao-credentials

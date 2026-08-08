@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A spec.deployment.topologySpreadConstraints selector that does not equal the
+# Deployment's own selector labels (app.kubernetes.io/name=barbican,
+# app.kubernetes.io/instance=<CR name>) is rejected by the validating webhook
+# via validation.TopologySpreadSelector. The constraint correlates with labels
+# the operator derives from metadata.name, so no marker can express it. A
+# selector matching nothing spreads no pods while reporting no error at all.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-topologyspread
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+    topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app: barbican
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password

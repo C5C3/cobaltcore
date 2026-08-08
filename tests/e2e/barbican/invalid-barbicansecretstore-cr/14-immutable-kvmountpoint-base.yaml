@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid base store for the kvMountpoint-immutability pair, in brownfield mode
+# so it may name a mount of its own. It is applied FIRST and must SUCCEED;
+# 15-immutable-kvmountpoint reuses this name so it is applied as an UPDATE.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-immutable-mount
+spec:
+  barbicanRef:
+    name: barbican-immutable-mount
+  type: OpenBao
+  openBao:
+    server:
+      url: https://openbao.example.com:8200
+      credentialsSecretRef:
+        name: barbican-openbao-credentials
+    kvMountpoint: secrets-a

@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.openBao with neither instanceRef nor server violates the same mode CEL
+# rule from the other side. The block is written as an empty map: the schema
+# default then fills kvMountpoint, so the mode rule is the only one this
+# fixture breaks.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-no-mode
+spec:
+  barbicanRef:
+    name: barbican
+  type: OpenBao
+  openBao: {}

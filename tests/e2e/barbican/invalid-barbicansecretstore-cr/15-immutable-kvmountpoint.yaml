@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Update of the barbicanstore-immutable-mount base CR that names a different
+# mount. The CEL transition rule on OpenBaoStoreSpec (self.kvMountpoint ==
+# oldSelf.kvMountpoint) rejects it on UPDATE: the secret material already
+# written under the old mount is addressed by that mount and is not reachable
+# under a new one.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-immutable-mount
+spec:
+  barbicanRef:
+    name: barbican-immutable-mount
+  type: OpenBao
+  openBao:
+    server:
+      url: https://openbao.example.com:8200
+      credentialsSecretRef:
+        name: barbican-openbao-credentials
+    kvMountpoint: secrets-b

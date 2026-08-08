@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid base store for the OpenBao-uniqueness pair. It is applied FIRST and
+# must SUCCEED; 21-second-openbao attaches a second OpenBao store to the same
+# Barbican. Neither store is a default, so the single-default rule stays out
+# of this pair.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-unique-a
+spec:
+  barbicanRef:
+    name: barbican-unique
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance

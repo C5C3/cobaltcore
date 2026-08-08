@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A metadata.name of 44 characters, one past MaxBarbicanNameLength, is
+# rejected by the validating webhook on CREATE: the {name}-db-clean CronJob
+# would exceed the 52-character cap the API server enforces on CronJob names,
+# so the CR would admit cleanly and then fail every reconcile. The rule runs
+# in ValidateCreate only, so the finalizer-removal update never trips over it.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-name-above-the-db-clean-cap
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password

@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# type OpenBao without a spec.openBao block violates the union CEL rule
+# ((self.type == 'OpenBao') == has(self.openBao)); validateStoreUnion mirrors
+# it. There is nothing to resolve credentials against, so the store could
+# never become ready.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-no-openbao
+spec:
+  barbicanRef:
+    name: barbican
+  type: OpenBao

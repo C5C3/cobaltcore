@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Second isDefault store attached to the same Barbican as 18-default-base.
+# Exactly one default store is allowed per Barbican, so the validating
+# webhook's sibling List rejects the newcomer. Applied AFTER 18-default-base.
+# The OpenBao-uniqueness rule answers this CR as well — OpenBao is the only
+# store type, so any second store on one Barbican breaks it too — and both
+# errors aggregate into the same admission response; 20/21 isolates that rule
+# with a store that is not a default.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-default-b
+spec:
+  barbicanRef:
+    name: barbican-default
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance
+  isDefault: true

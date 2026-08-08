@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid base store for the barbicanRef-immutability pair. It is applied FIRST
+# and must SUCCEED; 13-immutable-barbicanref reuses this name so it is applied
+# as an UPDATE. The referenced Barbican does not have to exist at admission
+# time (GitOps ordering), so the base is admitted.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-immutable-ref
+spec:
+  barbicanRef:
+    name: barbican-immutable-ref
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance

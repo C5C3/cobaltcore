@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Update of the barbicanstore-immutable-mode base CR that swaps the brownfield
+# server for a managed instanceRef. The CEL transition rule
+# (has(self.instanceRef) == has(oldSelf.instanceRef)) rejects it on UPDATE: the
+# switch re-points the plugin at a different server entirely.
+#
+# The merge patch leaves the base's server block in place, so the merged object
+# also trips the exactly-one rule. The API server evaluates every CEL rule and
+# returns both messages, and the suite asserts on the mode one. kvMountpoint is
+# left unset in both halves so it resolves to the same default and the mount
+# transition rule stays satisfied.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-immutable-mode
+spec:
+  barbicanRef:
+    name: barbican-immutable-mode
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance

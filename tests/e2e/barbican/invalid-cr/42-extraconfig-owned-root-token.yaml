@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraConfig setting [vault_plugin] root_token_id is rejected by the
+# validating webhook. The operator authenticates the vault plugin through a
+# mount-scoped AppRole and never renders a root token; honoring the override
+# would replace that credential with an unscoped one and write it in plain
+# text into the config Secret, both done the moment the pods load the file.
+# The option is in the catalog, so the registry's Rejected flag is what
+# answers rather than the unknown-option scan.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-cfg-owned-root-token
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password
+  extraConfig:
+    vault_plugin:
+      root_token_id: "hvs.example-root-token"
