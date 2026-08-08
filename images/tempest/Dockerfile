@@ -12,6 +12,7 @@ FROM venv-builder AS build
 
 # PyPI versions passed by CI from releases/<release>/test-refs.yaml.
 ARG TEMPEST_VERSION=46.3.0
+ARG BARBICAN_TEMPEST_PLUGIN_VERSION=4.4.0
 ARG KEYSTONE_TEMPEST_PLUGIN_VERSION=0.19.0
 
 # Install Tempest and plugins into the shared virtualenv.
@@ -25,6 +26,7 @@ RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target
     uv pip install --prefix /var/lib/openstack \
         --constraint /tmp/upper-constraints.txt \
         tempest==${TEMPEST_VERSION} \
+        barbican-tempest-plugin==${BARBICAN_TEMPEST_PLUGIN_VERSION} \
         keystone-tempest-plugin==${KEYSTONE_TEMPEST_PLUGIN_VERSION} \
         python-openstackclient \
         osc-placement \

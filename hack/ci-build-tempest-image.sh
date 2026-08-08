@@ -33,9 +33,10 @@ TEMPEST_IMAGE="${TEMPEST_IMAGE:-c5c3/tempest:local}"
 # 1. Resolve test component versions from release config
 # ---------------------------------------------------------------------------
 TEMPEST_VERSION=$("${REPO_ROOT}/hack/resolve-test-ref.sh" "releases/${RELEASE}/test-refs.yaml" tempest)
+BTP_VERSION=$("${REPO_ROOT}/hack/resolve-test-ref.sh" "releases/${RELEASE}/test-refs.yaml" barbican-tempest-plugin)
 KTP_VERSION=$("${REPO_ROOT}/hack/resolve-test-ref.sh" "releases/${RELEASE}/test-refs.yaml" keystone-tempest-plugin)
 
-echo "Building Tempest image (tempest=${TEMPEST_VERSION}, keystone-tempest-plugin=${KTP_VERSION})"
+echo "Building Tempest image (tempest=${TEMPEST_VERSION}, barbican-tempest-plugin=${BTP_VERSION}, keystone-tempest-plugin=${KTP_VERSION})"
 
 # ---------------------------------------------------------------------------
 # 2. Build Tempest image
@@ -50,6 +51,7 @@ docker build \
   -f "${REPO_ROOT}/images/tempest/Dockerfile" \
   "${cache_args[@]}" \
   --build-arg "TEMPEST_VERSION=${TEMPEST_VERSION}" \
+  --build-arg "BARBICAN_TEMPEST_PLUGIN_VERSION=${BTP_VERSION}" \
   --build-arg "KEYSTONE_TEMPEST_PLUGIN_VERSION=${KTP_VERSION}" \
   --build-context "upper-constraints=${REPO_ROOT}/releases/${RELEASE}/" \
   "${REPO_ROOT}/images/tempest/"
