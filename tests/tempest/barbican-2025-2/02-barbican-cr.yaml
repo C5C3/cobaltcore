@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Dedicated Barbican CR for the Barbican Tempest leg (2025.2 release).
+# Uses a separate database (barbican_tempest_2025_2) to avoid stale state from
+# prior Chainsaw E2E tests that reuse the same kind cluster. It authenticates
+# against the dedicated keystone-barbican-tempest-2025-2 identity service with
+# the real admin credentials so the barbican_tempest_plugin.tests.api suite
+# exercises the production auth path end-to-end. The database credentials come
+# from the ESO-synced barbican-db Secret and the service-user password from the
+# pre-seeded keystone-admin Secret. Barbican exits at start-up without a secret
+# store, so 03-barbicansecretstore-cr.yaml attaches one before Ready can settle.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-tempest-2025-2
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 3
+  # Barbican ships a WSGI application only, so this pod's request capacity is
+  # replicas × processes. The webhook default (2) is below the stestr worker
+  # count ci-run-tempest.sh runs (TEMPEST_CONCURRENCY, default 4), and the
+  # port-forward pins every worker to this single pod, so raise the process
+  # count to match rather than the replica count.
+  apiServer:
+    uwsgi:
+      processes: 4
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican_tempest_2025_2
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-barbican-tempest-2025-2.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

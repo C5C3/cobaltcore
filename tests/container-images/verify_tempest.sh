@@ -107,6 +107,15 @@ test_osc_placement_cli_registered() {
     "usage: openstack resource class list"
 }
 
+# --- Test 8: barbican-tempest-plugin is importable ---
+test_barbican_tempest_plugin_importable() {
+  echo "Test: barbican-tempest-plugin is importable"
+  local exit_code=0
+  docker run --rm "$IMAGE" python3 -c 'import barbican_tempest_plugin' > /dev/null 2>&1 || exit_code=$?
+
+  assert_eq "import barbican_tempest_plugin exits 0" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== tempest container verification tests ==="
 echo "Image: $IMAGE"
@@ -124,6 +133,8 @@ echo ""
 test_no_build_tools_in_final_image
 echo ""
 test_osc_placement_cli_registered
+echo ""
+test_barbican_tempest_plugin_importable
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

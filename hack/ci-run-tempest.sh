@@ -40,18 +40,25 @@
 #                   and add-hosts its cluster-local DNS names to 127.0.0.1 so the
 #                   catalog's image endpoint resolves to the forwarded port. Used
 #                   by the glance leg (tempest.api.image against a real Glance).
+#   BARBICAN_K8S_NAME — K8s Service name of a Barbican API to port-forward on
+#                   9311 (default: empty). The barbican counterpart of
+#                   GLANCE_K8S_NAME: same forward, /healthcheck poll and
+#                   add-host treatment, so the catalog's key-manager endpoint
+#                   resolves to the forwarded port. Used by the barbican leg
+#                   (barbican_tempest_plugin.tests.api against a real Barbican).
 #   TEMPEST_CONCURRENCY — stestr worker count (default: 4). Must not exceed the
 #                   request capacity (replicas × uwsgi.processes) of ANY target
-#                   it drives — the Keystone target, and on the glance leg the
-#                   Glance target too. Both port-forwards pin to a single pod,
-#                   so capacity is raised via uwsgi.processes in the target CR,
-#                   not via replicas.
+#                   it drives — the Keystone target, and on the glance and
+#                   barbican legs their service target too. Every port-forward
+#                   pins to a single pod, so capacity is raised via
+#                   uwsgi.processes in the target CR, not via replicas.
 #
 # The include list is scope-split into a core (tempest.*) and a plugin
-# (keystone_tempest_plugin.*) phase. Every non-comment line must land in exactly
+# (<service>_tempest_plugin.*) phase. Every non-comment line must land in exactly
 # one phase (unknown prefixes are a hard failure), but ONE phase may be empty —
-# a pure tempest.api.image include list (the glance leg) has no plugin phase, so
-# hack/tempest/run-tests.sh skips the empty plugin phase instead of running it.
+# a pure tempest.api.image include list (the glance leg) has no plugin phase and
+# a pure barbican_tempest_plugin.* one (the barbican leg) has no core phase, so
+# hack/tempest/run-tests.sh skips whichever phase is empty.
 #
 # CI-specific Tempest wrapper script.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -83,6 +90,10 @@ CATALOG_SVC="${SERVICE_K8S_NAME}.${NAMESPACE}.svc.cluster.local"
 # keystone-only scenario.
 GLANCE_K8S_NAME="${GLANCE_K8S_NAME:-}"
 
+# Optional Barbican API to port-forward on 9311 (barbican leg). Empty for the
+# keystone-only scenario.
+BARBICAN_K8S_NAME="${BARBICAN_K8S_NAME:-}"
+
 # ---------------------------------------------------------------------------
 # 1. Prepare output directories
 # ---------------------------------------------------------------------------
@@ -109,10 +120,14 @@ ADMIN_PASSWORD=$(echo "${ADMIN_PASSWORD_B64}" | base64 -d)
 kubectl port-forward "svc/${SERVICE_K8S_NAME}" -n "${NAMESPACE}" 5000:5000 >/dev/null 2>&1 &
 PF_PID=$!
 GLANCE_PF_PID=""
+BARBICAN_PF_PID=""
 cleanup() {
   kill "${PF_PID}" 2>/dev/null || true
   if [[ -n "${GLANCE_PF_PID}" ]]; then
     kill "${GLANCE_PF_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${BARBICAN_PF_PID}" ]]; then
+    kill "${BARBICAN_PF_PID}" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
@@ -121,6 +136,13 @@ trap cleanup EXIT
 if [[ -n "${GLANCE_K8S_NAME}" ]]; then
   kubectl port-forward "svc/${GLANCE_K8S_NAME}" -n "${NAMESPACE}" 9292:9292 >/dev/null 2>&1 &
   GLANCE_PF_PID=$!
+fi
+
+# Forward the Barbican API alongside Keystone when a barbican target is
+# configured.
+if [[ -n "${BARBICAN_K8S_NAME}" ]]; then
+  kubectl port-forward "svc/${BARBICAN_K8S_NAME}" -n "${NAMESPACE}" 9311:9311 >/dev/null 2>&1 &
+  BARBICAN_PF_PID=$!
 fi
 
 ready=false
@@ -147,6 +169,21 @@ if [[ -n "${GLANCE_K8S_NAME}" ]]; then
   done
   if [[ "${glance_ready}" != "true" ]]; then
     echo "::error::Glance API at http://localhost:9292 did not become reachable after 10 attempts"
+    exit 1
+  fi
+fi
+
+if [[ -n "${BARBICAN_K8S_NAME}" ]]; then
+  barbican_ready=false
+  for _ in $(seq 1 10); do
+    if curl -sf http://localhost:9311/healthcheck >/dev/null 2>&1; then
+      barbican_ready=true
+      break
+    fi
+    sleep 1
+  done
+  if [[ "${barbican_ready}" != "true" ]]; then
+    echo "::error::Barbican API at http://localhost:9311 did not become reachable after 10 attempts"
     exit 1
   fi
 fi
@@ -198,7 +235,7 @@ fi
 
 grep -E '^tempest\.' "${CONFIG_DIR}/include-tests.txt" \
   > "${PHASES_DIR}/phase-1-core.txt" || true
-grep -E '^keystone_tempest_plugin\.' "${CONFIG_DIR}/include-tests.txt" \
+grep -E '^[a-z0-9_]+_tempest_plugin\.' "${CONFIG_DIR}/include-tests.txt" \
   > "${PHASES_DIR}/phase-2-plugin.txt" || true
 
 # Invariant: every non-comment, non-empty line in include-tests.txt must land
@@ -211,12 +248,13 @@ PHASE2_COUNT=$(wc -l < "${PHASES_DIR}/phase-2-plugin.txt" | tr -d ' ')
 COVERED=$((PHASE1_COUNT + PHASE2_COUNT))
 
 if [[ "${COVERED}" -ne "${TOTAL_PATTERNS}" ]]; then
-  echo "::error::Scope-split does not cover include-tests.txt: ${TOTAL_PATTERNS} patterns, ${COVERED} covered (phase1=${PHASE1_COUNT}, phase2=${PHASE2_COUNT}). Every non-comment line must start with 'tempest.' or 'keystone_tempest_plugin.'."
+  echo "::error::Scope-split does not cover include-tests.txt: ${TOTAL_PATTERNS} patterns, ${COVERED} covered (phase1=${PHASE1_COUNT}, phase2=${PHASE2_COUNT}). Every non-comment line must match '^tempest\\.' or '^[a-z0-9_]+_tempest_plugin\\.'."
   exit 1
 fi
 # One phase may be empty — a pure tempest.api.image include list (the glance
-# leg) has no plugin phase, and run-tests.sh skips an empty phase — but both
-# empty means the include list selects nothing runnable.
+# leg) has no plugin phase and a pure barbican_tempest_plugin.* one (the
+# barbican leg) has no core phase, and run-tests.sh skips an empty phase — but
+# both empty means the include list selects nothing runnable.
 if [[ "${PHASE1_COUNT}" -eq 0 && "${PHASE2_COUNT}" -eq 0 ]]; then
   echo "::error::Scope-split produced two empty phases (phase1=${PHASE1_COUNT}, phase2=${PHASE2_COUNT}). include-tests.txt selects no runnable patterns."
   exit 1
@@ -230,9 +268,9 @@ fi
 WORKSPACE_ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
 
 # Point the catalog's service DNS names at the forwarded ports inside the
-# container. The keystone names are always present; the glance names are added
-# only when a glance target is configured so its image endpoint resolves to the
-# forwarded 9292.
+# container. The keystone names are always present; the glance and barbican
+# names are added only when the matching target is configured so their image
+# and key-manager endpoints resolve to the forwarded 9292 and 9311.
 ADD_HOST_ARGS=(
   --add-host "${CATALOG_SVC}:127.0.0.1"
   --add-host "${SERVICE_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1"
@@ -240,6 +278,10 @@ ADD_HOST_ARGS=(
 if [[ -n "${GLANCE_K8S_NAME}" ]]; then
   ADD_HOST_ARGS+=(--add-host "${GLANCE_K8S_NAME}.${NAMESPACE}.svc.cluster.local:127.0.0.1")
   ADD_HOST_ARGS+=(--add-host "${GLANCE_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1")
+fi
+if [[ -n "${BARBICAN_K8S_NAME}" ]]; then
+  ADD_HOST_ARGS+=(--add-host "${BARBICAN_K8S_NAME}.${NAMESPACE}.svc.cluster.local:127.0.0.1")
+  ADD_HOST_ARGS+=(--add-host "${BARBICAN_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1")
 fi
 
 docker run --rm \

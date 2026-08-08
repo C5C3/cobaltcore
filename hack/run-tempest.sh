@@ -281,7 +281,7 @@ run_tempest() {
   mkdir -p "${phases_dir}"
   grep -E '^tempest\.' "${config_dir}/include-tests.txt" \
     > "${phases_dir}/phase-1-core.txt" || true
-  grep -E '^keystone_tempest_plugin\.' "${config_dir}/include-tests.txt" \
+  grep -E '^[a-z0-9_]+_tempest_plugin\.' "${config_dir}/include-tests.txt" \
     > "${phases_dir}/phase-2-plugin.txt" || true
 
   local total_patterns phase1_count phase2_count
@@ -291,12 +291,13 @@ run_tempest() {
   phase2_count=$(wc -l < "${phases_dir}/phase-2-plugin.txt" | tr -d ' ')
   if [[ $((phase1_count + phase2_count)) -ne "${total_patterns}" ]]; then
     log "ERROR: scope-split does not cover include-tests.txt: ${total_patterns} patterns, $((phase1_count + phase2_count)) covered (phase1=${phase1_count}, phase2=${phase2_count})."
-    log "ERROR: every non-comment line must start with 'tempest.' or 'keystone_tempest_plugin.'."
+    log "ERROR: every non-comment line must match '^tempest\\.' or '^[a-z0-9_]+_tempest_plugin\\.'."
     return 1
   fi
   # ONE phase may legitimately be empty: a pure tempest.api.* include list (the
-  # glance legs) has no plugin phase, and hack/tempest/run-tests.sh — the runner
-  # this function installs into the container below — skips an empty plugin
+  # glance legs) has no plugin phase and a pure <service>_tempest_plugin.* one
+  # (the barbican legs) has no core phase, and hack/tempest/run-tests.sh — the
+  # runner this function installs into the container below — skips an empty
   # phase instead of running stestr with an empty include list. Only a split
   # that selects nothing at all is a real error.
   if [[ "${phase1_count}" -eq 0 && "${phase2_count}" -eq 0 ]]; then

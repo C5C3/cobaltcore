@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Registers the Barbican key-manager service and its public/internal endpoints
+# in the keystone-barbican-tempest-2026-1 catalog so Tempest's key-manager
+# client can discover the barbican-tempest-2026-1 API, and creates the
+# key-manager:service-admin role the plugin's quota tests assign via dynamic
+# credentials. keystone-manage bootstrap only creates the identity service, so
+# all of these must be added out-of-band.
+#
+# It authenticates as the bootstrap admin (keystone-admin Secret) and is written
+# idempotently so a Job retry converges rather than duplicating or erroring.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: barbican-tempest-catalog-setup
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-barbican-tempest-2026-1.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # Each step is idempotent so a Job retry re-converges instead of
+              # failing on AlreadyExists.
+              #
+              # Service create is guarded by a name-list grep (mirroring the
+              # external-keystone fixture): `openstack service show` of a missing
+              # resource can exit 0 on this image, so a show-guard would skip the
+              # create; listing + an exact-match grep is unambiguous.
+              if ! openstack service list --format value -c Name | grep -qx barbican; then
+                openstack service create --name barbican \
+                  --description "OpenStack Key Manager Service" key-manager
+              fi
+
+              # Endpoints are guarded by listing the barbican service's existing
+              # endpoints for the interface and matching the exact URL (fixed
+              # string, so the dotted FQDN is not treated as a regex).
+              create_endpoint() {
+                interface="$1"
+                url="$2"
+                if ! openstack endpoint list --service barbican --interface "${interface}" \
+                     --format value -c URL | grep -qxF "${url}"; then
+                  openstack endpoint create --region RegionOne key-manager "${interface}" "${url}"
+                fi
+              }
+
+              BARBICAN_URL="http://barbican-tempest-2026-1.openstack.svc:9311"
+              create_endpoint public "${BARBICAN_URL}"
+              create_endpoint internal "${BARBICAN_URL}"
+
+              # ProjectQuotasTest requests dynamic credentials carrying the
+              # key-manager:service-admin role, which devstack's barbican
+              # plugin normally creates. --or-show keeps the create idempotent
+              # (a show-guard would be unreliable on this image, see above).
+              openstack role create --or-show key-manager:service-admin
+
+              echo "OK: barbican service, endpoints, and role registered"
+              openstack endpoint list --service barbican --format value -c Interface -c URL

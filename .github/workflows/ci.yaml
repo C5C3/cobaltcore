@@ -1922,6 +1922,27 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+      # -- Barbican --------------------------------------------------------
+      # The barbican leg additionally pulls the barbican-operator and the
+      # matching barbican service image; the keystone leg needs neither.
+      - name: Load Barbican E2E images
+        if: matrix.service == 'barbican'
+        uses: ./.github/actions/load-e2e-images
+        with:
+          images: |
+            ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
+            ${{ env.IMAGE_PREFIX }}/barbican:${{ matrix.release }}
+      # The tempest image is kind-loaded on the barbican leg for the same reason
+      # as on the glance leg: it also runs in-cluster as the catalog-setup Job,
+      # which resolves the image on the kind node (imagePullPolicy: IfNotPresent)
+      # and would otherwise pull the published tag from GHCR instead of this PR's
+      # build.
+      - name: Load Barbican images into kind
+        if: matrix.service == 'barbican'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -1940,8 +1961,23 @@ jobs:
           OPERATOR: glance
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/glance-operator
           NAMESPACE: glance-system
-      # Both services deploy the Keystone CR from their own config-dir (the
-      # glance leg runs against its own keystone-glance-tempest identity CR).
+      # The barbican leg needs the barbican-operator in its own barbican-system
+      # namespace before its Barbican CR reconciles. The managed
+      # BarbicanSecretStore lives in the openstack Namespace, and the operator
+      # only mints its OpenBaoCluster provisioner token where the chart granted
+      # it a TokenRequest Role, hence the Namespace=provisioner-account pair the
+      # grant is rendered from and restricted to.
+      - name: Deploy barbican operator
+        if: matrix.service == 'barbican'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: barbican
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator
+          NAMESPACE: barbican-system
+          BARBICAN_SECRET_STORE_GRANTS: openstack=openbao-instance-provisioner
+      # Every service deploys the Keystone CR from its own config-dir (the
+      # glance and barbican legs run against their own
+      # keystone-<service>-tempest identity CR).
       - name: Deploy Keystone CR for Tempest
         run: |
           kubectl apply -f ${{ matrix.config-dir }}/00-keystone-cr.yaml
@@ -1964,6 +2000,27 @@ jobs:
           kubectl apply -f ${{ matrix.config-dir }}/04-glancebackend2-cr.yaml
           kubectl wait glance/${{ matrix.glance-cr-name }} -n openstack \
             --for=condition=Ready --timeout=300s
+      # The barbican leg bootstraps the key-manager catalog (Keystone service +
+      # endpoints via a setup Job) before its Barbican + BarbicanSecretStore CRs,
+      # which depend on that catalog entry to reconcile.
+      - name: Bootstrap key-manager catalog
+        if: matrix.service == 'barbican'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/01-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/barbican-tempest-catalog-setup -n openstack \
+            --timeout=300s
+      # The store goes Ready first: Barbican renders no config and never starts
+      # without a credential-ready default store, so waiting on it separately
+      # keeps a store-side failure from surfacing as an opaque Barbican timeout.
+      - name: Deploy Barbican CR for Tempest
+        if: matrix.service == 'barbican'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/02-barbican-cr.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/03-barbicansecretstore-cr.yaml
+          kubectl wait barbicansecretstore/${{ matrix.barbican-cr-name }}-store -n openstack \
+            --for=condition=Ready --timeout=300s
+          kubectl wait barbican/${{ matrix.barbican-cr-name }} -n openstack \
+            --for=condition=Ready --timeout=300s
       # Use shared Tempest wrapper script.
       - name: Run Tempest API tests
         run: hack/ci-run-tempest.sh
@@ -1975,6 +2032,10 @@ jobs:
           # (matrix key absent → ""), which disables the 9292 port-forward in
           # ci-run-tempest.sh.
           GLANCE_K8S_NAME: ${{ matrix.glance-cr-name }}
+          # The Barbican Service carries the CR name. Empty for the keystone and
+          # glance legs (matrix key absent → ""), which disables the 9311
+          # port-forward in ci-run-tempest.sh.
+          BARBICAN_K8S_NAME: ${{ matrix.barbican-cr-name }}
       - name: Upload Tempest results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
