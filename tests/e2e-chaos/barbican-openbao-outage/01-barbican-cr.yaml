@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Barbican CR fixture for the OpenBao outage chaos test. Unique name
+# (barbican-bao-outage) and database (barbican_bao_outage) to avoid conflicts
+# with other test suites. Managed database via clusterRef to openstack-db,
+# cache via clusterRef to openstack-memcached.
+#
+# keystoneEndpoint points at the Keystone this suite brings up in
+# 00-keystone-cr.yaml, and serviceUser is that Keystone's bootstrap admin, whose
+# password the pre-seeded keystone-admin Secret carries. The probes authenticate
+# as the same identity, so the token the API validates and the token the probe
+# presents come from one Keystone.
+#
+# Two replicas, not one: the fail-closed probe parks a uWSGI worker on a request
+# that drops into the partition, and the suite asserts /healthcheck keeps
+# answering while that request hangs. With one replica (two uWSGI processes) the
+# hung worker would be half the capacity serving health traffic.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-bao-outage
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 2
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican_bao_outage
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-barbican-outage.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

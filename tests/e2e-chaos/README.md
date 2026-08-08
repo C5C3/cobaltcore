@@ -35,8 +35,9 @@ as in `tests/e2e/README.md`. Chaos-specific rules:
   `blacksmith-4vcpu-ubuntu-2404` for now (it is the blocking leg and has not
   been stable on the self-hosted runners); the `network` leg runs on the
   `self-hosted` runners. The NetworkChaos suites
-  (`mariadb-network-latency`, `-partition`, `glance-garage-outage`) need the
-  `sch_netem`/`ip_set` kernel modules, which `hack/deploy-infra.sh` loads
+  (`mariadb-network-latency`, `-partition`, `glance-garage-outage`,
+  `barbican-openbao-outage`) need the `sch_netem`/`ip_set` kernel
+  modules, which `hack/deploy-infra.sh` loads
   (installing `linux-modules-extra-$(uname -r)` on demand); that leg stays
   `continue-on-error`.
 - **Recovery assertions are UID-gated** where the contract is "a new pod

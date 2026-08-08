@@ -723,11 +723,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Tempest and the e2e-chaos suites always exercise both keystone and
-      # glance, and the e2e-chaos pod leg always exercises placement, so all
-      # three must be built regardless of which operator triggered the
-      # pipeline.  Union the changed-operator list with fixed "keystone",
-      # "glance" and "placement" entries so the dependency is explicit.
+      # Tempest and the e2e-chaos suites always exercise keystone and glance,
+      # both e2e-chaos legs always exercise barbican (the operator pod-kill suite
+      # on the pod leg, the OpenBao outage suite on the network leg), and the
+      # e2e-chaos pod leg always exercises placement, so all four must be built
+      # regardless of which operator triggered the pipeline.  Union the
+      # changed-operator list with fixed "keystone", "glance", "placement" and
+      # "barbican" entries so the dependency is explicit.
       #
       # placement is unioned in unconditionally rather than behind a copy of
       # the e2e-chaos `if:`. That condition lives hundreds of lines away and
@@ -1219,6 +1221,7 @@ jobs:
               tests/e2e-chaos/operator-pod-kill
               tests/e2e-chaos/glance-operator-pod-kill
               tests/e2e-chaos/placement-operator-pod-kill
+              tests/e2e-chaos/barbican-operator-pod-kill
           - suite: network
             runner: self-hosted
             test_dirs: >-
@@ -1226,6 +1229,7 @@ jobs:
               tests/e2e-chaos/mariadb-network-latency
               tests/e2e-chaos/mariadb-network-partition
               tests/e2e-chaos/glance-garage-outage
+              tests/e2e-chaos/barbican-openbao-outage
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     # Pod-chaos is blocking; network-chaos stays non-blocking (its kernel-module
@@ -1253,6 +1257,8 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/horizon:2025.2
             ${{ env.IMAGE_PREFIX }}/glance-operator:dev
             ${{ env.IMAGE_PREFIX }}/glance:2025.2
+            ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
+            ${{ env.IMAGE_PREFIX }}/barbican:2025.2
             # placement is exercised by the pod leg alone (see the pod-leg-only
             # load and deploy steps below); the action skips the blank lines the
             # network leg renders here.
@@ -1267,9 +1273,11 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2025.2 --name ${{ env.KIND_CLUSTER }}
       # placement-operator-pod-kill is the only suite that touches placement and
-      # it runs on the pod leg; none of the network leg's four suites reference
-      # it. Keep the load off that leg — `kind load docker-image` is a docker
+      # it runs on the pod leg; none of the network leg's suites reference it.
+      # Keep the load off that leg — `kind load docker-image` is a docker
       # save piped into the node's containerd and the placement service image is
       # the expensive half of the pair.
       - name: Load placement images into kind
@@ -1330,6 +1338,23 @@ jobs:
           OPERATOR: placement
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
           NAMESPACE: placement-system
+      # Both barbican chaos suites need the barbican-operator, one per leg
+      # (barbican-operator-pod-kill on pod, barbican-openbao-outage on network),
+      # so unlike placement this deploy is unconditional. Like horizon and glance
+      # it must land in its own barbican-system namespace, not the script's
+      # keystone-system default: that is where the Flux/deploy-infra path
+      # installs it and where the pod-kill suite's selector and PodChaos look.
+      - name: Deploy barbican operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: barbican
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator
+          NAMESPACE: barbican-system
+          # Both suites create their managed BarbicanSecretStore in the openstack
+          # Namespace, and the operator only mints their OpenBaoCluster
+          # provisioner token where the chart granted it a TokenRequest Role,
+          # restricted to the provisioner account of the proving instance.
+          BARBICAN_SECRET_STORE_GRANTS: openstack=openbao-instance-provisioner
       - name: Run chaos E2E tests
         run: |
           mkdir -p _output/reports

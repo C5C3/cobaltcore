@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Barbican CR fixture for the chaos test. Unique name (barbican-chaos-op) and
+# database (barbican_chaos_opkill) to avoid conflicts with other test suites.
+# Managed database via clusterRef to openstack-db, cache via clusterRef to
+# openstack-memcached. Barbican resolves its secret store at process start, so
+# 01-barbican-secretstore.yaml attaches a default store the CR needs before
+# Ready can settle.
+#
+# No Keystone runs in this leg. keystoneEndpoint is required by the CRD and is
+# rendered into [keystone_authtoken], but nothing here authenticates: the
+# operator's readiness probe hits /healthcheck, which the paste composite routes
+# outside the authtoken pipeline. The suite that does authenticate is
+# barbican-openbao-outage, which brings its own Keystone.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-chaos-op
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican_chaos_opkill
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

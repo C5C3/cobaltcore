@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkChaos CR to partition barbican-api <-> OpenBao traffic.
+#
+# The partition is enforced on the OpenBao (server) side on purpose. barbican-api
+# does not connect to an OpenBao pod IP — the managed store derives its server URL
+# from the instance name, so the vault plugin connects to the ClusterIP Service
+# openbao-instance.openstack.svc. chaos-mesh installs its drop rule inside the
+# *selector* pods' network namespace and matches the *target* pods by their pod
+# IPs. If the rule were installed on the barbican-api (client) side, it would
+# match OpenBao pod IPs — but at that point the packet still carries the Service
+# ClusterIP, because kube-proxy only DNATs ClusterIP -> pod IP later, in the
+# node's root namespace, after the packet has left the pod. The rule would
+# therefore never match and the partition would be a no-op for Service-routed
+# traffic.
+#
+# Installing the rule on the OpenBao pods and dropping traffic *from* the
+# barbican-api pods works because, by the time the packet reaches the OpenBao
+# namespace, it has already been DNATed and carries the real barbican-api pod
+# source IP — the same reason Kubernetes NetworkPolicies can match Service-routed
+# traffic by client pod IP. direction 'both' fully severs the link in either
+# direction.
+#
+# Selector label provenance: no live cluster was available when this fixture was
+# written, so the OpenBao pod labels were read from the openbao-operator source
+# at the digest operators/barbican/go.mod pins,
+# v0.0.0-20260808005538-409f4827aa44. resourceidentity.Labels() (internal/
+# platform/resourceidentity/names.go) stamps every OpenBaoCluster-owned object,
+# pods included, with app.kubernetes.io/name=openbao,
+# app.kubernetes.io/instance=<cluster>, app.kubernetes.io/managed-by=
+# openbao-operator and openbao.org/cluster=<cluster>; the same four are pinned by
+# internal/app/openbaocluster/labels.go and asserted in its infra_test.go. The
+# pod template adds openbao.org/workload-pool and openbao.org/revision, both of
+# which change with the workload generation, so neither is used here. Name plus
+# cluster is enough to be exact: the management OpenBao runs in shared-services,
+# and openbao-instance is the only OpenBaoCluster in openstack.
+#
+# The target is narrowed to the API component. barbican-api is the only workload
+# of this Barbican that talks to the secret store; the db-sync, schema-check and
+# db-clean pods carry the same name and instance labels but reach only MariaDB,
+# so partitioning them would widen the fault beyond what the suite asserts.
+#
+# Duration is a safety net for auto-expiry if the test does not explicitly delete
+# the CR; step 7 lifts the partition explicitly. It must *exceed* the Chainsaw
+# assert window, not equal it. An equal duration self-heals at the exact deadline:
+# chaos-mesh restores OpenBao connectivity in the same instant the fail-closed
+# assertion (step 6) is still probing, which can flip a failing write back to
+# success mid-assert and mask the fault — exactly the trap the mariadb suite
+# documents. 600s sits above the 5m assert window with margin.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-openbao-barbican
+  namespace: openstack
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: openbao
+      openbao.org/cluster: openbao-instance
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - openstack
+      labelSelectors:
+        app.kubernetes.io/name: barbican
+        app.kubernetes.io/instance: barbican-bao-outage
+        app.kubernetes.io/component: api
+  duration: "600s"

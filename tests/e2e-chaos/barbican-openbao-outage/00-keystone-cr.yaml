@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the OpenBao outage chaos test. Uses unique name
+# (keystone-barbican-outage) and database (keystone_barbican_outage) to avoid
+# conflicts with other test suites.
+#
+# This suite is the only chaos suite that talks to the Barbican API as an
+# authenticated user, so it brings its own Keystone rather than pointing at
+# whatever another suite happened to leave behind. The Service the operator
+# projects carries the CR name, so the Barbican CR's keystoneEndpoint resolves
+# to keystone-barbican-outage.openstack.svc.cluster.local:5000.
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-barbican-outage
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_barbican_outage
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
