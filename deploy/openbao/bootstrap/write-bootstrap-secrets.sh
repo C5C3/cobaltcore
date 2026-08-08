@@ -336,6 +336,21 @@ main() {
     "username=placement" \
     "password=${GENERATED_PASSWORD}"
 
+  # Standalone (non-ControlPlane) Barbican demos read a static KV DB credential
+  # too, mirroring the Placement standalone seed above. It is read by the
+  # kind-only barbican-db ExternalSecret
+  # (deploy/kind/infrastructure/barbican-db-externalsecret.yaml) and materialised
+  # as the Secret the barbican e2e suites' Barbican CR selects via
+  # database.secretRef. No PushSecret targets it, so no mark_eso_managed is needed.
+  #
+  # The path mirrors the Keystone standalone shape with the barbican service
+  # segment (openstack/barbican/{namespace}/standalone/db); like placement-db, the
+  # barbican-db ExternalSecret reaches it through the per-tenant
+  # openbao-tenant-store.
+  write_secret_if_missing "kv-v2/openstack/barbican/openstack/standalone/db" \
+    "username=barbican" \
+    "password=${GENERATED_PASSWORD}"
+
   log "=== Done ==="
 }
 
