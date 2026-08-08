@@ -106,7 +106,7 @@ test_glance_test_matrices() {
   echo "Test: unit and integration test matrices include glance"
 
   local matrix_count
-  matrix_count=$(grep -c "target: \[common, keystone, c5c3, horizon, glance, placement\]" "$CI_YAML")
+  matrix_count=$(grep -c "target: \[common, keystone, c5c3, horizon, glance, placement, barbican\]" "$CI_YAML")
 
   assert_eq \
     "both test and test-integration matrices list glance" \

@@ -105,7 +105,7 @@ test_sentinel_matrix_yields_only_the_fixed_union() {
 
   assert_not_contains "sentinel is filtered out of the build union" "$ops" "__none__"
   assert_eq "only the fixed keystone/glance/placement union is built" \
-    "keystone glance placement" "$ops"
+    "keystone glance placement barbican" "$ops"
 }
 
 test_changed_operators_still_union_with_the_fixed_set() {
@@ -115,7 +115,7 @@ test_changed_operators_still_union_with_the_fixed_set() {
   ops=$(run_resolve_step '{"operator":["keystone","horizon"]}' 'false')
 
   assert_eq "changed operators are preserved and deduplicated" \
-    "keystone horizon glance placement" "$ops"
+    "keystone horizon glance placement barbican" "$ops"
 }
 
 test_controlplane_extras_are_appended() {
@@ -126,7 +126,7 @@ test_controlplane_extras_are_appended() {
 
   assert_not_contains "sentinel is filtered on the controlplane path too" "$ops" "__none__"
   assert_eq "controlplane extras join the fixed union" \
-    "keystone glance placement c5c3 horizon" "$ops"
+    "keystone glance placement barbican c5c3 horizon" "$ops"
 }
 
 # ---------------------------------------------------------------------------

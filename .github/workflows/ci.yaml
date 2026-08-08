@@ -103,6 +103,10 @@ jobs:
               - 'operators/placement/**'
               - 'operators/Dockerfile'
               - 'images/placement/**'
+            barbican:
+              - 'operators/barbican/**'
+              - 'operators/Dockerfile'
+              - 'images/barbican/**'
             docs:
               - 'docs/**'
               - 'package.json'
@@ -119,6 +123,7 @@ jobs:
               - 'operators/horizon/helm/**'
               - 'operators/glance/helm/**'
               - 'operators/placement/helm/**'
+              - 'operators/barbican/helm/**'
               - 'operators/shared/helm/**'
               - 'hack/gen-helm-values-schema.py'
               - 'Makefile'
@@ -190,12 +195,13 @@ jobs:
       - name: Resolve effective changes
         id: result
         env:
-          ALL_OPERATORS: keystone c5c3 horizon glance placement
+          ALL_OPERATORS: keystone c5c3 horizon glance placement barbican
           FILTER_keystone: ${{ steps.filter.outputs.keystone }}
           FILTER_c5c3: ${{ steps.filter.outputs.c5c3 }}
           FILTER_horizon: ${{ steps.filter.outputs.horizon }}
           FILTER_glance: ${{ steps.filter.outputs.glance }}
           FILTER_placement: ${{ steps.filter.outputs.placement }}
+          FILTER_barbican: ${{ steps.filter.outputs.barbican }}
           FILTER_docs: ${{ steps.filter.outputs.docs }}
           FILTER_helm: ${{ steps.filter.outputs.helm }}
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
@@ -378,7 +384,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [common, keystone, c5c3, horizon, glance, placement]
+        target: [common, keystone, c5c3, horizon, glance, placement, barbican]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -415,7 +421,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [common, keystone, c5c3, horizon, glance, placement]
+        target: [common, keystone, c5c3, horizon, glance, placement, barbican]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -563,13 +569,13 @@ jobs:
         run: make helm-deps
       - name: Helm lint
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator operators/barbican/helm/barbican-operator; do
             echo "--- lint $chart ---"
             helm lint "$chart"
           done
       - name: Helm template
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator operators/barbican/helm/barbican-operator; do
             echo "=== $chart ==="
             echo "--- Scenario 1: default values ---"
             helm template test "$chart"
@@ -584,7 +590,7 @@ jobs:
           done
       - name: Helm unittest
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator operators/barbican/helm/barbican-operator; do
             echo "--- unittest $chart ---"
             helm unittest "$chart"
           done
@@ -743,7 +749,7 @@ jobs:
           # `make docker-build OPERATOR=__none__` fails the build on exactly
           # the PRs the comment above describes.
           ops=$(echo '${{ needs.changes.outputs.e2e-operators }}' | jq -r '.operator[] | select(. != "__none__")')
-          for base in keystone glance placement; do
+          for base in keystone glance placement barbican; do
             if ! printf '%s\n' $ops | grep -qx "$base"; then
               ops=$(printf '%s\n%s' "$ops" "$base")
             fi
@@ -1982,7 +1988,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [keystone-operator, keystone, c5c3-operator, horizon-operator, horizon, glance-operator, glance, placement-operator, placement, tempest]
+        package: [keystone-operator, keystone, c5c3-operator, horizon-operator, horizon, glance-operator, glance, placement-operator, placement, barbican-operator, barbican, tempest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # GH-312: do NOT pass delete-untagged here. This job runs in

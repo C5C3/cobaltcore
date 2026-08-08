@@ -60,9 +60,9 @@ extract_yaml_step() {
 
 # Run ci-resolve-changes.sh with the supplied env and echo the GITHUB_OUTPUT
 # contents. ALL_OPERATORS deliberately mirrors the ci.yaml value ("keystone
-# c5c3 horizon glance placement") so the behavioural assertions exercise the
-# real resolution codepath. Args are passed as KEY=VALUE pairs through the
-# caller's env block.
+# c5c3 horizon glance placement barbican") so the behavioural assertions
+# exercise the real resolution codepath. Args are passed as KEY=VALUE pairs
+# through the caller's env block.
 run_resolve() {
   local out
   out=$(mktemp)
@@ -148,7 +148,7 @@ test_placement_test_matrices() {
   echo "Test: unit and integration test matrices include placement"
 
   local matrix_count
-  matrix_count=$(grep -c "target: \[common, keystone, c5c3, horizon, glance, placement\]" "$CI_YAML")
+  matrix_count=$(grep -c "target: \[common, keystone, c5c3, horizon, glance, placement, barbican\]" "$CI_YAML")
 
   assert_eq \
     "both test and test-integration matrices list placement" \
@@ -286,7 +286,7 @@ test_placement_build_is_unconditional() {
   assert_contains \
     "the unconditional build union lists keystone, glance and placement" \
     "$resolve_step" \
-    "for base in keystone glance placement; do"
+    "for base in keystone glance placement barbican; do"
 
   # Gating the union on a hand-copied duplicate of the e2e-chaos `if:` is the
   # failure this asserts against: the two conditions drift, build-e2e-images
@@ -322,13 +322,14 @@ test_resolve_emits_placement_on_operator_change() {
 
   local resolved operators has
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance placement" \
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican" \
     GITHUB_REF="refs/heads/main" \
     FILTER_keystone="false" \
     FILTER_c5c3="false" \
     FILTER_horizon="false" \
     FILTER_glance="false" \
     FILTER_placement="true" \
+    FILTER_barbican="false" \
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
@@ -361,13 +362,14 @@ test_resolve_excludes_placement_on_keystone_only_change() {
 
   local resolved operators
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance placement" \
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican" \
     GITHUB_REF="refs/heads/main" \
     FILTER_keystone="true" \
     FILTER_c5c3="false" \
     FILTER_horizon="false" \
     FILTER_glance="false" \
     FILTER_placement="false" \
+    FILTER_barbican="false" \
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
@@ -390,17 +392,18 @@ test_resolve_excludes_placement_on_keystone_only_change() {
 }
 
 test_resolve_emits_all_on_go_common_change() {
-  echo "Test: ci-resolve-changes.sh emits all five operators on a go_common change"
+  echo "Test: ci-resolve-changes.sh emits all six operators on a go_common change"
 
   local resolved operators op
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance placement" \
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican" \
     GITHUB_REF="refs/heads/main" \
     FILTER_keystone="false" \
     FILTER_c5c3="false" \
     FILTER_horizon="false" \
     FILTER_glance="false" \
     FILTER_placement="false" \
+    FILTER_barbican="false" \
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
@@ -411,7 +414,7 @@ test_resolve_emits_all_on_go_common_change() {
 
   operators=$(output_value "$resolved" "e2e-operators")
 
-  for op in keystone c5c3 horizon glance placement; do
+  for op in keystone c5c3 horizon glance placement barbican; do
     assert_contains \
       "go_common change includes $op" \
       "$operators" \
@@ -420,17 +423,18 @@ test_resolve_emits_all_on_go_common_change() {
 }
 
 test_resolve_emits_all_on_tag_push() {
-  echo "Test: ci-resolve-changes.sh emits all five operators on a tag push"
+  echo "Test: ci-resolve-changes.sh emits all six operators on a tag push"
 
   local resolved operators op
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance placement" \
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican" \
     GITHUB_REF="refs/tags/v1.0.0" \
     FILTER_keystone="false" \
     FILTER_c5c3="false" \
     FILTER_horizon="false" \
     FILTER_glance="false" \
     FILTER_placement="false" \
+    FILTER_barbican="false" \
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
@@ -441,7 +445,7 @@ test_resolve_emits_all_on_tag_push() {
 
   operators=$(output_value "$resolved" "e2e-operators")
 
-  for op in keystone c5c3 horizon glance placement; do
+  for op in keystone c5c3 horizon glance placement barbican; do
     assert_contains \
       "tag push forces $op into the e2e-operators matrix" \
       "$operators" \
