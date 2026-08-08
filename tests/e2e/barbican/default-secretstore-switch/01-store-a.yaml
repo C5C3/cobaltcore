@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The first default store of the switch E2E test, in managed mode.
+#
+# Only ONE OpenBao store may be attached to a Barbican at a time: the
+# [vault_plugin] section is process-global, so a second one would silently decide
+# where the first one's secrets are written, and the validating webhook rejects it
+# at admission. The switch therefore runs as delete-then-create rather than as an
+# isDefault handover between two live stores.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbican-store-switch-a
+  namespace: openstack
+spec:
+  barbicanRef:
+    name: barbican-store-switch
+  type: OpenBao
+  isDefault: true
+  openBao:
+    instanceRef:
+      name: openbao-instance

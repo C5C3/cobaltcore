@@ -1,0 +1,274 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the finalizer-driven cleanup on Barbican CR deletion.
+#
+# Deploys a Barbican CR and its default secret store, waits for Ready=True, then:
+#   - asserts the cleanup finalizer and every owned child (Deployment, Service,
+#     PDB, the content-hashed config Secret, the derived db-connection Secret,
+#     the db-sync Job, and the recurring db-clean CronJob);
+#   - deletes the STORE first and asserts the projection goes invalid while the
+#     last-good config Secret stays mounted — a detach does not tear the API down;
+#   - deletes the CR and asserts all of them are gone within a bounded deletion
+#     window, together with the MariaDB Database/User/Grant CRs the operator
+#     created in managed mode.
+#
+# SCOPE: cleanup ends at the Kubernetes objects and the MariaDB schema. Nothing
+# in reconcileDelete touches the secret store, so the payloads a store wrote into
+# its OpenBao KV mount OUTLIVE the CR — and the dropped schema was the index from
+# secret ID to KV path, so what survives is unreferenced. That retention
+# behaviour is not asserted here and could not be: this suite stores no secret
+# (it runs without a Keystone, so it has no authenticated write path), leaving
+# the mount empty at deletion time and any count assertion vacuous. Whether the
+# finalizer should purge the prefix or the operator should warn about the
+# orphaned material is an open question of the onboarding, not of this suite.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-deletion-cleanup
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Barbican CR and its default secret store ──────────
+  - try:
+    - apply:
+        file: 00-barbican-cr.yaml
+    - apply:
+        file: 01-barbican-secretstore.yaml
+  # ── Step 2: Wait for Ready=True and assert the cleanup finalizer ────────
+  # The finalizer is added on first reconcile so deletion can trigger the
+  # MariaDB CR cleanup before the Barbican CR leaves etcd.
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-deletion
+            namespace: openstack
+            # Nil-safe: on the first poll after apply the controller may not
+            # have added the finalizer yet (`finalizers` is nil). The `|| `[]``
+            # fallback lets the assert retry rather than raising a non-retryable
+            # JMESPath type error.
+            (contains(finalizers || `[]`, 'barbican.openstack.c5c3.io/finalizer')): true
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-deletion -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== BarbicanSecretStore status ==="
+          kubectl get barbicansecretstore barbican-deletion-store -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert the owned children exist before the deletion ─────────
+  # Asserting them here is what gives step 7 its meaning: an absence assertion
+  # on a resource that never existed passes for the wrong reason.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: barbican-deletion
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: barbican-deletion
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: barbican-deletion
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: barbican-deletion-db-connection
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: barbican-deletion-db-sync
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: barbican-deletion-db-clean
+            namespace: openstack
+    - script:
+        content: |
+          set -eu
+          SEC=$(kubectl get deploy barbican-deletion -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].secret.secretName}')
+          test -n "$SEC"
+          printf '%s' "$SEC" > /tmp/barbican-deletion-config-before
+          echo "config Secret: $SEC"
+  # ── Step 4: Delete the secret store and assert last-good retention ──────
+  # A store is detached by deleting it, and nothing about that is transactional:
+  # the store holds no finalizer and its deletion is not validated. What the
+  # operator does guarantee is that it will not re-render against a projection it
+  # cannot build, so the pods keep the config they are running.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: BarbicanSecretStore
+          name: barbican-deletion-store
+          namespace: openstack
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-deletion
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretStoresReady']):
+            - status: "False"
+              reason: NoDefaultSecretStore
+    - script:
+        content: |
+          set -eu
+          BEFORE_SEC=$(cat /tmp/barbican-deletion-config-before)
+          SEC=$(kubectl get deploy barbican-deletion -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].secret.secretName}')
+          echo "config: before=$BEFORE_SEC now=$SEC"
+          if [ "$SEC" != "$BEFORE_SEC" ]; then
+            echo "ERROR: config Secret changed after the store was detached (expected last-good retention)"
+            exit 1
+          fi
+          echo "OK: the detached store left the last-good config mounted"
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-deletion -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Delete the Barbican CR ──────────────────────────────────────
+  # Bounded timeout (<= 2m) to keep deletion responsive; fails the test if the
+  # finalizer blocks removal for longer than this.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          name: barbican-deletion
+          namespace: openstack
+  # ── Step 6: Assert owned resources and MariaDB CRs are deleted ──────────
+  - try:
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: barbican-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: barbican-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: barbican-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: barbican-deletion-db-connection
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: barbican-deletion-db-sync
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: barbican-deletion-db-clean
+            namespace: openstack
+    # MariaDB CRs created by reconcileDatabase in managed mode (clusterRef).
+    # Owner references are set on these CRs, but the cleanup finalizer also
+    # issues an explicit Delete so the schema teardown is triggered before the
+    # owner-ref chain disappears.
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: barbican-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: barbican-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: barbican-deletion
+            namespace: openstack
+  # ── Step 7: Assert the content-hashed config Secrets are gone ──────────
+  # These carry a content-hash suffix so they cannot use a static error
+  # assertion. A script step with an inverted grep verifies none with the
+  # expected prefix remains after garbage collection.
+  - try:
+    - script:
+        content: |
+          set -eu
+          if kubectl get secret -n openstack -o name | grep -q barbican-deletion-config-; then
+            echo "ERROR: Secret matching barbican-deletion-config-* still exists"
+            exit 1
+          fi
+          echo "OK: no barbican-deletion config Secret remains"
+    catch:
+    - script:
+        content: |
+          echo "=== remaining barbican-deletion objects ==="
+          kubectl get all,cm,secret,job,cronjob -n $NAMESPACE 2>&1 | grep barbican-deletion || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

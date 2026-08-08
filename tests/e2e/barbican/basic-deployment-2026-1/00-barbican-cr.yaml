@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Barbican CR fixture for the basic-deployment E2E test (2026.1 release).
+# Managed mode: database via clusterRef to openstack-db (schema
+# barbican_basic_2026), cache via clusterRef to openstack-memcached. The database
+# credentials come from the ESO-synced barbican-db Secret and the service-user
+# password from the pre-seeded keystone-admin Secret (both
+# deploy/kind/infrastructure). Barbican exits at start-up without a secret store,
+# so 01-barbican-secretstore.yaml attaches one before Ready can settle.
+#
+# Apart from the release, the image tag, and the names, this is the 2025.2
+# fixture. The one thing that differs at 2026.1 is the paste file barbican ships:
+# the oslo request_id filter arrived and the repoze.profile pipeline was dropped,
+# which is what the suite asserts.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-basic-2026
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2026.1"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican_basic_2026
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

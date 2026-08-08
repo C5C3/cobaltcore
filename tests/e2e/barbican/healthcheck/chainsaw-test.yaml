@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the HealthCheck sub-reconciler.
+# Verifies the operator's HTTP probe of the Barbican API healthcheck app drives
+# BarbicanAPIReady and status.endpoint:
+#   - BarbicanAPIReady=True with reason APIHealthy once the Deployment serves
+#   - status.endpoint carries the cluster-local URL (no gateway configured)
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-healthcheck
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Barbican CR and its default secret store ──────────
+  - try:
+    - apply:
+        file: 00-barbican-cr.yaml
+    - apply:
+        file: 01-barbican-secretstore.yaml
+  # ── Step 2: Assert BarbicanAPIReady and the endpoint ───────────────────
+  # The probe target is always the cluster-local Service URL, and with no
+  # spec.gateway that is also what status.endpoint advertises. The URL carries no
+  # trailing slash: barbican concatenates it with the resource path when it builds
+  # the self-referencing links of an API response.
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-healthcheck
+            namespace: openstack
+          status:
+            endpoint: http://barbican-healthcheck.openstack.svc.cluster.local:9311
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+            (conditions[?type == 'BarbicanAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-healthcheck -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== BarbicanSecretStore status ==="
+          kubectl get barbicansecretstore barbican-healthcheck-store -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Barbican API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=barbican-healthcheck -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

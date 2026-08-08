@@ -1,0 +1,330 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for happy-path Barbican deployment (2025.2 release).
+# Validates the full reconciliation cycle:
+#   - All 9 sub-conditions progress to True with expected reasons
+#   - Aggregate Ready=True with reason AllReady
+#   - The attached managed secret store reaches Ready=True and shows up in
+#     status.projectedSecretStores
+#   - The API Deployment launches uWSGI against the importable WSGI module
+#     (--module barbican.wsgi.api:application)
+#   - The database URL, the service-user password, and the AppRole secret ID
+#     arrive as env vars, and all three content-digest annotations are stamped on
+#     the pod template so a rotated credential rolls the pods
+#   - Owned resources exist (Deployment, Service on 9311, PDB, config Secret)
+#   - The rendered barbican.conf carries the vault plugin's approle_role_id and
+#     NOT its approle_secret_id, and the rendered paste file has the pre-2026.1
+#     shape (repoze.profile pipeline present, oslo request_id filter absent)
+#   - The Barbican API answers /healthcheck with 200 from inside the API pod
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-basic-deployment
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Barbican CR and its default secret store ──────────
+  - try:
+    - apply:
+        file: 00-barbican-cr.yaml
+    - apply:
+        file: 01-barbican-secretstore.yaml
+  # ── Step 2: Assert all sub-conditions and Ready ────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-basic
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'SecretStoresReady']):
+            - status: "True"
+              reason: AllStoresProjected
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'DBCleanReady']):
+            - status: "True"
+              reason: DBCleanScheduled
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'BarbicanAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            # The store the last valid projection rendered. A detach drops the
+            # store's [secretstore:<name>] section, so this record is what the
+            # sub-reconciler detects a detach against.
+            (contains(projectedSecretStores || `[]`, 'barbican-basic-store')): true
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-basic -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== BarbicanSecretStore status ==="
+          kubectl get barbicansecretstore barbican-basic-store -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Barbican API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=barbican-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert the Deployment, its uWSGI launch command, Service ────
+  # ── and PDB ─────────────────────────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: barbican-basic
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: barbican-api
+                  command:
+                  - uwsgi
+                  - "--http"
+                  - ":9311"
+                  - "--http-keepalive"
+                  - "--log-master"
+                  - "--log-format"
+                  - "%(method) %(uri) => generated %(rsize) bytes in %(msecs) msecs (%(proto) %(status))"
+                  # images/barbican ships no entry script, so the WSGI
+                  # application is imported as a module rather than loaded from
+                  # a --wsgi-file path.
+                  - "--module"
+                  - "barbican.wsgi.api:application"
+                  - "--master"
+                  - "--lazy-apps"
+                  - "--need-app"
+                  - "--processes"
+                  - "2"
+                  - "--threads"
+                  - "1"
+                # Barbican runs one process per pod: the asynchronous order
+                # queue is disabled and this operator projects no worker
+                # Deployment, so a second container here would mean something
+                # injected itself into every Barbican deployment in the fleet.
+                (length(containers) == `1`): true
+                # The DSN, the service-user password, and the AppRole secret ID
+                # all travel as oslo.config env overrides sourced from Secrets,
+                # so the only credential in the rendered config document is the
+                # AppRole role ID.
+                (containers[0].env[?name == 'OS_DATABASE__CONNECTION'].valueFrom.secretKeyRef.name | [0]): barbican-basic-db-connection
+                (containers[0].env[?name == 'OS_DATABASE__CONNECTION'].valueFrom.secretKeyRef.key | [0]): connection
+                (containers[0].env[?name == 'OS_KEYSTONE_AUTHTOKEN__PASSWORD'].valueFrom.secretKeyRef.name | [0]): keystone-admin
+                (containers[0].env[?name == 'OS_KEYSTONE_AUTHTOKEN__PASSWORD'].valueFrom.secretKeyRef.key | [0]): password
+                (containers[0].env[?name == 'OS_VAULT_PLUGIN__APPROLE_SECRET_ID'].valueFrom.secretKeyRef.name | [0]): barbican-basic-store-approle
+                (containers[0].env[?name == 'OS_VAULT_PLUGIN__APPROLE_SECRET_ID'].valueFrom.secretKeyRef.key | [0]): secret-id
+                # The trust bundle authenticating the OpenBao server. A managed
+                # store derives it from the instance name, so the pods verify
+                # the instance rather than falling back to their system store.
+                (volumes[?name == 'secret-store-ca'].secret.secretName | [0]): openbao-instance-tls-ca
+          status:
+            (availableReplicas > `0`): true
+    # All three credentials are env-var-consumed, so a rotation only reaches the
+    # workers on a Pod restart. The digest annotations are what turns a rotated
+    # DSN, service-user password or AppRole secret ID into a rollout; a missing
+    # annotation means a rotation would leave the pods running the old
+    # credential until something else happened to roll them.
+    - script:
+        content: |
+          set -eu
+          for key in db-connection-hash authtoken-hash secret-store-credentials-hash; do
+            VALUE=$(kubectl get deploy barbican-basic -n openstack \
+              -o "jsonpath={.spec.template.metadata.annotations['barbican\.c5c3\.io/${key}']}")
+            if [ -z "$VALUE" ]; then
+              echo "ERROR: pod template carries no barbican.c5c3.io/${key} annotation"
+              exit 1
+            fi
+            echo "OK: barbican.c5c3.io/${key} = $VALUE"
+          done
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: barbican-basic
+            namespace: openstack
+          spec:
+            ports:
+            - port: 9311
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: barbican-basic
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: barbican
+              app.kubernetes.io/instance: barbican-basic
+              app.kubernetes.io/managed-by: barbican-operator
+          spec:
+            minAvailable: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: barbican
+                app.kubernetes.io/instance: barbican-basic
+              # db-sync and db-clean pods carry no readiness probe, so they count
+              # as healthy from their first moment. Without this exclusion they
+              # inflate currentHealthy and let a drain evict the API pods the
+              # budget protects.
+              matchExpressions:
+              - key: batch.kubernetes.io/job-name
+                operator: DoesNotExist
+  # ── Step 4: Assert the attached secret store is Ready ──────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: BarbicanSecretStore
+          metadata:
+            name: barbican-basic-store
+            namespace: openstack
+          status:
+            (conditions[?type == 'ProvisioningReady']):
+            - status: "True"
+              reason: Provisioned
+            (conditions[?type == 'CredentialsReady']):
+            - status: "True"
+              reason: CredentialsAvailable
+            (conditions[?type == 'ConfigProjected']):
+            - status: "True"
+              reason: ConfigProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+  # ── Step 5: Assert the rendered config Secret ──────────────────────────
+  # Barbican reads exactly one configuration file and the rendered document
+  # carries the vault plugin's approle_role_id, so the carrier is a Secret rather
+  # than a ConfigMap. It is resolved through the Deployment's config volume so
+  # the assertion follows the content hash instead of guessing the current name.
+  #
+  # The two [vault_plugin] greps are the credential-split contract: the role ID
+  # is rendered into the file every API pod mounts, while the secret ID travels
+  # exclusively through the OS_VAULT_PLUGIN__APPROLE_SECRET_ID env override
+  # asserted in step 3. An approle_secret_id line anywhere in the document means
+  # the secret ID gained a second copy the store controller does not own.
+  #
+  # The paste greps pin the 2025.2 file shape: the repoze.profile pipeline that
+  # upstream dropped in 2026.1 is present, and the oslo request_id filter that
+  # arrived with it is not. The 2026-1 variant of this suite asserts the
+  # inverse, which is what makes the pair a release-boundary regression net.
+  - try:
+    - script:
+        content: |
+          kubectl get secret -n openstack -o name | grep barbican-basic-config-
+    - script:
+        content: |
+          set -eu
+          SEC=$(kubectl get deploy barbican-basic -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].secret.secretName}')
+          test -n "$SEC"
+          kubectl get secret "$SEC" -n openstack -o 'jsonpath={.data.barbican\.conf}' \
+            | base64 -d > /tmp/barbican-basic.conf
+          kubectl get secret "$SEC" -n openstack -o 'jsonpath={.data.barbican-api-paste\.ini}' \
+            | base64 -d > /tmp/barbican-basic-paste.ini
+          # Scope the role-ID grep to the section that owns the option: the awk
+          # range starts at the [vault_plugin] header and ends at the next
+          # section header, so a stray approle_role_id elsewhere cannot satisfy
+          # it.
+          awk '/^\[vault_plugin\]$/{f=1;next} /^\[/{f=0} f' /tmp/barbican-basic.conf \
+            > /tmp/barbican-basic-vault-plugin.ini
+          grep -q '^approle_role_id = ' /tmp/barbican-basic-vault-plugin.ini
+          if grep -q 'approle_secret_id' /tmp/barbican-basic.conf; then
+            echo "ERROR: barbican.conf carries an approle_secret_id option"
+            exit 1
+          fi
+          echo "OK: $SEC renders approle_role_id in [vault_plugin] and no approle_secret_id"
+          grep -q '^\[pipeline:barbican-profile\]$' /tmp/barbican-basic-paste.ini
+          if grep -q '^\[filter:request_id\]$' /tmp/barbican-basic-paste.ini; then
+            echo "ERROR: barbican-api-paste.ini carries the 2026.1 request_id filter"
+            exit 1
+          fi
+          echo "OK: $SEC renders the 2025.2 paste shape (barbican-profile pipeline, no request_id filter)"
+  # ── Step 6: Assert the Barbican API answers /healthcheck over HTTP ──────
+  # HTTP-level API coverage from inside an API pod: the paste composite routes
+  # /healthcheck to the oslo healthcheck app outside the authtoken pipeline, so
+  # it answers without a token and without a database round trip. Probing
+  # localhost skips kube-proxy entirely, so a 200 is about the WSGI app alone.
+  # Connection-level failures are retried because uWSGI's lazy-apps import can
+  # trail the readiness flip by a moment; HTTP errors still fail hard.
+  - try:
+    - script:
+        timeout: 90s
+        content: |
+          set -eu
+          POD=$(kubectl get pods -n $NAMESPACE \
+            -l app.kubernetes.io/instance=barbican-basic \
+            --field-selector=status.phase=Running -o name 2>/dev/null | head -1 || true)
+          if [ -z "$POD" ]; then
+            echo "ERROR: no Running barbican-api pod for barbican-basic"
+            exit 1
+          fi
+          kubectl exec -n $NAMESPACE "$POD" -c barbican-api -- python3 -c "
+          import time, urllib.error, urllib.request
+          last = None
+          for _ in range(15):
+              try:
+                  r = urllib.request.urlopen('http://localhost:9311/healthcheck')
+                  assert r.status == 200, r.status
+                  print('healthcheck OK, status %d' % r.status)
+                  break
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit('GET /healthcheck -> HTTP %d' % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  print('healthcheck retry: %s' % exc)
+                  time.sleep(2)
+          else:
+              raise SystemExit('healthcheck never answered after retries: %r' % last)
+          "
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-basic -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Barbican API pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=barbican-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Service and Endpoints ==="
+          kubectl get svc,endpoints -n $NAMESPACE -l app.kubernetes.io/instance=barbican-basic 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

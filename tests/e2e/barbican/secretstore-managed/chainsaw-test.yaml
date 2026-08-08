@@ -1,0 +1,178 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a managed BarbicanSecretStore against the proving
+# OpenBaoCluster openbao-instance (deploy/kind/infrastructure/openbao-instance.yaml).
+#
+# Managed mode is the only mode in which the operator writes to OpenBao. It
+# authenticates as the instance's provisioner ServiceAccount, checks the mount
+# and the AppRole the self-init provisioned, and mints an AppRole secret ID it
+# owns for the lifetime of the store. This suite pins that ownership:
+#   - ProvisioningReady=True/Provisioned: mount, policy and AppRole are in place
+#   - CredentialsReady=True/CredentialsAvailable and the aggregate Ready=True
+#   - The derived Secret <store>-approle carries the role-id and secret-id data
+#     keys, a controller ownerReference to the store, and the two mint-stamp
+#     annotations the re-mint schedule is read back from
+#   - Deleting the store garbage-collects that Secret, because the
+#     ownerReference — not a finalizer — is what ties the two lifetimes together
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-secretstore-managed
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Barbican CR and the managed store ─────────────────
+  - try:
+    - apply:
+        file: 00-barbican-cr.yaml
+    - apply:
+        file: 01-barbican-secretstore.yaml
+  # ── Step 2: Assert the store provisioned and the parent went Ready ──────
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: BarbicanSecretStore
+          metadata:
+            name: barbican-store-managed-store
+            namespace: openstack
+          status:
+            (conditions[?type == 'ProvisioningReady']):
+            - status: "True"
+              reason: Provisioned
+            (conditions[?type == 'CredentialsReady']):
+            - status: "True"
+              reason: CredentialsAvailable
+            (conditions[?type == 'ConfigProjected']):
+            - status: "True"
+              reason: ConfigProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-store-managed
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretStoresReady']):
+            - status: "True"
+              reason: AllStoresProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            (contains(projectedSecretStores || `[]`, 'barbican-store-managed-store')): true
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-store-managed -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== BarbicanSecretStore status ==="
+          kubectl get barbicansecretstore barbican-store-managed-store -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OpenBaoCluster status ==="
+          kubectl get openbaocluster openbao-instance -n $NAMESPACE -o yaml 2>&1 | tail -40 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert the operator-written credentials Secret ──────────────
+  # The Secret is the whole point of managed mode: it is where the minted secret
+  # ID lives, and it is the only copy the API pods source their env override
+  # from. The ownerReference is asserted here so step 5's absence check means
+  # "garbage-collected with its store" rather than "never existed".
+  - try:
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: barbican-store-managed-store-approle
+            namespace: openstack
+            (ownerReferences[?controller == `true`].kind | [0]): BarbicanSecretStore
+            (ownerReferences[?controller == `true`].name | [0]): barbican-store-managed-store
+    # The mint stamp is what the re-mint schedule is computed from: the
+    # controller reads both annotations back off the Secret to decide whether a
+    # secret ID is close enough to expiry to re-mint proactively, and treats an
+    # absent or unparseable stamp as "unknown". A Secret without them would keep
+    # working until the secret ID expired and then stop, with nothing having
+    # reported the approaching expiry.
+    - script:
+        content: |
+          set -eu
+          SECRET=barbican-store-managed-store-approle
+          for key in role-id secret-id; do
+            VALUE=$(kubectl get secret "$SECRET" -n openstack -o "jsonpath={.data.$key}")
+            if [ -z "$VALUE" ]; then
+              echo "ERROR: Secret $SECRET carries no $key data key"
+              exit 1
+            fi
+            echo "OK: $SECRET carries the $key data key"
+          done
+          for key in secret-id-minted-at secret-id-ttl-seconds; do
+            VALUE=$(kubectl get secret "$SECRET" -n openstack \
+              -o "jsonpath={.metadata.annotations['barbican\.c5c3\.io/${key}']}")
+            if [ -z "$VALUE" ]; then
+              echo "ERROR: Secret $SECRET carries no barbican.c5c3.io/${key} annotation"
+              exit 1
+            fi
+            echo "OK: barbican.c5c3.io/${key} = $VALUE"
+          done
+    catch:
+    - script:
+        content: |
+          echo "=== credentials Secret ==="
+          kubectl get secret barbican-store-managed-store-approle -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 2>&1 || true
+  # ── Step 4: Delete the store ────────────────────────────────────────────
+  # The store carries no finalizer: the credentials Secret is owned by it, so
+  # Kubernetes garbage collection is what reaps the secret ID, and nothing has to
+  # run on the OpenBao side to make the deletion safe.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: BarbicanSecretStore
+          name: barbican-store-managed-store
+          namespace: openstack
+  # ── Step 5: Assert the credentials Secret is garbage-collected ──────────
+  - try:
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: barbican-store-managed-store-approle
+            namespace: openstack
+    # The parent loses its only default store, so the projection goes invalid.
+    # The config is not re-rendered — last-good retention keeps the running pods
+    # serving — and the condition is what says so.
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-store-managed
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretStoresReady']):
+            - status: "False"
+              reason: NoDefaultSecretStore
+    catch:
+    - script:
+        content: |
+          echo "=== remaining barbican-store-managed objects ==="
+          kubectl get barbicansecretstore,secret -n $NAMESPACE 2>&1 | grep barbican-store-managed || true
+          echo "=== Barbican CR status ==="
+          kubectl get barbican barbican-store-managed -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=80 2>&1 || true
