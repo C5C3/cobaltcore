@@ -95,6 +95,11 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: barbican-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: c5c3-system
 ---
 apiVersion: v1

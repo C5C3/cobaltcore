@@ -3,14 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Gateway API wiring for the kind Quick Start — `GatewayClass/envoy`
-# plus a six-listener HTTPS Gateway on port 443
+# plus a seven-listener HTTPS Gateway on port 443
 # (`keystone.127-0-0-1.nip.io`, `horizon.127-0-0-1.nip.io`,
 # `glance.127-0-0-1.nip.io`, `dizzy.127-0-0-1.nip.io`,
-# `glance-upload.127-0-0-1.nip.io`, and `placement.127-0-0-1.nip.io`,
-# routed by SNI) terminating TLS with self-signed certificates issued by
-# the existing `selfsigned-cluster-issuer` ClusterIssuer (the same issuer
-# OpenBao uses; see
-# `deploy/flux-system/infrastructure/cluster-issuer.yaml`).
+# `glance-upload.127-0-0-1.nip.io`, `placement.127-0-0-1.nip.io`, and
+# `barbican.127-0-0-1.nip.io`, routed by SNI) terminating TLS with
+# self-signed certificates issued by the existing
+# `selfsigned-cluster-issuer` ClusterIssuer (the same issuer OpenBao
+# uses; see `deploy/flux-system/infrastructure/cluster-issuer.yaml`).
 #
 # The Gateway lives in the `openstack` namespace alongside the Keystone
 # CR on purpose: same-namespace `parentRef` resolution does not need a
@@ -192,6 +192,34 @@ spec:
         certificateRefs:
           - kind: Secret
             name: placement-nip-io-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
+    # Seventh HTTPS listener for the Barbican key-management API. It shares
+    # port 443 with the listeners above, routed by SNI on its distinct
+    # `hostname` and terminating with its own certificate
+    # (deploy/kind/infrastructure/barbican-nip-io-tls-certificate.yaml).
+    # Another listener on the same port leaves the NodePort pin intact:
+    # `envoy-nodeport.yaml` keys its StrategicMerge patch by `port: 443`,
+    # which selects the single ServicePort Envoy generates for all
+    # listeners.
+    #
+    # The HTTPRoute the barbican-operator projects from the Barbican CR's
+    # `spec.gateway` carries the hostname `barbican.127-0-0-1.nip.io`, so
+    # it attaches to THIS listener (matching hostname) and not the ones
+    # above. Its first consumer is
+    # tests/e2e/barbican/gateway-quick-start-smoke. Like the listeners
+    # above it is unconditional: with no HTTPRoute projected onto this
+    # hostname, requests for this SNI get 404.
+    - name: https-barbican
+      protocol: HTTPS
+      port: 443
+      hostname: barbican.127-0-0-1.nip.io
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: barbican-nip-io-tls
       allowedRoutes:
         namespaces:
           from: Same

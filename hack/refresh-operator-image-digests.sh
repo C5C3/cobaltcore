@@ -7,8 +7,8 @@
 # to their current digest.
 #
 # The Flux HelmReleases for the self-built operators (keystone-operator,
-# c5c3-operator, horizon-operator, glance-operator, placement-operator)
-# reference the mutable :latest image tag.
+# c5c3-operator, horizon-operator, glance-operator, placement-operator,
+# barbican-operator) reference the mutable :latest image tag.
 # A moved tag alone never rolls a running Deployment: the kubelet does not
 # re-pull an image that is already present on the node, and the HelmRelease
 # does not upgrade when neither chart version nor values change. This script
@@ -46,6 +46,7 @@ OPERATOR_DIGEST_TARGETS=(
   "horizon-operator|horizon-system|ghcr.io/c5c3/horizon-operator:latest"
   "glance-operator|glance-system|ghcr.io/c5c3/glance-operator:latest"
   "placement-operator|placement-system|ghcr.io/c5c3/placement-operator:latest"
+  "barbican-operator|barbican-system|ghcr.io/c5c3/barbican-operator:latest"
 )
 
 # ---------------------------------------------------------------------------
