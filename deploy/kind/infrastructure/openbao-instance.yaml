@@ -199,6 +199,44 @@ spec:
     # (openbao-instance-tls-server, openbao-instance-tls-ca). The operator
     # mounts them and waits for both, but never rotates them.
     mode: External
+  # Ingress allowlist for the instance's API port. The operator renders a
+  # default-deny NetworkPolicy over the instance pods on every reconcile and
+  # admits only peer OpenBao pods, its own namespace, this cluster's
+  # backup/restore Jobs, and the peers named here. kindnet enforces it, so a
+  # client nobody names gets no refusal: its packets are dropped and it fails
+  # with a timeout once its own deadline expires. That is what an unnamed
+  # client's error looks like — the barbican-operator reports
+  # OpenBaoUnreachable with "context deadline exceeded" for both the Kubernetes
+  # and the AppRole auth method, because neither ever reaches the listener.
+  #
+  # Sharing a namespace with the instance is not an exemption: the policy
+  # isolates the instance pods from every source it does not name, the Barbican
+  # API pods in openstack included. Kubelet probes and `kubectl port-forward`
+  # do bypass NetworkPolicy, so neither the pod going Ready nor a
+  # port-forwarded login is evidence that a pod-level client can get through.
+  network:
+    trustedIngressPeers:
+      # The barbican-operator's BarbicanSecretStore controller. It logs in with
+      # the provisioner's bound ServiceAccount token for a managed store and
+      # with the store's AppRole for a brownfield one, then mounts the KV path
+      # and mints AppRole secret IDs.
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: barbican-system
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: barbican-operator
+      # The Barbican API pods. Castellan's vault plugin reads and writes tenant
+      # key material over this same port, which is what the chaos outage leg and
+      # both tempest legs exercise. The namespaceSelector is a wildcard because
+      # the suites place Barbican in openstack and in per-suite namespaces of
+      # their own; the pod label is what keeps the grant narrow. A Hardened
+      # profile rejects a wildcard peer — one more posture this Development
+      # instance deliberately opts out of.
+      - namespaceSelector: {}
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: barbican
   unseal:
     # The key material contract is the fixed-name Secret
     # openbao-instance-unseal-key, data key `key`, mounted at /etc/bao/unseal.
