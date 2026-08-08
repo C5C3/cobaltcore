@@ -43,6 +43,21 @@
 #                        upgrade-baseline installs, whose older released chart's
 #                        additionalProperties:false values schema rejects the
 #                        unknown key.
+#   BARBICAN_SECRET_STORE_GRANTS
+#                      — Comma-separated <namespace>=<serviceAccount> pairs
+#                        naming where the barbican operator may mint bound
+#                        ServiceAccount tokens and which account each grant is
+#                        restricted to. Rendered into the barbican chart's
+#                        rbac.secretStoreNamespaces map, one helm brace-list per
+#                        Namespace key. Repeating a Namespace names a further
+#                        account in it and extends that key's list. The account
+#                        is paired WITH its Namespace rather than passed as a
+#                        second flat list, so a second Namespace cannot widen
+#                        the grant in the first. Only
+#                        takes effect for OPERATOR=barbican and is ignored for
+#                        every other operator, whose charts do not expose the
+#                        value and whose additionalProperties:false values
+#                        schema rejects the unknown key.
 #
 # Reusable operator deployment script.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -65,6 +80,7 @@ IMAGE_REPO="${IMAGE_REPO:?IMAGE_REPO is required (e.g. ghcr.io/c5c3/keystone-ope
 IMAGE_TAG="${IMAGE_TAG:-dev}"
 WITH_PROMETHEUS="${WITH_PROMETHEUS:-false}"
 FEDERATION_METADATA_ALLOW_CIDRS="${FEDERATION_METADATA_ALLOW_CIDRS:-}"
+BARBICAN_SECRET_STORE_GRANTS="${BARBICAN_SECRET_STORE_GRANTS:-}"
 # dedicated release Namespace for the operator. The Keystone workload
 # CRs themselves are still reconciled in the `openstack` Namespace.
 NAMESPACE="${NAMESPACE:-keystone-system}"
@@ -132,6 +148,39 @@ fi
 # Helm brace-list syntax expands the comma-separated string into the array.
 if [[ -n "${FEDERATION_METADATA_ALLOW_CIDRS}" ]]; then
   helm_args+=(--set "federation.metadataAllowCidrs={${FEDERATION_METADATA_ALLOW_CIDRS}}")
+fi
+# When set, grant the barbican operator the TokenRequest Role in the Namespace
+# of each pair (chart value rbac.secretStoreNamespaces) so a managed
+# BarbicanSecretStore there can mint its OpenBaoCluster provisioner token, with
+# resourceNames narrowed to the account the pair names. The chart refuses to
+# render an unrestricted Role, which in a shared tenant Namespace would also
+# cover the accounts that read database credentials and tenant secrets out of
+# OpenBao — and because the account travels WITH its Namespace, a second pair
+# grants nothing extra in the first Namespace. An entry that is not a pair is
+# rejected here rather than left to fail on a rendered template three steps
+# later. barbican-gated because no other operator chart exposes the value, and
+# their additionalProperties:false values schemas reject the unknown key.
+# Helm brace-list syntax expands each account into the per-Namespace array.
+if [[ "${OPERATOR}" == "barbican" ]] && [[ -n "${BARBICAN_SECRET_STORE_GRANTS}" ]]; then
+  IFS=',' read -r -a secret_store_grants <<< "${BARBICAN_SECRET_STORE_GRANTS}"
+  declare -A secret_store_accounts=()
+  for grant in "${secret_store_grants[@]}"; do
+    grant_namespace="${grant%%=*}"
+    grant_account="${grant#*=}"
+    if [[ "${grant}" != *=* ]] || [[ -z "${grant_namespace}" ]] || [[ -z "${grant_account}" ]]; then
+      echo "::error::BARBICAN_SECRET_STORE_GRANTS entry '${grant}' is not a <namespace>=<serviceAccount> pair; the TokenRequest grant must name the provisioner ServiceAccount it is restricted to"
+      exit 1
+    fi
+    # Accumulate per Namespace instead of emitting one --set per pair: a
+    # repeated Namespace names a SECOND account in it (a Namespace hosting two
+    # OpenBaoClusters), and helm --set REPLACES a brace-list on a repeated key
+    # rather than appending — the earlier account would be dropped silently and
+    # its managed store would stall on a denied TokenRequest.
+    secret_store_accounts["${grant_namespace}"]="${secret_store_accounts["${grant_namespace}"]:+${secret_store_accounts["${grant_namespace}"]},}${grant_account}"
+  done
+  for grant_namespace in "${!secret_store_accounts[@]}"; do
+    helm_args+=(--set "rbac.secretStoreNamespaces.${grant_namespace}={${secret_store_accounts["${grant_namespace}"]}}")
+  done
 fi
 
 helm install "${OPERATOR}-operator" \

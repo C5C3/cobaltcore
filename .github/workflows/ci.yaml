@@ -1022,6 +1022,13 @@ jobs:
           # Keycloak metadata past the operator's SSRF guard. keystone-gated
           # because only the keystone chart exposes federation.metadataAllowCidrs.
           FEDERATION_METADATA_ALLOW_CIDRS: ${{ matrix.operator == 'keystone' && '10.96.0.0/12' || '' }}
+          # The barbican suites create managed BarbicanSecretStore objects in the
+          # openstack Namespace, and the operator only mints their OpenBaoCluster
+          # provisioner token where the chart granted it a TokenRequest Role,
+          # restricted to the provisioner account of the proving instance.
+          # ci-deploy-operator.sh applies the value for OPERATOR=barbican only,
+          # so the other matrix legs ignore it.
+          BARBICAN_SECRET_STORE_GRANTS: openstack=openbao-instance-provisioner
       - name: Run E2E tests
         env:
           OPERATOR: ${{ matrix.operator }}

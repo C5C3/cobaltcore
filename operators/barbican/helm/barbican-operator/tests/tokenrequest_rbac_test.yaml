@@ -1,9 +1,10 @@
 # Per-namespace TokenRequest grant tests.
 #
-# create on serviceaccounts/token cannot be narrowed to specific accounts by
-# resourceNames, so it is never part of the operator's ClusterRole (see
-# clusterrole_test.yaml). It is bound one namespace at a time instead, and only
-# for the namespaces an administrator names.
+# create on serviceaccounts/token is never part of the operator's ClusterRole
+# (see clusterrole_test.yaml). It is bound one namespace at a time, and inside
+# each namespace it is narrowed by resourceNames to the provisioner accounts an
+# administrator names under THAT namespace — the object name of a subresource
+# create sits in the request path, so RBAC enforces it there.
 suite: TokenRequest RBAC
 templates:
   - templates/tokenrequest-rbac.yaml
@@ -17,17 +18,21 @@ tests:
     set:
       rbac:
         secretStoreNamespaces:
-          - openstack
-          - tenant-a
+          openstack:
+            - openbao-instance-provisioner
+          tenant-a:
+            - openbao-tenant-a-provisioner
     asserts:
       - hasDocuments:
           count: 4
 
-  - it: should grant only create on serviceaccounts/token in the listed namespace
+  - it: should grant create on serviceaccounts/token only for the named accounts
     set:
       rbac:
         secretStoreNamespaces:
-          - openstack
+          openstack:
+            - openbao-instance-provisioner
+            - openbao-tenant-provisioner
     documentIndex: 0
     asserts:
       - isKind:
@@ -42,14 +47,55 @@ tests:
                 - ""
               resources:
                 - serviceaccounts/token
+              resourceNames:
+                - openbao-instance-provisioner
+                - openbao-tenant-provisioner
               verbs:
                 - create
+
+  # Each namespace carries its OWN account list. Listing the accounts flat
+  # alongside the namespaces would cross every account into every namespace, so
+  # adding tenant-a would silently widen the openstack grant to an account that
+  # only ever existed in tenant-a.
+  - it: should not cross one namespace's accounts into another
+    set:
+      rbac:
+        secretStoreNamespaces:
+          openstack:
+            - openbao-instance-provisioner
+          tenant-a:
+            - openbao-tenant-a-provisioner
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: Role
+      - equal:
+          path: metadata.namespace
+          value: openstack
+      - equal:
+          path: rules[0].resourceNames
+          value:
+            - openbao-instance-provisioner
+
+  # Without resourceNames the Role would cover every ServiceAccount in the
+  # namespace — in a shared tenant namespace that is a path to the accounts that
+  # read database credentials and tenant secrets out of OpenBao. The chart
+  # refuses to render rather than shipping that grant.
+  - it: should refuse to render an unrestricted grant
+    set:
+      rbac:
+        secretStoreNamespaces:
+          openstack: []
+    asserts:
+      - failedTemplate:
+          errorMessage: rbac.secretStoreNamespaces.openstack must name the provisioner ServiceAccounts the operator may mint tokens for; an unrestricted TokenRequest Role would cover every ServiceAccount in that namespace
 
   - it: should bind the operator ServiceAccount from the release namespace
     set:
       rbac:
         secretStoreNamespaces:
-          - tenant-a
+          tenant-a:
+            - openbao-instance-provisioner
     release:
       namespace: barbican-system
     documentIndex: 1

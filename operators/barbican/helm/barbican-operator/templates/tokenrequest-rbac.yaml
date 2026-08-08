@@ -1,21 +1,30 @@
 {{/*
-The TokenRequest grant, bound one namespace at a time.
+The TokenRequest grant, bound one namespace at a time and one account at a time.
 
 When a BarbicanSecretStore names an OpenBaoCluster, the store controller mints a
 bound ServiceAccount token for that instance's "<instance>-provisioner" account
 and presents it to OpenBao's Kubernetes auth method. That needs create on the
-serviceaccounts/token subresource — and that verb cannot go into the operator's
-ClusterRole: RBAC has no way to express "only the provisioner accounts", so a
-cluster-wide grant lets anyone who reaches the operator's ServiceAccount mint a
-token for ANY ServiceAccount in the cluster, in the default audience, and act as
-it. One account bound to cluster-admin turns that into cluster takeover.
+serviceaccounts/token subresource — and that verb never goes into the operator's
+ClusterRole: an unbounded grant lets anyone who reaches the operator's
+ServiceAccount mint a token for ANY ServiceAccount in scope, in any audience, and
+act as it. In a shared tenant namespace those accounts include the ones that read
+database credentials and tenant secrets out of OpenBao, so an unbounded grant
+turns a compromised operator pod into a credential store compromise.
 
-Scoping it per namespace keeps the blast radius at the namespaces that actually
-run managed stores, which the administrator names explicitly. The list is empty
-by default: brownfield stores (spec.openBao.server) need no token at all, so the
-grant is only created once someone opts into managed provisioning.
+Two things bound it. resourceNames narrows the verb to the named accounts: the
+object name of a subresource create is in the request path, so RBAC does enforce
+it here — the same scoping the OpenBao/Vault Kubernetes-auth docs prescribe for
+TokenRequest. And the Role is rendered per namespace, so the grant only exists
+where a managed store actually runs. The accounts are keyed BY namespace rather
+than listed flat alongside it, so the two never cross-multiply: adding a second
+namespace grants nothing in the first. The map is empty by default: brownfield
+stores (spec.openBao.server) need no token at all, so nothing is granted until
+someone opts into managed provisioning.
 */}}
-{{- range $namespace := .Values.rbac.secretStoreNamespaces }}
+{{- range $namespace, $accounts := .Values.rbac.secretStoreNamespaces }}
+{{- if not $accounts }}
+{{- fail (printf "rbac.secretStoreNamespaces.%s must name the provisioner ServiceAccounts the operator may mint tokens for; an unrestricted TokenRequest Role would cover every ServiceAccount in that namespace" $namespace) }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -29,6 +38,8 @@ rules:
       - ""
     resources:
       - serviceaccounts/token
+    resourceNames:
+      {{- toYaml $accounts | nindent 6 }}
     verbs:
       - create
 ---
