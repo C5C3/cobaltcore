@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A spec.logging.perLoggerLevels value outside the accepted set. A CRD enum on
+# additionalProperties is not expressible, so the constraint is written as an
+# `in [...]` CEL rule on the map; the webhook repeats it per entry. The name is
+# a real oslo.log logger so the fixture violates the value rule and nothing
+# else.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-per-logger-level
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password
+  logging:
+    perLoggerLevels:
+      sqlalchemy.engine: TRACE

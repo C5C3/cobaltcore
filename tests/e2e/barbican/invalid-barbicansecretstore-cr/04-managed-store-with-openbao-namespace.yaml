@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A managed store (instanceRef) naming an OpenBao namespace violates the same
+# mount CEL rule: the self-init contract provisions at the root namespace, so
+# a scoped request addresses a mount the operator never created. Brownfield
+# stores are free to name one, since their server is provisioned elsewhere.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-namespaced
+spec:
+  barbicanRef:
+    name: barbican
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance
+    namespace: tenant-a

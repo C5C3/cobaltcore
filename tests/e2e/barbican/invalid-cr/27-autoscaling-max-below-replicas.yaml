@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.autoscaling.maxReplicas below spec.deployment.replicas while
+# minReplicas is unset is rejected by the validating webhook alone: the
+# reconciler resolves an absent minReplicas to spec.deployment.replicas, so
+# the rendered HPA would carry minReplicas 3 against maxReplicas 2 and the
+# API server would refuse it. The rule correlates two top-level spec fields,
+# which no marker on AutoscalingSpec can reach.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-autoscaling-implicit-min
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 3
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password
+  autoscaling:
+    maxReplicas: 2
+    targetCPUUtilization: 80

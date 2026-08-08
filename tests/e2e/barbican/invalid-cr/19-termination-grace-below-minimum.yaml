@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.deployment.terminationGracePeriodSeconds below the CRD Minimum=10
+# marker. preStopSleepSeconds is pinned to 0 so the drain-window CEL rule on
+# DeploymentSpec stays satisfied (0 < 9) and the Minimum marker is the only
+# rule this fixture breaks; left unset it would resolve to 5 and break that
+# rule too.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-grace-period
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+    terminationGracePeriodSeconds: 9
+    preStopSleepSeconds: 0
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password

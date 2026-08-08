@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A brownfield store on a plaintext server URL violates the ^https:// pattern
+# on OpenBaoServerSpec.URL, a schema-level rejection the API server answers
+# before the webhook's defense-in-depth twin runs. The AppRole credentials and
+# every secret barbican stores travel this URL, and a plaintext scheme would
+# also make a supplied caBundleSecretRef a no-op.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-plaintext-url
+spec:
+  barbicanRef:
+    name: barbican
+  type: OpenBao
+  openBao:
+    server:
+      url: http://openbao.example.com:8200
+      credentialsSecretRef:
+        name: barbican-openbao-credentials

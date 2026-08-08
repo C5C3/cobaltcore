@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A spec.cache.servers entry carrying a newline violates the items pattern
+# (^[^\n\r]*$) on CacheSpec.Servers. The list renders verbatim into
+# [keystone_authtoken] memcached_servers, so a newline would inject a whole
+# config section past the (section, key)-keyed extraConfig gates, which
+# inspect map structure and never look inside a value. The webhook repeats
+# the check via CacheNoControlChars for objects that bypass the schema.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-cache-control-char
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    servers:
+    - "memcached-0:11211\n[DEFAULT]\ndb_auto_create = true"
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password

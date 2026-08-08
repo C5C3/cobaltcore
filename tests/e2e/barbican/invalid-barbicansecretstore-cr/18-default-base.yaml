@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid default store for the single-default pair. It is applied FIRST and
+# must SUCCEED; 19-second-default attaches a second default to the same
+# Barbican, which the validating webhook rejects.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-default-a
+spec:
+  barbicanRef:
+    name: barbican-default
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance
+  isDefault: true

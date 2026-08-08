@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.deployment.priorityClassName naming a PriorityClass that does not exist
+# is rejected by the validating webhook alone, via
+# validation.PriorityClassExists. The object is cluster-scoped, so no marker
+# can express the reference; the webhook resolves it through the uncached
+# API reader. A typo'd name would otherwise leave every pod unschedulable
+# with the CR reporting nothing wrong.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-priorityclass
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+    priorityClassName: barbican-no-such-priority-class
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password

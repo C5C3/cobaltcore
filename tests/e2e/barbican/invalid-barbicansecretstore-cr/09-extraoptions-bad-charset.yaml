@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraOptions key "max-retries" carries dashes, which the validating
+# webhook's key allowlist (^[A-Za-z0-9_]+$) rejects. The allowlist runs before
+# the denylist because the denylist matches exact strings and is therefore
+# blind to a newline in a key or to a denylist-evading trailing space.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-bad-option-name
+spec:
+  barbicanRef:
+    name: barbican
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance
+  extraOptions:
+    max-retries: "3"

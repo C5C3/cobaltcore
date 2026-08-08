@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.keystoneEndpoint omitted. What answers is the CRD schema, not the
+# webhook's field.Required branch: the defaulting webhook marshals the whole
+# typed object back into its admission patch, and BarbicanSpec.KeystoneEndpoint
+# carries no omitempty tag, so the patch materializes the field as an empty
+# string. By the time the schema is checked the property is present and the
+# empty value fails the minLength and pattern guards. The fixture still earns
+# its place: it pins that no layer invents a Keystone URL for a CR that names
+# none.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-endpoint-missing
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  serviceUser:
+    secretRef:
+      name: barbican-service-password

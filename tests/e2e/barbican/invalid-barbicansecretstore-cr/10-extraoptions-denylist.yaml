@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraOptions carrying kv_mountpoint duplicates an option the operator
+# renders from spec.openBao.kvMountpoint; the validating webhook's denylist
+# rejects it. Depending on render order the duplicate would shadow the derived
+# value or be shadowed by it, and either way the store's AppRole policy still
+# covers only the mount the typed field names.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: barbicanstore-denylisted-option
+spec:
+  barbicanRef:
+    name: barbican
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance
+  extraOptions:
+    kv_mountpoint: secrets

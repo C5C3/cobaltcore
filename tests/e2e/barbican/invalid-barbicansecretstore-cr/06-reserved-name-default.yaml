@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# metadata.name "default" collides with the reserved DEFAULT section of
+# barbican.conf: the name becomes the suffix of this store's
+# [secretstore:<name>] section, and barbican resolves that suffix against the
+# flat section namespace of one config file. The validating webhook is the
+# only gate. It is the sole reserved name reachable here — the rest of the
+# reserved set ([keystone_authtoken], [vault_plugin], [oslo_policy] and
+# friends) carries underscores, which no Kubernetes object name may contain.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: BarbicanSecretStore
+metadata:
+  name: default
+spec:
+  barbicanRef:
+    name: barbican
+  type: OpenBao
+  openBao:
+    instanceRef:
+      name: openbao-instance

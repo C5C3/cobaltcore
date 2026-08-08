@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.apiServer.uwsgi.harakiri equal to the drain window
+# (terminationGracePeriodSeconds - preStopSleepSeconds = 25) is rejected by
+# the validating webhook alone. The rule correlates a uWSGI field with two
+# spec.deployment fields, which no marker can express. A harakiri that does
+# not fit inside the window lets uWSGI kill a request after SIGKILL has
+# already taken the pod. The grace and preStop values are spelled out so the
+# arithmetic in the error message does not depend on the webhook's defaults.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-harakiri
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+    terminationGracePeriodSeconds: 30
+    preStopSleepSeconds: 5
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password
+  apiServer:
+    uwsgi:
+      harakiri: 25

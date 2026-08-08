@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraConfig setting an unknown option in the known [quotas] section is
+# rejected by the validating webhook: the singular spelling is absent from the
+# barbican 2025.2 option catalog, so a typo'd key can never silently reach the
+# rendered barbican.conf. The value is quoted because extraConfig is a map of
+# string to string: a bare YAML integer would draw a schema type error and
+# never reach the catalog check.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-cfg-unknown-option
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password
+  extraConfig:
+    quotas:
+      quota_secret: "10"

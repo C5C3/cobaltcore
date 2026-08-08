@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A spec.deployment.resources memory request above its limit is rejected by
+# the validating webhook alone: ResourceRequirements is an embedded upstream
+# type carrying no cross-field marker, so admission is the only gate before
+# the kubelet refuses to admit the pod. Both maps are non-empty, so the
+# defaulting webhook leaves the block untouched.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-resources
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+    resources:
+      requests:
+        memory: 2Gi
+      limits:
+        memory: 1Gi
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password

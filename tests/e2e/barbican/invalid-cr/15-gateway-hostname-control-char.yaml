@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.gateway.hostname carrying a newline is rejected by the validating
+# webhook alone: the MinLength marker bounds the length, not the content. The
+# hostname reaches the renderer as [DEFAULT] host_href, and [DEFAULT] is
+# written first, so an injected line lands in a section the operator writes
+# nothing else into and nothing later overrides it. The HTTPRoute step would
+# refuse the hostname, but it runs after the config Secret has been written
+# and mounted.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-gateway-control-char
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: "barbican.example.com\n[DEFAULT]\ndb_auto_create = true"

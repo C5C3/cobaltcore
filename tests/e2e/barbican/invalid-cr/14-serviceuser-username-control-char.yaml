@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.serviceUser.username carrying a newline is rejected by the validating
+# webhook alone: the field has no schema marker, and it renders verbatim into
+# [keystone_authtoken] username. A newline therefore injects the
+# db_auto_create line the extraConfig ownership gate exists to refuse. The
+# username is set explicitly because the defaulting webhook fills it only
+# when empty.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-username-control-char
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: "barbican\n[DEFAULT]\ndb_auto_create = true"
+    secretRef:
+      name: barbican-service-password

@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.dbClean.schedule with a non-cron value is rejected by the validating
+# webhook alone — the cron grammar has no CRD schema counterpart, because the
+# accepted grammar includes descriptors such as @daily that no regex expresses
+# without also rejecting valid expressions. DBCleanSpec.Schedule is therefore
+# validated exclusively via validation.CronSchedule.
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-invalid-dbclean-schedule
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: barbican-service-password
+  dbClean:
+    schedule: "totally-not-cron"

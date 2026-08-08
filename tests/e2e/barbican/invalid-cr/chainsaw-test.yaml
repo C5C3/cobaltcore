@@ -1,0 +1,515 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for Barbican CRD webhook + CEL validation rejection.
+# Pins the implemented CEL XValidation, kubebuilder-marker, and
+# webhook.validate() rejection paths in operators/barbican/api/v1alpha1/ to a
+# deterministic admission failure. Each step applies an otherwise-valid Barbican
+# CR with a single aspect violating the rule under test, captures the admission
+# $error, and asserts the field path plus message substring.
+#
+# The API server validates against the structural schema and its CEL rules
+# before it calls the validating webhook, so a rule carried by both layers is
+# answered by the schema and the assertions below quote the schema message. The
+# webhook message is asserted only where the rule has no schema counterpart.
+#
+# All fixtures are generated from the single canonical scaffold in
+# `_generate.py` (mirroring tests/e2e/placement/invalid-cr/). After editing the
+# scaffold or any per-fixture override, regenerate via:
+#   python3 tests/e2e/barbican/invalid-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes
+# `_generate.py --check` (drift mode, both directions incl. orphans) and
+# `test_generate.py` (FIXTURES count + chainsaw-test.yaml cross-reference)
+# so any hand-edit to a generated fixture fails the build before the
+# cluster-bound e2e-operator job runs.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: barbican-invalid-cr
+spec:
+  steps:
+  # spec.openStackRelease with a non-cadence minor must be rejected by the CRD
+  # pattern.
+  - try:
+    - apply:
+        file: 00-openstackrelease-pattern.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'openStackRelease')): true
+            (contains($error, 'should match')): true
+  # spec.deployment.replicas below the Minimum=1 marker must be rejected. The
+  # value is -1, not 0: the defaulting webhook normalizes a zero before schema
+  # validation sees it.
+  - try:
+    - apply:
+        file: 01-replicas-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'replicas')): true
+            (contains($error, 'should be greater than or equal to 1')): true
+  # spec.image with both tag and digest must be rejected.
+  - try:
+    - apply:
+        file: 02-image-both-tag-digest.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'image')): true
+            (contains($error, 'exactly one of image.tag or image.digest')): true
+  # spec.image with neither tag nor digest must be rejected by the same rule.
+  - try:
+    - apply:
+        file: 03-image-neither-tag-nor-digest.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'image')): true
+            (contains($error, 'exactly one of image.tag or image.digest')): true
+  # spec.database with both clusterRef and host must be rejected.
+  - try:
+    - apply:
+        file: 04-database-clusterref-and-host.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'database')): true
+            (contains($error, 'exactly one of clusterRef or host')): true
+  # spec.database with neither clusterRef nor host must be rejected by the same
+  # rule.
+  - try:
+    - apply:
+        file: 05-database-neither-clusterref-nor-host.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'database')): true
+            (contains($error, 'exactly one of clusterRef or host')): true
+  # spec.database.credentialsMode Dynamic without clusterRef must be rejected:
+  # dynamic credentials are minted against a MariaDB CR the operator manages.
+  - try:
+    - apply:
+        file: 06-database-dynamic-without-clusterref.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'database')): true
+            (contains($error, 'credentialsMode Dynamic requires clusterRef')): true
+  # spec.cache with both clusterRef and servers must be rejected.
+  - try:
+    - apply:
+        file: 07-cache-clusterref-and-servers.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cache')): true
+            (contains($error, 'exactly one of clusterRef or servers')): true
+  # spec.cache with neither clusterRef nor servers must be rejected by the same
+  # rule.
+  - try:
+    - apply:
+        file: 08-cache-neither-clusterref-nor-servers.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cache')): true
+            (contains($error, 'exactly one of clusterRef or servers')): true
+  # A newline in a spec.cache.servers entry must be rejected by the items
+  # pattern on CacheSpec.Servers: the list renders verbatim into
+  # [keystone_authtoken] memcached_servers.
+  - try:
+    - apply:
+        file: 09-cache-server-control-char.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cache.servers[0]')): true
+            (contains($error, 'should match')): true
+  # spec.secretStoreRef.name empty must be rejected by the MinLength=1 marker on
+  # the shared SecretStoreRefSpec.
+  - try:
+    - apply:
+        file: 10-secretstoreref-empty-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'secretStoreRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
+  # spec.keystoneEndpoint omitted must be rejected. The defaulting webhook
+  # materializes the field as an empty string (no omitempty on the Go field), so
+  # the CRD minLength and pattern guards answer rather than the webhook's
+  # field.Required branch.
+  - try:
+    - apply:
+        file: 11-keystone-endpoint-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'keystoneEndpoint')): true
+  # spec.keystoneEndpoint with a non-http(s) scheme must be rejected by the CRD
+  # pattern.
+  - try:
+    - apply:
+        file: 12-keystone-endpoint-bad-scheme.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'keystoneEndpoint')): true
+            (contains($error, 'should match')): true
+  # spec.keystonePublicEndpoint with a non-numeric port must be rejected by the
+  # validating webhook: the value clears the CRD pattern, which constrains the
+  # scheme only, so url.Parse in validateEndpointURL is the sole gate.
+  - try:
+    - apply:
+        file: 13-keystone-public-endpoint-not-a-url.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'keystonePublicEndpoint')): true
+            (contains($error, 'must be a valid URL')): true
+  # A newline in spec.serviceUser.username must be rejected by the validating
+  # webhook: the field has no schema marker and renders verbatim into
+  # [keystone_authtoken] username.
+  - try:
+    - apply:
+        file: 14-serviceuser-username-control-char.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceUser.username')): true
+            (contains($error, 'must not contain a newline or carriage return')): true
+  # A newline in spec.gateway.hostname must be rejected by the validating
+  # webhook: the MinLength marker bounds the length, not the content, and the
+  # hostname reaches the renderer as [DEFAULT] host_href.
+  - try:
+    - apply:
+        file: 15-gateway-hostname-control-char.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'gateway.hostname')): true
+            (contains($error, 'must not contain a newline or carriage return')): true
+  # spec.logging.format outside the CRD enum must be rejected.
+  - try:
+    - apply:
+        file: 16-logging-format-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'logging.format')): true
+            (contains($error, 'Unsupported value')): true
+  # spec.logging.level outside the CRD enum must be rejected.
+  - try:
+    - apply:
+        file: 17-logging-level-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'logging.level')): true
+            (contains($error, 'Unsupported value')): true
+  # A spec.logging.perLoggerLevels value outside the accepted set must be
+  # rejected by the CEL rule on the map (a CRD enum on additionalProperties is
+  # not expressible); the webhook repeats it per entry.
+  - try:
+    - apply:
+        file: 18-logging-per-logger-level-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'perLoggerLevels')): true
+            (contains($error, 'level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL')): true
+  # spec.deployment.terminationGracePeriodSeconds below the Minimum=10 marker
+  # must be rejected.
+  - try:
+    - apply:
+        file: 19-termination-grace-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'terminationGracePeriodSeconds')): true
+            (contains($error, 'should be greater than or equal to 10')): true
+  # spec.deployment.preStopSleepSeconds not below terminationGracePeriodSeconds
+  # must be rejected by the drain-window CEL rule on DeploymentSpec. The rule is
+  # declared on the type, so the API server reports it at spec.deployment.
+  - try:
+    - apply:
+        file: 20-prestop-not-below-grace.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'preStopSleepSeconds')): true
+            (contains($error, 'must be strictly less than terminationGracePeriodSeconds')): true
+  # spec.apiServer.uwsgi.harakiri not below the drain window must be rejected by
+  # the validating webhook: the rule correlates a uWSGI field with two
+  # spec.deployment fields, which no marker can express.
+  - try:
+    - apply:
+        file: 21-harakiri-not-below-drain-window.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'uwsgi.harakiri')): true
+            (contains($error, 'must be strictly less than terminationGracePeriodSeconds - preStopSleepSeconds')): true
+  # spec.apiServer.uwsgi.httpKeepAliveTimeout set with httpKeepAlive false must
+  # be rejected (CEL rule on UWSGISpec).
+  - try:
+    - apply:
+        file: 22-uwsgi-keepalive-timeout-without-keepalive.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'httpKeepAliveTimeout may only be set when httpKeepAlive is true')): true
+  # A Recreate strategy carrying a rollingUpdate block must be rejected by the
+  # validating webhook: DeploymentStrategy is an embedded upstream type with no
+  # CEL rule here, so admission is the only gate before the Deployment
+  # controller refuses the child object.
+  - try:
+    - apply:
+        file: 23-strategy-recreate-with-rollingupdate.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'strategy.rollingUpdate')): true
+            (contains($error, 'rollingUpdate must not be set when strategy.type is Recreate')): true
+  # spec.autoscaling.minReplicas above maxReplicas must be rejected. The CEL
+  # rule is declared on AutoscalingSpec, so the API server reports it at the
+  # parent path spec.autoscaling, NOT at spec.autoscaling.minReplicas.
+  - try:
+    - apply:
+        file: 24-autoscaling-min-above-max.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'autoscaling')): true
+            (contains($error, 'minReplicas must not exceed maxReplicas')): true
+  # spec.autoscaling with no utilization target at all must be rejected by the
+  # second CEL rule on AutoscalingSpec: an HPA with no metric has nothing to
+  # scale on.
+  - try:
+    - apply:
+        file: 25-autoscaling-no-target.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'autoscaling')): true
+            (contains($error, 'at least one of targetCPUUtilization or targetMemoryUtilization must be set')): true
+  # spec.autoscaling.targetCPUUtilization above the Maximum=100 marker must be
+  # rejected.
+  - try:
+    - apply:
+        file: 26-autoscaling-cpu-utilization-above-max.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'targetCPUUtilization')): true
+            (contains($error, 'should be less than or equal to 100')): true
+  # spec.autoscaling.maxReplicas below spec.deployment.replicas while
+  # minReplicas is unset must be rejected by the validating webhook: minReplicas
+  # resolves to spec.deployment.replicas, so the rendered HPA would be one the
+  # API server refuses. The rule correlates two top-level spec fields.
+  - try:
+    - apply:
+        file: 27-autoscaling-max-below-replicas.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'autoscaling.maxReplicas')): true
+            (contains($error, 'maxReplicas must be >= spec.deployment.replicas')): true
+  # spec.networkPolicy with an empty ingress list must be rejected by the CEL
+  # rule on NetworkPolicySpec. The rule is declared on the type, so the API
+  # server reports it at spec.networkPolicy, not at spec.networkPolicy.ingress.
+  - try:
+    - apply:
+        file: 28-networkpolicy-empty-ingress.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'networkPolicy')): true
+            (contains($error, 'at least one ingress source must be specified')): true
+  # spec.gateway.hostname empty must be rejected by the MinLength=1 marker on
+  # the shared GatewaySpec.
+  - try:
+    - apply:
+        file: 29-gateway-empty-hostname.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'gateway.hostname')): true
+            (contains($error, 'should be at least 1 chars long')): true
+  # spec.gateway.parentRef.name empty must be rejected by the MinLength=1 marker
+  # on GatewayParentRefSpec: an HTTPRoute has to name the Gateway it attaches
+  # to.
+  - try:
+    - apply:
+        file: 30-gateway-empty-parentref-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'gateway.parentRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
+  # spec.policyOverrides carrying neither rules nor configMapRef must be
+  # rejected by the CEL rule on the field: there would be no policy document to
+  # render.
+  - try:
+    - apply:
+        file: 31-policyoverrides-no-source.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'policyOverrides')): true
+            (contains($error, 'at least one of rules or configMapRef must be set')): true
+  # An empty spec.policyOverrides.rules value must be rejected by the CEL rule
+  # on the shared PolicySpec; the webhook repeats it. oslo.policy reads an empty
+  # rule as "allow everyone".
+  - try:
+    - apply:
+        file: 32-policyoverrides-empty-rule-value.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'policyOverrides')): true
+            (contains($error, 'policy rule value must not be empty')): true
+  # spec.dbClean.retentionDays of 0 must be rejected by the CRD Minimum=1
+  # marker.
+  - try:
+    - apply:
+        file: 33-dbclean-retentiondays-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'dbClean.retentionDays')): true
+            (contains($error, 'should be greater than or equal to 1')): true
+  # spec.dbClean.schedule with a non-cron value must be rejected by the
+  # validating webhook: the accepted grammar includes descriptors such as
+  # @daily, so it has no CRD pattern counterpart.
+  - try:
+    - apply:
+        file: 34-dbclean-invalid-schedule.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'dbClean.schedule')): true
+            (contains($error, 'invalid cron expression')): true
+  # spec.extraConfig with an empty section name must be rejected by the webhook.
+  - try:
+    - apply:
+        file: 35-extraconfig-empty-section.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'extraConfig section name must not be empty')): true
+  # A newline in a spec.extraConfig SECTION name must be rejected by the
+  # webhook: the renderer writes '[<section>]' verbatim, so the newline opens a
+  # second section the ownership and catalog gates never see.
+  - try:
+    - apply:
+        file: 36-extraconfig-section-control-char.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'extraConfig section name must not contain a newline or carriage return')): true
+  # spec.extraConfig with an empty option key must be rejected by the webhook.
+  - try:
+    - apply:
+        file: 37-extraconfig-empty-key.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'extraConfig key must not be empty')): true
+  # A newline in a spec.extraConfig option VALUE must be rejected: the rendered
+  # INI writes `key = value` verbatim, so it would inject a whole section past
+  # the ownership and catalog gates, which key on names and never inspect
+  # values.
+  - try:
+    - apply:
+        file: 38-extraconfig-value-control-char.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'extraConfig key and value must not contain a newline or carriage return')): true
+  # spec.extraConfig setting an unknown option (typo'd key) in a known section
+  # must be rejected: it is absent from the barbican 2025.2 option catalog.
+  - try:
+    - apply:
+        file: 39-extraconfig-unknown-option.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'no such option in the barbican 2025.2 option catalog')): true
+  # spec.extraConfig declaring an unknown section (typo'd section name) must be
+  # rejected: it is absent from the barbican 2025.2 option catalog.
+  - try:
+    - apply:
+        file: 40-extraconfig-unknown-section.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'no such section in the barbican 2025.2 option catalog')): true
+  # spec.extraConfig setting [keystone_authtoken] password must be rejected by
+  # the webhook — the operator owns it via spec.serviceUser.secretRef and a file
+  # value would copy the service password into the config Secret the API pods
+  # mount.
+  - try:
+    - apply:
+        file: 41-extraconfig-owned-password.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'password is managed via spec.serviceUser.secretRef')): true
+            (contains($error, 'copies credential material into the rendered config Secret')): true
+  # spec.extraConfig setting [vault_plugin] root_token_id must be rejected by
+  # the webhook: it replaces the mount-scoped AppRole with an unscoped
+  # credential the moment the pods load the rendered file.
+  - try:
+    - apply:
+        file: 42-extraconfig-owned-root-token.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'root_token_id is managed via operator-computed')): true
+            (contains($error, 'unscoped credential written in plain text')): true
+  # A spec.deployment.resources memory request above its limit must be rejected
+  # by the validating webhook: ResourceRequirements is an embedded upstream type
+  # carrying no cross-field marker.
+  - try:
+    - apply:
+        file: 43-resources-request-above-limit.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'resources.requests.memory')): true
+            (contains($error, 'memory request must not exceed limit')): true
+  # spec.deployment.priorityClassName naming a PriorityClass that does not exist
+  # must be rejected by the validating webhook: the object is cluster-scoped, so
+  # no marker can express the reference.
+  - try:
+    - apply:
+        file: 44-priorityclass-not-found.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'priorityClassName')): true
+            (contains($error, 'Not found')): true
+  # A spec.deployment.topologySpreadConstraints selector that does not equal the
+  # Deployment's own selector labels must be rejected by the validating webhook:
+  # the labels are derived from metadata.name, so no marker can express it.
+  - try:
+    - apply:
+        file: 45-topologyspread-selector-mismatch.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'topologySpreadConstraints[0].labelSelector')): true
+            (contains($error, 'must equal the Deployment selector labels')): true
+  # A metadata.name past 43 characters must be rejected on CREATE: the
+  # {name}-db-clean CronJob would exceed the 52-character cap the API server
+  # enforces, so the CR would admit cleanly and then fail every reconcile.
+  - try:
+    - apply:
+        file: 46-name-too-long-for-db-clean-cronjob.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'name must be at most 43 characters')): true
