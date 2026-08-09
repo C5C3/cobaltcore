@@ -49,6 +49,33 @@ type UWSGICommandParams struct {
 	TrailingArgs []string
 }
 
+// EffectiveUWSGIConcurrency resolves the worker topology of the rendered uWSGI
+// command: the process and thread counts after the same default resolution
+// BuildUWSGICommand applies. A nil spec yields the commonv1 defaults; a
+// non-positive count in a non-nil spec falls back to the same defaults, as
+// defense in depth for a spec that reached the builder without the CRD
+// defaults — an adopting operator whose spec omits the +kubebuilder:default
+// markers, or an in-process caller that never round-trips the API server. (In
+// the command, a zero count would render "--processes 0", a master that binds
+// the socket, forks no worker, and serves nothing.)
+//
+// Callers sizing resources that scale with request concurrency — a database
+// user's connection cap, most prominently — resolve the counts here so their
+// arithmetic cannot drift from the command the container actually runs.
+func EffectiveUWSGIConcurrency(spec *commonv1.UWSGISpec) (processes, threads int32) {
+	processes = commonv1.DefaultUWSGIProcesses
+	threads = commonv1.DefaultUWSGIThreads
+	if spec != nil {
+		if spec.Processes >= 1 {
+			processes = spec.Processes
+		}
+		if spec.Threads >= 1 {
+			threads = spec.Threads
+		}
+	}
+	return processes, threads
+}
+
 // BuildUWSGICommand renders the uWSGI container command shared by every service
 // operator's API container. It owns exactly the parts the operators would
 // otherwise each repeat:
@@ -91,24 +118,10 @@ type UWSGICommandParams struct {
 // BuildUWSGICommand is a total function over valid params: it performs no I/O
 // and has no error paths.
 func BuildUWSGICommand(p UWSGICommandParams) []string {
-	processes := commonv1.DefaultUWSGIProcesses
-	threads := commonv1.DefaultUWSGIThreads
+	processes, threads := EffectiveUWSGIConcurrency(p.UWSGI)
 	httpKeepAlive := commonv1.DefaultUWSGIHTTPKeepAlive
 
 	if p.UWSGI != nil {
-		processes = p.UWSGI.Processes
-		threads = p.UWSGI.Threads
-		// Defense in depth for a spec that reached the builder without the CRD
-		// defaults — an adopting operator whose spec omits the
-		// +kubebuilder:default markers, or an in-process caller that never
-		// round-trips the API server. A zero count renders "--processes 0", a
-		// master that binds the socket, forks no worker, and serves nothing.
-		if processes < 1 {
-			processes = commonv1.DefaultUWSGIProcesses
-		}
-		if threads < 1 {
-			threads = commonv1.DefaultUWSGIThreads
-		}
 		// HTTPKeepAlive is a nil-preserving *bool: nil means "unset", which keeps
 		// the default (true); an explicit true/false is honored verbatim.
 		if p.UWSGI.HTTPKeepAlive != nil {

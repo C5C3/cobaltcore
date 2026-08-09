@@ -87,6 +87,9 @@ type ProvisionFlowParams struct {
 	// RequeueAfter is the requeue interval while waiting for the cluster or the
 	// MariaDB CRs to become Ready.
 	RequeueAfter time.Duration
+	// MaxUserConnections is forwarded to the User builder; see
+	// ProvisionParams.MaxUserConnections for the zero-value contract.
+	MaxUserConnections int32
 }
 
 // ReconcileProvision ensures the MariaDB Database, User, and Grant CRs exist and
@@ -129,6 +132,7 @@ func ReconcileProvision(ctx context.Context, p ProvisionFlowParams) (ctrl.Result
 		ClusterRef:         p.Database.ClusterRef.Name,
 		DatabaseName:       p.Database.Database,
 		PasswordSecretName: p.Database.SecretRef.Name,
+		MaxUserConnections: p.MaxUserConnections,
 	}
 
 	dbReady, err := EnsureDatabase(ctx, p.Client, p.Scheme, p.Owner, BuildDatabase(pp))

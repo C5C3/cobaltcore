@@ -214,6 +214,31 @@ func TestReconcileProvision_staticWaitsForUser(t *testing.T) {
 	g.Expect(cond.Message).To(Equal("MariaDB User or Grant CR is not ready"))
 }
 
+// MaxUserConnections travels from the flow params into the applied User CR, so
+// an operator sizing the cap from its CR topology reaches the SQL user through
+// one field instead of re-building the User itself.
+func TestReconcileProvision_forwardsMaxUserConnections(t *testing.T) {
+	g := NewWithT(t)
+	s := flowScheme()
+	owner := flowOwner()
+	var conds []metav1.Condition
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, readyMariaDB(), readyDatabaseCR()).
+		WithStatusSubresource(readyDatabaseCR()).
+		Build()
+
+	p := provisionParamsFor(managedDBSpec(), &conds, owner)
+	p.Client, p.Scheme = c, s
+	p.MaxUserConnections = 18
+
+	_, err := ReconcileProvision(context.Background(), p)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	user := &mariadbv1alpha1.User{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: flowInstance, Namespace: flowNamespace}, user)).To(Succeed())
+	g.Expect(user.Spec.MaxUserConnections).To(Equal(int32(18)))
+}
+
 func TestReconcileProvision_dynamicSkipsUser(t *testing.T) {
 	g := NewWithT(t)
 	s := flowScheme()
