@@ -14,5 +14,5 @@
 # synchronous 400 that glance ≥ 31.x's DNS-based URI filtering returns for
 # unresolvable hosts; tempest 45.x still demands the legacy async failure.
 tempest: "46.3.0"
-barbican-tempest-plugin: "4.4.0"
+barbican-tempest-plugin: "4.5.0"
 keystone-tempest-plugin: "0.21.0"
