@@ -289,6 +289,29 @@ func TestBuildBarbicanDeployment_ReMintedSecretIDRollsThePods(t *testing.T) {
 	g.Expect(afterAnnotations[secretStoreCredentialsHashAnnotation]).To(Equal("digest-after"))
 }
 
+// Every uWSGI worker imports the whole app under the container's CPU limit, so
+// the cold start stretches past the liveness budget once
+// spec.apiServer.uwsgi.processes rises above the default (observed 66-91s at
+// processes=4 under the default 500m limit, against a ~55s liveness budget:
+// the container is killed before the app ever answers, forever). The startup
+// probe must therefore exist and carry a budget that outlasts the worst
+// observed cold start, and only then does the liveness probe take over.
+func TestBuildBarbicanDeployment_StartupProbeOutlastsSlowColdStarts(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := testBarbican()
+
+	deploy := buildBarbicanDeployment(barbican, validProjection(), deploymentConfigSecretName, "", "")
+	container := deploy.Spec.Template.Spec.Containers[0]
+
+	g.Expect(container.StartupProbe).NotTo(BeNil())
+	g.Expect(container.StartupProbe.HTTPGet).NotTo(BeNil())
+	g.Expect(container.StartupProbe.HTTPGet.Path).To(Equal(barbicanHealthcheckPath))
+	g.Expect(container.StartupProbe.HTTPGet.Port.IntValue()).To(Equal(int(barbicanAPIPort)))
+	g.Expect(container.StartupProbe.FailureThreshold).To(Equal(int32(30)))
+	g.Expect(container.StartupProbe.PeriodSeconds).To(Equal(int32(10)))
+	g.Expect(container.StartupProbe.TimeoutSeconds).To(Equal(int32(8)))
+}
+
 // Once the Service selects by component, it must never widen again: re-widening
 // would re-admit db-clean pods as endpoints for the duration of every later
 // rollout. The latch is decided from the uncached reader, so a cache that still
