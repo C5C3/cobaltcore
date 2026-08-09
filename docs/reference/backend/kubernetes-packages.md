@@ -269,8 +269,9 @@ Creates or updates a MariaDB Database CR.
 **Behavior:**
 
 - Applies the desired Database via `apply.EnsureObject` (Server-Side Apply); the field
-  manager owns only the fields the builder sets, so the server default on
-  `maxUserConnections` is preserved and a converged Database is not rewritten.
+  manager owns only the fields the builder sets, so server defaults on omitted fields
+  (for example `maxUserConnections` on a User whose provision params leave it unsized)
+  are preserved and a converged Database is not rewritten.
 - Readiness is determined by the package-internal `isDatabaseReady` helper on the
   server-fresh apply response.
 

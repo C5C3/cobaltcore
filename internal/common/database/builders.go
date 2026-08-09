@@ -37,6 +37,15 @@ type ProvisionParams struct {
 	DatabaseName string
 	// PasswordSecretName locates the user password Secret.
 	PasswordSecretName string
+	// MaxUserConnections caps the SQL user's simultaneous connections. Zero
+	// leaves the field unset on the User CR, so the mariadb-operator CRD
+	// default (10) applies and an externally managed value is left alone; a
+	// positive value is applied verbatim and owned by the operator. An operator
+	// whose CR can raise the per-pod worker count sizes this from its own
+	// topology: every worker process holds at least one pooled connection once
+	// its app has loaded, so a fleet whose worker count exceeds the cap can
+	// never become fully ready.
+	MaxUserConnections int32
 }
 
 func (p ProvisionParams) mariaDBRef() mariadbv1alpha1.MariaDBRef {
@@ -76,6 +85,10 @@ func BuildUser(p ProvisionParams) *mariadbv1alpha1.User {
 				},
 				Key: defaultPasswordKey,
 			},
+			// int32 with omitempty: zero serializes as absent, which is exactly
+			// the "leave the CRD default in place" contract MaxUserConnections
+			// documents — no conditional needed.
+			MaxUserConnections: p.MaxUserConnections,
 		},
 	}
 }

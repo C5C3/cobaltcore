@@ -15,9 +15,38 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/database"
+	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/release"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 )
+
+// barbicanMaxUserConnections sizes the SQL user's max_user_connections cap for
+// the CR's own topology. Every uWSGI worker holds at least one pooled
+// connection once its app has loaded (each worker syncs the secret-store table
+// at start-up and the pool keeps that connection open), so the floor is pods ×
+// processes × threads — pods being the autoscaling ceiling when an HPA owns the
+// replica count. On top of the floor: one surge pod, because the rollout
+// strategy (maxSurge=1, maxUnavailable=0) runs a full extra pod's workers
+// alongside the fleet during an update, and two transient job connections
+// (db-sync, db-clean). Left unsized, the mariadb-operator CRD default of 10
+// applies, which a raised spec.apiServer.uwsgi.processes exceeds before a
+// single request is served: 3 replicas × 4 processes are 12 pooled
+// connections, the last workers fail their start-up store sync with MySQL
+// error 1226, and --need-app crash-loops their pod indefinitely. The default
+// topology (3 replicas × 2 processes × 1 thread) sizes to (3+1)×2+2 = 10, the
+// same cap the CRD default granted it.
+func barbicanMaxUserConnections(barbican *barbicanv1alpha1.Barbican) int32 {
+	pods := deployment.EffectiveReplicas(&barbican.Spec.Deployment)
+	if barbican.Spec.Autoscaling != nil {
+		pods = barbican.Spec.Autoscaling.MaxReplicas
+	}
+	var uwsgi *barbicanv1alpha1.UWSGISpec
+	if barbican.Spec.APIServer != nil {
+		uwsgi = barbican.Spec.APIServer.UWSGI
+	}
+	processes, threads := deployment.EffectiveUWSGIConcurrency(uwsgi)
+	return (pods+1)*processes*threads + 2
+}
 
 // conditionReasonImageReleaseMismatch flags the operator error where the
 // tag-pinned spec.image names a different OpenStack release than
@@ -69,16 +98,17 @@ func (r *BarbicanReconciler) reconcileDatabase(ctx context.Context, barbican *ba
 	// ensure, Dynamic-credentials skip of the User/Grant. A non-zero result means
 	// the flow set a not-ready condition and we must return it unchanged.
 	res, err := database.ReconcileProvision(ctx, database.ProvisionFlowParams{
-		Client:        r.Client,
-		Scheme:        r.Scheme,
-		Owner:         barbican,
-		InstanceName:  barbican.Name,
-		Namespace:     barbican.Namespace,
-		Database:      &barbican.Spec.Database,
-		Conditions:    &barbican.Status.Conditions,
-		Generation:    barbican.Generation,
-		ConditionType: "DatabaseReady",
-		RequeueAfter:  RequeueDatabaseWait,
+		Client:             r.Client,
+		Scheme:             r.Scheme,
+		Owner:              barbican,
+		InstanceName:       barbican.Name,
+		Namespace:          barbican.Namespace,
+		Database:           &barbican.Spec.Database,
+		Conditions:         &barbican.Status.Conditions,
+		Generation:         barbican.Generation,
+		ConditionType:      "DatabaseReady",
+		RequeueAfter:       RequeueDatabaseWait,
+		MaxUserConnections: barbicanMaxUserConnections(barbican),
 	})
 	if err != nil || !res.IsZero() {
 		return res, err

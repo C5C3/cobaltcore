@@ -51,6 +51,20 @@ func TestBuildUser(t *testing.T) {
 	g.Expect(user.Spec.PasswordSecretKeyRef.Key).To(gomega.Equal("password"))
 }
 
+// A zero MaxUserConnections must stay zero on the built User: int32-with-
+// omitempty serializes absent, which keeps the mariadb-operator CRD default in
+// place and leaves an externally managed value untouched. A positive value is
+// applied verbatim, so an operator sizing the cap from its own topology owns
+// the field.
+func TestBuildUser_MaxUserConnections(t *testing.T) {
+	g := gomega.NewWithT(t)
+	g.Expect(BuildUser(provisionParams()).Spec.MaxUserConnections).To(gomega.BeZero())
+
+	p := provisionParams()
+	p.MaxUserConnections = 18
+	g.Expect(BuildUser(p).Spec.MaxUserConnections).To(gomega.Equal(int32(18)))
+}
+
 func TestBuildGrant(t *testing.T) {
 	g := gomega.NewWithT(t)
 	grant := BuildGrant(provisionParams())

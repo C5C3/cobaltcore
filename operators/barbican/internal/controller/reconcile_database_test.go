@@ -8,10 +8,12 @@ import (
 	"context"
 	"testing"
 
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -76,6 +78,104 @@ func expectNoSyncJob(t *testing.T, r *BarbicanReconciler) {
 	var syncJob batchv1.Job
 	err := r.Get(context.Background(), syncJobKey, &syncJob)
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "no migration Job may run on this path")
+}
+
+// barbicanMaxUserConnections must track the CR's own worker topology: every
+// uWSGI worker holds a pooled connection once loaded, so a cap below
+// pods × processes × threads can never let the fleet become fully ready (the
+// last workers fail their start-up store sync with MySQL error 1226 and
+// --need-app crash-loops their pod). The default topology must keep sizing to
+// 10, the cap the mariadb-operator CRD default granted it before the operator
+// owned the field.
+func TestBarbicanMaxUserConnections(t *testing.T) {
+	cases := []struct {
+		name     string
+		mutate   func(*barbicanv1alpha1.Barbican)
+		expected int32
+	}{
+		{
+			name:     "defaults keep the historical cap of 10",
+			mutate:   func(*barbicanv1alpha1.Barbican) {},
+			expected: (3+1)*2*1 + 2,
+		},
+		{
+			name: "raised process count raises the cap",
+			mutate: func(b *barbicanv1alpha1.Barbican) {
+				b.Spec.Deployment.Replicas = 3
+				b.Spec.APIServer = &barbicanv1alpha1.APIServerSpec{
+					UWSGI: &barbicanv1alpha1.UWSGISpec{Processes: 4},
+				}
+			},
+			expected: (3+1)*4*1 + 2,
+		},
+		{
+			name: "threads multiply per-worker concurrency",
+			mutate: func(b *barbicanv1alpha1.Barbican) {
+				b.Spec.APIServer = &barbicanv1alpha1.APIServerSpec{
+					UWSGI: &barbicanv1alpha1.UWSGISpec{Processes: 2, Threads: 2},
+				}
+			},
+			expected: (3+1)*2*2 + 2,
+		},
+		{
+			name: "autoscaling sizes for the HPA ceiling",
+			mutate: func(b *barbicanv1alpha1.Barbican) {
+				b.Spec.Autoscaling = &barbicanv1alpha1.AutoscalingSpec{MaxReplicas: 5}
+				b.Spec.APIServer = &barbicanv1alpha1.APIServerSpec{
+					UWSGI: &barbicanv1alpha1.UWSGISpec{Processes: 4},
+				}
+			},
+			expected: (5+1)*4*1 + 2,
+		},
+		{
+			name: "zero-valued replicas normalize to the default",
+			mutate: func(b *barbicanv1alpha1.Barbican) {
+				b.Spec.Deployment.Replicas = 0
+			},
+			expected: (3+1)*2*1 + 2,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			barbican := testBarbican()
+			tc.mutate(barbican)
+			g.Expect(barbicanMaxUserConnections(barbican)).To(Equal(tc.expected))
+		})
+	}
+}
+
+// The sized cap must actually reach the provisioned User CR: the tempest
+// topology (3 replicas x 4 processes = 12 pooled connections) exceeded the CRD
+// default of 10 and crash-looped a pod at every cold start until the operator
+// owned the field.
+func TestReconcileDatabase_SizesTheUserConnectionCap(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := managedBarbican()
+	barbican.Spec.APIServer = &barbicanv1alpha1.APIServerSpec{
+		UWSGI: &barbicanv1alpha1.UWSGISpec{Processes: 4},
+	}
+
+	readyMariaDB := &mariadbv1alpha1.MariaDB{
+		ObjectMeta: metav1.ObjectMeta{Name: "mariadb", Namespace: testNamespace},
+	}
+	meta.SetStatusCondition(&readyMariaDB.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Running",
+	})
+	readyDatabase := &mariadbv1alpha1.Database{
+		ObjectMeta: metav1.ObjectMeta{Name: testBarbicanName, Namespace: testNamespace},
+	}
+	meta.SetStatusCondition(&readyDatabase.Status.Conditions, metav1.Condition{
+		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Created",
+	})
+	r := newBarbicanTestReconciler(barbican, readyMariaDB, readyDatabase)
+
+	_, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	user := &mariadbv1alpha1.User{}
+	g.Expect(r.Get(context.Background(), client.ObjectKey{Name: testBarbicanName, Namespace: testNamespace}, user)).To(Succeed())
+	g.Expect(user.Spec.MaxUserConnections).To(Equal(int32((3+1)*4*1 + 2)))
 }
 
 // TestReconcileDatabase_SyncJobCommandAndMounts pins what the migration

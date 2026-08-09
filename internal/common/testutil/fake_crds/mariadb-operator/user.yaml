@@ -50,7 +50,8 @@ spec:
                   type: integer
                   # Mirrors the real CRD's +kubebuilder:default=10 so envtest
                   # exercises the server-default convergence the operator relies
-                  # on (the builder never sets maxUserConnections).
+                  # on (the builder omits maxUserConnections unless
+                  # ProvisionParams sizes it explicitly).
                   default: 10
                 name:
                   type: string
