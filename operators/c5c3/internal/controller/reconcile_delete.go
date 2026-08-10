@@ -14,12 +14,14 @@ import (
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -164,6 +167,18 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 			orcChildObject{newService, placementCatalogServiceName(cp)},
 			orcChildObject{newEndpoint, placementCatalogEndpointName(cp, "internal")},
 			orcChildObject{newEndpoint, placementCatalogEndpointName(cp, "public")},
+		)
+	}
+
+	// And the same cover for the key-manager catalog row: a barbican removal without
+	// the deletion opt-in leaves the row standing, so its names are enumerated
+	// unconditionally here and torn down with the ControlPlane.
+	if cp.Spec.Services.Barbican == nil {
+		objs = append(
+			objs,
+			orcChildObject{newService, barbicanCatalogServiceName(cp)},
+			orcChildObject{newEndpoint, barbicanCatalogEndpointName(cp, "internal")},
+			orcChildObject{newEndpoint, barbicanCatalogEndpointName(cp, "public")},
 		)
 	}
 
@@ -478,6 +493,14 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 			return ctrl.Result{RequeueAfter: namespaceRequeueAfter}, nil
 		}
 
+		// The auth-delegator binding is cluster-scoped, so the sweep above reaches it
+		// only when Barbican runs in a namespace of its own. Co-located — the default
+		// — there is no dedicated namespace at all, teardownDedicatedNamespaces
+		// returns at once, and nothing else can collect it.
+		if err := r.deleteBarbicanAuthDelegatorBinding(ctx, cp); err != nil {
+			return ctrl.Result{}, err
+		}
+
 		// Release the finalizer so GC tears down Keystone/MariaDB and the rest.
 		r.Recorder.Event(cp, "Normal", "ORCTeardownComplete",
 			"No remaining K-ORC CRs; releasing the ControlPlane finalizer")
@@ -706,9 +729,18 @@ func (r *ControlPlaneReconciler) teardownDedicatedNamespaces(
 
 // crossNamespaceServiceChildren returns the service children the ControlPlane
 // placed in namespace: the Keystone child when the Keystone service is assigned
-// there, and the Horizon, Glance, and Placement children likewise. Each is
-// matched by its deterministic name; ownership is re-checked against the live
+// there, and the Horizon, Glance, Placement, and Barbican children likewise. Each
+// is matched by its deterministic name; ownership is re-checked against the live
 // object before anything is deleted.
+//
+// The Barbican arm names three objects rather than one, because its secret store
+// and the dedicated OpenBao instance behind it belong in the WAIT SET too. The
+// namespace must not be deleted until the openbao-operator has finished the
+// instance's finalizer, and that finalizer runs under the tenant RBAC living in
+// this very namespace: a namespace deleted first reaps the RBAC out from under it,
+// leaving the instance unfinalizable and the namespace stuck Terminating. An
+// external secret store projects no instance, so its name is simply NotFound and
+// tolerated as already-gone.
 func crossNamespaceServiceChildren(cp *c5c3v1alpha1.ControlPlane, namespace string) []client.Object {
 	var children []client.Object
 	if cp.KeystoneNamespace() == namespace {
@@ -730,6 +762,20 @@ func crossNamespaceServiceChildren(cp *c5c3v1alpha1.ControlPlane, namespace stri
 		children = append(children, &placementv1alpha1.Placement{
 			ObjectMeta: metav1.ObjectMeta{Name: placementName(cp), Namespace: namespace},
 		})
+	}
+	if cp.BarbicanNamespace() == namespace {
+		children = append(
+			children,
+			&barbicanv1alpha1.Barbican{
+				ObjectMeta: metav1.ObjectMeta{Name: barbicanName(cp), Namespace: namespace},
+			},
+			&barbicanv1alpha1.BarbicanSecretStore{
+				ObjectMeta: metav1.ObjectMeta{Name: barbicanSecretStoreName(cp), Namespace: namespace},
+			},
+			&openbaov1alpha1.OpenBaoCluster{
+				ObjectMeta: metav1.ObjectMeta{Name: barbicanOpenBaoName(cp), Namespace: namespace},
+			},
+		)
 	}
 	return children
 }
@@ -790,7 +836,133 @@ func (r *ControlPlaneReconciler) deleteServiceChildrenIn(
 			remaining = append(remaining, fmt.Sprintf("%s/%s", namespace, b.Name))
 		}
 	}
+
+	// The Barbican namespace carries two more sets. First the projected
+	// BarbicanSecretStores, swept on the GlanceBackend terms: only c5c3-owned stores
+	// carrying the Barbican child's name prefix, so a hand-created store attached to
+	// the same Barbican is never deleted. The store the projection names today is
+	// already in the wait set above; this catches one the reconcile-time prune never
+	// removed, because a spec edit landing moments before the delete leaves a store
+	// nobody names. An absent CRD (meta.IsNoMatchError) reads as nothing to sweep,
+	// the same way deleteORCResources reads an absent K-ORC stack.
+	if cp.BarbicanNamespace() == namespace {
+		var stores barbicanv1alpha1.BarbicanSecretStoreList
+		switch err := r.List(ctx, &stores, client.InNamespace(namespace)); {
+		case err == nil:
+			prefix := barbicanName(cp) + "-"
+			for i := range stores.Items {
+				store := &stores.Items[i]
+				if store.Name == barbicanSecretStoreName(cp) {
+					continue
+				}
+				if !isControlPlaneChild(store, cp) || !strings.HasPrefix(store.Name, prefix) {
+					continue
+				}
+				if store.GetDeletionTimestamp().IsZero() {
+					if derr := client.IgnoreNotFound(
+						r.Delete(ctx, store, client.PropagationPolicy(metav1.DeletePropagationBackground)),
+					); derr != nil {
+						return nil, fmt.Errorf("deleting BarbicanSecretStore %s/%s: %w", namespace, store.Name, derr)
+					}
+				}
+				remaining = append(remaining, fmt.Sprintf("%s/%s", namespace, store.Name))
+			}
+		case meta.IsNoMatchError(err):
+		default:
+			return nil, fmt.Errorf("listing BarbicanSecretStores in %q for cross-namespace teardown: %w", namespace, err)
+		}
+
+		// Then the rest of the dedicated OpenBao ensemble.
+		if err := r.deleteBarbicanEnsembleIn(ctx, cp, namespace); err != nil {
+			return nil, err
+		}
+	}
 	return remaining, nil
+}
+
+// deleteBarbicanEnsembleIn deletes what the dedicated OpenBao ensemble leaves
+// behind once its instance is on the way out: the tenant that admitted the
+// namespace, the two transport Certificates, the provisioner ServiceAccount, the
+// TokenRequest Role and RoleBinding, the static-seal Secret, and the cluster-scoped
+// auth-delegator binding. The instance itself and the secret store in front of it
+// are in the wait set (crossNamespaceServiceChildren), so nothing here can outrun
+// them.
+//
+// The TENANT is the one gated object. It is what admits the namespace to the
+// openbao-operator, and the instance's own finalizer runs under that admission, so
+// it is held back while an instance this ControlPlane owns is still present. No
+// requeue is needed for that: the instance is in the wait set, so the surrounding
+// flow re-runs until it is gone and a later pass takes the tenant. A tenant this
+// ControlPlane did not create is never touched — in the kind stack a proving tenant
+// already admits the namespace, and deleting it would revoke an admission the
+// operator does not own.
+//
+// The auth-delegator ClusterRoleBinding is cluster-scoped, so neither a namespace
+// deletion nor an owner-reference cascade ever reclaims it. It is deleted here for
+// the Managed lifecycle, by sweepExternalNamespaceResidue for the External one, and
+// by deleteBarbicanAuthDelegatorBinding for the co-located default that reaches
+// neither. Naming it more than once costs nothing: the second Get is a NotFound.
+func (r *ControlPlaneReconciler) deleteBarbicanEnsembleIn(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, namespace string,
+) error {
+	name := barbicanOpenBaoName(cp)
+
+	instanceHoldsTenant := false
+	instance := &openbaov1alpha1.OpenBaoCluster{}
+	switch err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, instance); {
+	case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
+	case err != nil:
+		return fmt.Errorf("checking whether OpenBaoCluster %q is gone before releasing its OpenBaoTenant: %w", name, err)
+	default:
+		instanceHoldsTenant = isControlPlaneChild(instance, cp)
+	}
+
+	// The tenant leads the ensemble, so holding it back is dropping that entry.
+	objs := barbicanOpenBaoEnsembleObjects(name, namespace)
+	if instanceHoldsTenant {
+		objs = objs[1:]
+	}
+
+	for _, obj := range objs {
+		if err := r.deleteOwnedEnsembleObject(ctx, cp, obj); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deleteBarbicanAuthDelegatorBinding removes the cluster-scoped ClusterRoleBinding
+// that lets a dedicated OpenBao instance run its TokenReviews. It is the one child
+// the ControlPlane places outside every namespace, and the per-namespace sweeps
+// reach it only when Barbican was assigned a namespace of its own. Co-located in
+// the ControlPlane's own namespace it has no sweep at all: an owner reference
+// cannot cross from a namespaced owner into cluster scope, so the GC cascade skips
+// it too, and the binding would outlive the ControlPlane under a name a
+// same-named ControlPlane later adopts.
+//
+// Only a binding carrying this ControlPlane's ownership labels is deleted. The name
+// is cluster-wide, so a collision is not confined to one namespace.
+func (r *ControlPlaneReconciler) deleteBarbicanAuthDelegatorBinding(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) error {
+	name := barbicanOpenBaoAuthDelegatorName(barbicanOpenBaoName(cp), cp.BarbicanNamespace())
+	binding := &rbacv1.ClusterRoleBinding{}
+	// Uncached (see ControlPlaneReconciler.APIReader): this runs on EVERY
+	// ControlPlane teardown, Barbican or not, and a cached read would install a
+	// cluster-wide ClusterRoleBinding informer for one object.
+	switch err := r.apiReader().Get(ctx, types.NamespacedName{Name: name}, binding); {
+	case apierrors.IsNotFound(err):
+		return nil
+	case err != nil:
+		return fmt.Errorf("getting ClusterRoleBinding %q for teardown: %w", name, err)
+	}
+	if !isControlPlaneChild(binding, cp) {
+		return nil
+	}
+	if err := client.IgnoreNotFound(r.Delete(ctx, binding)); err != nil {
+		return fmt.Errorf("deleting ClusterRoleBinding %q: %w", name, err)
+	}
+	return nil
 }
 
 // deleteManagedNamespace deletes a namespace the operator created, which cascades
@@ -836,7 +1008,8 @@ func (r *ControlPlaneReconciler) deleteManagedNamespace(
 // nothing cascades and every object has to be named. The set is deterministic
 // (every name is derived from the ControlPlane), so nothing has to be discovered:
 // the backing services, the admin-password and Keystone DB-credential material, the
-// Glance and Placement DB-credential material, and the tenant-store trio.
+// Glance, Placement, and Barbican DB-credential material, the Barbican secret store
+// with the dedicated OpenBao ensemble behind it, and the tenant-store trio.
 //
 // The tenant-store trio goes LAST: the service children deleted before this ran
 // their own ESO cleanup through that store, and an ESO PushSecret cannot purge its
@@ -930,6 +1103,40 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 			}},
 		)
 	}
+	// Everything that follows the Barbican service: the child and its secret store,
+	// the dedicated OpenBao ensemble behind them (instance, tenant, transport
+	// Certificates, provisioner account, TokenRequest grant, static-seal Secret, and
+	// the cluster-scoped auth-delegator binding no namespace deletion reclaims), and
+	// the DB-credential material in the same four shapes as Glance's above.
+	if cp.BarbicanNamespace() == namespace {
+		instance := barbicanOpenBaoName(cp)
+		objs = append(
+			objs,
+			&barbicanv1alpha1.Barbican{ObjectMeta: metav1.ObjectMeta{
+				Name: barbicanName(cp), Namespace: namespace,
+			}},
+			&barbicanv1alpha1.BarbicanSecretStore{ObjectMeta: metav1.ObjectMeta{
+				Name: barbicanSecretStoreName(cp), Namespace: namespace,
+			}},
+			&openbaov1alpha1.OpenBaoCluster{ObjectMeta: metav1.ObjectMeta{
+				Name: instance, Namespace: namespace,
+			}},
+		)
+		objs = append(objs, barbicanOpenBaoEnsembleObjects(instance, namespace)...)
+		objs = append(
+			objs,
+			&esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: barbicanDBCredentialSecretName(cp), Namespace: namespace,
+			}},
+			&esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{
+				Name: barbicanDBCredentialSecretName(cp), Namespace: namespace,
+			}},
+			unstructuredIn(certificateGVK, barbicanDBCredentialClientCertName(cp)),
+			&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+				Name: barbicanDBCredentialServiceAccountName, Namespace: namespace,
+			}},
+		)
+	}
 	// Any service-account credential delivered into this namespace: its source
 	// Secret and consumer ExternalSecret, both operator-owned by label here. The
 	// PushSecret was already deleted by deleteOwnedPushSecrets (before this ran, so
@@ -963,7 +1170,10 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 
 	for _, obj := range objs {
 		key := client.ObjectKeyFromObject(obj)
-		switch err := r.Get(ctx, key, obj); {
+		// Uncached: the Barbican arm above adds the ensemble's three RBAC kinds
+		// to this list (see ControlPlaneReconciler.APIReader), and a one-shot
+		// teardown read has nothing to gain from an informer anyway.
+		switch err := r.apiReader().Get(ctx, key, obj); {
 		case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
 			continue
 		case err != nil:
