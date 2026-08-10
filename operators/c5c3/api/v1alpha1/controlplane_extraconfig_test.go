@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	"k8s.io/utils/ptr"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
@@ -140,6 +141,150 @@ func TestDerivedPublicEndpoint(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g.Expect(tc.hz.DerivedPublicEndpoint()).To(Equal(tc.want))
+		})
+	}
+}
+
+// TestValidateExtraConfigOwnership_ForbidsBarbicanRejectedKeys pins the three
+// Rejected barbican keys. None of them is read from the rendered file at runtime
+// — each arrives through an env override — so honoring the override buys
+// nothing and copies credential material into the config Secret every API pod
+// mounts. The check runs from whichever block carries the key, since the merged
+// value is what would be rendered.
+func TestValidateExtraConfigOwnership_ForbidsBarbicanRejectedKeys(t *testing.T) {
+	for _, tc := range []struct {
+		section string
+		key     string
+	}{
+		{"keystone_authtoken", "password"},
+		{"vault_plugin", "approle_secret_id"},
+		{"vault_plugin", "root_token_id"},
+	} {
+		t.Run(tc.section+" "+tc.key, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := barbicanControlPlane()
+			cp.Spec.Services.Barbican.ExtraConfig = map[string]map[string]string{
+				tc.section: {tc.key: "s3cr3t"},
+			}
+
+			_, errs := validateExtraConfigOwnership(cp)
+			g.Expect(errs.ToAggregate()).To(HaveOccurred())
+			g.Expect(errs.ToAggregate().Error()).To(ContainSubstring(
+				"spec.services.barbican.extraConfig[" + tc.section + "][" + tc.key + "]"))
+			g.Expect(errs.ToAggregate().Error()).To(ContainSubstring("must not be set in extraConfig"))
+		})
+	}
+
+	t.Run("in globalExtraConfig", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.GlobalExtraConfig = map[string]map[string]string{
+			"vault_plugin": {"root_token_id": "s.rootrootroot"},
+		}
+
+		_, errs := validateExtraConfigOwnership(cp)
+		g.Expect(errs.ToAggregate()).To(HaveOccurred())
+		g.Expect(errs.ToAggregate().Error()).To(ContainSubstring(
+			"spec.globalExtraConfig[vault_plugin][root_token_id]"))
+	})
+}
+
+// TestValidateExtraConfigCatalogs_ExemptsBarbicanStoreSectionsByPrefix pins the
+// prefix expansion barbican needs and no other service does: the per-store
+// [secretstore:<name>] sections are named after the BarbicanSecretStore CRs
+// attached to a Barbican, so no release catalog lists them and no static
+// exemption can spell them. Every other unknown section still fails, which is
+// what keeps the exemption from swallowing real typos.
+func TestValidateExtraConfigCatalogs_ExemptsBarbicanStoreSectionsByPrefix(t *testing.T) {
+	t.Run("a per-store section is skipped whole", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.ExtraConfig = map[string]map[string]string{
+			"secretstore:foo": {"global_default": "True", "secret_store_plugin": "vault_plugin"},
+		}
+
+		_, errs := validateExtraConfigCatalogs(cp)
+		g.Expect(errs).To(BeEmpty())
+	})
+
+	t.Run("a section that merely resembles one is not", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.ExtraConfig = map[string]map[string]string{
+			"secretstore_foo": {"global_default": "True"},
+		}
+
+		_, errs := validateExtraConfigCatalogs(cp)
+		g.Expect(errs.ToAggregate()).To(HaveOccurred())
+		g.Expect(errs.ToAggregate().Error()).To(ContainSubstring(
+			"spec.services.barbican.extraConfig[secretstore_foo][global_default]"))
+		g.Expect(errs.ToAggregate().Error()).To(ContainSubstring(
+			"no such section in the barbican 2025.2 option catalog"))
+	})
+
+	t.Run("an unknown option in a known section is rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.ExtraConfig = map[string]map[string]string{
+			"DEFAULT": {"host_hrefs": "https://barbican.example.com"},
+		}
+
+		_, errs := validateExtraConfigCatalogs(cp)
+		g.Expect(errs.ToAggregate()).To(HaveOccurred())
+		g.Expect(errs.ToAggregate().Error()).To(ContainSubstring(
+			"no such option in the barbican 2025.2 option catalog"))
+	})
+}
+
+// TestControlPlaneExtraConfigCatalogInputsChanged_Barbican pins the update gate
+// for the barbican leg: the catalog family re-runs when the barbican block is
+// added, dropped, or edited, and stays gated off for an update that leaves it
+// alone.
+func TestControlPlaneExtraConfigCatalogInputsChanged_Barbican(t *testing.T) {
+	withExtraConfig := func(cfg map[string]map[string]string) *ControlPlane {
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.ExtraConfig = cfg
+		return cp
+	}
+
+	for _, tc := range []struct {
+		name     string
+		oldCP    *ControlPlane
+		newCP    *ControlPlane
+		expected bool
+	}{
+		{
+			name:     "the barbican block is newly declared",
+			oldCP:    validControlPlane(),
+			newCP:    barbicanControlPlane(),
+			expected: true,
+		},
+		{
+			name:     "the barbican block is dropped",
+			oldCP:    barbicanControlPlane(),
+			newCP:    validControlPlane(),
+			expected: true,
+		},
+		{
+			name:     "the barbican extraConfig changes",
+			oldCP:    withExtraConfig(map[string]map[string]string{"DEFAULT": {"debug": "false"}}),
+			newCP:    withExtraConfig(map[string]map[string]string{"DEFAULT": {"debug": "true"}}),
+			expected: true,
+		},
+		{
+			name:  "an unrelated barbican edit leaves the gate closed",
+			oldCP: barbicanControlPlane(),
+			newCP: func() *ControlPlane {
+				cp := barbicanControlPlane()
+				cp.Spec.Services.Barbican.Replicas = ptr.To(int32(5))
+				return cp
+			}(),
+			expected: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(controlPlaneExtraConfigCatalogInputsChanged(tc.oldCP, tc.newCP)).To(Equal(tc.expected))
 		})
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
+	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
 
@@ -6315,4 +6316,905 @@ func TestValidateUpdate_TrustedDashboardRejectedWhenHorizonAppears(t *testing.T)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[federation][trusted_dashboard]"))
 	g.Expect(err.Error()).To(ContainSubstring("Horizon-derived trusted-dashboards projection"))
+}
+
+// --- services.barbican ---
+
+// barbicanControlPlane returns a managed ControlPlane with a minimal barbican
+// block AND the barbican service account the defaulting webhook injects, so the
+// tests below start from an admissible baseline (the validating webhook's
+// defense-in-depth check requires that account) and vary only the field (or the
+// INI content) under test. The store is the dedicated one, the mode that needs
+// no references of its own. The shared infrastructure stays brownfield (the
+// validControlPlane baseline).
+func barbicanControlPlane() *ControlPlane {
+	cp := validControlPlane()
+	cp.Name = "cp"
+	cp.Spec.Services.Barbican = &ServiceBarbicanSpec{
+		SecretStore: ServiceBarbicanSecretStoreSpec{Dedicated: &BarbicanDedicatedSecretStoreSpec{}},
+	}
+	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
+		Name:    "barbican",
+		Project: ServiceAccountProjectSpec{Name: "service-barbican", Create: true},
+		Roles:   []string{"service"},
+	}}
+	return cp
+}
+
+// externalBarbicanStore returns a complete external secret-store block, the
+// shape the tests below break one field at a time.
+func externalBarbicanStore() *BarbicanExternalSecretStoreSpec {
+	return &BarbicanExternalSecretStoreSpec{
+		URL:                  "https://openbao.example.com:8200",
+		CredentialsSecretRef: barbicanv1alpha1.SecretNameRefSpec{Name: "barbican-approle"},
+	}
+}
+
+// TestValidateCreate_AcceptsBarbicanControlPlane pins the admissible baseline.
+func TestValidateCreate_AcceptsBarbicanControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	_, err := w.ValidateCreate(context.Background(), barbicanControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// The projected Barbican child is bounded far below the 253-byte object-name
+// cap: the barbican operator appends "-db-clean" to name its clean-up CronJob,
+// and Kubernetes caps CronJob names at 52 characters, which leaves the Barbican
+// CRD's own 43-character metadata.name bound. Without this guard the
+// ControlPlane admits and the projection is then rejected on every pass — with
+// metadata.name immutable, recovery means recreating the whole control plane.
+func TestValidateCreate_RejectsOverlongProjectedBarbicanChildName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	maxCPName := barbicanv1alpha1.MaxBarbicanNameLength - barbicanChildNameOverhead
+	g.Expect(maxCPName).To(Equal(34), "the 43-character child bound leaves 34 for the ControlPlane name")
+
+	atLimit := barbicanControlPlane()
+	atLimit.Name = strings.Repeat("c", maxCPName)
+	_, err := w.ValidateCreate(context.Background(), atLimit)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a name whose projected Barbican child still fits must be accepted")
+
+	tooLong := barbicanControlPlane()
+	tooLong.Name = strings.Repeat("c", maxCPName+1)
+	_, err = w.ValidateCreate(context.Background(), tooLong)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("projected Barbican child CR name would be"))
+	g.Expect(err.Error()).To(ContainSubstring("caps metadata.name at 43"))
+
+	// Without services.barbican no Barbican child is projected, so the bound does
+	// not apply — the ControlPlane keeps the full 253-byte budget.
+	noBarbican := validControlPlane()
+	noBarbican.Name = strings.Repeat("c", maxCPName+1)
+	_, err = w.ValidateCreate(context.Background(), noBarbican)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// Enabling Barbican on an existing over-long ControlPlane is the one update that
+// can newly violate the bound, so it is rejected; every other update on a CR that
+// already carried Barbican — including the finalizer removal that completes its
+// deletion — must still pass, because metadata.name is immutable and a rejection
+// would wedge it in Terminating.
+func TestValidateUpdate_ProjectedBarbicanChildNameBoundIsNewlyEnabledOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	overlong := strings.Repeat("c", barbicanv1alpha1.MaxBarbicanNameLength-barbicanChildNameOverhead+1)
+
+	withoutBarbican := validControlPlane()
+	withoutBarbican.Name = overlong
+	enabling := barbicanControlPlane()
+	enabling.Name = overlong
+
+	_, err := w.ValidateUpdate(context.Background(), withoutBarbican, enabling)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("projected Barbican child CR name would be"))
+
+	grandfathered := barbicanControlPlane()
+	grandfathered.Name = overlong
+	grandfathered.Finalizers = []string{"c5c3.io/finalizer"}
+	deleting := grandfathered.DeepCopy()
+	deleting.Finalizers = nil
+
+	_, err = w.ValidateUpdate(context.Background(), grandfathered, deleting)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"an over-long grandfathered ControlPlane must stay updatable, or its deletion never completes")
+}
+
+// TestDefault_InjectsBarbicanServiceAccount verifies the defaulting webhook
+// injects the barbican service account when services.barbican is declared, in
+// its own project: each create:true entry projects a managed Project, so sharing
+// glance's "service" project would have each adopt the other's Keystone row.
+func TestDefault_InjectsBarbicanServiceAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Barbican = &ServiceBarbicanSpec{
+		SecretStore: ServiceBarbicanSecretStoreSpec{Dedicated: &BarbicanDedicatedSecretStoreSpec{}},
+	}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	barbican := findServiceAccount(cp, "barbican")
+	g.Expect(barbican).NotTo(BeNil(), "the defaulting webhook must inject a barbican service account")
+	g.Expect(barbican.Project.Name).To(Equal("service-barbican"),
+		"the barbican account creates a project of its own, not the one the glance account creates")
+	g.Expect(barbican.Project.Create).To(BeTrue())
+	g.Expect(barbican.Roles).To(Equal([]string{"service"}),
+		`the role must be "service" (SRBAC identity:validate_token), not "member"`)
+	g.Expect(barbican.TargetNamespace).To(BeEmpty(),
+		"a co-located Barbican leaves the account targetNamespace empty")
+	g.Expect(barbican.UserName).To(Equal("barbican"),
+		"the injected entry is defaulted before the userName loop, so it gets UserName")
+}
+
+// TestDefault_DoesNotInjectBarbicanServiceAccountWhenBarbicanUnset verifies a
+// ControlPlane without services.barbican grows no barbican account.
+func TestDefault_DoesNotInjectBarbicanServiceAccountWhenBarbicanUnset(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(findServiceAccount(cp, "barbican")).To(BeNil())
+}
+
+// TestDefault_PreservesUserDeclaredBarbicanServiceAccount verifies an
+// operator-declared barbican account is left untouched — no second injection,
+// and its project and roles are preserved.
+func TestDefault_PreservesUserDeclaredBarbicanServiceAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Services.Barbican = &ServiceBarbicanSpec{
+		SecretStore: ServiceBarbicanSecretStoreSpec{Dedicated: &BarbicanDedicatedSecretStoreSpec{}},
+	}
+	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
+		Name:     "barbican",
+		UserName: "barbican-svc",
+		Project:  ServiceAccountProjectSpec{Name: "secrets", Create: false},
+		Roles:    []string{"admin"},
+	}}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	count := 0
+	for _, sa := range cp.Spec.KORC.ServiceAccounts {
+		if sa.Name == "barbican" {
+			count++
+		}
+	}
+	g.Expect(count).To(Equal(1), "an operator-declared barbican account must not trigger a second injection")
+	barbican := findServiceAccount(cp, "barbican")
+	g.Expect(barbican.UserName).To(Equal("barbican-svc"))
+	g.Expect(barbican.Project).To(Equal(ServiceAccountProjectSpec{Name: "secrets", Create: false}))
+	g.Expect(barbican.Roles).To(Equal([]string{"admin"}))
+}
+
+// TestDefault_BarbicanExternalStoreKVMountpoint verifies the webhook mirror of
+// the +kubebuilder:default=barbican marker: an external store with no mount
+// named takes the delivered one, an explicit mount survives, and the dedicated
+// mode — which names no mount at all — is left alone.
+func TestDefault_BarbicanExternalStoreKVMountpoint(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("an absent mountpoint is materialized", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{External: externalBarbicanStore()}
+
+		g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+		g.Expect(cp.Spec.Services.Barbican.SecretStore.External.KVMountpoint).To(Equal(DefaultBarbicanKVMountpoint))
+	})
+
+	t.Run("an explicit mountpoint is preserved", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		ext := externalBarbicanStore()
+		ext.KVMountpoint = "kv-secrets"
+		cp.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{External: ext}
+
+		g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+		g.Expect(cp.Spec.Services.Barbican.SecretStore.External.KVMountpoint).To(Equal("kv-secrets"))
+	})
+
+	t.Run("the dedicated mode names no mount", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+
+		g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+		g.Expect(cp.Spec.Services.Barbican.SecretStore.External).To(BeNil())
+		g.Expect(cp.Spec.Services.Barbican.SecretStore.Dedicated).NotTo(BeNil())
+	})
+}
+
+// TestDefault_BarbicanDedicatedBackingServicesLeaves verifies a declared
+// barbican dedicated block takes the same leaf defaults as the shared one, with
+// a managed clusterRef name DERIVED from the ControlPlane and credentialsMode
+// materialized to Static (a dedicated managed database cannot draw engine-issued
+// credentials).
+func TestDefault_BarbicanDedicatedBackingServicesLeaves(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := barbicanControlPlane()
+	cp.Name = "prod"
+	cp.Spec.Services.Barbican.DedicatedBackingServices = &BarbicanDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{},
+		Cache:    &commonv1.CacheSpec{},
+	}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+	db := cp.Spec.Services.Barbican.DedicatedBackingServices.Database
+	g.Expect(db.ClusterRef).NotTo(BeNil())
+	g.Expect(db.ClusterRef.Name).To(Equal("prod-barbican-db"))
+	g.Expect(db.Database).To(Equal(DefaultDatabaseName))
+	g.Expect(db.SecretRef.Name).To(Equal(DefaultDatabaseSecretName))
+	g.Expect(db.CredentialsMode).To(Equal(commonv1.CredentialsModeStatic),
+		"a dedicated managed database is Static-only: no per-instance OpenBao engine role exists")
+
+	cache := cp.Spec.Services.Barbican.DedicatedBackingServices.Cache
+	g.Expect(cache.ClusterRef).NotTo(BeNil())
+	g.Expect(cache.ClusterRef.Name).To(Equal("prod-barbican-cache"))
+	g.Expect(cache.Backend).To(Equal(DefaultCacheBackend))
+
+	// Idempotent on the dedicated leaves too.
+	before := cp.DeepCopy()
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services).To(Equal(before.Spec.Services))
+}
+
+// TestDefault_BarbicanServiceNamespaceLifecycle verifies a declared barbican
+// namespace assignment takes the Managed lifecycle default, exactly as the
+// keystone/horizon/glance/placement ones do.
+func TestDefault_BarbicanServiceNamespaceLifecycle(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := barbicanControlPlane()
+	cp.Spec.Services.Barbican.Namespace = &ServiceNamespaceSpec{Name: "barbican"}
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Services.Barbican.Namespace.Lifecycle).To(Equal(ServiceNamespaceLifecycleManaged))
+}
+
+// TestValidateCreate_RejectsBarbicanSecretStoreUnion pins the webhook mirror of
+// the type-level CEL rule, which an API server that skips
+// x-kubernetes-validations would otherwise let through: a store naming both
+// modes addresses two different servers, and one naming neither leaves the
+// projection with no server to point barbican at.
+func TestValidateCreate_RejectsBarbicanSecretStoreUnion(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, store := range map[string]ServiceBarbicanSecretStoreSpec{
+		"neither mode": {},
+		"both modes": {
+			Dedicated: &BarbicanDedicatedSecretStoreSpec{},
+			External:  externalBarbicanStore(),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := barbicanControlPlane()
+			cp.Spec.Services.Barbican.SecretStore = store
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.services.barbican.secretStore"))
+			g.Expect(err.Error()).To(ContainSubstring("exactly one of dedicated or external must be set"))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsBarbicanExternalStoreWithoutCredentials pins that an
+// external store must name the Secret its AppRole credentials live in: without
+// it the operator has nothing to authenticate the vault plugin with, and the
+// child would park unready with no admission error naming the cause.
+func TestValidateCreate_RejectsBarbicanExternalStoreWithoutCredentials(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := barbicanControlPlane()
+	ext := externalBarbicanStore()
+	ext.CredentialsSecretRef.Name = ""
+	cp.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{External: ext}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(
+		"spec.services.barbican.secretStore.external.credentialsSecretRef.name"))
+}
+
+// TestValidateCreate_RejectsBarbicanExternalStoreWithEmptyCABundleName is the
+// rejecting side of the optional CA reference: configuring the block and leaving
+// its name empty names no Secret at all, which would leave the store trusting the
+// pods' system roots while the operator believed a bundle was pinned.
+func TestValidateCreate_RejectsBarbicanExternalStoreWithEmptyCABundleName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := barbicanControlPlane()
+	ext := externalBarbicanStore()
+	ext.CABundleSecretRef = &barbicanv1alpha1.SecretNameRefSpec{}
+	cp.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{External: ext}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(
+		"spec.services.barbican.secretStore.external.caBundleSecretRef.name"))
+}
+
+// TestValidateCreate_RejectsBarbicanExternalStoreInsecureURL covers the shapes
+// the ^https:// Pattern marker guards and the ones only a URL parse catches: the
+// AppRole credentials and every secret barbican stores travel this URL, so a
+// plaintext or hostless server address must never be admitted.
+func TestValidateCreate_RejectsBarbicanExternalStoreInsecureURL(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, rawURL := range map[string]string{
+		"plaintext http": "http://openbao.example.com:8200",
+		"missing host":   "https://",
+		"not a URL":      "openbao.example.com",
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := barbicanControlPlane()
+			ext := externalBarbicanStore()
+			ext.URL = rawURL
+			cp.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{External: ext}
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.services.barbican.secretStore.external.url"))
+		})
+	}
+}
+
+// TestValidateCreate_AcceptsBarbicanExternalStore pins the accepting side of the
+// external mode, CA bundle and OpenBao namespace included.
+func TestValidateCreate_AcceptsBarbicanExternalStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := barbicanControlPlane()
+	ext := externalBarbicanStore()
+	ext.CABundleSecretRef = &barbicanv1alpha1.SecretNameRefSpec{Name: "openbao-ca"}
+	ext.Namespace = "tenants/openstack"
+	cp.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{External: ext}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsBarbicanImageTagDigestXOR pins the defense-in-depth
+// mirror of the commonv1.ImageSpec XValidation rule for callers that bypass CRD
+// schema admission.
+func TestValidateCreate_RejectsBarbicanImageTagDigestXOR(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	for name, img := range map[string]*commonv1.ImageSpec{
+		"neither tag nor digest": {Repository: "ghcr.io/c5c3/barbican"},
+		"both tag and digest": {
+			Repository: "ghcr.io/c5c3/barbican",
+			Tag:        "2025.2",
+			Digest:     "sha256:" + strings.Repeat("a", 64),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := barbicanControlPlane()
+			cp.Spec.Services.Barbican.Image = img
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("services.barbican.image"))
+			g.Expect(err.Error()).To(ContainSubstring("exactly one of image.tag or image.digest must be set"))
+		})
+	}
+}
+
+// TestValidateCreate_BarbicanPublicEndpointMustAgreeWithGateway pins the rules
+// the CRD markers cannot express. The value is advertised verbatim as the public
+// key-manager catalog endpoint and is projected into no child CR, so nothing
+// downstream re-checks it.
+func TestValidateCreate_BarbicanPublicEndpointMustAgreeWithGateway(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	gateway := func() *commonv1.GatewaySpec {
+		return &commonv1.GatewaySpec{
+			Hostname:  "barbican.example.com",
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		}
+	}
+
+	t.Run("a path is not a bare origin", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.PublicEndpoint = "https://barbican.example.com/keymanager"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.barbican.publicEndpoint"))
+		g.Expect(err.Error()).To(ContainSubstring("must be a bare origin"))
+	})
+
+	t.Run("divergent host", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.Gateway = gateway()
+		cp.Spec.Services.Barbican.PublicEndpoint = "https://secrets.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(
+			`must equal services.barbican.gateway.hostname "barbican.example.com"`))
+	})
+
+	t.Run("http scheme behind a TLS-terminating gateway", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.Gateway = gateway()
+		cp.Spec.Services.Barbican.PublicEndpoint = "http://barbican.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("scheme must be https"))
+	})
+
+	t.Run("matching host with a non-default port", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.Gateway = gateway()
+		cp.Spec.Services.Barbican.PublicEndpoint = "https://barbican.example.com:8443"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred(),
+			"Gateway API hostnames carry no port, so the port is the reason the override exists")
+	})
+
+	// The documented tolerance: OpenStack clients normalize the catalog endpoint
+	// before appending the API path, so one trailing slash is not a path.
+	t.Run("a single trailing slash is tolerated", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.Gateway = gateway()
+		cp.Spec.Services.Barbican.PublicEndpoint = "https://barbican.example.com/"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	// The two arms of the gateway-hostname check itself, which every other subtest
+	// reaches only through the well-formed helper.
+	t.Run("wildcard gateway hostname", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.Gateway = gateway()
+		cp.Spec.Services.Barbican.Gateway.Hostname = "*.example.com"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.barbican.gateway.hostname"))
+	})
+
+	t.Run("gateway without a hostname", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.Gateway = &commonv1.GatewaySpec{
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("services.barbican.gateway.hostname"))
+		g.Expect(err.Error()).To(ContainSubstring("must be set when a gateway is configured"))
+	})
+}
+
+// TestValidateCreate_WarnsOnCleartextBarbicanPublicEndpoint covers the
+// gateway-less barbican service, where an http endpoint is a legal (if unwise)
+// development setup the CRD Pattern deliberately allows. Every call sends a
+// scoped Keystone token — and the secret material — to that URL, so the
+// downgrade must at least be surfaced.
+func TestValidateCreate_WarnsOnCleartextBarbicanPublicEndpoint(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	// The fixture takes a dedicated secret store, which carries its own standing
+	// warning (TestValidateCreate_WarnsOnDedicatedBarbicanSecretStore), so the
+	// assertions here are about the endpoint warning specifically.
+	t.Run("http warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.PublicEndpoint = "http://barbican.example.com"
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(ContainElement(ContainSubstring("scoped Keystone token")))
+	})
+
+	t.Run("https is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.PublicEndpoint = "https://barbican.example.com"
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).NotTo(ContainElement(ContainSubstring("scoped Keystone token")))
+	})
+}
+
+// TestValidateCreate_WarnsOnDedicatedBarbicanSecretStore pins the admission
+// signal the fieldless dedicated block otherwise has no way of carrying: the
+// instance it provisions runs a single replica on the Development profile and
+// keeps its static seal key in a Secret beside the volume that key seals. The
+// external store, which addresses a server somebody else hardened, must stay
+// silent.
+func TestValidateCreate_WarnsOnDedicatedBarbicanSecretStore(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("dedicated warns", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(ContainElement(And(
+			ContainSubstring("single-replica"),
+			ContainSubstring("static key"),
+			ContainSubstring("secretStore.external"),
+		)))
+	})
+
+	t.Run("dedicated warns on update too", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+
+		warnings, err := w.ValidateUpdate(context.Background(), cp.DeepCopy(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).To(ContainElement(ContainSubstring("single-replica")))
+	})
+
+	t.Run("external is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := barbicanControlPlane()
+		cp.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{
+			External: &BarbicanExternalSecretStoreSpec{
+				URL:                  "https://openbao.example.com:8200",
+				CredentialsSecretRef: barbicanv1alpha1.SecretNameRefSpec{Name: "barbican-approle"},
+			},
+		}
+
+		warnings, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(warnings).NotTo(ContainElement(ContainSubstring("single-replica")))
+	})
+}
+
+// TestValidateCreate_RejectsBarbicanInExternalMode verifies the webhook
+// cross-field forbid, mirroring services.glance and services.placement: no
+// Keystone workload is deployed, so Barbican has no identity to validate its
+// tokens against.
+func TestValidateCreate_RejectsBarbicanInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Services.Barbican = &ServiceBarbicanSpec{
+		SecretStore: ServiceBarbicanSecretStoreSpec{Dedicated: &BarbicanDedicatedSecretStoreSpec{}},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.barbican"))
+	g.Expect(err.Error()).To(ContainSubstring("forbidden when services.keystone.mode is External"))
+}
+
+// TestValidateCreate_RejectsBarbicanNamespaceClaimedByOtherControlPlane mirrors
+// the tenant-key claim rule for the barbican service namespace: it proves the
+// assignment reaches declaredServiceNamespaces, which is what the cluster-wide
+// claim check walks.
+func TestValidateCreate_RejectsBarbicanNamespaceClaimedByOtherControlPlane(t *testing.T) {
+	g := NewGomegaWithT(t)
+	incumbent := validControlPlane()
+	incumbent.Name = "other"
+	incumbent.Namespace = "barbican"
+	c := fake.NewClientBuilder().WithScheme(webhookScheme(t)).WithObjects(incumbent).Build()
+	w := &ControlPlaneWebhook{Client: c}
+
+	cp := barbicanControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Barbican.Namespace = &ServiceNamespaceSpec{
+		Name: "barbican", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "barbican"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.barbican.namespace.name"))
+	g.Expect(err.Error()).To(ContainSubstring(`already occupied by ControlPlane "other"`))
+}
+
+// TestValidateUpdate_RejectsBarbicanNamespaceChange pins the create-only freeze
+// on the barbican namespace assignment.
+func TestValidateUpdate_RejectsBarbicanNamespaceChange(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := barbicanControlPlane()
+	oldCP.Namespace = "openstack"
+	oldCP.Spec.Services.Barbican.Namespace = &ServiceNamespaceSpec{
+		Name: "barbican", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	oldCP.Spec.KORC.ServiceAccounts[0].TargetNamespace = "barbican"
+	newCP := oldCP.DeepCopy()
+	newCP.Spec.Services.Barbican.Namespace.Name = "barbican-2"
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.barbican.namespace.name"))
+	g.Expect(err.Error()).To(ContainSubstring("the namespace a service is placed in is immutable"))
+}
+
+// TestValidateCreate_RejectsBarbicanDedicatedDatabaseDynamic confirms barbican's
+// dedicated block reaches the shared dedicated-backing validation: the
+// Dynamic-credentials rule (no per-instance OpenBao engine role) applies to it
+// exactly as to keystone's.
+func TestValidateCreate_RejectsBarbicanDedicatedDatabaseDynamic(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := barbicanControlPlane()
+	cp.Spec.Services.Barbican.DedicatedBackingServices = &BarbicanDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef:      &corev1.LocalObjectReference{Name: "cp-barbican-db"},
+			CredentialsMode: commonv1.CredentialsModeDynamic,
+			Database:        "barbican",
+			SecretRef:       commonv1.SecretRefSpec{Name: "barbican-db"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("credentialsMode Dynamic is not supported on a dedicated database"))
+	g.Expect(err.Error()).To(ContainSubstring("barbican.dedicatedBackingServices.database"))
+}
+
+// TestValidateCreate_RejectsEmptyBarbicanDedicatedBackingServices pins the
+// webhook mirror of the at-least-one-class CEL rule on the barbican dedicated
+// block.
+func TestValidateCreate_RejectsEmptyBarbicanDedicatedBackingServices(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := barbicanControlPlane()
+	cp.Spec.Services.Barbican.DedicatedBackingServices = &BarbicanDedicatedBackingServicesSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.barbican.dedicatedBackingServices"))
+	g.Expect(err.Error()).To(ContainSubstring("at least one backing-service class must be declared"))
+}
+
+// TestValidateUpdate_RejectsBarbicanDedicatedPresenceFlip pins the transition
+// freeze on the barbican dedicated block: a live service cannot be moved between
+// shared and dedicated backing services.
+func TestValidateUpdate_RejectsBarbicanDedicatedPresenceFlip(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	oldCP := barbicanControlPlane()
+	newCP := barbicanControlPlane()
+	newCP.Spec.Services.Barbican.DedicatedBackingServices = &BarbicanDedicatedBackingServicesSpec{
+		Cache: &commonv1.CacheSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-barbican-cache"},
+			Backend:    commonv1.DefaultCacheBackend,
+		},
+	}
+
+	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("switching a service between shared and dedicated backing services"))
+	g.Expect(err.Error()).To(ContainSubstring("barbican.dedicatedBackingServices"))
+}
+
+// TestValidateCreate_RejectsBarbicanCredentialsModeOverrideDynamicOnDedicated is
+// the barbican mirror of the keystone dedicated-database rejection: the override
+// retargets the shared database the service does not use.
+func TestValidateCreate_RejectsBarbicanCredentialsModeOverrideDynamicOnDedicated(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := barbicanControlPlane()
+	cp.Spec.Services.Barbican.DatabaseCredentialsMode = commonv1.CredentialsModeDynamic
+	cp.Spec.Services.Barbican.DedicatedBackingServices = &BarbicanDedicatedBackingServicesSpec{
+		Database: &commonv1.DatabaseSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "cp-barbican-db"},
+			Database:   "barbican",
+			SecretRef:  commonv1.SecretRefSpec{Name: "barbican-db"},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.barbican.databaseCredentialsMode"))
+	g.Expect(err.Error()).To(ContainSubstring(
+		"Dynamic is not supported as an override on a service with a dedicated database",
+	))
+}
+
+// TestValidateCreate_RejectsBarbicanWithoutServiceAccount pins the
+// defense-in-depth for the injection: a webhook-bypassed CR that dropped the
+// barbican account is rejected.
+func TestValidateCreate_RejectsBarbicanWithoutServiceAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := barbicanControlPlane()
+	cp.Spec.KORC.ServiceAccounts = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`a service account named "barbican" is required`))
+}
+
+// TestValidateUpdate_FreezesBarbicanSecretStoreAddressing is the regression guard
+// for a store change that STRANDS the secret material behind it. The
+// BarbicanSecretStore CRD freezes its own kvMountpoint and its instanceRef/server
+// discriminator, and its message ("delete and recreate the store instead") is
+// addressed to a human who accepted that consequence. Without this rule the
+// reconciler acts on it instead: reconcileBarbicanSecretStore sees the frozen-field
+// drift, deletes the live store, and recreates it against the new mount or the new
+// server — and, leaving dedicated, leaves the whole OpenBao ensemble (instance,
+// raft PVC, seal key, cluster-scoped auth-delegator binding) behind with nothing
+// converging on it.
+func TestValidateUpdate_FreezesBarbicanSecretStoreAddressing(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	t.Run("dedicated to external", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := barbicanControlPlane()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{
+			External: externalBarbicanStore(),
+		}
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.barbican.secretStore"))
+		g.Expect(err.Error()).To(ContainSubstring("secret-store mode (dedicated vs external) is immutable"))
+	})
+
+	t.Run("external to dedicated", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := barbicanControlPlane()
+		oldCP.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{
+			External: externalBarbicanStore(),
+		}
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{
+			Dedicated: &BarbicanDedicatedSecretStoreSpec{},
+		}
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("secret-store mode (dedicated vs external) is immutable"))
+	})
+
+	t.Run("kvMountpoint change", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := barbicanControlPlane()
+		ext := externalBarbicanStore()
+		ext.KVMountpoint = "barbican"
+		oldCP.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{External: ext}
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Barbican.SecretStore.External.KVMountpoint = "tenant-barbican"
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring(
+			"spec.services.barbican.secretStore.external.kvMountpoint"))
+		g.Expect(err.Error()).To(ContainSubstring("immutable"))
+	})
+
+	// The default only fills an absent field, so naming it explicitly is not a
+	// change and must not be rejected.
+	t.Run("materialising the default mount is not a change", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := barbicanControlPlane()
+		oldCP.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{
+			External: externalBarbicanStore(),
+		}
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Barbican.SecretStore.External.KVMountpoint = DefaultBarbicanKVMountpoint
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	// Rotating the credentials or the CA bundle re-authenticates the same store
+	// against the same server, which the CRD admits too.
+	t.Run("credential and CA rotation stay mutable", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := barbicanControlPlane()
+		oldCP.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{
+			External: externalBarbicanStore(),
+		}
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Barbican.SecretStore.External.CredentialsSecretRef.Name = "barbican-approle-v2"
+		newCP.Spec.Services.Barbican.SecretStore.External.CABundleSecretRef = &barbicanv1alpha1.SecretNameRefSpec{Name: "openbao-ca-v2"}
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	// The server ADDRESS is not a rotation: nothing downstream freezes
+	// spec.openBao.server.url, so the new address is SSA-updated into the live
+	// store in place and every store and retrieve goes to it from the next pass —
+	// which is why `patch controlplanes` alone must not re-point a live key
+	// manager at a server of the actor's choosing.
+	t.Run("server URL is frozen", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := barbicanControlPlane()
+		oldCP.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{
+			External: externalBarbicanStore(),
+		}
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Barbican.SecretStore.External.URL = "https://openbao.attacker.example:8200"
+		newCP.Spec.Services.Barbican.SecretStore.External.CredentialsSecretRef.Name = "attacker-approle"
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.barbican.secretStore.external.url"))
+		g.Expect(err.Error()).To(ContainSubstring("url is immutable"))
+	})
+
+	// The OpenBao namespace scopes every request, so moving it strands the
+	// material the same way a new server does.
+	t.Run("OpenBao namespace is frozen", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := barbicanControlPlane()
+		ext := externalBarbicanStore()
+		ext.Namespace = "tenant-a"
+		oldCP.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{External: ext}
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Barbican.SecretStore.External.Namespace = "tenant-b"
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.barbican.secretStore.external.namespace"))
+		g.Expect(err.Error()).To(ContainSubstring("namespace is immutable"))
+	})
+
+	// Dropping services.barbican preserves the child, the store and the whole
+	// OpenBao ensemble, so a re-add while status still reports the service must
+	// not be able to carry a store the two-revision comparison would have caught.
+	t.Run("dropped and re-added barbican cannot re-declare its store", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := barbicanControlPlane()
+		oldCP.Spec.Services.Barbican = nil
+		oldCP.Status.Services = []ServiceStatus{{Name: "barbican", Ready: true}}
+		newCP := barbicanControlPlane()
+		newCP.Spec.Services.Barbican.SecretStore = ServiceBarbicanSecretStoreSpec{
+			External: externalBarbicanStore(),
+		}
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.barbican.secretStore"))
+		g.Expect(err.Error()).To(ContainSubstring("dropped from spec while the ControlPlane still reports it"))
+
+		// The way out the message names has to be one admission can actually
+		// accept. "Restore the previous services.barbican block" was not: restoring
+		// it byte-for-byte is itself a re-add while status still reports the
+		// service, so the only revision that could have satisfied the instruction
+		// was the one it was attached to rejecting. The escape is the window
+		// closing — the controller prunes status.services one pass after it
+		// observes the drop — and past that point the re-add is admitted.
+		g.Expect(err.Error()).To(ContainSubstring("status.services"))
+		oldCP.Status.Services = nil
+		_, err = w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred(), "the escape the refusal names must actually be admitted")
+	})
+
+	// The update that FIRST declares the service — on a ControlPlane that carries
+	// no Barbican in spec and never reported one in status — names its mode freely.
+	t.Run("newly declared barbican is free", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := barbicanControlPlane()
+		oldCP.Spec.Services.Barbican = nil
+		oldCP.Spec.KORC.ServiceAccounts = nil
+		newCP := barbicanControlPlane()
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
 }

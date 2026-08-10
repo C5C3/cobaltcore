@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
+	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 )
 
 func TestSchemeBuilderRegistersControlPlane(t *testing.T) {
@@ -456,11 +457,11 @@ func TestGlanceNamespace(t *testing.T) {
 	}
 }
 
-// TestDedicatedServiceNamespacesIncludesGlance asserts the Glance and Placement
-// assignments are enumerated alongside keystone and horizon, in the stable
-// keystone→horizon→glance→placement order, and that co-located services collapse
-// to a single entry (services sharing a namespace share its backing services and
-// tenant store).
+// TestDedicatedServiceNamespacesIncludesGlance asserts the Glance, Placement,
+// and Barbican assignments are enumerated alongside keystone and horizon, in the
+// stable keystone→horizon→glance→placement→barbican order, and that co-located
+// services collapse to a single entry (services sharing a namespace share its
+// backing services and tenant store).
 func TestDedicatedServiceNamespacesIncludesGlance(t *testing.T) {
 	cpIn := func(services ServicesSpec) *ControlPlane {
 		return &ControlPlane{
@@ -481,14 +482,37 @@ func TestDedicatedServiceNamespacesIncludesGlance(t *testing.T) {
 			want: []string{"images"},
 		},
 		{
-			name: "each service in its own namespace enumerates in keystone→horizon→glance→placement order",
+			name: "each service in its own namespace enumerates in keystone→horizon→glance→placement→barbican order",
 			cp: cpIn(ServicesSpec{
 				Keystone:  &ServiceKeystoneSpec{Namespace: &ServiceNamespaceSpec{Name: "identity"}},
 				Horizon:   &ServiceHorizonSpec{Namespace: &ServiceNamespaceSpec{Name: "dashboard"}},
 				Glance:    &ServiceGlanceSpec{Namespace: &ServiceNamespaceSpec{Name: "images"}},
 				Placement: &ServicePlacementSpec{Namespace: &ServiceNamespaceSpec{Name: "placement"}},
+				Barbican:  &ServiceBarbicanSpec{Namespace: &ServiceNamespaceSpec{Name: "barbican"}},
 			}),
-			want: []string{"identity", "dashboard", "images", "placement"},
+			want: []string{"identity", "dashboard", "images", "placement", "barbican"},
+		},
+		{
+			name: "barbican takes a namespace of its own",
+			cp: cpIn(ServicesSpec{
+				Barbican: &ServiceBarbicanSpec{Namespace: &ServiceNamespaceSpec{Name: "barbican"}},
+			}),
+			want: []string{"barbican"},
+		},
+		{
+			name: "barbican co-located with placement yields one entry",
+			cp: cpIn(ServicesSpec{
+				Placement: &ServicePlacementSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
+				Barbican:  &ServiceBarbicanSpec{Namespace: &ServiceNamespaceSpec{Name: "shared-ns"}},
+			}),
+			want: []string{"shared-ns"},
+		},
+		{
+			name: "a barbican assignment naming the ControlPlane namespace contributes nothing",
+			cp: cpIn(ServicesSpec{
+				Barbican: &ServiceBarbicanSpec{Namespace: &ServiceNamespaceSpec{Name: "openstack"}},
+			}),
+			want: nil,
 		},
 		{
 			name: "placement takes a namespace of its own",
@@ -783,5 +807,155 @@ func TestServicePlacementSpecDeepCopy(t *testing.T) {
 	if spec.ExtraConfig["placement"]["randomize_allocation_candidates"] != "true" {
 		t.Errorf("DeepCopy aliased the nested extraConfig section: source value changed to %q",
 			spec.ExtraConfig["placement"]["randomize_allocation_candidates"])
+	}
+}
+
+// TestBarbicanNamespace exercises the nil-safe namespace resolver for the
+// Barbican service across the states the accessor can be in: no service block
+// and a block without an assignment (both default to the ControlPlane's
+// namespace), a webhook-bypass empty name (also a fallback), and an explicit
+// assignment.
+func TestBarbicanNamespace(t *testing.T) {
+	cpIn := func(barbican *ServiceBarbicanSpec) *ControlPlane {
+		return &ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+			Spec:       ControlPlaneSpec{Services: ServicesSpec{Barbican: barbican}},
+		}
+	}
+	tests := []struct {
+		name string
+		cp   *ControlPlane
+		want string
+	}{
+		{"no barbican block defaults to the ControlPlane namespace", cpIn(nil), "openstack"},
+		{"barbican block without an assignment defaults to the ControlPlane namespace", cpIn(&ServiceBarbicanSpec{}), "openstack"},
+		{"an empty assignment name falls back to the ControlPlane namespace", cpIn(&ServiceBarbicanSpec{Namespace: &ServiceNamespaceSpec{}}), "openstack"},
+		{"barbican takes a namespace of its own", cpIn(&ServiceBarbicanSpec{Namespace: &ServiceNamespaceSpec{Name: "barbican"}}), "barbican"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cp.BarbicanNamespace(); got != tc.want {
+				t.Errorf("BarbicanNamespace() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDedicatedBarbicanBackingServicesAccessors exercises the nil-safe reads for
+// the Barbican service across the states it can be in: no service block
+// (services.barbican nil), a block that shares the ControlPlane-wide instances
+// (dedicatedBackingServices nil), and one that opted into a dedicated database, a
+// dedicated cache, or both.
+func TestDedicatedBarbicanBackingServicesAccessors(t *testing.T) {
+	tests := []struct {
+		name         string
+		cp           *ControlPlane
+		wantDatabase bool
+		wantCache    bool
+	}{
+		{
+			name: "no barbican block",
+			cp:   &ControlPlane{},
+		},
+		{
+			name: "barbican shares the ControlPlane-wide instances",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Barbican: &ServiceBarbicanSpec{},
+			}}},
+		},
+		{
+			name: "barbican takes a dedicated database only",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Barbican: &ServiceBarbicanSpec{
+					DedicatedBackingServices: &BarbicanDedicatedBackingServicesSpec{
+						Database: &commonv1.DatabaseSpec{Database: "barbican"},
+					},
+				},
+			}}},
+			wantDatabase: true,
+		},
+		{
+			name: "barbican takes a dedicated cache only",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Barbican: &ServiceBarbicanSpec{
+					DedicatedBackingServices: &BarbicanDedicatedBackingServicesSpec{
+						Cache: &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+					},
+				},
+			}}},
+			wantCache: true,
+		},
+		{
+			name: "barbican takes both dedicated instances",
+			cp: &ControlPlane{Spec: ControlPlaneSpec{Services: ServicesSpec{
+				Barbican: &ServiceBarbicanSpec{
+					DedicatedBackingServices: &BarbicanDedicatedBackingServicesSpec{
+						Database: &commonv1.DatabaseSpec{Database: "barbican"},
+						Cache:    &commonv1.CacheSpec{Backend: commonv1.DefaultCacheBackend},
+					},
+				},
+			}}},
+			wantDatabase: true,
+			wantCache:    true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cp.DedicatedBarbicanDatabase() != nil; got != tc.wantDatabase {
+				t.Errorf("DedicatedBarbicanDatabase() present = %v, want %v", got, tc.wantDatabase)
+			}
+			if got := tc.cp.DedicatedBarbicanCache() != nil; got != tc.wantCache {
+				t.Errorf("DedicatedBarbicanCache() present = %v, want %v", got, tc.wantCache)
+			}
+		})
+	}
+}
+
+// TestServiceBarbicanSpecDeepCopy verifies the curated Barbican subset
+// round-trips through DeepCopy with independent storage, in particular the
+// secret-store block and its nested Secret references: the reconciler DeepCopies
+// the projected spec onto the Barbican child, so an aliased pointer here would
+// let a child projection mutate the ControlPlane spec it was derived from.
+func TestServiceBarbicanSpecDeepCopy(t *testing.T) {
+	replicas := int32(2)
+	spec := ServiceBarbicanSpec{
+		Replicas:    &replicas,
+		Image:       &commonv1.ImageSpec{Repository: "ghcr.io/c5c3/barbican", Tag: "2026.1"},
+		ExtraConfig: map[string]map[string]string{"DEFAULT": {"debug": "true"}},
+		SecretStore: ServiceBarbicanSecretStoreSpec{
+			External: &BarbicanExternalSecretStoreSpec{
+				URL:                  "https://openbao.example.com:8200",
+				CredentialsSecretRef: barbicanv1alpha1.SecretNameRefSpec{Name: "barbican-approle"},
+				CABundleSecretRef:    &barbicanv1alpha1.SecretNameRefSpec{Name: "openbao-ca"},
+			},
+		},
+		DedicatedBackingServices: &BarbicanDedicatedBackingServicesSpec{
+			Database: &commonv1.DatabaseSpec{Database: "barbican"},
+		},
+		Namespace: &ServiceNamespaceSpec{Name: "barbican"},
+	}
+
+	clone := spec.DeepCopy()
+	if clone.Replicas == spec.Replicas {
+		t.Errorf("DeepCopy did not allocate a new *int32 for Replicas")
+	}
+	if clone.SecretStore.External == spec.SecretStore.External {
+		t.Errorf("DeepCopy did not allocate a new *BarbicanExternalSecretStoreSpec")
+	}
+	if clone.SecretStore.External.CABundleSecretRef == spec.SecretStore.External.CABundleSecretRef {
+		t.Errorf("DeepCopy did not allocate a new *SecretNameRefSpec for the CA bundle reference")
+	}
+	if clone.DedicatedBackingServices == spec.DedicatedBackingServices {
+		t.Errorf("DeepCopy did not allocate a new *BarbicanDedicatedBackingServicesSpec")
+	}
+	if clone.Namespace == spec.Namespace {
+		t.Errorf("DeepCopy did not allocate a new *ServiceNamespaceSpec for Namespace")
+	}
+
+	// Mutating the clone's nested store must not touch the source.
+	clone.SecretStore.External.CABundleSecretRef.Name = "other-ca"
+	if spec.SecretStore.External.CABundleSecretRef.Name != "openbao-ca" {
+		t.Errorf("DeepCopy aliased the CA bundle reference: source name changed to %q",
+			spec.SecretStore.External.CABundleSecretRef.Name)
 	}
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/config"
 	"github.com/c5c3/forge/internal/common/release"
+	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -113,6 +114,7 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 	keystonePath := specPath.Child("services", "keystone", "extraConfig")
 	glancePath := specPath.Child("services", "glance", "extraConfig")
 	placementPath := specPath.Child("services", "placement", "extraConfig")
+	barbicanPath := specPath.Child("services", "barbican", "extraConfig")
 	horizonPath := specPath.Child("services", "horizon", "extraConfig")
 
 	// --- Shape checks -----------------------------------------------------
@@ -125,6 +127,9 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 	}
 	if pl := cp.Spec.Services.Placement; pl != nil {
 		errs = append(errs, validateINIShape(placementPath, pl.ExtraConfig)...)
+	}
+	if bn := cp.Spec.Services.Barbican; bn != nil {
+		errs = append(errs, validateINIShape(barbicanPath, bn.ExtraConfig)...)
 	}
 	if hz := cp.Spec.Services.Horizon; hz != nil {
 		for name := range hz.ExtraConfig {
@@ -207,6 +212,29 @@ func validateExtraConfigOwnership(cp *ControlPlane) (admission.Warnings, field.E
 			// drops token validation entirely and takes project and role from the
 			// x-auth-token header, on an endpoint services.placement.gateway can
 			// publish outside the cluster.
+			if owned.Rejected {
+				for _, p := range paths {
+					errs = append(errs, field.Forbidden(p, rejectedOwnedKeyMessage(owned)))
+				}
+				continue
+			}
+			warnings = append(warnings, ownedINIWarning(owned, paths))
+		}
+	}
+
+	// --- Barbican merged-result ownership ---------------------------------
+	if bn := cp.Spec.Services.Barbican; bn != nil {
+		blocks := []iniBlock{{cp.Spec.GlobalExtraConfig, globalPath}, {bn.ExtraConfig, barbicanPath}}
+		merged := MergedExtraConfig(cp.Spec.GlobalExtraConfig, bn.ExtraConfig)
+		for _, owned := range config.FindOwnedOverrides(merged, barbicanv1alpha1.OwnedConfigKeys) {
+			paths := contributingKeyPaths(owned.Section, owned.Key, blocks...)
+			// The three Rejected barbican keys are the credential ones:
+			// [keystone_authtoken] password and the two [vault_plugin] secrets
+			// (approle_secret_id, root_token_id). None is read from the file at
+			// runtime — each arrives through an env override — so rendering one
+			// gains nothing and copies credential material into the config Secret
+			// every API pod mounts. root_token_id additionally replaces the
+			// mount-scoped AppRole with an unscoped credential.
 			if owned.Rejected {
 				for _, p := range paths {
 					errs = append(errs, field.Forbidden(p, rejectedOwnedKeyMessage(owned)))
@@ -342,13 +370,13 @@ func ownedSettingWarning(owned config.OwnedKey, path *field.Path) string {
 }
 
 // validateExtraConfigCatalogs validates the MERGED INI config of each declared
-// INI service (Keystone unless External, Glance, Placement) against the option
-// catalog embedded for the resolved release (Family B). It fails open — exactly
-// one warning, no error — when no catalog resolves for a non-empty merged
-// config, so a digest pin, an unparseable tag, or a release the build ships no
-// catalog for never blocks admission. Every unknown option/section becomes a
-// field error attributed to the concrete block(s) that carry it; every
-// deprecated-but-accepted option becomes a warning.
+// INI service (Keystone unless External, Glance, Placement, Barbican) against
+// the option catalog embedded for the resolved release (Family B). It fails
+// open — exactly one warning, no error — when no catalog resolves for a
+// non-empty merged config, so a digest pin, an unparseable tag, or a release the
+// build ships no catalog for never blocks admission. Every unknown
+// option/section becomes a field error attributed to the concrete block(s) that
+// carry it; every deprecated-but-accepted option becomes a warning.
 func validateExtraConfigCatalogs(cp *ControlPlane) (admission.Warnings, field.ErrorList) {
 	var warnings admission.Warnings
 	var errs field.ErrorList
@@ -431,7 +459,47 @@ func validateExtraConfigCatalogs(cp *ControlPlane) (admission.Warnings, field.Er
 		}
 	}
 
+	// --- Barbican ---------------------------------------------------------
+	if bn := cp.Spec.Services.Barbican; bn != nil {
+		merged := MergedExtraConfig(cp.Spec.GlobalExtraConfig, bn.ExtraConfig)
+		catalog, ok := barbicanv1alpha1.OptionCatalogForRelease(cp.Spec.OpenStackRelease)
+		if !ok {
+			if w := failOpenCatalogWarning("barbican", "spec.openStackRelease", cp.Spec.OpenStackRelease, merged); w != "" {
+				warnings = append(warnings, w)
+			}
+		} else {
+			ex := config.CatalogExemptions{
+				Sections: barbicanExemptSections(merged),
+				Keys:     config.KeyExemptionsFromRegistry(barbicanv1alpha1.OwnedConfigKeys),
+			}
+			w, e := attributeCatalogFindings("barbican", catalog, merged, ex,
+				iniBlock{cp.Spec.GlobalExtraConfig, globalPath},
+				iniBlock{bn.ExtraConfig, specPath.Child("services", "barbican", "extraConfig")})
+			warnings = append(warnings, w...)
+			errs = append(errs, e...)
+		}
+	}
+
 	return warnings, errs
+}
+
+// barbicanExemptSections expands barbican's exempt section PREFIXES against the
+// section names the merged configuration actually carries, since
+// config.CatalogExemptions.Sections matches exact names only. Unlike glance,
+// whose exempt sections are a static list, barbican's are the per-store
+// [secretstore:<name>] sections named after the BarbicanSecretStore CRs attached
+// to a Barbican, so no static list can spell them. It mirrors the barbican
+// child's own catalogExemptions helper.
+func barbicanExemptSections(merged map[string]map[string]string) map[string]struct{} {
+	sections := make(map[string]struct{})
+	for section := range merged {
+		for _, prefix := range barbicanv1alpha1.CatalogExemptSectionPrefixes {
+			if strings.HasPrefix(section, prefix) {
+				sections[section] = struct{}{}
+			}
+		}
+	}
+	return sections
 }
 
 // failOpenCatalogWarning renders the single fail-open warning for a service
@@ -546,6 +614,16 @@ func controlPlaneExtraConfigCatalogInputsChanged(oldObj, newObj *ControlPlane) b
 	}
 	if oldPl != nil && newPl != nil {
 		if !reflect.DeepEqual(oldPl.ExtraConfig, newPl.ExtraConfig) {
+			return true
+		}
+	}
+
+	oldBn, newBn := oldObj.Spec.Services.Barbican, newObj.Spec.Services.Barbican
+	if (oldBn == nil) != (newBn == nil) {
+		return true
+	}
+	if oldBn != nil && newBn != nil {
+		if !reflect.DeepEqual(oldBn.ExtraConfig, newBn.ExtraConfig) {
 			return true
 		}
 	}
