@@ -79,6 +79,13 @@ spec:
             {{- with .Values.logging.encoder }}
             - --zap-encoder={{ . }}
             {{- end }}
+          {{- with .Values.barbicanOperator }}
+          env:
+            - name: BARBICAN_OPERATOR_NAMESPACE
+              value: {{ .namespace | quote }}
+            - name: BARBICAN_OPERATOR_SERVICE_ACCOUNT
+              value: {{ .serviceAccount | quote }}
+          {{- end }}
           ports:
             - name: metrics
               containerPort: {{ .Values.metrics.port }}

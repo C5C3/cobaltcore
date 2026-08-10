@@ -249,6 +249,23 @@
         }
       }
     },
+    "barbicanOperator": {
+      "type": "object",
+      "description": "Identity of the barbican-operator, rendered as the BARBICAN_OPERATOR_NAMESPACE and BARBICAN_OPERATOR_SERVICE_ACCOUNT environment variables on the manager container. It is the subject of the TokenRequest grant (Role/RoleBinding) the operator projects next to every dedicated OpenBao instance, and the NetworkPolicy peer that instance admits, so both fields must match the release the barbican-operator chart is installed as",
+      "additionalProperties": false,
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "description": "Namespace the barbican-operator runs in",
+          "default": "barbican-system"
+        },
+        "serviceAccount": {
+          "type": "string",
+          "description": "ServiceAccount the barbican-operator pod runs as",
+          "default": "barbican-operator"
+        }
+      }
+    },
     "nameOverride": {
       "type": "string",
       "description": "Override the chart name used in resource names",

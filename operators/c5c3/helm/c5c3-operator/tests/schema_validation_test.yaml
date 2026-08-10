@@ -410,3 +410,31 @@ tests:
     asserts:
       - isKind:
           of: Deployment
+
+  # ---------------------------------------------------------------------------
+  # barbicanOperator schema constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject non-string barbicanOperator.namespace
+    set:
+      barbicanOperator:
+        namespace: 42
+    asserts:
+      - failedTemplate:
+          errorPattern: "/barbicanOperator/namespace.*got number, want string"
+
+  - it: should reject unknown property in barbicanOperator
+    set:
+      barbicanOperator:
+        account: barbican-operator
+    asserts:
+      - failedTemplate:
+          errorPattern: "/barbicanOperator.*additional properties.*not allowed"
+
+  - it: should accept a valid barbicanOperator override
+    set:
+      barbicanOperator:
+        namespace: openstack
+        serviceAccount: barbican-controller-manager
+    asserts:
+      - isKind:
+          of: Deployment
