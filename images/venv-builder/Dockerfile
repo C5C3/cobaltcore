@@ -5,7 +5,7 @@
 FROM python-base
 
 # Install uv (fast Python package manager, pinned via Renovate)
-COPY --from=ghcr.io/astral-sh/uv:0.11.32@sha256:df4cae8f3a96d175e2e5f992e597550000edbe78fdc2594d5cd8de1a217f504c /uv /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.12.3@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc /uv /bin/
 
 # Build dependencies
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
