@@ -401,34 +401,62 @@ func TestReconcileBarbican_UnsetDeletesChildStoreAndEnsembleWithOptIn(t *testing
 		key  types.NamespacedName
 		obj  client.Object
 	}{
-		{"DB-credential ExternalSecret",
-			types.NamespacedName{Name: barbicanDBCredentialSecretName(cp), Namespace: ns}, &esov1.ExternalSecret{}},
-		{"VaultDynamicSecret generator",
+		{
+			"DB-credential ExternalSecret",
 			types.NamespacedName{Name: barbicanDBCredentialSecretName(cp), Namespace: ns},
-			&esgenv1alpha1.VaultDynamicSecret{}},
-		{"generator ServiceAccount",
-			types.NamespacedName{Name: barbicanDBCredentialServiceAccountName, Namespace: ns}, &corev1.ServiceAccount{}},
+			&esov1.ExternalSecret{},
+		},
+		{
+			"VaultDynamicSecret generator",
+			types.NamespacedName{Name: barbicanDBCredentialSecretName(cp), Namespace: ns},
+			&esgenv1alpha1.VaultDynamicSecret{},
+		},
+		{
+			"generator ServiceAccount",
+			types.NamespacedName{Name: barbicanDBCredentialServiceAccountName, Namespace: ns},
+			&corev1.ServiceAccount{},
+		},
 		{"OpenBaoCluster", types.NamespacedName{Name: instanceName, Namespace: ns}, &openbaov1alpha1.OpenBaoCluster{}},
-		{"OpenBaoTenant", types.NamespacedName{Name: instanceName + barbicanOpenBaoTenantSuffix, Namespace: ns},
-			&openbaov1alpha1.OpenBaoTenant{}},
-		{"provisioner ServiceAccount",
+		{
+			"OpenBaoTenant",
+			types.NamespacedName{Name: instanceName + barbicanOpenBaoTenantSuffix, Namespace: ns},
+			&openbaov1alpha1.OpenBaoTenant{},
+		},
+		{
+			"provisioner ServiceAccount",
 			types.NamespacedName{Name: instanceName + barbicanOpenBaoProvisionerSuffix, Namespace: ns},
-			&corev1.ServiceAccount{}},
-		{"TokenRequest Role",
-			types.NamespacedName{Name: instanceName + barbicanOpenBaoTokenGrantSuffix, Namespace: ns}, &rbacv1.Role{}},
-		{"TokenRequest RoleBinding",
+			&corev1.ServiceAccount{},
+		},
+		{
+			"TokenRequest Role",
 			types.NamespacedName{Name: instanceName + barbicanOpenBaoTokenGrantSuffix, Namespace: ns},
-			&rbacv1.RoleBinding{}},
-		{"unseal-key Secret",
+			&rbacv1.Role{},
+		},
+		{
+			"TokenRequest RoleBinding",
+			types.NamespacedName{Name: instanceName + barbicanOpenBaoTokenGrantSuffix, Namespace: ns},
+			&rbacv1.RoleBinding{},
+		},
+		{
+			"unseal-key Secret",
 			types.NamespacedName{Name: instanceName + barbicanOpenBaoUnsealSecretSuffix, Namespace: ns},
-			&corev1.Secret{}},
-		{"auth-delegator ClusterRoleBinding",
-			types.NamespacedName{Name: barbicanOpenBaoAuthDelegatorName(instanceName, ns)}, &rbacv1.ClusterRoleBinding{}},
-		{"catalog Service", types.NamespacedName{Name: barbicanCatalogServiceName(cp), Namespace: childNamespace(cp)},
-			&orcv1alpha1.Service{}},
-		{"catalog Endpoint",
+			&corev1.Secret{},
+		},
+		{
+			"auth-delegator ClusterRoleBinding",
+			types.NamespacedName{Name: barbicanOpenBaoAuthDelegatorName(instanceName, ns)},
+			&rbacv1.ClusterRoleBinding{},
+		},
+		{
+			"catalog Service",
+			types.NamespacedName{Name: barbicanCatalogServiceName(cp), Namespace: childNamespace(cp)},
+			&orcv1alpha1.Service{},
+		},
+		{
+			"catalog Endpoint",
 			types.NamespacedName{Name: barbicanCatalogEndpointName(cp, "internal"), Namespace: childNamespace(cp)},
-			&orcv1alpha1.Endpoint{}},
+			&orcv1alpha1.Endpoint{},
+		},
 	}
 	for _, tc := range gone {
 		g.Expect(r.Get(ctx, tc.key, tc.obj)).NotTo(Succeed(), "the %s must be swept", tc.what)
@@ -1043,7 +1071,8 @@ func TestReconcileBarbican_InvalidRejectionSurfacesDistinctReason(t *testing.T) 
 		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Apply: func(ctx context.Context, wc client.WithWatch, ac runtime.ApplyConfiguration,
-				opts ...client.ApplyOption) error {
+				opts ...client.ApplyOption,
+			) error {
 				// The store applies normally; only the child is rejected.
 				applies++
 				if applies == 1 {
