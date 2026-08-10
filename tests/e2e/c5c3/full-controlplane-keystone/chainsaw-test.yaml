@@ -52,14 +52,31 @@
 #                        internal/public Endpoints
 #                        ("…-placement-endpoint-{internal,public}"), both URLs the
 #                        in-cluster Placement API (no gateway in this fixture).
+#   5g. Barbican child — owned Barbican CR ("…-barbican") on the Placement child's
+#                        terms (database/cache clusterRefs, an engine-issued
+#                        (Dynamic) DB credential, the derived Keystone endpoint, the
+#                        injected service user) PLUS the dedicated secret store the
+#                        fixture asks for: an OpenBaoCluster ("…-barbican-bao")
+#                        reporting Available=True, a BarbicanSecretStore
+#                        ("…-barbican-store") reporting Ready=True, the AppRole
+#                        Secret ("…-barbican-store-approle") the barbican-operator
+#                        mints against it, and SecretStoresReady=AllStoresProjected
+#                        on the child; BarbicanReady=True.
+#   5h. Key-mgr cat.   — owned K-ORC key-manager Service ("…-key-manager-service") +
+#                        internal/public Endpoints
+#                        ("…-key-manager-endpoint-{internal,public}"), both URLs the
+#                        in-cluster Barbican API (no gateway in this fixture).
 #   6. Aggregate       — ControlPlane Ready=True (reason AllReady).
 #   7. API reachable   — Keystone /v3 returns HTTP 200; `openstack token issue`,
-#                        `openstack catalog list` (identity, image, AND placement), an
-#                        image upload round-trip through the projected Glance endpoint
-#                        into the Garage S3 backend, and a placement resource-class
-#                        listing succeed using the materialised admin clouds.yaml
-#                        (proves the minted, pushed, re-materialised application
-#                        credential authenticates and the services work).
+#                        `openstack catalog list` (identity, image, placement, AND
+#                        key-manager), an image upload round-trip through the
+#                        projected Glance endpoint into the Garage S3 backend, a
+#                        placement resource-class listing, and a Barbican secret
+#                        store/get round-trip whose retrieved payload is compared
+#                        byte for byte against the stored literal all succeed using
+#                        the materialised admin clouds.yaml (proves the minted,
+#                        pushed, re-materialised application credential
+#                        authenticates and the services work).
 #
 # ── DECISION: belt-and-braces presence guard + single consolidated script ────
 # Ambiguity: the task says "follow tests/e2e/keystone/basic-deployment
@@ -122,16 +139,17 @@ metadata:
 spec:
   namespace: openstack
   # The full chain (Galera bring-up + Keystone bootstrap + K-ORC mint + the
-  # OpenBao round-trip) is long-running, so the consolidated script and its
+  # OpenBao round-trip + the dedicated OpenBao instance the Barbican store is
+  # provisioned against) is long-running, so the consolidated script and its
   # diagnostic catch get generous bounds well above the 120s suite default.
   timeouts:
     assert: 5m
-    exec: 20m
+    exec: 30m
   steps:
   # ── Step 1: Presence-gate, apply the ControlPlane, assert the chain ────────
   - try:
     - script:
-        timeout: 20m
+        timeout: 30m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
         # infra/keystone e2e script pins bash for the same reason.
         shell: bash
@@ -154,6 +172,12 @@ spec:
           PLACEMENT_SVC_CR="${CP_NAME}-placement-service"
           PLACEMENT_EP_INT="${CP_NAME}-placement-endpoint-internal"
           PLACEMENT_EP_PUB="${CP_NAME}-placement-endpoint-public"
+          BARBICAN_CR="${CP_NAME}-barbican"
+          BARBICAN_STORE="${BARBICAN_CR}-store"
+          BARBICAN_BAO="${BARBICAN_CR}-bao"
+          KM_SVC_CR="${CP_NAME}-key-manager-service"
+          KM_EP_INT="${CP_NAME}-key-manager-endpoint-internal"
+          KM_EP_PUB="${CP_NAME}-key-manager-endpoint-public"
           CLOUDS_SECRET=k-orc-clouds-yaml
 
           # ── Presence guard ──────────────────────────────
@@ -192,6 +216,10 @@ spec:
             glances.glance.openstack.c5c3.io \
             glancebackends.glance.openstack.c5c3.io \
             placements.placement.openstack.c5c3.io \
+            barbicans.barbican.openstack.c5c3.io \
+            barbicansecretstores.barbican.openstack.c5c3.io \
+            openbaoclusters.openbao.org \
+            openbaotenants.openbao.org \
             applicationcredentials.openstack.k-orc.cloud \
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \
@@ -247,8 +275,22 @@ spec:
           if ! operator_running placement-operator; then
             gate_absent "no placement-operator is running; the cluster carries the stack's CRDs only."
           fi
-          echo "OK: c5c3 + K-ORC + keystone + glance + placement CRDs, OpenBao store, and running"
-          echo "    keystone-operator, glance-operator, and placement-operator present — running the full ControlPlane → Keystone chain."
+          # Same for the barbican-operator: it drives the projected Barbican child
+          # to Ready and mints the secret store's AppRole credentials against the
+          # dedicated instance.
+          if ! operator_running barbican-operator; then
+            gate_absent "no barbican-operator is running; the cluster carries the stack's CRDs only."
+          fi
+          # The dedicated secret store additionally needs the openbao-operator: it
+          # is what drives the projected OpenBaoCluster to Available, and both the
+          # store and the Barbican child wait for that. Without the probe a cluster
+          # carrying the openbao.org CRDs but no controller would hang here for the
+          # whole script timeout instead of gating.
+          if ! operator_running openbao-operator; then
+            gate_absent "no openbao-operator is running; the dedicated Barbican secret store cannot be provisioned."
+          fi
+          echo "OK: c5c3 + K-ORC + keystone + glance + placement + barbican + openbao CRDs, OpenBao store, and running"
+          echo "    keystone-operator, glance-operator, placement-operator, barbican-operator, and openbao-operator present — running the full ControlPlane → Keystone chain."
 
           # ── Helpers ────────────────────────────────────────────────────────
           # Poll a ControlPlane status condition to True. Implemented as an
@@ -505,21 +547,22 @@ spec:
           assert_eq "K-ORC identity Endpoint owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of endpoints.openstack.k-orc.cloud "${EP_CR}")"
 
-          # ── Link 5b: service accounts (INJECTED glance + placement accounts) ─
+          # ── Link 5b: injected glance + placement + barbican accounts ────────
           # The CR fixture declares NO serviceAccounts — whenever services.glance
           # is set the defaulting webhook INJECTS the glance account (name glance,
-          # project service (create), role "service"), and services.placement adds
-          # the placement account right after it (project service-placement, a
-          # per-service project of its own). Asserting the entries landed on
-          # spec.korc.serviceAccounts[0] and [1] proves the injection ran — in that
-          # order — on this live cluster. Each injected account projects a managed
-          # User/Project, an unmanaged K-ORC Role import, and a managed
-          # RoleAssignment whose name embeds the deterministic role slug for
-          # "service" (base "service" + "-" + the first 8 hex of sha256("service")),
-          # so both assignment names carry the SAME slug and differ only in the
-          # account segment. ServiceAccountsReady gates on all of them Available AND
-          # the OpenBao password round-trip, and status.serviceAccounts[i].ready
-          # mirrors that per-account convergence.
+          # project service (create), role "service"), services.placement adds the
+          # placement account right after it (project service-placement, a
+          # per-service project of its own), and services.barbican the barbican
+          # account (project service-barbican, likewise its own). Asserting the
+          # entries landed on spec.korc.serviceAccounts[0], [1] and [2] proves the
+          # injection ran — in that order — on this live cluster. Each injected
+          # account projects a managed User/Project, an unmanaged K-ORC Role import,
+          # and a managed RoleAssignment whose name embeds the deterministic role
+          # slug for "service" (base "service" + "-" + the first 8 hex of
+          # sha256("service")), so all three assignment names carry the SAME slug
+          # and differ only in the account segment. ServiceAccountsReady gates on
+          # all of them Available AND the OpenBao password round-trip, and
+          # status.serviceAccounts[i].ready mirrors that per-account convergence.
           assert_eq "webhook injected the glance service account (spec.korc.serviceAccounts[0].name)" "glance" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[0].name}')"
           assert_eq "injected glance account bound to the \"service\" role" "service" \
@@ -528,13 +571,20 @@ spec:
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[1].name}')"
           assert_eq "injected placement account bound to the \"service\" role" "service" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[1].roles[0]}')"
+          assert_eq "webhook injected the barbican service account (spec.korc.serviceAccounts[2].name)" "barbican" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[2].name}')"
+          assert_eq "injected barbican account bound to the \"service\" role" "service" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[2].roles[0]}')"
           SA_ASSIGN="${CP_NAME}-service-account-glance-assign-service-9df6b026"
           PLACEMENT_SA_ASSIGN="${CP_NAME}-service-account-placement-assign-service-9df6b026"
+          BARBICAN_SA_ASSIGN="${CP_NAME}-service-account-barbican-assign-service-9df6b026"
           wait_cp_condition ServiceAccountsReady 600
           assert_eq "status.serviceAccounts[0].ready" "true" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.serviceAccounts[0].ready}')"
           assert_eq "status.serviceAccounts[1].ready" "true" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.serviceAccounts[1].ready}')"
+          assert_eq "status.serviceAccounts[2].ready" "true" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.serviceAccounts[2].ready}')"
           kubectl get roleassignments.openstack.k-orc.cloud "${SA_ASSIGN}" -n "${CP_NS}" >/dev/null
           assert_eq "RoleAssignment ${SA_ASSIGN} Available" "True" \
             "$(kubectl get roleassignments.openstack.k-orc.cloud "${SA_ASSIGN}" -n "${CP_NS}" \
@@ -547,6 +597,12 @@ spec:
               -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
           assert_eq "placement RoleAssignment owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of roleassignments.openstack.k-orc.cloud "${PLACEMENT_SA_ASSIGN}")"
+          kubectl get roleassignments.openstack.k-orc.cloud "${BARBICAN_SA_ASSIGN}" -n "${CP_NS}" >/dev/null
+          assert_eq "RoleAssignment ${BARBICAN_SA_ASSIGN} Available" "True" \
+            "$(kubectl get roleassignments.openstack.k-orc.cloud "${BARBICAN_SA_ASSIGN}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
+          assert_eq "barbican RoleAssignment owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of roleassignments.openstack.k-orc.cloud "${BARBICAN_SA_ASSIGN}")"
 
           # ── Link 5c: Glance child (gated on KeystoneReady + service account) ─
           # GlanceReady mirrors the child's Ready, which requires the real
@@ -733,14 +789,165 @@ spec:
           assert_eq "placement public Endpoint URL is the in-cluster Placement API" "${PLACEMENT_URL}" \
             "$(kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
 
+          # ── Link 5g: Barbican child + its dedicated OpenBao secret store ────
+          # BarbicanReady mirrors the child's Ready, which needs the real
+          # barbican-api Deployment + db-sync against MariaDB AND a secret store the
+          # barbican-operator could authenticate against. The dedicated store makes
+          # that second half a chain of its own, all of it inside this one wait: the
+          # c5c3-operator provisions an OpenBaoCluster, the openbao-operator brings
+          # it up and self-inits the KV mount, the AppRole and the Kubernetes auth
+          # method, and only then can the barbican-operator log in and mint the
+          # store's credentials. The window is therefore wider than the other
+          # children's.
+          wait_cp_condition BarbicanReady 900
+
+          # The dedicated instance first: it is what the store is provisioned
+          # against, so a store that is Ready without an Available instance would be
+          # reading a server this ControlPlane did not project. deletionPolicy is
+          # asserted because the deletion suite depends on it — the instance name is
+          # derived from the ControlPlane name, so a retained data-<instance>-0 PVC
+          # would meet the next ControlPlane of the same name with raft storage
+          # sealed under a key that no longer exists.
+          kubectl get openbaoclusters.openbao.org "${BARBICAN_BAO}" -n "${CP_NS}" >/dev/null
+          assert_eq "dedicated OpenBaoCluster Available" "True" \
+            "$(kubectl get openbaoclusters.openbao.org "${BARBICAN_BAO}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
+          # The image version is deliberately NOT asserted: it is a Renovate-managed
+          # pin in the operator (defaultOpenBaoVersion), and a bump PR must not have
+          # to edit an e2e fixture to stay green.
+          assert_eq "dedicated OpenBaoCluster reaps its PVCs on delete" "DeletePVCs" \
+            "$(kubectl get openbaoclusters.openbao.org "${BARBICAN_BAO}" -n "${CP_NS}" -o 'jsonpath={.spec.deletionPolicy}')"
+          assert_eq "dedicated OpenBaoCluster owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of openbaoclusters.openbao.org "${BARBICAN_BAO}")"
+          # No ControlPlane-owned OpenBaoTenant is asserted here ON PURPOSE: the kind
+          # overlay's proving instance already runs a tenant targeting the openstack
+          # namespace, and the operator skips its own rather than admitting the
+          # namespace twice (two finalizers over one namespace).
+          kubectl get secret "${BARBICAN_BAO}-unseal-key" -n "${CP_NS}" >/dev/null
+          kubectl get serviceaccount "${BARBICAN_BAO}-provisioner" -n "${CP_NS}" >/dev/null
+          # The cluster-scoped auth-delegator binding carries a hash of the
+          # instance's namespace in its name (two same-named ControlPlanes in
+          # different namespaces must not collide on it), so it is looked up by the
+          # ownership labels the projection stamps rather than by a derived name.
+          [ -n "$(kubectl get clusterrolebinding \
+            -l "c5c3.io/controlplane-name=${CP_NAME},c5c3.io/controlplane-namespace=${CP_NS}" \
+            -o jsonpath='{.items[*].metadata.name}')" ]
+
+          # The store attaches the child to that instance. Ready=AllReady aggregates
+          # its ProvisioningReady / CredentialsReady / ConfigProjected
+          # sub-conditions, so it only turns True once the operator has mounted the
+          # KV path and minted an AppRole secret ID the server accepts.
+          kubectl get barbicansecretstores.barbican.openstack.c5c3.io "${BARBICAN_STORE}" -n "${CP_NS}" >/dev/null
+          wait_ready_condition barbicansecretstores.barbican.openstack.c5c3.io "${BARBICAN_STORE}" "${CP_NS}" 600
+          assert_eq "BarbicanSecretStore Ready reason" "AllReady" \
+            "$(kubectl get barbicansecretstores.barbican.openstack.c5c3.io "${BARBICAN_STORE}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
+          assert_eq "BarbicanSecretStore points at the dedicated instance" "${BARBICAN_BAO}" \
+            "$(kubectl get barbicansecretstores.barbican.openstack.c5c3.io "${BARBICAN_STORE}" -n "${CP_NS}" \
+              -o 'jsonpath={.spec.openBao.instanceRef.name}')"
+          assert_eq "BarbicanSecretStore is the Barbican's default store" "true" \
+            "$(kubectl get barbicansecretstores.barbican.openstack.c5c3.io "${BARBICAN_STORE}" -n "${CP_NS}" \
+              -o 'jsonpath={.spec.isDefault}')"
+          assert_eq "BarbicanSecretStore owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of barbicansecretstores.barbican.openstack.c5c3.io "${BARBICAN_STORE}")"
+          # The AppRole credentials Secret the barbican-operator mints for the store
+          # (<store>-approle, keys role-id/secret-id). It is what the API pods source
+          # OS_VAULT_PLUGIN__APPROLE_SECRET_ID from, so an empty one would leave the
+          # pods unable to reach their own key material.
+          kubectl get secret "${BARBICAN_STORE}-approle" -n "${CP_NS}" >/dev/null
+          for key in role-id secret-id; do
+            if [ -z "$(kubectl get secret "${BARBICAN_STORE}-approle" -n "${CP_NS}" -o "jsonpath={.data.${key}}")" ]; then
+              echo "ERROR: AppRole Secret ${BARBICAN_STORE}-approle carries no ${key} data key"; exit 1
+            fi
+          done
+          echo "OK: AppRole Secret ${BARBICAN_STORE}-approle carries role-id and secret-id"
+          assert_eq "Barbican child aggregated its stores" "AllStoresProjected" \
+            "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='SecretStoresReady')].reason}")"
+
+          # The child itself, on the Placement child's terms.
+          assert_eq "Barbican image tag derived from openStackRelease" "2025.2" \
+            "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.image.tag}')"
+          assert_eq "Barbican database clusterRef wired to infra" "openstack-db" \
+            "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.clusterRef.name}')"
+          assert_eq "Barbican logical database is barbican" "barbican" \
+            "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.database}')"
+          assert_eq "Barbican DB secretRef points at the projected DB-credential Secret" "${BARBICAN_CR}-db-credentials" \
+            "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.secretRef.name}')"
+          assert_eq "Barbican projected with Dynamic credentialsMode" "Dynamic" \
+            "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.database.credentialsMode}')"
+
+          # ── Assert the Barbican DB credential is generator-backed ───────────
+          # Same shape and same ordering rationale as the Glance and Placement
+          # checks: the dynamic objects are ensured inside the Keystone-gated
+          # reconcileBarbican, and the child only reaches Dynamic once an
+          # engine-issued credential has materialised. Barbican shares the
+          # ControlPlane namespace here, so the per-tenant engine role is
+          # barbican-<CP_NS>.
+          BARBICAN_DB_SECRET="${BARBICAN_CR}-db-credentials"
+          assert_eq "Barbican DB-credential ExternalSecret uses a VaultDynamicSecret generator" "VaultDynamicSecret" \
+            "$(kubectl get externalsecret "${BARBICAN_DB_SECRET}" -n "${CP_NS}" \
+              -o "jsonpath={.spec.dataFrom[0].sourceRef.generatorRef.kind}")"
+          assert_eq "Barbican DB-credential ExternalSecret carries no static Data refs" "" \
+            "$(kubectl get externalsecret "${BARBICAN_DB_SECRET}" -n "${CP_NS}" -o 'jsonpath={.spec.data}')"
+          kubectl get vaultdynamicsecret "${BARBICAN_DB_SECRET}" -n "${CP_NS}" >/dev/null
+          assert_eq "Barbican VaultDynamicSecret reads the barbican engine-role creds path" "database/mariadb/creds/barbican-${CP_NS}" \
+            "$(kubectl get vaultdynamicsecret "${BARBICAN_DB_SECRET}" -n "${CP_NS}" -o 'jsonpath={.spec.path}')"
+          kubectl get serviceaccount barbican-db-creds -n "${CP_NS}" >/dev/null
+          BARBICAN_DB_USERNAME="$(kubectl get secret "${BARBICAN_DB_SECRET}" -n "${CP_NS}" \
+            -o "jsonpath={.data.username}" | base64 -d)"
+          if [ "${BARBICAN_DB_USERNAME}" = "barbican" ] || [ -z "${BARBICAN_DB_USERNAME}" ]; then
+            echo "ERROR: Barbican DB-credential Secret username '${BARBICAN_DB_USERNAME}' is not engine-issued"; exit 1
+          fi
+          echo "OK: Barbican DB credential is engine-issued (username '${BARBICAN_DB_USERNAME}')"
+          assert_eq "Barbican cache clusterRef wired to infra" "openstack-memcached" \
+            "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.cache.clusterRef.name}')"
+          assert_eq "Barbican keystoneEndpoint derived from the naming convention" \
+            "http://${KEYSTONE_CR}.${CP_NS}.svc:5000/v3" \
+            "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.keystoneEndpoint}')"
+          assert_eq "Barbican service user derived from the injected account (username)" "barbican" \
+            "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.username}')"
+          # Like placement, the barbican account creates a project of its OWN.
+          assert_eq "Barbican service user project" "service-barbican" \
+            "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.projectName}')"
+          assert_eq "Barbican service user secretRef" "${CP_NAME}-service-account-barbican-credentials" \
+            "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.secretRef.name}')"
+          assert_eq "Barbican CR owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}")"
+
+          # ── Link 5h: key-manager catalog (Service + both Endpoints, owned) ──
+          # The key-manager service registers an internal AND a public Endpoint at
+          # birth like the image and placement ones; with no gateway in this fixture
+          # both URLs advertise the in-cluster Barbican API Service.
+          kubectl get services.openstack.k-orc.cloud "${KM_SVC_CR}" -n "${CP_NS}" >/dev/null
+          kubectl get endpoints.openstack.k-orc.cloud "${KM_EP_INT}" -n "${CP_NS}" >/dev/null
+          kubectl get endpoints.openstack.k-orc.cloud "${KM_EP_PUB}" -n "${CP_NS}" >/dev/null
+          assert_eq "K-ORC key-manager Service owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of services.openstack.k-orc.cloud "${KM_SVC_CR}")"
+          assert_eq "K-ORC key-manager Service type" "key-manager" \
+            "$(kubectl get services.openstack.k-orc.cloud "${KM_SVC_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.type}')"
+          BARBICAN_URL="http://${BARBICAN_CR}.${CP_NS}.svc:9311"
+          assert_eq "K-ORC key-manager internal Endpoint owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of endpoints.openstack.k-orc.cloud "${KM_EP_INT}")"
+          assert_eq "key-manager internal Endpoint interface" "internal" \
+            "$(kubectl get endpoints.openstack.k-orc.cloud "${KM_EP_INT}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.interface}')"
+          assert_eq "key-manager internal Endpoint URL is the in-cluster Barbican API" "${BARBICAN_URL}" \
+            "$(kubectl get endpoints.openstack.k-orc.cloud "${KM_EP_INT}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
+          assert_eq "K-ORC key-manager public Endpoint owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of endpoints.openstack.k-orc.cloud "${KM_EP_PUB}")"
+          assert_eq "key-manager public Endpoint interface" "public" \
+            "$(kubectl get endpoints.openstack.k-orc.cloud "${KM_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.interface}')"
+          assert_eq "key-manager public Endpoint URL is the in-cluster Barbican API" "${BARBICAN_URL}" \
+            "$(kubectl get endpoints.openstack.k-orc.cloud "${KM_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
+
           # ── Link 6: aggregate Ready=True ───────────────────────────────────
           wait_cp_condition Ready 300
           assert_eq "Aggregate Ready reason" "AllReady" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
 
-          # ── Link 6a: status.services[] reports all four services ready ─────
-          # keystone [0], horizon [1], glance [2], placement [3] — the stable
-          # order setServicesStatus emits.
+          # ── Link 6a: status.services[] reports all five services ready ─────
+          # keystone [0], horizon [1], glance [2], placement [3], barbican [4] —
+          # the stable order setServicesStatus emits.
           assert_eq "status.services[0] is keystone" "keystone" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[0].name}')"
           assert_eq "status.services[0] keystone ready" "true" \
@@ -757,6 +964,10 @@ spec:
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[3].name}')"
           assert_eq "status.services[3] placement ready" "true" \
             "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[3].ready}')"
+          assert_eq "status.services[4] is barbican" "barbican" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[4].name}')"
+          assert_eq "status.services[4] barbican ready" "true" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.services[4].ready}')"
 
           # ── Link 6b: dynamic DB credential engine (no-static / revoke / iso) ─
           # Per-tenant role is keyed on the namespace alone (dbDynamicRoleFor /
@@ -889,7 +1100,13 @@ spec:
             || { echo "ERROR: image (glance) service not listed in the catalog"; exit 1; }
           grep -qi "placement" <<<"${VERIFY_LOGS}" \
             || { echo "ERROR: placement service not listed in the catalog"; exit 1; }
-          echo "OK: token issued, identity + image + placement services catalogued, and the image and placement round-trips passed — full chain verified."
+          grep -qi "key-manager" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: key-manager (barbican) service not listed in the catalog"; exit 1; }
+          # The Job fails itself on a payload mismatch; this grep pins the positive
+          # line so a silently skipped round-trip cannot pass as a green Job.
+          grep -q "secret round-trip payload matches" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: the Barbican secret round-trip did not confirm a matching payload"; exit 1; }
+          echo "OK: token issued, identity + image + placement + key-manager services catalogued, and the image, placement and secret round-trips passed — full chain verified."
     catch:
     - script:
         shell: bash
@@ -925,6 +1142,19 @@ spec:
           kubectl get serviceaccount placement-db-creds -n openstack 2>&1 || true
           echo "=== placement-operator logs (last 200 lines) ==="
           kubectl logs -n placement-system -l app.kubernetes.io/name=placement-operator --tail=200 --all-containers 2>&1 || true
+          echo "=== Barbican child + secret store + dedicated OpenBao instance ==="
+          kubectl get barbicans.barbican.openstack.c5c3.io,barbicansecretstores.barbican.openstack.c5c3.io -n openstack 2>&1 || true
+          kubectl describe barbicans.barbican.openstack.c5c3.io controlplane-keystone-barbican -n openstack 2>&1 || true
+          kubectl describe barbicansecretstores.barbican.openstack.c5c3.io controlplane-keystone-barbican-store -n openstack 2>&1 || true
+          kubectl describe openbaoclusters.openbao.org controlplane-keystone-barbican-bao -n openstack 2>&1 || true
+          kubectl get secret controlplane-keystone-barbican-store-approle -n openstack 2>&1 || true
+          kubectl describe externalsecret controlplane-keystone-barbican-db-credentials -n openstack 2>&1 || true
+          kubectl describe vaultdynamicsecret controlplane-keystone-barbican-db-credentials -n openstack 2>&1 || true
+          kubectl get serviceaccount barbican-db-creds -n openstack 2>&1 || true
+          echo "=== barbican-operator logs (last 200 lines) ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --tail=200 --all-containers 2>&1 || true
+          echo "=== openbao-operator logs (last 100 lines) ==="
+          kubectl logs -n openbao-operator-system -l app.kubernetes.io/name=openbao-operator --tail=100 --all-containers 2>&1 || true
           echo "=== OpenBao logs (last 100 lines) ==="
           kubectl logs -n shared-services -l app.kubernetes.io/name=openbao --tail=100 --all-containers 2>&1 || true
           echo "=== c5c3-operator logs (last 200 lines) ==="

@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # ControlPlane CR fixture for the full-controlplane-keystone E2E test. It drives
-# FOUR services — keystone, horizon, glance, and placement — through the full
-# chain.
+# FIVE services (keystone, horizon, glance, placement, and barbican) through the
+# full chain.
 #
 # Managed mode: database and cache reference managed clusters by clusterRef, so
 # the c5c3-operator reconcileInfrastructure sub-reconciler projects an owned
@@ -102,6 +102,18 @@ spec:
     # is the whole declaration.
     placement:
       replicas: 1
+    # Barbican takes a DEDICATED secret store, so the c5c3-operator provisions an
+    # OpenBao instance of its own beside the child and attaches the store to it.
+    # That is the point of declaring it here: the suite then exercises the whole
+    # projected instance chain (instance, store, minted AppRole, secret
+    # round-trip) rather than a server run outside this control plane. In the
+    # openstack namespace the kind overlay's proving tenant already admits the
+    # namespace to the openbao-operator, so no ControlPlane-owned OpenBaoTenant
+    # is created beside the instance.
+    barbican:
+      replicas: 1
+      secretStore:
+        dedicated: {}
   globalPolicyOverrides:
     rules:
       "identity:list_users": "role:admin"
@@ -123,9 +135,10 @@ spec:
     # SRBAC default for identity:validate_token requires the "service" role) with
     # its targetNamespace set to the Glance namespace, and services.placement adds
     # the placement account on the same terms right after it (project
-    # service-placement, a project of its own). Exercising that injection on
-    # a live cluster is the point: each role projects as one unmanaged K-ORC Role
-    # import plus one managed RoleAssignment; the chainsaw link asserts the injected
-    # entries at spec.korc.serviceAccounts[0] (glance) and [1] (placement) and that
-    # their RoleAssignments reach Available, and the verify Job asserts the role is
-    # listed against each user in Keystone.
+    # service-placement, a project of its own), then services.barbican the barbican
+    # account (project service-barbican, a project of its own too). Exercising that
+    # injection on a live cluster is the point: each role projects as one unmanaged
+    # K-ORC Role import plus one managed RoleAssignment; the chainsaw link asserts
+    # the injected entries at spec.korc.serviceAccounts[0] (glance), [1] (placement)
+    # and [2] (barbican) and that their RoleAssignments reach Available, and the
+    # verify Job asserts the role is listed against each user in Keystone.

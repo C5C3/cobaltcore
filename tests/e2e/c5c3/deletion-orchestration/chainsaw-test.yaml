@@ -24,6 +24,14 @@
 #      releases the ControlPlane.
 #   5. Assert the projected Keystone, MariaDB, Memcached, and all five K-ORC CRs
 #      are garbage-collected, and that an ORC-teardown event was emitted.
+#   6. Assert the Barbican ensemble is reclaimed with it: the child, its
+#      BarbicanSecretStore, the dedicated OpenBaoCluster, the raft PVC that
+#      instance leaves behind (data-<instance>-0, reaped because the projection
+#      pins deletionPolicy DeletePVCs), and the cluster-scoped auth-delegator
+#      ClusterRoleBinding. The last two are the ones nothing else collects: no GC
+#      cascade reaches a cluster-scoped object from a namespaced owner, and a
+#      retained PVC would meet the next ControlPlane of the same name with raft
+#      storage sealed under a key that no longer exists.
 #
 # Whether step 3 wins the race against an in-flight revoke or not, the regression
 # guard is identical: deletion must COMPLETE (the happy path emits
@@ -48,16 +56,17 @@ metadata:
   name: deletion-orchestration
 spec:
   namespace: openstack
-  # The full chain bring-up plus the bounded stall (5m) and GC cascade is long-
-  # running, so the consolidated script and its diagnostic catch get generous
-  # bounds well above the 120s suite default.
+  # The full chain bring-up (now including the dedicated OpenBao instance the
+  # Barbican secret store is provisioned against) plus the bounded stall (5m) and
+  # the GC cascade is long-running, so the consolidated script and its diagnostic
+  # catch get generous bounds well above the 120s suite default.
   timeouts:
     assert: 5m
-    exec: 30m
+    exec: 40m
   steps:
   - try:
     - script:
-        timeout: 30m
+        timeout: 40m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
         # infra/keystone/c5c3 e2e script pins bash for the same reason.
         shell: bash
@@ -72,6 +81,19 @@ spec:
           EP_CR="${CP_NAME}-identity-endpoint"
           USER_CR="${CP_NAME}-user-admin"
           DOMAIN_CR="${CP_NAME}-domain-default"
+          BARBICAN_CR="${CP_NAME}-barbican"
+          BARBICAN_STORE="${BARBICAN_CR}-store"
+          BARBICAN_BAO="${BARBICAN_CR}-bao"
+          # The raft volume the openbao-operator's StatefulSet claims for the
+          # single instance replica.
+          BARBICAN_BAO_PVC="data-${BARBICAN_BAO}-0"
+          # The auth-delegator ClusterRoleBinding is the one ensemble name this
+          # script does NOT spell out: it carries a hash of the instance's
+          # namespace so two same-named ControlPlanes in different namespaces
+          # cannot collide on one cluster-scoped object. It is resolved from the
+          # ownership labels below, once the ensemble is up.
+          BARBICAN_BAO_CRB=""
+          CP_LABELS="c5c3.io/controlplane-name=${CP_NAME},c5c3.io/controlplane-namespace=${CP_NS}"
           FINALIZER="c5c3.io/orc-teardown"
 
           # ── Presence guard ─────────────────────────────────────────────────
@@ -79,6 +101,10 @@ spec:
           for crd in \
             controlplanes.c5c3.io \
             keystones.keystone.openstack.c5c3.io \
+            barbicans.barbican.openstack.c5c3.io \
+            barbicansecretstores.barbican.openstack.c5c3.io \
+            openbaoclusters.openbao.org \
+            openbaotenants.openbao.org \
             applicationcredentials.openstack.k-orc.cloud \
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \
@@ -112,8 +138,33 @@ spec:
             echo "      stack's CRDs only, so the ControlPlane cannot converge here."
             exit 0
           fi
-          echo "OK: stack present (including a running keystone-operator) —"
-          echo "    running ControlPlane deletion orchestration."
+          # The Barbican leg needs two more controllers before the ControlPlane can
+          # converge far enough to be worth deleting: the barbican-operator drives
+          # the child and mints its secret store's AppRole credentials, and the
+          # openbao-operator drives the dedicated instance behind that store to
+          # Available. The listing is captured and retried rather than piped into
+          # `grep -q`, which under pipefail reads a transient apiserver error, or
+          # grep closing the pipe on a match, as "no pods".
+          operator_running() { # <app.kubernetes.io/name label value>
+            local pods
+            for _ in 1 2 3 4 5; do
+              if pods="$(kubectl get pods -A -l "app.kubernetes.io/name=$1" --no-headers 2>/dev/null)" \
+                && [ -n "${pods}" ]; then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+          for op in barbican-operator openbao-operator; do
+            if ! operator_running "${op}"; then
+              echo "SKIP: no ${op} is running; the projected Barbican ensemble"
+              echo "      cannot converge, so its teardown cannot be exercised here."
+              exit 0
+            fi
+          done
+          echo "OK: stack present (including running keystone-, barbican- and"
+          echo "    openbao-operators) — running ControlPlane deletion orchestration."
 
           # ── Helpers ────────────────────────────────────────────────────────
           wait_cp_condition() { # <conditionType> <timeoutSeconds>
@@ -147,9 +198,29 @@ spec:
             echo "OK: ${res}/${name} is gone"
           }
 
+          # The cluster-scoped twin of wait_gone. It exists for the auth-delegator
+          # ClusterRoleBinding: `kubectl get -n` on a cluster-scoped object ignores
+          # the namespace, so the check would still work, but naming it separately
+          # keeps it obvious that no namespace teardown can collect this one.
+          wait_gone_cluster_scoped() { # <resource> <name> <timeoutSeconds>
+            local res="$1" name="$2" timeout="$3" deadline
+            deadline=$(( $(date +%s) + timeout ))
+            while kubectl get "${res}" "${name}" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} still present after ${timeout}s"
+                return 1
+              fi
+              sleep 5
+            done
+            echo "OK: ${res}/${name} is gone"
+          }
+
           # ── Bring the ControlPlane up to Ready ─────────────────────────────
+          # The window covers the Barbican leg too: the dedicated OpenBao instance
+          # is created, unsealed and self-init'd, and only then can the store's
+          # AppRole be minted and the child converge.
           kubectl apply -f 00-controlplane-cr.yaml
-          wait_cp_condition Ready 900
+          wait_cp_condition Ready 1200
 
           # The ORC-teardown finalizer must be installed, and the five owned
           # K-ORC CRs must exist before we tear down.
@@ -167,6 +238,32 @@ spec:
               || { echo "ERROR: expected K-ORC CR $1/$2 missing before teardown"; exit 1; }
           done
           echo "OK: finalizer installed and all five K-ORC CRs present."
+
+          # The Barbican ensemble must be STANDING before the teardown, or the
+          # "gone" checks below would pass against objects that never existed.
+          for kv in \
+            "barbicans.barbican.openstack.c5c3.io ${BARBICAN_CR}" \
+            "barbicansecretstores.barbican.openstack.c5c3.io ${BARBICAN_STORE}" \
+            "openbaoclusters.openbao.org ${BARBICAN_BAO}" \
+            "persistentvolumeclaim ${BARBICAN_BAO_PVC}"; do
+            set -- $kv
+            kubectl get "$1" "$2" -n "${CP_NS}" >/dev/null \
+              || { echo "ERROR: expected Barbican ensemble object $1/$2 missing before teardown"; exit 1; }
+          done
+          # {.items[*]...} emits a SPACE-SEPARATED list, and wait_gone_cluster_scoped
+          # passes the value quoted — so two matches (a binding leaked by an earlier
+          # run of this suite in the same cluster carries the same labels) would look
+          # up one resource literally named "a b", get NotFound on the first
+          # iteration, and report the residue reaped while both are still live. That
+          # would make the assertion this suite exists for a no-op, so anything but
+          # exactly one match is an error here.
+          BARBICAN_BAO_CRB="$(kubectl get clusterrolebinding -l "${CP_LABELS}" \
+            -o jsonpath='{.items[*].metadata.name}')"
+          case "${BARBICAN_BAO_CRB}" in
+            "")   echo "ERROR: expected auth-delegator ClusterRoleBinding missing before teardown"; exit 1 ;;
+            *\ *) echo "ERROR: ${CP_LABELS} matches more than one ClusterRoleBinding: ${BARBICAN_BAO_CRB}"; exit 1 ;;
+          esac
+          echo "OK: Barbican child, secret store, dedicated OpenBao instance, its PVC, and the auth-delegator binding are present."
 
           # ── Simulate "Keystone already gone" during teardown ───────────────
           # Initiate deletion first (async) so the operator enters its deletion
@@ -193,6 +290,19 @@ spec:
           wait_gone keystone "${KEYSTONE_CR}" 300
           wait_gone mariadb openstack-db 300
           wait_gone memcacheds.memcached.c5c3.io openstack-memcached 300
+
+          # ── The Barbican ensemble must be reclaimed too ────────────────────
+          # The child, its store, and the instance follow the owner references;
+          # the PVC follows the instance's deletionPolicy (DeletePVCs), and the
+          # cluster-scoped binding is removed by the ControlPlane finalizer, since
+          # neither the GC cascade nor a namespace deletion reaches it. The
+          # instance carries the openbao-operator's own finalizer, so it gets the
+          # widest window of the group.
+          wait_gone barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" 300
+          wait_gone barbicansecretstores.barbican.openstack.c5c3.io "${BARBICAN_STORE}" 300
+          wait_gone openbaoclusters.openbao.org "${BARBICAN_BAO}" 600
+          wait_gone persistentvolumeclaim "${BARBICAN_BAO_PVC}" 300
+          wait_gone_cluster_scoped clusterrolebinding "${BARBICAN_BAO_CRB}" 300
 
           # ── The ORC-teardown finalizer must have run ───────────────────────
           # Either ORCTeardownComplete (revoke won the race) or ORCTeardownStalled
@@ -222,6 +332,15 @@ spec:
           kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,domains.openstack.k-orc.cloud -n openstack 2>&1 || true
           echo "=== Projected child CRs ==="
           kubectl get mariadb,memcacheds.memcached.c5c3.io,keystone -n openstack 2>&1 || true
+          echo "=== Barbican ensemble (may be Terminating or gone) ==="
+          kubectl get barbicans.barbican.openstack.c5c3.io,barbicansecretstores.barbican.openstack.c5c3.io -n openstack 2>&1 || true
+          kubectl get openbaoclusters.openbao.org,pvc -n openstack 2>&1 || true
+          kubectl get clusterrolebinding \
+            -l c5c3.io/controlplane-name=deletion-orch,c5c3.io/controlplane-namespace=openstack 2>&1 || true
+          echo "=== barbican-operator logs (last 100 lines) ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --tail=100 --all-containers 2>&1 || true
+          echo "=== openbao-operator logs (last 100 lines) ==="
+          kubectl logs -n openbao-operator-system -l app.kubernetes.io/name=openbao-operator --tail=100 --all-containers 2>&1 || true
           echo "=== c5c3-operator logs (last 200 lines) ==="
           kubectl logs -n c5c3-system -l app.kubernetes.io/name=c5c3-operator --tail=200 --all-containers 2>&1 || true
           echo "=== K-ORC controller logs (last 100 lines) ==="
