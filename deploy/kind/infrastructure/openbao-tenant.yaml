@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Namespace onboarding for the proving OpenBao instance (openbao-instance.yaml).
+# The openbao-operator runs multi-tenant (deploy/flux-system/releases/
+# openbao-operator.yaml), where its controller reconciles only in namespaces an
+# OpenBaoTenant has admitted. Without this CR the instance in openstack keeps an
+# empty status and no StatefulSet, and the operator reports the wait only at log
+# level V(1).
+#
+# This tenant is static because openstack is a fixture of the overlay. The
+# service namespaces a ControlPlane's dedicated instance lands in are created at
+# runtime, so the c5c3 operator creates their tenants itself; it skips any
+# namespace an OpenBaoTenant already targets, this one included, because a
+# namespace admitted twice carries the finalizer of two tenants.
+---
+apiVersion: openbao.org/v1alpha1
+kind: OpenBaoTenant
+metadata:
+  name: openstack
+  namespace: openstack
+spec:
+  targetNamespace: openstack

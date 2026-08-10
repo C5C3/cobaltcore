@@ -26,10 +26,11 @@
 #     storage — so a request added to a CR whose PVC survived is silently never
 #     applied. Pinning the list here means such an edit cannot land without
 #     confronting that.
-#   - the openbao-operator HelmRelease sets WATCH_NAMESPACE, which is what
-#     actually puts the controller in single-tenant mode. tenancy.mode only
-#     shapes the chart's own output; a controller without WATCH_NAMESPACE waits
-#     forever for tenant onboarding and never reconciles the instance.
+#   - the openbao-operator HelmRelease runs the operator multi-tenant with
+#     namespacePodSecurityLabels.mode external, sets no WATCH_NAMESPACE (which
+#     would pin the controller to one namespace), and the kind overlay carries
+#     the OpenBaoTenant that admits openstack. A namespace without a tenant
+#     never gets its instance reconciled.
 #
 # Usage: bash tests/unit/deploy/openbao_instance_overlay_test.sh
 
@@ -159,46 +160,64 @@ test_self_init_request_list_is_pinned() {
     "$expected" "$actual"
 }
 
-# --- Test 4: the operator release really reaches single-tenant mode ---
-test_operator_release_sets_watch_namespace() {
-  echo "Test: the openbao-operator HelmRelease puts the controller in single-tenant mode"
+# --- Test 4: the operator release runs multi-tenant, and openstack is onboarded ---
+test_operator_release_runs_multi_tenant() {
+  echo "Test: the openbao-operator HelmRelease runs multi-tenant and the kind overlay onboards openstack"
 
   if ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: yq not installed"
+    echo "  SKIP: yq not installed (4 checks skipped)"
+    SKIP=$((SKIP + 4))
+    return
+  fi
+
+  local mode psl_mode values
+  mode="$(yq -r '.spec.values.tenancy.mode' "$OPERATOR_RELEASE_FILE" 2>/dev/null | head -n1)"
+  psl_mode="$(yq -r '.spec.values.tenancy.namespacePodSecurityLabels.mode' \
+    "$OPERATOR_RELEASE_FILE" 2>/dev/null | head -n1)"
+  values="$(yq -r '.spec.values' "$OPERATOR_RELEASE_FILE" 2>/dev/null)"
+
+  # The c5c3 operator projects a dedicated instance into service namespaces
+  # created at runtime, which no single-tenant controller can reach.
+  assert_eq "the release requests multi-tenant mode" "multi" "$mode"
+  # Under the chart default (enforce) the provisioner holds update and patch on
+  # namespaces cluster-wide and stamps restricted Pod Security labels onto every
+  # onboarded namespace, openstack included.
+  assert_eq "the provisioner is denied every Namespace mutation" "external" "$psl_mode"
+  # tenancy.mode only shapes the chart's own output. The controller derives its
+  # tenancy from WATCH_NAMESPACE, which no chart template sets, so any value
+  # reintroduced here pins it to one namespace and strands every other one.
+  assert_not_contains "no WATCH_NAMESPACE pins the controller to a single namespace" \
+    "$values" "WATCH_NAMESPACE"
+
+  if ! command -v kustomize >/dev/null 2>&1; then
+    echo "  SKIP: kustomize not installed (1 check skipped)"
     SKIP=$((SKIP + 1))
     return
   fi
 
-  # tenancy.mode alone is not enough. At chart 0.4.2 it picks the single-tenant
-  # ClusterRole and drops the provisioner, but the controller reads its tenancy
-  # from WATCH_NAMESPACE and no chart template sets that variable. Without it
-  # the controller runs multi-tenant and pauses every reconcile waiting for the
-  # RoleBinding openbao-operator-tenant-rolebinding that OpenBaoTenant
-  # onboarding would create — silently, at V(1), leaving the OpenBaoCluster with
-  # an empty status and no StatefulSet until deploy-infra's Available wait
-  # times out.
-  local mode target watch_ns
-  mode="$(yq -r '.spec.values.tenancy.mode' "$OPERATOR_RELEASE_FILE" 2>/dev/null | head -n1)"
-  target="$(yq -r '.spec.values.tenancy.targetNamespace' "$OPERATOR_RELEASE_FILE" 2>/dev/null | head -n1)"
-  watch_ns="$(yq -r \
-    '.spec.values.controller.extraEnv[] | select(.name == "WATCH_NAMESPACE") | .value' \
-    "$OPERATOR_RELEASE_FILE" 2>/dev/null | head -n1)"
+  local rendered tenant_target
+  if ! rendered="$(kustomize build "$KIND_INFRA_DIR" 2>&1)"; then
+    echo "  FAIL: kustomize build $KIND_INFRA_DIR failed:"
+    echo "$rendered" | head -20
+    FAIL=$((FAIL + 1))
+    return
+  fi
+  tenant_target="$(printf '%s\n' "$rendered" | yq -r \
+    'select(.kind == "OpenBaoTenant" and .metadata.name == "openstack") | .spec.targetNamespace' \
+    2>/dev/null | head -n1)"
 
-  assert_eq "the release requests single-tenant mode" "single" "$mode"
-  assert_eq "WATCH_NAMESPACE is set, so the controller actually runs single-tenant" \
-    "openstack" "$watch_ns"
-  # The two must agree: the controller watches WATCH_NAMESPACE, while the chart
-  # scopes its RBAC to tenancy.targetNamespace. A mismatch grants the controller
-  # rights in one namespace and points it at another.
-  assert_eq "the watched namespace matches the namespace the chart scopes RBAC to" \
-    "$target" "$watch_ns"
+  # Without a tenant admitting the namespace the controller waits for the
+  # RoleBinding tenant onboarding creates and pauses every reconcile in it,
+  # silently, at V(1), leaving the OpenBaoCluster with an empty status and no
+  # StatefulSet until deploy-infra's Available wait times out.
+  assert_eq "the kind overlay onboards the openstack namespace" "openstack" "$tenant_target"
 }
 
 # --- Run ---
 test_kind_overlay_renders_paused_instance
 test_production_overlay_renders_no_instance
 test_self_init_request_list_is_pinned
-test_operator_release_sets_watch_namespace
+test_operator_release_runs_multi_tenant
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

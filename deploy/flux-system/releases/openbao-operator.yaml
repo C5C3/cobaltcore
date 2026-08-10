@@ -55,27 +55,45 @@ spec:
     crds: CreateReplace
     remediation:
       retries: 3
-  # The chart defaults to multi-tenant mode, whose provisioner requires
-  # OpenBaoTenant namespace onboarding and applies restricted Pod Security
-  # labels to tenant namespaces. That is unacceptable for the shared openstack
-  # namespace, which hosts every OpenStack service workload. Single-tenant mode
-  # deploys only the controller, scoped to the one namespace the instance CRs
-  # live in.
+  # Multi-tenant mode. The c5c3 operator projects a dedicated OpenBaoCluster
+  # into the Barbican service namespace of every ControlPlane, and those
+  # namespaces are created at runtime, so no single watched namespace covers
+  # them. Multi-tenant mode deploys the provisioner next to the controller and
+  # lets the controller reconcile in every onboarded namespace. tenancy.mode
+  # only shapes the chart's own output: the controller derives its tenancy from
+  # the WATCH_NAMESPACE environment variable, which no chart template sets, so
+  # an unset controller.extraEnv is what actually runs it multi-tenant.
   #
-  # tenancy.mode alone does NOT put the controller in single-tenant mode. At
-  # chart 0.4.2 it selects the single-tenant ClusterRole and drops the
-  # provisioner Deployment, but the controller derives its own tenancy from the
-  # WATCH_NAMESPACE environment variable (empty means multi-tenant), and no
-  # chart template sets it. A controller left in multi-tenant mode waits for the
-  # RoleBinding openbao-operator-tenant-rolebinding that OpenBaoTenant
-  # onboarding creates, and pauses every reconcile until it appears — silently,
-  # at log level V(1), leaving the OpenBaoCluster with an empty status and no
-  # StatefulSet. controller.extraEnv is the chart's documented hook for it.
+  # namespacePodSecurityLabels.mode: external bounds what that costs in RBAC.
+  # Under the chart default (enforce) the provisioner holds update and patch on
+  # namespaces cluster-wide and stamps restricted Pod Security labels onto every
+  # onboarded namespace, including openstack, the namespace that hosts every
+  # OpenStack service workload — which restricted would start rejecting. external
+  # drops those verbs from the ClusterRole and widens the chart's
+  # ValidatingAdmissionPolicy to deny the provisioner any Namespace update at
+  # all. Tenant RBAC onboarding is unaffected.
+  #
+  # ACCEPTED GAP: this repo ships no policy layer that stamps the labels instead.
+  # Nothing here sets pod-security.kubernetes.io/* on a service namespace (the
+  # only occurrence in the tree is deploy/kind/chaos-mesh/namespace.yaml, which
+  # sets privileged), and reconcileNamespaces stamps none either, so an onboarded
+  # namespace admits pods at whatever the cluster default is. For a namespace
+  # holding a dedicated OpenBao instance that is the seal key and the raft volume
+  # in reach of any pod that namespace admits. Closing it means picking an
+  # enforcement level the OpenStack workloads in openstack actually satisfy and
+  # stamping it from the platform side — not from this operator, whose labels
+  # would land on the same namespace with the same problem.
+  #
+  # Every namespace hosting an OpenBaoCluster needs an OpenBaoTenant. Without
+  # one the controller waits for the RoleBinding
+  # openbao-operator-tenant-rolebinding that tenant onboarding creates and
+  # pauses every reconcile in that namespace, silently, at log level V(1),
+  # leaving the OpenBaoCluster with an empty status and no StatefulSet. The c5c3
+  # operator creates a tenant for each service namespace it projects into; the
+  # kind overlay carries a static one for the proving instance in openstack
+  # (deploy/kind/infrastructure/openbao-tenant.yaml).
   values:
     tenancy:
-      mode: single
-      targetNamespace: openstack
-    controller:
-      extraEnv:
-        - name: WATCH_NAMESPACE
-          value: openstack
+      mode: multi
+      namespacePodSecurityLabels:
+        mode: external

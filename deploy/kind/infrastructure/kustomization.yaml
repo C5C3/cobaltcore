@@ -85,7 +85,10 @@ resources:
   # adopt it instead of generating its own. Both sit in the openstack namespace
   # and survive the WITH_CONTROLPLANE shim drop (neither is among the
   # keystone-admin/keystone-db/mariadb-root-password names). The instance is
-  # CI/dev-only — see the posture rationale in its own file header.
+  # CI/dev-only — see the posture rationale in its own file header. The tenant
+  # admits the openstack namespace to the multi-tenant openbao-operator, without
+  # which the controller never reconciles the instance.
+  - openbao-tenant.yaml
   - openbao-instance.yaml
   - openbao-instance-unseal-key-externalsecret.yaml
 
