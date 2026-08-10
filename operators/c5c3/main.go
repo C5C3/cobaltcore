@@ -13,7 +13,9 @@ package main
 
 import (
 	"os"
+	"strings"
 
+	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
@@ -21,6 +23,7 @@ import (
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
+	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	"github.com/c5c3/forge/operators/c5c3/internal/controller"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
@@ -36,6 +39,21 @@ import (
 // is asserted by main_test.go so a rename cannot silently break leader election.
 const leaderElectionID = "c5c3.openstack.c5c3.io"
 
+// barbicanOperatorNamespaceEnv and barbicanOperatorServiceAccountEnv name the
+// environment the deploy stack sets to tell the c5c3 operator where the
+// barbican-operator runs and which ServiceAccount it runs as. A dedicated
+// Barbican secret store grants that identity a TokenRequest RoleBinding and a
+// NetworkPolicy ingress peer on the OpenBao instance it provisions.
+//
+// A blank or unset value is passed to the reconciler as the empty string, which
+// resolves to the barbican-operator chart defaults (barbican-system /
+// barbican-operator) — the same fallback a programmatically constructed
+// reconciler gets, so the default lives in exactly one place.
+const (
+	barbicanOperatorNamespaceEnv      = "BARBICAN_OPERATOR_NAMESPACE"
+	barbicanOperatorServiceAccountEnv = "BARBICAN_OPERATOR_SERVICE_ACCOUNT"
+)
+
 var scheme = bootstrap.NewScheme(
 	// c5c3 own API types (ControlPlane, CredentialRotation).
 	c5c3v1alpha1.AddToScheme,
@@ -48,6 +66,12 @@ var scheme = bootstrap.NewScheme(
 	// Placement CR — the ControlPlane reconciler projects and Owns a Placement
 	// child.
 	placementv1alpha1.AddToScheme,
+	// Barbican CR (and BarbicanSecretStore) — the ControlPlane reconciler
+	// projects and Owns a Barbican child plus the secret store attached to it.
+	barbicanv1alpha1.AddToScheme,
+	// OpenBaoCluster and OpenBaoTenant — projected and Owned by the dedicated
+	// Barbican secret store.
+	openbaov1alpha1.AddToScheme,
 	// MariaDB CR — projected and Owned by reconcileInfrastructure.
 	mariadbv1alpha1.AddToScheme,
 	// ESO PushSecret (v1alpha1) and ClusterSecretStore/ExternalSecret (v1) — the
@@ -82,10 +106,12 @@ func main() {
 			}
 			// +kubebuilder:scaffold:builder — register controllers here
 			if err := (&controller.ControlPlaneReconciler{
-				Client:                  mgr.GetClient(),
-				Scheme:                  mgr.GetScheme(),
-				Recorder:                mgr.GetEventRecorderFor("controlplane-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
-				MaxConcurrentReconciles: maxConcurrentReconciles,
+				Client:                         mgr.GetClient(),
+				Scheme:                         mgr.GetScheme(),
+				Recorder:                       mgr.GetEventRecorderFor("controlplane-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+				MaxConcurrentReconciles:        maxConcurrentReconciles,
+				BarbicanOperatorNamespace:      strings.TrimSpace(os.Getenv(barbicanOperatorNamespaceEnv)),
+				BarbicanOperatorServiceAccount: strings.TrimSpace(os.Getenv(barbicanOperatorServiceAccountEnv)),
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}

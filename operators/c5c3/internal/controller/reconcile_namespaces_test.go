@@ -14,8 +14,10 @@ import (
 	"context"
 	"testing"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -486,4 +488,105 @@ func TestRefuseForeignAdoption_UnresolvableKindStillRefuses(t *testing.T) {
 
 	g.Expect(err).To(HaveOccurred(), "an unresolvable kind must not turn a refusal into an adoption")
 	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt pre-existing"))
+}
+
+// countingReader is an uncached reader that records how many Gets were routed
+// through it, so a test can tell WHICH reader ensureUnownedOrOwned's adoption
+// pre-check used.
+type countingReader struct {
+	client.Reader
+	gets int
+}
+
+func (c *countingReader) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	c.gets++
+	return c.Reader.Get(ctx, key, obj, opts...)
+}
+
+// TestEnsureUnownedOrOwned_ReadsWatchedKindsThroughTheCache pins which reader the
+// adoption pre-check uses per kind. The uncached reader exists for the kinds the
+// operator never watches (the three RBAC kinds and ServiceAccount), where a cached
+// read would start an unfiltered cluster-wide informer. Routing the WATCHED kinds
+// through it too would spend a direct API GET per cross-namespace projection on
+// every pass — dozens on the dedicated-service-namespace layout — against the
+// reconciler's shared client-side rate limit, for a cache hit that is already free.
+//
+// The two readers are seeded differently so the choice is observable: only the
+// cached client holds the foreign ExternalSecret the pre-check exists to refuse.
+func TestEnsureUnownedOrOwned_ReadsWatchedKindsThroughTheCache(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	if err := esov1.AddToScheme(s); err != nil {
+		t.Fatalf("adding external-secrets scheme: %v", err)
+	}
+	cp := namespacedControlPlane()
+
+	foreign := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "identity",
+		Name:      "cp-admin-password",
+		Labels:    map[string]string{"owner": "someone-else"},
+	}}
+	direct := &countingReader{Reader: fake.NewClientBuilder().WithScheme(s).Build()}
+	r := &ControlPlaneReconciler{
+		Client:    fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build(),
+		Scheme:    s,
+		APIReader: direct,
+	}
+
+	err := r.ensureUnownedOrOwned(ctx, cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "identity", Name: "cp-admin-password",
+	}})
+	g.Expect(err).To(HaveOccurred(), "the informer already holds the foreign object the pre-check must refuse")
+	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt pre-existing"))
+	g.Expect(direct.gets).To(Equal(0), "a watched kind must not spend a direct API GET on this pre-check")
+
+	g.Expect(r.ensureUnownedOrOwned(ctx, cp, &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp-barbican-bao-auth-delegator"},
+	})).To(Succeed())
+	g.Expect(direct.gets).To(Equal(1), "an unwatched kind has no informer to read from")
+}
+
+// TestEnsureUnownedOrOwned_ConfirmsACacheMissAgainstTheAPIServer covers the one
+// answer the informer can get WRONG. A cached Get reports NotFound for as long as
+// the watch has not delivered the ADD, and everything past the pre-check is
+// destructive on a name that turns out to be taken: the SSA apply overwrites the
+// foreign object's spec, and the ownership labels the projection stamps make the
+// teardown residue sweep DELETE it — with no error, no condition and no event to
+// show for either. So a cached miss is confirmed against the API server before it
+// is believed.
+//
+// The two readers are seeded the other way round from the test above: the foreign
+// ExternalSecret is on the API server and the cache has not caught up with it.
+func TestEnsureUnownedOrOwned_ConfirmsACacheMissAgainstTheAPIServer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	if err := esov1.AddToScheme(s); err != nil {
+		t.Fatalf("adding external-secrets scheme: %v", err)
+	}
+	cp := namespacedControlPlane()
+
+	foreign := &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "identity",
+		Name:      "cp-admin-password",
+		Labels:    map[string]string{"owner": "someone-else"},
+	}}
+	r := &ControlPlaneReconciler{
+		Client:    fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:    s,
+		APIReader: fake.NewClientBuilder().WithScheme(s).WithObjects(foreign).Build(),
+	}
+
+	err := r.ensureUnownedOrOwned(ctx, cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "identity", Name: "cp-admin-password",
+	}})
+	g.Expect(err).To(HaveOccurred(), "a lagging informer must not turn a foreign object into an adoption")
+	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt pre-existing"))
+
+	// The confirmation refuses only what is actually there: a name free on BOTH
+	// readers is still created.
+	g.Expect(r.ensureUnownedOrOwned(ctx, cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "identity", Name: "cp-db-credentials",
+	}})).To(Succeed())
 }
