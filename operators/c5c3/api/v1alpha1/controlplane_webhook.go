@@ -28,6 +28,7 @@ import (
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/validation"
 	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
+	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
 
@@ -92,6 +93,12 @@ const (
 	// DedicatedPlacementCacheClusterRefSuffix names the Memcached CR of a
 	// dedicated Placement cache.
 	DedicatedPlacementCacheClusterRefSuffix = "-placement-cache"
+	// DedicatedBarbicanDatabaseClusterRefSuffix names the MariaDB CR of a
+	// dedicated Barbican database.
+	DedicatedBarbicanDatabaseClusterRefSuffix = "-barbican-db" //nolint:gosec // G101 false positive: CR name suffix, not a credential
+	// DedicatedBarbicanCacheClusterRefSuffix names the Memcached CR of a
+	// dedicated Barbican cache.
+	DedicatedBarbicanCacheClusterRefSuffix = "-barbican-cache"
 	// DefaultDatabaseStorageSize is the effective per-replica MariaDB volume size
 	// when spec.infrastructure.database.storageSize is empty. It aliases
 	// commonv1.DatabaseStorageSizeDefault (also the CRD +kubebuilder:default and
@@ -130,6 +137,11 @@ const (
 	// DefaultAdminProjectName is materialized when
 	// spec.korc.adminCredential.projectName is empty (mirrors the CRD default).
 	DefaultAdminProjectName = "admin"
+	// DefaultBarbicanKVMountpoint is materialized when
+	// spec.services.barbican.secretStore.external.kvMountpoint is empty. It
+	// mirrors the +kubebuilder:default=barbican marker on
+	// BarbicanExternalSecretStoreSpec.KVMountpoint.
+	DefaultBarbicanKVMountpoint = "barbican"
 	// DefaultAdminDomainName is materialized when
 	// spec.korc.adminCredential.domainName is empty (mirrors the CRD default). The
 	// single domain feeds both user_domain_name and project_domain_name in the
@@ -697,6 +709,19 @@ const PlacementServiceAccountName = "placement"
 // Service name is a DNS-1035 label, capped at maxServiceNameBytes.
 const placementChildNameOverhead = len("-placement")
 
+// BarbicanServiceAccountName is the spec.korc.serviceAccounts entry the Barbican
+// projection consumes; the defaulting webhook injects it and the reconciler
+// gates on it.
+const BarbicanServiceAccountName = "barbican"
+
+// barbicanChildNameOverhead is the fixed part of the projected Barbican child CR
+// name, "{cp}-barbican". Like its Glance sibling the budget it eats into is not
+// the apiserver's 253-byte cap but the tighter one the Barbican CRD's own
+// admission applies to metadata.name (barbicanv1alpha1.MaxBarbicanNameLength):
+// the barbican operator appends a suffix of its own for the db-clean CronJob,
+// and Kubernetes caps CronJob names at 52 characters.
+const barbicanChildNameOverhead = len("-barbican")
+
 // validateGlanceChildName enforces that the Glance child this ControlPlane would
 // project carries a name the Glance CRD's own validating webhook admits.
 // Without it a longer ControlPlane admits cleanly and reconcileGlance then fails
@@ -753,6 +778,42 @@ func validatePlacementChildName(cp *ControlPlane) field.ErrorList {
 			"Service after the CR and Kubernetes caps Service names at %d, so the ControlPlane name must be at "+
 			"most %d characters when spec.services.placement is set",
 		n, maxServiceNameBytes, maxServiceNameBytes-placementChildNameOverhead,
+	))}
+}
+
+// validateBarbicanChildName enforces that the Barbican child this ControlPlane
+// would project carries a name the Barbican CRD's own validating webhook
+// admits. Without it a longer ControlPlane admits cleanly and reconcileBarbican
+// then fails to apply the child on every pass: BarbicanReady never goes True,
+// the ControlPlane never reaches Ready, and metadata.name is immutable — so the
+// only recovery is deleting and recreating the whole control plane.
+//
+// It is a create-and-newly-enabled rule rather than part of validateBarbican,
+// which every update re-runs, for the same reason as its Glance and Placement
+// siblings: the ControlPlane name is immutable, so on a routine update the rule
+// could only ever fire against a CR a pre-upgrade operator already admitted —
+// including the finalizer-removal update that completes its deletion.
+//
+// This is the only name bound Barbican needs. A dedicated secret store puts an
+// OpenBao instance named "{cp}-barbican-bao" next to the service, and the
+// openbao-operator derives its per-cluster objects by appending suffixes to that
+// name; the longest is the default ServiceAccount
+// "{cp}-barbican-bao-serviceaccount", which at the bound this rule enforces is
+// 34+13+15 = 62 bytes and therefore still inside the 63-byte label cap.
+func validateBarbicanChildName(cp *ControlPlane) field.ErrorList {
+	if cp.Spec.Services.Barbican == nil {
+		return nil
+	}
+	n := len(cp.Name) + barbicanChildNameOverhead
+	if n <= barbicanv1alpha1.MaxBarbicanNameLength {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(field.NewPath("metadata", "name"), cp.Name, fmt.Sprintf(
+		"the projected Barbican child CR name would be %d characters; the Barbican CRD caps metadata.name at %d "+
+			"(its db-clean CronJob appends a suffix, and Kubernetes caps CronJob names at %d characters), so the "+
+			"ControlPlane name must be at most %d characters when spec.services.barbican is set",
+		n, barbicanv1alpha1.MaxBarbicanNameLength, barbicanv1alpha1.MaxCronJobNameLength,
+		barbicanv1alpha1.MaxBarbicanNameLength-barbicanChildNameOverhead,
 	))}
 }
 
@@ -939,7 +1000,8 @@ func warnInsecureGlancePublicEndpoint(cp *ControlPlane) admission.Warnings {
 func insecurePublicEndpointWarnings(cp *ControlPlane) admission.Warnings {
 	warnings := warnInsecureHorizonPublicEndpoint(cp)
 	warnings = append(warnings, warnInsecureGlancePublicEndpoint(cp)...)
-	return append(warnings, warnInsecurePlacementPublicEndpoint(cp)...)
+	warnings = append(warnings, warnInsecurePlacementPublicEndpoint(cp)...)
+	return append(warnings, warnInsecureBarbicanPublicEndpoint(cp)...)
 }
 
 // glanceImportFilteringWarnings surfaces the two admissible-but-misleading
@@ -1205,6 +1267,216 @@ func warnInsecurePlacementPublicEndpoint(cp *ControlPlane) admission.Warnings {
 	)}
 }
 
+// validateBarbican enforces the rules on the services.barbican block. It mirrors
+// the declarative constraints as defense-in-depth for callers that bypass CRD
+// schema admission (the gateway hostname shape, the image tag/digest XOR, the
+// secret-store dedicated/external union and the external store's URL and
+// credentials reference) and adds the rules the CRD schema cannot express: the
+// public endpoint's origin shape and its agreement with the gateway
+// (validateBarbicanPublicEndpoint), and the requirement that the barbican
+// service account the defaulting webhook injects is present (and, when Barbican
+// is placed in a dedicated namespace, targets it).
+//
+// The projected-child-name bound lives in validateBarbicanChildName, which runs
+// only on create and on the update that newly enables Barbican.
+//
+// The cross-field rule that services.barbican is forbidden in External mode
+// lives in validateKeystoneMode with the rest of the External-mode matrix; the
+// extraConfig rules live in the two extraConfig admission families, which walk
+// every declared service block at once.
+func validateBarbican(cp *ControlPlane) field.ErrorList {
+	bn := cp.Spec.Services.Barbican
+	if bn == nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	bnPath := field.NewPath("spec", "services", "barbican")
+
+	// When a gateway is configured, its hostname must be set and usable as the
+	// host of the derived public endpoint. Mirrors the MinLength=1 marker on
+	// commonv1.GatewaySpec.Hostname.
+	if g := bn.Gateway; g != nil {
+		hostnamePath := bnPath.Child("gateway", "hostname")
+		if g.Hostname == "" {
+			allErrs = append(allErrs, field.Required(hostnamePath,
+				"must be set when a gateway is configured"))
+		} else if err := validateGatewayHostname(hostnamePath, g.Hostname); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	}
+
+	// When the Barbican image is overridden, mirror the ImageSpec tag/digest XOR
+	// (the +kubebuilder:validation:XValidation rule on commonv1.ImageSpec).
+	if img := bn.Image; img != nil && (img.Tag != "") == (img.Digest != "") {
+		allErrs = append(allErrs, field.Invalid(bnPath.Child("image"), img,
+			"exactly one of image.tag or image.digest must be set"))
+	}
+
+	allErrs = append(allErrs, validateBarbicanSecretStore(bnPath.Child("secretStore"), &bn.SecretStore)...)
+	allErrs = append(allErrs, validateBarbicanPublicEndpoint(bnPath, bn)...)
+	allErrs = append(allErrs, validateProjectedServiceAccount(
+		cp, BarbicanServiceAccountName, "Barbican", cp.BarbicanNamespace())...)
+
+	return allErrs
+}
+
+// validateBarbicanSecretStore mirrors the declarative constraints on
+// services.barbican.secretStore: the dedicated/external union carried by the
+// type-level CEL rule, and the external store's own MinLength/Pattern markers.
+// The mirror is load-bearing rather than decorative — an API server that skips
+// the x-kubernetes-validations rule admits a store naming neither mode, and the
+// projection would then have no server to point barbican at.
+func validateBarbicanSecretStore(storePath *field.Path, store *ServiceBarbicanSecretStoreSpec) field.ErrorList {
+	var allErrs field.ErrorList
+
+	if (store.Dedicated != nil) == (store.External != nil) {
+		allErrs = append(allErrs, field.Invalid(storePath, store,
+			"exactly one of dedicated or external must be set"))
+	}
+
+	ext := store.External
+	if ext == nil {
+		return allErrs
+	}
+	extPath := storePath.Child("external")
+
+	// TLS is mandatory: the AppRole login and every stored secret travel this
+	// URL. Mirrors the ^https:// Pattern marker.
+	urlPath := extPath.Child("url")
+	if u, err := validateHTTPURL(urlPath, ext.URL); err != nil {
+		allErrs = append(allErrs, err)
+	} else if u.Scheme != "https" {
+		allErrs = append(allErrs, field.Invalid(urlPath, ext.URL,
+			"scheme must be https: the AppRole credentials and every secret barbican stores travel this URL"))
+	}
+
+	if ext.CredentialsSecretRef.Name == "" {
+		allErrs = append(allErrs, field.Required(extPath.Child("credentialsSecretRef", "name"),
+			"must be set: the external store authenticates with the AppRole credentials in that Secret"))
+	}
+	if ref := ext.CABundleSecretRef; ref != nil && ref.Name == "" {
+		allErrs = append(allErrs, field.Required(extPath.Child("caBundleSecretRef", "name"),
+			"must be set when caBundleSecretRef is configured"))
+	}
+
+	return allErrs
+}
+
+// validateBarbicanPublicEndpoint enforces the rules on
+// services.barbican.publicEndpoint that the CRD markers cannot express. The
+// value is advertised VERBATIM as the K-ORC public key-manager catalog Endpoint:
+// the URL every client resolves to store and read secret material, and sends its
+// scoped Keystone token (X-Auth-Token) to. Unlike the keystone override it is
+// projected into no child CR, so no downstream webhook re-checks it: whatever
+// admission accepts here is what lands in the Keystone catalog.
+//
+//   - Shape, as defense-in-depth alongside the ^https?:// Pattern marker:
+//     "https://" alone matches the pattern and stays under the 512-byte cap, yet
+//     registers a hostless URL no client can resolve.
+//   - A bare origin, with no path, query or fragment. The Pattern marker anchors
+//     only the prefix, so "https://barbican.example.com?utm=1" is schema-legal;
+//     the Barbican API is served at the root and clients append the API path to
+//     the catalog URL, yielding "https://barbican.example.com?utm=1/v1/secrets"
+//     and a 404 on every secret call. A single trailing slash is tolerated:
+//     OpenStack clients normalize the catalog endpoint before appending.
+//   - With a gateway configured the listener terminates TLS, so the externally
+//     observed scheme is https, the same rule the Glance public endpoint applies.
+//     An http endpoint is also a token leak, and what it leaks alongside the
+//     scoped Keystone token is the secret material the service exists to protect.
+//   - With a gateway configured the host must equal gateway.hostname. The
+//     Gateway listener is what routes that hostname to the Barbican Service, so
+//     a divergent host advertises an endpoint that never reaches the API,
+//     failing client-side with no status condition and no admission error naming
+//     the cause. The port may still differ: Gateway API hostnames carry none, so
+//     an API published off 443 has to spell the port out here.
+func validateBarbicanPublicEndpoint(bnPath *field.Path, bn *ServiceBarbicanSpec) field.ErrorList {
+	if bn.PublicEndpoint == "" {
+		return nil
+	}
+	pePath := bnPath.Child("publicEndpoint")
+	u, err := validateHTTPURL(pePath, bn.PublicEndpoint)
+	if err != nil {
+		return field.ErrorList{err}
+	}
+
+	var errs field.ErrorList
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		errs = append(errs, field.Invalid(pePath, bn.PublicEndpoint,
+			"must be a bare origin (scheme://host[:port]) with no path, query, or fragment: the Barbican API is "+
+				"served at the root and clients append the API path to the catalog endpoint"))
+	}
+
+	g := bn.Gateway
+	if g == nil || g.Hostname == "" {
+		return errs
+	}
+
+	if u.Scheme != "https" {
+		errs = append(errs, field.Invalid(pePath, bn.PublicEndpoint,
+			"scheme must be https when services.barbican.gateway is configured (the Gateway listener terminates "+
+				"TLS): every call sends the caller's scoped Keystone token, and the secret payload, to this endpoint"))
+	}
+	if u.Hostname() != g.Hostname {
+		errs = append(errs, field.Invalid(pePath, bn.PublicEndpoint,
+			fmt.Sprintf("host %q must equal services.barbican.gateway.hostname %q: the Gateway listener routes that "+
+				"hostname to the Barbican API, so the catalog would direct clients to a host that never reaches it",
+				u.Hostname(), g.Hostname)))
+	}
+	return errs
+}
+
+// warnInsecureBarbicanPublicEndpoint surfaces a cleartext key-manager endpoint
+// that validateBarbicanPublicEndpoint cannot reject: without a gateway Barbican
+// is published by some other means, and a plain-http endpoint is a legal, if
+// unwise, development setup that the ^https?:// CRD Pattern deliberately allows.
+// The downgrade must never be silent, though: every call carries the caller's
+// scoped Keystone token to this URL, and the stored secret material travels the
+// same connection.
+func warnInsecureBarbicanPublicEndpoint(cp *ControlPlane) admission.Warnings {
+	bn := cp.Spec.Services.Barbican
+	if bn == nil || bn.PublicEndpoint == "" {
+		return nil
+	}
+	if u, err := url.Parse(bn.PublicEndpoint); err != nil || u.Scheme != "http" {
+		return nil
+	}
+	return admission.Warnings{fmt.Sprintf(
+		"spec.services.barbican.publicEndpoint %q uses http://: it is advertised as the public key-manager catalog "+
+			"endpoint, so every call would deliver the caller's scoped Keystone token — and the secret material "+
+			"itself — in cleartext. Use https://.",
+		bn.PublicEndpoint,
+	)}
+}
+
+// warnDevelopmentBarbicanSecretStore surfaces what services.barbican.secretStore.dedicated
+// actually provisions. The block is fieldless, so nothing in the CR, in the CRD
+// schema, or in any validation error tells an operator that the store they just
+// asked for is a proving-grade one — and Barbican is the service the rest of the
+// cloud puts its key material in.
+//
+// Two properties are worth the warning. The instance runs the openbao-operator's
+// Development profile at a single replica with no PodDisruptionBudget, so a node
+// drain or a failed image pull takes every secret read and write with it. And its
+// seal is static: the key lives in a plain Secret, "<instance>-unseal-key", in the
+// SAME namespace as the raft volume it seals, so `get secrets` there — or one etcd
+// snapshot, or one namespace backup — yields both halves at once. Neither is a
+// reason to reject the choice: it is the only self-service store mode, and a kind
+// or proving cluster has no KMS to unseal against. It is a reason not to let it
+// land silently.
+func warnDevelopmentBarbicanSecretStore(cp *ControlPlane) admission.Warnings {
+	bn := cp.Spec.Services.Barbican
+	if bn == nil || bn.SecretStore.Dedicated == nil {
+		return nil
+	}
+	return admission.Warnings{
+		"spec.services.barbican.secretStore.dedicated provisions a single-replica OpenBao instance on the " +
+			"openbao-operator's Development profile, sealed by a static key stored in a Secret in the same " +
+			"namespace as the volume it seals. It has no HA, and the seal protects nothing against a read of " +
+			"that namespace's Secrets or against an etcd or namespace backup. For a production key manager use " +
+			"spec.services.barbican.secretStore.external against a hardened server with a KMS unseal.",
+	}
+}
+
 // externalAuthURLIsPlaintext reports whether raw is an http:// (non-TLS) endpoint.
 // A parse failure reads as false: validateHTTPURL already rejects those on the same
 // field, and a second error on it would only add noise.
@@ -1310,10 +1582,22 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 	// namespace", and the webhook must never invent a placement. Mirrors the
 	// +kubebuilder:default=Managed marker on ServiceNamespaceSpec.Lifecycle.
 	for _, ns := range []*ServiceNamespaceSpec{
-		keystoneNamespaceBlock(obj), horizonNamespaceBlock(obj), glanceNamespaceBlock(obj), placementNamespaceBlock(obj),
+		keystoneNamespaceBlock(obj), horizonNamespaceBlock(obj), glanceNamespaceBlock(obj),
+		placementNamespaceBlock(obj), barbicanNamespaceBlock(obj),
 	} {
 		if ns != nil && ns.Lifecycle == "" {
 			ns.Lifecycle = ServiceNamespaceLifecycleManaged
+		}
+	}
+
+	// An external Barbican secret store defaults to the mount the delivered
+	// contract provisions, mirroring the +kubebuilder:default=barbican marker for
+	// callers that bypass CRD schema admission. Like the lifecycle above it is
+	// only applied to a DECLARED external block: the dedicated mode names no
+	// mount, so there is nothing to fill in there.
+	if bn := obj.Spec.Services.Barbican; bn != nil {
+		if ext := bn.SecretStore.External; ext != nil && ext.KVMountpoint == "" {
+			ext.KVMountpoint = DefaultBarbicanKVMountpoint
 		}
 	}
 
@@ -1405,6 +1689,20 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 				defaultCacheLeaves(cache, obj.Name+DedicatedPlacementCacheClusterRefSuffix)
 			}
 		}
+		if bn := barbicanDedicatedBlock(obj); bn != nil {
+			if db := bn.Database; db != nil {
+				defaultDatabaseLeaves(db, obj.Name+DedicatedBarbicanDatabaseClusterRefSuffix)
+				// A dedicated MANAGED Barbican database is Static-only for the same
+				// reason the Keystone one is (see above): no per-instance OpenBao
+				// engine role exists. Materialize the mode; validate() rejects Dynamic.
+				if db.ClusterRef != nil && db.CredentialsMode == "" {
+					db.CredentialsMode = commonv1.CredentialsModeStatic
+				}
+			}
+			if cache := bn.Cache; cache != nil {
+				defaultCacheLeaves(cache, obj.Name+DedicatedBarbicanCacheClusterRefSuffix)
+			}
+		}
 	}
 
 	// K-ORC admin-credential defaults. cloudCredentialsRef.secretName defaults to
@@ -1481,6 +1779,9 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 		// each adopt the other's Keystone row — which validateServiceAccounts rejects
 		// outright.
 		{obj.Spec.Services.Placement != nil, PlacementServiceAccountName, "service-placement", obj.PlacementNamespace()},
+		// Barbican creates "service-barbican" for the same reason placement creates
+		// its own project: no two create:true entries may name one project.
+		{obj.Spec.Services.Barbican != nil, BarbicanServiceAccountName, "service-barbican", obj.BarbicanNamespace()},
 	} {
 		if !inject.declared {
 			continue
@@ -1535,6 +1836,7 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPlane) (admission.Warnings, error) {
 	warnings := insecurePublicEndpointWarnings(obj)
 	warnings = append(warnings, glanceImportFilteringWarnings(obj)...)
+	warnings = append(warnings, warnDevelopmentBarbicanSecretStore(obj)...)
 
 	// extraConfig admission checks: the un-gated shape/ownership family (A) and
 	// the option-catalog family (B). Both fold their errors into the single
@@ -1550,6 +1852,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	allErrs = append(allErrs, catalogErrs...)
 	allErrs = append(allErrs, validateGlanceChildName(obj)...)
 	allErrs = append(allErrs, validatePlacementChildName(obj)...)
+	allErrs = append(allErrs, validateBarbicanChildName(obj)...)
 	if err := newInvalidIfErrs(obj, allErrs); err != nil {
 		return warnings, err
 	}
@@ -1580,6 +1883,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *ControlPlane) (admission.Warnings, error) {
 	warnings := insecurePublicEndpointWarnings(newObj)
 	warnings = append(warnings, glanceImportFilteringWarnings(newObj)...)
+	warnings = append(warnings, warnDevelopmentBarbicanSecretStore(newObj)...)
 
 	allErrs := w.validate(newObj)
 	allErrs = append(allErrs, validateImmutable(oldObj, newObj)...)
@@ -1611,6 +1915,9 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	}
 	if oldObj.Spec.Services.Placement == nil {
 		allErrs = append(allErrs, validatePlacementChildName(newObj)...)
+	}
+	if oldObj.Spec.Services.Barbican == nil {
+		allErrs = append(allErrs, validateBarbicanChildName(newObj)...)
 	}
 
 	if err := newInvalidIfErrs(newObj, allErrs); err != nil {
@@ -1797,6 +2104,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 
 	allErrs = append(allErrs, validateGlance(cp)...)
 	allErrs = append(allErrs, validatePlacement(cp)...)
+	allErrs = append(allErrs, validateBarbican(cp)...)
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
 	allErrs = append(allErrs, validateServiceAccounts(cp)...)
 	allErrs = append(allErrs, validateDedicatedBackingServices(cp)...)
@@ -1835,6 +2143,9 @@ func declaredServiceNamespaces(cp *ControlPlane) []serviceNamespaceAssignment {
 	}
 	if ns := placementNamespaceBlock(cp); ns != nil {
 		out = append(out, serviceNamespaceAssignment{path: svcPath.Child("placement", "namespace"), ns: ns})
+	}
+	if ns := barbicanNamespaceBlock(cp); ns != nil {
+		out = append(out, serviceNamespaceAssignment{path: svcPath.Child("barbican", "namespace"), ns: ns})
 	}
 	return out
 }
@@ -2038,6 +2349,13 @@ func declaredDedicatedBackingServices(cp *ControlPlane) []dedicatedBackingServic
 			cache: pl.Cache,
 		})
 	}
+	if bn := barbicanDedicatedBlock(cp); bn != nil {
+		out = append(out, dedicatedBackingServices{
+			path:  svcPath.Child("barbican", "dedicatedBackingServices"),
+			db:    bn.Database,
+			cache: bn.Cache,
+		})
+	}
 	return out
 }
 
@@ -2145,16 +2463,17 @@ func validateDedicatedBackingServices(cp *ControlPlane) field.ErrorList {
 //
 // A Static override is always admitted, and an empty override (inherit) is a no-op.
 // The External-mode forbid on services.keystone.databaseCredentialsMode lives in
-// validateKeystoneMode with the rest of the External-mode matrix (glance and
-// placement are forbidden entirely in External mode, so they need no such rule).
+// validateKeystoneMode with the rest of the External-mode matrix (glance,
+// placement, and barbican are forbidden entirely in External mode, so they need
+// no such rule).
 func validateServiceCredentialsModeOverrides(cp *ControlPlane) field.ErrorList {
 	var allErrs field.ErrorList
 	svcPath := field.NewPath("spec", "services")
 
 	// The shared database is managed exactly when it names a clusterRef. A nil
 	// infrastructure block (only reachable in External mode, which forbids the
-	// keystone override via CEL and forbids glance and placement entirely) counts
-	// as not managed.
+	// keystone override via CEL and forbids glance, placement, and barbican
+	// entirely) counts as not managed.
 	sharedManaged := cp.Spec.Infrastructure != nil && cp.Spec.Infrastructure.Database.ClusterRef != nil
 
 	check := func(svc string, mode string, dedicatedDB *commonv1.DatabaseSpec) {
@@ -2184,6 +2503,9 @@ func validateServiceCredentialsModeOverrides(cp *ControlPlane) field.ErrorList {
 	}
 	if pl := cp.Spec.Services.Placement; pl != nil {
 		check("placement", pl.DatabaseCredentialsMode, cp.DedicatedPlacementDatabase())
+	}
+	if bn := cp.Spec.Services.Barbican; bn != nil {
+		check("barbican", bn.DatabaseCredentialsMode, cp.DedicatedBarbicanDatabase())
 	}
 
 	return allErrs
@@ -2337,6 +2659,10 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("services", "placement"),
 				"forbidden when services.keystone.mode is External (Placement needs its own External-mode design)"))
 		}
+		if cp.Spec.Services.Barbican != nil {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("services", "barbican"),
+				"forbidden when services.keystone.mode is External (Barbican needs its own External-mode design)"))
+		}
 
 		return allErrs
 	}
@@ -2479,6 +2805,7 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 
 	allErrs = append(allErrs, validateDedicatedBackingServicesImmutable(oldObj, newObj)...)
 	allErrs = append(allErrs, validateServiceNamespacesImmutable(oldObj, newObj)...)
+	allErrs = append(allErrs, validateBarbicanSecretStoreImmutable(oldObj, newObj)...)
 
 	oldSecretName := oldObj.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
 	newSecretName := newObj.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
@@ -2606,6 +2933,112 @@ func serviceDeclaredBefore(oldObj *ControlPlane, declaredInSpec bool, service st
 	return false
 }
 
+// validateBarbicanSecretStoreImmutable freezes the properties of
+// services.barbican.secretStore that ADDRESS the secret material already written
+// through the store: the mode (dedicated vs external), the KV mountpoint, and —
+// on an external store — the server URL and the OpenBao namespace.
+//
+// They are frozen for the reason the BarbicanSecretStore CRD freezes its own
+// spec.openBao.kvMountpoint and instanceRef/server discriminator: material
+// written under one mount, on one server, is not reachable under another. The
+// CRD's transition rule says "delete and recreate the store instead", and it says
+// it to a human who has accepted that consequence. Without this rule the
+// reconciler is the one that acts on it — reconcileBarbicanSecretStore sees the
+// frozen-field drift, DELETES the live store, and recreates it against the new
+// mount or the new server, leaving every previously stored secret at an address
+// nobody holds any longer. A dedicated->external flip additionally strands the
+// whole OpenBao ensemble the ControlPlane provisioned: the instance, its raft PVC
+// with the secrets still in it, the seal key beside them, and the cluster-scoped
+// auth-delegator binding, none of which any convergence loop reaps once the
+// ControlPlane stops asking for a dedicated store.
+//
+// The external server ADDRESS is frozen here and nowhere else. The child CRD's
+// transition rules cover the discriminator and the mount but not
+// spec.openBao.server.url, and barbicanSecretStoreFor copies the URL straight
+// through, so barbicanSecretStoreImmutableDrift reads no drift and a new address
+// is SSA-updated into the live store in place: no delete, no recreation, no
+// condition to show for it, and from the next barbican-operator pass every store
+// and retrieve goes to the new server while the material on the old one is
+// unreachable. An identity holding nothing but `patch controlplanes` must not be
+// able to re-point a live key manager that way. The OpenBao namespace is frozen
+// on the same argument: it scopes every request, so material written under the
+// old one is not reachable under a new one.
+//
+// Only the credentials Secret and the CA bundle stay mutable: both
+// re-authenticate the SAME store against the SAME server, which is what a
+// rotation needs and what the CRD admits too.
+//
+// The freeze is gated on serviceDeclaredBefore rather than on a bare nil check,
+// for the reason its two siblings are: dropping services.barbican preserves the
+// child, the store and the whole OpenBao ensemble (nothing reaps them without the
+// deletion annotation), so a drop-and-re-add would otherwise slip a frozen
+// transition past a two-revision comparison. A re-add inside that window carries
+// no old block to compare against and is refused outright. The update that FIRST
+// declares services.barbican — on a ControlPlane that never reported it — is
+// free to name any mode, and the update that drops the service leaves nothing to
+// compare against.
+func validateBarbicanSecretStoreImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
+	oldBN, newBN := oldObj.Spec.Services.Barbican, newObj.Spec.Services.Barbican
+	if newBN == nil || !serviceDeclaredBefore(oldObj, oldBN != nil, "barbican") {
+		return nil
+	}
+
+	storePath := field.NewPath("spec", "services", "barbican", "secretStore")
+	if oldBN == nil {
+		return field.ErrorList{field.Invalid(storePath, newBN.SecretStore,
+			"the Barbican service was dropped from spec while the ControlPlane still reports it: its secret store, "+
+				"the material behind it and — on the dedicated mode — the OpenBao instance holding that material are "+
+				"all still live, and the revision that addressed them is gone, so this store cannot be checked "+
+				"against it. Wait until the ControlPlane stops reporting barbican under status.services — one "+
+				"reconcile pass after the operator observes the drop — and declare the service again then")}
+	}
+
+	var allErrs field.ErrorList
+
+	if (oldBN.SecretStore.Dedicated != nil) != (newBN.SecretStore.Dedicated != nil) {
+		allErrs = append(allErrs, field.Invalid(storePath, newBN.SecretStore,
+			"the secret-store mode (dedicated vs external) is immutable: the secret material barbican has already "+
+				"stored lives on the server the current mode names, and switching modes would re-point the store at "+
+				"a different server while stranding that material — and, leaving dedicated, the OpenBao instance and "+
+				"raft volume holding it. Delete and recreate the ControlPlane's Barbican service to change it"))
+	}
+
+	if oldMount, newMount := effectiveBarbicanKVMountpoint(oldBN), effectiveBarbicanKVMountpoint(newBN); oldMount != newMount {
+		allErrs = append(allErrs, field.Invalid(storePath.Child("external", "kvMountpoint"), newMount,
+			fmt.Sprintf("kvMountpoint is immutable (was %q): the secret material already written under the old "+
+				"mount is not reachable under a new one", oldMount)))
+	}
+
+	if oldExt, newExt := oldBN.SecretStore.External, newBN.SecretStore.External; oldExt != nil && newExt != nil {
+		if oldExt.URL != newExt.URL {
+			allErrs = append(allErrs, field.Invalid(storePath.Child("external", "url"), newExt.URL,
+				fmt.Sprintf("url is immutable (was %q): the secret material already written to the old server is "+
+					"not reachable on a new one, and the update would re-point the live store at the new address "+
+					"in place. Delete and recreate the ControlPlane's Barbican service to change it", oldExt.URL)))
+		}
+		if oldExt.Namespace != newExt.Namespace {
+			allErrs = append(allErrs, field.Invalid(storePath.Child("external", "namespace"), newExt.Namespace,
+				fmt.Sprintf("namespace is immutable (was %q): the OpenBao namespace scopes every request, so the "+
+					"secret material already written under the old one is not reachable under a new one",
+					oldExt.Namespace)))
+		}
+	}
+
+	return allErrs
+}
+
+// effectiveBarbicanKVMountpoint returns the KV mount the store projects, with the
+// external block's default filled in. A dedicated store names no mount of its own:
+// the self-init contract provisions barbican/ and the BarbicanSecretStore CRD pins
+// managed stores to it, which is the same value DefaultBarbicanKVMountpoint holds.
+func effectiveBarbicanKVMountpoint(bn *ServiceBarbicanSpec) string {
+	ext := bn.SecretStore.External
+	if ext == nil || ext.KVMountpoint == "" {
+		return DefaultBarbicanKVMountpoint
+	}
+	return ext.KVMountpoint
+}
+
 // dedicatedTransitionMessage is the single message every shared<->dedicated
 // presence freeze reports, so the sites (the per-service block and each
 // backing-service class within it, for each service) cannot drift apart.
@@ -2694,6 +3127,18 @@ func validateDedicatedBackingServicesImmutable(oldObj, newObj *ControlPlane) fie
 		} else if oldPL != nil && newPL != nil {
 			allErrs = append(allErrs, validateDedicatedDatabase(plPath.Child("database"), oldPL.Database, newPL.Database)...)
 			allErrs = append(allErrs, validateDedicatedCache(plPath.Child("cache"), oldPL.Cache, newPL.Cache)...)
+		}
+	}
+
+	if serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Barbican != nil, "barbican") {
+		bnPath := svcPath.Child("barbican", "dedicatedBackingServices")
+		oldBN := barbicanDedicatedBlock(oldObj)
+		newBN := barbicanDedicatedBlock(newObj)
+		if (oldBN == nil) != (newBN == nil) {
+			allErrs = append(allErrs, field.Invalid(bnPath, newBN, dedicatedTransitionMessage))
+		} else if oldBN != nil && newBN != nil {
+			allErrs = append(allErrs, validateDedicatedDatabase(bnPath.Child("database"), oldBN.Database, newBN.Database)...)
+			allErrs = append(allErrs, validateDedicatedCache(bnPath.Child("cache"), oldBN.Cache, newBN.Cache)...)
 		}
 	}
 
@@ -2800,6 +3245,9 @@ func validateServiceNamespacesImmutable(oldObj, newObj *ControlPlane) field.Erro
 	freeze(svcPath.Child("placement", "namespace"),
 		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Placement != nil, "placement"),
 		placementNamespaceBlock(oldObj), placementNamespaceBlock(newObj))
+	freeze(svcPath.Child("barbican", "namespace"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Barbican != nil, "barbican"),
+		barbicanNamespaceBlock(oldObj), barbicanNamespaceBlock(newObj))
 
 	return allErrs
 }
