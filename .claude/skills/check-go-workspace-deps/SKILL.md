@@ -31,7 +31,7 @@ The repo declares three things that have to agree:
 |---|---|---|
 | Workspace member set | `go.work` (`use (…)` block) | the directories listed are exactly the modules participating in workspace mode |
 | Go directive | `go.work` `go <ver>` and each `operators/<op>/go.mod` / `internal/common/go.mod` `go <ver>` | a single version string (e.g. `1.25.10`) shared across all modules |
-| Shared dependency versions | each `go.mod` `require ( … )` block — specifically the k8s.io/* and sigs.k8s.io/controller-runtime entries | identical version per module (controller-runtime, k8s.io/api, k8s.io/apimachinery, k8s.io/client-go, k8s.io/apiextensions-apiserver) |
+| Shared dependency versions | each `go.mod` `require ( … )` block — specifically the k8s.io/*, sigs.k8s.io/controller-runtime, and github.com/dc-tec/openbao-operator entries | identical version per module (controller-runtime, k8s.io/api, k8s.io/apimachinery, k8s.io/client-go, k8s.io/apiextensions-apiserver, openbao-operator) |
 | Workspace sum file | `go.work.sum` | a *tracked* file per CC-0001 REQ-009 (gitignore intentionally does *not* exclude it) |
 
 The authoritative gate is `go build ./...` from each module root, which
@@ -71,7 +71,9 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   A delta is a real toolchain hazard: the workspace uses one Go
   version, the per-module CI legs use another.
 - **W4** — for each shared dep (controller-runtime, k8s.io/api,
-  k8s.io/apimachinery, k8s.io/client-go, k8s.io/apiextensions-apiserver),
+  k8s.io/apimachinery, k8s.io/client-go, k8s.io/apiextensions-apiserver,
+  github.com/dc-tec/openbao-operator — required by both `operators/c5c3`
+  and `operators/barbican`, which register its CR types in one scheme),
   every module that requires it (direct or indirect) pins the same
   version. A divergent pin is the most common workspace drift: one
   module bumped, the others did not.
@@ -165,9 +167,10 @@ These recurring shapes are worth grepping for first:
   Apply fixes (`go get`, `go mod tidy`, edit `go.work`) as a separate,
   explicitly-scoped task.
 - The shared-dep list at the top of the script is opinionated —
-  controller-runtime + the k8s.io/* family. If forge later adds
-  another cross-cutting dep (e.g. a metrics library, a tracing
-  client), extend that list so the W4 check covers it.
+  controller-runtime, the k8s.io/* family, and the openbao-operator
+  API module. If forge later adds another cross-cutting dep (e.g. a
+  metrics library, a tracing client), extend that list so the W4
+  check covers it.
 - `go.work.sum` is intentionally tracked per CC-0001 REQ-009. Do not
   add it to `.gitignore`.
 - Pair this with [[check-renovate-coverage]] — that skill ensures

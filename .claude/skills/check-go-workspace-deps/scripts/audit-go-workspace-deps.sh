@@ -30,6 +30,7 @@ SHARED_DEPS=(
   "k8s.io/apimachinery"
   "k8s.io/client-go"
   "k8s.io/apiextensions-apiserver"
+  "github.com/dc-tec/openbao-operator"
 )
 
 if [[ ! -f go.work ]]; then
@@ -101,7 +102,10 @@ for dep in "${SHARED_DEPS[@]}"; do
   while IFS= read -r d; do
     [[ -z "${d}" ]] && continue
     [[ -f "${d}/go.mod" ]] || continue
-    v=$(grep -E "\s${dep}\s+v[0-9]" "${d}/go.mod" | head -1 | awk '{print $2}')
+    # `|| true` keeps a module that does not require the dep at all from
+    # aborting the run: under `set -o pipefail` the grep miss fails the whole
+    # pipeline, and the assignment would inherit that status.
+    v=$(grep -E "\s${dep}\s+v[0-9]" "${d}/go.mod" | head -1 | awk '{print $2}' || true)
     if [[ -z "${v}" ]]; then
       # Some modules only depend transitively; skip rather than flag.
       continue
@@ -147,7 +151,7 @@ for dep in "${SHARED_DEPS[@]}"; do
   while IFS= read -r d; do
     [[ -z "${d}" ]] && continue
     [[ -f "${d}/go.mod" ]] || { printf ' %-25s' '(no go.mod)'; continue; }
-    v=$(grep -E "\s${dep}\s+v[0-9]" "${d}/go.mod" | head -1 | awk '{print $2}')
+    v=$(grep -E "\s${dep}\s+v[0-9]" "${d}/go.mod" | head -1 | awk '{print $2}' || true)
     [[ -z "${v}" ]] && v='—'
     printf ' %-25s' "${v}"
   done <<< "${use_dirs}"
