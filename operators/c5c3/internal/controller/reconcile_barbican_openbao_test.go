@@ -342,7 +342,8 @@ func TestEnsureBarbicanOpenBao_ProjectsAccessObjects(t *testing.T) {
 
 	sa := &corev1.ServiceAccount{}
 	g.Expect(r.Get(ctx, types.NamespacedName{
-		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-provisioner"}, sa)).To(Succeed())
+		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-provisioner",
+	}, sa)).To(Succeed())
 	g.Expect(sa.AutomountServiceAccountToken).NotTo(BeNil())
 	g.Expect(*sa.AutomountServiceAccountToken).To(BeFalse(),
 		"every consumer mints a token for the instance audience explicitly")
@@ -366,7 +367,8 @@ func TestEnsureBarbicanOpenBao_ProjectsAccessObjects(t *testing.T) {
 
 	role := &rbacv1.Role{}
 	g.Expect(r.Get(ctx, types.NamespacedName{
-		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-provisioner-token"}, role)).To(Succeed())
+		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-provisioner-token",
+	}, role)).To(Succeed())
 	g.Expect(role.Rules).To(HaveLen(1))
 	g.Expect(role.Rules[0].APIGroups).To(Equal([]string{""}))
 	g.Expect(role.Rules[0].Resources).To(Equal([]string{"serviceaccounts/token"}))
@@ -376,7 +378,8 @@ func TestEnsureBarbicanOpenBao_ProjectsAccessObjects(t *testing.T) {
 
 	binding := &rbacv1.RoleBinding{}
 	g.Expect(r.Get(ctx, types.NamespacedName{
-		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-provisioner-token"}, binding)).To(Succeed())
+		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-provisioner-token",
+	}, binding)).To(Succeed())
 	g.Expect(binding.RoleRef.Kind).To(Equal("Role"))
 	g.Expect(binding.RoleRef.Name).To(Equal("cp-barbican-bao-provisioner-token"))
 	g.Expect(binding.Subjects).To(HaveLen(1))
@@ -400,7 +403,8 @@ func TestEnsureBarbicanOpenBao_HonoursOperatorIdentityOverride(t *testing.T) {
 
 	binding := &rbacv1.RoleBinding{}
 	g.Expect(r.Get(context.Background(), types.NamespacedName{
-		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-provisioner-token"}, binding)).To(Succeed())
+		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-provisioner-token",
+	}, binding)).To(Succeed())
 	g.Expect(binding.Subjects[0].Name).To(Equal("barbican-controller-manager"))
 	g.Expect(binding.Subjects[0].Namespace).To(Equal("openstack-operators"))
 
@@ -422,7 +426,8 @@ func TestEnsureBarbicanOpenBao_CreatesTenantForUnadmittedNamespace(t *testing.T)
 
 	tenant := &openbaov1alpha1.OpenBaoTenant{}
 	g.Expect(r.Get(context.Background(), types.NamespacedName{
-		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-tenant"}, tenant)).To(Succeed())
+		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-tenant",
+	}, tenant)).To(Succeed())
 	g.Expect(tenant.Spec.TargetNamespace).To(Equal(barbicanOpenBaoTestNamespace))
 	g.Expect(isControlPlaneChild(tenant, cp)).To(BeTrue())
 }
@@ -450,12 +455,14 @@ func TestEnsureBarbicanOpenBao_SkipsTenantWhenNamespaceAlreadyAdmitted(t *testin
 
 	ours := &openbaov1alpha1.OpenBaoTenant{}
 	g.Expect(r.Get(context.Background(), types.NamespacedName{
-		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-tenant"}, ours)).NotTo(Succeed(),
+		Namespace: barbicanOpenBaoTestNamespace, Name: "cp-barbican-bao-tenant",
+	}, ours)).NotTo(Succeed(),
 		"a namespace already admitted must not be admitted a second time")
 
 	after := &openbaov1alpha1.OpenBaoTenant{}
 	g.Expect(r.Get(context.Background(), types.NamespacedName{
-		Namespace: "shared-services", Name: "proving-tenant"}, after)).To(Succeed())
+		Namespace: "shared-services", Name: "proving-tenant",
+	}, after)).To(Succeed())
 	g.Expect(isControlPlaneChild(after, cp)).To(BeFalse(), "the pre-existing tenant must not be adopted")
 }
 
