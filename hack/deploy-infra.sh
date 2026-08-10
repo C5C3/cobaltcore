@@ -2563,6 +2563,17 @@ main() {
     --for=jsonpath='{.status.phase}'=Running --timeout="${POD_TIMEOUT}s"
   log "GarageCluster CR is Running."
 
+  # The openbao-operator runs multi-tenant, so its controller reconciles only in
+  # namespaces an OpenBaoTenant has admitted
+  # (deploy/kind/infrastructure/openbao-tenant.yaml). Wait for that onboarding
+  # first: in an un-admitted namespace the controller pauses silently at V(1),
+  # and the Available wait below would burn its whole timeout on a CR with an
+  # empty status.
+  log "Waiting for the OpenBaoTenant to be provisioned..."
+  kubectl wait openbaotenant/openstack -n openstack \
+    --for=jsonpath='{.status.provisioned}'=true --timeout="${POD_TIMEOUT}s"
+  log "OpenBaoTenant is provisioned."
+
   # Collect the readiness of the proving OpenBao instance un-paused above.
   log "Waiting for the OpenBaoCluster CR to become Available..."
   kubectl wait openbaocluster/openbao-instance -n openstack \
