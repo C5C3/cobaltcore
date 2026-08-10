@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"slices"
 
+	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
@@ -99,6 +101,7 @@ var subConditionTypes = []string{
 	conditionTypeHorizonReady,
 	conditionTypeGlanceReady,
 	conditionTypePlacementReady,
+	conditionTypeBarbicanReady,
 	conditionTypeKORCReady,
 	conditionTypeAdminCredentialReady,
 	conditionTypeAdminPasswordReady,
@@ -170,6 +173,11 @@ func (r *ControlPlaneReconciler) apiReader() client.Reader {
 // +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glancebackends,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=placement.openstack.c5c3.io,resources=placements,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicans,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=openbao.org,resources=openbaoclusters;openbaotenants,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings;clusterrolebindings,verbs=get;create;patch;delete
+// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,resourceNames="system:auth-delegator",verbs=bind
 // +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;projects;roles;roleassignments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores,verbs=get;list;watch
@@ -178,6 +186,7 @@ func (r *ControlPlaneReconciler) apiReader() client.Reader {
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts/token,verbs=create
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch;create;delete
 
@@ -254,14 +263,14 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// genuinely feeds the next: a later step applying before its predecessor
 	// converged would fail or wedge.
 	//
-	// The tail is a RunSequentialGroup of seven independent projections (Horizon,
-	// KORC, AdminCredential, Catalog, ServiceAccounts, Glance, Placement).
-	// Running every member on every pass is safe: every member runs each pass,
-	// its condition always persists, the members' requeues aggregate to the
-	// shortest member interval, and one member's failure no longer suppresses its
-	// peers (member errors are joined). A still-converging Horizon therefore no
+	// The tail is a RunSequentialGroup of eight independent projections (Horizon,
+	// KORC, AdminCredential, Catalog, ServiceAccounts, Glance, Placement,
+	// Barbican). Running every member on every pass is safe: every member runs
+	// each pass, its condition always persists, the members' requeues aggregate to
+	// the shortest member interval, and one member's failure no longer suppresses
+	// its peers (member errors are joined). A still-converging Horizon therefore no
 	// longer parks KORC, the AdminCredential/Catalog/ServiceAccounts identity
-	// bootstrap, Glance, or Placement.
+	// bootstrap, Glance, Placement, or Barbican.
 	//
 	// Correctness rests on each member gating itself on the conditions it
 	// consumes rather than on its position in the chain — the prefix's
@@ -273,7 +282,7 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	//
 	// Onboarding rule: a future service whose projection is independent of the
 	// others joins the tail group rather than the blocking prefix — and MUST
-	// carry its own condition gate, following the six gated members rather than
+	// carry its own condition gate, following the seven gated members rather than
 	// KORC.
 	//
 	// Either phase's outcome funnels through updateStatus, so conditions and
@@ -354,6 +363,16 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				// against the Keystone child.
 				{Name: "Placement", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcilePlacement(ctx, &cp)
+				}},
+				// Barbican is gated exactly like Glance and Placement: on the
+				// barbican service account's per-account readiness, which
+				// reconcileServiceAccounts computes into status in this same
+				// pass, and on KeystoneReady — Barbican validates tokens
+				// against the Keystone child. It carries one gate the others
+				// do not: on a dedicated secret store it holds the projection
+				// until the OpenBao instance it provisions serves requests.
+				{Name: "Barbican", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileBarbican(ctx, &cp)
 				}},
 			})
 		}},
@@ -473,6 +492,10 @@ const glanceServiceKey = "glance"
 // Placement service.
 const placementServiceKey = "placement"
 
+// barbicanServiceKey is the key under which status.services reports the Barbican
+// key manager.
+const barbicanServiceKey = "barbican"
+
 // setServicesStatus records status.services and status.updatePhase on every
 // status write (#476). Both fields were declared on ControlPlaneStatus but never
 // written. status.updatePhase is fixed at Idle until the release-update state
@@ -487,9 +510,13 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 	// ControlPlane (spec.services.keystone set). When unset the ControlPlane
 	// manages no Keystone, so status.services stays empty rather than reporting a
 	// service that does not exist.
-	// One entry per configured service (keystone, horizon, glance, placement), in
-	// a stable order; unmanaged services are omitted rather than reported as a
-	// service that does not exist.
+	// One entry per configured service (keystone, horizon, glance, placement,
+	// barbican), in a stable order; unmanaged services are omitted rather than
+	// reported as a service that does not exist. The entry NAMES carry beyond
+	// status: the webhook's shared/dedicated transition freeze reads
+	// status.services[].name to tell a service's CREATE from a service dropped and
+	// re-added (serviceDeclaredBefore), so a service missing an arm here is a
+	// service the freeze cannot see.
 	var services []c5c3v1alpha1.ServiceStatus
 	if cp.Spec.Services.Keystone != nil {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
@@ -516,6 +543,13 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 		services = append(services, c5c3v1alpha1.ServiceStatus{
 			Name:    placementServiceKey,
 			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypePlacementReady),
+			Release: cp.Spec.OpenStackRelease,
+		})
+	}
+	if cp.Spec.Services.Barbican != nil {
+		services = append(services, c5c3v1alpha1.ServiceStatus{
+			Name:    barbicanServiceKey,
+			Ready:   conditions.AllTrue(cp.Status.Conditions, conditionTypeBarbicanReady),
 			Release: cp.Spec.OpenStackRelease,
 		})
 	}
@@ -854,9 +888,10 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b
 		// other's objects. The Namespace leg installs a cluster-wide Namespace
 		// informer, so the predicate is what keeps that informer from waking the
 		// mapper on every namespace event in the cluster. (The Keystone, Horizon,
-		// Glance, GlanceBackend and Placement cross-namespace legs belong to this
-		// group too but are registered under the discovery guard below, co-located
-		// with their Owns.)
+		// Glance, GlanceBackend, Placement, Barbican, BarbicanSecretStore,
+		// OpenBaoCluster and OpenBaoTenant cross-namespace legs belong to this group
+		// too but are registered under the discovery guard below, co-located with
+		// their Owns.)
 		Watches(&mariadbv1alpha1.MariaDB{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
 		Watches(memcached, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
 		Watches(&esov1.ExternalSecret{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
@@ -866,16 +901,22 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b
 		Watches(&corev1.Namespace{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate()))
 
 	// Guarded legs: kinds owned by a sibling operator whose CRD may be absent.
-	// For each service-operator kind both its Owns leg and its cross-namespace
-	// Watches leg (see the cross-namespace block above) are co-located under one
-	// guard because both informers target the same CRD and both would block
-	// manager start when it is not served.
+	// For each such kind both its Owns leg and its cross-namespace Watches leg (see
+	// the cross-namespace block above) are co-located under one guard because both
+	// informers target the same CRD and both would block manager start when it is
+	// not served. The two openbao.org kinds join them: the openbao-operator is
+	// installed only for a Barbican that takes a dedicated secret store, so a
+	// ControlPlane without one runs on a cluster that never served them.
 	for _, obj := range []client.Object{
 		&keystonev1alpha1.Keystone{},
 		&horizonv1alpha1.Horizon{},
 		&glancev1alpha1.Glance{},
 		&glancev1alpha1.GlanceBackend{},
 		&placementv1alpha1.Placement{},
+		&barbicanv1alpha1.Barbican{},
+		&barbicanv1alpha1.BarbicanSecretStore{},
+		&openbaov1alpha1.OpenBaoCluster{},
+		&openbaov1alpha1.OpenBaoTenant{},
 	} {
 		if isServed(obj) {
 			b = b.Owns(obj).

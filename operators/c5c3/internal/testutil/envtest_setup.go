@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"testing"
 
+	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
@@ -22,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	commonenvtest "github.com/c5c3/forge/internal/common/testutil/envtest"
+	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -100,21 +102,22 @@ func SetupC5c3EnvTestWithControllerAndCRDs(
 // crdDirectoryPaths returns the absolute CRD directories envtest loads for a
 // ControlPlane integration test, resolved relative to this
 // source file via runtime.Caller(0):
-//   - the sibling service-operator CRDs (Keystone, Horizon, Glance, Placement —
-//     and with them GlanceBackend and KeystoneIdentityBackend) the reconciler Owns
-//     as children.
+//   - the sibling service-operator CRDs (Keystone, Horizon, Glance, Placement,
+//     Barbican — and with them GlanceBackend, KeystoneIdentityBackend and
+//     BarbicanSecretStore) the reconciler Owns as children.
 //   - BaselineCRDDirectoryPaths(): the c5c3 CRDs plus every shared fake CRD dir
 //     (mariadb-operator, memcached-operator, external-secrets, cert-manager,
-//     k-orc, ...) so the external operator kinds the reconciler create-or-updates
-//     resolve in the apiserver RESTMapper.
+//     k-orc, openbao-operator, ...) so the external operator kinds the reconciler
+//     create-or-updates resolve in the apiserver RESTMapper.
 func crdDirectoryPaths() []string {
 	base := callerDir()
 	keystoneCRDDir := filepath.Join(base, "..", "..", "..", "keystone", "config", "crd", "bases")
 	horizonCRDDir := filepath.Join(base, "..", "..", "..", "horizon", "config", "crd", "bases")
 	glanceCRDDir := filepath.Join(base, "..", "..", "..", "glance", "config", "crd", "bases")
 	placementCRDDir := filepath.Join(base, "..", "..", "..", "placement", "config", "crd", "bases")
+	barbicanCRDDir := filepath.Join(base, "..", "..", "..", "barbican", "config", "crd", "bases")
 
-	dirs := []string{keystoneCRDDir, horizonCRDDir, glanceCRDDir, placementCRDDir}
+	dirs := []string{keystoneCRDDir, horizonCRDDir, glanceCRDDir, placementCRDDir, barbicanCRDDir}
 	return append(dirs, BaselineCRDDirectoryPaths()...)
 }
 
@@ -125,14 +128,18 @@ func crdDirectoryPaths() []string {
 //   - c5c3 CRDs (controlplanes, credentialrotations, secretaggregates).
 //   - every shared fake CRD dir under internal/common/testutil/fake_crds/*.
 //
-// The sibling service-operator CRDs (Keystone, Horizon, Glance, Placement — and
-// with them GlanceBackend and KeystoneIdentityBackend) are DELIBERATELY absent, so
-// tests can prove the ControlPlane controller starts when those kinds are unserved.
-// K-ORC IS served — its fake CRDs are part of the common fake dirs — because the
-// K-ORC kinds are Owned unconditionally as hard dependencies (see optionalWatchObjects
-// in crd_presence.go): the manager would fail to start without them. Tests therefore
-// exercise the intended partial state — the guarded sibling service-operator legs are
-// skipped while every unconditional infrastructure leg, K-ORC included, stays wired.
+// The sibling service-operator CRDs (Keystone, Horizon, Glance, Placement, Barbican
+// — and with them GlanceBackend, KeystoneIdentityBackend and BarbicanSecretStore)
+// are DELIBERATELY absent, so tests can prove the ControlPlane controller starts
+// when those kinds are unserved. K-ORC IS served — its fake CRDs are part of the
+// common fake dirs — because the K-ORC kinds are Owned unconditionally as hard
+// dependencies (see optionalWatchObjects in crd_presence.go): the manager would fail
+// to start without them. The two openbao.org kinds ARE served too, since their fake
+// CRDs ship in those same common dirs, so the baseline also covers the mixed case a
+// guarded leg has to survive: some optional CRDs installed, others not. Tests
+// therefore exercise the intended partial state — the guarded service-operator legs
+// are skipped while every unconditional infrastructure leg, K-ORC included, stays
+// wired.
 func BaselineCRDDirectoryPaths() []string {
 	c5c3CRDDir := filepath.Join(callerDir(), "..", "..", "config", "crd", "bases")
 
@@ -183,6 +190,8 @@ func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8srunti
 		horizonv1alpha1.AddToScheme,
 		glancev1alpha1.AddToScheme,
 		placementv1alpha1.AddToScheme,
+		barbicanv1alpha1.AddToScheme,
+		openbaov1alpha1.AddToScheme,
 		esov1.AddToScheme,
 		esov1alpha1.AddToScheme,
 		esgenv1alpha1.AddToScheme,

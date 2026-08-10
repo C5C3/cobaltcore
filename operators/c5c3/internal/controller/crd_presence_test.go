@@ -14,10 +14,12 @@ import (
 	"testing"
 	"time"
 
+	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -30,24 +32,26 @@ import (
 )
 
 // The GroupVersions referenced by the presence-probe tests. keystone, horizon,
-// glance and placement are the sibling-operator groups SetupWithManager probes for;
-// orc is the hard-dependency group TestOptionalWatchObjects_ExcludesKORC asserts never
-// appears in the optional set. Verified against the api packages' GroupVersion /
-// GroupName before hardcoding here.
+// glance, placement and barbican are the sibling-operator groups SetupWithManager
+// probes for, and openbao is the third-party group a dedicated Barbican secret store
+// is built from; orc is the hard-dependency group TestOptionalWatchObjects_ExcludesKORC
+// asserts never appears in the optional set. Verified against the api packages'
+// GroupVersion / GroupName before hardcoding here.
 var (
 	keystoneGV  = schema.GroupVersion{Group: "keystone.openstack.c5c3.io", Version: "v1alpha1"}
 	horizonGV   = schema.GroupVersion{Group: "horizon.openstack.c5c3.io", Version: "v1alpha1"}
 	glanceGV    = schema.GroupVersion{Group: "glance.openstack.c5c3.io", Version: "v1alpha1"}
 	placementGV = schema.GroupVersion{Group: "placement.openstack.c5c3.io", Version: "v1alpha1"}
+	barbicanGV  = schema.GroupVersion{Group: "barbican.openstack.c5c3.io", Version: "v1alpha1"}
+	openbaoGV   = schema.GroupVersion{Group: "openbao.org", Version: "v1alpha1"}
 	orcGV       = schema.GroupVersion{Group: "openstack.k-orc.cloud", Version: "v1alpha1"}
 )
 
-// optionalWatchTestScheme registers the sibling-operator API groups the presence probe
-// resolves GVKs against (keystone, horizon, glance, placement) plus K-ORC, which
+// optionalWatchTestScheme registers the API groups the presence probe resolves GVKs
+// against (keystone, horizon, glance, placement, barbican, openbao) plus K-ORC, which
 // TestOptionalWatchObjects_ExcludesKORC needs registered to prove no K-ORC kind is
 // listed as an optional watch. controllerTestScheme registers only c5c3 + client-go,
-// so it cannot resolve Keystone/Horizon/Glance/Placement/K-ORC kinds; this helper
-// adds them.
+// so it cannot resolve any of those kinds; this helper adds them.
 func optionalWatchTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -59,6 +63,8 @@ func optionalWatchTestScheme(t *testing.T) *runtime.Scheme {
 		{"horizon", horizonv1alpha1.AddToScheme},
 		{"glance", glancev1alpha1.AddToScheme},
 		{"placement", placementv1alpha1.AddToScheme},
+		{"barbican", barbicanv1alpha1.AddToScheme},
+		{"openbao", openbaov1alpha1.AddToScheme},
 		{"orc", orcv1alpha1.AddToScheme},
 	}
 	for _, a := range adders {
@@ -210,13 +216,15 @@ func TestServedKindsForGroupVersion_UpstreamError(t *testing.T) {
 
 // --- probeOptionalWatches ---
 
-// serveAllOptionalKinds populates the stub with every optional kind across the four
-// sibling-operator GroupVersions, matching optionalWatchObjects.
+// serveAllOptionalKinds populates the stub with every optional kind across the six
+// GroupVersions, matching optionalWatchObjects.
 func serveAllOptionalKinds(f *fakeServerResources) {
 	f.serve(keystoneGV, "Keystone", "KeystoneIdentityBackend")
 	f.serve(horizonGV, "Horizon")
 	f.serve(glanceGV, "Glance", "GlanceBackend")
 	f.serve(placementGV, "Placement")
+	f.serve(barbicanGV, "Barbican", "BarbicanSecretStore")
+	f.serve(openbaoGV, "OpenBaoCluster", "OpenBaoTenant")
 }
 
 func TestProbeOptionalWatches_AllServed(t *testing.T) {
@@ -228,7 +236,7 @@ func TestProbeOptionalWatches_AllServed(t *testing.T) {
 	served, missing, err := probeOptionalWatches(disco, optionalWatchTestScheme(t))
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(missing).To(BeEmpty(), "no CRD is missing when every group is served")
-	g.Expect(served).To(HaveLen(6), "all 6 optional kinds must be recorded")
+	g.Expect(served).To(HaveLen(10), "all 10 optional kinds must be recorded")
 	for gvk, ok := range served {
 		g.Expect(ok).To(BeTrue(), "expected %s to be served", gvk)
 	}
@@ -237,8 +245,8 @@ func TestProbeOptionalWatches_AllServed(t *testing.T) {
 func TestProbeOptionalWatches_SubsetServed(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	// keystone group served but without KeystoneIdentityBackend; horizon, glance and
-	// placement groups entirely absent.
+	// keystone group served but without KeystoneIdentityBackend; horizon, glance,
+	// placement, barbican and openbao groups entirely absent.
 	disco := newFakeServerResources()
 	disco.serve(keystoneGV, "Keystone")
 
@@ -251,17 +259,50 @@ func TestProbeOptionalWatches_SubsetServed(t *testing.T) {
 		glanceGV.WithKind("GlanceBackend"),
 		keystoneGV.WithKind("KeystoneIdentityBackend"),
 		placementGV.WithKind("Placement"),
+		barbicanGV.WithKind("Barbican"),
+		barbicanGV.WithKind("BarbicanSecretStore"),
+		openbaoGV.WithKind("OpenBaoCluster"),
+		openbaoGV.WithKind("OpenBaoTenant"),
 	), "exactly the uninstalled kinds must be reported missing")
 
-	g.Expect(served).To(HaveLen(6))
+	g.Expect(served).To(HaveLen(10))
 	// The one served kind is marked true.
 	g.Expect(served[keystoneGV.WithKind("Keystone")]).To(BeTrue())
-	// The five missing kinds are marked false.
+	// The nine missing kinds are marked false.
 	g.Expect(served[horizonGV.WithKind("Horizon")]).To(BeFalse())
 	g.Expect(served[glanceGV.WithKind("Glance")]).To(BeFalse())
 	g.Expect(served[glanceGV.WithKind("GlanceBackend")]).To(BeFalse())
 	g.Expect(served[keystoneGV.WithKind("KeystoneIdentityBackend")]).To(BeFalse())
 	g.Expect(served[placementGV.WithKind("Placement")]).To(BeFalse())
+	g.Expect(served[barbicanGV.WithKind("Barbican")]).To(BeFalse())
+	g.Expect(served[barbicanGV.WithKind("BarbicanSecretStore")]).To(BeFalse())
+	g.Expect(served[openbaoGV.WithKind("OpenBaoCluster")]).To(BeFalse())
+	g.Expect(served[openbaoGV.WithKind("OpenBaoTenant")]).To(BeFalse())
+}
+
+// TestProbeOptionalWatches_BarbicanWithoutOpenBao covers the partial install a
+// Barbican on an EXTERNAL secret store produces: the barbican CRDs are served but
+// the openbao-operator was never installed, because no dedicated instance is
+// provisioned. Each group must classify on its own, so the barbican legs register
+// while the two openbao legs are skipped and reported for the restart gate.
+func TestProbeOptionalWatches_BarbicanWithoutOpenBao(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	disco := newFakeServerResources()
+	disco.serve(keystoneGV, "Keystone", "KeystoneIdentityBackend")
+	disco.serve(horizonGV, "Horizon")
+	disco.serve(glanceGV, "Glance", "GlanceBackend")
+	disco.serve(placementGV, "Placement")
+	disco.serve(barbicanGV, "Barbican", "BarbicanSecretStore")
+
+	served, missing, err := probeOptionalWatches(disco, optionalWatchTestScheme(t))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(missing).To(ConsistOf(
+		openbaoGV.WithKind("OpenBaoCluster"),
+		openbaoGV.WithKind("OpenBaoTenant"),
+	), "only the openbao kinds may be reported missing")
+	g.Expect(served[barbicanGV.WithKind("Barbican")]).To(BeTrue())
+	g.Expect(served[barbicanGV.WithKind("BarbicanSecretStore")]).To(BeTrue())
 }
 
 func TestProbeOptionalWatches_DiscoveryError(t *testing.T) {
@@ -297,7 +338,7 @@ func TestProbeOptionalWatches_TransientErrorRetries(t *testing.T) {
 	served, missing, err := probeOptionalWatches(disco, optionalWatchTestScheme(t))
 	g.Expect(err).NotTo(HaveOccurred(), "a single transient blip must not abort the startup probe")
 	g.Expect(missing).To(BeEmpty())
-	g.Expect(served).To(HaveLen(6))
+	g.Expect(served).To(HaveLen(10))
 	for gvk, ok := range served {
 		g.Expect(ok).To(BeTrue(), "expected %s to be served after the blip cleared", gvk)
 	}
@@ -306,15 +347,15 @@ func TestProbeOptionalWatches_TransientErrorRetries(t *testing.T) {
 func TestProbeOptionalWatches_FetchesEachGroupVersionOnce(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	// The 6 optional kinds span only four GroupVersions, so the probe must query
-	// discovery four times, not once per kind.
+	// The 10 optional kinds span only six GroupVersions, so the probe must query
+	// discovery six times, not once per kind.
 	disco := newFakeServerResources()
 	serveAllOptionalKinds(disco)
 
 	_, _, err := probeOptionalWatches(disco, optionalWatchTestScheme(t))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(disco.calls()).To(Equal(4),
-		"each of the four GroupVersions must be queried exactly once, not per kind")
+	g.Expect(disco.calls()).To(Equal(6),
+		"each of the six GroupVersions must be queried exactly once, not per kind")
 }
 
 // --- optionalWatchObjects ---
