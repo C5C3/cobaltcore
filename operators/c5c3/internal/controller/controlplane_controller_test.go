@@ -207,6 +207,54 @@ func TestSetServicesStatus_PlacementEntry(t *testing.T) {
 	g.Expect(cp.Status.Services[2].Name).To(Equal("glance"))
 }
 
+// TestSetServicesStatus_BarbicanEntry extends the status projection to the fifth
+// service: services.barbican produces a "barbican" entry whose readiness tracks the
+// BarbicanReady sub-condition, and an unmanaged Barbican is omitted. The entry is
+// appended LAST, so the four established positions keep their meaning.
+func TestSetServicesStatus_BarbicanEntry(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := &c5c3v1alpha1.ControlPlane{
+		ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+		Spec: c5c3v1alpha1.ControlPlaneSpec{
+			OpenStackRelease: "2025.2",
+			Services: c5c3v1alpha1.ServicesSpec{
+				Keystone:  &c5c3v1alpha1.ServiceKeystoneSpec{},
+				Horizon:   &c5c3v1alpha1.ServiceHorizonSpec{},
+				Glance:    &c5c3v1alpha1.ServiceGlanceSpec{},
+				Placement: &c5c3v1alpha1.ServicePlacementSpec{},
+				Barbican:  &c5c3v1alpha1.ServiceBarbicanSpec{},
+			},
+		},
+	}
+
+	setServicesStatus(cp)
+	g.Expect(cp.Status.Services).To(HaveLen(5))
+	// Stable order: keystone, horizon, glance, placement, barbican.
+	g.Expect(cp.Status.Services[4].Name).To(Equal("barbican"))
+	g.Expect(cp.Status.Services[4].Ready).To(BeFalse(),
+		"barbican is not Ready while BarbicanReady is absent")
+	g.Expect(cp.Status.Services[4].Release).To(Equal("2025.2"))
+
+	// BarbicanReady True flips only the barbican entry.
+	conditions.SetCondition(&cp.Status.Conditions, trueCondition(conditionTypeBarbicanReady))
+	setServicesStatus(cp)
+	barbican := findServiceStatus(cp.Status.Services, "barbican")
+	g.Expect(barbican).NotTo(BeNil())
+	g.Expect(barbican.Ready).To(BeTrue())
+	g.Expect(findServiceStatus(cp.Status.Services, "placement").Ready).To(BeFalse(),
+		"BarbicanReady must not flip a peer service entry")
+
+	// An unmanaged barbican is omitted rather than reported, and the remaining
+	// entries keep their positions. The webhook's shared/dedicated transition
+	// freeze reads status.services[].name, so a dropped service disappearing from
+	// the list is what eventually reopens its CREATE path (serviceDeclaredBefore).
+	cp.Spec.Services.Barbican = nil
+	setServicesStatus(cp)
+	g.Expect(cp.Status.Services).To(HaveLen(4))
+	g.Expect(findServiceStatus(cp.Status.Services, "barbican")).To(BeNil())
+	g.Expect(cp.Status.Services[3].Name).To(Equal("placement"))
+}
+
 // findServiceStatus returns a pointer to the ServiceStatus entry with the given
 // name, or nil when the listType=map status.services list has no such entry.
 func findServiceStatus(services []c5c3v1alpha1.ServiceStatus, name string) *c5c3v1alpha1.ServiceStatus {

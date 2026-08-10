@@ -29,6 +29,7 @@ var subReconcilerConditionTypes = map[string]string{
 	"Horizon":         conditionTypeHorizonReady,
 	"Glance":          conditionTypeGlanceReady,
 	"Placement":       conditionTypePlacementReady,
+	"Barbican":        conditionTypeBarbicanReady,
 	"KORC":            conditionTypeKORCReady,
 	"AdminCredential": conditionTypeAdminCredentialReady,
 	"AdminPassword":   conditionTypeAdminPasswordReady,
