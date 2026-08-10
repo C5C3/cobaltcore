@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE of the accepted dedicated base onto an external store is rejected. The
+# secret material barbican has already written lives on the server the current
+# mode names, and the BarbicanSecretStore CRD freezes the instanceRef/server
+# discriminator for exactly that reason. Without the ControlPlane-side freeze the
+# reconciler would answer the drift by deleting and recreating the store against
+# the new server, stranding that material together with the OpenBao instance, its
+# raft volume, and its seal key. dedicated is explicitly nulled, not merely
+# omitted: Chainsaw applies an UPDATE as an RFC 7386 JSON merge patch, so an
+# omitted dedicated would be RETAINED from the base, and the resulting
+# both-modes shape would trip the CEL union rule (exactly one of dedicated or
+# external) at CRD validation, before the webhook's mode freeze ever runs.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-transition-e
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    barbican:
+      secretStore:
+        dedicated: null
+        external:
+          url: https://openbao.example.com:8200
+          credentialsSecretRef:
+            name: barbican-approle
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

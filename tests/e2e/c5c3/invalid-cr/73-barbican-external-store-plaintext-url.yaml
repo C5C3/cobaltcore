@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.barbican.secretStore.external.url without an https scheme violates the
+# CRD pattern (^https://), which is stricter than the ^https?:// the endpoint
+# fields carry: the operator's AppRole login and every secret barbican stores
+# travel this URL, so a plaintext scheme would put the role ID, the secret ID, and
+# the keys and certificates the service exists to protect on the wire in the
+# clear. The webhook mirrors the pattern.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-barbican-store-plaintext-url
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    barbican:
+      secretStore:
+        external:
+          url: http://openbao.example.com:8200
+          credentialsSecretRef:
+            name: barbican-approle
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

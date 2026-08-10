@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.barbican.publicEndpoint must name the same host as
+# services.barbican.gateway.hostname. The Gateway listener is what routes that
+# hostname to the Barbican API, so a divergent host advertises a catalog endpoint
+# that never reaches it. The value is projected into no child CR, so this webhook
+# is the only gate on the URL every client resolves to store and read its secret
+# material. The endpoint keeps the https scheme the gateway rule also demands, so
+# the ONLY violation is the host.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-barbican-endpoint-mismatch
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    barbican:
+      secretStore:
+        dedicated: {}
+      gateway:
+        hostname: barbican.example.com
+        parentRef:
+          name: openstack-gw
+      publicEndpoint: https://secrets.example.com
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

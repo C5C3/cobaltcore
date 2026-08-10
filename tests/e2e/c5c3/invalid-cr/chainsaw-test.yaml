@@ -616,6 +616,75 @@ spec:
             ($error != null): true
             (contains($error, 'services.placement.databaseCredentialsMode')): true
             (contains($error, 'Dynamic is not supported as an override on a service with a dedicated database')): true
+    # services.barbican in External mode is rejected by the webhook (cross-field,
+    # mirrors services.glance and services.placement): no Keystone workload is
+    # deployed, so Barbican needs its own External-mode design.
+    - apply:
+        file: 70-external-with-barbican.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.barbican')): true
+            (contains($error, 'forbidden when services.keystone.mode is External')): true
+    # services.barbican.secretStore must name exactly one mode (CEL union rule):
+    # dedicated and external address different servers with different credentials,
+    # so a block naming both leaves the projection nothing to resolve.
+    - apply:
+        file: 71-barbican-secret-store-both-modes.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.barbican.secretStore')): true
+            (contains($error, 'exactly one of dedicated or external must be set')): true
+    # The other side of the same union rule: a store naming neither mode would
+    # project a Barbican that parks on SecretStoresReady=False forever.
+    - apply:
+        file: 72-barbican-secret-store-no-mode.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.barbican.secretStore')): true
+            (contains($error, 'exactly one of dedicated or external must be set')): true
+    # An external secret store must be addressed over https (CRD pattern, stricter
+    # than the ^https?:// the endpoint fields carry): the AppRole login and every
+    # secret barbican stores travel that URL.
+    - apply:
+        file: 73-barbican-external-store-plaintext-url.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.barbican.secretStore.external.url')): true
+            (contains($error, 'should match')): true
+    # An empty credentialsSecretRef.name is rejected by the SecretNameRefSpec
+    # MinLength marker, which answers before the webhook mirror does: the external
+    # store authenticates with the AppRole credentials that Secret holds.
+    - apply:
+        file: 74-barbican-external-store-empty-credentials-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.barbican.secretStore.external.credentialsSecretRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
+    # services.barbican.publicEndpoint must name the same host as the gateway
+    # (webhook-only): the listener routes that hostname to the Barbican API, so a
+    # divergent host advertises a catalog endpoint that never reaches it.
+    - apply:
+        file: 75-barbican-public-endpoint-host-mismatch.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.barbican.publicEndpoint')): true
+            (contains($error, 'must equal services.barbican.gateway.hostname')): true
+    # databaseCredentialsMode Dynamic on the Barbican service with a DEDICATED
+    # database is rejected by the webhook, mirroring the keystone, glance, and
+    # placement cases above.
+    - apply:
+        file: 76-barbican-override-dynamic-on-dedicated.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.barbican.databaseCredentialsMode')): true
+            (contains($error, 'Dynamic is not supported as an override on a service with a dedicated database')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -706,3 +775,27 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'the namespace a service is placed in is immutable')): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  # Own ephemeral namespace so the accepted base persists (see the sibling
+  # transition waves).
+  name: c5c3-invalid-cr-barbican-store-freeze
+spec:
+  steps:
+  - try:
+    # Base CR (Managed, Barbican on the dedicated secret store the operator
+    # provisions) must be admitted.
+    - apply:
+        file: 77-transition-base-barbican-dedicated.yaml
+    # Flipping the live store onto an external server is rejected: the secret
+    # material already written lives on the server the current mode names, and
+    # the flip would both re-point the store at a different server and strand the
+    # OpenBao instance, its raft volume, and its seal key behind it.
+    - apply:
+        file: 78-transition-barbican-store-to-external.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'secret-store mode (dedicated vs external) is immutable')): true

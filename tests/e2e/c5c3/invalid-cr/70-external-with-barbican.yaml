@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.barbican set in External mode is forbidden by the webhook (cross-field,
+# mirrors services.glance and services.placement): Barbican needs its own
+# External-mode design. The barbican block is the minimal valid one (a dedicated
+# secret store), so the ONLY violation is the cross-field forbid.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-external-with-barbican
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: https://keystone.example.com/v3
+    barbican:
+      secretStore:
+        dedicated: {}
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
