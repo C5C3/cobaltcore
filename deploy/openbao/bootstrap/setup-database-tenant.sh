@@ -261,15 +261,12 @@ main() {
   # defaultPlacementDatabaseName in
   # operators/c5c3/internal/controller/reconcile_<service>.go.
   #
-  # BARBICAN HAS NO COUNTERPART YET, deliberately. The c5c3 operator carries no
-  # barbican reconciler and the ControlPlane API has no spec.services.barbican,
-  # so the presence gate below always skips this leg on a live CR — it is the
-  # engine half of the onboarding, pre-wired next to the presence-independent
-  # barbican-db auth role in setup-auth.sh. What it fixes for the reconciler that
-  # lands later is the contract, not the behaviour: the schema is 'barbican' and
-  # the role is barbican-<namespace>, and the c5c3-side constants have to be
-  # written to match. Until then only the mocked-CR unit tests in
-  # tests/unit/deploy/service_namespace_seeding_test.sh reach this iteration.
+  # MUST STAY IN SYNC (barbican): the barbican-<namespace> role name below is the
+  # derivation barbicanDBDynamicRoleFor asserts in
+  # operators/c5c3/internal/controller/reconcile_barbican_dbcredentials.go, and the
+  # schema is the fixed 'barbican' one. This leg is the engine half of the barbican
+  # onboarding, next to the presence-independent barbican-db auth role in
+  # setup-auth.sh.
   local svc svc_ns svc_mariadb
   for svc in glance placement barbican; do
     if [[ -z "$(get_controlplane_field "{.spec.services.${svc}}" '')" ]]; then
