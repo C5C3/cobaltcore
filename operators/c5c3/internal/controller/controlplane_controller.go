@@ -69,6 +69,7 @@ const (
 	conditionTypeHorizonReady         = "HorizonReady"
 	conditionTypeGlanceReady          = "GlanceReady"
 	conditionTypePlacementReady       = "PlacementReady"
+	conditionTypeBarbicanReady        = "BarbicanReady"
 	conditionTypeKORCReady            = "KORCReady"
 	conditionTypeAdminCredentialReady = "AdminCredentialReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeAdminPasswordReady   = "AdminPasswordReady"   //nolint:gosec // G101 false positive: condition type name, not a credential.

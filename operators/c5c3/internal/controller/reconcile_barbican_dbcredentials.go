@@ -21,13 +21,6 @@ import (
 // service-agnostic ones in reconcile_dbcredentials.go, driven by the
 // dbCredentialTarget this file constructs.
 
-// The projected Barbican CR is named "{controlplane.Name}-barbican" — the same
-// deterministic, collision-free naming convention as the Keystone, Horizon,
-// Glance, and Placement children (see keystoneNameSuffix) — and lives in
-// cp.BarbicanNamespace(): the ControlPlane's own namespace by default, or the one
-// services.barbican.namespace assigns.
-const barbicanNameSuffix = "-barbican"
-
 const (
 	// barbicanDBDynamicVaultRole is the OpenBao Kubernetes-auth role the Barbican
 	// generator authenticates against (see deploy/openbao/bootstrap/setup-auth.sh);
@@ -44,12 +37,6 @@ const (
 	// for every service namespace.
 	barbicanDBCredentialServiceAccountName = "barbican-db-creds" //nolint:gosec // G101 false positive: ServiceAccount name, not a credential.
 )
-
-// barbicanName returns the deterministic name of the Barbican CR projected from
-// the given ControlPlane (see barbicanNameSuffix).
-func barbicanName(cp *c5c3v1alpha1.ControlPlane) string {
-	return cp.Name + barbicanNameSuffix
-}
 
 // barbicanDBCredentialSecretName returns the deterministic name of the
 // per-ControlPlane Barbican DB-credential Secret/ExternalSecret. It tracks the
