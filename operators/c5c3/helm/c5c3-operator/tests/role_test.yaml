@@ -41,7 +41,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should have 24 rules matching ClusterRole
+  - it: should have 30 rules matching ClusterRole
     set:
       rbac:
         namespaceScoped: true
@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 24
+          count: 30
 
   - it: should grant full CRUD on controlplanes
     set:
@@ -299,6 +299,75 @@ tests:
               - update
               - patch
               - delete
+
+  # The rules partial is shared with the ClusterRole, so the cluster-scoped
+  # clusterrolebindings entry rides along into the Role, where it grants
+  # nothing, the same way the existing namespaces and clustersecretstores
+  # entries do. Namespace-scoped mode therefore cannot serve a ControlPlane
+  # whose Barbican secret store is managed; roles and rolebindings, which the
+  # TokenRequest grant actually needs, are namespaced and do take effect.
+  - it: should grant get/create/patch/delete on roles and rolebindings
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - roles
+              - rolebindings
+            verbs:
+              - get
+              - create
+              - patch
+              - delete
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - clusterrolebindings
+            verbs:
+              - get
+              - create
+              - patch
+              - delete
+
+  # bind is checked against the namespace of the RoleBinding being created, so
+  # this rule stays effective in a Role, but only for the one name it lists.
+  - it: should grant bind on system:auth-delegator only
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - clusterroles
+            resourceNames:
+              - system:auth-delegator
+            verbs:
+              - bind
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - clusterroles
+            verbs:
+              - bind
 
   - it: should grant full CRUD on k-orc applicationcredentials, services, endpoints, users, domains, projects, roles, roleassignments
     set:

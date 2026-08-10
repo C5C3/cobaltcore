@@ -241,6 +241,44 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --zap-devel=true
 
+  # barbican-operator identity environment tests.
+  - it: should render the barbican-operator identity env from the defaults
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env
+          value:
+            - name: BARBICAN_OPERATOR_NAMESPACE
+              value: barbican-system
+            - name: BARBICAN_OPERATOR_SERVICE_ACCOUNT
+              value: barbican-operator
+
+  - it: should render an overridden barbican-operator identity
+    set:
+      barbicanOperator:
+        namespace: openstack
+        serviceAccount: barbican-controller-manager
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BARBICAN_OPERATOR_NAMESPACE
+            value: openstack
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BARBICAN_OPERATOR_SERVICE_ACCOUNT
+            value: barbican-controller-manager
+
+  # The env block is gated on the whole barbicanOperator key so the sibling
+  # operator charts, which never set it, keep rendering an env-less container.
+  # Nulling it here reproduces that render.
+  - it: should render no env block when barbicanOperator is unset
+    set:
+      barbicanOperator: null
+    asserts:
+      - isNull:
+          path: spec.template.spec.containers[0].env
+
   - it: should spread replicas across nodes best-effort
     asserts:
       - equal:

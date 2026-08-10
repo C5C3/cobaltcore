@@ -1,10 +1,11 @@
 # ClusterRole RBAC rules unit tests.
 # Rules mirror the +kubebuilder:rbac markers on the ControlPlane and
 # CredentialRotation reconcilers (deduplicated), plus the leases rule for
-# leader election — 24 rules total (clustersecretstores read-only and
+# leader election — 30 rules total (clustersecretstores read-only and
 # secretstores read-write are separate rules since the operator provisions the
 # per-tenant SecretStore; the namespaces rule lets reconcileNamespaces ensure the
-# per-service dedicated namespaces).
+# per-service dedicated namespaces; the clusterroles rule is bind-only on the
+# single name system:auth-delegator).
 suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
@@ -13,7 +14,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 24
+          count: 30
 
   - it: should grant full CRUD on controlplanes
     asserts:
@@ -245,6 +246,128 @@ tests:
               - patch
               - delete
 
+  - it: should grant full CRUD on barbicans and barbicansecretstores
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - barbican.openstack.c5c3.io
+            resources:
+              - barbicans
+              - barbicansecretstores
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  # A managed Barbican secret store gets a dedicated OpenBao instance: the
+  # OpenBaoCluster it reads and writes through, plus the OpenBaoTenant that
+  # admits the Barbican service namespace to it.
+  - it: should grant full CRUD on openbaoclusters and openbaotenants
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - openbao.org
+            resources:
+              - openbaoclusters
+              - openbaotenants
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  # The dedicated OpenBao instance needs a Role/RoleBinding pair for the
+  # barbican-operator's TokenRequest and a ClusterRoleBinding for the instance
+  # pods' TokenReview, so the operator authors all three kinds. Both rules carry
+  # the same narrowed verb set: no list/watch, because every read goes through
+  # the uncached API reader rather than an informer, and no update, because
+  # every write is a Server-Side Apply.
+  - it: should grant get/create/patch/delete on roles and rolebindings
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - roles
+              - rolebindings
+            verbs:
+              - get
+              - create
+              - patch
+              - delete
+
+  - it: should grant get/create/patch/delete on clusterrolebindings
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - clusterrolebindings
+            verbs:
+              - get
+              - create
+              - patch
+              - delete
+      # list and watch would only ever feed an informer, and a cluster-wide
+      # ClusterRoleBinding informer in a 128Mi operator is what the uncached
+      # reader exists to avoid.
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - clusterrolebindings
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant bind on system:auth-delegator only
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - clusterroles
+            resourceNames:
+              - system:auth-delegator
+            verbs:
+              - bind
+      # bind without resourceNames would let the operator bind ANY ClusterRole,
+      # including cluster-admin. That is the escalation the resourceNames scope
+      # exists to prevent.
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - clusterroles
+            verbs:
+              - bind
+
   - it: should grant full CRUD on k-orc applicationcredentials, services, endpoints, users, domains, projects, roles, roleassignments
     asserts:
       - contains:
@@ -405,6 +528,21 @@ tests:
               - update
               - patch
               - delete
+
+  # Kubernetes only lets an author grant permissions it holds itself, so the
+  # operator needs create on the subresource to write the TokenRequest Role the
+  # barbican-operator binds to.
+  - it: should grant create on the serviceaccounts/token subresource
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - serviceaccounts/token
+            verbs:
+              - create
 
   - it: should grant full CRUD on core secrets
     asserts:

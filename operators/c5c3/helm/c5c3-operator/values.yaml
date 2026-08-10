@@ -69,3 +69,14 @@ monitoring:
 serviceAccount:
   create: true
   name: ""
+
+# Identity of the barbican-operator, rendered as the BARBICAN_OPERATOR_NAMESPACE
+# and BARBICAN_OPERATOR_SERVICE_ACCOUNT environment variables. It is the subject
+# of the TokenRequest grant (Role/RoleBinding) this operator projects next to
+# every dedicated OpenBao instance, so the barbican-operator can mint the bound
+# token that instance authenticates it with. Keep both in sync with the release
+# the barbican-operator chart is installed as; a mismatch leaves the
+# barbican-operator unable to reach the OpenBao instance.
+barbicanOperator:
+  namespace: barbican-system
+  serviceAccount: barbican-operator

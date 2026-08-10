@@ -16,7 +16,8 @@ description, and -- for keystone only -- the cidr/stringMap definitions, the
 NetworkPolicy property and its fail-closed constraint, and the federation
 metadata-allowlist property -- plus, for barbican only, the OpenBao egress
 block nested under the NetworkPolicy property and the per-namespace
-TokenRequest grant nested under rbac.
+TokenRequest grant nested under rbac, and, for c5c3 only, the barbican-operator
+identity property.
 
 Editing a shared field here regenerates both charts, so the two schemas cannot
 drift. Run via the Makefile:
@@ -414,6 +415,24 @@ FEDERATION = {
     },
 }
 
+BARBICAN_OPERATOR = {
+    "type": "object",
+    "description": "Identity of the barbican-operator, rendered as the BARBICAN_OPERATOR_NAMESPACE and BARBICAN_OPERATOR_SERVICE_ACCOUNT environment variables on the manager container. It is the subject of the TokenRequest grant (Role/RoleBinding) the operator projects next to every dedicated OpenBao instance, and the NetworkPolicy peer that instance admits, so both fields must match the release the barbican-operator chart is installed as",
+    "additionalProperties": False,
+    "properties": {
+        "namespace": {
+            "type": "string",
+            "description": "Namespace the barbican-operator runs in",
+            "default": "barbican-system",
+        },
+        "serviceAccount": {
+            "type": "string",
+            "description": "ServiceAccount the barbican-operator pod runs as",
+            "default": "barbican-operator",
+        },
+    },
+}
+
 RBAC_WEBHOOK_RULE = {
     "if": {
         "properties": {
@@ -513,6 +532,7 @@ def discover_charts():
                 "federation": name == "keystone-operator",
                 "openbao_egress": name == "barbican-operator",
                 "secret_store_namespaces": name == "barbican-operator",
+                "barbican_operator": name == "c5c3-operator",
             }
         )
     return charts
@@ -566,6 +586,9 @@ def build_schema(chart):
     if chart["federation"]:
         definitions["cidr"] = CIDR
         properties["federation"] = FEDERATION
+
+    if chart["barbican_operator"]:
+        properties["barbicanOperator"] = BARBICAN_OPERATOR
 
     properties["nameOverride"] = NAME_OVERRIDE
     properties["fullnameOverride"] = FULLNAME_OVERRIDE
