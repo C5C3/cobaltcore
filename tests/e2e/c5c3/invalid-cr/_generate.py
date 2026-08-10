@@ -55,6 +55,7 @@ LICENSE_HEADER = """\
 #   {horizon}             the spec.services.horizon entry (indent 4) or ""
 #   {glance}              the spec.services.glance entry (indent 4) or ""
 #   {placement}           the spec.services.placement entry (indent 4) or ""
+#   {barbican}            the spec.services.barbican entry (indent 4) or ""
 #
 # korc.adminCredential.applicationCredential is intentionally omitted: the
 # defaulting webhook materializes it (rotation.mode etc.) before the CRD's
@@ -68,7 +69,7 @@ spec:
   openStackRelease: "2025.2"
 {global_extra_config}{infrastructure}  services:
     keystone:
-{keystone}{horizon}{glance}{placement}  korc:
+{keystone}{horizon}{glance}{placement}{barbican}  korc:
     adminCredential:
       cloudCredentialsRef:
         cloudName: admin
@@ -118,6 +119,17 @@ VALID_GLANCE = (
 )
 
 
+# A valid barbican service body (indent 4): the minimal shape, a dedicated
+# secret store. secretStore is the one REQUIRED field of the block, and the
+# dedicated mode carries no fields of its own. The barbican fixtures that mutate
+# the store spell their block out instead of appending to this one.
+VALID_BARBICAN = (
+    "    barbican:\n"
+    "      secretStore:\n"
+    "        dedicated: {}\n"
+)
+
+
 # A valid, MANAGED dedicated backing-services block for the Keystone service
 # (indent 6, to be appended to a Managed keystone body). Every dedicated fixture
 # below mutates exactly one aspect of it.
@@ -148,6 +160,7 @@ class Fixture:
     horizon: str = ""
     glance: str = ""
     placement: str = ""
+    barbican: str = ""
     # The spec.globalExtraConfig block (indent 2, trailing newline) or "".
     global_extra_config: str = ""
     # The spec.korc.serviceAccounts block (indent 4, trailing newline) or "".
@@ -162,6 +175,7 @@ class Fixture:
             horizon=self.horizon,
             glance=self.glance,
             placement=self.placement,
+            barbican=self.barbican,
             service_accounts=self.service_accounts,
         )
         comment_lines = "".join(f"# {line}\n" for line in self.comment.splitlines())
@@ -1273,6 +1287,194 @@ FIXTURES: tuple[Fixture, ...] = (
             "          database: placement\n"
             "          secretRef:\n"
             "            name: placement-db\n"
+        ),
+    ),
+    # --- per-service Barbican (still the create-rejection matrix). Every
+    #     ControlPlane name below stays at or under 34 characters: the projected
+    #     Barbican child is "{cp}-barbican", and the Barbican CRD caps its own
+    #     metadata.name at 43. ---
+    Fixture(
+        filename="70-external-with-barbican.yaml",
+        comment=(
+            "services.barbican set in External mode is forbidden by the webhook (cross-field,\n"
+            "mirrors services.glance and services.placement): Barbican needs its own\n"
+            "External-mode design. The barbican block is the minimal valid one (a dedicated\n"
+            "secret store), so the ONLY violation is the cross-field forbid."
+        ),
+        name="cp-external-with-barbican",
+        barbican=VALID_BARBICAN,
+    ),
+    Fixture(
+        filename="71-barbican-secret-store-both-modes.yaml",
+        comment=(
+            "services.barbican.secretStore setting BOTH dedicated and external violates the\n"
+            "type-level CEL union rule: the two modes address different servers with\n"
+            "different credentials, so a block naming both leaves the projection no way to\n"
+            "tell which server barbican writes its secret material to. The external block is\n"
+            "itself valid, so the ONLY violation is the union."
+        ),
+        name="cp-barbican-store-both",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        barbican=(
+            "    barbican:\n"
+            "      secretStore:\n"
+            "        dedicated: {}\n"
+            "        external:\n"
+            "          url: https://openbao.example.com:8200\n"
+            "          credentialsSecretRef:\n"
+            "            name: barbican-approle\n"
+        ),
+    ),
+    Fixture(
+        filename="72-barbican-secret-store-no-mode.yaml",
+        comment=(
+            "services.barbican.secretStore naming NEITHER mode violates the same CEL union\n"
+            "rule from the other side. A Barbican with no store attached parks on\n"
+            "SecretStoresReady=False/NoDefaultSecretStore for as long as it exists, so the\n"
+            "block would only ever project a child that can never reach Ready. The webhook\n"
+            "mirrors the rule for an API server old enough to skip x-kubernetes-validations."
+        ),
+        name="cp-barbican-store-neither",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        barbican=(
+            "    barbican:\n"
+            "      secretStore: {}\n"
+        ),
+    ),
+    Fixture(
+        filename="73-barbican-external-store-plaintext-url.yaml",
+        comment=(
+            "services.barbican.secretStore.external.url without an https scheme violates the\n"
+            "CRD pattern (^https://), which is stricter than the ^https?:// the endpoint\n"
+            "fields carry: the operator's AppRole login and every secret barbican stores\n"
+            "travel this URL, so a plaintext scheme would put the role ID, the secret ID, and\n"
+            "the keys and certificates the service exists to protect on the wire in the\n"
+            "clear. The webhook mirrors the pattern."
+        ),
+        name="cp-barbican-store-plaintext-url",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        barbican=(
+            "    barbican:\n"
+            "      secretStore:\n"
+            "        external:\n"
+            "          url: http://openbao.example.com:8200\n"
+            "          credentialsSecretRef:\n"
+            "            name: barbican-approle\n"
+        ),
+    ),
+    Fixture(
+        filename="74-barbican-external-store-empty-credentials-name.yaml",
+        comment=(
+            "services.barbican.secretStore.external.credentialsSecretRef.name empty violates\n"
+            "the SecretNameRefSpec MinLength marker, mirroring the keystone caBundleSecretRef\n"
+            "fixture: the external store authenticates with the AppRole credentials that\n"
+            "Secret holds, so an unnamed reference resolves to nothing. Schema validation runs\n"
+            "before the validating webhook, so the marker is what rejects this CR and the\n"
+            "chainsaw step anchors on its message; the webhook mirrors the rule for callers\n"
+            "that bypass the schema."
+        ),
+        name="cp-barbican-store-empty-creds",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        barbican=(
+            "    barbican:\n"
+            "      secretStore:\n"
+            "        external:\n"
+            "          url: https://openbao.example.com:8200\n"
+            "          credentialsSecretRef:\n"
+            '            name: ""\n'
+        ),
+    ),
+    Fixture(
+        filename="75-barbican-public-endpoint-host-mismatch.yaml",
+        comment=(
+            "services.barbican.publicEndpoint must name the same host as\n"
+            "services.barbican.gateway.hostname. The Gateway listener is what routes that\n"
+            "hostname to the Barbican API, so a divergent host advertises a catalog endpoint\n"
+            "that never reaches it. The value is projected into no child CR, so this webhook\n"
+            "is the only gate on the URL every client resolves to store and read its secret\n"
+            "material. The endpoint keeps the https scheme the gateway rule also demands, so\n"
+            "the ONLY violation is the host."
+        ),
+        name="cp-barbican-endpoint-mismatch",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        barbican=(
+            VALID_BARBICAN
+            + "      gateway:\n"
+            + "        hostname: barbican.example.com\n"
+            + "        parentRef:\n"
+            + "          name: openstack-gw\n"
+            + "      publicEndpoint: https://secrets.example.com\n"
+        ),
+    ),
+    Fixture(
+        filename="76-barbican-override-dynamic-on-dedicated.yaml",
+        comment=(
+            "databaseCredentialsMode Dynamic on the Barbican service is rejected by the\n"
+            "webhook when Barbican declares a DEDICATED database, mirroring the keystone,\n"
+            "glance, and placement twins: the override retargets the shared database this\n"
+            "service does not use, and a dedicated database is Static-only. The defaulting\n"
+            "webhook injects the barbican service account, so the only violation is the\n"
+            "credentials-mode override."
+        ),
+        name="cp-override-dynamic-dedicated-bn",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        barbican=(
+            VALID_BARBICAN
+            + "      databaseCredentialsMode: Dynamic\n"
+            + "      dedicatedBackingServices:\n"
+            + "        database:\n"
+            + "          clusterRef:\n"
+            + "            name: cp-dedicated-db\n"
+            + "          database: barbican\n"
+            + "          secretRef:\n"
+            + "            name: barbican-db\n"
+        ),
+    ),
+    # --- transition wave E: barbican secret-store addressing freeze
+    #     (Test: c5c3-invalid-cr-barbican-store-freeze) ---
+    Fixture(
+        filename="77-transition-base-barbican-dedicated.yaml",
+        comment=(
+            "Accepted base for the barbican secret-store freeze test: a Managed ControlPlane\n"
+            "whose Barbican service takes the dedicated secret store the operator provisions."
+        ),
+        name="cp-transition-e",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        barbican=VALID_BARBICAN,
+    ),
+    Fixture(
+        filename="78-transition-barbican-store-to-external.yaml",
+        comment=(
+            "UPDATE of the accepted dedicated base onto an external store is rejected. The\n"
+            "secret material barbican has already written lives on the server the current\n"
+            "mode names, and the BarbicanSecretStore CRD freezes the instanceRef/server\n"
+            "discriminator for exactly that reason. Without the ControlPlane-side freeze the\n"
+            "reconciler would answer the drift by deleting and recreating the store against\n"
+            "the new server, stranding that material together with the OpenBao instance, its\n"
+            "raft volume, and its seal key. dedicated is explicitly nulled, not merely\n"
+            "omitted: Chainsaw applies an UPDATE as an RFC 7386 JSON merge patch, so an\n"
+            "omitted dedicated would be RETAINED from the base, and the resulting\n"
+            "both-modes shape would trip the CEL union rule (exactly one of dedicated or\n"
+            "external) at CRD validation, before the webhook's mode freeze ever runs."
+        ),
+        name="cp-transition-e",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        barbican=(
+            "    barbican:\n"
+            "      secretStore:\n"
+            "        dedicated: null\n"
+            "        external:\n"
+            "          url: https://openbao.example.com:8200\n"
+            "          credentialsSecretRef:\n"
+            "            name: barbican-approle\n"
         ),
     ),
 )
