@@ -111,6 +111,20 @@ type ControlPlaneReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 
+	// APIReader is the manager's DIRECT, uncached reader (mgr.GetAPIReader(),
+	// wired by SetupWithManager). It exists for the get-by-exact-name reads on
+	// kinds the operator manages a handful of objects of but never watches — the
+	// three RBAC kinds behind a dedicated Barbican secret store (Role,
+	// RoleBinding, and the cluster-scoped ClusterRoleBinding) among them.
+	// Reading those through the cached client would have controller-runtime
+	// start an unfiltered CLUSTER-WIDE informer for each of them: every Role and
+	// RoleBinding in the cluster held in memory, in an operator the chart caps
+	// at 128Mi, to track at most three objects per ControlPlane whose names the
+	// reconciler already derives. A nil value falls back to Client, so a
+	// programmatically constructed reconciler (unit tests, envtest fixtures)
+	// keeps working unchanged.
+	APIReader client.Reader
+
 	// MaxConcurrentReconciles bounds how many ControlPlane CRs reconcile
 	// concurrently. It is threaded from the --max-concurrent-reconciles flag
 	// (see internal/common/bootstrap) and applied to the controller's
@@ -119,6 +133,26 @@ type ControlPlaneReconciler struct {
 	// bootstrap.ControllerOptions, so the zero value is safe for
 	// programmatically constructed reconcilers.
 	MaxConcurrentReconciles int
+
+	// BarbicanOperatorNamespace and BarbicanOperatorServiceAccount identify the
+	// barbican-operator's own Pod identity. The dedicated OpenBao instance grants
+	// it two things a ControlPlane-derived name cannot supply: the TokenRequest
+	// RoleBinding subject, and the NetworkPolicy peer that admits its pods to the
+	// instance's API port. Both are threaded from the BARBICAN_OPERATOR_NAMESPACE
+	// and BARBICAN_OPERATOR_SERVICE_ACCOUNT environment (see main.go); an empty
+	// value falls back to the barbican-operator chart defaults, so the zero value
+	// is safe for programmatically constructed reconcilers.
+	BarbicanOperatorNamespace      string
+	BarbicanOperatorServiceAccount string
+}
+
+// apiReader returns the uncached reader described on APIReader, falling back to
+// the cached client when none was injected.
+func (r *ControlPlaneReconciler) apiReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 // +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes,verbs=get;list;watch;create;update;patch;delete
@@ -687,6 +721,11 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// bootstrap.ControllerOptions).
 	b := ctrl.NewControllerManagedBy(mgr).
 		WithOptions(bootstrap.ControllerOptions(r.MaxConcurrentReconciles))
+
+	// The uncached reader for the never-watched RBAC kinds (see APIReader).
+	if r.APIReader == nil {
+		r.APIReader = mgr.GetAPIReader()
+	}
 
 	b, err := r.buildControlPlaneController(mgr, b)
 	if err != nil {

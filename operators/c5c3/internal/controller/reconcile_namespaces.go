@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -115,7 +116,20 @@ func (r *ControlPlaneReconciler) ensureUnownedOrOwned(ctx context.Context, cp *c
 		return apply.EnsureObject(ctx, r.Client, r.Scheme, cp, obj, apply.FieldManager)
 	}
 	live := obj.DeepCopyObject().(client.Object)
-	switch err := r.Get(ctx, client.ObjectKeyFromObject(obj), live); {
+	reader, cached := adoptionPrecheckReader(r, obj)
+	err := reader.Get(ctx, client.ObjectKeyFromObject(obj), live)
+	if cached && apierrors.IsNotFound(err) {
+		// A cache MISS is not proof of absence: the informer trails the API server
+		// by however long the watch takes to deliver the ADD, and everything below
+		// this point is destructive if the name turns out to be taken — the SSA
+		// apply overwrites the foreign object's spec, and the labels we stamp get
+		// it deleted at teardown. Confirm against the API server before concluding
+		// the name is free. It costs a round trip only while the object does not
+		// exist yet; once it does, the cache answers and this never runs.
+		live = obj.DeepCopyObject().(client.Object)
+		err = r.apiReader().Get(ctx, client.ObjectKeyFromObject(obj), live)
+	}
+	switch {
 	case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
 		// Absent (or its CRD is not installed): safe to create.
 	case err != nil:
@@ -130,6 +144,29 @@ func (r *ControlPlaneReconciler) ensureUnownedOrOwned(ctx context.Context, cp *c
 	}
 	stampControlPlaneChildLabels(obj, cp)
 	return apply.EnsureUnownedObject(ctx, r.Client, r.Scheme, obj, apply.FieldManager)
+}
+
+// adoptionPrecheckReader picks the reader ensureUnownedOrOwned's adoption
+// pre-check reads obj through — the UNCACHED one (see
+// ControlPlaneReconciler.APIReader) for the kinds the operator never watches, the
+// cached client for every other kind — and reports whether that reader is the
+// cached one, whose miss the caller has to confirm before trusting it.
+//
+// For an unwatched kind this pre-check is the only read the kind ever gets, and a
+// cached read would have controller-runtime start an unfiltered cluster-wide
+// informer for it — every Role, RoleBinding and ServiceAccount in the cluster held
+// in memory to track a handful of objects per ControlPlane. For a WATCHED kind the
+// informer is already running and its cache is already populated, so a direct GET
+// on the HIT buys nothing and costs a round trip against the reconciler's shared
+// client-side rate limit — on the dedicated-service-namespace layout, one per
+// cross-namespace projection on every pass. A cached MISS is the one answer the
+// informer can get wrong, which is what the second return value is for.
+func adoptionPrecheckReader(r *ControlPlaneReconciler, obj client.Object) (client.Reader, bool) {
+	switch obj.(type) {
+	case *rbacv1.Role, *rbacv1.RoleBinding, *rbacv1.ClusterRoleBinding, *corev1.ServiceAccount:
+		return r.apiReader(), false
+	}
+	return r.Client, true
 }
 
 // refuseForeignAdoption is the CreateOrUpdate-mutate twin of ensureUnownedOrOwned's
