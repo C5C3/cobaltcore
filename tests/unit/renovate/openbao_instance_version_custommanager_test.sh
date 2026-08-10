@@ -12,6 +12,11 @@
 # stale silently, and the proving instance stops following the OpenBao line the
 # Barbican onboarding targets.
 #
+# The same package is pinned a second time in the c5c3 controller, under its
+# own manager and covered by tests/unit/renovate/
+# c5c3_openbao_version_custommanager_test.sh, so every selector here is scoped
+# to the instance manifest.
+#
 # Asserts:
 #   - exactly one customManager targets openbao/openbao over the instance
 #     manifest with the github-releases datasource and the extractVersionTemplate
@@ -66,12 +71,15 @@ test_manager_exists_and_regex_matches() {
 
   local count
   count="$(jq --arg pkg "$PKG_NAME" '[.customManagers[]
-    | select(.packageNameTemplate == $pkg)] | length' "$RENOVATE_FILE")"
-  assert_eq "exactly one customManager targets ${PKG_NAME}" "1" "$count"
+    | select(.packageNameTemplate == $pkg)
+    | select(any(.managerFilePatterns[]; test("openbao-instance")))] | length' "$RENOVATE_FILE")"
+  assert_eq "exactly one customManager targets ${PKG_NAME} over the instance manifest" \
+    "1" "$count"
 
   local entry
   entry="$(jq -c --arg pkg "$PKG_NAME" '.customManagers[]
-    | select(.packageNameTemplate == $pkg)' "$RENOVATE_FILE" | head -1)"
+    | select(.packageNameTemplate == $pkg)
+    | select(any(.managerFilePatterns[]; test("openbao-instance")))' "$RENOVATE_FILE" | head -1)"
 
   if [ -z "$entry" ]; then
     echo "  FAIL: no customManager for ${PKG_NAME}"

@@ -247,6 +247,20 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/operators/c5c3/internal/controller/reconcile_barbican_openbao\\.go$/"
+      ],
+      "matchStrings": [
+        "defaultOpenBaoVersion = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "openbao/openbao",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "openbao/openbao",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/Makefile$/",
         "/\\.github/workflows/.*\\.yaml$/"
       ],
@@ -481,14 +495,20 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/kind/infrastructure/openbao-instance.yaml"],
+      "matchFileNames": [
+        "deploy/kind/infrastructure/openbao-instance.yaml",
+        "operators/c5c3/internal/controller/reconcile_barbican_openbao.go"
+      ],
       "matchPackageNames": ["openbao/openbao"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["deploy/kind/infrastructure/openbao-instance.yaml"],
+      "matchFileNames": [
+        "deploy/kind/infrastructure/openbao-instance.yaml",
+        "operators/c5c3/internal/controller/reconcile_barbican_openbao.go"
+      ],
       "matchPackageNames": ["openbao/openbao"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": false,
