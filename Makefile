@@ -660,12 +660,16 @@ install-test-deps:
 # test-integration runs envtest-based integration tests per operator.
 # Requires setup-envtest (go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest).
 # Usage: make test-integration [OPERATOR=keystone]
+# The 30m go-test timeout must stay below the CI job wall (ci.yaml
+# test-integration timeout-minutes) so a hung suite panics with a goroutine
+# dump instead of being killed silently by the runner. The c5c3 controller
+# envtest suite alone runs ~22m.
 test-integration:
 	@KUBEBUILDER_ASSETS=$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) -p path) && export KUBEBUILDER_ASSETS && \
 	echo "KUBEBUILDER_ASSETS=$$KUBEBUILDER_ASSETS" && \
 	for op in $(OPERATORS); do \
 		echo "Integration-testing operators/$$op module..."; \
-		go test -tags=integration -timeout=20m -coverprofile=cover-integration-$$op.out ./operators/$$op/... || exit 1; \
+		go test -tags=integration -timeout=30m -coverprofile=cover-integration-$$op.out ./operators/$$op/... || exit 1; \
 	done
 
 .PHONY: test-integration-common

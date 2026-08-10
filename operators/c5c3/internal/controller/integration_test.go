@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
@@ -27,6 +28,7 @@ import (
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,6 +45,7 @@ import (
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
+	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	"github.com/c5c3/forge/operators/c5c3/internal/testutil"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
@@ -250,6 +253,22 @@ func integrationPlacementService() *c5c3v1alpha1.ServicePlacementSpec {
 	return &c5c3v1alpha1.ServicePlacementSpec{}
 }
 
+// integrationBarbicanService returns a valid services.barbican block: one replica
+// on a secret store the ControlPlane provisions for it. Unlike its Placement
+// sibling the block cannot be empty — secretStore is required and admits exactly
+// one of dedicated/external — and the dedicated mode is the one that puts the whole
+// OpenBao ensemble under test. It is shared by the full-chain projection test, the
+// tail-group test, the service-account injection test, and the cross-namespace
+// teardown test, so the enabling shape is written once.
+func integrationBarbicanService() *c5c3v1alpha1.ServiceBarbicanSpec {
+	return &c5c3v1alpha1.ServiceBarbicanSpec{
+		Replicas: ptr.To(int32(1)),
+		SecretStore: c5c3v1alpha1.ServiceBarbicanSecretStoreSpec{
+			Dedicated: &c5c3v1alpha1.BarbicanDedicatedSecretStoreSpec{},
+		},
+	}
+}
+
 // ensureReadyClusterSecretStore creates the cluster-scoped OpenBao-backed
 // ClusterSecretStore the DB-credential, admin-password and admin-credential
 // sub-reconcilers gate on (#476) and marks it Ready. It is idempotent across the
@@ -420,6 +439,52 @@ func simulatePlacementReadyWhenPresent(t testing.TB, ctx context.Context, c clie
 		Message: "simulated ready",
 	})
 	g.Expect(c.Status().Update(ctx, pl)).To(Succeed(), "set Placement Ready=True")
+}
+
+// simulateBarbicanReadyWhenPresent waits for the projected Barbican child, then
+// sets its aggregate Ready condition True so reconcileBarbican's mirror flips
+// BarbicanReady (there is no barbican-operator running in envtest). Mirrors
+// simulatePlacementReadyWhenPresent.
+func simulateBarbicanReadyWhenPresent(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	bn := &barbicanv1alpha1.Barbican{}
+	g.Eventually(func() error {
+		return c.Get(ctx, key, bn)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "Barbican child should be created")
+
+	meta.SetStatusCondition(&bn.Status.Conditions, metav1.Condition{
+		Type:    "Ready",
+		Status:  metav1.ConditionTrue,
+		Reason:  "AllReady",
+		Message: "simulated ready",
+	})
+	g.Expect(c.Status().Update(ctx, bn)).To(Succeed(), "set Barbican Ready=True")
+}
+
+// simulateOpenBaoClusterAvailableWhenPresent waits for the dedicated OpenBao
+// instance the Barbican secret store points at, then sets its Available condition
+// True — the signal the openbao-operator raises once the instance is initialised,
+// unsealed, and serving requests. No openbao-operator runs in envtest, so without
+// this the Barbican store and child stay behind
+// BarbicanReady=False/WaitingForOpenBaoInstance forever.
+func simulateOpenBaoClusterAvailableWhenPresent(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	instance := &openbaov1alpha1.OpenBaoCluster{}
+	g.Eventually(func() error {
+		return c.Get(ctx, key, instance)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "the dedicated OpenBaoCluster should be created")
+
+	meta.SetStatusCondition(&instance.Status.Conditions, metav1.Condition{
+		Type:    string(openbaov1alpha1.ConditionAvailable),
+		Status:  metav1.ConditionTrue,
+		Reason:  "Available",
+		Message: "simulated available",
+	})
+	g.Expect(c.Status().Update(ctx, instance)).To(Succeed(), "set OpenBaoCluster Available=True")
 }
 
 // simulateApplicationCredentialAvailableWhenPresent waits for the owned K-ORC
@@ -641,6 +706,47 @@ func simulatePlacementCatalogAvailableWhenPresent(t testing.TB, ctx context.Cont
 			Message:            "simulated available",
 		})
 		g.Expect(c.Status().Update(ctx, ep)).To(Succeed(), "set placement %q Endpoint Available=True", iface)
+	}
+}
+
+// simulateBarbicanCatalogAvailableWhenPresent waits for the key-manager catalog row
+// reconcileCatalog projects when spec.services.barbican is set — the key-manager
+// Service plus its internal and public Endpoints — and marks each Available inline.
+// It is the Barbican sibling of simulatePlacementCatalogAvailableWhenPresent, and
+// exists for the same reason: CatalogReady gates on ALL catalog children reporting
+// Available, and the barbican-free tests must never wait on CRs that are not
+// projected.
+func simulateBarbicanCatalogAvailableWhenPresent(t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	ns := childNamespace(cp)
+
+	svc := &orcv1alpha1.Service{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: barbicanCatalogServiceName(cp)}, svc)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "key-manager Service should be registered")
+	meta.SetStatusCondition(&svc.Status.Conditions, metav1.Condition{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		ObservedGeneration: svc.Generation,
+		Message:            "simulated available",
+	})
+	g.Expect(c.Status().Update(ctx, svc)).To(Succeed(), "set key-manager Service Available=True")
+
+	for _, iface := range []string{"internal", "public"} {
+		ep := &orcv1alpha1.Endpoint{}
+		g.Eventually(func() error {
+			return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: barbicanCatalogEndpointName(cp, iface)}, ep)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "key-manager %q Endpoint should be registered", iface)
+		meta.SetStatusCondition(&ep.Status.Conditions, metav1.Condition{
+			Type:               orcv1alpha1.ConditionAvailable,
+			Status:             metav1.ConditionTrue,
+			Reason:             orcv1alpha1.ConditionReasonSuccess,
+			ObservedGeneration: ep.Generation,
+			Message:            "simulated available",
+		})
+		g.Expect(c.Status().Update(ctx, ep)).To(Succeed(), "set key-manager %q Endpoint Available=True", iface)
 	}
 }
 
@@ -953,6 +1059,38 @@ func simulatePlacementDBCredentialSyncWhenPresent(
 		To(Succeed(), "simulate per-CP Placement DB credential ExternalSecret sync")
 }
 
+// simulateBarbicanDBCredentialSyncWhenPresent is the Barbican twin of
+// simulatePlacementDBCredentialSyncWhenPresent: it waits for the operator-created
+// Barbican DB-credential ExternalSecret, simulates the ESO sync, and materialises
+// the Secret behind it with an ENGINE-ISSUED username. reconcileBarbican gates the
+// Dynamic projection on both halves for the same reason reconcilePlacement does — a
+// Static->Dynamic flip updates the ExternalSecret in place, so its Ready can still
+// be the retired Static sync's — and the engine-issued username here is
+// deliberately not the static seed's "barbican".
+func simulateBarbicanDBCredentialSyncWhenPresent(
+	t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	barbicanNS, name := cp.BarbicanNamespace(), barbicanDBCredentialSecretName(cp)
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: barbicanNS, Name: name}, &esov1.ExternalSecret{})
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"operator must create the per-CP Barbican DB-credential ExternalSecret")
+
+	g.Expect(c.Create(ctx, &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: barbicanNS},
+		Data: map[string][]byte{
+			"username": []byte(engineIssuedUsernamePrefix + "kubernetes-barbican-abc123-1750000000"),
+			"password": []byte("engine-issued-password"),
+		},
+	})).To(Succeed(), "materialise the engine-issued Barbican DB credential ESO would have written")
+
+	g.Expect(simulators.SimulateExternalSecretSync(ctx, c, client.ObjectKey{Namespace: barbicanNS, Name: name})).
+		To(Succeed(), "simulate per-CP Barbican DB credential ExternalSecret sync")
+}
+
 // TestIntegration_FullReconcile_ManagedToReady drives a managed-mode ControlPlane
 // through every sub-reconciler to the aggregate Ready=True, simulating each
 // external dependency's readiness in dependency order. It is the single primary
@@ -976,16 +1114,18 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
 
 	// Create the ControlPlane CR (the defaulting webhook fills region etc.).
-	// Horizon, Glance and Placement are enabled HERE (not in the shared fixture) so
-	// only this full-chain test — which simulates the Horizon child in Phase 2.5, the
-	// Glance child (plus its catalog row and GlanceBackend) in Phases 5/6, and the
-	// Placement child (plus its catalog row) in Phases 5/7 — carries the extra
-	// services; the gate-focused tests reusing the fixture would otherwise wedge at
-	// the unsimulated steps.
+	// Horizon, Glance, Placement and Barbican are enabled HERE (not in the shared
+	// fixture) so only this full-chain test — which simulates the Horizon child in
+	// Phase 2.5, the Glance child (plus its catalog row and GlanceBackend) in Phases
+	// 5/6, the Placement child (plus its catalog row) in Phases 5/7, and the Barbican
+	// child (plus its catalog row and the dedicated OpenBao ensemble behind its secret
+	// store) in Phases 5/8 — carries the extra services; the gate-focused tests
+	// reusing the fixture would otherwise wedge at the unsimulated steps.
 	cp := integrationManagedControlPlane("cp", ns.Name)
 	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{}
 	cp.Spec.Services.Glance = integrationGlanceService()
 	cp.Spec.Services.Placement = integrationPlacementService()
+	cp.Spec.Services.Barbican = integrationBarbicanService()
 
 	// Both halves of the extraConfig merge, so Phase 7 can assert the projected
 	// Placement child carries the union: a global-only section plus a
@@ -1004,9 +1144,10 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// This declared "glance" entry deliberately pre-empts the defaulting webhook's
 	// auto-injection (injection fires only when no "glance" entry exists), so the
 	// "member"-role assertions in Phase 5.5 stay valid; the injection itself is
-	// covered by TestIntegration_GlanceServiceAccountInjection. No "placement" entry
-	// is declared, so the webhook injects that one and Phase 7 projects its service
-	// user from the account the operator never had to hand-wire.
+	// covered by TestIntegration_GlanceServiceAccountInjection. No "placement" or
+	// "barbican" entry is declared, so the webhook injects those two and Phases 7 and
+	// 8 project their service users from accounts the operator never had to
+	// hand-wire.
 	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
 		Name:    "glance",
 		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
@@ -1029,11 +1170,15 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
 
 	// The API server returns the defaulted spec, so cp now carries the injected
-	// placement account appended after the declared glance one.
-	g.Expect(cp.Spec.KORC.ServiceAccounts).To(HaveLen(2),
-		"the defaulting webhook must inject the placement service account beside the declared glance one")
+	// placement and barbican accounts appended after the declared glance one, in the
+	// webhook's table order.
+	g.Expect(cp.Spec.KORC.ServiceAccounts).To(HaveLen(3),
+		"the defaulting webhook must inject the placement and barbican service accounts "+
+			"beside the declared glance one")
 	placementSA := cp.Spec.KORC.ServiceAccounts[1]
 	g.Expect(placementSA.Name).To(Equal("placement"))
+	barbicanSA := cp.Spec.KORC.ServiceAccounts[2]
+	g.Expect(barbicanSA.Name).To(Equal("barbican"))
 
 	// --- Phase 1: Infrastructure (MariaDB + Memcached). ---
 	simulateMariaDBReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: "openstack-db", Namespace: ns.Name})
@@ -1139,25 +1284,29 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	simulateCloudsYamlMaterializedWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Phase 5: Catalog. With services.glance and services.placement set,
-	// reconcileCatalog projects the identity row (Service + public Endpoint), the
-	// image row and the placement row (Service + internal and public Endpoints
-	// each); CatalogReady gates on ALL of them reporting Available, so simulate the
-	// K-ORC actuator marking every row Available before waiting. ---
+	// --- Phase 5: Catalog. With services.glance, services.placement and
+	// services.barbican set, reconcileCatalog projects the identity row (Service +
+	// public Endpoint), the image row, the placement row and the key-manager row
+	// (Service + internal and public Endpoints each); CatalogReady gates on ALL of
+	// them reporting Available, so simulate the K-ORC actuator marking every row
+	// Available before waiting. ---
 	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
 	simulateGlanceCatalogAvailableWhenPresent(t, ctx, c, cp)
 	simulatePlacementCatalogAvailableWhenPresent(t, ctx, c, cp)
+	simulateBarbicanCatalogAvailableWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	// --- Phase 5.5: Service accounts. Each account projects a managed User/Project,
 	// an unmanaged Role import, and a managed RoleAssignment; envtest runs neither
-	// K-ORC nor ESO, so drive the whole round-trip for both the declared glance
-	// account and the injected placement one (whose project is CREATED, so it is
-	// probe-gated on the project too), assert the two role CRs of the glance account
-	// exist with the expected policies, then wait for ServiceAccountsReady. ---
+	// K-ORC nor ESO, so drive the whole round-trip for the declared glance account
+	// and for the injected placement and barbican ones (whose projects are CREATED,
+	// so they are probe-gated on the project too), assert the two role CRs of the
+	// glance account exist with the expected policies, then wait for
+	// ServiceAccountsReady. ---
 	sa := cp.Spec.KORC.ServiceAccounts[0]
 	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, sa, "member")
 	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, placementSA, "service")
+	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, barbicanSA, "service")
 	roleImport := &orcv1alpha1.Role{}
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns.Name, Name: serviceAccountRoleImportRef(cp, "member")}, roleImport)).
 		To(Succeed(), "the unmanaged Role import must be projected")
@@ -1405,6 +1554,266 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	simulatePlacementReadyWhenPresent(t, ctx, c, placementKey)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypePlacementReady, metav1.ConditionTrue, itEventuallyTimeout)
 
+	// --- Phase 8: Barbican child (the pipeline's last member, after Placement).
+	// Projection is gated on KeystoneReady, on the injected barbican service
+	// account's per-account readiness (driven in Phase 5.5), on the Dynamic-default
+	// credential, and — because this fixture takes a dedicated secret store — on the
+	// OpenBao instance the ControlPlane provisions for it reporting Available. The
+	// whole ensemble behind that instance is projected BEFORE the last gate closes,
+	// so open the credential gate, assert the ensemble, prove the instance gate
+	// holds, and only then let the instance serve. ---
+	simulateBarbicanDBCredentialSyncWhenPresent(t, ctx, c, cp)
+
+	instanceName := barbicanOpenBaoName(cp)
+	instanceKey := client.ObjectKey{Name: instanceName, Namespace: ns.Name}
+	instance := &openbaov1alpha1.OpenBaoCluster{}
+	g.Eventually(func() error {
+		return c.Get(ctx, instanceKey, instance)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the dedicated OpenBao instance must be projected once the Barbican gates ahead of it are open")
+
+	// The instance posture: the pinned OpenBao version, the DeletePVCs policy that
+	// keeps a re-created ControlPlane from meeting raft storage sealed under a key
+	// that no longer exists, External TLS over the two cert-manager Secrets, and a
+	// static seal whose key lives beside it.
+	g.Expect(instance.Spec.Version).To(Equal("2.6.1"))
+	g.Expect(instance.Spec.Replicas).To(Equal(int32(1)))
+	g.Expect(instance.Spec.DeletionPolicy).To(Equal(openbaov1alpha1.DeletionPolicyDeletePVCs))
+	g.Expect(instance.Spec.TLS.Enabled).To(BeTrue())
+	g.Expect(instance.Spec.TLS.Mode).To(Equal(openbaov1alpha1.TLSModeExternal))
+	g.Expect(instance.Spec.Unseal).NotTo(BeNil())
+	g.Expect(instance.Spec.Unseal.Type).To(Equal("static"))
+
+	// self-init is one-shot, so the eight requests and their order are frozen at
+	// create time: a mount or auth method must be enabled before anything writes
+	// under it.
+	g.Expect(instance.Spec.SelfInit).NotTo(BeNil())
+	g.Expect(instance.Spec.SelfInit.Enabled).To(BeTrue())
+	selfInitNames := make([]string, 0, len(instance.Spec.SelfInit.Requests))
+	for _, req := range instance.Spec.SelfInit.Requests {
+		selfInitNames = append(selfInitNames, req.Name)
+	}
+	g.Expect(selfInitNames).To(Equal([]string{
+		"barbican_kv",
+		"barbican_secretstore_policy",
+		"approle_auth",
+		"barbican_approle_role",
+		"kubernetes_auth",
+		"kubernetes_auth_config",
+		"provisioner_policy",
+		"provisioner_k8s_role",
+	}))
+
+	// The NetworkPolicy allowlist names the barbican-operator and the Barbican API
+	// pods, each pinned to an exact namespace: a wildcard peer would admit any pod
+	// carrying the label from anywhere in the cluster.
+	g.Expect(instance.Spec.Network).NotTo(BeNil())
+	g.Expect(instance.Spec.Network.TrustedIngressPeers).To(HaveLen(2))
+	for i, peer := range instance.Spec.Network.TrustedIngressPeers {
+		g.Expect(peer.NamespaceSelector).NotTo(BeNil(), "ingress peer %d must pin a namespace", i)
+		g.Expect(peer.NamespaceSelector.MatchLabels).NotTo(BeEmpty(),
+			"ingress peer %d must not select every namespace", i)
+		g.Expect(peer.PodSelector).NotTo(BeNil(), "ingress peer %d must pin a pod label", i)
+		g.Expect(peer.PodSelector.MatchLabels).NotTo(BeEmpty(),
+			"ingress peer %d must not select every pod", i)
+	}
+
+	// The two transport Certificates the External TLS mode consumes. They have no Go
+	// type, so they are addressed unstructured exactly as the projection creates them.
+	for _, suffix := range []string{barbicanOpenBaoServerCertSuffix, barbicanOpenBaoCACertSuffix} {
+		cert := &unstructured.Unstructured{}
+		cert.SetGroupVersionKind(certificateGVK)
+		g.Expect(c.Get(ctx, client.ObjectKey{Name: instanceName + suffix, Namespace: ns.Name}, cert)).
+			To(Succeed(), "the instance's %q Certificate must be projected", suffix)
+		secretName, _, serr := unstructured.NestedString(cert.Object, "spec", "secretName")
+		g.Expect(serr).NotTo(HaveOccurred())
+		g.Expect(secretName).To(Equal(instanceName+suffix),
+			"the operator mounts the certificate from this fixed-name Secret")
+	}
+
+	// The provisioner account the instance's Kubernetes-auth role binds to. Every
+	// consumer mints a token for it explicitly and for the instance audience, so the
+	// auto-mounted default-audience token is turned off.
+	provisionerSA := &corev1.ServiceAccount{}
+	g.Expect(c.Get(ctx, client.ObjectKey{
+		Name: instanceName + barbicanOpenBaoProvisionerSuffix, Namespace: ns.Name,
+	}, provisionerSA)).To(Succeed(), "the provisioner ServiceAccount must be projected")
+	g.Expect(provisionerSA.AutomountServiceAccountToken).NotTo(BeNil())
+	g.Expect(*provisionerSA.AutomountServiceAccountToken).To(BeFalse())
+
+	// The cluster-scoped binding that lets the instance run the TokenReview every
+	// Kubernetes-auth login needs. No namespace deletion and no owner-reference
+	// cascade reaches it, so the ownership labels are its only handle.
+	authDelegator := &rbacv1.ClusterRoleBinding{}
+	g.Expect(c.Get(ctx, client.ObjectKey{
+		Name: barbicanOpenBaoAuthDelegatorName(instanceName, ns.Name),
+	}, authDelegator)).To(Succeed(), "the auth-delegator ClusterRoleBinding must be projected")
+	g.Expect(authDelegator.RoleRef.Name).To(Equal("system:auth-delegator"))
+	g.Expect(authDelegator.Subjects).To(HaveLen(1))
+	g.Expect(authDelegator.Subjects[0].Name).To(Equal(instanceName + barbicanOpenBaoPodSASuffix))
+	g.Expect(isControlPlaneChild(authDelegator, cp)).To(BeTrue(),
+		"a cluster-scoped child lives and dies by the ownership labels")
+
+	// The TokenRequest grant the barbican-operator mints the provisioner token with,
+	// scoped by resourceNames to that one account.
+	tokenRole := &rbacv1.Role{}
+	g.Expect(c.Get(ctx, client.ObjectKey{
+		Name: instanceName + barbicanOpenBaoTokenGrantSuffix, Namespace: ns.Name,
+	}, tokenRole)).To(Succeed(), "the TokenRequest Role must be projected")
+	g.Expect(tokenRole.Rules).To(HaveLen(1))
+	g.Expect(tokenRole.Rules[0].Resources).To(Equal([]string{"serviceaccounts/token"}))
+	g.Expect(tokenRole.Rules[0].ResourceNames).To(Equal([]string{instanceName + barbicanOpenBaoProvisionerSuffix}))
+	tokenBinding := &rbacv1.RoleBinding{}
+	g.Expect(c.Get(ctx, client.ObjectKey{
+		Name: instanceName + barbicanOpenBaoTokenGrantSuffix, Namespace: ns.Name,
+	}, tokenBinding)).To(Succeed(), "the TokenRequest RoleBinding must be projected")
+	g.Expect(tokenBinding.Subjects).To(HaveLen(1))
+	g.Expect(tokenBinding.Subjects[0].Name).To(Equal(defaultBarbicanOperatorServiceAccount))
+	g.Expect(tokenBinding.Subjects[0].Namespace).To(Equal(defaultBarbicanOperatorNamespace))
+
+	// The static-seal key, carrying the INSTANCE's controller owner reference: both
+	// live in the same namespace, so deleting the instance reaps its seal key with it
+	// and the openbao-operator reads that reference as the proof it may adopt a
+	// pre-existing unseal Secret.
+	unsealSecret := &corev1.Secret{}
+	g.Eventually(func() error {
+		if err := c.Get(ctx, client.ObjectKey{
+			Name: instanceName + barbicanOpenBaoUnsealSecretSuffix, Namespace: ns.Name,
+		}, unsealSecret); err != nil {
+			return err
+		}
+		if metav1.GetControllerOf(unsealSecret) == nil {
+			return fmt.Errorf("the unseal Secret does not carry the instance's controller reference yet")
+		}
+		return nil
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the unseal Secret must be adopted by the instance once there is an instance to reference")
+	g.Expect(unsealSecret.Data).To(HaveKey(barbicanOpenBaoUnsealSecretKey))
+	unsealOwner := metav1.GetControllerOf(unsealSecret)
+	g.Expect(unsealOwner.Kind).To(Equal("OpenBaoCluster"))
+	g.Expect(unsealOwner.Name).To(Equal(instanceName))
+
+	// The tenant that admits the namespace to the openbao-operator. Nothing else in
+	// this cluster admits it, so the ControlPlane creates one of its own.
+	tenant := &openbaov1alpha1.OpenBaoTenant{}
+	g.Expect(c.Get(ctx, client.ObjectKey{
+		Name: instanceName + barbicanOpenBaoTenantSuffix, Namespace: ns.Name,
+	}, tenant)).To(Succeed(), "the OpenBaoTenant admitting the namespace must be projected")
+	g.Expect(tenant.Spec.TargetNamespace).To(Equal(ns.Name))
+
+	// --- The instance gate. Until the instance serves requests, BarbicanReady parks
+	// on WaitingForOpenBaoInstance and NEITHER the secret store NOR the child is
+	// projected: a store attached to an initialising instance reports
+	// ProvisioningDenied and would have to be re-driven from a failure state. ---
+	storeKey := client.ObjectKey{Name: barbicanSecretStoreName(cp), Namespace: ns.Name}
+	barbicanKey := client.ObjectKey{Name: barbicanName(cp), Namespace: ns.Name}
+	g.Eventually(func() string {
+		live := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, live); err != nil {
+			return ""
+		}
+		cond := conditions.GetCondition(live.Status.Conditions, conditionTypeBarbicanReady)
+		if cond == nil {
+			return ""
+		}
+		return cond.Reason
+	}, itEventuallyTimeout, itPollInterval).Should(Equal("WaitingForOpenBaoInstance"),
+		"the Barbican gates ahead of the instance are open, so the only one left is the instance itself")
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, storeKey, &barbicanv1alpha1.BarbicanSecretStore{}))).To(BeTrue(),
+		"no BarbicanSecretStore may be attached while the instance behind it is still initialising")
+	g.Expect(apierrors.IsNotFound(c.Get(ctx, barbicanKey, &barbicanv1alpha1.Barbican{}))).To(BeTrue(),
+		"no Barbican child may be projected while its secret store has no server to point at")
+
+	// --- Open the gate: the instance serves requests. ---
+	simulateOpenBaoClusterAvailableWhenPresent(t, ctx, c, instanceKey)
+
+	// The secret store attaches the Barbican to that instance, and is its default:
+	// it is the only store projected, and a Barbican with no default store never
+	// reaches Ready.
+	projectedStore := &barbicanv1alpha1.BarbicanSecretStore{}
+	g.Eventually(func() error {
+		return c.Get(ctx, storeKey, projectedStore)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the BarbicanSecretStore must be projected once the instance is Available")
+	g.Expect(projectedStore.Spec.BarbicanRef.Name).To(Equal(barbicanName(cp)),
+		"the store references its Barbican by name (inverted attachment)")
+	g.Expect(projectedStore.Spec.IsDefault).To(BeTrue())
+	g.Expect(projectedStore.Spec.OpenBao).NotTo(BeNil())
+	g.Expect(projectedStore.Spec.OpenBao.InstanceRef).NotTo(BeNil(),
+		"a dedicated store names the instance rather than a server URL")
+	g.Expect(projectedStore.Spec.OpenBao.InstanceRef.Name).To(Equal(instanceName))
+	g.Expect(projectedStore.Spec.OpenBao.KVMountpoint).To(Equal(defaultBarbicanKVMountpoint))
+
+	projectedBarbican := &barbicanv1alpha1.Barbican{}
+	g.Eventually(func() error {
+		return c.Get(ctx, barbicanKey, projectedBarbican)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the Barbican child must be projected once its secret store is attached")
+
+	// Release and image: the canonical repository with the release-derived tag.
+	g.Expect(projectedBarbican.Spec.OpenStackRelease).To(Equal("2025.2"))
+	g.Expect(projectedBarbican.Spec.Image.Repository).To(Equal(defaultBarbicanRepository))
+	g.Expect(projectedBarbican.Spec.Image.Tag).To(Equal("2025.2"), "Barbican image tag must derive from openStackRelease")
+
+	// Database: the shared managed cluster, the fixed "barbican" logical schema, and
+	// the operator-owned engine-issued DB credential (Dynamic is the default on the
+	// managed shared database, mirroring Keystone with barbican-scoped objects).
+	g.Expect(projectedBarbican.Spec.Database.ClusterRef).NotTo(BeNil(), "Barbican database clusterRef must be wired")
+	g.Expect(projectedBarbican.Spec.Database.ClusterRef.Name).To(Equal("openstack-db"))
+	g.Expect(projectedBarbican.Spec.Database.Database).To(Equal("barbican"))
+	g.Expect(projectedBarbican.Spec.Database.SecretRef.Name).To(Equal(barbicanDBCredentialSecretName(cp)),
+		"managed Barbican DB secretRef must point at the operator-owned per-CP Barbican DB-credential Secret")
+	g.Expect(projectedBarbican.Spec.Database.SecretRef.Key).To(Equal("password"))
+	g.Expect(projectedBarbican.Spec.Database.CredentialsMode).To(Equal(commonv1.CredentialsModeDynamic),
+		"the projected Barbican DB credential defaults to Dynamic (engine-issued)")
+
+	// Cache: the shared managed Memcached.
+	g.Expect(projectedBarbican.Spec.Cache.ClusterRef).NotTo(BeNil(), "Barbican cache clusterRef must be wired")
+	g.Expect(projectedBarbican.Spec.Cache.ClusterRef.Name).To(Equal("openstack-memcached"))
+
+	// Keystone endpoint: derived TOP-DOWN from the naming convention, because
+	// Barbican validates every token against it from inside the cluster.
+	g.Expect(projectedBarbican.Spec.KeystoneEndpoint).To(
+		Equal(fmt.Sprintf("http://%s.%s.svc:5000/v3", keystoneName(cp), ns.Name)),
+		"keystoneEndpoint must be the cluster-local Keystone Service URL",
+	)
+	g.Expect(projectedBarbican.Spec.KeystonePublicEndpoint).To(BeEmpty(),
+		"this fixture exposes Keystone nowhere externally, so the child falls back to the internal endpoint")
+
+	g.Expect(projectedBarbican.Spec.Region).To(Equal(c5c3v1alpha1.DefaultRegion),
+		"the region the defaulting webhook materialized reaches the child")
+
+	// Service user: the identity of the INJECTED barbican account (its own
+	// service-barbican project) and that account's materialized consumer Secret.
+	g.Expect(projectedBarbican.Spec.ServiceUser.Username).To(Equal("barbican"))
+	g.Expect(projectedBarbican.Spec.ServiceUser.ProjectName).To(Equal("service-barbican"))
+	g.Expect(projectedBarbican.Spec.ServiceUser.SecretRef.Name).
+		To(Equal(serviceAccountCredentialsSecretName(cp, barbicanSA)),
+			"Barbican service-user password must read the barbican service account's materialized consumer Secret")
+	g.Expect(projectedBarbican.Spec.ServiceUser.SecretRef.Key).To(Equal("password"))
+
+	// The ControlPlane's RESOLVED ESO store selection — the store the child's own
+	// ExternalSecrets are routed through, a separate concern from the
+	// BarbicanSecretStore holding the tenant key material.
+	g.Expect(projectedBarbican.Spec.SecretStoreRef).NotTo(BeNil(), "the resolved store ref must be projected")
+	g.Expect(projectedBarbican.Spec.SecretStoreRef.Kind).To(Equal(commonv1.SecretStoreKindNamespaced))
+	g.Expect(projectedBarbican.Spec.SecretStoreRef.Name).To(Equal(esoTenantStoreName))
+
+	g.Expect(projectedBarbican.Spec.Gateway).To(BeNil(),
+		"this fixture exposes Barbican nowhere externally, so no HTTPRoute is projected")
+	g.Expect(projectedBarbican.Spec.Deployment.Replicas).To(Equal(int32(1)),
+		"services.barbican.replicas overrides the shared operator default")
+
+	// The child is co-located with the ControlPlane, so ownership is a controller
+	// owner reference rather than the labels a cross-namespace child carries.
+	barbicanOwner := metav1.GetControllerOf(projectedBarbican)
+	g.Expect(barbicanOwner).NotTo(BeNil(), "Barbican child must be controller-owned by the ControlPlane")
+	g.Expect(barbicanOwner.Kind).To(Equal("ControlPlane"))
+	g.Expect(barbicanOwner.Name).To(Equal(cp.Name))
+
+	simulateBarbicanReadyWhenPresent(t, ctx, c, barbicanKey)
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeBarbicanReady, metav1.ConditionTrue, itEventuallyTimeout)
+
 	// --- Aggregate: Ready=True. ---
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeReady, metav1.ConditionTrue, itEventuallyTimeout)
 
@@ -1423,6 +1832,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		conditionTypeServiceAccountsReady,
 		conditionTypeGlanceReady,
 		conditionTypePlacementReady,
+		conditionTypeBarbicanReady,
 		conditionTypeReady,
 	} {
 		cond := meta.FindStatusCondition(final.Status.Conditions, condType)
@@ -1439,9 +1849,10 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 		"status.observedGeneration should match the CR generation")
 
 	// status.services reports one entry per configured service, all ready, in the
-	// stable order setServicesStatus produces (keystone, horizon, glance, placement).
-	g.Expect(final.Status.Services).To(HaveLen(4),
-		"four services are configured (keystone, horizon, glance, placement)")
+	// stable order setServicesStatus produces (keystone, horizon, glance, placement,
+	// barbican).
+	g.Expect(final.Status.Services).To(HaveLen(5),
+		"five services are configured (keystone, horizon, glance, placement, barbican)")
 	g.Expect(final.Status.Services[0].Name).To(Equal("keystone"))
 	g.Expect(final.Status.Services[0].Ready).To(BeTrue())
 	g.Expect(final.Status.Services[1].Name).To(Equal("horizon"))
@@ -1451,6 +1862,9 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(final.Status.Services[3].Name).To(Equal("placement"))
 	g.Expect(final.Status.Services[3].Ready).To(BeTrue())
 	g.Expect(final.Status.Services[3].Release).To(Equal("2025.2"))
+	g.Expect(final.Status.Services[4].Name).To(Equal("barbican"))
+	g.Expect(final.Status.Services[4].Ready).To(BeTrue())
+	g.Expect(final.Status.Services[4].Release).To(Equal("2025.2"))
 
 	// Every condition records the generation it was observed against.
 	for _, cond := range final.Status.Conditions {
@@ -1578,6 +1992,31 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 			"both placement Endpoint interfaces advertise the in-cluster Placement API URL (no gateway in this fixture)")
 	}
 
+	// Key-manager catalog (Barbican): the managed key-manager Service and both
+	// interface Endpoints, on the same k-orc-clouds-yaml credential. The Barbican API
+	// listens on 9311 and is served at the root, so the URL carries no path suffix,
+	// and with no gateway in this fixture the public interface has not diverged from
+	// the in-cluster one.
+	bnSvc := &orcv1alpha1.Service{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: barbicanCatalogServiceName(final), Namespace: ns.Name}, bnSvc)).
+		To(Succeed(), "get projected key-manager Service CR")
+	g.Expect(bnSvc.Spec.Resource).NotTo(BeNil())
+	g.Expect(bnSvc.Spec.Resource.Type).To(Equal("key-manager"), "Service type must be key-manager")
+	g.Expect(bnSvc.Spec.CloudCredentialsRef.SecretName).To(Equal(korcCloudsYamlSecretName))
+
+	wantBarbicanURL := fmt.Sprintf("http://%s.%s.svc:9311", barbicanName(final), ns.Name)
+	for _, iface := range []string{"internal", "public"} {
+		bnEP := &orcv1alpha1.Endpoint{}
+		g.Expect(c.Get(ctx, types.NamespacedName{Name: barbicanCatalogEndpointName(final, iface), Namespace: ns.Name}, bnEP)).
+			To(Succeed(), "get projected key-manager %q Endpoint CR", iface)
+		g.Expect(bnEP.Spec.Resource).NotTo(BeNil())
+		g.Expect(bnEP.Spec.Resource.Interface).To(Equal(iface), "Endpoint interface must be %q", iface)
+		g.Expect(string(bnEP.Spec.Resource.ServiceRef)).To(Equal(barbicanCatalogServiceName(final)),
+			"key-manager Endpoint serviceRef must reference the key-manager Service CR")
+		g.Expect(bnEP.Spec.Resource.URL).To(Equal(wantBarbicanURL),
+			"both key-manager Endpoint interfaces advertise the in-cluster Barbican API URL (no gateway in this fixture)")
+	}
+
 	// --- Per-CR OpenBao RemoteKey lock. ---
 	//
 	// On the single-ControlPlane path the admin app-credential PushSecret must
@@ -1598,18 +2037,18 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 // TestIntegration_UnreadyHorizonDoesNotParkBootstrap locks the tail-group
 // isolation contract: a dashboard (Horizon) child that never becomes Ready must
 // NOT park the identity bootstrap (KORC, AdminCredential, Catalog,
-// ServiceAccounts), the image service (Glance), or Placement at the tail. Under
-// the old short-circuiting chain the reconcile stalled at the unready Horizon step
-// and never reached the members behind it; the sequential tail group instead
-// attempts every member on each pass and lets each one self-gate, so everything
-// except HorizonReady converges while HorizonReady — and with it the aggregate
-// Ready — stays False.
+// ServiceAccounts), the image service (Glance), Placement, or Barbican at the
+// tail. Under the old short-circuiting chain the reconcile stalled at the unready
+// Horizon step and never reached the members behind it; the sequential tail group
+// instead attempts every member on each pass and lets each one self-gate, so
+// everything except HorizonReady converges while HorizonReady — and with it the
+// aggregate Ready — stays False.
 //
 // The test drives the full phased bring-up exactly as
 // TestIntegration_FullReconcile_ManagedToReady does but NEVER simulates the
 // Horizon child ready, then asserts the admin ApplicationCredential is still
-// minted and every sub-condition except HorizonReady (GlanceReady and
-// PlacementReady included) reaches True.
+// minted and every sub-condition except HorizonReady (GlanceReady,
+// PlacementReady and BarbicanReady included) reaches True.
 func TestIntegration_UnreadyHorizonDoesNotParkBootstrap(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -1627,18 +2066,20 @@ func TestIntegration_UnreadyHorizonDoesNotParkBootstrap(t *testing.T) {
 	// (envtest has no ESO controller).
 	ensureReadySecretStore(t, ctx, c, esoTenantStoreName, ns.Name)
 
-	// Enable Horizon, Glance and Placement on the managed CR exactly as the
+	// Enable Horizon, Glance, Placement and Barbican on the managed CR exactly as the
 	// full-chain test does — but this test deliberately never simulates the Horizon
 	// child ready.
 	cp := integrationManagedControlPlane("cp", ns.Name)
 	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{}
 	cp.Spec.Services.Glance = integrationGlanceService()
 	cp.Spec.Services.Placement = integrationPlacementService()
+	cp.Spec.Services.Barbican = integrationBarbicanService()
 
 	// Declare the glance service account (project "service", role "member") so the
 	// ServiceAccounts sub-reconciler projects the managed User/Project, the
-	// unmanaged Role import, and the managed RoleAssignment. The placement account
-	// is left to the defaulting webhook, as in the full-chain test.
+	// unmanaged Role import, and the managed RoleAssignment. The placement and
+	// barbican accounts are left to the defaulting webhook, as in the full-chain
+	// test.
 	cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{{
 		Name:    "glance",
 		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
@@ -1713,19 +2154,22 @@ func TestIntegration_UnreadyHorizonDoesNotParkBootstrap(t *testing.T) {
 	simulateCloudsYamlMaterializedWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Phase 5: Catalog (identity + image + placement rows). ---
+	// --- Phase 5: Catalog (identity + image + placement + key-manager rows). ---
 	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
 	simulateGlanceCatalogAvailableWhenPresent(t, ctx, c, cp)
 	simulatePlacementCatalogAvailableWhenPresent(t, ctx, c, cp)
+	simulateBarbicanCatalogAvailableWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	// --- Phase 5.5: Service accounts (the declared glance one and the injected
-	// placement one). ---
+	// placement and barbican ones). ---
 	sa := cp.Spec.KORC.ServiceAccounts[0]
 	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, sa, "member")
-	g.Expect(cp.Spec.KORC.ServiceAccounts).To(HaveLen(2),
-		"the defaulting webhook must inject the placement service account beside the declared glance one")
+	g.Expect(cp.Spec.KORC.ServiceAccounts).To(HaveLen(3),
+		"the defaulting webhook must inject the placement and barbican service accounts "+
+			"beside the declared glance one")
 	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, cp.Spec.KORC.ServiceAccounts[1], "service")
+	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, cp.Spec.KORC.ServiceAccounts[2], "service")
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeServiceAccountsReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	// --- Phase 6: Glance child. ---
@@ -1733,17 +2177,26 @@ func TestIntegration_UnreadyHorizonDoesNotParkBootstrap(t *testing.T) {
 	simulateGlanceReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: glanceName(cp), Namespace: ns.Name})
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeGlanceReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Phase 7: Placement child (the last tail-group member). ---
+	// --- Phase 7: Placement child. ---
 	simulatePlacementDBCredentialSyncWhenPresent(t, ctx, c, cp)
 	simulatePlacementReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: placementName(cp), Namespace: ns.Name})
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypePlacementReady, metav1.ConditionTrue, itEventuallyTimeout)
 
+	// --- Phase 8: Barbican child (the last tail-group member). Its dedicated OpenBao
+	// instance is a gate no other service has, so open it before the child can be
+	// projected at all. ---
+	simulateBarbicanDBCredentialSyncWhenPresent(t, ctx, c, cp)
+	simulateOpenBaoClusterAvailableWhenPresent(t, ctx, c,
+		client.ObjectKey{Name: barbicanOpenBaoName(cp), Namespace: ns.Name})
+	simulateBarbicanReadyWhenPresent(t, ctx, c, client.ObjectKey{Name: barbicanName(cp), Namespace: ns.Name})
+	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeBarbicanReady, metav1.ConditionTrue, itEventuallyTimeout)
+
 	// --- Final assertion: every sub-condition except HorizonReady (GlanceReady,
-	// PlacementReady, NamespacesReady and ESOTenantStoreReady included) is True,
-	// HorizonReady is False, and the aggregate Ready is False. This read is
-	// deterministic because updateStatus re-aggregates Ready on every status write,
-	// so once PlacementReady flips True the aggregate has already been recomputed
-	// against the still-False HorizonReady. ---
+	// PlacementReady, BarbicanReady, NamespacesReady and ESOTenantStoreReady
+	// included) is True, HorizonReady is False, and the aggregate Ready is False.
+	// This read is deterministic because updateStatus re-aggregates Ready on every
+	// status write, so once BarbicanReady flips True the aggregate has already been
+	// recomputed against the still-False HorizonReady. ---
 	final := &c5c3v1alpha1.ControlPlane{}
 	g.Expect(c.Get(ctx, cpKey, final)).To(Succeed(), "get the ControlPlane after the phased bring-up")
 
@@ -2339,6 +2792,13 @@ func TestIntegration_MultiControlPlane_DistinctDBCredentialPaths(t *testing.T) {
 // finalizer would, then removes it to let teardown complete.
 const fakeKORCFinalizer = "openstack.k-orc.cloud/applicationcredential"
 
+// fakeOpenBaoFinalizer mimics the finalizer the openbao-operator adds to an
+// OpenBaoCluster it manages. envtest runs no openbao-operator, so the
+// cross-namespace teardown test injects this finalizer to hold the instance
+// Terminating exactly as the real one would while it unmounts and shuts the server
+// down, then removes it to let the teardown continue.
+const fakeOpenBaoFinalizer = "openbao.org/openbaocluster-finalizer"
+
 // TestIntegration_ControlPlaneDeletion_SequencesORCTeardown proves the
 // ORC-teardown finalizer sequences deletion: the operator deletes the owned
 // K-ORC ApplicationCredential FIRST and holds the ControlPlane CR (and thus,
@@ -2730,6 +3190,78 @@ func TestIntegration_PlacementServiceAccountInjection(t *testing.T) {
 	g.Expect(afterPlacementUpdate.Spec.KORC.ServiceAccounts).To(HaveLen(2),
 		"a re-defaulting UPDATE must not inject a second placement service account")
 	g.Expect(afterPlacementUpdate.Spec.KORC.ServiceAccounts[1].Name).To(Equal("placement"))
+}
+
+// TestIntegration_BarbicanServiceAccountInjection is the Barbican twin of
+// TestIntegration_PlacementServiceAccountInjection, on a ControlPlane that sets all
+// three services: the defaulting webhook must inject the accounts in its table
+// order, so the barbican entry lands third. Like the placement entry it creates a
+// project of its own ("service-barbican") rather than the "service" project the
+// glance entry creates, because two create:true entries naming one project would
+// each adopt the other's Keystone row. Injection is idempotent across a later
+// UPDATE.
+func TestIntegration_BarbicanServiceAccountInjection(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-barbican-inject-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	// A managed ControlPlane with all three services set and NO serviceAccounts of
+	// its own: the defaulting webhook must inject all three accounts BEFORE the
+	// validating webhook's defense-in-depth check (validateProjectedServiceAccount,
+	// once per service) runs, or admission would reject the CR.
+	cp := integrationManagedControlPlane("cp-barbican-inject", ns.Name)
+	cp.Spec.Services.Glance = integrationGlanceService()
+	cp.Spec.Services.Placement = integrationPlacementService()
+	cp.Spec.Services.Barbican = integrationBarbicanService()
+	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeEmpty(), "the fixture declares no service accounts")
+	g.Expect(c.Create(ctx, cp)).To(Succeed(),
+		"create managed ControlPlane with services.glance, services.placement, services.barbican and no serviceAccounts")
+
+	fetched := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed(), "re-fetch defaulted ControlPlane")
+	g.Expect(fetched.Spec.KORC.ServiceAccounts).To(HaveLen(3),
+		"the defaulting webhook must inject one service account per set service")
+	g.Expect(fetched.Spec.KORC.ServiceAccounts[0].Name).To(Equal("glance"),
+		"the glance account is injected first")
+	g.Expect(fetched.Spec.KORC.ServiceAccounts[1].Name).To(Equal("placement"),
+		"the placement account is injected second")
+
+	injected := fetched.Spec.KORC.ServiceAccounts[2]
+	g.Expect(injected.Name).To(Equal("barbican"))
+	g.Expect(injected.Project.Name).To(Equal("service-barbican"),
+		"the barbican account creates a project of its own, not the glance account's")
+	g.Expect(injected.Project.Create).To(BeTrue(), "the service-barbican project is created, not merely referenced")
+	g.Expect(injected.Roles).To(Equal([]string{"service"}),
+		"the injected role is 'service' (identity:validate_token), never 'member'")
+	g.Expect(injected.UserName).To(Equal("barbican"), "userName defaults to the account name")
+	g.Expect(injected.TargetNamespace).To(BeEmpty(),
+		"Barbican is co-located here, so the account delivers into the ControlPlane's own namespace")
+
+	// Idempotency: an UPDATE touching an unrelated field must NOT inject a fourth
+	// entry. The reconciler writes status (bumping resourceVersion), so drive the
+	// update through an Eventually that re-fetches and retries on the inevitable
+	// conflict.
+	g.Eventually(func() error {
+		latest := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, client.ObjectKeyFromObject(cp), latest); err != nil {
+			return err
+		}
+		if latest.Labels == nil {
+			latest.Labels = map[string]string{}
+		}
+		latest.Labels["barbican-injection-test"] = "touched"
+		return c.Update(ctx, latest)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "update an unrelated field")
+
+	afterBarbicanUpdate := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), afterBarbicanUpdate)).To(Succeed(), "re-fetch after the update")
+	g.Expect(afterBarbicanUpdate.Spec.KORC.ServiceAccounts).To(HaveLen(3),
+		"a re-defaulting UPDATE must not inject a second barbican service account")
+	g.Expect(afterBarbicanUpdate.Spec.KORC.ServiceAccounts[2].Name).To(Equal("barbican"))
 }
 
 // TestIntegration_CredentialRotation_ServiceAccountValidation pins the two CEL
@@ -4114,9 +4646,15 @@ func TestIntegration_DedicatedBackingServices_TransitionRejected(t *testing.T) {
 // TestIntegration_DedicatedNamespaces exercises the whole cross-namespace path
 // against a real API server: the operator creates the namespace, provisions the
 // backing services and the tenant store IN it, materialises the credential
-// material there, projects the Keystone child there — all without an owner
+// material there, projects the Keystone and Barbican children (and the dedicated
+// OpenBao ensemble behind Barbican's secret store) there — all without an owner
 // reference, which the API server would reject across a namespace — and then, on
 // deletion, tears every one of them down by hand and deletes the namespace.
+//
+// Barbican is what puts an ORDER on that teardown. Its OpenBao instance carries the
+// openbao-operator's finalizer, and that finalizer runs under the tenant admitting
+// this namespace, so the tenant and the namespace must outlive the instance. The
+// test holds the instance Terminating behind a fake finalizer to pin the invariant.
 //
 // envtest runs no namespace controller, so a deleted namespace never actually
 // disappears: it is asserted on its DeletionTimestamp, which is what the operator
@@ -4140,6 +4678,15 @@ func TestIntegration_DedicatedNamespaces(t *testing.T) {
 		Name:      keystoneNS,
 		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
 	}
+	// Barbican shares that namespace. Two services in one namespace yield ONE
+	// teardown assignment, and Barbican is the service whose teardown has the most to
+	// sequence: its dedicated OpenBao instance holds the openbao-operator's finalizer,
+	// and the tenant admitting the namespace is what that finalizer runs under.
+	cp.Spec.Services.Barbican = integrationBarbicanService()
+	cp.Spec.Services.Barbican.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      keystoneNS,
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
 	// A service account delivering its credentials into the dedicated Keystone
 	// namespace: its publish leg rides that namespace's tenant store, so the source
 	// Secret, PushSecret, and consumer ExternalSecret must land there — carrying the
@@ -4152,6 +4699,15 @@ func TestIntegration_DedicatedNamespaces(t *testing.T) {
 	}}
 	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR with a dedicated Keystone namespace")
 	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	// The defaulting webhook injected the barbican account beside the declared nova
+	// one, targeting the namespace Barbican is placed in.
+	g.Expect(cp.Spec.KORC.ServiceAccounts).To(HaveLen(2),
+		"the defaulting webhook must inject the barbican service account beside the declared nova one")
+	barbicanSA := cp.Spec.KORC.ServiceAccounts[1]
+	g.Expect(barbicanSA.Name).To(Equal("barbican"))
+	g.Expect(barbicanSA.TargetNamespace).To(Equal(keystoneNS),
+		"the injected account delivers into the namespace its service is placed in")
 
 	// --- The namespace is created and stamped with the ownership labels. ---
 	created := &corev1.Namespace{}
@@ -4287,14 +4843,16 @@ func TestIntegration_DedicatedNamespaces(t *testing.T) {
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeAdminCredentialReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	simulateCatalogServiceEndpointAvailableWhenPresent(t, ctx, c, cp)
+	simulateBarbicanCatalogAvailableWhenPresent(t, ctx, c, cp)
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeCatalogReady, metav1.ConditionTrue, itEventuallyTimeout)
 
-	// --- Service account: the K-ORC children converge in the ControlPlane's own
+	// --- Service accounts: the K-ORC children converge in the ControlPlane's own
 	// namespace, but the publish leg lands in the dedicated Keystone namespace,
 	// carrying the ownership labels and reading the OpenBao path keyed on THAT
 	// namespace. ---
 	sa := cp.Spec.KORC.ServiceAccounts[0]
 	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, sa, "member")
+	simulateServiceAccountConvergedWhenPresent(t, ctx, c, cp, barbicanSA, "service")
 	waitForControlPlaneCondition(t, ctx, c, cpKey, conditionTypeServiceAccountsReady, metav1.ConditionTrue, itEventuallyTimeout)
 
 	saPush := &esov1alpha1.PushSecret{}
@@ -4323,15 +4881,64 @@ func TestIntegration_DedicatedNamespaces(t *testing.T) {
 	}, &esov1alpha1.PushSecret{}))).To(BeTrue(),
 		"no service-account delivery object may land in the ControlPlane's own namespace")
 
-	// status.serviceAccounts[].secretNamespace reports the delivery namespace.
+	// status.serviceAccounts[].secretNamespace reports the delivery namespace, for
+	// the declared nova account and the injected barbican one alike.
 	converged := &c5c3v1alpha1.ControlPlane{}
 	g.Expect(c.Get(ctx, cpKey, converged)).To(Succeed())
-	g.Expect(converged.Status.ServiceAccounts).To(HaveLen(1))
-	g.Expect(converged.Status.ServiceAccounts[0].SecretNamespace).To(Equal(keystoneNS),
-		"status must report the delivery namespace the credentials Secret lives in")
+	g.Expect(converged.Status.ServiceAccounts).To(HaveLen(2))
+	for i, status := range converged.Status.ServiceAccounts {
+		g.Expect(status.SecretNamespace).To(Equal(keystoneNS),
+			"status must report the delivery namespace the credentials Secret of account %d lives in", i)
+	}
+
+	// --- The Barbican ensemble follows its service into that namespace too. Open the
+	// credential gate, then let the dedicated OpenBao instance serve so the secret
+	// store and the Barbican child are projected beside it: those three are the wait
+	// set the teardown below has to sequence. ---
+	simulateBarbicanDBCredentialSyncWhenPresent(t, ctx, c, cp)
+
+	instanceName := barbicanOpenBaoName(cp)
+	instanceKey := client.ObjectKey{Name: instanceName, Namespace: keystoneNS}
+	simulateOpenBaoClusterAvailableWhenPresent(t, ctx, c, instanceKey)
+
+	tenantKey := client.ObjectKey{Name: instanceName + barbicanOpenBaoTenantSuffix, Namespace: keystoneNS}
+	g.Expect(c.Get(ctx, tenantKey, &openbaov1alpha1.OpenBaoTenant{})).To(Succeed(),
+		"the OpenBaoTenant admitting the Barbican namespace must be projected into it")
+
+	authDelegatorKey := client.ObjectKey{Name: barbicanOpenBaoAuthDelegatorName(instanceName, keystoneNS)}
+	g.Expect(c.Get(ctx, authDelegatorKey, &rbacv1.ClusterRoleBinding{})).To(Succeed(),
+		"the auth-delegator ClusterRoleBinding must be projected")
+
+	projectedBarbican := &barbicanv1alpha1.Barbican{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Name: barbicanName(cp), Namespace: keystoneNS}, projectedBarbican)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the Barbican child must be projected into its assigned namespace")
+	g.Expect(projectedBarbican.OwnerReferences).To(BeEmpty(),
+		"the API server rejects a cross-namespace controller owner reference")
+	g.Expect(projectedBarbican.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
 
 	// --- Deletion: nothing garbage-collects a cross-namespace child, so the
-	// finalizer must delete them by hand and take the namespace down with them. ---
+	// finalizer must delete them by hand and take the namespace down with them.
+	//
+	// The instance is the one child whose own operator holds a finalizer over it, so
+	// inject a fake one and hold it Terminating exactly as the openbao-operator would.
+	// It is the wait set's whole point: the tenant that admits this namespace to the
+	// openbao-operator — and the namespace itself — must outlive the instance, or the
+	// instance's finalizer loses the RBAC it runs under and the namespace wedges. ---
+	g.Eventually(func() error {
+		instance := &openbaov1alpha1.OpenBaoCluster{}
+		if err := c.Get(ctx, instanceKey, instance); err != nil {
+			return err
+		}
+		if controllerutil.ContainsFinalizer(instance, fakeOpenBaoFinalizer) {
+			return nil
+		}
+		controllerutil.AddFinalizer(instance, fakeOpenBaoFinalizer)
+		return c.Update(ctx, instance)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"inject the fake openbao-operator finalizer on the dedicated instance")
+
 	live := &c5c3v1alpha1.ControlPlane{}
 	g.Expect(c.Get(ctx, cpKey, live)).To(Succeed())
 	g.Expect(c.Delete(ctx, live)).To(Succeed(), "delete the ControlPlane")
@@ -4341,6 +4948,66 @@ func TestIntegration_DedicatedNamespaces(t *testing.T) {
 		return apierrors.IsNotFound(err)
 	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
 		"the cross-namespace Keystone child must be deleted explicitly — no GC cascade reaches it")
+
+	// The instance is deleted first and held Terminating by the fake finalizer.
+	g.Eventually(func() bool {
+		instance := &openbaov1alpha1.OpenBaoCluster{}
+		if err := c.Get(ctx, instanceKey, instance); err != nil {
+			return false
+		}
+		return !instance.DeletionTimestamp.IsZero()
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the operator must delete the dedicated OpenBao instance as part of the namespace teardown")
+
+	// Sequencing invariant: while the instance is still Terminating, the tenant it
+	// runs under survives, the ControlPlane finalizer holds, and the namespace is NOT
+	// deleted. The window spans a full namespaceRequeueAfter, so the sweep is
+	// observed re-running against the still-Terminating instance rather than merely
+	// not having run again yet.
+	g.Consistently(func() bool {
+		gotCP := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, gotCP); err != nil {
+			return false
+		}
+		if !controllerutil.ContainsFinalizer(gotCP, controlPlaneORCFinalizer) {
+			return false
+		}
+		if err := c.Get(ctx, tenantKey, &openbaov1alpha1.OpenBaoTenant{}); err != nil {
+			return false
+		}
+		namespace := &corev1.Namespace{}
+		if err := c.Get(ctx, client.ObjectKey{Name: keystoneNS}, namespace); err != nil {
+			return false
+		}
+		return namespace.DeletionTimestamp.IsZero()
+	}, namespaceRequeueAfter+5*time.Second, itPollInterval).Should(BeTrue(),
+		"the tenant, the ControlPlane finalizer and the namespace must all outlive a Terminating OpenBao instance")
+
+	// Release the instance by removing the fake finalizer.
+	g.Eventually(func() error {
+		instance := &openbaov1alpha1.OpenBaoCluster{}
+		err := c.Get(ctx, instanceKey, instance)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		controllerutil.RemoveFinalizer(instance, fakeOpenBaoFinalizer)
+		return c.Update(ctx, instance)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"remove the fake openbao-operator finalizer from the instance")
+
+	// Only now may the tenant follow. The cluster-scoped auth-delegator binding goes
+	// with it: no namespace deletion and no owner-reference cascade ever reaches a
+	// cluster-scoped object, so the teardown is the only thing that can collect it.
+	g.Eventually(func() bool {
+		instanceErr := c.Get(ctx, instanceKey, &openbaov1alpha1.OpenBaoCluster{})
+		tenantErr := c.Get(ctx, tenantKey, &openbaov1alpha1.OpenBaoTenant{})
+		bindingErr := c.Get(ctx, authDelegatorKey, &rbacv1.ClusterRoleBinding{})
+		return apierrors.IsNotFound(instanceErr) && apierrors.IsNotFound(tenantErr) && apierrors.IsNotFound(bindingErr)
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the tenant and the cluster-scoped auth-delegator binding must be removed once the instance is gone")
 
 	// envtest runs no namespace controller, so a deleted namespace stays Terminating
 	// forever. The DeletionTimestamp is what the operator is responsible for.
