@@ -357,6 +357,14 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 		addCache(effectivePlacementCache(cp), placementNS, placementCacheDeclaredAt(cp))
 	}
 
+	// Barbican's database and cache are gated on the DECLARATION for the same
+	// no-consumer-no-instance reason as Placement's above.
+	if cp.Spec.Services.Barbican != nil {
+		barbicanNS := cp.BarbicanNamespace()
+		addDatabase(effectiveBarbicanDatabase(cp), barbicanNS, barbicanDatabaseDeclaredAt(cp))
+		addCache(effectiveBarbicanCache(cp), barbicanNS, barbicanCacheDeclaredAt(cp))
+	}
+
 	return instances
 }
 
@@ -408,6 +416,20 @@ func placementDatabaseDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 func placementCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 	if cp.DedicatedPlacementCache() != nil {
 		return "spec.services.placement.dedicatedBackingServices.cache"
+	}
+	return "spec.infrastructure.cache"
+}
+
+func barbicanDatabaseDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedBarbicanDatabase() != nil {
+		return "spec.services.barbican.dedicatedBackingServices.database"
+	}
+	return "spec.infrastructure.database"
+}
+
+func barbicanCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.DedicatedBarbicanCache() != nil {
+		return "spec.services.barbican.dedicatedBackingServices.cache"
 	}
 	return "spec.infrastructure.cache"
 }

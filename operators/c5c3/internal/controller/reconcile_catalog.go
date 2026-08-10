@@ -238,6 +238,17 @@ func managedCatalogRows(cp *c5c3v1alpha1.ControlPlane) []managedCatalogServiceRo
 			},
 		})
 	}
+	if cp.Spec.Services.Barbican != nil {
+		rows = append(rows, managedCatalogServiceRow{
+			serviceType: "key-manager",
+			serviceName: "barbican",
+			crName:      barbicanCatalogServiceName(cp),
+			endpoints: []managedCatalogEndpointRow{
+				{iface: "internal", crName: barbicanCatalogEndpointName(cp, "internal"), url: barbicanEndpointURL(cp)},
+				{iface: "public", crName: barbicanCatalogEndpointName(cp, "public"), url: barbicanCatalogURL(cp)},
+			},
+		})
+	}
 	return rows
 }
 
@@ -436,4 +447,37 @@ func placementCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
 		return fmt.Sprintf("https://%s", gw.Hostname)
 	}
 	return placementEndpointURL(cp)
+}
+
+// barbicanCatalogServiceName / barbicanCatalogEndpointName return the
+// deterministic names of the owned K-ORC Service/Endpoint CRs registering the
+// key-manager catalog entry, under the generic naming convention (see
+// managedCatalogServiceRow): "{cp}-key-manager-service" and, per interface,
+// "{cp}-key-manager-endpoint-{iface}".
+func barbicanCatalogServiceName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cp.Name + "-key-manager-service"
+}
+
+func barbicanCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) string {
+	return cp.Name + "-key-manager-endpoint-" + iface
+}
+
+// barbicanCatalogURL returns the URL registered for the K-ORC key-manager catalog
+// PUBLIC Endpoint. Like the image and placement rows, the key-manager service
+// registers both a public and an internal endpoint from the start; the internal
+// endpoint always advertises the in-cluster Service URL (barbicanEndpointURL),
+// while the public one prefers an explicit services.barbican.publicEndpoint (the
+// only way to advertise a non-443 external port), then the externally routable
+// gateway hostname ("https://{gateway.hostname}"), and falls back to that same
+// in-cluster URL when Barbican is not exposed via a Gateway. Unlike
+// keystoneCatalogURL there is no "/v3" path suffix: the Barbican API is served at
+// the root.
+func barbicanCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
+	if pe := cp.Spec.Services.Barbican.PublicEndpoint; pe != "" {
+		return pe
+	}
+	if gw := cp.Spec.Services.Barbican.Gateway; gw != nil {
+		return fmt.Sprintf("https://%s", gw.Hostname)
+	}
+	return barbicanEndpointURL(cp)
 }

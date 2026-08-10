@@ -1292,3 +1292,108 @@ func TestManagedInfraInstances_PlacementDedicatedBackingServices(t *testing.T) {
 	g.Expect(byName).To(HaveKey("MariaDB/openstack-db"))
 	g.Expect(byName).To(HaveKey("Memcached/openstack-memcached"))
 }
+
+// --- Barbican: a fifth database + cache consumer ---
+
+// TestManagedInfraInstances_BarbicanEnumeratedOnlyWhenDeclared pins the
+// no-consumer-no-instance rule for Barbican: an undeclared Barbican enumerates
+// nothing, and a co-located declared Barbican resolves to the SAME shared database
+// and cache as Keystone, so the entries dedup away rather than provisioning a
+// second set.
+func TestManagedInfraInstances_BarbicanEnumeratedOnlyWhenDeclared(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	// Without services.barbican: only Keystone's shared database and cache.
+	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2))
+
+	// With services.barbican sharing the ControlPlane's namespace: Barbican
+	// resolves to the same shared instances, so the (kind, namespace, name) dedup
+	// collapses them, still two.
+	cp.Spec.Services.Barbican = &c5c3v1alpha1.ServiceBarbicanSpec{
+		SecretStore: c5c3v1alpha1.ServiceBarbicanSecretStoreSpec{
+			Dedicated: &c5c3v1alpha1.BarbicanDedicatedSecretStoreSpec{},
+		},
+	}
+	g.Expect(r.managedInfraInstances(cp)).To(HaveLen(2),
+		"a co-located Barbican shares Keystone's instances, so nothing new is enumerated")
+}
+
+// TestManagedInfraInstances_BarbicanDedicatedBackingServices verifies a Barbican
+// that opts into a dedicated database and a dedicated cache is enumerated as its
+// own pair of instances, each declared at the dedicated path and placed in the
+// namespace the Barbican service occupies. The dedicated database carries
+// credentialsMode Static, the only mode the webhook admits for one: the OpenBao
+// database engine is bootstrapped per namespace against the SHARED cluster, so no
+// engine role could issue credentials for it.
+func TestManagedInfraInstances_BarbicanDedicatedBackingServices(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := infraTestScheme(t)
+	cp := managedInfraControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+		Barbican: &c5c3v1alpha1.ServiceBarbicanSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "key-manager"},
+			SecretStore: c5c3v1alpha1.ServiceBarbicanSecretStoreSpec{
+				Dedicated: &c5c3v1alpha1.BarbicanDedicatedSecretStoreSpec{},
+			},
+			DedicatedBackingServices: &c5c3v1alpha1.BarbicanDedicatedBackingServicesSpec{
+				Database: &commonv1.DatabaseSpec{
+					ClusterRef:      &corev1.LocalObjectReference{Name: "cp-barbican-db"},
+					Database:        "barbican",
+					SecretRef:       commonv1.SecretRefSpec{Name: "barbican-db"},
+					CredentialsMode: commonv1.CredentialsModeStatic,
+					Replicas:        1,
+				},
+				Cache: &commonv1.CacheSpec{
+					ClusterRef: &corev1.LocalObjectReference{Name: "cp-barbican-memcached"},
+					Backend:    "dogpile.cache.pymemcache",
+					Replicas:   1,
+				},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	instances := r.managedInfraInstances(cp)
+	byName := make(map[string]infraInstance, len(instances))
+	for _, inst := range instances {
+		byName[inst.kind+"/"+inst.name] = inst
+	}
+	g.Expect(byName).To(HaveKey("MariaDB/cp-barbican-db"))
+	g.Expect(byName["MariaDB/cp-barbican-db"].declaredAt).To(
+		Equal("spec.services.barbican.dedicatedBackingServices.database"),
+	)
+	g.Expect(byName["MariaDB/cp-barbican-db"].namespace).To(Equal("key-manager"),
+		"the backing services follow the service into its namespace")
+	g.Expect(byName).To(HaveKey("Memcached/cp-barbican-memcached"))
+	g.Expect(byName["Memcached/cp-barbican-memcached"].declaredAt).To(
+		Equal("spec.services.barbican.dedicatedBackingServices.cache"),
+	)
+	g.Expect(byName["Memcached/cp-barbican-memcached"].namespace).To(Equal("key-manager"))
+	// Keystone still shares the ControlPlane's own instances.
+	g.Expect(byName).To(HaveKey("MariaDB/openstack-db"))
+	g.Expect(byName).To(HaveKey("Memcached/openstack-memcached"))
+}
+
+// TestBarbicanDeclaredAt_FallsBackToTheSharedBlock is the other half of the
+// declaredAt contract: a Barbican that declares no dedicated instance resolves to
+// the shared block, and the condition message names spec.infrastructure rather
+// than a per-service path nobody wrote.
+func TestBarbicanDeclaredAt_FallsBackToTheSharedBlock(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := managedInfraControlPlane()
+	cp.Spec.Services.Barbican = &c5c3v1alpha1.ServiceBarbicanSpec{
+		SecretStore: c5c3v1alpha1.ServiceBarbicanSecretStoreSpec{
+			Dedicated: &c5c3v1alpha1.BarbicanDedicatedSecretStoreSpec{},
+		},
+	}
+
+	g.Expect(barbicanDatabaseDeclaredAt(cp)).To(Equal("spec.infrastructure.database"))
+	g.Expect(barbicanCacheDeclaredAt(cp)).To(Equal("spec.infrastructure.cache"))
+}
