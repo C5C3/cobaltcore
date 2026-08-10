@@ -22,6 +22,8 @@ ARG KEYSTONE_TEMPEST_PLUGIN_VERSION=0.19.0
 # its version is pinned by upper-constraints like the other unversioned deps.
 # osc-placement is the placement plugin for that CLI, used by the
 # full-ControlPlane E2E placement round-trip (resource class list).
+# python-barbicanclient provides the `openstack secret` commands the
+# full-ControlPlane E2E verify Job round-trips.
 RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target=/tmp/upper-constraints.txt \
     uv pip install --prefix /var/lib/openstack \
         --constraint /tmp/upper-constraints.txt \
@@ -30,6 +32,7 @@ RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target
         keystone-tempest-plugin==${KEYSTONE_TEMPEST_PLUGIN_VERSION} \
         python-openstackclient \
         osc-placement \
+        python-barbicanclient \
         python-subunit \
         junitxml \
         defusedxml

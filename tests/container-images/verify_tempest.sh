@@ -116,6 +116,15 @@ test_barbican_tempest_plugin_importable() {
   assert_eq "import barbican_tempest_plugin exits 0" "0" "$exit_code"
 }
 
+# --- Test 9: python-barbicanclient is importable ---
+test_barbicanclient_importable() {
+  echo "Test: python-barbicanclient is importable"
+  local exit_code=0
+  docker run --rm "$IMAGE" python3 -c 'import barbicanclient' > /dev/null 2>&1 || exit_code=$?
+
+  assert_eq "import barbicanclient exits 0" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== tempest container verification tests ==="
 echo "Image: $IMAGE"
@@ -135,6 +144,8 @@ echo ""
 test_osc_placement_cli_registered
 echo ""
 test_barbican_tempest_plugin_importable
+echo ""
+test_barbicanclient_importable
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
