@@ -413,11 +413,12 @@ jobs:
     # 4 vCPU (was 2): the keystone envtest leg sat at ~14m on a 2-vCPU runner
     # against the 15m timeout, and the password-rotation integration
     # tests tipped it over. envtest is CPU-bound, so the larger runner pulls the
-    # wall-clock back down. Even so the keystone controller envtest
-    # suite alone runs ~14m and intermittently brushed the 15m job wall (a 15m07s
-    # run was cancelled), so the limit is raised to 30m for headroom.
+    # wall-clock back down. The c5c3 controller envtest suite has since grown to
+    # ~22m (barbican made it five services), so the Makefile's go-test timeout is
+    # 30m — and the job wall sits above it at 35m so a hung suite still panics
+    # with a goroutine dump instead of being killed silently by the runner.
     runs-on: self-hosted
-    timeout-minutes: 30
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
