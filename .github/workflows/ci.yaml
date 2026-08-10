@@ -169,6 +169,7 @@ jobs:
               - 'operators/horizon/**'
               - 'operators/glance/**'
               - 'operators/placement/**'
+              - 'operators/barbican/**'
               - 'tests/e2e/c5c3/**'
               # The federated suite lives outside tests/e2e/ so the per-CR
               # e2e-operator matrix leg does not sweep it up. It therefore needs
@@ -1510,10 +1511,12 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/horizon-operator:dev
             ${{ env.IMAGE_PREFIX }}/glance-operator:dev
             ${{ env.IMAGE_PREFIX }}/placement-operator:dev
+            ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
             ${{ env.IMAGE_PREFIX }}/horizon:2025.2
             ${{ env.IMAGE_PREFIX }}/glance:2025.2
             ${{ env.IMAGE_PREFIX }}/placement:2025.2
+            ${{ env.IMAGE_PREFIX }}/barbican:2025.2
             ${{ env.IMAGE_PREFIX }}/tempest:2025.2
       - name: Load images into kind
         run: |
@@ -1522,10 +1525,12 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/horizon:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/glance:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2025.2 --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2025.2 --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Prepare the shared infra (TLS, OpenBao + per-CR seeding, ESO store) and
       # suspend the Flux ControlPlane stack; the operators are deployed below.
@@ -1574,6 +1579,25 @@ jobs:
           OPERATOR: placement
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/placement-operator
           NAMESPACE: placement-system
+      # barbican-operator before c5c3-operator so the Barbican and
+      # BarbicanSecretStore CRDs exist before c5c3-operator projects the
+      # Barbican child and its dedicated secret store. barbican-system is
+      # also the namespace c5c3-operator assumes the barbican-operator runs
+      # in when it binds the TokenRequest grant.
+      #
+      # BARBICAN_SECRET_STORE_GRANTS is deliberately unset here, unlike on the
+      # e2e-operator and e2e-chaos legs. Those point the store at the shared
+      # proving instance, whose provisioner account the chart has to name up
+      # front. This job's store hangs off the instance the ControlPlane
+      # creates, and the ControlPlane projects the matching TokenRequest Role
+      # and RoleBinding for that instance's own provisioner account at
+      # runtime.
+      - name: Deploy barbican-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: barbican
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator
+          NAMESPACE: barbican-system
       - name: Deploy c5c3-operator
         run: hack/ci-deploy-operator.sh
         env:

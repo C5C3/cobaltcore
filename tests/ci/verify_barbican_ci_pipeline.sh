@@ -8,9 +8,11 @@
 # FILTER_barbican env, ALL_OPERATORS membership, test/helm-validate/cleanup
 # matrices, the codecov flags, the BARBICAN_SECRET_STORE_GRANTS passthrough
 # on the e2e-operator deploy step, both e2e-chaos legs with their ungated image
-# load and operator deploy, the barbican entry in the build-e2e-images operator
-# union, the tempest service leg, and that ci-resolve-changes.sh emits barbican
-# in the e2e-operators matrix once barbican is a known operator.
+# load and operator deploy, the e2e-controlplane filter entry with its image
+# load and grant-free operator deploy, the barbican entry in the
+# build-e2e-images operator union, the tempest service leg, and that
+# ci-resolve-changes.sh emits barbican in the e2e-operators matrix once
+# barbican is a known operator.
 # No CI job runs this script; it is a hand-run check of the workflow wiring.
 # Usage: bash tests/ci/verify_barbican_ci_pipeline.sh
 
@@ -351,6 +353,77 @@ test_barbican_chaos_wiring() {
     "if:"
 }
 
+# ── e2e-controlplane wiring ─────────────────────────────────────────────────
+
+test_barbican_controlplane_filter() {
+  echo "Test: the e2e_controlplane paths-filter covers the barbican operator"
+
+  # The full-chain suite hard-requires the barbican-operator, so a barbican-only
+  # change that skipped this job would let the ControlPlane's barbican leg rot
+  # unnoticed until an unrelated PR touched one of the other five globs.
+  local filter_block
+  filter_block=$(extract_paths_filter_block "$CI_YAML" "e2e_controlplane")
+
+  assert_contains \
+    "e2e_controlplane filter includes operators/barbican/**" \
+    "$filter_block" \
+    "- 'operators/barbican/**'"
+}
+
+test_barbican_controlplane_wiring() {
+  echo "Test: e2e-controlplane loads the barbican images and deploys the operator"
+
+  # Scope every needle to the e2e-controlplane job for the reason the e2e-chaos
+  # test gives: the same image names occur in the build, chaos and tempest jobs.
+  local cp_section pull_step kind_load_step deploy_step
+  cp_section=$(extract_yaml_job_section "$CI_YAML" "e2e-controlplane")
+  pull_step=$(extract_yaml_step "$cp_section" "Load E2E images")
+
+  assert_contains \
+    "the GHCR pull step lists the barbican-operator image" \
+    "$pull_step" \
+    "IMAGE_PREFIX }}/barbican-operator:dev"
+
+  assert_contains \
+    "the GHCR pull step lists the barbican service image" \
+    "$pull_step" \
+    "IMAGE_PREFIX }}/barbican:2025.2"
+
+  kind_load_step=$(extract_yaml_step "$cp_section" "Load images into kind")
+
+  assert_contains \
+    "the kind-load step loads the barbican-operator image" \
+    "$kind_load_step" \
+    "IMAGE_PREFIX }}/barbican-operator:dev"
+
+  assert_contains \
+    "the kind-load step loads the barbican service image" \
+    "$kind_load_step" \
+    "IMAGE_PREFIX }}/barbican:2025.2"
+
+  deploy_step=$(extract_yaml_step "$cp_section" "Deploy barbican-operator")
+
+  assert_contains \
+    "e2e-controlplane deploys the barbican operator" \
+    "$deploy_step" \
+    "OPERATOR: barbican"
+
+  assert_contains \
+    "e2e-controlplane deploys the barbican operator into barbican-system" \
+    "$deploy_step" \
+    "NAMESPACE: barbican-system"
+
+  # This job's store hangs off the OpenBaoCluster the ControlPlane creates, and
+  # the ControlPlane projects the TokenRequest Role and RoleBinding for that
+  # instance's own provisioner account. A chart-level grant copied from the
+  # e2e-operator or e2e-chaos deploy would name the proving instance's account
+  # instead, so it would neither help the store nor stay scoped.
+  assert_not_contains \
+    "the controlplane deploy sets no static secret-store grant" \
+    "$deploy_step" \
+    "BARBICAN_SECRET_STORE_GRANTS"
+}
+
 # ── build-e2e-images wiring ─────────────────────────────────────────────────
 
 test_barbican_build_is_unconditional() {
@@ -568,6 +641,10 @@ echo ""
 test_barbican_chaos_suites
 echo ""
 test_barbican_chaos_wiring
+echo ""
+test_barbican_controlplane_filter
+echo ""
+test_barbican_controlplane_wiring
 echo ""
 test_barbican_build_is_unconditional
 echo ""
