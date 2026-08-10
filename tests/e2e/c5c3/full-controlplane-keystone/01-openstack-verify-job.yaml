@@ -7,14 +7,16 @@
 # clouds.yaml (the minted, OpenBao-round-tripped application credential
 # delivered to the per-CR k-orc-clouds-yaml Secret by the credential chain) and
 # runs `openstack token issue` + `openstack catalog list` to prove the
-# credential actually works end-to-end and that the identity, image, and
-# placement services are catalogued. It also lists the role assignments of the
-# INJECTED "glance" and "placement" service accounts and greps for the "service"
-# role, proving the RoleAssignments landed in Keystone, uploads a real image
-# through the projected Glance endpoint into the Garage S3 backend, waits for it
-# to reach "active", and deletes it — proving the image service works
-# end-to-end, not just catalogued — and lists the placement resource classes
-# through the projected Placement endpoint for the same reason.
+# credential actually works end-to-end and that the identity, image, placement,
+# and key-manager services are catalogued. It also lists the role assignments of
+# the INJECTED "glance", "placement", and "barbican" service accounts and greps
+# for the "service" role, proving the RoleAssignments landed in Keystone, uploads
+# a real image through the projected Glance endpoint into the Garage S3 backend,
+# waits for it to reach "active", and deletes it (proving the image service works
+# end-to-end rather than only being catalogued), lists the placement resource
+# classes through the projected Placement endpoint for the same reason, and
+# stores a secret through the projected Barbican endpoint, reads its payload back
+# and compares it byte for byte against the stored literal.
 #
 # the orc-system copy of k-orc-clouds-yaml was removed; the
 # operator now materialises the per-CR k-orc-clouds-yaml Secret ONLY into the
@@ -28,10 +30,11 @@
 # OpenStack client. The e2e-controlplane CI job loads ghcr.io/c5c3/tempest:2025.2
 # into kind (the tag CI builds — there is no :latest), so the image is pinned to
 # that tag with imagePullPolicy: IfNotPresent to use the kind-loaded copy rather
-# than pulling from GHCR. Behind the chainsaw presence guard the verify step
-# never runs on a cluster that lacks the stack. The `admin` cloud entry name is
-# the cloudName K-ORC writes into the clouds.yaml (spec.korc.adminCredential in
-# 00-controlplane-cr.yaml).
+# than pulling from GHCR. The `openstack secret` subcommands come from the
+# python-barbicanclient plugin the same image bundles. Behind the chainsaw
+# presence guard the verify step never runs on a cluster that lacks the stack.
+# The `admin` cloud entry name is the cloudName K-ORC writes into the clouds.yaml
+# (spec.korc.adminCredential in 00-controlplane-cr.yaml).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -61,12 +64,17 @@ spec:
               openstack --os-cloud admin catalog list | grep -qi image
               echo "== placement service catalogued =="
               openstack --os-cloud admin catalog list | grep -qi placement
+              echo "== key-manager service catalogued =="
+              openstack --os-cloud admin catalog list | grep -qi key-manager
               echo "== openstack --os-cloud admin role assignment list --names --user glance =="
               openstack --os-cloud admin role assignment list --names --user glance
               openstack --os-cloud admin role assignment list --user glance --names -f value -c Role | grep -qx service
               echo "== openstack --os-cloud admin role assignment list --names --user placement =="
               openstack --os-cloud admin role assignment list --names --user placement
               openstack --os-cloud admin role assignment list --user placement --names -f value -c Role | grep -qx service
+              echo "== openstack --os-cloud admin role assignment list --names --user barbican =="
+              openstack --os-cloud admin role assignment list --names --user barbican
+              openstack --os-cloud admin role assignment list --user barbican --names -f value -c Role | grep -qx service
               echo "== image upload round-trip =="
               # The projected K-ORC catalog rows carry no region — K-ORC's
               # EndpointResourceSpec has no region field — while the mounted
@@ -96,6 +104,21 @@ spec:
               # the endpoint is catalogued.
               OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin resource class list
               echo "OK: placement answered a resource-class listing through the projected endpoint"
+              echo "== barbican secret round-trip =="
+              # Store a secret and read its payload back. This is the only check
+              # that spans the whole key-manager chain: the catalog entry resolves
+              # the endpoint, Barbican validates the token against Keystone, and the
+              # payload travels through the vault plugin into the dedicated OpenBao
+              # instance and back out. Catalogue-only checks miss every step after
+              # the first. The key-manager rows carry no region either, so this runs
+              # against the region-stripped copy for the reason documented above.
+              SECRET_PAYLOAD='c5c3-e2e-barbican-payload'
+              SECRET_HREF="$(OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin secret store --name e2e-roundtrip --payload "${SECRET_PAYLOAD}" -f value -c 'Secret href')"
+              test -n "${SECRET_HREF}" || { echo "ERROR: secret store returned no href"; exit 1; }
+              RETRIEVED="$(OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin secret get -p "${SECRET_HREF}" -f value -c Payload)"
+              test "${RETRIEVED}" = "${SECRET_PAYLOAD}" || { echo "ERROR: retrieved payload '${RETRIEVED}' != stored payload '${SECRET_PAYLOAD}'"; exit 1; }
+              OS_CLIENT_CONFIG_FILE=/tmp/clouds-noregion.yaml openstack --os-cloud admin secret delete "${SECRET_HREF}"
+              echo "OK: secret round-trip payload matches the stored literal, and the secret was deleted"
           volumeMounts:
             - name: clouds
               mountPath: /etc/openstack

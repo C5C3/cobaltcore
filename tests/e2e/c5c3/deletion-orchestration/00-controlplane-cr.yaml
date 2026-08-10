@@ -11,11 +11,12 @@
 # use, so this test exercises the production-shaped infrastructure.
 #
 # This CR exists to be DELETED: the suite drives it far enough to mint the K-ORC
-# admin ApplicationCredential, takes Keystone down to simulate "Keystone already
-# gone", then deletes the ControlPlane and asserts the ORC-teardown finalizer
-# sequences the teardown and ultimately lets deletion COMPLETE (rather than
-# hanging forever on a Terminating ApplicationCredential whose K-ORC finalizer
-# can never revoke against a dead Keystone).
+# admin ApplicationCredential and stand the Barbican ensemble up, takes Keystone
+# down to simulate "Keystone already gone", then deletes the ControlPlane and
+# asserts the ORC-teardown finalizer sequences the teardown and ultimately lets
+# deletion COMPLETE (rather than hanging forever on a Terminating
+# ApplicationCredential whose K-ORC finalizer can never revoke against a dead
+# Keystone).
 #
 # The name "deletion-orch" is distinct from the canonical "controlplane" /
 # "controlplane-keystone" CRs so the suite never clobbers them; the c5c3 suite
@@ -46,6 +47,16 @@ spec:
   services:
     keystone:
       replicas: 1
+    # Barbican with a DEDICATED secret store, so the teardown has the widest
+    # ensemble to reclaim: the child, its BarbicanSecretStore, the OpenBao
+    # instance the c5c3-operator provisions for it, the raft PVC behind that
+    # instance, and the cluster-scoped auth-delegator ClusterRoleBinding no
+    # namespace deletion collects. Each of those is asserted GONE after the
+    # ControlPlane is deleted.
+    barbican:
+      replicas: 1
+      secretStore:
+        dedicated: {}
   korc:
     adminCredential:
       cloudCredentialsRef:
