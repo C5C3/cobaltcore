@@ -116,6 +116,18 @@ func effectivePlacementCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec 
 	return nil
 }
 
+// effectiveBarbicanDatabase resolves the database instance the Barbican service
+// connects to.
+func effectiveBarbicanDatabase(cp *c5c3v1alpha1.ControlPlane) *commonv1.DatabaseSpec {
+	if db := cp.DedicatedBarbicanDatabase(); db != nil {
+		return db
+	}
+	if cp.Spec.Infrastructure != nil {
+		return &cp.Spec.Infrastructure.Database
+	}
+	return nil
+}
+
 // intervalToCron converts a rotation interval into a cron expression suitable
 // for a Kubernetes CronJob schedule.
 //
