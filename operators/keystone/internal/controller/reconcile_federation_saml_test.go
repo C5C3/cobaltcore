@@ -59,7 +59,7 @@ func TestRenderSAMLBackend_SecretRefSource(t *testing.T) {
 	backend := testProjectableSAMLBackend("corp-saml")
 	r := newTestReconciler(ks, backend, testSAMLIdPMetadataSecret("corp-saml"))
 
-	rd, err := r.renderSAMLBackend(ctx, ks, backend)
+	rd, err := r.renderSAMLBackend(ctx, r.Client, ks, backend)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rd.idpName).To(Equal("corp-saml"))
 	g.Expect(rd.protocolID).To(Equal("mapped"))
@@ -115,7 +115,7 @@ func TestRenderSAMLBackend_InlineSource(t *testing.T) {
 	}
 	r := newTestReconciler(ks, backend)
 
-	rd, err := r.renderSAMLBackend(ctx, ks, backend)
+	rd, err := r.renderSAMLBackend(ctx, r.Client, ks, backend)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(string(rd.idpMetadata)).To(ContainSubstring(testSAMLIdPEntityID))
 }
@@ -131,7 +131,7 @@ func TestRenderSAMLBackend_URLSource(t *testing.T) {
 	r := newTestReconciler(ks, backend)
 	r.HTTPClient = &metadataDoer{body: testSAMLIdPMetadataXML(testSAMLIdPEntityID)}
 
-	rd, err := r.renderSAMLBackend(ctx, ks, backend)
+	rd, err := r.renderSAMLBackend(ctx, r.Client, ks, backend)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(string(rd.idpMetadata)).To(ContainSubstring(testSAMLIdPEntityID))
 }
@@ -150,7 +150,7 @@ func TestRenderSAMLBackend_EntityIDMismatchSkips(t *testing.T) {
 	r := newTestReconciler(ks, backend)
 	r.HTTPClient = &metadataDoer{body: testSAMLIdPMetadataXML("https://evil.example.com/idp")}
 
-	_, err := r.renderSAMLBackend(ctx, ks, backend)
+	_, err := r.renderSAMLBackend(ctx, r.Client, ks, backend)
 	g.Expect(err).To(MatchError(errProviderMetadataUnavailable))
 	g.Expect(err.Error()).NotTo(ContainSubstring("evil.example.com"), "must not echo the fetched entityID")
 }
@@ -167,7 +167,7 @@ func TestRenderSAMLBackend_RejectsAggregateMetadata(t *testing.T) {
 	}
 	r := newTestReconciler(ks, backend)
 
-	_, err := r.renderSAMLBackend(ctx, ks, backend)
+	_, err := r.renderSAMLBackend(ctx, r.Client, ks, backend)
 	g.Expect(err).To(MatchError(errProviderMetadataUnavailable))
 }
 
@@ -189,9 +189,9 @@ func TestEnsureSAMLSPKeypair_CreateOnce(t *testing.T) {
 	backend := testProjectableSAMLBackend("corp-saml")
 	r := newTestReconciler(ks, backend)
 
-	cert1, key1, _, err := r.ensureSAMLSPKeypair(ctx, ks, backend)
+	cert1, key1, _, err := r.ensureSAMLSPKeypair(ctx, r.Client, ks, backend)
 	g.Expect(err).NotTo(HaveOccurred())
-	cert2, key2, _, err := r.ensureSAMLSPKeypair(ctx, ks, backend)
+	cert2, key2, _, err := r.ensureSAMLSPKeypair(ctx, r.Client, ks, backend)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(cert2).To(Equal(cert1))
 	g.Expect(key2).To(Equal(key1))
@@ -209,7 +209,8 @@ func TestEnsureSAMLSPKeypair_ConsumesCertificateSecretRef(t *testing.T) {
 	backend := testProjectableSAMLBackend("corp-saml")
 	// Generate a keypair once to obtain valid PEM, then feed it back via a
 	// user-supplied Secret.
-	cert, key, _, err := r0(t, ks, backend).ensureSAMLSPKeypair(ctx, ks, backend)
+	seed := r0(t, ks, backend)
+	cert, key, _, err := seed.ensureSAMLSPKeypair(ctx, seed.Client, ks, backend)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	backend.Spec.SAML.SP = &keystonev1alpha1.SAMLSPSpec{
@@ -222,7 +223,7 @@ func TestEnsureSAMLSPKeypair_ConsumesCertificateSecretRef(t *testing.T) {
 	}
 	r := newTestReconciler(ks, backend, userSecret)
 
-	gotCert, gotKey, _, err := r.ensureSAMLSPKeypair(ctx, ks, backend)
+	gotCert, gotKey, _, err := r.ensureSAMLSPKeypair(ctx, r.Client, ks, backend)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(gotCert).To(Equal(cert))
 	g.Expect(gotKey).To(Equal(key))
@@ -244,7 +245,7 @@ func TestReconcileIdentityBackends_SAMLRendersFederationSecret(t *testing.T) {
 	backend := testProjectableSAMLBackend("corp-saml")
 	r := newTestReconciler(ks, backend, testSAMLIdPMetadataSecret("corp-saml"))
 
-	projection, err := r.reconcileIdentityBackends(ctx, ks)
+	projection, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.DomainsSecretName).To(BeEmpty(), "no LDAP backend is attached")
 	g.Expect(projection.Federation).NotTo(BeNil())
@@ -281,7 +282,7 @@ func TestReconcileIdentityBackends_SAMLMissingMetadataSecretSkips(t *testing.T) 
 	backend := testProjectableSAMLBackend("corp-saml")
 	r := newTestReconciler(ks, backend) // no metadata Secret
 
-	projection, err := r.reconcileIdentityBackends(ctx, ks)
+	projection, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.Federation).To(BeNil())
 
@@ -299,7 +300,7 @@ func TestReconcileIdentityBackends_SAMLMissingProxyImagePending(t *testing.T) {
 	backend := testProjectableSAMLBackend("corp-saml")
 	r := newTestReconciler(ks, backend, testSAMLIdPMetadataSecret("corp-saml"))
 
-	projection, err := r.reconcileIdentityBackends(ctx, ks)
+	projection, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.Federation).To(BeNil())
 	cond := commonconditions.GetCondition(ks.Status.Conditions, conditionTypeIdentityBackendsReady)
@@ -316,7 +317,7 @@ func TestReconcileIdentityBackends_TwoSAMLBackendsSkipped(t *testing.T) {
 	b := testProjectableSAMLBackend("b-saml")
 	r := newTestReconciler(ks, a, b, testSAMLIdPMetadataSecret("a-saml"), testSAMLIdPMetadataSecret("b-saml"))
 
-	projection, err := r.reconcileIdentityBackends(ctx, ks)
+	projection, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.Federation).To(BeNil())
 	cond := commonconditions.GetCondition(ks.Status.Conditions, conditionTypeIdentityBackendsReady)
@@ -340,7 +341,7 @@ func TestReconcileIdentityBackends_SAMLExportSecretDeletedOnDetach(t *testing.T)
 	stale := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-saml-sp-metadata", Namespace: "default"}}
 	r := newTestReconciler(ks, deleting, stale)
 
-	_, err := r.reconcileIdentityBackends(ctx, ks)
+	_, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	var gone corev1.Secret
 	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: "default", Name: "test-keystone-saml-sp-metadata"}, &gone)).NotTo(Succeed())

@@ -14,8 +14,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
@@ -27,7 +29,7 @@ import (
 // it runs reconcileIdentityBackends and unwraps the domains Secret name from
 // the projection struct.
 func reconcileIdentityBackendsDomains(ctx context.Context, r *KeystoneReconciler, ks *keystonev1alpha1.Keystone) (string, error) {
-	projection, err := r.reconcileIdentityBackends(ctx, ks)
+	projection, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	return projection.DomainsSecretName, err
 }
 
@@ -94,6 +96,40 @@ func TestReconcileIdentityBackends_NotRequiredWhenNoBackends(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal(conditionReasonIdentityBackendsNotRequired))
+}
+
+// TestIdentityBackendListReadsManagementCluster proves the attached-backends
+// list stays on the embedded client while everything it renders goes to the
+// children client. The children fake is built without the keystone API group,
+// so a misrouted List fails with "no kind is registered" instead of quietly
+// returning an empty set that would look like "no backends attached".
+func TestIdentityBackendListReadsManagementCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	backend := testIdentityBackend("corp-ldap", "corp")
+	// Management: the CR and its sibling backend, with the field index the
+	// list selects on (SetupWithManager registers the same extractor).
+	r := newTestReconciler(ks, backend)
+
+	childrenScheme := runtime.NewScheme()
+	g.Expect(clientgoscheme.AddToScheme(childrenScheme)).To(Succeed())
+	children := fake.NewClientBuilder().
+		WithScheme(childrenScheme).
+		WithObjects(testBindSecret("corp-ldap")).
+		Build()
+
+	projection, err := r.reconcileIdentityBackends(context.Background(), children, ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(projection.DomainsSecretName).To(HavePrefix("test-keystone-domains-"),
+		"the backend was found, so its domain config was rendered")
+
+	// The rendered artifact landed on the children cluster, not beside the CR.
+	var onChildren corev1.Secret
+	key := client.ObjectKey{Namespace: "default", Name: projection.DomainsSecretName}
+	g.Expect(children.Get(context.Background(), key, &onChildren)).To(Succeed())
+	g.Expect(onChildren.Data).To(HaveKey("keystone.corp.conf"))
+	g.Expect(r.Get(context.Background(), key, &corev1.Secret{})).NotTo(Succeed(),
+		"the domains Secret must not be written to the management cluster")
 }
 
 func TestReconcileIdentityBackends_ProjectsReadyBackend(t *testing.T) {
@@ -481,7 +517,7 @@ func TestPruneStaleDomainsSecrets_FullCleanupWhenNothingProjected(t *testing.T) 
 
 	// Backend detaches: nothing projected anymore, prune with empty current.
 	g.Expect(r.Client.Delete(ctx, backend)).To(Succeed())
-	g.Expect(r.pruneStaleDomainsSecrets(ctx, ks, "")).To(Succeed())
+	g.Expect(r.pruneStaleDomainsSecrets(ctx, r.Client, ks, "")).To(Succeed())
 
 	var secret corev1.Secret
 	err = r.Get(ctx, client.ObjectKey{Namespace: "default", Name: name}, &secret)
@@ -497,7 +533,7 @@ func TestReconcileConfig_DomainFlagsFollowProjectionState(t *testing.T) {
 	r := newTestReconciler(ks, testDBCredentialsSecret())
 	ctx := context.Background()
 
-	nameOff, err := r.reconcileConfig(ctx, ks, false, nil)
+	nameOff, err := r.reconcileConfig(ctx, r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	var cmOff corev1.ConfigMap
 	g.Expect(r.Get(ctx, client.ObjectKey{Namespace: "default", Name: nameOff}, &cmOff)).To(Succeed())
@@ -505,7 +541,7 @@ func TestReconcileConfig_DomainFlagsFollowProjectionState(t *testing.T) {
 
 	// Projection turned on at the same generation: the cache must miss and
 	// the re-render must carry the domain options.
-	nameOn, err := r.reconcileConfig(ctx, ks, true, nil)
+	nameOn, err := r.reconcileConfig(ctx, r.Client, ks, true, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(nameOn).NotTo(Equal(nameOff))
 	var cmOn corev1.ConfigMap
@@ -521,7 +557,7 @@ func TestReconcileConfig_DomainFlagsFollowProjectionState(t *testing.T) {
 		"identity": {"domain_specific_drivers_enabled": "false"},
 	}
 	r2 := newTestReconciler(ks2, testDBCredentialsSecret())
-	nameExtra, err := r2.reconcileConfig(ctx, ks2, true, nil)
+	nameExtra, err := r2.reconcileConfig(ctx, r2.Client, ks2, true, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	var cmExtra corev1.ConfigMap
 	g.Expect(r2.Client.Get(ctx, client.ObjectKey{Namespace: "default", Name: nameExtra}, &cmExtra)).To(Succeed())

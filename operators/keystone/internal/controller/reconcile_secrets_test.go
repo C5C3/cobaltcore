@@ -157,7 +157,7 @@ func TestReconcileSecrets_BothReady(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -197,7 +197,7 @@ func TestReconcileSecrets_MaterializedValid_ESNotReady_StillReady(t *testing.T) 
 		Build()
 	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
 
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
@@ -232,7 +232,7 @@ func TestReconcileSecrets_SecretMissingKeys_ESReady_MissingKeysMessage(t *testin
 		Build()
 	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
 
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
@@ -264,7 +264,7 @@ func TestReconcileSecrets_DBCredentialsNotReady(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -300,7 +300,7 @@ func TestReconcileSecrets_DBCredentialsExternalSecretMissing(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -338,7 +338,7 @@ func TestReconcileSecrets_AdminCredentialsNotReady(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -379,7 +379,7 @@ func TestReconcileSecrets_ErrorFetchingExternalSecret(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileSecrets(context.Background(), ks)
+	_, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("simulated API server error"))
@@ -406,7 +406,7 @@ func TestReconcileSecrets_DBNotReady_ConditionMessage(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileSecrets(context.Background(), ks)
+	_, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -441,7 +441,7 @@ func TestReconcileSecrets_AdminNotReady_ConditionMessage(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileSecrets(context.Background(), ks)
+	_, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -476,7 +476,7 @@ func TestReconcileSecrets_DBSecretMissingKeys(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -518,7 +518,7 @@ func TestReconcileSecrets_AdminSecretMissingKeys(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -552,7 +552,7 @@ func TestReconcileSecrets_BothNotReady_DBCheckFirst(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -589,7 +589,7 @@ func TestReconcileSecrets_StoreNotReady(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -645,7 +645,7 @@ func TestReconcileSecrets_NamespacedStoreReady_GatesThroughTenantStore(t *testin
 		Build()
 
 	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -676,7 +676,7 @@ func TestReconcileSecrets_NamespacedStoreMissing_SetsCondition(t *testing.T) {
 		Build()
 
 	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -706,7 +706,7 @@ func TestReconcileSecrets_StoreMissing(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileSecrets(context.Background(), ks)
+	result, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -744,7 +744,7 @@ func TestReconcileSecrets_StoreGetErrorSurfaces(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileSecrets(context.Background(), ks)
+	_, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("simulated API server error"))
@@ -774,7 +774,7 @@ func TestReconcileSecrets_StoreCheckedBeforeExternalSecret(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileSecrets(context.Background(), ks)
+	_, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -813,7 +813,7 @@ func TestReconcileSecrets_ConditionObservedGeneration(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileSecrets(context.Background(), ks)
+	_, err := r.reconcileSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "SecretsReady")
@@ -843,7 +843,7 @@ func TestReconcileSecrets_ConditionObservedGeneration(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err = r3.reconcileSecrets(context.Background(), ks3)
+	_, err = r3.reconcileSecrets(context.Background(), r3.Client, ks3)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond3 := meta.FindStatusCondition(ks3.Status.Conditions, "SecretsReady")
@@ -877,7 +877,7 @@ func TestReconcileSecrets_ConditionObservedGeneration(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err = r4.reconcileSecrets(context.Background(), ks4)
+	_, err = r4.reconcileSecrets(context.Background(), r4.Client, ks4)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond4 := meta.FindStatusCondition(ks4.Status.Conditions, "SecretsReady")
@@ -912,7 +912,7 @@ func TestReconcileSecrets_ConditionObservedGeneration(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err = r2.reconcileSecrets(context.Background(), ks2)
+	_, err = r2.reconcileSecrets(context.Background(), r2.Client, ks2)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "SecretsReady")
@@ -1023,7 +1023,7 @@ func TestFinalizeOpenBaoSecrets_DeletesBothPushSecrets(t *testing.T) {
 
 	// First pass: Pass-0 accepts (finalizer present), Pass-1 Deletes, Pass-2
 	// sees Terminating and reports done=false.
-	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeFalse())
 
@@ -1039,7 +1039,7 @@ func TestFinalizeOpenBaoSecrets_DeletesBothPushSecrets(t *testing.T) {
 	}
 
 	// Second pass: everything should now be gone.
-	done, err = r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err = r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeTrue())
 
@@ -1093,7 +1093,7 @@ func TestFinalizeOpenBaoSecrets_NotFoundIsTolerated(t *testing.T) {
 				Recorder: record.NewFakeRecorder(10),
 			}
 
-			done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+			done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 			g.Expect(err).NotTo(HaveOccurred())
 
 			if len(tc.present) == 0 {
@@ -1116,7 +1116,7 @@ func TestFinalizeOpenBaoSecrets_NotFoundIsTolerated(t *testing.T) {
 				g.Expect(c.Update(context.Background(), fresh)).To(Succeed())
 			}
 
-			done, err = r.finalizeOpenBaoSecrets(context.Background(), ks)
+			done, err = r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(done).To(BeTrue())
 
@@ -1147,11 +1147,11 @@ func TestFinalizeOpenBaoSecrets_IsIdempotent(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeTrue())
 
-	done, err = r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err = r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeTrue())
 }
@@ -1180,7 +1180,7 @@ func TestFinalizeOpenBaoSecrets_RequeuesWhilePushSecretTerminating(t *testing.T)
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeFalse())
@@ -1217,7 +1217,7 @@ func TestFinalizeOpenBaoSecrets_SetsBlockedConditionOnStall(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeFalse())
@@ -1328,7 +1328,7 @@ func TestFinalizeOpenBaoSecrets_BlocksOnMissingESOAdoption(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeFalse())
@@ -1376,7 +1376,7 @@ func TestFinalizeOpenBaoSecrets_ProceedsAfterAdoptionTimeout(t *testing.T) {
 	rec := record.NewFakeRecorder(10)
 	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: rec}
 
-	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	// Unadopted PushSecrets carry no finalizer, so the force-delete removes
 	// them outright and Pass-2 observes them gone.
@@ -1414,7 +1414,7 @@ func TestFinalizeOpenBaoSecrets_BlocksWithinAdoptionWindow(t *testing.T) {
 	rec := record.NewFakeRecorder(10)
 	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: rec}
 
-	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeFalse())
 	g.Expect(deleteCount).To(Equal(0),
@@ -1456,7 +1456,7 @@ func TestFinalizeOpenBaoSecrets_ProceedsOnceAdopted(t *testing.T) {
 		"test-keystone-credential-keys-backup",
 	}
 
-	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeFalse())
 
@@ -1488,7 +1488,7 @@ func TestFinalizeOpenBaoSecrets_ProceedsOnceAdopted(t *testing.T) {
 		g.Expect(c.Update(context.Background(), fresh)).To(Succeed())
 	}
 
-	done, err = r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err = r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeTrue())
 
@@ -1536,7 +1536,7 @@ func TestFinalizeOpenBaoSecrets_MixedAdoptionState(t *testing.T) {
 	}
 
 	// Phase 1: mixed adoption state.
-	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeFalse())
 	g.Expect(deleteCount).To(Equal(0),
@@ -1558,7 +1558,7 @@ func TestFinalizeOpenBaoSecrets_MixedAdoptionState(t *testing.T) {
 	fresh.Finalizers = []string{esoPushSecretFinalizer}
 	g.Expect(c.Update(context.Background(), fresh)).To(Succeed())
 
-	done, err = r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err = r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	// Both objects still held by ESO finalizer, so done=false — but the fact
 	// that Deletes fired at all proves Pass-1 ran for both.
@@ -1613,7 +1613,7 @@ func TestFinalizeOpenBaoSecrets_TerminatingCountsAsAdopted(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeFalse())
 
@@ -1642,7 +1642,7 @@ func TestFinalizeOpenBaoSecrets_AbsentPushSecretIsStillIdempotent(t *testing.T) 
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	done, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(done).To(BeTrue())
 }
@@ -1716,7 +1716,7 @@ func TestFinalizeOpenBaoSecrets_RBACShape(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.finalizeOpenBaoSecrets(context.Background(), ks)
+	_, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(verbs["get"]).To(BeTrue(), "handler must call Get on PushSecret")

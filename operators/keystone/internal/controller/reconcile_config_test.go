@@ -131,7 +131,7 @@ func TestReconcileConfig_ManagedDatabase_NoCredentialsInConfigMap(t *testing.T) 
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "secret123")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(configMapName).To(HavePrefix("test-keystone-config-"))
@@ -186,7 +186,7 @@ func TestReconcileConfig_BrownfieldDatabase_PlaceholderInsteadOfPassword(t *test
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -218,7 +218,7 @@ func TestReconcileConfig_SpecialCharactersInCredentials_DoNotLeakToConfigMap(t *
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "user@domain", "p@ss:w/rd")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -245,7 +245,7 @@ func TestReconcileConfig_BrownfieldCache(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -276,7 +276,7 @@ func TestReconcileConfig_ManagedCacheCustomReplicas(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -305,7 +305,7 @@ func TestReconcileConfig_PluginConfig(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -335,7 +335,7 @@ func TestReconcileConfig_ExtraConfigOverridesDefaults(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -367,7 +367,7 @@ func TestReconcileConfig_PolicyOverridesInlineRules(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -407,7 +407,7 @@ func TestReconcileConfig_PolicyOverridesConfigMapRef(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret, policyCM)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -441,7 +441,7 @@ func TestReconcileConfig_Middleware(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -463,7 +463,7 @@ func TestReconcileConfig_ConfigMapNameContainsContentHash(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(configMapName).To(HavePrefix("test-keystone-config-"))
@@ -481,7 +481,7 @@ func TestReconcileConfig_ImmutableConfigMapWithOwnerReference(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -506,7 +506,7 @@ func TestReconcileConfig_CredentialKeysSectionPresent(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -529,7 +529,7 @@ func TestReconcileConfig_CredentialKeysCustomMaxActiveKeys(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -549,7 +549,7 @@ func TestReconcileConfig_OsloPolicyEnforceScopeDefaults(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -806,7 +806,7 @@ func TestPruneStaleConfigMaps_deletesOldConfigMaps(t *testing.T) {
 	}
 	r := newConfigTestReconciler(s, objs...)
 
-	err := r.pruneStaleConfigMaps(ctx, ks, "test-keystone-config-current1")
+	err := r.pruneStaleConfigMaps(ctx, r.Client, ks, "test-keystone-config-current1")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// The 2 oldest historical ConfigMaps (T0, T1) should be deleted.
@@ -847,7 +847,7 @@ func TestPruneStaleConfigMaps_retainsRecentConfigMaps(t *testing.T) {
 	}
 	r := newConfigTestReconciler(s, objs...)
 
-	err := r.pruneStaleConfigMaps(ctx, ks, "test-keystone-config-current1")
+	err := r.pruneStaleConfigMaps(ctx, r.Client, ks, "test-keystone-config-current1")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Exactly 4 ConfigMaps should remain: current + 3 newest historical.
@@ -881,7 +881,7 @@ func TestPruneStaleConfigMaps_noopWithNoCandidates(t *testing.T) {
 	currentCM := pruneTestConfigMap("test-keystone-config-current1", "default", "test-keystone-config", ks, baseTime)
 	r := newConfigTestReconciler(s, ks, currentCM)
 
-	err := r.pruneStaleConfigMaps(ctx, ks, "test-keystone-config-current1")
+	err := r.pruneStaleConfigMaps(ctx, r.Client, ks, "test-keystone-config-current1")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// The current ConfigMap must still exist.
@@ -906,7 +906,7 @@ func TestReconcileConfig_LoggingDefaultsEmitUseStderr(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -934,7 +934,7 @@ func TestReconcileConfig_LoggingDebugNilRendersFalse(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -959,7 +959,7 @@ func TestReconcileConfig_LoggingDebugTruePropagates(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -984,7 +984,7 @@ func TestReconcileConfig_LoggingTextPathOmitsLoggingConf(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -1011,7 +1011,7 @@ func TestReconcileConfig_LoggingJSONPathRendersLoggingConfAndAppend(t *testing.T
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -1049,7 +1049,7 @@ func TestReconcileConfig_LoggingJSONToTextDropsLoggingConf(t *testing.T) {
 	ksJSON.Generation = 1
 	ksJSON.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "json", Level: "INFO"}
 	r := newConfigTestReconciler(s, ksJSON, secret)
-	cmJSONName, err := r.reconcileConfig(context.Background(), ksJSON, false, nil)
+	cmJSONName, err := r.reconcileConfig(context.Background(), r.Client, ksJSON, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cmJSON, err := getCreatedConfigMap(context.Background(), r.Client, "default", cmJSONName)
@@ -1059,7 +1059,7 @@ func TestReconcileConfig_LoggingJSONToTextDropsLoggingConf(t *testing.T) {
 	ksText := configTestKeystone()
 	ksText.Generation = 2
 	ksText.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
-	cmTextName, err := r.reconcileConfig(context.Background(), ksText, false, nil)
+	cmTextName, err := r.reconcileConfig(context.Background(), r.Client, ksText, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(cmTextName).NotTo(Equal(cmJSONName),
 		"format toggle must produce a new ConfigMap name to roll the Deployment")
@@ -1092,7 +1092,7 @@ func TestReconcileConfig_LoggingPerLoggerLevelsDeterministicOrder(t *testing.T) 
 	}
 	r := newConfigTestReconciler(s, ks, secret)
 
-	cmName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	cmName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", cmName)
@@ -1111,7 +1111,7 @@ func TestReconcileConfig_LoggingPerLoggerLevelsDeterministicOrder(t *testing.T) 
 			"keystone.middleware": "DEBUG",
 		},
 	}
-	cm2Name, err := r.reconcileConfig(context.Background(), ks2, false, nil)
+	cm2Name, err := r.reconcileConfig(context.Background(), r.Client, ks2, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(cm2Name).To(Equal(cmName),
 		"identical PerLoggerLevels with different map iteration order must yield the same ConfigMap name")
@@ -1134,7 +1134,7 @@ func TestReconcileConfig_LoggingPerLoggerLevelsEmptyOmitsKey(t *testing.T) {
 	}
 	r := newConfigTestReconciler(s, ks, secret)
 
-	cmName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	cmName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", cmName)
@@ -1173,7 +1173,7 @@ func TestReconcileConfig_LoggingJSONPlusPerLoggerLevels(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	cmName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	cmName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", cmName)
@@ -1217,13 +1217,13 @@ func TestReconcileConfig_LoggingFormatToggleSymmetricHash(t *testing.T) {
 	ks1.Generation = 1
 	ks1.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
 	r := newConfigTestReconciler(s, ks1, secret)
-	firstTextName, err := r.reconcileConfig(context.Background(), ks1, false, nil)
+	firstTextName, err := r.reconcileConfig(context.Background(), r.Client, ks1, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	ks2 := configTestKeystone()
 	ks2.Generation = 2
 	ks2.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "json", Level: "INFO"}
-	jsonName, err := r.reconcileConfig(context.Background(), ks2, false, nil)
+	jsonName, err := r.reconcileConfig(context.Background(), r.Client, ks2, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(jsonName).NotTo(Equal(firstTextName),
 		"format=json must produce a different ConfigMap name than format=text")
@@ -1231,7 +1231,7 @@ func TestReconcileConfig_LoggingFormatToggleSymmetricHash(t *testing.T) {
 	ks3 := configTestKeystone()
 	ks3.Generation = 3
 	ks3.Spec.Logging = &keystonev1alpha1.LoggingSpec{Format: "text", Level: "INFO"}
-	secondTextName, err := r.reconcileConfig(context.Background(), ks3, false, nil)
+	secondTextName, err := r.reconcileConfig(context.Background(), r.Client, ks3, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(secondTextName).To(Equal(firstTextName),
 		"text→json→text must return to the original ConfigMap name (symmetric content hash)")
@@ -1254,12 +1254,12 @@ func TestReconcileConfig_CacheHit_SameGeneration_ReturnsSameName(t *testing.T) {
 	ks.Spec.ExtraConfig = map[string]map[string]string{"custom": {"key": "before"}}
 	r := newConfigTestReconciler(s, ks, secret)
 
-	firstName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	firstName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Mutate the content but NOT the generation.
 	ks.Spec.ExtraConfig = map[string]map[string]string{"custom": {"key": "after"}}
-	secondName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	secondName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(secondName).To(Equal(firstName),
 		"same generation must return the cached name; re-rendering would change the content hash")
@@ -1277,12 +1277,12 @@ func TestReconcileConfig_GenerationBump_ReRenders(t *testing.T) {
 	ks.Spec.ExtraConfig = map[string]map[string]string{"custom": {"key": "before"}}
 	r := newConfigTestReconciler(s, ks, secret)
 
-	firstName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	firstName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	ks.Spec.ExtraConfig = map[string]map[string]string{"custom": {"key": "after"}}
 	ks.Generation = 2
-	secondName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	secondName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(secondName).NotTo(Equal(firstName),
 		"a generation bump must re-render against the new spec")
@@ -1307,7 +1307,7 @@ func TestReconcileConfig_PolicyConfigMapChange_ReRenders(t *testing.T) {
 	}
 	r := newConfigTestReconciler(s, ks, secret, policyCM)
 
-	firstName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	firstName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Update the external policy content (fake client bumps the ResourceVersion)
@@ -1315,7 +1315,7 @@ func TestReconcileConfig_PolicyConfigMapChange_ReRenders(t *testing.T) {
 	policyCM.Data["policy.yaml"] = "identity:get_user: \"role:admin\"\n"
 	g.Expect(r.Client.Update(context.Background(), policyCM)).To(Succeed())
 
-	secondName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	secondName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(secondName).NotTo(Equal(firstName),
 		"a changed policy ConfigMap ResourceVersion must re-render even at the same generation")
@@ -1333,7 +1333,7 @@ func TestReconcileConfig_CachedConfigMapDeleted_ReRenders(t *testing.T) {
 	ks := configTestKeystone()
 	r := newConfigTestReconciler(s, ks, secret)
 
-	firstName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	firstName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Delete the rendered ConfigMap out of band.
@@ -1346,7 +1346,7 @@ func TestReconcileConfig_CachedConfigMapDeleted_ReRenders(t *testing.T) {
 	// Same generation: the cache would hit, but the existence check must fall
 	// through to a full render that recreates the (same, content-addressed)
 	// ConfigMap.
-	secondName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	secondName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(secondName).To(Equal(firstName))
 	_, err = getCreatedConfigMap(context.Background(), r.Client, "default", secondName)
@@ -1366,7 +1366,7 @@ func TestReconcileConfig_CacheHit_UpsertsExtraConfigHealthy(t *testing.T) {
 	ks.Spec.ExtraConfig = map[string]map[string]string{"fernet_tokens": {"max_active_keys": "9"}}
 	r := newConfigTestReconciler(s, ks, secret)
 
-	_, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	_, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	cond := meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
 	g.Expect(cond).NotTo(BeNil())
@@ -1376,7 +1376,7 @@ func TestReconcileConfig_CacheHit_UpsertsExtraConfigHealthy(t *testing.T) {
 	// render is served from cache; the ownership guard runs before the
 	// short-circuit and must re-upsert ExtraConfigHealthy from the spec.
 	meta.RemoveStatusCondition(&ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
-	_, err = r.reconcileConfig(context.Background(), ks, false, nil)
+	_, err = r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	cond = meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
 	g.Expect(cond).NotTo(BeNil(), "cache hit must re-upsert ExtraConfigHealthy")
@@ -1397,7 +1397,7 @@ func TestReconcileConfig_FederationRendersAuthAndTemplate(t *testing.T) {
 	r := newConfigTestReconciler(s, ks, secret)
 
 	fed := &federationProjection{RemoteIDAttribute: "HTTP_OIDC_ISS"}
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, fed)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, fed)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -1428,7 +1428,7 @@ func TestReconcileConfig_SAMLRendersPerProtocolRemoteID(t *testing.T) {
 	r := newConfigTestReconciler(s, ks, secret)
 
 	fed := &federationProjection{SAMLProtocolID: "mapped", SAMLRemoteIDAttribute: "HTTP_MELLON_IDP"}
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, fed)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, fed)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -1455,11 +1455,11 @@ func TestReconcileConfig_CacheInvalidatesOnSAMLState(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	without, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	without, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	fed := &federationProjection{SAMLProtocolID: "mapped", SAMLRemoteIDAttribute: "HTTP_MELLON_IDP"}
-	with, err := r.reconcileConfig(context.Background(), ks, false, fed)
+	with, err := r.reconcileConfig(context.Background(), r.Client, ks, false, fed)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(with).NotTo(Equal(without), "attaching a SAML backend must re-render the config")
 }
@@ -1475,7 +1475,7 @@ func TestReconcileConfig_FederationInactiveOmitsSections(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -1504,7 +1504,7 @@ func TestReconcileConfig_TrustedDashboardsRenderRepeatedLines(t *testing.T) {
 	r := newConfigTestReconciler(s, ks, secret)
 
 	fed := &federationProjection{RemoteIDAttribute: "HTTP_OIDC_ISS"}
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, fed)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, fed)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -1536,7 +1536,7 @@ func TestReconcileConfig_TrustedDashboardsWithoutFederationBackend(t *testing.T)
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -1562,7 +1562,7 @@ func TestReconcileConfig_NoTrustedDashboardsOmitsKey(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -1587,7 +1587,7 @@ func TestReconcileConfig_FederationExtraConfigTrustedDashboardCoexists(t *testin
 	r := newConfigTestReconciler(s, ks, secret)
 
 	fed := &federationProjection{RemoteIDAttribute: "HTTP_OIDC_ISS"}
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, fed)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, fed)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -1608,24 +1608,24 @@ func TestReconcileConfig_CacheInvalidatesOnFederationState(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	nameOff, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	nameOff, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	fed := &federationProjection{RemoteIDAttribute: "HTTP_OIDC_ISS"}
-	nameOn, err := r.reconcileConfig(context.Background(), ks, false, fed)
+	nameOn, err := r.reconcileConfig(context.Background(), r.Client, ks, false, fed)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(nameOn).NotTo(Equal(nameOff), "federation attach must re-render")
 
-	nameOnAgain, err := r.reconcileConfig(context.Background(), ks, false, fed)
+	nameOnAgain, err := r.reconcileConfig(context.Background(), r.Client, ks, false, fed)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(nameOnAgain).To(Equal(nameOn), "an unchanged projection is a cache hit")
 
 	fed2 := &federationProjection{RemoteIDAttribute: "HTTP_OIDC_ISSUER"}
-	nameChanged, err := r.reconcileConfig(context.Background(), ks, false, fed2)
+	nameChanged, err := r.reconcileConfig(context.Background(), r.Client, ks, false, fed2)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(nameChanged).NotTo(Equal(nameOn), "a remote-id-attribute change must re-render")
 
-	nameDetached, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	nameDetached, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(nameDetached).To(Equal(nameOff), "detaching returns the non-federated content hash")
 }
@@ -1649,7 +1649,7 @@ func TestReconcileConfig_OwnedKeyOverrideReportOnly(t *testing.T) {
 		secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 		r := newConfigTestReconciler(s, ks, secret)
 
-		configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+		configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 		g.Expect(err).NotTo(HaveOccurred())
 
 		cond := meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
@@ -1678,7 +1678,7 @@ func TestReconcileConfig_OwnedKeyOverrideReportOnly(t *testing.T) {
 		secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 		r := newConfigTestReconciler(s, ks, secret)
 
-		configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+		configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 		g.Expect(err).NotTo(HaveOccurred())
 
 		cond := meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
@@ -1708,7 +1708,7 @@ func TestReconcileConfig_ExtraConfigHealthyTrueOnDefaults(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	_, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	_, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
@@ -1734,12 +1734,12 @@ func TestReconcileConfig_OwnedKeyEventGatedAcrossReconciles(t *testing.T) {
 	r := newConfigTestReconciler(s, ks, secret)
 
 	// First pass: transition into False emits exactly one event; drain it.
-	_, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	_, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	expectEvent(g, r, "ExtraConfigOwnedKeyOverride")
 
 	// Second pass at the same generation: condition stays False, no re-emit.
-	_, err = r.reconcileConfig(context.Background(), ks, false, nil)
+	_, err = r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	cond := meta.FindStatusCondition(ks.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
 	g.Expect(cond).NotTo(BeNil())
@@ -1771,7 +1771,7 @@ func TestReconcileConfig_OperatorDefaultsWinOverPlugins(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	configMapName, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	configMapName, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm, err := getCreatedConfigMap(context.Background(), r.Client, "default", configMapName)
@@ -1800,7 +1800,7 @@ func TestReconcileConfig_PluginRenderErrorPropagates(t *testing.T) {
 	secret := dbCredentialsSecret("default", "keystone-db-credentials", "keystone", "pass")
 	r := newConfigTestReconciler(s, ks, secret)
 
-	_, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	_, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("rendering plugin config:"))
 }

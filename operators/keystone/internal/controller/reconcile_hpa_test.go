@@ -119,7 +119,7 @@ func TestReconcileHPA_AutoscalingSet_CreatesHPA(t *testing.T) {
 	}
 	r := newHPATestReconciler(s, ks)
 
-	result, err := r.reconcileHPA(context.Background(), ks)
+	result, err := r.reconcileHPA(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -151,7 +151,7 @@ func TestReconcileHPA_ConditionObservedGeneration(t *testing.T) {
 	}
 	r := newHPATestReconciler(s, ks)
 
-	_, err := r.reconcileHPA(context.Background(), ks)
+	_, err := r.reconcileHPA(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "HPAReady")
@@ -163,7 +163,7 @@ func TestReconcileHPA_ConditionObservedGeneration(t *testing.T) {
 	ks2.Generation = 12
 	r2 := newHPATestReconciler(s, ks2)
 
-	_, err = r2.reconcileHPA(context.Background(), ks2)
+	_, err = r2.reconcileHPA(context.Background(), r2.Client, ks2)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "HPAReady")
@@ -183,12 +183,12 @@ func TestReconcileHPA_AutoscalingEnabled_HPAUpdated(t *testing.T) {
 	ctx := context.Background()
 
 	// First reconcile creates HPA.
-	_, err := r.reconcileHPA(ctx, ks)
+	_, err := r.reconcileHPA(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Change max replicas and re-reconcile.
 	ks.Spec.Autoscaling.MaxReplicas = 20
-	_, err = r.reconcileHPA(ctx, ks)
+	_, err = r.reconcileHPA(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var hpa autoscalingv2.HorizontalPodAutoscaler
@@ -208,7 +208,7 @@ func TestReconcileHPA_AutoscalingNil_NoExistingHPA_SetsHPANotRequired(t *testing
 	// autoscaling is nil by default
 	r := newHPATestReconciler(s, ks)
 
-	result, err := r.reconcileHPA(context.Background(), ks)
+	result, err := r.reconcileHPA(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -248,7 +248,7 @@ func TestReconcileHPA_AutoscalingNil_ExistingHPA_DeletesHPA(t *testing.T) {
 	}, &hpa)).To(Succeed())
 
 	// reconcileHPA with nil autoscaling should delete the HPA.
-	result, err := r.reconcileHPA(ctx, ks)
+	result, err := r.reconcileHPA(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -297,7 +297,7 @@ func TestReconcileHPA_EnsureError_Propagated(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileHPA(context.Background(), ks)
+	_, err := r.reconcileHPA(context.Background(), r.Client, ks)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ensuring HorizontalPodAutoscaler"))
 	g.Expect(err.Error()).To(ContainSubstring("simulated HPA apply error"))
@@ -344,7 +344,7 @@ func TestReconcileHPA_DeleteError_Propagated(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileHPA(context.Background(), ks)
+	_, err := r.reconcileHPA(context.Background(), r.Client, ks)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("deleting HorizontalPodAutoscaler"))
 	g.Expect(err.Error()).To(ContainSubstring("simulated HPA deletion error"))

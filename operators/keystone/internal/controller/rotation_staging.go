@@ -16,6 +16,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/rotation"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -71,6 +72,7 @@ func rotationCompletedAt(secret *corev1.Secret) (time.Time, bool) {
 // StagingSecretLabelKey label (e.g. "fernet-keys", "credential-keys").
 func (r *KeystoneReconciler) ensureStagingSecret(
 	ctx context.Context,
+	children client.Client,
 	keystone *keystonev1alpha1.Keystone,
 	name, labelValue string,
 ) (*corev1.Secret, error) {
@@ -78,14 +80,14 @@ func (r *KeystoneReconciler) ensureStagingSecret(
 	// labels stay authoritative.
 	labels := commonLabels(keystone)
 	labels[StagingSecretLabelKey] = labelValue
-	return rotation.EnsureStagingSecret(ctx, r.Client, r.Scheme, keystone, name, labels)
+	return rotation.EnsureStagingSecret(ctx, children, r.Scheme, keystone, name, labels)
 }
 
 // commitStagedRotation copies a completed staging Secret onto an operator-owned
 // target Secret and deletes the staging Secret, via the shared
 // rotation.CommitStaged.
-func (r *KeystoneReconciler) commitStagedRotation(ctx context.Context, keystone *keystonev1alpha1.Keystone, staging, target *corev1.Secret, spec rotation.CommitSpec) (applied bool, err error) {
-	return rotation.CommitStaged(ctx, r.Client, r.Recorder, keystone, staging, target, spec)
+func (r *KeystoneReconciler) commitStagedRotation(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, staging, target *corev1.Secret, spec rotation.CommitSpec) (applied bool, err error) {
+	return rotation.CommitStaged(ctx, children, r.Recorder, keystone, staging, target, spec)
 }
 
 // applyRotationOutput commits a completed Fernet/credential key rotation from
@@ -96,12 +98,13 @@ func (r *KeystoneReconciler) commitStagedRotation(ctx context.Context, keystone 
 // CronJob run (issue #475).
 func (r *KeystoneReconciler) applyRotationOutput(
 	ctx context.Context,
+	children client.Client,
 	keystone *keystonev1alpha1.Keystone,
 	staging, mainSecret *corev1.Secret,
 	eventReason string,
 	minKeys, maxKeys int,
 ) (applied bool, err error) {
-	return r.commitStagedRotation(ctx, keystone, staging, mainSecret, rotation.CommitSpec{
+	return r.commitStagedRotation(ctx, children, keystone, staging, mainSecret, rotation.CommitSpec{
 		TargetNoun:              "main secret",
 		Validate:                func(data map[string][]byte) error { return validateRotationOutput(data, minKeys, maxKeys) },
 		ClearStagingOnReject:    true,

@@ -170,10 +170,10 @@ func secretNameForVolume(deploy *appsv1.Deployment, volumeName string) string {
 // same Secret. When the gate does not hold it returns (false, reason, nil)
 // with a fixed human-readable reason string; only a non-NotFound Get failure
 // surfaces as an error.
-func (r *KeystoneReconciler) projectionRolledOut(ctx context.Context, keystone *keystonev1alpha1.Keystone, projection identityBackendsProjection) (bool, string, error) {
+func (r *KeystoneReconciler) projectionRolledOut(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, projection identityBackendsProjection) (bool, string, error) {
 	var deploy appsv1.Deployment
 	key := client.ObjectKey{Namespace: keystone.Namespace, Name: subResourceName(keystone)}
-	if err := r.Get(ctx, key, &deploy); err != nil {
+	if err := children.Get(ctx, key, &deploy); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, "the Keystone Deployment does not exist yet", nil
 		}
@@ -228,9 +228,12 @@ func setIdentityBackendsWaitingForRollout(keystone *keystonev1alpha1.Keystone, r
 // this pipeline has not created yet. Wake-ups are watch-driven (backend
 // status flips re-enqueue the Keystone). Only genuine infrastructure
 // failures (List/render/create errors) surface as errors.
-func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keystone *keystonev1alpha1.Keystone) (identityBackendsProjection, error) {
+func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (identityBackendsProjection, error) {
 	logger := log.FromContext(ctx)
 
+	// The attached backends are sibling configuration CRs on the management
+	// cluster, so this list goes through the embedded client and its field
+	// index; only the artifacts rendered from them land on children.
 	var backends keystonev1alpha1.KeystoneIdentityBackendList
 	if err := r.List(
 		ctx, &backends,
@@ -245,7 +248,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 		// report True: detaching the last backend keeps the condition False
 		// until the sidecar/volume removal has rolled out. The wake-up is the
 		// Deployment watch; no requeue (pipeline contract above).
-		rolledOut, reason, err := r.projectionRolledOut(ctx, keystone, identityBackendsProjection{})
+		rolledOut, reason, err := r.projectionRolledOut(ctx, children, keystone, identityBackendsProjection{})
 		if err != nil {
 			return identityBackendsProjection{}, err
 		}
@@ -366,7 +369,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 						backend.Name, strings.Join(samlBackendNames, ", ")))
 					continue
 				}
-				render, err := r.renderSAMLBackend(ctx, keystone, backend)
+				render, err := r.renderSAMLBackend(ctx, children, keystone, backend)
 				if err != nil {
 					// A missing metadata/certificate Secret, an unreachable or
 					// mismatched IdP metadata document, or a control character in
@@ -404,7 +407,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 				}
 			}
 
-			render, err := r.renderOIDCBackend(ctx, keystone, backend)
+			render, err := r.renderOIDCBackend(ctx, children, keystone, backend)
 			if err != nil {
 				// A missing client Secret, an unreachable/mismatched provider
 				// metadata document, or a control character in a rendered
@@ -436,7 +439,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 			continue
 		}
 
-		conf, caPEM, err := r.renderDomainConf(ctx, keystone.Namespace, backend)
+		conf, caPEM, err := r.renderDomainConf(ctx, children, keystone.Namespace, backend)
 		if err != nil {
 			// A missing/incomplete bind Secret or a value carrying a control
 			// character (INI-injection guard) is a per-backend
@@ -476,7 +479,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 
 	var projection identityBackendsProjection
 	if len(data) > 0 {
-		name, err := config.CreateImmutableSecret(ctx, r.Client, r.Scheme, keystone,
+		name, err := config.CreateImmutableSecret(ctx, children, r.Scheme, keystone,
 			domainsSecretBaseName(keystone), keystone.Namespace, data)
 		if err != nil {
 			return identityBackendsProjection{}, fmt.Errorf("creating domains Secret: %w", err)
@@ -484,7 +487,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 		projection.DomainsSecretName = name
 	}
 	if len(oidcRenders) > 0 || len(samlRenders) > 0 {
-		fed, err := r.buildFederationProjection(ctx, keystone, oidcRenders, samlRenders, fedRemoteIDAttribute, *proxyImage)
+		fed, err := r.buildFederationProjection(ctx, children, keystone, oidcRenders, samlRenders, fedRemoteIDAttribute, *proxyImage)
 		if err != nil {
 			return identityBackendsProjection{}, err
 		}
@@ -494,7 +497,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 	// When no SAML backend is attached anymore, remove the stable-named SP
 	// metadata export Secret (a no-op when it never existed).
 	if len(samlBackendNames) == 0 {
-		if err := r.deleteSAMLSPMetadataSecret(ctx, keystone); err != nil {
+		if err := r.deleteSAMLSPMetadataSecret(ctx, children, keystone); err != nil {
 			return identityBackendsProjection{}, err
 		}
 	}
@@ -514,7 +517,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 	// False until the Deployment mounts exactly this pass's artifacts and every
 	// replica runs them, so consumers gating on IdentityBackendsReady (the
 	// ControlPlane websso projection among them) never race the rollout.
-	rolledOut, reason, err := r.projectionRolledOut(ctx, keystone, projection)
+	rolledOut, reason, err := r.projectionRolledOut(ctx, children, keystone, projection)
 	if err != nil {
 		return identityBackendsProjection{}, err
 	}
@@ -537,7 +540,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, keys
 // backend and, when TLS is configured, the CA-bundle PEM projected beside it.
 // Only user-set optional fields are rendered so upstream keystone defaults
 // apply otherwise.
-func (r *KeystoneReconciler) renderDomainConf(ctx context.Context, namespace string, backend *keystonev1alpha1.KeystoneIdentityBackend) (conf, caPEM []byte, err error) {
+func (r *KeystoneReconciler) renderDomainConf(ctx context.Context, children client.Client, namespace string, backend *keystonev1alpha1.KeystoneIdentityBackend) (conf, caPEM []byte, err error) {
 	l := backend.Spec.LDAP
 	if l == nil {
 		// The webhook + CEL union rule prevent this; fail loudly rather than
@@ -546,11 +549,11 @@ func (r *KeystoneReconciler) renderDomainConf(ctx context.Context, namespace str
 	}
 
 	bindKey := client.ObjectKey{Namespace: namespace, Name: l.BindCredentialsSecretRef.Name}
-	bindUser, err := secrets.GetSecretValue(ctx, r.Client, bindKey, "username")
+	bindUser, err := secrets.GetSecretValue(ctx, children, bindKey, "username")
 	if err != nil {
 		return nil, nil, err
 	}
-	bindPassword, err := secrets.GetSecretValue(ctx, r.Client, bindKey, "password")
+	bindPassword, err := secrets.GetSecretValue(ctx, children, bindKey, "password")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -594,7 +597,7 @@ func (r *KeystoneReconciler) renderDomainConf(ctx context.Context, namespace str
 
 	if l.TLS != nil {
 		caKey := client.ObjectKey{Namespace: namespace, Name: l.TLS.CABundleSecretRef.Name}
-		ca, err := secrets.GetSecretValue(ctx, r.Client, caKey, "ca.crt")
+		ca, err := secrets.GetSecretValue(ctx, children, caKey, "ca.crt")
 		if err != nil {
 			return nil, nil, err
 		}
@@ -678,12 +681,12 @@ func (r *KeystoneReconciler) renderDomainConf(ctx context.Context, namespace str
 // the retain count (matching the config-ConfigMap retention). When nothing is
 // projected anymore (empty currentName), every historical Secret is removed —
 // the last backend detached, so no bind password may linger.
-func (r *KeystoneReconciler) pruneStaleDomainsSecrets(ctx context.Context, keystone *keystonev1alpha1.Keystone, domainsSecretName string) error {
+func (r *KeystoneReconciler) pruneStaleDomainsSecrets(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, domainsSecretName string) error {
 	retain := defaultConfigMapRetainCount
 	if domainsSecretName == "" {
 		retain = 0
 	}
-	return config.PruneImmutableSecrets(ctx, r.Client, keystone, config.PruneOptions{
+	return config.PruneImmutableSecrets(ctx, children, keystone, config.PruneOptions{
 		BaseName:    domainsSecretBaseName(keystone),
 		Namespace:   keystone.Namespace,
 		CurrentName: domainsSecretName,

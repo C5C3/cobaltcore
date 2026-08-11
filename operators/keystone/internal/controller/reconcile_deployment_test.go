@@ -135,7 +135,7 @@ func TestReconcileDeployment_DeploymentAndServiceCreated(t *testing.T) {
 	ks := deployTestKeystone()
 	r := newDeployTestReconciler(s, ks)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	result, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	// Deployment just created, not ready yet — should requeue.
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
@@ -160,7 +160,7 @@ func TestReconcileDeployment_NotReady_Requeues(t *testing.T) {
 	deploy := notReadyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	result, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 
@@ -177,7 +177,7 @@ func TestReconcileDeployment_Ready_SetsEndpoint(t *testing.T) {
 	deploy := readyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	result, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -195,7 +195,7 @@ func TestReconcileDeployment_OwnerReferences(t *testing.T) {
 	ks := deployTestKeystone()
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Verify Deployment has owner reference.
@@ -225,7 +225,7 @@ func TestReconcileDeployment_DeploymentSpec(t *testing.T) {
 	// TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout).
 	r := newDeployTestReconciler(s, ks, readyDeployment(ks, "keystone-config-abc123"))
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var deploy appsv1.Deployment
@@ -444,7 +444,7 @@ func TestReconcileDeployment_AutoscalingPreservesLiveReplicas(t *testing.T) {
 	live.Status.ReadyReplicas = 5
 	r := newDeployTestReconciler(s, ks, live)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var deploy appsv1.Deployment
@@ -561,7 +561,7 @@ func TestReconcileDeployment_NotReady_ConditionMessageAndGeneration(t *testing.T
 	deploy := notReadyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	result, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 
@@ -580,7 +580,7 @@ func TestReconcileDeployment_Ready_ConditionMessageAndGeneration(t *testing.T) {
 	deploy := readyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	result, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -599,7 +599,7 @@ func TestReconcileDeployment_ServiceCreatedAlongsideDeployment(t *testing.T) {
 	// Only pre-create the Keystone CR, not the Deployment or Service.
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Verify both Deployment and Service exist after a single reconcile call.
@@ -673,7 +673,7 @@ func TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout(t *testing.T) {
 			ks := deployTestKeystone()
 			r := newDeployTestReconciler(s, ks, tc.deploy(ks))
 
-			_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+			_, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 			g.Expect(err).NotTo(HaveOccurred())
 
 			key := types.NamespacedName{Name: "test-keystone", Namespace: "default"}
@@ -722,7 +722,7 @@ func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
 
 	// Pass 1: the Deployment is fully converged, so the migration completes and
 	// the Service selector narrows.
-	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(ctx, r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	var svc corev1.Service
 	g.Expect(r.Client.Get(ctx, key, &svc)).To(Succeed())
@@ -737,7 +737,7 @@ func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
 	deploy.Status.ReadyReplicas = 0
 	g.Expect(r.Client.Status().Update(ctx, &deploy)).To(Succeed())
 
-	_, err = r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "", nil)
+	_, err = r.reconcileDeployment(ctx, r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(r.Client.Get(ctx, key, &svc)).To(Succeed())
 	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI),
@@ -765,7 +765,7 @@ func TestReconcileDeployment_SelectorNarrowsWithoutFullReadiness(t *testing.T) {
 	deploy.Status.Conditions = nil
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(ctx, r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var svc corev1.Service
@@ -798,7 +798,7 @@ func TestReconcileDeployment_NarrowingLatchReadsUncached(t *testing.T) {
 	r.apiReader = fake.NewClientBuilder().WithScheme(s).
 		WithObjects(buildKeystoneService(ks, false, true)).Build()
 
-	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(ctx, r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var svc corev1.Service
@@ -977,7 +977,7 @@ func TestReconcileDeployment_NoSecretReadRequired(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	result, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 	g.Expect(secretGetCalled).To(BeFalse(),
@@ -991,7 +991,7 @@ func TestReconcileDeployment_PDBCreated(t *testing.T) {
 	ks.Spec.Deployment.Replicas = 3 // explicit: PDB expectations depend on this value
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var pdb policyv1.PodDisruptionBudget
@@ -1009,7 +1009,7 @@ func TestReconcileDeployment_PDBLabelsAndSelector(t *testing.T) {
 	ks := deployTestKeystone()
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var pdb policyv1.PodDisruptionBudget
@@ -1035,7 +1035,7 @@ func TestReconcileDeployment_PDBMinAvailableForMultipleReplicas(t *testing.T) {
 	ks.Spec.Deployment.Replicas = 3 // explicit: PDB expectations depend on this value
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var pdb policyv1.PodDisruptionBudget
@@ -1055,7 +1055,7 @@ func TestReconcileDeployment_PDBMaxUnavailableForSingleReplica(t *testing.T) {
 	ks.Spec.Deployment.Replicas = 1
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var pdb policyv1.PodDisruptionBudget
@@ -1078,7 +1078,7 @@ func TestReconcileDeployment_PDBUpdatedOnReplicaChange(t *testing.T) {
 	ctx := context.Background()
 
 	// First reconcile with replicas=3 → minAvailable=1.
-	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(ctx, r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var pdb policyv1.PodDisruptionBudget
@@ -1089,7 +1089,7 @@ func TestReconcileDeployment_PDBUpdatedOnReplicaChange(t *testing.T) {
 
 	// Change to replicas=1 and re-reconcile → maxUnavailable=1.
 	ks.Spec.Deployment.Replicas = 1
-	_, err = r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "", nil)
+	_, err = r.reconcileDeployment(ctx, r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(r.Client.Get(ctx, types.NamespacedName{
@@ -1121,7 +1121,7 @@ func TestReconcileDeployment_PDBSelectorMatchesDeploymentPods(t *testing.T) {
 	}
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var deploy appsv1.Deployment
@@ -1273,7 +1273,7 @@ func TestReconcileDeployment_PDBEnsureError(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ensuring PodDisruptionBudget"))
@@ -1509,7 +1509,7 @@ func TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContract
 	deploy := readyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	result, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Must requeue immediately (not RequeueAfter) so the next reconcile enters reconcileContract.
@@ -1544,7 +1544,7 @@ func TestReconcileDeployment_RollingUpdate_NotReady_Requeues(t *testing.T) {
 	deploy := notReadyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	result, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Must requeue with the standard polling interval.
@@ -1592,7 +1592,7 @@ func TestReconcileDeployment_RollingUpdate_SurgeReady_HoldsContract(t *testing.T
 	}
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	result, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Holds in RollingUpdate and requeues to wait for the old image to drain.
@@ -1622,7 +1622,7 @@ func TestReconcileDeployment_NoUpgrade_Ready_SetsEndpoint(t *testing.T) {
 	deploy := readyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	result, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Normal path: no requeue.
@@ -1658,7 +1658,7 @@ func TestReconcileDeployment_OtherPhase_Ready_SetsEndpoint(t *testing.T) {
 	deploy := readyDeployment(ks, "keystone-config-abc123")
 	r := newDeployTestReconciler(s, ks, deploy)
 
-	result, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	result, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Normal path: no requeue.
@@ -1691,7 +1691,7 @@ func TestReconcileDeployment_ConditionObservedGeneration(t *testing.T) {
 
 	r := newDeployTestReconciler(s, ks)
 
-	_, err := r.reconcileDeployment(context.Background(), ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(context.Background(), r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DeploymentReady")
@@ -1705,7 +1705,7 @@ func TestReconcileDeployment_ConditionObservedGeneration(t *testing.T) {
 	deploy := readyDeployment(ks2, "keystone-config-abc123")
 	r2 := newDeployTestReconciler(s, ks2, deploy)
 
-	_, err = r2.reconcileDeployment(context.Background(), ks2, "keystone-config-abc123", "", "", nil)
+	_, err = r2.reconcileDeployment(context.Background(), r2.Client, ks2, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "DeploymentReady")
@@ -2120,7 +2120,7 @@ func TestEnsureDeployment_StrategyConvergesFromServerDefault(t *testing.T) {
 	ctx := context.Background()
 
 	// First reconcile: the default 0/1 strategy overwrites the server default.
-	_, err := r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "", nil)
+	_, err := r.reconcileDeployment(ctx, r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var afterFirst appsv1.Deployment
@@ -2134,7 +2134,7 @@ func TestEnsureDeployment_StrategyConvergesFromServerDefault(t *testing.T) {
 	// Second reconcile: the Strategy block must remain identical — no further
 	// drift-triggered rollout (the stability contract from
 	// TestBuildKeystoneDeployment_StrategyStableAcrossReconciles held end-to-end).
-	_, err = r.reconcileDeployment(ctx, ks, "keystone-config-abc123", "", "", nil)
+	_, err = r.reconcileDeployment(ctx, r.Client, ks, "keystone-config-abc123", "", "", nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var afterSecond appsv1.Deployment

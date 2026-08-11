@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/networkpolicy"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -29,7 +30,7 @@ const (
 // deployment matches the desired state, via the shared network-policy flow. It
 // keeps only the service-specific parts: the desired policy builder (with its
 // federation- and apiserver-aware egress tail) and the backend identity.
-func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, keystone *keystonev1alpha1.Keystone, fed *federationProjection) (ctrl.Result, error) {
+func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, fed *federationProjection) (ctrl.Result, error) {
 	// buildKeystoneNetworkPolicy is only applied on the enabled+non-empty path;
 	// build it lazily so a nil or empty-ingress spec takes the delete or
 	// fail-closed path without a wasted build.
@@ -41,7 +42,7 @@ func (r *KeystoneReconciler) reconcileNetworkPolicy(ctx context.Context, keyston
 			desired = buildKeystoneNetworkPolicy(keystone, r.OperatorNamespace, fed)
 		}
 	}
-	return networkpolicy.Reconcile(ctx, r.Client, r.Scheme, keystone, networkpolicy.FlowParams{
+	return networkpolicy.Reconcile(ctx, children, r.Scheme, keystone, networkpolicy.FlowParams{
 		Configured:         keystone.Spec.NetworkPolicy != nil,
 		IngressSourceCount: ingressCount,
 		Desired:            desired,

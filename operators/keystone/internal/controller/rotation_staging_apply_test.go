@@ -87,7 +87,7 @@ func runApplyRotation(t *testing.T, r *KeystoneReconciler, ks *keystonev1alpha1.
 	if err := r.Get(ctx, types.NamespacedName{Name: stagingName, Namespace: ks.Namespace}, &s); err == nil {
 		staging = &s
 	}
-	return r.applyRotationOutput(ctx, ks, staging, &main, reason, minKeys, maxKeys)
+	return r.applyRotationOutput(ctx, r.Client, ks, staging, &main, reason, minKeys, maxKeys)
 }
 
 func TestApplyRotationOutput_NoStagingSecret(t *testing.T) {

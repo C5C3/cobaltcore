@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -31,7 +32,7 @@ import (
 //     going through admission. Delete any existing CronJob and emit a Warning
 //     Event so the bypass posture is visible in `kubectl describe`
 //     .
-func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
+func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context, children client.Client,
 	keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string,
 ) (ctrl.Result, error) {
 	cronJobName := fmt.Sprintf("%s-trust-flush", keystone.Name)
@@ -58,7 +59,7 @@ func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
 		// `kubectl describe keystone <name>`.
 		r.Recorder.Event(keystone, corev1.EventTypeWarning, "TrustFlushBypass",
 			"Trust flush legacy bypass: spec.trustFlush is nil (webhook defaulting did not run); existing CronJob deleted")
-		if err := job.DeleteCronJob(ctx, r.Client, keystone.Namespace, cronJobName); err != nil {
+		if err := job.DeleteCronJob(ctx, children, keystone.Namespace, cronJobName); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting trust flush CronJob: %w", err)
 		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -73,7 +74,7 @@ func (r *KeystoneReconciler) reconcileTrustFlush(ctx context.Context,
 
 	// Production path: trust flush configured — create or update CronJob.
 	cronJob := trustFlushCronJob(keystone, configMapName, domainsSecretName)
-	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, keystone, cronJob); err != nil {
+	if err := job.EnsureCronJob(ctx, children, r.Scheme, keystone, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring trust flush CronJob: %w", err)
 	}
 	conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{

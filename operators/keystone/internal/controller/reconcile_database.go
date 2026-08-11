@@ -55,14 +55,14 @@ const (
 // upgrade flows are all shared (internal/common/database); only the
 // keystone-specific inputs (assembled by upgradeFlowParams) and the
 // target-changed guard below stay local.
-func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
+func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	// Managed/brownfield provisioning: MariaDB cluster gate, Database/User/Grant
 	// ensure, Dynamic-credentials skip of the User/Grant. A non-zero result means
 	// the flow set a not-ready condition and we must return it unchanged.
 	res, err := database.ReconcileProvision(ctx, database.ProvisionFlowParams{
-		Client:        r.Client,
+		Client:        children,
 		Scheme:        r.Scheme,
 		Owner:         keystone,
 		InstanceName:  keystone.Name,
@@ -103,18 +103,18 @@ func (r *KeystoneReconciler) reconcileDatabase(ctx context.Context, keystone *ke
 			return ctrl.Result{}, fmt.Errorf("image tag changed during active upgrade: current upgrade targets %s but spec.image.tag is %s",
 				keystone.Status.TargetRelease, keystone.Spec.Image.Tag)
 		}
-		return database.ReconcileUpgrade(ctx, r.upgradeFlowParams(ctx, keystone, configMapName, domainsSecretName))
+		return database.ReconcileUpgrade(ctx, r.upgradeFlowParams(ctx, children, keystone, configMapName, domainsSecretName))
 	}
 
 	// Detect upgrade.
 	if isUpgrade(keystone) {
-		return database.InitiateUpgrade(ctx, r.upgradeFlowParams(ctx, keystone, configMapName, domainsSecretName))
+		return database.InitiateUpgrade(ctx, r.upgradeFlowParams(ctx, children, keystone, configMapName, domainsSecretName))
 	}
 
 	// Non-upgrade path: db_sync then schema-check, with terminal metrics emitted
 	// per phase and the installed release tracked on success.
 	return database.ReconcileSyncJobs(ctx, database.SyncFlowParams{
-		Client:   r.Client,
+		Client:   children,
 		Scheme:   r.Scheme,
 		Recorder: r.Recorder,
 		Owner:    keystone,
@@ -147,9 +147,9 @@ func isUpgrade(keystone *keystonev1alpha1.Keystone) bool {
 // the phase choreography itself lives in internal/common/database. The three
 // status pointers (UpgradePhase, InstalledRelease, TargetRelease) are mutated in
 // place by the flow and persisted by the caller after it returns.
-func (r *KeystoneReconciler) upgradeFlowParams(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) database.UpgradeFlowParams {
+func (r *KeystoneReconciler) upgradeFlowParams(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) database.UpgradeFlowParams {
 	return database.UpgradeFlowParams{
-		Client:           r.Client,
+		Client:           children,
 		Scheme:           r.Scheme,
 		Recorder:         r.Recorder,
 		Owner:            keystone,
@@ -189,6 +189,6 @@ func (r *KeystoneReconciler) upgradeFlowParams(ctx context.Context, keystone *ke
 // been accepted (or tolerated as NotFound) so the Keystone CR finalizer can be
 // released in the same reconcile pass; see database.FinalizeResources for the
 // deadlock-avoidance rationale.
-func (r *KeystoneReconciler) finalizeDatabaseResources(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
-	return database.FinalizeResources(ctx, r.Client, mariaDBResourceKey(keystone))
+func (r *KeystoneReconciler) finalizeDatabaseResources(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) error {
+	return database.FinalizeResources(ctx, children, mariaDBResourceKey(keystone))
 }

@@ -67,7 +67,7 @@ const adminPasswordHashAnnotation = "forge.c5c3.io/admin-password-hash" //nolint
 
 // reconcileBootstrap ensures the Keystone bootstrap Job runs with
 // keystone-manage bootstrap and admin credentials.
-func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
+func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	// Re-run the bootstrap Job whenever the admin password rotates: read the
@@ -87,7 +87,7 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *k
 		Namespace: keystone.Namespace,
 		Name:      keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name,
 	}
-	password, err := secrets.GetSecretValue(ctx, r.Client, adminSecretKey, "password")
+	password, err := secrets.GetSecretValue(ctx, children, adminSecretKey, "password")
 	if err != nil || password == "" {
 		msg := fmt.Sprintf("Admin password Secret %s/%s is missing, unreadable, or has an empty %q value",
 			adminSecretKey.Namespace, adminSecretKey.Name, "password")
@@ -117,7 +117,7 @@ func (r *KeystoneReconciler) reconcileBootstrap(ctx context.Context, keystone *k
 	// Ready — False for the whole upgrade. Identity bootstrap is one-time; the
 	// only input that must force a re-run is a rotated admin password
 	// The bootstrap Job emits no db_sync metrics, so the observed Job is discarded.
-	done, _, err := job.RunJobWithRerunKey(ctx, r.Client, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName, domainsSecretName, fernetSecretName, adminPasswordHash), adminPasswordHash)
+	done, _, err := job.RunJobWithRerunKey(ctx, children, r.Scheme, keystone, buildBootstrapJob(keystone, configMapName, domainsSecretName, fernetSecretName, adminPasswordHash), adminPasswordHash)
 	if err != nil {
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               "BootstrapReady",

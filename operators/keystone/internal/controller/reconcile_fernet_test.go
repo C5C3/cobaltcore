@@ -98,7 +98,7 @@ func TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	result, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	// Must requeue to confirm the secret is available before proceeding. Uses
@@ -159,7 +159,7 @@ func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	result, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -258,7 +258,7 @@ func TestReconcileFernetKeys_CronJobScheduleUpdated(t *testing.T) {
 	// Change the schedule in the spec.
 	ks.Spec.Fernet.RotationSchedule = "0 */6 * * *"
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	result, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -289,7 +289,7 @@ func TestReconcileFernetKeys_GeneratedKeysAreValid(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
@@ -330,7 +330,7 @@ func TestReconcileFernetKeys_CronJobScheduleMatchesSpec(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -368,7 +368,7 @@ func TestReconcileFernetKeys_PushSecretDeletionPolicyDelete(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var ps esov1alpha1.PushSecret
@@ -402,7 +402,7 @@ func TestReconcileFernetKeys_PushSecretReferencesCorrectSecret(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var ps esov1alpha1.PushSecret
@@ -562,7 +562,7 @@ func TestReconcileFernetKeys_MinActiveKeysFloor(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
@@ -600,7 +600,7 @@ func TestReconcileFernetKeys_ConditionMessages(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// The final condition should be FernetKeysAvailable with the correct message.
@@ -650,7 +650,7 @@ func TestReconcileFernetKeys_CronJobSpec(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -968,7 +968,7 @@ func TestReconcileFernetKeys_ConditionObservedGeneration(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "FernetKeysReady")
@@ -999,7 +999,7 @@ func TestReconcileFernetKeys_ConditionObservedGeneration(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err = r2.reconcileFernetKeys(context.Background(), ks2, "test-keystone-config-abc123", "")
+	_, err = r2.reconcileFernetKeys(context.Background(), r2.Client, ks2, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "FernetKeysReady")
@@ -1102,7 +1102,7 @@ func TestEnsureFernetRotationRBAC_MainSecretIsReadOnly(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	g.Expect(r.ensureFernetRotationRBAC(context.Background(), ks, "test-keystone-fernet-keys")).To(Succeed())
+	g.Expect(r.ensureFernetRotationRBAC(context.Background(), r.Client, ks, "test-keystone-fernet-keys")).To(Succeed())
 
 	var role rbacv1.Role
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
@@ -1152,7 +1152,7 @@ func TestEnsureFernetRotationRBAC_StagingSecretHasGetPatchOnly(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	g.Expect(r.ensureFernetRotationRBAC(context.Background(), ks, "test-keystone-fernet-keys")).To(Succeed())
+	g.Expect(r.ensureFernetRotationRBAC(context.Background(), r.Client, ks, "test-keystone-fernet-keys")).To(Succeed())
 
 	var role rbacv1.Role
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
@@ -1208,7 +1208,7 @@ func TestReconcileFernetKeys_CreatesEmptyStagingSecret(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Staging Secret must exist with empty Data and the correct labels and owner.
@@ -1292,7 +1292,7 @@ func TestReconcileFernetKeys_AppliesStagedKeysWhenAnnotationPresent(t *testing.T
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileFernetKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	result, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Rotation applied: short-circuit via RequeueAfter so the parallel group's
 	// shortestRequeue propagates it (issue #467).
@@ -1346,7 +1346,7 @@ func TestEnsureFernetRotationRBAC_IsIdempotent_CC0081(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	g.Expect(r.ensureFernetRotationRBAC(context.Background(), ks, "test-keystone-fernet-keys")).To(Succeed())
+	g.Expect(r.ensureFernetRotationRBAC(context.Background(), r.Client, ks, "test-keystone-fernet-keys")).To(Succeed())
 	var first rbacv1.Role
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
@@ -1354,7 +1354,7 @@ func TestEnsureFernetRotationRBAC_IsIdempotent_CC0081(t *testing.T) {
 	}, &first)).To(Succeed())
 	rulesFirst := append([]rbacv1.PolicyRule{}, first.Rules...)
 
-	g.Expect(r.ensureFernetRotationRBAC(context.Background(), ks, "test-keystone-fernet-keys")).To(Succeed())
+	g.Expect(r.ensureFernetRotationRBAC(context.Background(), r.Client, ks, "test-keystone-fernet-keys")).To(Succeed())
 	var second rbacv1.Role
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
@@ -1415,7 +1415,7 @@ func TestFernetReconcileUpdatesRotationAgeGauge(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-cm", "")
+	_, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-cm", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	gaugeLabels := map[string]string{
@@ -1462,7 +1462,7 @@ func TestFernetReconcileSkipsRotationAgeGaugeWhenAnnotationAbsent(t *testing.T) 
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileFernetKeys(context.Background(), ks, "test-cm", "")
+	_, err := r.reconcileFernetKeys(context.Background(), r.Client, ks, "test-cm", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	gaugeLabels := map[string]string{

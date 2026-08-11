@@ -283,7 +283,7 @@ func TestReconcileDatabase_Managed_AllReady_DatabaseSynced(t *testing.T) {
 		completedSchemaCheckJob(ks),
 	)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -313,7 +313,7 @@ func TestReconcileDatabase_DynamicManaged_CreatesDatabaseButNoUserGrant(t *testi
 		completedSchemaCheckJob(ks),
 	)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -351,7 +351,7 @@ func TestReconcileDatabase_DynamicManaged_PreexistingUserGrantSurvive(t *testing
 		completedSchemaCheckJob(ks),
 	)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -370,7 +370,7 @@ func TestReconcileDatabase_Managed_DatabaseNotReady_Requeues(t *testing.T) {
 	db := buildDatabase(ks)
 	r := newDBTestReconciler(s, ks, readyMariaDBCluster(ks), db)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -395,7 +395,7 @@ func TestReconcileDatabase_Managed_UserNotReady_Requeues(t *testing.T) {
 		buildUser(ks), // exists but not ready
 	)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -416,7 +416,7 @@ func TestReconcileDatabase_Managed_ClusterMissing_Requeues(t *testing.T) {
 	// DatabaseReady=False rather than proceeding to create the Database CR.
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -456,7 +456,7 @@ func TestReconcileDatabase_Managed_ClusterNotReady_FlipsDatabaseReadyFalse(t *te
 		completedDBSyncJob(ks),
 	)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -478,7 +478,7 @@ func TestReconcileDatabase_Brownfield_DBSyncComplete_DatabaseSynced(t *testing.T
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -509,7 +509,7 @@ func TestReconcileDatabase_DBSyncRunning_Requeues(t *testing.T) {
 	}
 	r := newDBTestReconciler(s, ks, syncJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -528,7 +528,7 @@ func TestReconcileDatabase_DBSyncFailed_ReturnsError(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, failedDBSyncJob(ks))
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("db_sync"))
 
@@ -548,7 +548,7 @@ func TestReconcileDatabase_Brownfield_SkipsMariaDBCRs_CreatesDBSyncJob(t *testin
 	// No pre-existing Job — should create one and requeue.
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -650,7 +650,7 @@ func TestReconcileDatabase_StaleDBSyncJob_Recreated(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, staleJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -836,7 +836,7 @@ func TestInitiateUpgrade_SequentialUpgrade(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -864,7 +864,7 @@ func TestInitiateUpgrade_SkipLevelRejected(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("sequential"))
 
@@ -885,7 +885,7 @@ func TestInitiateUpgrade_DowngradeRejected(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("downgrade"))
 
@@ -906,7 +906,7 @@ func TestInitiateUpgrade_InvalidVersionFormat(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("parse"))
 
@@ -928,7 +928,7 @@ func TestReconcileDatabase_FreshDeploy_SetsInstalledRelease(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -965,7 +965,7 @@ func TestReconcileDatabase_PatchOnly_UsesSimpleDBSync(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completedJob, completedSchemaCheckJob(ks))
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -987,7 +987,7 @@ func TestReconcileDatabase_ActiveUpgrade_DelegatesToReconcileUpgrade(t *testing.
 
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -1009,7 +1009,7 @@ func TestReconcileDatabase_SameVersionWithInstalledRelease_UsesSimpleDBSync(t *t
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -1033,7 +1033,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 		db := buildDatabase(ks)
 		r := newDBTestReconciler(s, ks, readyMariaDBCluster(ks), db)
 
-		_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+		_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 		g.Expect(err).NotTo(HaveOccurred())
 
 		cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1052,7 +1052,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 			buildUser(ks), // exists but not ready
 		)
 
-		_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+		_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 		g.Expect(err).NotTo(HaveOccurred())
 
 		cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1093,7 +1093,7 @@ func TestReconcileDatabase_Managed_ConditionMessages(t *testing.T) {
 			completedSchemaCheckJob(ks),
 		)
 
-		_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+		_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 		g.Expect(err).NotTo(HaveOccurred())
 
 		cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1153,7 +1153,7 @@ func TestReconcileExpand_NoExistingJob_CreatesJob(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -1187,7 +1187,7 @@ func TestReconcileExpand_JobRunning_Requeues(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, expandJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -1210,7 +1210,7 @@ func TestReconcileExpand_JobCompleted_TransitionsToMigrating(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completed)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -1234,7 +1234,7 @@ func TestReconcileExpand_JobFailed_ReturnsError(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, failed)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1260,7 +1260,7 @@ func TestReconcileMigrate_JobRunning_Requeues(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, migrateJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -1283,7 +1283,7 @@ func TestReconcileMigrate_JobCompleted_TransitionsToRollingUpdate(t *testing.T) 
 
 	r := newDBTestReconciler(s, ks, completed)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -1310,7 +1310,7 @@ func TestReconcileMigrate_JobFailed_ReturnsError(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, failed)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1330,7 +1330,7 @@ func TestReconcileRollingUpdate_PassesThrough(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Pass-through: no requeue, empty result allows reconcileDeployment to proceed.
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -1355,7 +1355,7 @@ func TestReconcileContract_NoExistingJob_CreatesJobAndRequeues(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -1392,7 +1392,7 @@ func TestReconcileContract_JobRunning_Requeues(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, contractJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -1415,7 +1415,7 @@ func TestReconcileContract_JobCompleted_CompletesUpgrade(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completed)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Upgrade complete: no requeue.
@@ -1447,7 +1447,7 @@ func TestReconcileContract_JobFailed_ReturnsError(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, failed)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -1468,7 +1468,7 @@ func TestReconcileContract_UsesNewImage(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Fetch the created Job and verify it uses the NEW image tag.
@@ -1499,7 +1499,7 @@ func TestReconcileDatabase_InterruptedExpand_Resumes(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completed)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -1540,7 +1540,7 @@ func TestReconcileDatabase_TagChangedDuringUpgrade_Blocks(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("image tag changed during active upgrade"))
 	g.Expect(err.Error()).To(ContainSubstring("2026.1"))
@@ -1586,7 +1586,7 @@ func TestReconcileDatabase_RevertToInstalledRelease_AbortsDuringExpand(t *testin
 
 	r := newDBTestReconciler(s, ks, expandJob, migrateJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -1631,7 +1631,7 @@ func TestReconcileDatabase_RevertToInstalledRelease_AbortsFromAnyPhase(t *testin
 
 			r := newDBTestReconciler(s, ks)
 
-			result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+			result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -1673,7 +1673,7 @@ func TestReconcileDatabase_AbortUpgrade_DeleteErrorRetainsState(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("simulated API server error"))
 
@@ -1806,7 +1806,7 @@ func TestReconcileDatabase_SchemaCheckRunning_Requeues(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), runningSchemaCheckJob(ks))
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -1828,7 +1828,7 @@ func TestReconcileDatabase_SchemaCheckComplete_DatabaseSynced(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completedSchemaCheckJob(ks))
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -1851,7 +1851,7 @@ func TestReconcileDatabase_SchemaCheckFailed_SchemaDriftDetected(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), failedSchemaCheckJob(ks))
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("schema-check"))
 
@@ -1882,7 +1882,7 @@ func TestReconcileDatabase_Managed_AllReady_WithSchemaCheck(t *testing.T) {
 		completedSchemaCheckJob(ks),
 	)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -1910,7 +1910,7 @@ func TestReconcileDatabase_SchemaCheckStale_Recreated(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), staleSchemaCheck)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -1941,7 +1941,7 @@ func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncRunning(t *testing.T) 
 	}
 	r := newDBTestReconciler(s, ks, syncJob)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -1971,7 +1971,7 @@ func TestReconcileDatabase_SchemaCheckNotCreatedWhenDBSyncFails(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, failedDBSyncJob(ks))
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("db_sync"))
 
@@ -2002,7 +2002,7 @@ func TestReconcileDatabase_SchemaCheckFailed_InstalledReleaseNotUpdated(t *testi
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), failedSchemaCheckJob(ks))
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	// InstalledRelease must NOT be updated when schema-check fails.
@@ -2026,7 +2026,7 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "DatabaseReady")
@@ -2044,7 +2044,7 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 		buildUser(ks3), // exists but not ready
 	)
 
-	_, err = r3.reconcileDatabase(context.Background(), ks3, "keystone-config-abc123", "")
+	_, err = r3.reconcileDatabase(context.Background(), r3.Client, ks3, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond3 := meta.FindStatusCondition(ks3.Status.Conditions, "DatabaseReady")
@@ -2057,7 +2057,7 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 
 	r4 := newDBTestReconciler(s, ks4, failedDBSyncJob(ks4))
 
-	_, err = r4.reconcileDatabase(context.Background(), ks4, "keystone-config-abc123", "")
+	_, err = r4.reconcileDatabase(context.Background(), r4.Client, ks4, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	cond4 := meta.FindStatusCondition(ks4.Status.Conditions, "DatabaseReady")
@@ -2070,7 +2070,7 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 
 	r5 := newDBTestReconciler(s, ks5, completedDBSyncJob(ks5), failedSchemaCheckJob(ks5))
 
-	_, err = r5.reconcileDatabase(context.Background(), ks5, "keystone-config-abc123", "")
+	_, err = r5.reconcileDatabase(context.Background(), r5.Client, ks5, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred())
 
 	cond5 := meta.FindStatusCondition(ks5.Status.Conditions, "DatabaseReady")
@@ -2091,7 +2091,7 @@ func TestReconcileDatabase_ConditionObservedGeneration(t *testing.T) {
 		completedSchemaCheckJob(ks2),
 	)
 
-	_, err = r2.reconcileDatabase(context.Background(), ks2, "keystone-config-abc123", "")
+	_, err = r2.reconcileDatabase(context.Background(), r2.Client, ks2, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "DatabaseReady")
@@ -2163,7 +2163,7 @@ func TestFinalizeDatabaseResources_DeletesAllThreeCRs(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks, db, user, grant)
 
-	err := r.finalizeDatabaseResources(context.Background(), ks)
+	err := r.finalizeDatabaseResources(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -2188,7 +2188,7 @@ func TestFinalizeDatabaseResources_BrownfieldIsNoop(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	err := r.finalizeDatabaseResources(context.Background(), ks)
+	err := r.finalizeDatabaseResources(context.Background(), r.Client, ks)
 
 	g.Expect(err).NotTo(HaveOccurred(), "brownfield finalize must not error on absent MariaDB CRs")
 }
@@ -2232,7 +2232,7 @@ func TestFinalizeDatabaseResources_NotFoundIsTolerated(t *testing.T) {
 			objs := append([]client.Object{ks}, tc.present(ks)...)
 			r := newDBTestReconciler(s, objs...)
 
-			err := r.finalizeDatabaseResources(context.Background(), ks)
+			err := r.finalizeDatabaseResources(context.Background(), r.Client, ks)
 
 			g.Expect(err).NotTo(HaveOccurred())
 		})
@@ -2250,8 +2250,8 @@ func TestFinalizeDatabaseResources_IsIdempotent(t *testing.T) {
 
 	r := newDBTestReconciler(s, ks)
 
-	g.Expect(r.finalizeDatabaseResources(context.Background(), ks)).To(Succeed())
-	g.Expect(r.finalizeDatabaseResources(context.Background(), ks)).
+	g.Expect(r.finalizeDatabaseResources(context.Background(), r.Client, ks)).To(Succeed())
+	g.Expect(r.finalizeDatabaseResources(context.Background(), r.Client, ks)).
 		To(Succeed(), "re-invocation after completion remains a no-op")
 }
 
@@ -2294,7 +2294,7 @@ func TestFinalizeDatabaseResources_IssuesDeleteWhenTerminating(t *testing.T) {
 			held := tc.terminates(ks)
 			r := newDBTestReconciler(s, ks, held)
 
-			g.Expect(r.finalizeDatabaseResources(context.Background(), ks)).To(Succeed())
+			g.Expect(r.finalizeDatabaseResources(context.Background(), r.Client, ks)).To(Succeed())
 
 			// The held resource must now carry a DeletionTimestamp.
 			fresh := held.DeepCopyObject().(client.Object)
@@ -2333,7 +2333,7 @@ func TestFinalizeDatabaseResources_DeleteErrorIsPropagated(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	err := r.finalizeDatabaseResources(context.Background(), ks)
+	err := r.finalizeDatabaseResources(context.Background(), r.Client, ks)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("simulated API server error"))
@@ -2399,7 +2399,7 @@ func TestDbSyncCompletionRecordsMetric(t *testing.T) {
 	beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 	beforeSum := histogramSampleSum(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	afterCount := counterValue(t, "keystone_operator_db_sync_total", counterLabels)
@@ -2420,7 +2420,7 @@ func TestDbSyncCompletionRecordsMetric(t *testing.T) {
 	// NOT re-emit. Each phase keeps an independent
 	// dedupe annotation, so neither db_sync nor schema-check should fire
 	// again.
-	_, _ = r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, _ = r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	finalCount := counterValue(t, "keystone_operator_db_sync_total", counterLabels)
 	g.Expect(finalCount).To(Equal(afterCount),
 		"metric MUST be emitted at-most-once per (phase, Job UID)")
@@ -2534,7 +2534,7 @@ func TestDbSyncFailureRecordsMetric(t *testing.T) {
 	beforeCount := counterValue(t, "keystone_operator_db_sync_total", counterLabels)
 	beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).To(HaveOccurred(),
 		"reconcileDatabase must surface the job.ErrJobFailed error to the caller")
 
@@ -2591,7 +2591,7 @@ func TestDbSyncInProgressDoesNotRecord(t *testing.T) {
 	beforeFailed := counterValue(t, "keystone_operator_db_sync_total", failedLabels)
 	beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
-	_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	afterSuccess := counterValue(t, "keystone_operator_db_sync_total", successLabels)
@@ -2650,7 +2650,7 @@ func TestUpgradePhaseFailureRecordsDBSyncMetric(t *testing.T) {
 			beforeFailed := counterValue(t, "keystone_operator_db_sync_total", failedLabels)
 			beforeSamples := histogramSampleCount(t, "keystone_operator_db_sync_duration_seconds", durationLabels)
 
-			_, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+			_, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 			g.Expect(err).To(HaveOccurred(),
 				"the failing upgrade-phase Job MUST surface as a reconcile error so callers retry")
 
@@ -3038,7 +3038,7 @@ func TestReconcileDatabase_CompletedSchemaCheck_SameHash_NotRecreated(t *testing
 
 	r := newDBTestReconciler(s, ks, completedDBSyncJob(ks), completed)
 
-	result, err := r.reconcileDatabase(context.Background(), ks, "keystone-config-abc123", "")
+	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Steady state: no churn, no requeue.
 	g.Expect(result.RequeueAfter).To(BeZero())

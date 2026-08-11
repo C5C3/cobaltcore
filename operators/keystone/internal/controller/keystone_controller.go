@@ -39,6 +39,7 @@ import (
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/healthcheck"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
@@ -215,6 +216,13 @@ type KeystoneReconciler struct {
 	Recorder   record.EventRecorder
 	HTTPClient HTTPDoer
 
+	// Resolver resolves the target cluster a Keystone CR names in
+	// spec.targetClusterRef into the client its children are read and written
+	// with. Nil means always-local: every CR keeps its children on the
+	// management cluster, which is what single-cluster tests and deployments
+	// want.
+	Resolver commonmulticluster.ClusterResolver
+
 	// FederationMetadataAllowCIDRs is threaded from the
 	// --federation-metadata-allow-cidrs binary flag: the CIDRs the
 	// federation-metadata dial guard additionally permits for OIDC discovery /
@@ -360,14 +368,51 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// finalizers run in the same pass; reconcileDeleteOpenBao may requeue while
 	// a PushSecret is still Terminating, in which case updateStatus persists
 	// the OpenBaoFinalizerBlocked condition.
+	//
+	// The deletion branch comes before the target-cluster resolution below, and
+	// resolves through the deletion variant, which never fails the pass: a CR
+	// whose cluster was deregistered after the finalizers went on would
+	// otherwise short-circuit on the unresolvable ref on every pass and stay
+	// Terminating forever. A target that has not resolved yet requeues instead
+	// of being given up on — engagement is asynchronous, so an operator restart
+	// looks exactly like a deregistration until the provider has synced.
 	if !keystone.DeletionTimestamp.IsZero() {
-		if result, err := r.reconcileDelete(ctx, &keystone); !result.IsZero() || err != nil {
+		children, wait := commonmulticluster.ResolveChildrenClientForDeletion(
+			ctx, r.Resolver, r.Client, keystone.Spec.TargetClusterRef, *keystone.DeletionTimestamp)
+		if wait {
+			// The hold goes on the CR, not only into the operator's log. It is a
+			// deliberate state a CR can sit in for minutes, and "Terminating,
+			// waiting on the target cluster" has to be distinguishable from a
+			// wedged finalizer without correlating logs across replicas.
+			keystoneSkeleton.MarkFailed(&keystone, "SecretsReady",
+				commonmulticluster.TargetClusterUnavailable,
+				fmt.Errorf("target cluster %s does not resolve; waiting at least %s before abandoning its children",
+					keystone.Spec.TargetClusterRef.Name, commonmulticluster.AbandonAfter))
+			return r.updateStatus(ctx, &keystone, statusBefore,
+				ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
+		}
+		if result, err := r.reconcileDelete(ctx, children, &keystone); !result.IsZero() || err != nil {
 			return result, err
 		}
-		if result, err := r.reconcileDeleteOpenBao(ctx, &keystone); !result.IsZero() || err != nil {
+		if result, err := r.reconcileDeleteOpenBao(ctx, children, &keystone); !result.IsZero() || err != nil {
 			return r.updateStatus(ctx, &keystone, statusBefore, result, err)
 		}
 		return ctrl.Result{}, nil
+	}
+
+	// Resolve the client every child object of this CR is read and written
+	// with. The embedded client stays on the management cluster (the CR, its
+	// status, its finalizers, and the sibling configuration CRs live there);
+	// children carries everything the CR projects into the target cluster. The
+	// resolution runs before the finalizer is added so a CR naming an
+	// unresolvable cluster stays clean of finalizers: nothing was created for
+	// it, so there is nothing to clean up, and a finalizer would only block its
+	// deletion.
+	children, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, keystone.Spec.TargetClusterRef)
+	if err != nil {
+		keystoneSkeleton.MarkFailed(&keystone, "SecretsReady", commonmulticluster.TargetClusterUnavailable, err)
+		return r.updateStatus(ctx, &keystone, statusBefore,
+			ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
 	}
 
 	// Ensure the MariaDB finalizer is installed before any sub-reconciler runs
@@ -420,7 +465,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	var federation *federationProjection
 	pipeline := []commonreconcile.Step{
 		{Name: "Secrets", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileSecrets(ctx, &keystone)
+			return r.reconcileSecrets(ctx, children, &keystone)
 		}},
 		// reconcileDatabaseTLS provisions the client certificate Keystone
 		// presents to MariaDB/MaxScale for mutual TLS. It runs after Secrets (the
@@ -428,7 +473,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// first) and before DBConnectionSecret (which appends the ssl_* DSN
 		// parameters pointing at the issued client keypair).
 		{Name: "DatabaseTLS", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDatabaseTLS(ctx, &keystone)
+			return r.reconcileDatabaseTLS(ctx, children, &keystone)
 		}},
 		// reconcileDBConnectionSecret materialises the DB URL into the derived
 		// <keystone.Name>-db-connection Secret. It runs after Secrets (upstream
@@ -440,7 +485,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				res ctrl.Result
 				err error
 			)
-			res, dbConnectionHash, err = r.reconcileDBConnectionSecret(ctx, &keystone)
+			res, dbConnectionHash, err = r.reconcileDBConnectionSecret(ctx, children, &keystone)
 			return res, err
 		}},
 		// reconcileIdentityBackends aggregates the attached, DomainReady
@@ -452,7 +497,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// result so first-install can bring the API up, and backend status
 		// flips re-enqueue this Keystone via the backend watch.
 		{Name: "IdentityBackends", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			projection, err := r.reconcileIdentityBackends(ctx, &keystone)
+			projection, err := r.reconcileIdentityBackends(ctx, children, &keystone)
 			domainsSecretName = projection.DomainsSecretName
 			federation = projection.Federation
 			return ctrl.Result{}, err
@@ -465,7 +510,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// stay stale-True at the new generation (issue #467).
 		{Name: "Config", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			var err error
-			configMapName, err = r.reconcileConfig(ctx, &keystone, domainsSecretName != "", federation)
+			configMapName, err = r.reconcileConfig(ctx, children, &keystone, domainsSecretName != "", federation)
 			if err != nil {
 				markConfigFailed(&keystone, err)
 			}
@@ -484,35 +529,35 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					Name:          "FernetKeys",
 					ConditionType: "FernetKeysReady",
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-						return r.reconcileFernetKeys(ctx, ks, configMapName, domainsSecretName)
+						return r.reconcileFernetKeys(ctx, children, ks, configMapName, domainsSecretName)
 					},
 				},
 				{
 					Name:          "CredentialKeys",
 					ConditionType: "CredentialKeysReady",
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-						return r.reconcileCredentialKeys(ctx, ks, configMapName, domainsSecretName)
+						return r.reconcileCredentialKeys(ctx, children, ks, configMapName, domainsSecretName)
 					},
 				},
 				{
 					Name:          "NetworkPolicy",
 					ConditionType: "NetworkPolicyReady",
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-						return r.reconcileNetworkPolicy(ctx, ks, federation)
+						return r.reconcileNetworkPolicy(ctx, children, ks, federation)
 					},
 				},
 			})
 		}},
 		{Name: "Database", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDatabase(ctx, &keystone, configMapName, domainsSecretName)
+			return r.reconcileDatabase(ctx, children, &keystone, configMapName, domainsSecretName)
 		}},
 		// Policy validation gates the Deployment: invalid oslo.policy overrides
 		// must be caught before reaching running pods.
 		{Name: "PolicyValidation", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcilePolicyValidation(ctx, &keystone, configMapName, domainsSecretName)
+			return r.reconcilePolicyValidation(ctx, children, &keystone, configMapName, domainsSecretName)
 		}},
 		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDeployment(ctx, &keystone, configMapName, dbConnectionHash, domainsSecretName, federation)
+			return r.reconcileDeployment(ctx, children, &keystone, configMapName, dbConnectionHash, domainsSecretName, federation)
 		}},
 		// Prune stale immutable ConfigMaps and domains Secrets after
 		// Deployment is ready so all pods run the new config before old
@@ -521,11 +566,11 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// SecretsReady=False via markConfigFailed rather than leaving the
 		// aggregate Ready stale-True (issue #467).
 		{Fn: func(ctx context.Context) (ctrl.Result, error) {
-			if err := r.pruneStaleConfigMaps(ctx, &keystone, configMapName); err != nil {
+			if err := r.pruneStaleConfigMaps(ctx, children, &keystone, configMapName); err != nil {
 				markConfigFailed(&keystone, err)
 				return ctrl.Result{}, err
 			}
-			if err := r.pruneStaleDomainsSecrets(ctx, &keystone, domainsSecretName); err != nil {
+			if err := r.pruneStaleDomainsSecrets(ctx, children, &keystone, domainsSecretName); err != nil {
 				markConfigFailed(&keystone, err)
 				return ctrl.Result{}, err
 			}
@@ -533,7 +578,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			if federation != nil {
 				federationSecretName = federation.SecretName
 			}
-			if err := r.pruneStaleFederationSecrets(ctx, &keystone, federationSecretName); err != nil {
+			if err := r.pruneStaleFederationSecrets(ctx, children, &keystone, federationSecretName); err != nil {
 				markConfigFailed(&keystone, err)
 				return ctrl.Result{}, err
 			}
@@ -562,7 +607,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					Name:          "HTTPRoute",
 					ConditionType: conditionTypeHTTPRouteReady,
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-						return r.reconcileHTTPRoute(ctx, ks)
+						return r.reconcileHTTPRoute(ctx, children, ks)
 					},
 				},
 				{
@@ -576,21 +621,21 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					Name:          "HPA",
 					ConditionType: "HPAReady",
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-						return r.reconcileHPA(ctx, ks)
+						return r.reconcileHPA(ctx, children, ks)
 					},
 				},
 				{
 					Name:          "Bootstrap",
 					ConditionType: "BootstrapReady",
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-						return r.reconcileBootstrap(ctx, ks, configMapName, domainsSecretName)
+						return r.reconcileBootstrap(ctx, children, ks, configMapName, domainsSecretName)
 					},
 				},
 				{
 					Name:          "TrustFlush",
 					ConditionType: "TrustFlushReady",
 					Fn: func(ctx context.Context, ks *keystonev1alpha1.Keystone) (ctrl.Result, error) {
-						return r.reconcileTrustFlush(ctx, ks, configMapName, domainsSecretName)
+						return r.reconcileTrustFlush(ctx, children, ks, configMapName, domainsSecretName)
 					},
 				},
 			})
@@ -600,7 +645,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// PushSecret never race the bootstrap seed; configMapName is accepted for
 		// call-site symmetry only — the rotate script needs no keystone config
 		{Name: "PasswordRotation", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcilePasswordRotation(ctx, &keystone, configMapName)
+			return r.reconcilePasswordRotation(ctx, children, &keystone, configMapName)
 		}},
 	}
 
@@ -625,29 +670,39 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // DATABASE. Owner references set by reconcileDatabase ensure the MariaDB CRs
 // are still reclaimed after the Keystone CR is gone — either via their own
 // finalizers or via GC.
-func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+//
+// A nil children client means the target cluster this CR named is no longer
+// registered. Its MariaDB CRs cannot be reached, so they are left behind (the
+// remote-ownership gap #837 tracks) and the finalizer is released anyway:
+// holding it would only strand the CR in Terminating.
+func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(keystone, keystoneFinalizer) {
 		return ctrl.Result{}, nil
 	}
 
-	// Only emit FinalizingDatabase when at least one MariaDB CR is still live
-	// so brownfield CRs (no MariaDB CRs ever created) do not produce a
-	// misleading "cleaning up" event.
-	hasLiveCleanupWork, err := r.hasLiveMariaDBResources(ctx, keystone)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if hasLiveCleanupWork {
-		r.Recorder.Event(keystone, corev1.EventTypeNormal, "FinalizingDatabase",
-			"Cleaning up MariaDB Database, User, and Grant before removing Keystone")
-	}
+	if children == nil {
+		r.Recorder.Event(keystone, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
+			"Target cluster is no longer registered; releasing the finalizer without deleting the MariaDB Database, User, and Grant on it")
+	} else {
+		// Only emit FinalizingDatabase when at least one MariaDB CR is still live
+		// so brownfield CRs (no MariaDB CRs ever created) do not produce a
+		// misleading "cleaning up" event.
+		hasLiveCleanupWork, err := r.hasLiveMariaDBResources(ctx, children, keystone)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if hasLiveCleanupWork {
+			r.Recorder.Event(keystone, corev1.EventTypeNormal, "FinalizingDatabase",
+				"Cleaning up MariaDB Database, User, and Grant before removing Keystone")
+		}
 
-	if err := r.finalizeDatabaseResources(ctx, keystone); err != nil {
-		return ctrl.Result{}, err
-	}
+		if err := r.finalizeDatabaseResources(ctx, children, keystone); err != nil {
+			return ctrl.Result{}, err
+		}
 
-	r.Recorder.Event(keystone, corev1.EventTypeNormal, "DatabaseFinalized",
-		"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
+		r.Recorder.Event(keystone, corev1.EventTypeNormal, "DatabaseFinalized",
+			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
+	}
 
 	controllerutil.RemoveFinalizer(keystone, keystoneFinalizer)
 	if err := r.Update(ctx, keystone); err != nil {
@@ -668,8 +723,8 @@ func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, keystone *keys
 // (no MariaDB CRs ever created) report false so the FinalizingDatabase event
 // is suppressed when there is nothing to announce. It delegates to the shared
 // database.HasLiveResources.
-func (r *KeystoneReconciler) hasLiveMariaDBResources(ctx context.Context, keystone *keystonev1alpha1.Keystone) (bool, error) {
-	return database.HasLiveResources(ctx, r.Client, mariaDBResourceKey(keystone))
+func (r *KeystoneReconciler) hasLiveMariaDBResources(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (bool, error) {
+	return database.HasLiveResources(ctx, children, mariaDBResourceKey(keystone))
 }
 
 // reconcileDeleteOpenBao drives the openbao-finalizer cleanup when the Keystone
@@ -683,8 +738,22 @@ func (r *KeystoneReconciler) hasLiveMariaDBResources(ctx context.Context, keysto
 // finalizer surfaces as
 // ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling} so the
 // Keystone CR stays live until ESO has purged the kv-v2 path.
-func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(keystone, keystoneOpenBaoFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	// A nil children client means the target cluster holding the PushSecrets is
+	// no longer registered. ESO cannot be waited on across a cluster that
+	// cannot be reached, so the kv-v2 paths stay as they are (#837) and the
+	// finalizer is released rather than blocking the CR forever.
+	if children == nil {
+		r.Recorder.Event(keystone, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
+			"Target cluster is no longer registered; releasing the openbao-finalizer without deleting the backup PushSecrets on it")
+		controllerutil.RemoveFinalizer(keystone, keystoneOpenBaoFinalizer)
+		if err := r.Update(ctx, keystone); err != nil {
+			return ctrl.Result{}, fmt.Errorf("removing openbao finalizer: %w", err)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -696,7 +765,7 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keyston
 	// contract across the Pass-0 adoption-wait window; without the gate, the
 	// 15s commonreconcile.RequeueSecretPolling tick would fire a fresh
 	// FinalizingOpenBaoSecrets event on every requeue until ESO adopts
-	hasLiveCleanupWork, err := r.hasLiveOpenBaoBackupPushSecrets(ctx, keystone)
+	hasLiveCleanupWork, err := r.hasLiveOpenBaoBackupPushSecrets(ctx, children, keystone)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -705,7 +774,7 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keyston
 			"Cleaning up OpenBao backup PushSecrets before removing Keystone")
 	}
 
-	done, err := r.finalizeOpenBaoSecrets(ctx, keystone)
+	done, err := r.finalizeOpenBaoSecrets(ctx, children, keystone)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -736,11 +805,11 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, keyston
 //     to announce yet. Without this gate the 15s
 //     commonreconcile.RequeueSecretPolling tick would fire a fresh Event on
 //     every requeue until ESO adopts, regressing the exactly-once contract.
-func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context, keystone *keystonev1alpha1.Keystone) (bool, error) {
+func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (bool, error) {
 	for _, name := range openBaoBackupPushSecretNames(keystone) {
 		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
 		ps := &esov1alpha1.PushSecret{}
-		err := r.Get(ctx, key, ps)
+		err := children.Get(ctx, key, ps)
 		if apierrors.IsNotFound(err) {
 			continue
 		}

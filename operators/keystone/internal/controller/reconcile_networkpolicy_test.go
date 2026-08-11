@@ -734,7 +734,7 @@ func TestReconcileNetworkPolicy_OperatorNamespaceWiredThrough(t *testing.T) {
 	r := newNPTestReconciler(s, ks)
 	r.OperatorNamespace = "keystone-system"
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
+	_, err := r.reconcileNetworkPolicy(context.Background(), r.Client, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var np networkingv1.NetworkPolicy
@@ -763,7 +763,7 @@ func TestReconcileNetworkPolicy_GatewaySet_NetworkPolicyNil_NoNetworkPolicyCreat
 	}
 	r := newNPTestReconciler(s, ks)
 
-	result, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
+	result, err := r.reconcileNetworkPolicy(context.Background(), r.Client, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -826,7 +826,7 @@ func TestReconcileNetworkPolicy_NetworkPolicySet_CreatesNetworkPolicy(t *testing
 	}
 	r := newNPTestReconciler(s, ks)
 
-	result, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
+	result, err := r.reconcileNetworkPolicy(context.Background(), r.Client, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -859,7 +859,7 @@ func TestReconcileNetworkPolicy_ConditionObservedGeneration(t *testing.T) {
 	}
 	r := newNPTestReconciler(s, ks)
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
+	_, err := r.reconcileNetworkPolicy(context.Background(), r.Client, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "NetworkPolicyReady")
@@ -871,7 +871,7 @@ func TestReconcileNetworkPolicy_ConditionObservedGeneration(t *testing.T) {
 	ks2.Generation = 12
 	r2 := newNPTestReconciler(s, ks2)
 
-	_, err = r2.reconcileNetworkPolicy(context.Background(), ks2, nil)
+	_, err = r2.reconcileNetworkPolicy(context.Background(), r2.Client, ks2, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "NetworkPolicyReady")
@@ -892,7 +892,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NetworkPolicyUpdated(t *tes
 	ctx := context.Background()
 
 	// First reconcile creates NetworkPolicy.
-	_, err := r.reconcileNetworkPolicy(ctx, ks, nil)
+	_, err := r.reconcileNetworkPolicy(ctx, r.Client, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Add a second ingress source and re-reconcile.
@@ -902,7 +902,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_NetworkPolicyUpdated(t *tes
 			NamespaceSelector: metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "monitoring"}},
 		},
 	)
-	_, err = r.reconcileNetworkPolicy(ctx, ks, nil)
+	_, err = r.reconcileNetworkPolicy(ctx, r.Client, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var np networkingv1.NetworkPolicy
@@ -931,9 +931,9 @@ func TestReconcileNetworkPolicy_NetworkPolicyEnabled_RepeatedReconcileIsIdempote
 	r := newNPTestReconciler(s, ks)
 	ctx := context.Background()
 
-	_, err := r.reconcileNetworkPolicy(ctx, ks, nil)
+	_, err := r.reconcileNetworkPolicy(ctx, r.Client, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
-	_, err = r.reconcileNetworkPolicy(ctx, ks, nil)
+	_, err = r.reconcileNetworkPolicy(ctx, r.Client, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	list := &networkingv1.NetworkPolicyList{}
@@ -951,7 +951,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyNil_NoExistingNP_SetsNotRequired(t 
 	// networkPolicy is nil by default.
 	r := newNPTestReconciler(s, ks)
 
-	result, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
+	result, err := r.reconcileNetworkPolicy(context.Background(), r.Client, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -986,7 +986,7 @@ func TestReconcileNetworkPolicy_NetworkPolicyNil_ExistingNP_DeletesNetworkPolicy
 	}, &np)).To(Succeed())
 
 	// reconcileNetworkPolicy with nil networkPolicy should delete the NP.
-	result, err := r.reconcileNetworkPolicy(ctx, ks, nil)
+	result, err := r.reconcileNetworkPolicy(ctx, r.Client, ks, nil)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -1015,7 +1015,7 @@ func TestReconcileNetworkPolicy_EmptyIngress_ReturnsError(t *testing.T) {
 	}
 	r := newNPTestReconciler(s, ks)
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
+	_, err := r.reconcileNetworkPolicy(context.Background(), r.Client, ks, nil)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("spec.networkPolicy.ingress must not be empty"))
 
@@ -1058,7 +1058,7 @@ func TestReconcileNetworkPolicy_EnsureError_Propagated(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
+	_, err := r.reconcileNetworkPolicy(context.Background(), r.Client, ks, nil)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ensuring NetworkPolicy"))
 	g.Expect(err.Error()).To(ContainSubstring("simulated NetworkPolicy apply error"))
@@ -1100,7 +1100,7 @@ func TestReconcileNetworkPolicy_DeleteError_Propagated(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), ks, nil)
+	_, err := r.reconcileNetworkPolicy(context.Background(), r.Client, ks, nil)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("deleting NetworkPolicy"))
 	g.Expect(err.Error()).To(ContainSubstring("simulated NetworkPolicy deletion error"))

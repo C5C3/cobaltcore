@@ -22,6 +22,7 @@ import (
 	"context"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/database"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
@@ -49,9 +50,9 @@ const dbTLSMountPath = "/etc/keystone/db-tls/"
 // roll the Pods when a Dynamic (engine-issued) credential rotates without
 // reading the Secret content itself; the digest is empty on the requeue/error
 // paths where no derived Secret was materialised.
-func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, string, error) {
+func (r *KeystoneReconciler) reconcileDBConnectionSecret(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (ctrl.Result, string, error) {
 	return database.ReconcileConnectionSecret(ctx, database.ConnectionSecretFlowParams{
-		Client:        r.Client,
+		Client:        children,
 		Scheme:        r.Scheme,
 		Owner:         keystone,
 		InstanceName:  keystone.Name,

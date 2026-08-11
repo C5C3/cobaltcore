@@ -9,6 +9,7 @@ import (
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/deployment"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -25,12 +26,12 @@ func subResourceName(keystone *keystonev1alpha1.Keystone) string {
 // reconcileHPA ensures the HorizontalPodAutoscaler for the Keystone API
 // deployment matches the desired state, via the shared HPA flow. It keeps only
 // the service-specific desired HPA builder.
-func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+func (r *KeystoneReconciler) reconcileHPA(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	var desired *autoscalingv2.HorizontalPodAutoscaler
 	if keystone.Spec.Autoscaling != nil {
 		desired = buildKeystoneHPA(keystone)
 	}
-	return deployment.ReconcileHPA(ctx, r.Client, r.Scheme, keystone, deployment.HPAFlowParams{
+	return deployment.ReconcileHPA(ctx, children, r.Scheme, keystone, deployment.HPAFlowParams{
 		Enabled:       keystone.Spec.Autoscaling != nil,
 		Desired:       desired,
 		Name:          subResourceName(keystone),

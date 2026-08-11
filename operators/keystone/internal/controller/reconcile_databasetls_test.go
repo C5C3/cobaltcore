@@ -115,7 +115,7 @@ func TestReconcileDatabaseTLS_CreatesCertificateWhenEnabled(t *testing.T) {
 	ks := dbTLSManagedKeystone("verify-full")
 	r := dbTLSReconciler(s, ks)
 
-	result, err := r.reconcileDatabaseTLS(context.Background(), ks)
+	result, err := r.reconcileDatabaseTLS(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	// Newly created Certificate is not yet Ready, so the reconciler requeues.
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -165,7 +165,7 @@ func TestReconcileDatabaseTLS_ConditionTrueWhenIssued(t *testing.T) {
 	}
 	r := dbTLSReconciler(s, ks, issued)
 
-	result, err := r.reconcileDatabaseTLS(context.Background(), ks)
+	result, err := r.reconcileDatabaseTLS(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
@@ -210,7 +210,7 @@ func TestReconcileDatabaseTLS_EnabledMissingCertRefsFailsClosed(t *testing.T) {
 			ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{Mode: "require"}
 			r := dbTLSReconciler(s, ks)
 
-			result, err := r.reconcileDatabaseTLS(context.Background(), ks)
+			result, err := r.reconcileDatabaseTLS(context.Background(), r.Client, ks)
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(result).To(Equal(ctrl.Result{}))
 
@@ -238,7 +238,7 @@ func TestReconcileDatabaseTLS_DisabledIsNoOp(t *testing.T) {
 	ks := dbTLSBaseKeystone() // TLS == nil
 	r := dbTLSReconciler(s, ks)
 
-	result, err := r.reconcileDatabaseTLS(context.Background(), ks)
+	result, err := r.reconcileDatabaseTLS(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
@@ -268,7 +268,7 @@ func TestReconcileDatabaseTLS_BrownfieldExternallyManaged(t *testing.T) {
 	}
 	r := dbTLSReconciler(s, ks)
 
-	result, err := r.reconcileDatabaseTLS(context.Background(), ks)
+	result, err := r.reconcileDatabaseTLS(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
@@ -300,7 +300,7 @@ func TestReconcileDatabaseTLS_DisabledDeletesManagedCertificate(t *testing.T) {
 	}
 	r := dbTLSReconciler(s, ks, existing)
 
-	result, err := r.reconcileDatabaseTLS(context.Background(), ks)
+	result, err := r.reconcileDatabaseTLS(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
@@ -335,7 +335,7 @@ func TestReconcileDatabaseTLS_BrownfieldDeletesManagedCertificate(t *testing.T) 
 	}
 	r := dbTLSReconciler(s, ks, existing)
 
-	result, err := r.reconcileDatabaseTLS(context.Background(), ks)
+	result, err := r.reconcileDatabaseTLS(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
@@ -367,7 +367,7 @@ func TestReconcileDatabaseTLS_DisabledSkipsDeleteWhenCertManagerAbsent(t *testin
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ks, existing).Build()
 	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10), certManagerAvailable: false}
 
-	result, err := r.reconcileDatabaseTLS(context.Background(), ks)
+	result, err := r.reconcileDatabaseTLS(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 

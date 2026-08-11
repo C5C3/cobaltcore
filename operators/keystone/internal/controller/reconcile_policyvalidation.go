@@ -37,13 +37,13 @@ const (
 //     PolicyValidReady=True/PolicyValidationNotRequired
 //   - spec.policyOverrides set: run validation Job via job.RunJob, track
 //     lifecycle through InProgress/Passed/Failed states
-func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
+func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string) (ctrl.Result, error) {
 	jobName := fmt.Sprintf("%s-policy-validation", keystone.Name)
 
 	// Path 1: no policy overrides — delete any existing validation Job and
 	// set condition to True/PolicyValidationNotRequired.
 	if keystone.Spec.PolicyOverrides == nil {
-		if err := deleteValidationJob(ctx, r.Client, keystone.Namespace, jobName); err != nil {
+		if err := deleteValidationJob(ctx, children, keystone.Namespace, jobName); err != nil {
 			return ctrl.Result{}, fmt.Errorf("deleting validation Job: %w", err)
 		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -58,11 +58,11 @@ func (r *KeystoneReconciler) reconcilePolicyValidation(ctx context.Context, keys
 
 	// Path 2: policy overrides set — run validation Job. Policy validation does
 	// not emit db_sync metrics, so the observed Job is discarded.
-	done, _, err := job.RunJob(ctx, r.Client, r.Scheme, keystone, buildPolicyValidationJob(keystone, configMapName, domainsSecretName))
+	done, _, err := job.RunJob(ctx, children, r.Scheme, keystone, buildPolicyValidationJob(keystone, configMapName, domainsSecretName))
 	if err != nil {
 		msg := fmt.Sprintf("Policy validation failed: %v", err)
 		if errors.Is(err, job.ErrJobFailed) {
-			msg = getValidationErrorMessage(ctx, r.Client, jobName, keystone.Namespace)
+			msg = getValidationErrorMessage(ctx, children, jobName, keystone.Namespace)
 		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
 			Type:               conditionTypePolicyValidReady,
