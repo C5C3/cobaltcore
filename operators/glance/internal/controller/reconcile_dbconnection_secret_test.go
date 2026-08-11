@@ -23,7 +23,7 @@ func TestReconcileDBConnectionSecret_DerivesSecretAndDigest(t *testing.T) {
 	glance := testGlance()
 	r := newGlanceTestReconciler(glance, glanceDBSecret())
 
-	res, digest, err := r.reconcileDBConnectionSecret(context.Background(), glance)
+	res, digest, err := r.reconcileDBConnectionSecret(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -37,7 +37,7 @@ func TestReconcileDBConnectionSecret_DerivesSecretAndDigest(t *testing.T) {
 	g.Expect(derived.Data[database.ConnectionSecretKey]).NotTo(BeEmpty())
 
 	// The digest is stable across passes (drives the deployment pod-roll).
-	_, digest2, err := r.reconcileDBConnectionSecret(context.Background(), glance)
+	_, digest2, err := r.reconcileDBConnectionSecret(context.Background(), r.Client, glance)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(digest2).To(Equal(digest))
 }
@@ -48,7 +48,7 @@ func TestReconcileDBConnectionSecret_MissingUpstreamWaits(t *testing.T) {
 	// No upstream DB credentials Secret: no derived Secret is materialised.
 	r := newGlanceTestReconciler(glance)
 
-	res, digest, err := r.reconcileDBConnectionSecret(context.Background(), glance)
+	res, digest, err := r.reconcileDBConnectionSecret(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))

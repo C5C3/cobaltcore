@@ -102,7 +102,7 @@ type configArtifacts struct {
 // unmet), it does NOT re-render: it returns the artefact names the live
 // Deployment currently mounts so downstream steps keep using the last-good
 // config (D3 last-good retention), or empty names on first install.
-func (r *GlanceReconciler) reconcileConfig(ctx context.Context, glance *glancev1alpha1.Glance, projection backendsProjection) (ctrl.Result, configArtifacts, error) {
+func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance, projection backendsProjection) (ctrl.Result, configArtifacts, error) {
 	// The extraConfig ownership guard is a pure function of the spec, so it
 	// runs before the invalid-projection short-circuit: the condition is
 	// maintained on the last-good-retention path too. The ExtraConfigHealthy
@@ -114,7 +114,7 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, glance *glancev1
 	if !projection.valid {
 		// Last-good retention: keep whatever the running Deployment mounts rather
 		// than re-rendering against an invalid projection.
-		return r.lastGoodArtifacts(ctx, glance)
+		return r.lastGoodArtifacts(ctx, children, glance)
 	}
 
 	defaults := operatorDefaults(glance, projection)
@@ -144,7 +144,7 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, glance *glancev1
 	// Handle PolicyOverrides: render policy.yaml and wire oslo_policy.policy_file.
 	var policyYAML string
 	if glance.Spec.PolicyOverrides != nil {
-		yaml, err := buildPolicyYAML(ctx, r.Client, glance)
+		yaml, err := buildPolicyYAML(ctx, children, glance)
 		if err != nil {
 			markConfigFailed(glance, err)
 			return ctrl.Result{}, configArtifacts{}, fmt.Errorf("building policy: %w", err)
@@ -172,13 +172,13 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, glance *glancev1
 		data["logging.conf"] = config.RenderLoggingConf(logging.Level)
 	}
 
-	configMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, glance,
+	configMapName, err := config.CreateImmutableConfigMap(ctx, children, r.Scheme, glance,
 		glance.Name+"-config", glance.Namespace, data)
 	if err != nil {
 		markConfigFailed(glance, err)
 		return ctrl.Result{}, configArtifacts{}, fmt.Errorf("creating config ConfigMap: %w", err)
 	}
-	if err := config.PruneImmutableConfigMaps(ctx, r.Client, glance, config.PruneOptions{
+	if err := config.PruneImmutableConfigMaps(ctx, children, glance, config.PruneOptions{
 		BaseName:    glance.Name + "-config",
 		Namespace:   glance.Namespace,
 		CurrentName: configMapName,
@@ -474,10 +474,10 @@ func glanceStaticPasteSections() map[string]map[string]string {
 // Glance Deployment currently mounts, so an invalid projection keeps the
 // last-good config instead of re-rendering. On first install (no Deployment
 // yet) it returns empty names.
-func (r *GlanceReconciler) lastGoodArtifacts(ctx context.Context, glance *glancev1alpha1.Glance) (ctrl.Result, configArtifacts, error) {
+func (r *GlanceReconciler) lastGoodArtifacts(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) (ctrl.Result, configArtifacts, error) {
 	var deploy appsv1.Deployment
 	key := client.ObjectKey{Namespace: glance.Namespace, Name: subResourceName(glance)}
-	if err := r.Get(ctx, key, &deploy); err != nil {
+	if err := children.Get(ctx, key, &deploy); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, configArtifacts{}, nil
 		}

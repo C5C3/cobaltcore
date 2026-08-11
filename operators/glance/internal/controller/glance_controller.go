@@ -34,6 +34,7 @@ import (
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/healthcheck"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
@@ -196,6 +197,13 @@ type GlanceReconciler struct {
 	// health check uses http.DefaultClient; tests inject a stub transport.
 	HTTPClient HTTPDoer
 
+	// Resolver resolves the target cluster a Glance CR names in
+	// spec.targetClusterRef into the client its children are read and written
+	// with. Nil means always-local: every CR keeps its children on the
+	// management cluster, which is what single-cluster tests and deployments
+	// want.
+	Resolver commonmulticluster.ClusterResolver
+
 	// apiReader is set during SetupWithManager from mgr.GetAPIReader(): a direct,
 	// uncached reader. reconcileDeployment latches the two-phase narrowing of the
 	// API Service selector on the live Service, and the informer cache can still
@@ -298,10 +306,52 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// Handle deletion via the finalizer: issue Delete on the MariaDB CRs, then
 	// release the finalizer once no live (not-yet-deleted) resource remains. The
-	// deletion path sets no conditions, so it returns directly without
-	// updateStatus.
+	// cleanup itself sets no conditions, so it returns directly without
+	// updateStatus; only the hold on an unresolvable target below reports.
+	//
+	// It comes before the target-cluster resolution below and uses the deletion
+	// variant, which never fails the pass: a CR whose cluster was deregistered
+	// after the finalizer went on would otherwise short-circuit on the
+	// unresolvable ref on every pass and stay Terminating forever. A target that
+	// has not resolved yet requeues instead of being given up on — engagement is
+	// asynchronous, so an operator restart looks exactly like a deregistration
+	// until the provider has synced.
 	if !glance.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, &glance)
+		children, wait := commonmulticluster.ResolveChildrenClientForDeletion(
+			ctx, r.Resolver, r.Client, glance.Spec.TargetClusterRef, *glance.DeletionTimestamp)
+		if wait {
+			// The hold goes on the CR, not only into the operator's log. It is a
+			// deliberate state a CR can sit in for minutes, and "Terminating,
+			// waiting on the target cluster" has to be distinguishable from a
+			// wedged finalizer without correlating logs across replicas. This exit
+			// precedes the pipeline's status snapshot below, so it takes its own
+			// baseline for the skip-unchanged write.
+			statusBefore := glance.Status.DeepCopy()
+			glanceSkeleton.MarkFailed(&glance, "SecretsReady",
+				commonmulticluster.TargetClusterUnavailable,
+				fmt.Errorf("target cluster %s does not resolve; waiting at least %s before abandoning its children",
+					glance.Spec.TargetClusterRef.Name, commonmulticluster.AbandonAfter))
+			return r.updateStatus(ctx, &glance, statusBefore,
+				ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
+		}
+		return r.reconcileDelete(ctx, children, &glance)
+	}
+
+	// Resolve the client every child object of this CR is read and written with.
+	// The embedded client stays on the management cluster (the CR, its status,
+	// its finalizer, and the sibling GlanceBackends live there); children carries
+	// everything the CR projects into the target cluster. The resolution runs
+	// before the finalizer is added so a CR naming an unresolvable cluster stays
+	// clean of finalizers: nothing was created for it, so there is nothing to
+	// clean up, and a finalizer would only block its deletion.
+	children, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, glance.Spec.TargetClusterRef)
+	if err != nil {
+		// This exit precedes the pipeline's status snapshot below, so it takes its
+		// own baseline for the skip-unchanged write.
+		statusBefore := glance.Status.DeepCopy()
+		glanceSkeleton.MarkFailed(&glance, "SecretsReady", commonmulticluster.TargetClusterUnavailable, err)
+		return r.updateStatus(ctx, &glance, statusBefore,
+			ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
 	}
 
 	// Ensure the finalizer is installed before any sub-reconciler runs so a
@@ -346,7 +396,7 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 				res ctrl.Result
 				err error
 			)
-			res, authTokenDigest, err = r.reconcileSecrets(ctx, &glance)
+			res, authTokenDigest, err = r.reconcileSecrets(ctx, children, &glance)
 			return res, err
 		}},
 		// reconcileDBConnectionSecret materialises the DB URL into the derived
@@ -358,7 +408,7 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 				res ctrl.Result
 				err error
 			)
-			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, &glance)
+			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, children, &glance)
 			return res, err
 		}},
 		// reconcileBackends aggregates the attached, credential-ready backends
@@ -371,7 +421,7 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 				res ctrl.Result
 				err error
 			)
-			res, projection, err = r.reconcileBackends(ctx, &glance)
+			res, projection, err = r.reconcileBackends(ctx, children, &glance)
 			return res, err
 		}},
 		// reconcileConfig renders glance-api.conf into an immutable ConfigMap. On
@@ -383,20 +433,20 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 				res ctrl.Result
 				err error
 			)
-			res, art, err = r.reconcileConfig(ctx, &glance, projection)
+			res, art, err = r.reconcileConfig(ctx, children, &glance, projection)
 			return res, err
 		}},
 		// reconcileDatabase provisions/migrates the schema. It waits (requeue)
 		// while art.configMapName is empty (no rendered config to db-sync yet).
 		{Name: "Database", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDatabase(ctx, &glance, art.configMapName)
+			return r.reconcileDatabase(ctx, children, &glance, art.configMapName)
 		}},
 		// reconcileDeployment ensures the API Deployment/Service/PDB and stamps the
 		// status endpoint. It re-applies the last-good config on an invalid
 		// projection when a Deployment exists, else waits for a ready default
 		// backend.
 		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDeployment(ctx, &glance, art, dsnDigest, authTokenDigest)
+			return r.reconcileDeployment(ctx, children, &glance, art, dsnDigest, authTokenDigest)
 		}},
 		// Once the Deployment/Service/Config outputs are in place, HTTPRoute,
 		// HealthCheck, HPA, NetworkPolicy, and DBPurge have no inter-dependency and
@@ -409,7 +459,7 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 					Name:          "HTTPRoute",
 					ConditionType: conditionTypeHTTPRouteReady,
 					Fn: func(ctx context.Context, g *glancev1alpha1.Glance) (ctrl.Result, error) {
-						return r.reconcileHTTPRoute(ctx, g)
+						return r.reconcileHTTPRoute(ctx, children, g)
 					},
 				},
 				{
@@ -423,14 +473,14 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 					Name:          "HPA",
 					ConditionType: "HPAReady",
 					Fn: func(ctx context.Context, g *glancev1alpha1.Glance) (ctrl.Result, error) {
-						return r.reconcileHPA(ctx, g)
+						return r.reconcileHPA(ctx, children, g)
 					},
 				},
 				{
 					Name:          "NetworkPolicy",
 					ConditionType: conditionTypeNetworkPolicyReady,
 					Fn: func(ctx context.Context, g *glancev1alpha1.Glance) (ctrl.Result, error) {
-						return r.reconcileNetworkPolicy(ctx, g, projection)
+						return r.reconcileNetworkPolicy(ctx, children, g, projection)
 					},
 				},
 				// The purge CronJob mounts the rendered config, so it belongs after
@@ -440,7 +490,7 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 					Name:          "DBPurge",
 					ConditionType: conditionTypeDBPurgeReady,
 					Fn: func(ctx context.Context, g *glancev1alpha1.Glance) (ctrl.Result, error) {
-						return r.reconcileDBPurge(ctx, g, art.configMapName)
+						return r.reconcileDBPurge(ctx, children, g, art.configMapName)
 					},
 				},
 			})
@@ -458,34 +508,44 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 // holds the finalizer for one more pass so the schema teardown is triggered
 // before the owner-ref chain disappears. Once no live resource remains it drops
 // the per-CR metrics, evicts the health-probe cache, and releases the finalizer.
-func (r *GlanceReconciler) reconcileDelete(ctx context.Context, glance *glancev1alpha1.Glance) (ctrl.Result, error) {
+//
+// A nil children client means the target cluster this CR named is no longer
+// registered. Its MariaDB CRs cannot be reached, so they are left behind (the
+// remote-ownership gap #837 tracks) and the finalizer is released anyway:
+// holding it would only strand the CR in Terminating.
+func (r *GlanceReconciler) reconcileDelete(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(glance, glanceFinalizer) {
 		return ctrl.Result{}, nil
 	}
 
 	key := client.ObjectKey{Name: glance.Name, Namespace: glance.Namespace}
 
-	// Observe whether any MariaDB CR is still live BEFORE issuing the Delete: a
-	// Delete flips DeletionTimestamp, so a post-Delete check would always report
-	// none-live and release immediately. Gating on the pre-Delete observation
-	// keeps the CR alive one extra pass so the teardown is actually triggered.
-	hasLive, err := database.HasLiveResources(ctx, r.Client, key)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	if children == nil {
+		r.Recorder.Event(glance, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
+			"Target cluster is no longer registered; releasing the finalizer without deleting the MariaDB Database, User, and Grant on it")
+	} else {
+		// Observe whether any MariaDB CR is still live BEFORE issuing the Delete: a
+		// Delete flips DeletionTimestamp, so a post-Delete check would always report
+		// none-live and release immediately. Gating on the pre-Delete observation
+		// keeps the CR alive one extra pass so the teardown is actually triggered.
+		hasLive, err := database.HasLiveResources(ctx, children, key)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 
-	if err := database.FinalizeResources(ctx, r.Client, key); err != nil {
-		return ctrl.Result{}, err
-	}
+		if err := database.FinalizeResources(ctx, children, key); err != nil {
+			return ctrl.Result{}, err
+		}
 
-	if hasLive {
-		r.Recorder.Event(glance, corev1.EventTypeNormal, "FinalizingDatabase",
-			"Cleaning up MariaDB Database, User, and Grant before removing Glance")
-		return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
-	}
+		if hasLive {
+			r.Recorder.Event(glance, corev1.EventTypeNormal, "FinalizingDatabase",
+				"Cleaning up MariaDB Database, User, and Grant before removing Glance")
+			return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
+		}
 
-	r.Recorder.Event(glance, corev1.EventTypeNormal, "DatabaseFinalized",
-		"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
+		r.Recorder.Event(glance, corev1.EventTypeNormal, "DatabaseFinalized",
+			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
+	}
 
 	controllerutil.RemoveFinalizer(glance, glanceFinalizer)
 	if err := r.Update(ctx, glance); err != nil {

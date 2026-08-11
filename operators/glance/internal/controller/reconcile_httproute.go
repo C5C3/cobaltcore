@@ -10,6 +10,7 @@ import (
 
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/gateway"
@@ -60,7 +61,7 @@ func internalGlanceURL(glance *glancev1alpha1.Glance) string {
 // Gateway matches the desired state, via the shared route flow. It keeps only
 // the service-specific parts: the desired route builder, the backend identity,
 // and the exposure noun for the messages.
-func (r *GlanceReconciler) reconcileHTTPRoute(ctx context.Context, glance *glancev1alpha1.Glance) (ctrl.Result, error) {
+func (r *GlanceReconciler) reconcileHTTPRoute(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) (ctrl.Result, error) {
 	// buildGlanceHTTPRoute dereferences spec.gateway, so build the desired route
 	// only when external exposure is requested; the flow uses Desired only on the
 	// gateway-enabled path.
@@ -68,7 +69,7 @@ func (r *GlanceReconciler) reconcileHTTPRoute(ctx context.Context, glance *glanc
 	if glance.Spec.Gateway != nil {
 		desired = buildGlanceHTTPRoute(glance)
 	}
-	return gateway.ReconcileHTTPRoute(ctx, r.Client, r.Scheme, glance, gateway.RouteFlowParams{
+	return gateway.ReconcileHTTPRoute(ctx, children, r.Scheme, glance, gateway.RouteFlowParams{
 		GatewayAPIAvailable: r.gatewayAPIAvailable,
 		GatewayConfigured:   glance.Spec.Gateway != nil,
 		Desired:             desired,

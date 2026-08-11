@@ -84,9 +84,12 @@ type backendsProjection struct {
 // Secrets, control-char values) — the GlanceBackend watch wakes the parent when
 // a backend's status flips. Only genuine infrastructure failures (List/create/
 // prune errors) surface as errors.
-func (r *GlanceReconciler) reconcileBackends(ctx context.Context, glance *glancev1alpha1.Glance) (ctrl.Result, backendsProjection, error) {
+func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) (ctrl.Result, backendsProjection, error) {
 	logger := log.FromContext(ctx)
 
+	// The attached backends are sibling configuration CRs on the management
+	// cluster, so this list goes through the embedded client and its field
+	// index; only the credentials they name are read on children.
 	var backends glancev1alpha1.GlanceBackendList
 	if err := r.List(
 		ctx, &backends,
@@ -158,7 +161,7 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, glance *glance
 			continue
 		}
 
-		section, err := r.renderStoreSection(ctx, glance.Namespace, backend)
+		section, err := r.renderStoreSection(ctx, children, glance.Namespace, backend)
 		if err != nil {
 			// A missing/unreadable credentials Secret or a value carrying a
 			// control character is a per-backend fault: skip the backend, warn
@@ -185,13 +188,13 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, glance *glance
 		enabled = append(enabled, name+":s3")
 	}
 
-	secretName, err := config.CreateImmutableSecret(ctx, r.Client, r.Scheme, glance,
+	secretName, err := config.CreateImmutableSecret(ctx, children, r.Scheme, glance,
 		glance.Name+"-backends", glance.Namespace,
 		map[string][]byte{backendsConfDataKey: []byte(config.RenderINI(sections))})
 	if err != nil {
 		return ctrl.Result{}, backendsProjection{}, fmt.Errorf("creating backends Secret: %w", err)
 	}
-	if err := config.PruneImmutableSecrets(ctx, r.Client, glance, config.PruneOptions{
+	if err := config.PruneImmutableSecrets(ctx, children, glance, config.PruneOptions{
 		BaseName:    glance.Name + "-backends",
 		Namespace:   glance.Namespace,
 		CurrentName: secretName,
@@ -256,7 +259,7 @@ var errControlCharInValue = errors.New("[glance_store] option name or value cont
 // win on collision — the webhook denylist normally guarantees disjointness, this
 // is the fail-closed backstop for a bypassed webhook). Only user-set optional
 // fields are rendered so upstream Glance defaults apply otherwise.
-func (r *GlanceReconciler) renderStoreSection(ctx context.Context, namespace string, backend *glancev1alpha1.GlanceBackend) (map[string]string, error) {
+func (r *GlanceReconciler) renderStoreSection(ctx context.Context, children client.Client, namespace string, backend *glancev1alpha1.GlanceBackend) (map[string]string, error) {
 	s3 := backend.Spec.S3
 	if s3 == nil {
 		// The schema union rule guarantees spec.s3 for a type-S3 backend; a
@@ -265,11 +268,11 @@ func (r *GlanceReconciler) renderStoreSection(ctx context.Context, namespace str
 	}
 
 	credKey := client.ObjectKey{Namespace: namespace, Name: s3.CredentialsSecretRef.Name}
-	accessKey, err := secrets.GetSecretValue(ctx, r.Client, credKey, glancev1alpha1.S3AccessKeyIDKey)
+	accessKey, err := secrets.GetSecretValue(ctx, children, credKey, glancev1alpha1.S3AccessKeyIDKey)
 	if err != nil {
 		return nil, err
 	}
-	secretKey, err := secrets.GetSecretValue(ctx, r.Client, credKey, glancev1alpha1.S3SecretAccessKeyKey)
+	secretKey, err := secrets.GetSecretValue(ctx, children, credKey, glancev1alpha1.S3SecretAccessKeyKey)
 	if err != nil {
 		return nil, err
 	}

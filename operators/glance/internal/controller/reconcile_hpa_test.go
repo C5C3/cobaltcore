@@ -34,7 +34,7 @@ func TestReconcileHPA_DisabledDeletesAndNotRequired(t *testing.T) {
 	stale.Namespace = "default"
 	r := newGlanceTestReconciler(glance, stale)
 
-	res, err := r.reconcileHPA(context.Background(), glance)
+	res, err := r.reconcileHPA(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -54,7 +54,7 @@ func TestReconcileHPA_EnabledCreatesHPA(t *testing.T) {
 	glance.Spec.Autoscaling = glanceAutoscalingSpec(2, 5)
 	r := newGlanceTestReconciler(glance)
 
-	res, err := r.reconcileHPA(context.Background(), glance)
+	res, err := r.reconcileHPA(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())

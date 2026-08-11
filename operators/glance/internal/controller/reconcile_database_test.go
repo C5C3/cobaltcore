@@ -117,7 +117,7 @@ func TestReconcileDatabase_ProvisionGatesOnClusterReady(t *testing.T) {
 	// The referenced MariaDB cluster does not exist yet, so provisioning gates.
 	r := newDBTestReconciler(dbTestScheme(), glance)
 
-	res, err := r.reconcileDatabase(context.Background(), glance, "test-glance-config-abc")
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
@@ -132,7 +132,7 @@ func TestReconcileDatabase_NoConfigWaitsForBackends(t *testing.T) {
 	glance := testGlance() // brownfield, OpenStackRelease 2026.1
 	r := newGlanceTestReconciler(glance)
 
-	res, err := r.reconcileDatabase(context.Background(), glance, "")
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
@@ -155,7 +155,7 @@ func TestReconcileDatabase_DowngradeRejected(t *testing.T) {
 	glance.Status.InstalledRelease = "2026.1"
 	r := newGlanceTestReconciler(glance)
 
-	_, err := r.reconcileDatabase(context.Background(), glance, "test-glance-config-abc")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
 
 	// A downgrade now surfaces through the shared vocabulary as a returned error
 	// (controller backoff), exactly like keystone; the rejection precedes target
@@ -177,7 +177,7 @@ func TestReconcileDatabase_NonSequentialJumpRejected(t *testing.T) {
 	glance.Status.InstalledRelease = "2025.1" // skips 2025.2
 	r := newGlanceTestReconciler(glance)
 
-	_, err := r.reconcileDatabase(context.Background(), glance, "test-glance-config-abc")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("sequential"))
@@ -195,7 +195,7 @@ func TestReconcileDatabase_PatchOnlyAccepted(t *testing.T) {
 	glance.Status.InstalledRelease = "2026.1"
 	r := newGlanceTestReconciler(glance)
 
-	res, err := r.reconcileDatabase(context.Background(), glance, "test-glance-config-abc")
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	// Accepted: a patch-only change stays on the steady-state path (a fresh
@@ -213,7 +213,7 @@ func TestReconcileDatabase_SequentialUpgradeAccepted(t *testing.T) {
 	glance.Status.InstalledRelease = "2025.2"
 	r := newGlanceTestReconciler(glance)
 
-	res, err := r.reconcileDatabase(context.Background(), glance, "test-glance-config-abc")
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	// A sequential upgrade initiates the shared flow: TargetRelease and the
@@ -244,7 +244,7 @@ func TestReconcileDatabase_ImageReleaseMismatchBlocks(t *testing.T) {
 	glance.Status.InstalledRelease = "2025.2"
 	r := newGlanceTestReconciler(glance)
 
-	res, err := r.reconcileDatabase(context.Background(), glance, "test-glance-config-abc")
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
@@ -274,7 +274,7 @@ func TestReconcileDatabase_ImagePatchBuildAccepted(t *testing.T) {
 	glance.Spec.Image.Tag = "2026.1-p1"
 	r := newGlanceTestReconciler(glance)
 
-	res, err := r.reconcileDatabase(context.Background(), glance, "test-glance-config-abc")
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	// Not blocked: the fresh install runs the steady-state db-sync (a Job is in
@@ -290,7 +290,7 @@ func TestReconcileDatabase_SyncJobCommandAndEnv(t *testing.T) {
 	glance := testGlance()
 	r := newGlanceTestReconciler(glance)
 
-	_, err := r.reconcileDatabase(context.Background(), glance, "test-glance-config-abc")
+	_, err := r.reconcileDatabase(context.Background(), r.Client, glance, "test-glance-config-abc")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var syncJob batchv1.Job
@@ -334,7 +334,7 @@ func TestReconcileDatabase_InstalledReleasePromotedOnSuccess(t *testing.T) {
 	}
 	r := newGlanceTestReconciler(glance, completed)
 
-	res, err := r.reconcileDatabase(context.Background(), glance, configMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -360,7 +360,7 @@ func TestReconcileDatabase_UpgradeExpand_CreatesJob(t *testing.T) {
 	configMapName := "test-glance-config-abc"
 	r := newGlanceTestReconciler(glance)
 
-	res, err := r.reconcileDatabase(context.Background(), glance, configMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueUpgradeWait))
 
@@ -389,7 +389,7 @@ func TestReconcileDatabase_UpgradeExpandComplete_TransitionsToMigrating(t *testi
 	configMapName := "test-glance-config-abc"
 	r := newGlanceTestReconciler(glance, completedGlanceUpgradeJob(glance, configMapName, "expand"))
 
-	res, err := r.reconcileDatabase(context.Background(), glance, configMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
 	g.Expect(glance.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseMigrating))
@@ -410,7 +410,7 @@ func TestReconcileDatabase_UpgradeMigrateComplete_TransitionsToRollingUpdate(t *
 	configMapName := "test-glance-config-abc"
 	r := newGlanceTestReconciler(glance, completedGlanceUpgradeJob(glance, configMapName, "migrate"))
 
-	res, err := r.reconcileDatabase(context.Background(), glance, configMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
 	g.Expect(glance.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseRollingUpdate))
@@ -431,7 +431,7 @@ func TestReconcileDatabase_UpgradeContractComplete_CompletesUpgrade(t *testing.T
 	configMapName := "test-glance-config-abc"
 	r := newGlanceTestReconciler(glance, completedGlanceUpgradeJob(glance, configMapName, "contract"))
 
-	res, err := r.reconcileDatabase(context.Background(), glance, configMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res).To(Equal(ctrl.Result{}))
 
@@ -455,7 +455,7 @@ func TestReconcileDatabase_UpgradeExpandFailed_ReturnsError(t *testing.T) {
 	configMapName := "test-glance-config-abc"
 	r := newGlanceTestReconciler(glance, failedGlanceUpgradeJob(glance, configMapName, "expand"))
 
-	_, err := r.reconcileDatabase(context.Background(), glance, configMapName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).To(HaveOccurred())
 
 	cond := conditions.GetCondition(glance.Status.Conditions, "DatabaseReady")
@@ -485,7 +485,7 @@ func TestReconcileDatabase_UpgradeAbort_RevertToInstalled(t *testing.T) {
 		glanceUpgradeJob(glance, configMapName, "contract"),
 	)
 
-	res, err := r.reconcileDatabase(context.Background(), glance, configMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -503,7 +503,7 @@ func TestReconcileDatabase_UpgradeAbort_RevertToInstalled(t *testing.T) {
 
 	// The next pass runs the steady-state sync: the db-sync Job is created and
 	// DatabaseReady flips to DBSyncInProgress.
-	res, err = r.reconcileDatabase(context.Background(), glance, configMapName)
+	res, err = r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
 	var syncJob batchv1.Job
@@ -524,7 +524,7 @@ func TestReconcileDatabase_UpgradeTargetChanged_Blocks(t *testing.T) {
 	configMapName := "test-glance-config-abc"
 	r := newGlanceTestReconciler(glance)
 
-	_, err := r.reconcileDatabase(context.Background(), glance, configMapName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("spec release changed during active upgrade"))
 
@@ -558,7 +558,7 @@ func TestReconcileDatabase_MidUpgradeImageDriftBlocks(t *testing.T) {
 	configMapName := "test-glance-config-abc"
 	r := newGlanceTestReconciler(glance)
 
-	res, err := r.reconcileDatabase(context.Background(), glance, configMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
 
@@ -589,7 +589,7 @@ func TestReconcileDatabase_AbortReachableDuringImageDrift(t *testing.T) {
 	configMapName := "test-glance-config-abc"
 	r := newGlanceTestReconciler(glance)
 
-	res, err := r.reconcileDatabase(context.Background(), glance, configMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -626,7 +626,7 @@ func TestUpgradePhaseFailureRecordsDBSyncMetric(t *testing.T) {
 			configMapName := "test-glance-config-abc"
 			r := newGlanceTestReconciler(glance, failedGlanceUpgradeJob(glance, configMapName, tc.verb))
 
-			_, err := r.reconcileDatabase(context.Background(), glance, configMapName)
+			_, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 			g.Expect(err).To(HaveOccurred(),
 				"the failing upgrade-phase Job MUST surface as a reconcile error so callers retry")
 
@@ -657,7 +657,7 @@ func TestReconcileDatabase_UpgradeInProgress_ShortCircuitsBeforeDeployment(t *te
 
 	r := newGlanceTestReconciler(glance, inProgress, oldDeploy)
 
-	res, err := r.reconcileDatabase(context.Background(), glance, configMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	// Non-zero requeue: the pipeline stops here and never rolls the Deployment.
 	g.Expect(res.RequeueAfter).To(Equal(RequeueUpgradeWait))

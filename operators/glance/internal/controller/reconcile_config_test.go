@@ -82,7 +82,7 @@ func TestReconcileConfig_RendersGlanceAPIConf(t *testing.T) {
 	glance := glanceForConfig()
 	r := newGlanceTestReconciler(glance)
 
-	res, art, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	res, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(art.configMapName).NotTo(BeEmpty())
@@ -137,7 +137,7 @@ func TestReconcileConfig_PasteContainsPipelineAndComposite(t *testing.T) {
 	glance := glanceForConfig()
 	r := newGlanceTestReconciler(glance)
 
-	_, art, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	paste := renderedPaste(t, r, art)
@@ -176,7 +176,7 @@ func TestReconcileConfig_ExtraConfigWins(t *testing.T) {
 	}
 	r := newGlanceTestReconciler(glance)
 
-	_, art, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	conf := renderedConfig(t, r, art)
@@ -203,7 +203,7 @@ func TestReconcileConfig_OperatorDefaultsWinOverPlugins(t *testing.T) {
 	}}
 	r := newGlanceTestReconciler(glance)
 
-	_, art, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	conf := renderedConfig(t, r, art)
@@ -223,7 +223,7 @@ func TestReconcileConfig_PolicyOverridesRenderOsloPolicy(t *testing.T) {
 	}
 	r := newGlanceTestReconciler(glance)
 
-	_, art, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	conf := renderedConfig(t, r, art)
@@ -262,7 +262,7 @@ func TestReconcileConfig_InvalidProjectionWithDeploymentKeepsLastGood(t *testing
 	}
 	r := newGlanceTestReconciler(glance, deploy)
 
-	res, art, err := r.reconcileConfig(context.Background(), glance, backendsProjection{valid: false})
+	res, art, err := r.reconcileConfig(context.Background(), r.Client, glance, backendsProjection{valid: false})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(art.configMapName).To(Equal("test-glance-config-live"))
@@ -280,7 +280,7 @@ func TestReconcileConfig_InvalidProjectionNoDeploymentReturnsEmpty(t *testing.T)
 	glance := glanceForConfig()
 	r := newGlanceTestReconciler(glance)
 
-	res, art, err := r.reconcileConfig(context.Background(), glance, backendsProjection{valid: false})
+	res, art, err := r.reconcileConfig(context.Background(), r.Client, glance, backendsProjection{valid: false})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(art.configMapName).To(BeEmpty())
@@ -302,7 +302,7 @@ func TestReconcileConfig_OwnedKeyOverrideReported(t *testing.T) {
 	}
 	r := newGlanceTestReconciler(glance)
 
-	_, art, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(glance.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
@@ -340,7 +340,7 @@ func TestReconcileConfig_ImportFilteringOverrideReported(t *testing.T) {
 	}
 	r := newGlanceTestReconciler(glance)
 
-	_, art, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(glance.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
@@ -374,7 +374,7 @@ func TestReconcileConfig_ImportFilteringChangeRotatesConfigMap(t *testing.T) {
 	glance := glanceForConfig()
 	r := newGlanceTestReconciler(glance)
 
-	_, before, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	_, before, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(before.configMapName).NotTo(BeEmpty())
 
@@ -382,7 +382,7 @@ func TestReconcileConfig_ImportFilteringChangeRotatesConfigMap(t *testing.T) {
 		AllowedSchemes: []string{"http", "https"},
 		AllowedPorts:   []int32{80, 443},
 	}
-	_, after, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	_, after, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(after.configMapName).NotTo(Equal(before.configMapName),
 		"an importFiltering change must rotate the content-hashed ConfigMap")
@@ -404,7 +404,7 @@ func TestReconcileConfig_InvalidProjectionStillUpsertsExtraConfigHealthy(t *test
 	}
 	r := newGlanceTestReconciler(glance)
 
-	res, art, err := r.reconcileConfig(context.Background(), glance, backendsProjection{valid: false})
+	res, art, err := r.reconcileConfig(context.Background(), r.Client, glance, backendsProjection{valid: false})
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	// Last-good early return: no fresh render on the invalid path.
@@ -430,7 +430,7 @@ func TestReconcileConfig_ExtraConfigHealthyTrueOnDefaults(t *testing.T) {
 	}
 	r := newGlanceTestReconciler(glance)
 
-	_, _, err := r.reconcileConfig(context.Background(), glance, validProjection())
+	_, _, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(glance.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
@@ -1330,7 +1330,7 @@ func TestRenderPasteINI_DuplicateCacheName(t *testing.T) {
 		glance := newGlance()
 		r := newGlanceTestReconciler(glance)
 
-		_, art, err := r.reconcileConfig(context.Background(), glance, validProjection())
+		_, art, err := r.reconcileConfig(context.Background(), r.Client, glance, validProjection())
 		g.Expect(err).To(MatchError(ContainSubstring("rendering glance-api-paste.ini:")))
 		g.Expect(err).To(MatchError(ContainSubstring(`duplicate middleware Name "cache" in pipeline "api"`)))
 		g.Expect(art.configMapName).To(BeEmpty())

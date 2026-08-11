@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/networkpolicy"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
@@ -30,7 +31,7 @@ const (
 // the service-specific parts: the desired policy builder (with its DB/cache/S3
 // egress) and the backend identity. It takes the backends projection so the S3
 // egress set tracks every attached store's host.
-func (r *GlanceReconciler) reconcileNetworkPolicy(ctx context.Context, glance *glancev1alpha1.Glance, projection backendsProjection) (ctrl.Result, error) {
+func (r *GlanceReconciler) reconcileNetworkPolicy(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance, projection backendsProjection) (ctrl.Result, error) {
 	// buildGlanceNetworkPolicy is only applied on the enabled+non-empty path;
 	// build it lazily so a nil or empty-ingress spec takes the delete or
 	// fail-closed path without a wasted build.
@@ -42,7 +43,7 @@ func (r *GlanceReconciler) reconcileNetworkPolicy(ctx context.Context, glance *g
 			desired = buildGlanceNetworkPolicy(glance, r.OperatorNamespace, projection.hosts)
 		}
 	}
-	return networkpolicy.Reconcile(ctx, r.Client, r.Scheme, glance, networkpolicy.FlowParams{
+	return networkpolicy.Reconcile(ctx, children, r.Scheme, glance, networkpolicy.FlowParams{
 		Configured:         glance.Spec.NetworkPolicy != nil,
 		IngressSourceCount: ingressCount,
 		Desired:            desired,

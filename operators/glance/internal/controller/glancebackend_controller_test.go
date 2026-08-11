@@ -22,10 +22,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
@@ -69,6 +72,50 @@ func glanceFakeClientBuilder(objs ...client.Object) *fake.ClientBuilder {
 // a pre-indexed fake client with the given objects seeded.
 func newMapperFakeClient(objs ...client.Object) client.Client {
 	return glanceFakeClientBuilder(objs...).Build()
+}
+
+// childrenFake builds a target cluster's client: core/apps only, and
+// deliberately WITHOUT the glance API group — a CR read, a sibling list, or a
+// status write misrouted to it then fails with "no kind is registered" instead
+// of passing on an empty result that would read as "nothing attached".
+func childrenFake(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	s := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(s); err != nil {
+		t.Fatalf("building the children scheme: %v", err)
+	}
+	return fake.NewClientBuilder().WithScheme(s).WithObjects(objs...).Build()
+}
+
+// fakeTargetCluster exposes a fake client as a registered cluster. Embedding the
+// interface leaves every other method nil, which panics if the resolver ever
+// reaches for one.
+type fakeTargetCluster struct {
+	cluster.Cluster
+	c client.Client
+}
+
+func (f fakeTargetCluster) GetClient() client.Client { return f.c }
+
+// childrenResolver registers exactly one cluster under every name and records
+// the names it was asked for, so a test can prove which ref a backend resolved —
+// or that it resolved none at all.
+type childrenResolver struct {
+	children client.Client
+	names    []mcruntime.ClusterName
+}
+
+func (r *childrenResolver) GetCluster(_ context.Context, name mcruntime.ClusterName) (cluster.Cluster, error) {
+	r.names = append(r.names, name)
+	return fakeTargetCluster{c: r.children}, nil
+}
+
+// targetedGlance returns the parent Glance placing its workload on the named
+// target cluster.
+func targetedGlance(target string) *glancev1alpha1.Glance {
+	glance := testGlance()
+	glance.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: target}
+	return glance
 }
 
 // newBackendTestReconciler builds a GlanceBackendReconciler over a fake client
@@ -241,11 +288,16 @@ func TestBackendReconcile_CredentialsReadyWhenBothKeysPresent(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal(conditionReasonCredentialsAvailable))
 }
 
-func TestBackendReconcile_ConfigProjectedNoParentGlanceWaits(t *testing.T) {
+// A parent that does not exist stops the pass at the first gate: without one
+// there is nothing to say which cluster this backend's credentials and its
+// parent Deployment live on, so neither is read and the projection observation
+// never runs.
+func TestBackendReconcile_NoParentGlanceHoldsBeforeProjection(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	backend := testGlanceBackend("store", "test-glance")
-	// Credentials ready, but the parent Glance does not exist.
+	// The credentials Secret is seeded, so only the missing parent can explain
+	// the hold.
 	r := newBackendTestReconciler(backend, testS3CredentialsSecret("store"))
 
 	result, err := r.Reconcile(context.Background(), backendRequest(backend))
@@ -253,11 +305,44 @@ func TestBackendReconcile_ConfigProjectedNoParentGlanceWaits(t *testing.T) {
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
 	updated := getBackend(t, r.Client, "store")
-	g.Expect(commonconditions.GetCondition(updated.Status.Conditions, conditionTypeCredentialsReady).Status).
-		To(Equal(metav1.ConditionTrue))
+	creds := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeCredentialsReady)
+	g.Expect(creds.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(creds.Reason).To(Equal(conditionReasonWaitingForParent))
+	g.Expect(commonconditions.GetCondition(updated.Status.Conditions, conditionTypeConfigProjected)).To(BeNil(),
+		"the pass returned before the projection observation could run")
+}
+
+// A backend that already converged carries ConfigProjected=True observed
+// against the parent's Deployment. Deleting the parent must demote that claim
+// (the deletion-cleanup e2e pins the surviving backend on
+// ConfigProjected=False/WaitingForProjection) instead of leaving it standing
+// forever behind the WaitingForParent hold.
+func TestBackendReconcile_ParentDeletionDemotesStaleConfigProjected(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	backend := testGlanceBackend("store", "test-glance")
+	backend.Status.Conditions = []metav1.Condition{
+		{Type: conditionTypeCredentialsReady, Status: metav1.ConditionTrue, Reason: conditionReasonCredentialsAvailable, ObservedGeneration: 1, LastTransitionTime: metav1.Now()},
+		{Type: conditionTypeConfigProjected, Status: metav1.ConditionTrue, Reason: conditionReasonConfigProjected, ObservedGeneration: 1, LastTransitionTime: metav1.Now()},
+		{Type: "Ready", Status: metav1.ConditionTrue, Reason: "AllReady", ObservedGeneration: 1, LastTransitionTime: metav1.Now()},
+	}
+	// No parent Glance in the client: it was deleted after the convergence.
+	r := newBackendTestReconciler(backend, testS3CredentialsSecret("store"))
+
+	result, err := r.Reconcile(context.Background(), backendRequest(backend))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+
+	updated := getBackend(t, r.Client, "store")
 	projected := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeConfigProjected)
 	g.Expect(projected.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(projected.Reason).To(Equal(conditionReasonWaitingForProjection))
+	creds := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeCredentialsReady)
+	g.Expect(creds.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(creds.Reason).To(Equal(conditionReasonWaitingForParent))
+	ready := commonconditions.GetCondition(updated.Status.Conditions, "Ready")
+	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(ready.Reason).To(Equal("NotAllReady"))
 }
 
 func TestBackendReconcile_ConfigProjectedNoDeploymentWaits(t *testing.T) {
@@ -375,6 +460,105 @@ func TestBackendReconcile_TransientObservationErrorPreservesTrue(t *testing.T) {
 	projected := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeConfigProjected)
 	g.Expect(projected.Status).To(Equal(metav1.ConditionTrue), "a cache blip says nothing about the projection")
 	g.Expect(projected.Reason).To(Equal(conditionReasonConfigProjected))
+}
+
+// TestBackendReconcile_ObservesOnParentTargetCluster pins the split a backend
+// inherits from its parent: the CR and its status stay on the management
+// cluster, while the S3 credentials Secret it gates on, the parent Deployment it
+// observes, and that Deployment's projection Secret live on the cluster the
+// parent's spec.targetClusterRef names — the same one the API pods run on.
+func TestBackendReconcile_ObservesOnParentTargetCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := targetedGlance("edge-1")
+	backend := testGlanceBackend("store", "test-glance")
+	backendsSecretName := "test-glance-backends-abcd1234"
+	// Management carries the backend and its parent; all three objects the gates
+	// read exist ONLY on the target cluster, so a misrouted read reports
+	// WaitingForCredentials or WaitingForProjection instead of Ready.
+	r := newBackendTestReconciler(backend, glance)
+	resolver := &childrenResolver{children: childrenFake(t,
+		testS3CredentialsSecret("store"),
+		testProjectedDeployment(glance, backendsSecretName),
+		testBackendsSecret(backendsSecretName, "[default]\n\n[store]\ns3_store_host = https://s3.example.com\n"),
+	)}
+	r.Resolver = resolver
+
+	result, err := r.Reconcile(context.Background(), backendRequest(backend))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(resolver.names).To(Equal([]mcruntime.ClusterName{"edge-1"}),
+		"the backend resolves the target its parent names, having none of its own")
+
+	// The status landed on the management cluster, the only one carrying the CR.
+	updated := getBackend(t, r.Client, "store")
+	g.Expect(commonconditions.GetCondition(updated.Status.Conditions, conditionTypeCredentialsReady).Status).
+		To(Equal(metav1.ConditionTrue))
+	g.Expect(commonconditions.GetCondition(updated.Status.Conditions, conditionTypeConfigProjected).Status).
+		To(Equal(metav1.ConditionTrue))
+	g.Expect(commonconditions.GetCondition(updated.Status.Conditions, "Ready").Status).
+		To(Equal(metav1.ConditionTrue))
+}
+
+// TestBackendReconcile_TargetClusterUnavailableGatesCredentials pins the failure
+// surface of a parent naming a cluster nothing registered: the backend reports
+// it on its first gate condition and waits, rather than attributing the gap to
+// a credential the target cluster may well hold.
+func TestBackendReconcile_TargetClusterUnavailableGatesCredentials(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := targetedGlance("nowhere")
+	backend := testGlanceBackend("store", "test-glance")
+	backendsSecretName := "test-glance-backends-abcd1234"
+	// Credentials and a fully projected Deployment ARE seeded beside the CR, so
+	// only the gate can explain the backend not going Ready.
+	r := newBackendTestReconciler(backend, glance, testS3CredentialsSecret("store"),
+		testProjectedDeployment(glance, backendsSecretName),
+		testBackendsSecret(backendsSecretName, "[store]\ns3_store_host = https://s3.example.com\n"))
+	r.Resolver = unresolvableResolver{}
+
+	result, err := r.Reconcile(context.Background(), backendRequest(backend))
+
+	g.Expect(err).NotTo(HaveOccurred(),
+		"an unregistered target cluster is a wait, not a reconcile failure")
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+
+	updated := getBackend(t, r.Client, "store")
+	cond := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeCredentialsReady)
+	g.Expect(cond).NotTo(BeNil(), "the first gate condition must carry the failure")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+	g.Expect(commonconditions.GetCondition(updated.Status.Conditions, conditionTypeConfigProjected)).To(BeNil(),
+		"the pass returned before the projection observation could run")
+}
+
+// TestBackendReconcile_MissingParentCostsNoClusterLookup covers the dangling
+// spec.glanceRef from the resolver's side: with no parent there is no ref to
+// resolve, so no cluster is looked up and the backend waits instead of gating
+// on whatever Secret of that name happens to sit beside the CR — which for a
+// parent that lives on a target cluster would be the wrong one entirely.
+func TestBackendReconcile_MissingParentCostsNoClusterLookup(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	backend := testGlanceBackend("store", "test-glance")
+	// No parent Glance: the credentials Secret beside the CR is all there is.
+	r := newBackendTestReconciler(backend, testS3CredentialsSecret("store"))
+	resolver := &childrenResolver{children: childrenFake(t)}
+	r.Resolver = resolver
+
+	result, err := r.Reconcile(context.Background(), backendRequest(backend))
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+	g.Expect(resolver.names).To(BeEmpty(), "a backend whose parent is gone costs no cluster lookup")
+
+	updated := getBackend(t, r.Client, "store")
+	creds := commonconditions.GetCondition(updated.Status.Conditions, conditionTypeCredentialsReady)
+	g.Expect(creds.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(creds.Reason).To(Equal(conditionReasonWaitingForParent))
+	g.Expect(creds.Message).To(ContainSubstring("test-glance"))
 }
 
 func TestBackendReconcile_DeletionTimestampIsNoOp(t *testing.T) {

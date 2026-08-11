@@ -22,7 +22,7 @@ func TestReconcileSecrets_StoreNotReady(t *testing.T) {
 	glance := testGlance()
 	r := newGlanceTestReconciler(glance, notReadyClusterSecretStore(openBaoClusterStoreName))
 
-	res, digest, err := r.reconcileSecrets(context.Background(), glance)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -42,7 +42,7 @@ func TestReconcileSecrets_DBCredentialsMissing(t *testing.T) {
 		readyClusterSecretStore(openBaoClusterStoreName),
 		glanceServiceUserSecret())
 
-	res, digest, err := r.reconcileSecrets(context.Background(), glance)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -64,7 +64,7 @@ func TestReconcileSecrets_ServiceUserKeyMissing(t *testing.T) {
 		readyClusterSecretStore(openBaoClusterStoreName),
 		glanceDBSecret(), wrongKey)
 
-	res, digest, err := r.reconcileSecrets(context.Background(), glance)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -81,7 +81,7 @@ func TestReconcileSecrets_AllPresentReturnsStableDigest(t *testing.T) {
 		readyClusterSecretStore(openBaoClusterStoreName),
 		glanceDBSecret(), glanceServiceUserSecret())
 
-	res, digest, err := r.reconcileSecrets(context.Background(), glance)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -94,7 +94,7 @@ func TestReconcileSecrets_AllPresentReturnsStableDigest(t *testing.T) {
 
 	// A second pass returns the identical digest (no dependency on iteration
 	// order or wall-clock).
-	_, digest2, err := r.reconcileSecrets(context.Background(), glance)
+	_, digest2, err := r.reconcileSecrets(context.Background(), r.Client, glance)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(digest2).To(Equal(digest))
 }
