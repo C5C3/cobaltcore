@@ -137,6 +137,13 @@ type HorizonList struct {
 // endpoints of its own, and no db-sync/fernet/bootstrap/upgrade machinery.
 // Sessions use Django signed cookies; Memcached only backs the Django cache,
 // so losing it degrades cache hit-rate without logging users out.
+//
+// The targetClusterRef transition rules (evaluated only on UPDATE) freeze the
+// ref: adding it, removing it, or renaming it after creation is rejected at the
+// schema layer, so the guarantee holds even when the validating webhook is
+// down. Moving a service between clusters is not a supported mutation.
+// +kubebuilder:validation:XValidation:rule="has(self.targetClusterRef) == has(oldSelf.targetClusterRef)",message="targetClusterRef is immutable"
+// +kubebuilder:validation:XValidation:rule="!has(self.targetClusterRef) || !has(oldSelf.targetClusterRef) || self.targetClusterRef.name == oldSelf.targetClusterRef.name",message="targetClusterRef is immutable"
 type HorizonSpec struct {
 	// Deployment groups the pod-level knobs for the Horizon dashboard
 	// Deployment (replicas, resources, rollout strategy, graceful-termination
@@ -185,6 +192,23 @@ type HorizonSpec struct {
 	// operators normally configure it there rather than here.
 	// +optional
 	SecretStoreRef *commonv1.SecretStoreRefSpec `json:"secretStoreRef,omitempty"`
+
+	// TargetClusterRef names the registered target cluster that receives this
+	// Horizon's children: Deployments, ConfigMaps, and Secrets. The CR itself
+	// stays on the management cluster, and so do its status and its
+	// finalizers. When omitted, the children are created on the local
+	// cluster (the management cluster the operator runs on) and the deployment
+	// behaves exactly like a single-cluster one. The field is immutable (see the
+	// transition rules on this spec).
+	//
+	// A remote child carries an owner reference to a CR that lives on a
+	// different cluster, so that reference dangles. Until issue #837 replaces
+	// the owner references with an explicit remote-cleanup path, a target
+	// cluster must not have the service CRDs installed: with the CRDs present
+	// its garbage collector resolves the owner reference to a missing object and
+	// deletes the children.
+	// +optional
+	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
 
 	// Gateway configures external exposure of the dashboard via a Gateway API
 	// HTTPRoute. When set, the operator creates an HTTPRoute targeting the

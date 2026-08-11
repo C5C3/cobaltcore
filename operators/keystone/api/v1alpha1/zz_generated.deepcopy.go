@@ -414,6 +414,11 @@ func (in *KeystoneSpec) DeepCopyInto(out *KeystoneSpec) {
 		*out = new(types.SecretStoreRefSpec)
 		**out = **in
 	}
+	if in.TargetClusterRef != nil {
+		in, out := &in.TargetClusterRef, &out.TargetClusterRef
+		*out = new(types.TargetClusterRefSpec)
+		**out = **in
+	}
 	if in.Autoscaling != nil {
 		in, out := &in.Autoscaling, &out.Autoscaling
 		*out = new(AutoscalingSpec)

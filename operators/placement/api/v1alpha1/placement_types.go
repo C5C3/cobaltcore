@@ -40,6 +40,13 @@ type PlacementList struct {
 }
 
 // PlacementSpec defines the desired state of Placement.
+//
+// The targetClusterRef transition rules (evaluated only on UPDATE) freeze the
+// ref: adding it, removing it, or renaming it after creation is rejected at the
+// schema layer, so the guarantee holds even when the validating webhook is
+// down. Moving a service between clusters is not a supported mutation.
+// +kubebuilder:validation:XValidation:rule="has(self.targetClusterRef) == has(oldSelf.targetClusterRef)",message="targetClusterRef is immutable"
+// +kubebuilder:validation:XValidation:rule="!has(self.targetClusterRef) || !has(oldSelf.targetClusterRef) || self.targetClusterRef.name == oldSelf.targetClusterRef.name",message="targetClusterRef is immutable"
 type PlacementSpec struct {
 	// OpenStackRelease names the OpenStack release this operator deploys and
 	// drives. It governs install/upgrade release tracking:
@@ -158,6 +165,23 @@ type PlacementSpec struct {
 	// here.
 	// +optional
 	SecretStoreRef *commonv1.SecretStoreRefSpec `json:"secretStoreRef,omitempty"`
+
+	// TargetClusterRef names the registered target cluster that receives this
+	// Placement's children: Deployments, ConfigMaps, Secrets, and the database
+	// CRs. The CR itself stays on the management cluster, and so do its status
+	// and its finalizers. When omitted, the children are created on the local
+	// cluster (the management cluster the operator runs on) and the deployment
+	// behaves exactly like a single-cluster one. The field is immutable (see the
+	// transition rules on this spec).
+	//
+	// A remote child carries an owner reference to a CR that lives on a
+	// different cluster, so that reference dangles. Until issue #837 replaces
+	// the owner references with an explicit remote-cleanup path, a target
+	// cluster must not have the service CRDs installed: with the CRDs present
+	// its garbage collector resolves the owner reference to a missing object and
+	// deletes the children.
+	// +optional
+	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
 
 	// PolicyOverrides defines custom oslo.policy rules for the service.
 	// When set, the operator renders a policy.yaml and configures

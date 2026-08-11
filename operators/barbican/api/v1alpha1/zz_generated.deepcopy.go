@@ -260,6 +260,11 @@ func (in *BarbicanSpec) DeepCopyInto(out *BarbicanSpec) {
 		*out = new(types.SecretStoreRefSpec)
 		**out = **in
 	}
+	if in.TargetClusterRef != nil {
+		in, out := &in.TargetClusterRef, &out.TargetClusterRef
+		*out = new(types.TargetClusterRefSpec)
+		**out = **in
+	}
 	if in.PolicyOverrides != nil {
 		in, out := &in.PolicyOverrides, &out.PolicyOverrides
 		*out = new(types.PolicySpec)
