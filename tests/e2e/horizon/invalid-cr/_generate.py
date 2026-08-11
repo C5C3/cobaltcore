@@ -229,6 +229,18 @@ FIXTURES: tuple[Fixture, ...] = (
             "    domainDropdown: true\n"
         ),
     ),
+    Fixture(
+        filename="11-targetclusterref-empty-name.yaml",
+        comment=(
+            "spec.targetClusterRef.name empty violates the TargetClusterRefSpec\n"
+            "MinLength marker: an unnamed target names no registered cluster."
+        ),
+        name="horizon-invalid-targetclusterref",
+        extra=(
+            "  targetClusterRef:\n"
+            '    name: ""\n'
+        ),
+    ),
 )
 
 

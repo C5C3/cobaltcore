@@ -895,6 +895,20 @@ FIXTURES: tuple[Fixture, ...] = (
         ),
         name="barbican-invalid-name-above-the-db-clean-cap",
     ),
+    Fixture(
+        filename="47-targetclusterref-empty-name.yaml",
+        comment=(
+            "spec.targetClusterRef.name empty violates the MinLength=1 marker on the\n"
+            "shared TargetClusterRefSpec. An unnamed target names no registered cluster,\n"
+            "so the operator would have nowhere to place the CR's children. The webhook\n"
+            "repeats it via validation.TargetClusterRef."
+        ),
+        name="barbican-invalid-targetclusterref",
+        extra=(
+            "  targetClusterRef:\n"
+            '    name: ""\n'
+        ),
+    ),
 )
 
 

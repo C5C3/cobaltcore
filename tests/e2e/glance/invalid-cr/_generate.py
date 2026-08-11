@@ -577,6 +577,20 @@ FIXTURES: tuple[Fixture, ...] = (
             "    decompression: {}\n"
         ),
     ),
+    Fixture(
+        filename="30-targetclusterref-empty-name.yaml",
+        comment=(
+            "spec.targetClusterRef.name empty violates the MinLength=1 marker on\n"
+            "the shared TargetClusterRefSpec; the webhook mirrors it via\n"
+            "validation.TargetClusterRef. An unnamed target names no registered\n"
+            "cluster, so the operator would have nowhere to place the children."
+        ),
+        name="glance-invalid-targetclusterref",
+        extra=(
+            "  targetClusterRef:\n"
+            '    name: ""\n'
+        ),
+    ),
 )
 
 

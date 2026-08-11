@@ -361,3 +361,13 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'no such section in the keystone 2025.2 option catalog')): true
+  # spec.targetClusterRef.name empty rejected by the shared TargetClusterRefSpec
+  # MinLength=1 marker (CRD schema).
+  - try:
+    - apply:
+        file: 26-targetclusterref-empty-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'targetClusterRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
