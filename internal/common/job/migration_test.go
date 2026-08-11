@@ -163,6 +163,68 @@ func TestRecordJobTerminalState_AtMostOncePerUID(t *testing.T) {
 	g.Expect(results).To(gomega.HaveLen(2))
 }
 
+// Once a CR names a target cluster, the owner and its Job live on two different
+// clusters: the CR stays on the management cluster while the Job runs on the
+// children cluster. The single client this helper takes is the owner's, and the
+// split has to hold in both directions — the dedupe annotation lands on the
+// management cluster, and the children cluster the Job was read from is never
+// written to.
+func TestRecordJobTerminalState_WritesOnlyToTheOwnerCluster(t *testing.T) {
+	g := gomega.NewWithT(t)
+	ctx := context.Background()
+
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "o", Namespace: "ns"}}
+	ownerCluster := fake.NewClientBuilder().WithScheme(terminalScheme(t)).WithObjects(owner).Build()
+
+	childrenScheme := terminalScheme(t)
+	if err := batchv1.AddToScheme(childrenScheme); err != nil {
+		t.Fatalf("batchv1: %v", err)
+	}
+	childrenWrites := 0
+	childrenCluster := fake.NewClientBuilder().WithScheme(childrenScheme).
+		WithObjects(completedJob("uid-1")).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+				childrenWrites++
+				return nil
+			},
+			Update: func(context.Context, client.WithWatch, client.Object, ...client.UpdateOption) error {
+				childrenWrites++
+				return nil
+			},
+			Patch: func(context.Context, client.WithWatch, client.Object, client.Patch, ...client.PatchOption) error {
+				childrenWrites++
+				return nil
+			},
+			Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+				childrenWrites++
+				return nil
+			},
+		}).Build()
+
+	// The Job the caller observed comes off the children cluster.
+	var observed batchv1.Job
+	g.Expect(childrenCluster.Get(ctx, apitypes.NamespacedName{Name: "db-sync", Namespace: "ns"}, &observed)).
+		To(gomega.Succeed())
+
+	var results []string
+	recordFn := func(result string, _ time.Duration) { results = append(results, result) }
+	RecordJobTerminalState(ctx, ownerCluster, nil, owner, "db-sync", &observed, "R", recordFn)
+
+	g.Expect(results).To(gomega.Equal([]string{"succeeded"}))
+	var storedOwner corev1.ConfigMap
+	g.Expect(ownerCluster.Get(ctx, client.ObjectKeyFromObject(owner), &storedOwner)).To(gomega.Succeed())
+	g.Expect(storedOwner.Annotations).To(gomega.HaveKeyWithValue(JobUIDAnnotationKey("db-sync"), "uid-1"),
+		"the dedupe annotation belongs on the cluster that holds the owner")
+	g.Expect(childrenWrites).To(gomega.BeZero(), "the children cluster must see no write")
+
+	// The dedupe state lives on the owner cluster, so re-observing the same Job
+	// is a no-op there too — and still writes nothing to the children cluster.
+	RecordJobTerminalState(ctx, ownerCluster, nil, owner, "db-sync", &observed, "R", recordFn)
+	g.Expect(results).To(gomega.HaveLen(1), "same UID must emit at most once")
+	g.Expect(childrenWrites).To(gomega.BeZero(), "the children cluster must see no write")
+}
+
 // The dedupe patch must not land blindly on an object that moved on since the
 // caller read it: the caller mirrors the response version back and hands it to a
 // trailing Status().Update, so a blind patch would launder its stale snapshot

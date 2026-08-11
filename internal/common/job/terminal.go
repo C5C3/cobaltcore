@@ -44,6 +44,11 @@ func JobUIDAnnotationKey(jobSuffix string) string {
 // function does not re-Get it; a nil observed (a just-created Job with no
 // terminal condition) is a no-op.
 //
+// ownerClient must be the client for the cluster that holds the owning CR (the
+// management cluster in a multicluster split). The observed Job may have been
+// read from a different cluster, the one the children live on; this function
+// performs no Job writes, so the two never have to be the same client.
+//
 // Ordering: the dedupe annotation is patched BEFORE record is called. The patch
 // is optimistically locked on the version owner was read at, so it fails rather
 // than landing blindly on a concurrently-updated object. If the patch fails
@@ -56,7 +61,7 @@ func JobUIDAnnotationKey(jobSuffix string) string {
 // are swallowed rather than surfaced as a reconcile failure.
 func RecordJobTerminalState(
 	ctx context.Context,
-	c client.Client,
+	ownerClient client.Client,
 	recorder record.EventRecorder,
 	owner client.Object,
 	jobSuffix string,
@@ -126,7 +131,7 @@ func RecordJobTerminalState(
 	}
 	anns[annotationKey] = uid
 	patchTarget.SetAnnotations(anns)
-	if err := c.Patch(ctx, patchTarget, patch); err != nil {
+	if err := ownerClient.Patch(ctx, patchTarget, patch); err != nil {
 		log.FromContext(ctx).Info(
 			"RecordJobTerminalState: patching last-observed Job UID failed; "+
 				"metric emission deferred to the next reconcile",
