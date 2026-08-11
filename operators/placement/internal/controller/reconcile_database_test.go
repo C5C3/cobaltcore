@@ -86,7 +86,7 @@ func TestReconcileDatabase_SyncJobCommandAndEnv(t *testing.T) {
 	placement := testPlacement()
 	r := newPlacementTestReconciler(placement)
 
-	_, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var syncJob batchv1.Job
@@ -141,7 +141,7 @@ func TestReconcileDatabase_SyncJobProjectsDBTLSKeypair(t *testing.T) {
 	}
 	r := newPlacementTestReconciler(placement)
 
-	_, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var syncJob batchv1.Job
@@ -176,7 +176,7 @@ func TestSyncCommandReadsRenderedConfigKey(t *testing.T) {
 	placement := placementForConfig()
 	r := newPlacementTestReconciler(placement)
 
-	_, configMapName, err := r.reconcileConfig(context.Background(), placement)
+	_, configMapName, err := r.reconcileConfig(context.Background(), r.Client, placement)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm := renderedConfigMap(t, r, configMapName)
@@ -189,7 +189,7 @@ func TestReconcileDatabase_ProvisionGatesOnClusterReady(t *testing.T) {
 	// The referenced MariaDB cluster does not exist yet, so provisioning gates.
 	r := newPlacementTestReconciler(placement)
 
-	res, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
@@ -205,7 +205,7 @@ func TestReconcileDatabase_FreshInstallRunsOneJob(t *testing.T) {
 	placement := testPlacement() // InstalledRelease empty
 	r := newPlacementTestReconciler(placement)
 
-	res, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
@@ -227,7 +227,7 @@ func TestReconcileDatabase_InstalledReleasePromotedOnSuccess(t *testing.T) {
 	placement := testPlacement() // InstalledRelease empty, OpenStackRelease 2026.1
 	r := newPlacementTestReconciler(placement, terminatedSyncJob(placement, batchv1.JobComplete, "sync-complete-uid"))
 
-	res, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -256,7 +256,7 @@ func TestReconcileDatabase_JobFailureRecordsMetricOncePerUID(t *testing.T) {
 	failed := terminatedSyncJob(placement, batchv1.JobFailed, "sync-failed-uid")
 	r := newPlacementTestReconciler(placement, failed)
 
-	_, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 	g.Expect(err).To(HaveOccurred(),
 		"a permanently failed db-sync surfaces as a reconcile error so the controller backs off")
 
@@ -275,7 +275,7 @@ func TestReconcileDatabase_JobFailureRecordsMetricOncePerUID(t *testing.T) {
 	g.Expect(metric.GetCounter().GetValue()).To(Equal(1.0))
 
 	// Same Job, same UID: a second pass must not count it again.
-	_, err = r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	_, err = r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 	g.Expect(err).To(HaveOccurred())
 	metric = findMetricByLabels(t, ctrlmetrics.Registry, "placement_operator_db_sync_total", counterLabels)
 	g.Expect(metric.GetCounter().GetValue()).To(Equal(1.0),
@@ -294,7 +294,7 @@ func TestReconcileDatabase_ReleaseBumpTracksTargetRelease(t *testing.T) {
 	placement.Status.InstalledRelease = "2025.2"
 	r := newPlacementTestReconciler(placement)
 
-	res, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
 	g.Expect(placement.Status.TargetRelease).To(Equal("2026.1"))
@@ -315,7 +315,7 @@ func TestReconcileDatabase_ReleaseBumpTracksTargetRelease(t *testing.T) {
 	}
 	g.Expect(r.Status().Update(context.Background(), &syncJob)).To(Succeed())
 
-	res, err = r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	res, err = r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(placement.Status.InstalledRelease).To(Equal("2026.1"))
@@ -335,7 +335,7 @@ func TestReconcileDatabase_DowngradeRejected(t *testing.T) {
 	placement.Status.InstalledRelease = "2026.1"
 	r := newPlacementTestReconciler(placement)
 
-	_, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("downgrade"))
@@ -356,7 +356,7 @@ func TestReconcileDatabase_NonSequentialJumpRejected(t *testing.T) {
 	placement.Status.InstalledRelease = "2025.1" // skips 2025.2
 	r := newPlacementTestReconciler(placement)
 
-	_, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("sequential"))
@@ -403,7 +403,7 @@ func TestReconcileDatabase_UnparseableReleaseRejected(t *testing.T) {
 			placement.Status.InstalledRelease = tc.installed
 			r := newPlacementTestReconciler(placement)
 
-			_, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+			_, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(err.Error()).To(ContainSubstring(tc.wantCause),
@@ -429,7 +429,7 @@ func TestReconcileDatabase_ImageReleaseMismatchBlocks(t *testing.T) {
 	placement.Status.InstalledRelease = "2025.2"
 	r := newPlacementTestReconciler(placement)
 
-	res, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
@@ -453,7 +453,7 @@ func TestReconcileDatabase_DigestPinnedImageSkipsMismatchCheck(t *testing.T) {
 	placement.Spec.Image.Digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	r := newPlacementTestReconciler(placement)
 
-	res, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
@@ -485,7 +485,7 @@ func TestReconcileDatabase_ReleaseBumpWithUnchangedImageRejected(t *testing.T) {
 	placement.Status.InstalledImage = placement.Spec.Image.Reference()
 	r := newPlacementTestReconciler(placement)
 
-	_, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("leaves spec.image unchanged"))
@@ -516,7 +516,7 @@ func TestReconcileDatabase_ReleaseBumpWithNewDigestAccepted(t *testing.T) {
 		"@sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	r := newPlacementTestReconciler(placement)
 
-	res, err := r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
 	g.Expect(placement.Status.TargetRelease).To(Equal("2026.1"))
@@ -532,7 +532,7 @@ func TestReconcileDatabase_ReleaseBumpWithNewDigestAccepted(t *testing.T) {
 	}
 	g.Expect(r.Status().Update(context.Background(), &syncJob)).To(Succeed())
 
-	res, err = r.reconcileDatabase(context.Background(), placement, dbConfigMapName)
+	res, err = r.reconcileDatabase(context.Background(), r.Client, placement, dbConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(placement.Status.InstalledRelease).To(Equal("2026.1"))

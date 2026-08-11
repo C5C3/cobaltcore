@@ -34,6 +34,7 @@ import (
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/healthcheck"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
@@ -166,6 +167,13 @@ type PlacementReconciler struct {
 	// health check uses http.DefaultClient; tests inject a stub transport.
 	HTTPClient healthcheck.HTTPDoer
 
+	// Resolver resolves the target cluster a Placement CR names in
+	// spec.targetClusterRef into the client its children are read and written
+	// with. Nil means always-local: every CR keeps its children on the
+	// management cluster, which is what single-cluster tests and deployments
+	// want.
+	Resolver commonmulticluster.ClusterResolver
+
 	// apiReader is set during SetupWithManager from mgr.GetAPIReader(): a direct,
 	// uncached reader. The deployment step latches the two-phase narrowing of the
 	// API Service selector on the live Service, and the informer cache can still
@@ -222,10 +230,52 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Handle deletion via the finalizer: issue Delete on the MariaDB CRs, then
 	// release the finalizer once no live (not-yet-deleted) resource remains. The
-	// deletion path sets no conditions, so it returns directly without
-	// updateStatus.
+	// cleanup itself sets no conditions, so it returns directly without
+	// updateStatus; only the hold on an unresolvable target below reports.
+	//
+	// It comes before the target-cluster resolution below and uses the deletion
+	// variant, which never fails the pass: a CR whose cluster was deregistered
+	// after the finalizer went on would otherwise short-circuit on the
+	// unresolvable ref on every pass and stay Terminating forever. A target that
+	// has not resolved yet requeues instead of being given up on — engagement is
+	// asynchronous, so an operator restart looks exactly like a deregistration
+	// until the provider has synced.
 	if !placement.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, &placement)
+		children, wait := commonmulticluster.ResolveChildrenClientForDeletion(
+			ctx, r.Resolver, r.Client, placement.Spec.TargetClusterRef, *placement.DeletionTimestamp)
+		if wait {
+			// The hold goes on the CR, not only into the operator's log. It is a
+			// deliberate state a CR can sit in for minutes, and "Terminating,
+			// waiting on the target cluster" has to be distinguishable from a
+			// wedged finalizer without correlating logs across replicas. This exit
+			// precedes the pipeline's status snapshot below, so it takes its own
+			// baseline for the skip-unchanged write.
+			statusBefore := placement.Status.DeepCopy()
+			placementSkeleton.MarkFailed(&placement, "SecretsReady",
+				commonmulticluster.TargetClusterUnavailable,
+				fmt.Errorf("target cluster %s does not resolve; waiting at least %s before abandoning its children",
+					placement.Spec.TargetClusterRef.Name, commonmulticluster.AbandonAfter))
+			return r.updateStatus(ctx, &placement, statusBefore,
+				ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
+		}
+		return r.reconcileDelete(ctx, children, &placement)
+	}
+
+	// Resolve the client every child object of this CR is read and written with.
+	// The embedded client stays on the management cluster (the CR, its status,
+	// and its finalizer live there); children carries everything the CR projects
+	// into the target cluster. The resolution runs before the finalizer is added
+	// so a CR naming an unresolvable cluster stays clean of finalizers: nothing
+	// was created for it, so there is nothing to clean up, and a finalizer would
+	// only block its deletion.
+	children, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, placement.Spec.TargetClusterRef)
+	if err != nil {
+		// This exit precedes the pipeline's status snapshot below, so it takes its
+		// own baseline for the skip-unchanged write.
+		statusBefore := placement.Status.DeepCopy()
+		placementSkeleton.MarkFailed(&placement, "SecretsReady", commonmulticluster.TargetClusterUnavailable, err)
+		return r.updateStatus(ctx, &placement, statusBefore,
+			ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
 	}
 
 	// Ensure the finalizer is installed before any sub-reconciler runs so a
@@ -244,7 +294,7 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// there does not race a status write.
 	statusBefore := placement.Status.DeepCopy()
 
-	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, r.pipelineSteps(&placement))
+	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, r.pipelineSteps(children, &placement))
 	return r.updateStatus(ctx, &placement, statusBefore, result, err)
 }
 
@@ -254,7 +304,7 @@ func (r *PlacementReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 //
 // It is a method rather than a literal inside Reconcile so the drift guard can
 // enumerate the step names without running a reconcile.
-func (r *PlacementReconciler) pipelineSteps(placement *placementv1alpha1.Placement) []commonreconcile.Step {
+func (r *PlacementReconciler) pipelineSteps(children client.Client, placement *placementv1alpha1.Placement) []commonreconcile.Step {
 	// The values one sub-reconciler hands to a later one within a single
 	// reconcile pass, captured by the step closures. configMapName names the
 	// rendered config ConfigMap produced by reconcileConfig; the database step
@@ -266,7 +316,7 @@ func (r *PlacementReconciler) pipelineSteps(placement *placementv1alpha1.Placeme
 
 	return []commonreconcile.Step{
 		{Name: "Secrets", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
-			res, authtokenDigest, err = r.reconcileSecrets(ctx, placement)
+			res, authtokenDigest, err = r.reconcileSecrets(ctx, children, placement)
 			return res, err
 		}},
 		// reconcileDBConnectionSecret materialises the DB URL into the derived
@@ -274,27 +324,27 @@ func (r *PlacementReconciler) pipelineSteps(placement *placementv1alpha1.Placeme
 		// credentials must be synced) and before Config; failures set
 		// SecretsReady=False, the same condition reconcileSecrets uses.
 		{Name: "DBConnectionSecret", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
-			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, placement)
+			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, children, placement)
 			return res, err
 		}},
 		// reconcileConfig renders placement.conf into an immutable ConfigMap. It
 		// self-marks SecretsReady=False on failure via markConfigFailed, so the
 		// wrapper only threads the result.
 		{Name: "Config", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
-			res, configMapName, err = r.reconcileConfig(ctx, placement)
+			res, configMapName, err = r.reconcileConfig(ctx, children, placement)
 			return res, err
 		}},
 		// reconcileDatabase provisions the schema, gates the requested OpenStack
 		// release against the installed one, and runs the db-sync Job against the
 		// rendered config.
 		{Name: "Database", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDatabase(ctx, placement, configMapName)
+			return r.reconcileDatabase(ctx, children, placement, configMapName)
 		}},
 		// reconcileDeployment projects the API Deployment, its Service, and the
 		// PodDisruptionBudget. It runs after Database so the pods only start once
 		// the schema they query exists.
 		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDeployment(ctx, placement, configMapName, dsnDigest, authtokenDigest)
+			return r.reconcileDeployment(ctx, children, placement, configMapName, dsnDigest, authtokenDigest)
 		}},
 		// Once the Deployment/Service outputs are in place, HTTPRoute,
 		// HealthCheck, HPA, and NetworkPolicy have no inter-dependency and run
@@ -302,7 +352,7 @@ func (r *PlacementReconciler) pipelineSteps(placement *placementv1alpha1.Placeme
 		// self-instruments its members, so this step carries no sub_reconciler
 		// name.
 		{Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileParallelGroup(ctx, placement, r.parallelSteps())
+			return r.reconcileParallelGroup(ctx, placement, r.parallelSteps(children))
 		}},
 	}
 }
@@ -310,13 +360,13 @@ func (r *PlacementReconciler) pipelineSteps(placement *placementv1alpha1.Placeme
 // parallelSteps returns the members of the post-deployment parallel group. Each
 // member sets exactly one condition type and receives its own copy of the CR, so
 // none of them reads a value another one produces.
-func (r *PlacementReconciler) parallelSteps() []commonreconcile.ParallelStep[*placementv1alpha1.Placement] {
+func (r *PlacementReconciler) parallelSteps(children client.Client) []commonreconcile.ParallelStep[*placementv1alpha1.Placement] {
 	return []commonreconcile.ParallelStep[*placementv1alpha1.Placement]{
 		{
 			Name:          "HTTPRoute",
 			ConditionType: conditionTypeHTTPRouteReady,
 			Fn: func(ctx context.Context, p *placementv1alpha1.Placement) (ctrl.Result, error) {
-				return r.reconcileHTTPRoute(ctx, p)
+				return r.reconcileHTTPRoute(ctx, children, p)
 			},
 		},
 		{
@@ -330,14 +380,14 @@ func (r *PlacementReconciler) parallelSteps() []commonreconcile.ParallelStep[*pl
 			Name:          "HPA",
 			ConditionType: "HPAReady",
 			Fn: func(ctx context.Context, p *placementv1alpha1.Placement) (ctrl.Result, error) {
-				return r.reconcileHPA(ctx, p)
+				return r.reconcileHPA(ctx, children, p)
 			},
 		},
 		{
 			Name:          "NetworkPolicy",
 			ConditionType: conditionTypeNetworkPolicyReady,
 			Fn: func(ctx context.Context, p *placementv1alpha1.Placement) (ctrl.Result, error) {
-				return r.reconcileNetworkPolicy(ctx, p)
+				return r.reconcileNetworkPolicy(ctx, children, p)
 			},
 		},
 	}
@@ -350,34 +400,44 @@ func (r *PlacementReconciler) parallelSteps() []commonreconcile.ParallelStep[*pl
 // holds the finalizer for one more pass so the schema teardown is triggered
 // before the owner-ref chain disappears. Once no live resource remains it drops
 // the per-CR metrics, evicts the health-probe cache, and releases the finalizer.
-func (r *PlacementReconciler) reconcileDelete(ctx context.Context, placement *placementv1alpha1.Placement) (ctrl.Result, error) {
+//
+// A nil children client means the target cluster this CR named is no longer
+// registered. Its MariaDB CRs cannot be reached, so they are left behind (the
+// remote-ownership gap #837 tracks) and the finalizer is released anyway:
+// holding it would only strand the CR in Terminating.
+func (r *PlacementReconciler) reconcileDelete(ctx context.Context, children client.Client, placement *placementv1alpha1.Placement) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(placement, placementFinalizer) {
 		return ctrl.Result{}, nil
 	}
 
 	key := client.ObjectKey{Name: placement.Name, Namespace: placement.Namespace}
 
-	// Observe whether any MariaDB CR is still live BEFORE issuing the Delete: a
-	// Delete flips DeletionTimestamp, so a post-Delete check would always report
-	// none-live and release immediately. Gating on the pre-Delete observation
-	// keeps the CR alive one extra pass so the teardown is actually triggered.
-	hasLive, err := database.HasLiveResources(ctx, r.Client, key)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	if children == nil {
+		r.Recorder.Event(placement, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
+			"Target cluster is no longer registered; releasing the finalizer without deleting the MariaDB Database, User, and Grant on it")
+	} else {
+		// Observe whether any MariaDB CR is still live BEFORE issuing the Delete: a
+		// Delete flips DeletionTimestamp, so a post-Delete check would always report
+		// none-live and release immediately. Gating on the pre-Delete observation
+		// keeps the CR alive one extra pass so the teardown is actually triggered.
+		hasLive, err := database.HasLiveResources(ctx, children, key)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 
-	if err := database.FinalizeResources(ctx, r.Client, key); err != nil {
-		return ctrl.Result{}, err
-	}
+		if err := database.FinalizeResources(ctx, children, key); err != nil {
+			return ctrl.Result{}, err
+		}
 
-	if hasLive {
-		r.Recorder.Event(placement, corev1.EventTypeNormal, "FinalizingDatabase",
-			"Cleaning up MariaDB Database, User, and Grant before removing Placement")
-		return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
-	}
+		if hasLive {
+			r.Recorder.Event(placement, corev1.EventTypeNormal, "FinalizingDatabase",
+				"Cleaning up MariaDB Database, User, and Grant before removing Placement")
+			return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
+		}
 
-	r.Recorder.Event(placement, corev1.EventTypeNormal, "DatabaseFinalized",
-		"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
+		r.Recorder.Event(placement, corev1.EventTypeNormal, "DatabaseFinalized",
+			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
+	}
 
 	controllerutil.RemoveFinalizer(placement, placementFinalizer)
 	if err := r.Update(ctx, placement); err != nil {

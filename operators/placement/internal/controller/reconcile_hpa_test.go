@@ -34,7 +34,7 @@ func TestReconcileHPA_DisabledDeletesAndNotRequired(t *testing.T) {
 	stale.Namespace = "default"
 	r := newPlacementTestReconciler(placement, stale)
 
-	res, err := r.reconcileHPA(context.Background(), placement)
+	res, err := r.reconcileHPA(context.Background(), r.Client, placement)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -54,7 +54,7 @@ func TestReconcileHPA_EnabledCreatesHPA(t *testing.T) {
 	placement.Spec.Autoscaling = placementAutoscalingSpec(2, 5)
 	r := newPlacementTestReconciler(placement)
 
-	res, err := r.reconcileHPA(context.Background(), placement)
+	res, err := r.reconcileHPA(context.Background(), r.Client, placement)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())

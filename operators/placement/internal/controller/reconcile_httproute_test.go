@@ -34,7 +34,7 @@ func TestReconcileHTTPRoute_GatewayNilDeletesAndNotRequired(t *testing.T) {
 	r := newPlacementTestReconciler(placement, stale)
 	r.gatewayAPIAvailable = true
 
-	res, err := r.reconcileHTTPRoute(context.Background(), placement)
+	res, err := r.reconcileHTTPRoute(context.Background(), r.Client, placement)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -55,7 +55,7 @@ func TestReconcileHTTPRoute_GatewayAPINotInstalledWithGatewaySet(t *testing.T) {
 	r := newPlacementTestReconciler(placement)
 	r.gatewayAPIAvailable = false
 
-	res, err := r.reconcileHTTPRoute(context.Background(), placement)
+	res, err := r.reconcileHTTPRoute(context.Background(), r.Client, placement)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -72,7 +72,7 @@ func TestReconcileHTTPRoute_NotAcceptedRequeues(t *testing.T) {
 	r := newPlacementTestReconciler(placement)
 	r.gatewayAPIAvailable = true
 
-	res, err := r.reconcileHTTPRoute(context.Background(), placement)
+	res, err := r.reconcileHTTPRoute(context.Background(), r.Client, placement)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(requeueHTTPRouteAccepted))

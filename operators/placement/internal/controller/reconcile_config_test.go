@@ -60,7 +60,7 @@ func TestReconcileConfig_RendersPlacementConf(t *testing.T) {
 	placement := placementForConfig()
 	r := newPlacementTestReconciler(placement)
 
-	res, name, err := r.reconcileConfig(context.Background(), placement)
+	res, name, err := r.reconcileConfig(context.Background(), r.Client, placement)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(name).NotTo(BeEmpty())
@@ -139,7 +139,7 @@ func TestReconcileConfig_OptionalKeystoneKeysOmitted(t *testing.T) {
 	placement.Spec.Region = ""
 	r := newPlacementTestReconciler(placement)
 
-	_, name, err := r.reconcileConfig(context.Background(), placement)
+	_, name, err := r.reconcileConfig(context.Background(), r.Client, placement)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	conf := renderedConfig(t, r, name)
@@ -156,7 +156,7 @@ func TestReconcileConfig_PolicyOverridesRenderOsloPolicy(t *testing.T) {
 	}
 	r := newPlacementTestReconciler(placement)
 
-	_, name, err := r.reconcileConfig(context.Background(), placement)
+	_, name, err := r.reconcileConfig(context.Background(), r.Client, placement)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm := renderedConfigMap(t, r, name)
@@ -182,7 +182,7 @@ func TestReconcileConfig_JSONLoggingShipsLoggingConf(t *testing.T) {
 	}
 	r := newPlacementTestReconciler(placement)
 
-	_, name, err := r.reconcileConfig(context.Background(), placement)
+	_, name, err := r.reconcileConfig(context.Background(), r.Client, placement)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cm := renderedConfigMap(t, r, name)
@@ -209,13 +209,13 @@ func TestReconcileConfig_NilAndEmptyExtraConfigRenderIdentically(t *testing.T) {
 	nilCfg := placementForConfig()
 	nilCfg.Spec.ExtraConfig = nil
 	rNil := newPlacementTestReconciler(nilCfg)
-	_, nilName, err := rNil.reconcileConfig(context.Background(), nilCfg)
+	_, nilName, err := rNil.reconcileConfig(context.Background(), rNil.Client, nilCfg)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	emptyCfg := placementForConfig()
 	emptyCfg.Spec.ExtraConfig = map[string]map[string]string{}
 	rEmpty := newPlacementTestReconciler(emptyCfg)
-	_, emptyName, err := rEmpty.reconcileConfig(context.Background(), emptyCfg)
+	_, emptyName, err := rEmpty.reconcileConfig(context.Background(), rEmpty.Client, emptyCfg)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(emptyName).To(Equal(nilName), "an empty extraConfig must not rotate the ConfigMap")
@@ -237,7 +237,7 @@ func TestReconcileConfig_OwnedKeyOverrideReported(t *testing.T) {
 	}
 	r := newPlacementTestReconciler(placement)
 
-	_, name, err := r.reconcileConfig(context.Background(), placement)
+	_, name, err := r.reconcileConfig(context.Background(), r.Client, placement)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(placement.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
@@ -273,7 +273,7 @@ func TestReconcileConfig_ExtraConfigHealthyTrueOnUnownedKey(t *testing.T) {
 	}
 	r := newPlacementTestReconciler(placement)
 
-	_, name, err := r.reconcileConfig(context.Background(), placement)
+	_, name, err := r.reconcileConfig(context.Background(), r.Client, placement)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(placement.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
@@ -305,7 +305,7 @@ func TestReconcileConfig_ApplyFailureMarksSecretsReady(t *testing.T) {
 		Build()
 	r := &PlacementReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
 
-	res, name, err := r.reconcileConfig(context.Background(), placement)
+	res, name, err := r.reconcileConfig(context.Background(), r.Client, placement)
 
 	g.Expect(err).To(MatchError(boom))
 	g.Expect(err).To(MatchError(ContainSubstring("creating config ConfigMap:")))
@@ -327,11 +327,11 @@ func TestReconcileConfig_SpecChangeRotatesConfigMap(t *testing.T) {
 	placement := placementForConfig()
 	r := newPlacementTestReconciler(placement)
 
-	_, before, err := r.reconcileConfig(context.Background(), placement)
+	_, before, err := r.reconcileConfig(context.Background(), r.Client, placement)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	placement.Spec.Region = "RegionTwo"
-	_, after, err := r.reconcileConfig(context.Background(), placement)
+	_, after, err := r.reconcileConfig(context.Background(), r.Client, placement)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(after).NotTo(Equal(before), "a spec change must rotate the content-hashed ConfigMap")

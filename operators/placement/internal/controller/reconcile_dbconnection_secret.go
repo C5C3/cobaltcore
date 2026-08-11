@@ -20,6 +20,7 @@ import (
 	"context"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/database"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
@@ -51,9 +52,9 @@ const dbTLSMountPath = "/etc/placement-db-tls/"
 // roll the Pods when a Dynamic (engine-issued) credential rotates without
 // reading the Secret content itself; the digest is empty on the requeue/error
 // paths where no derived Secret was materialised.
-func (r *PlacementReconciler) reconcileDBConnectionSecret(ctx context.Context, placement *placementv1alpha1.Placement) (ctrl.Result, string, error) {
+func (r *PlacementReconciler) reconcileDBConnectionSecret(ctx context.Context, children client.Client, placement *placementv1alpha1.Placement) (ctrl.Result, string, error) {
 	return database.ReconcileConnectionSecret(ctx, database.ConnectionSecretFlowParams{
-		Client:        r.Client,
+		Client:        children,
 		Scheme:        r.Scheme,
 		Owner:         placement,
 		InstanceName:  placement.Name,

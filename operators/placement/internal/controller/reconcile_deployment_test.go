@@ -377,7 +377,7 @@ func TestReconcileDeployment_ServiceAndPDBEnsured(t *testing.T) {
 	placement := testPlacement()
 	r := newPlacementTestReconciler(placement)
 
-	res, err := r.reconcileDeployment(context.Background(), placement, testConfigMapName, "", "")
+	res, err := r.reconcileDeployment(context.Background(), r.Client, placement, testConfigMapName, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// A fresh Deployment is not ready yet, so the step requeues.
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
@@ -421,7 +421,7 @@ func TestReconcileDeployment_PDBSelectorCoversAPIPodsOnly(t *testing.T) {
 	placement := testPlacement()
 	r := newPlacementTestReconciler(placement)
 
-	_, err := r.reconcileDeployment(context.Background(), placement, testConfigMapName, "", "")
+	_, err := r.reconcileDeployment(context.Background(), r.Client, placement, testConfigMapName, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var pdb policyv1.PodDisruptionBudget
@@ -490,7 +490,7 @@ func TestReconcileDeployment_SelectorNarrowsOnlyAfterRollout(t *testing.T) {
 			placement := testPlacement()
 			r := newPlacementTestReconciler(placement, tc.deploy(placement))
 
-			_, err := r.reconcileDeployment(context.Background(), placement, testConfigMapName, "", "")
+			_, err := r.reconcileDeployment(context.Background(), r.Client, placement, testConfigMapName, "", "")
 			g.Expect(err).NotTo(HaveOccurred())
 
 			var svc corev1.Service
@@ -531,7 +531,7 @@ func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
 
 	// Pass 1: the Deployment is fully converged, so the migration completes and
 	// the Service selector narrows.
-	_, err := r.reconcileDeployment(ctx, placement, testConfigMapName, "", "")
+	_, err := r.reconcileDeployment(ctx, r.Client, placement, testConfigMapName, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	var svc corev1.Service
 	g.Expect(r.Get(ctx, key, &svc)).To(Succeed())
@@ -546,7 +546,7 @@ func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
 	deploy.Status.ReadyReplicas = 0
 	g.Expect(r.Status().Update(ctx, &deploy)).To(Succeed())
 
-	_, err = r.reconcileDeployment(ctx, placement, testConfigMapName, "", "")
+	_, err = r.reconcileDeployment(ctx, r.Client, placement, testConfigMapName, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(r.Get(ctx, key, &svc)).To(Succeed())
 	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI),
@@ -559,7 +559,7 @@ func TestReconcileDeployment_ReadyStampsClusterLocalEndpoint(t *testing.T) {
 	placement := testPlacement()
 	r := newPlacementTestReconciler(placement, readyPlacementDeployment(placement))
 
-	res, err := r.reconcileDeployment(context.Background(), placement, testConfigMapName, "", "")
+	res, err := r.reconcileDeployment(context.Background(), r.Client, placement, testConfigMapName, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	cond := meta.FindStatusCondition(placement.Status.Conditions, "DeploymentReady")
@@ -576,7 +576,7 @@ func TestReconcileDeployment_GatewayEndpointStamped(t *testing.T) {
 	placement.Spec.Gateway = placementGatewaySpec()
 	r := newPlacementTestReconciler(placement, readyPlacementDeployment(placement))
 
-	_, err := r.reconcileDeployment(context.Background(), placement, testConfigMapName, "", "")
+	_, err := r.reconcileDeployment(context.Background(), r.Client, placement, testConfigMapName, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(placement.Status.Endpoint).To(Equal("https://placement.127-0-0-1.nip.io/"))
 }
@@ -594,7 +594,7 @@ func TestReconcileDeployment_ServiceKeepsServerAssignedClusterIP(t *testing.T) {
 	live.Spec.ClusterIP = "10.0.0.1"
 	r := newPlacementTestReconciler(placement, live)
 
-	_, err := r.reconcileDeployment(context.Background(), placement, testConfigMapName, "", "")
+	_, err := r.reconcileDeployment(context.Background(), r.Client, placement, testConfigMapName, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var svc corev1.Service
@@ -615,7 +615,7 @@ func TestReconcileDeployment_SelectorChangeRecreatesDeployment(t *testing.T) {
 	stale.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": "legacy"}}
 	r := newPlacementTestReconciler(placement, stale)
 
-	res, err := r.reconcileDeployment(ctx, placement, testConfigMapName, "", "")
+	res, err := r.reconcileDeployment(ctx, r.Client, placement, testConfigMapName, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
 

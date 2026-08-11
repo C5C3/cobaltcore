@@ -57,7 +57,7 @@ func TestPinPlacementConf_ReleasesRenderIdentically(t *testing.T) {
 		placement.Spec.OpenStackRelease = release
 		r := newPlacementTestReconciler(placement)
 
-		_, name, err := r.reconcileConfig(context.Background(), placement)
+		_, name, err := r.reconcileConfig(context.Background(), r.Client, placement)
 		g.Expect(err).NotTo(HaveOccurred())
 		return renderedConfig(t, r, name)
 	}

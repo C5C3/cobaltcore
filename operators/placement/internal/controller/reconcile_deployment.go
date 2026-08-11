@@ -23,6 +23,7 @@ import (
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/keystoneauth"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/naming"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
@@ -125,9 +126,9 @@ func componentLabels(placement *placementv1alpha1.Placement, component string) m
 // rotated database credential or service-user password rolls the pods; both are
 // env-var-consumed, so they only take effect on a Pod restart. Each annotation
 // is omitted when its digest is empty (the requeue/error paths upstream).
-func (r *PlacementReconciler) reconcileDeployment(ctx context.Context, placement *placementv1alpha1.Placement, configMapName, dsnDigest, authtokenDigest string) (ctrl.Result, error) {
+func (r *PlacementReconciler) reconcileDeployment(ctx context.Context, children client.Client, placement *placementv1alpha1.Placement, configMapName, dsnDigest, authtokenDigest string) (ctrl.Result, error) {
 	deploy := buildPlacementDeployment(placement, configMapName, dsnDigest, authtokenDigest)
-	ready, err := deployment.EnsureDeployment(ctx, r.Client, r.Scheme, placement, deploy)
+	ready, err := deployment.EnsureDeployment(ctx, children, r.Scheme, placement, deploy)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
 	}
@@ -144,16 +145,25 @@ func (r *PlacementReconciler) reconcileDeployment(ctx context.Context, placement
 	// built by an operator predating the component label produces pods the
 	// narrow selector misses. Re-widening on a later rollout would re-admit
 	// maintenance pods as endpoints for exactly as long as it lasts, reopening
-	// the race this narrowing closes. The latch reads the live Service through
-	// the uncached APIReader, so it cannot be decided from a cache that still
-	// predates the narrowing write (see deployment.APISelectorNarrowed);
-	// r.apiReader is nil only in unit tests, whose fake client is
-	// read-your-writes anyway.
+	// the race this narrowing closes. The latch reads the live Service
+	// through the uncached APIReader of whichever cluster holds it, so it cannot
+	// be decided from a cache that still predates the narrowing write (see
+	// deployment.APISelectorNarrowed). A CR that names a target cluster latches
+	// off that cluster's own API reader: its cache lags after a relist or a
+	// fresh write exactly like the local one, and a latch decided from it would
+	// re-widen the selector. The reader is nil only in unit tests, whose fake
+	// client is read-your-writes anyway.
 	narrowSelector := deployment.TemplateConverged(deploy)
 	if !narrowSelector {
-		reader := client.Reader(r.Client)
-		if r.apiReader != nil {
-			reader = r.apiReader
+		reader, err := commonmulticluster.ResolveChildrenAPIReader(
+			ctx, r.Resolver, r.apiReader, placement.Spec.TargetClusterRef)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if reader == nil {
+			// No manager behind this reconciler (unit tests): the fake client
+			// is read-your-writes, so it is a sound latch source.
+			reader = children
 		}
 		narrowSelector, err = deployment.APISelectorNarrowed(ctx, reader, placement.Namespace, subResourceName(placement))
 		if err != nil {
@@ -162,12 +172,12 @@ func (r *PlacementReconciler) reconcileDeployment(ctx context.Context, placement
 	}
 
 	svc := buildPlacementService(placement, narrowSelector)
-	if err := deployment.EnsureService(ctx, r.Client, r.Scheme, placement, svc); err != nil {
+	if err := deployment.EnsureService(ctx, children, r.Scheme, placement, svc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
 	}
 
 	pdb := buildPodDisruptionBudget(placement)
-	if err := deployment.EnsurePDB(ctx, r.Client, r.Scheme, placement, pdb); err != nil {
+	if err := deployment.EnsurePDB(ctx, children, r.Scheme, placement, pdb); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring PodDisruptionBudget: %w", err)
 	}
 
