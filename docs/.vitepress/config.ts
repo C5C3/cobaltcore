@@ -87,6 +87,17 @@ export default defineConfig({
               { text: 'Standalone Placement', link: '/guides/placement/standalone-placement' },
             ],
           },
+          {
+            text: 'Barbican',
+            collapsed: true,
+            items: [
+              { text: 'Run Barbican on a Dedicated OpenBao', link: '/guides/barbican/barbican-dedicated-openbao' },
+              { text: 'Attach an External OpenBao to Barbican', link: '/guides/barbican/attach-external-openbao' },
+              { text: 'Enable Barbican Operator Metrics', link: '/guides/barbican/enable-barbican-operator-metrics' },
+              { text: 'Enable Barbican Operator NetworkPolicy', link: '/guides/barbican/enable-barbican-operator-networkpolicy' },
+              { text: 'Migrate Barbican DB to Dynamic Credentials', link: '/guides/barbican/migrate-barbican-db-to-dynamic-credentials' },
+            ],
+          },
         ],
       },
       {
