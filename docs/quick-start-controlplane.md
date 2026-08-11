@@ -12,7 +12,8 @@ SPDX-License-Identifier: Apache-2.0
 This guide takes a single **c5c3 ControlPlane** CR from `git clone` to an authenticated
 Keystone API call. Compared with the [Quick Start](./quick-start.md), the
 c5c3-operator now provisions the `MariaDB`, `Memcached`, `Keystone`, `Horizon`,
-`Glance`, and `Placement` children, mints the admin application credential through
+`Glance`, `Placement`, and `Barbican` children, mints the admin application
+credential through
 [K-ORC](https://github.com/k-orc/openstack-resource-controller), mirrors it to
 OpenBao, and registers the identity catalog.
 
@@ -21,7 +22,7 @@ OpenBao, and registers the identity catalog.
 Same toolchain as the [Quick Start](./quick-start.md), plus:
 
 - `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
-- The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 6, plus the [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) plugin for the placement check in the same step
+- The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 6, plus two plugins for the other checks in that step: [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) for the placement call and [`python-barbicanclient`](https://docs.openstack.org/python-barbicanclient/latest/) for the `openstack secret` subcommands
 - A stable internet connection while `make deploy-infra` clones K-ORC from GitHub
 - Roughly 8 GB RAM, 2 CPU cores, and 10 GB of free disk for a laptop-sized kind cluster
 - `yq` v4.x on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
@@ -74,7 +75,8 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 
 `WITH_CONTROLPLANE=true` brings up the shared infrastructure and then the
 ControlPlane operator stack (keystone-operator, horizon-operator,
-glance-operator, placement-operator, K-ORC, c5c3-operator) from the published charts — but **not** the `ControlPlane` CR
+glance-operator, placement-operator, barbican-operator, K-ORC, c5c3-operator)
+from the published charts — but **not** the `ControlPlane` CR
 itself; you create and apply that in Step 3. In this mode the ControlPlane provisions its own MariaDB/Memcached
 (managed mode), so deploy-infra does not create the shared ones. `KIND_HOST_PORT=8443`
 maps the Gateway to a non-privileged host port for macOS; on Linux with rootful
@@ -181,6 +183,21 @@ spec:
         parentRef:
           name: openstack-gw
         hostname: placement.127-0-0-1.nip.io
+    barbican:
+      replicas: 1
+      # An OpenBao instance this ControlPlane provisions and owns; its name, its
+      # KV mount, and its AppRole are derived by convention, so the block is empty.
+      secretStore:
+        dedicated: {}
+      # Drop publicEndpoint on the default port 443; the operator then derives
+      # https://barbican.127-0-0-1.nip.io from the gateway hostname.
+      publicEndpoint: https://barbican.127-0-0-1.nip.io:8443
+      # Exposed through the same shared Envoy Gateway, via the seventh HTTPS
+      # listener the kind overlay adds for barbican.127-0-0-1.nip.io.
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: barbican.127-0-0-1.nip.io
 ```
 
 ```bash
@@ -213,9 +230,9 @@ Glance can validate the Keystone tokens it receives; its database and cache
 derive from `spec.infrastructure`, exactly like Keystone's. On the managed
 shared database its DB credential is engine-issued and auto-rotated exactly like
 Keystone's — short-lived leases from the OpenBao database engine, and the Step 4
-onboarding provisions the engine tenant for all three database services
-(keystone, glance, and placement). A `GlanceReady` condition joins the chain —
-gating on `KeystoneReady` plus that injected service account — and
+onboarding provisions the engine tenant for all four database services
+(keystone, glance, placement, and barbican). A `GlanceReady` condition joins
+the chain — gating on `KeystoneReady` plus that injected service account — and
 `status.services` gains a third entry.
 
 The `placement` block projects a Placement child, `controlplane-placement`: the
@@ -231,6 +248,23 @@ overlay adds, `placement.127-0-0-1.nip.io`, and `publicEndpoint` carries the
 `:8443` host port into the public placement catalog row. A `PlacementReady`
 condition joins the chain next to `GlanceReady`, gated the same way, and
 `status.services` gains a fourth entry.
+
+The `barbican` block adds the Key Manager service. `secretStore.dedicated` asks
+for an OpenBao instance this ControlPlane owns, so the operator projects three
+CRs: the Barbican child `controlplane-barbican`, the instance
+`controlplane-barbican-bao`, and the store `controlplane-barbican-store` that
+attaches the two. The defaulting webhook injects a `barbican` service account
+(user `barbican`, role `service`) with a project of its own,
+`service-barbican`. Its database credential is engine-issued from the tenant
+Step 4 onboards, like Glance's and Placement's. The `gateway` block puts the
+key-manager API on the seventh HTTPS listener, `barbican.127-0-0-1.nip.io`, and
+`publicEndpoint` carries the `:8443` host port into the public key-manager
+catalog row. A `BarbicanReady` condition joins the chain beside `GlanceReady`
+and `PlacementReady`, gated the same way, and `status.services` gains a fifth
+entry. The projected instance is proving-grade: one replica, no
+PodDisruptionBudget, sealed by a static key in a plain Secret beside its volume.
+[Run Barbican on a Dedicated OpenBao](./guides/barbican/barbican-dedicated-openbao.md)
+covers the same service step by step, including the external-server alternative.
 
 Applying the CR is not the end of the manual work: a hand-applied ControlPlane
 needs the one-time OpenBao onboarding in Step 4 before the chain can progress
@@ -306,6 +340,15 @@ spec:
         parentRef:
           name: openstack-gw          # same Gateway; sixth listener
         hostname: placement.127-0-0-1.nip.io
+    barbican:
+      replicas: 1
+      secretStore:
+        dedicated: {}                 # OpenBao instance projected beside the child
+      publicEndpoint: https://barbican.127-0-0-1.nip.io:8443
+      gateway:
+        parentRef:
+          name: openstack-gw          # same Gateway; seventh listener
+        hostname: barbican.127-0-0-1.nip.io
   korc:
     adminCredential:
       cloudCredentialsRef:
@@ -332,6 +375,13 @@ spec:
         project:
           name: service-placement    # its own project: two create:true entries
                                      # cannot name the same Keystone project
+          create: true
+        roles:
+          - service
+      - name: barbican               # injected because services.barbican is set
+        userName: barbican           # defaults to the account name
+        project:
+          name: service-barbican     # its own project, for the same reason
           create: true
         roles:
           - service
@@ -405,13 +455,13 @@ ControlPlane. See the
 
 ## Step 5 — Watch the chain reconcile
 
-The aggregate `Ready` flips to `True` once all 13 sub-conditions are met, in
-dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady` and
-`PlacementReady` gate on `KeystoneReady` plus `ServiceAccountsReady`; the K-ORC
-branch runs alongside):
+The aggregate `Ready` flips to `True` once all 14 sub-conditions are met, in
+dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady`,
+`PlacementReady`, and `BarbicanReady` gate on `KeystoneReady` plus
+`ServiceAccountsReady`; the K-ORC branch runs alongside):
 
 ```
-NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → ServiceAccountsReady → GlanceReady → PlacementReady
+NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → ServiceAccountsReady → GlanceReady → PlacementReady → BarbicanReady
 ```
 
 ```bash
@@ -472,6 +522,7 @@ sudo sh -c 'cat >> /etc/hosts <<EOF
 127.0.0.1 horizon.127-0-0-1.nip.io
 127.0.0.1 glance.127-0-0-1.nip.io
 127.0.0.1 placement.127-0-0-1.nip.io
+127.0.0.1 barbican.127-0-0-1.nip.io
 EOF'
 ```
 
@@ -509,8 +560,8 @@ openstack --insecure token issue
 > `foo-keystone-admin-credentials` instead.
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
-> and drop all three `publicEndpoint` lines (keystone, glance, and placement)
-> from the CR in Step 3.
+> and drop all four `publicEndpoint` lines (keystone, glance, placement, and
+> barbican) from the CR in Step 3.
 
 ### Upload a first image
 
@@ -555,12 +606,12 @@ A run aborted before the final `delete` leaves `first-image` behind; delete it
 
 ::: warning Leave OS_REGION_NAME unset
 Do **not** add `OS_REGION_NAME` to the host exports: the projected K-ORC
-catalog rows carry no region, image and placement alike, so a region-scoped
-lookup finds no endpoint. The upload fails with `public endpoint for image
-service in RegionOne region not found`, the placement call with the same message
-under its own service name. Keystone's own bootstrap registers RegionOne
-identity rows, so identity is unaffected. Only the projected rows need the
-filter left clear.
+catalog rows carry no region, image, placement, and key-manager alike, so a
+region-scoped lookup finds no endpoint. The upload fails with `public endpoint
+for image service in RegionOne region not found`, the placement and secret calls
+with the same message under their own service names. Keystone's own bootstrap
+registers RegionOne identity rows, so identity is unaffected. Only the projected
+rows need the filter left clear.
 :::
 
 ### List placement resource classes
@@ -588,6 +639,53 @@ token validation in one command. It needs the `osc-placement` plugin from the
 prerequisites; without it the `openstack` CLI rejects `resource class list` as
 an unknown command. `OS_REGION_NAME` has to stay unset here as well, for the
 reason above.
+
+### Store and retrieve a first secret
+
+With the same `OS_*` variables still exported, confirm the Key Manager service
+reached the catalog:
+
+```bash
+openstack --insecure catalog list
+```
+
+A `key-manager` row proves the ControlPlane registered both endpoints: the
+in-cluster one at `http://controlplane-barbican.openstack.svc:9311` and the
+public one at `https://barbican.127-0-0-1.nip.io:8443`, the `publicEndpoint`
+from Step 3. Store a secret through that public endpoint, read the payload back,
+and delete it again:
+
+```bash
+PAYLOAD='forge-quick-start-payload'
+HREF=$(openstack --insecure secret store --name first-secret \
+  --payload "$PAYLOAD" -f value -c 'Secret href')
+test "$(openstack --insecure secret get -p "$HREF" -f value -c Payload)" = "$PAYLOAD" \
+  && echo "OK: payload came back unchanged from the key manager"
+openstack --insecure secret delete "$HREF"
+```
+
+A payload that survives the round-trip covers the whole key-manager chain in two
+calls: the catalog row resolves the endpoint, Barbican validates the admin token
+against Keystone, and the payload travels through castellan's vault plugin into
+the dedicated `controlplane-barbican-bao` instance and out again. The
+`openstack secret` subcommands come from the `python-barbicanclient` plugin in
+the prerequisites; without it the CLI rejects `secret store` as an unknown
+command. `OS_REGION_NAME` stays unset here too: the key-manager rows carry no
+region either, and with it set the store call fails with `public endpoint for
+key-manager service in RegionOne region not found`.
+
+::: warning Do not substitute real key material into `--payload`
+The literal above is a throwaway, and this snippet is written for a devstack. A
+value passed to `--payload` sits in the process argument vector, where any local
+user reads it out of `ps` or `/proc/<pid>/cmdline` for the life of the call, and
+typing it directly rather than through a variable also leaves it in your shell
+history. Feed real material in from a file or from standard input instead.
+`--insecure` belongs to this devstack for the same reason, and it reaches
+further than the payload: the flag disables certificate verification for the
+whole invocation, including the Keystone call that sends `OS_PASSWORD`. Anything
+that answers on the way collects the admin credential. Drop it anywhere the
+gateway presents a certificate you trust.
+:::
 
 ### Open the Horizon dashboard
 
@@ -630,4 +728,6 @@ make teardown-infra
   its `GlanceBackend` stores, and the reconciler chain.
 - [Placement Operator](./reference/placement/index.md) — the projected Placement
   service, its CRD surface, and the reconciler chain.
+- [Barbican Operator](./reference/barbican/index.md) — the projected Key Manager
+  service, its `BarbicanSecretStore` attachment, and the reconciler chain.
 - [Quick Start](./quick-start.md) — the compact per-service Keystone path.
