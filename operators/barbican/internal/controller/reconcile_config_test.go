@@ -54,7 +54,7 @@ func renderConfig(t *testing.T, barbican *barbicanv1alpha1.Barbican, projection 
 	g := NewGomegaWithT(t)
 	r := newBarbicanTestReconciler(append([]client.Object{barbican}, objs...)...)
 
-	res, name, err := r.reconcileConfig(context.Background(), barbican, projection)
+	res, name, err := r.reconcileConfig(context.Background(), r.Client, barbican, projection)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(name).NotTo(BeEmpty())
@@ -227,7 +227,7 @@ func TestReconcileConfig_DuplicatePluginSectionFails(t *testing.T) {
 	}
 	r := newBarbicanTestReconciler(barbican)
 
-	_, name, err := r.reconcileConfig(context.Background(), barbican, validProjection())
+	_, name, err := r.reconcileConfig(context.Background(), r.Client, barbican, validProjection())
 
 	g.Expect(err).To(MatchError(ContainSubstring("rendering plugin config")))
 	g.Expect(name).To(BeEmpty())
@@ -254,7 +254,7 @@ func TestReconcileConfig_InvalidProjectionKeepsLastGood(t *testing.T) {
 	r := newBarbicanTestReconciler(barbican, lastGood,
 		testProjectedDeployment(lastGood.Name))
 
-	res, name, err := r.reconcileConfig(context.Background(), barbican, secretStoreProjection{})
+	res, name, err := r.reconcileConfig(context.Background(), r.Client, barbican, secretStoreProjection{})
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -277,7 +277,7 @@ func TestReconcileConfig_InvalidProjectionOnFirstInstall(t *testing.T) {
 	barbican := testBarbican()
 	r := newBarbicanTestReconciler(barbican)
 
-	res, name, err := r.reconcileConfig(context.Background(), barbican, secretStoreProjection{})
+	res, name, err := r.reconcileConfig(context.Background(), r.Client, barbican, secretStoreProjection{})
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -405,7 +405,7 @@ func TestRenderPasteINI_DuplicateMiddlewareIsRejected(t *testing.T) {
 	}
 	r := newBarbicanTestReconciler(barbican)
 
-	_, name, err := r.reconcileConfig(context.Background(), barbican, validProjection())
+	_, name, err := r.reconcileConfig(context.Background(), r.Client, barbican, validProjection())
 
 	g.Expect(err).To(MatchError(ContainSubstring("rendering barbican-api-paste.ini")))
 	g.Expect(name).To(BeEmpty())

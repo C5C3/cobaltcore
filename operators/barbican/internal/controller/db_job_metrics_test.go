@@ -68,13 +68,13 @@ func TestRecordDBJobTerminalState_CountsAFailedRunOncePerUID(t *testing.T) {
 		"result":    "failed",
 	}
 
-	_, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(counterValueForLabels(t, ctrlmetrics.Registry, "barbican_operator_db_sync_total", labels)).
 		To(Equal(1.0), "a failed Job must be counted as result=failed")
 
 	// Same Job, same UID: a second pass must not count it again.
-	_, err = r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	_, err = r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(counterValueForLabels(t, ctrlmetrics.Registry, "barbican_operator_db_sync_total", labels)).
 		To(Equal(1.0), "the terminal state MUST be recorded at most once per Job UID")

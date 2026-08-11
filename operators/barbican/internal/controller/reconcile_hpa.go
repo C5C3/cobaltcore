@@ -9,6 +9,7 @@ import (
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/deployment"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
@@ -17,12 +18,12 @@ import (
 // reconcileHPA ensures the HorizontalPodAutoscaler for the Barbican API
 // deployment matches the desired state, via the shared HPA flow. It keeps only
 // the service-specific desired HPA builder.
-func (r *BarbicanReconciler) reconcileHPA(ctx context.Context, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
+func (r *BarbicanReconciler) reconcileHPA(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
 	var desired *autoscalingv2.HorizontalPodAutoscaler
 	if barbican.Spec.Autoscaling != nil {
 		desired = buildBarbicanHPA(barbican)
 	}
-	return deployment.ReconcileHPA(ctx, r.Client, r.Scheme, barbican, deployment.HPAFlowParams{
+	return deployment.ReconcileHPA(ctx, children, r.Scheme, barbican, deployment.HPAFlowParams{
 		Enabled:       barbican.Spec.Autoscaling != nil,
 		Desired:       desired,
 		Name:          subResourceName(barbican),

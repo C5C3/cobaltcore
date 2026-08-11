@@ -219,7 +219,7 @@ func TestReconcileDBClean_CreatesCronJobWithDefaults(t *testing.T) {
 	barbican := dbCleanBarbican() // spec.dbClean is nil
 	r := newBarbicanTestReconciler(barbican)
 
-	res, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+	res, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue(), "the clean-up step never requeues on its own")
 
@@ -281,7 +281,7 @@ func TestReconcileDBClean_HonorsSpecKnobs(t *testing.T) {
 	}
 	r := newBarbicanTestReconciler(barbican)
 
-	_, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -310,7 +310,7 @@ func TestReconcileDBClean_SuspendedReportsItsOwnReason(t *testing.T) {
 	barbican.Spec.DBClean = &barbicanv1alpha1.DBCleanSpec{Suspend: true}
 	r := newBarbicanTestReconciler(barbican)
 
-	_, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
@@ -334,7 +334,7 @@ func TestReconcileDBClean_MigrationInFlightSuspendsTheSchedule(t *testing.T) {
 	barbican.Status.InstalledRelease = "2025.2" // spec asks for 2026.1
 	r := newBarbicanTestReconciler(barbican)
 
-	_, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -373,7 +373,7 @@ func TestReconcileDBClean_WedgedReleaseGateReportsTheBlockedPause(t *testing.T) 
 			})
 			r := newBarbicanTestReconciler(barbican)
 
-			_, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+			_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 			g.Expect(err).NotTo(HaveOccurred())
 
 			cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
@@ -399,7 +399,7 @@ func TestReconcileDBClean_SyncInProgressKeepsThePauseATrue(t *testing.T) {
 	})
 	r := newBarbicanTestReconciler(barbican)
 
-	_, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
@@ -415,7 +415,7 @@ func TestReconcileDBClean_WithoutRenderedConfigSchedulesNothing(t *testing.T) {
 	barbican := dbCleanBarbican()
 	r := newBarbicanTestReconciler(barbican)
 
-	res, err := r.reconcileDBClean(context.Background(), barbican, "")
+	res, err := r.reconcileDBClean(context.Background(), r.Client, barbican, "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 
@@ -450,7 +450,7 @@ func TestReconcileDBClean_SuspendedAfterAFailedRunStaysTrue(t *testing.T) {
 	recorder, ok := r.Recorder.(*record.FakeRecorder)
 	g.Expect(ok).To(BeTrue())
 
-	_, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
@@ -482,7 +482,7 @@ func TestReconcileDBClean_FailedJobSetsConditionEventAndMetric(t *testing.T) {
 	recorder, ok := r.Recorder.(*record.FakeRecorder)
 	g.Expect(ok).To(BeTrue())
 
-	_, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred(),
 		"a failed run is a status signal, not a reconcile error: retrying the pass cannot fix it")
 
@@ -521,7 +521,7 @@ func TestReconcileDBClean_SucceededJobKeepsConditionTrue(t *testing.T) {
 		batchv1.JobComplete, now)
 	r := newBarbicanTestReconciler(barbican, cronJob, older, newer)
 
-	_, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
@@ -547,7 +547,7 @@ func TestReconcileDBClean_IgnoresJobsItDoesNotControl(t *testing.T) {
 	foreign.OwnerReferences = nil
 	r := newBarbicanTestReconciler(barbican, cronJob, foreign)
 
-	_, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
@@ -571,7 +571,7 @@ func TestReconcileDBClean_RunningJobLeavesConditionOnTheSchedule(t *testing.T) {
 	running.Status.Conditions = nil
 	r := newBarbicanTestReconciler(barbican, cronJob, running)
 
-	_, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := barbicanCondition(barbican, conditionTypeDBCleanReady)
@@ -594,7 +594,7 @@ func TestReconcileDBClean_ProjectsDBTLSMaterialWhenEnabled(t *testing.T) {
 	}
 	r := newBarbicanTestReconciler(barbican)
 
-	_, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -647,7 +647,7 @@ func TestReconcileDBClean_AppliesForAnOverlongBarbicanName(t *testing.T) {
 	barbican.Name = strings.Repeat("b", barbicanv1alpha1.MaxBarbicanNameLength+20)
 	r := newBarbicanTestReconciler(barbican)
 
-	_, err := r.reconcileDBClean(context.Background(), barbican, dbCleanConfigSecretName)
+	_, err := r.reconcileDBClean(context.Background(), r.Client, barbican, dbCleanConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob

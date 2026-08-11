@@ -33,7 +33,7 @@ func TestReconcileHPA_DisabledDeletesAndNotRequired(t *testing.T) {
 	stale.Namespace = testNamespace
 	r := newBarbicanTestReconciler(barbican, stale)
 
-	res, err := r.reconcileHPA(context.Background(), barbican)
+	res, err := r.reconcileHPA(context.Background(), r.Client, barbican)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -53,7 +53,7 @@ func TestReconcileHPA_EnabledCreatesHPA(t *testing.T) {
 	barbican.Spec.Autoscaling = barbicanAutoscalingSpec(2, 5)
 	r := newBarbicanTestReconciler(barbican)
 
-	res, err := r.reconcileHPA(context.Background(), barbican)
+	res, err := r.reconcileHPA(context.Background(), r.Client, barbican)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())

@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/secrets"
 	"github.com/c5c3/forge/internal/common/watch"
@@ -61,6 +62,7 @@ const (
 	// CredentialsReady reasons.
 	conditionReasonCredentialsAvailable     = "CredentialsAvailable"
 	conditionReasonWaitingForCredentials    = "WaitingForCredentials"
+	conditionReasonWaitingForParent         = "WaitingForParent"
 	conditionReasonInvalidCredentials       = "InvalidCredentials"
 	conditionReasonInsufficientCapabilities = "InsufficientCapabilities"
 
@@ -251,6 +253,14 @@ type BarbicanSecretStoreReconciler struct {
 	// time.Now; tests inject a fixed clock so the 2/3-of-TTL threshold is
 	// exercised without waiting for it.
 	Now func() time.Time
+
+	// Resolver resolves the target cluster the PARENT Barbican names in
+	// spec.targetClusterRef into the client this store's children are read and
+	// written with. A store carries no target of its own: it exists to serve one
+	// Barbican, so its credentials Secret and the server it authenticates
+	// against belong wherever that Barbican's workload runs. Nil means
+	// always-local.
+	Resolver commonmulticluster.ClusterResolver
 }
 
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores,verbs=get;list;watch
@@ -300,7 +310,16 @@ func (r *BarbicanSecretStoreReconciler) Reconcile(ctx context.Context, req ctrl.
 // succeeded, the config-projection observation. A store that is not credential-
 // ready short-circuits before the observation: the parent never projects a store
 // that is not ready, so there is nothing to observe yet.
+//
+// Everything it touches beyond the store CR itself is a child of the parent
+// Barbican, so it opens by resolving that parent's target cluster into the
+// children client the rest of the pass reads and writes with.
 func (r *BarbicanSecretStoreReconciler) reconcileNormal(ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore) (ctrl.Result, error) {
+	children, result, err := r.resolveChildren(ctx, store)
+	if children == nil {
+		return result, err
+	}
+
 	spec := store.Spec.OpenBao
 	if spec == nil || (spec.InstanceRef == nil && spec.Server == nil) {
 		// The schema union rules guarantee exactly one store block matching
@@ -310,25 +329,61 @@ func (r *BarbicanSecretStoreReconciler) reconcileNormal(ctx context.Context, sto
 		return result, err
 	}
 
-	var (
-		ready  bool
-		result ctrl.Result
-		err    error
-	)
+	var ready bool
 	if spec.InstanceRef != nil {
-		ready, result, err = r.reconcileManaged(ctx, store, spec)
+		ready, result, err = r.reconcileManaged(ctx, children, store, spec)
 	} else {
-		ready, result, err = r.reconcileBrownfield(ctx, store, spec)
+		ready, result, err = r.reconcileBrownfield(ctx, children, store, spec)
 	}
 	if err != nil || !ready {
 		return result, err
 	}
 
-	projection, err := r.observeConfigProjected(ctx, store)
+	projection, err := r.observeConfigProjected(ctx, children, store)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	return commonreconcile.ShortestRequeue(result, projection), nil
+}
+
+// resolveChildren returns the client this store's children are read and written
+// with: the one the PARENT Barbican's spec.targetClusterRef selects. The store
+// has no target field of its own, so the AppRole credentials Secret it mints and
+// the OpenBao instance it authenticates against land wherever the parent's
+// workload runs — the same cluster the API pods read them from.
+//
+// A parent that does not exist holds the pass on CredentialsReady=False and
+// requeues, the same treatment an unresolvable target gets. Guessing the local
+// client instead would be a write to the wrong cluster: this reconciler MINTS
+// AppRole credentials, so a store whose parent is momentarily absent — the
+// ordinary case when a GitOps apply lands both objects at once — would create a
+// live secret ID against the management cluster's OpenBao and leave it behind
+// unreferenced once the parent appears and the ref resolves elsewhere.
+//
+// A named-but-unregistered target returns a nil client with the failure already
+// on CredentialsReady, the store's first gate condition.
+func (r *BarbicanSecretStoreReconciler) resolveChildren(
+	ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore,
+) (client.Client, ctrl.Result, error) {
+	var parent barbicanv1alpha1.Barbican
+	parentKey := client.ObjectKey{Namespace: store.Namespace, Name: store.Spec.BarbicanRef.Name}
+	if err := r.Get(ctx, parentKey, &parent); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, ctrl.Result{}, fmt.Errorf("fetching parent Barbican %s: %w", parentKey, err)
+		}
+		r.setCondition(store, conditionTypeCredentialsReady, metav1.ConditionFalse,
+			conditionReasonWaitingForParent,
+			fmt.Sprintf("parent Barbican %s does not exist; the cluster this store's credentials belong on is unknown", parentKey))
+		return nil, ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+	}
+
+	children, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, parent.Spec.TargetClusterRef)
+	if err != nil {
+		r.setCondition(store, conditionTypeCredentialsReady, metav1.ConditionFalse,
+			commonmulticluster.TargetClusterUnavailable, err.Error())
+		return nil, ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+	}
+	return children, ctrl.Result{}, nil
 }
 
 // reconcileManaged provisions the store against the OpenBaoCluster it names: it
@@ -337,13 +392,14 @@ func (r *BarbicanSecretStoreReconciler) reconcileNormal(ctx context.Context, sto
 // the store's AppRole credentials. It returns (true, …) only when the
 // credentials are live.
 func (r *BarbicanSecretStoreReconciler) reconcileManaged(
-	ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore, spec *barbicanv1alpha1.OpenBaoStoreSpec,
+	ctx context.Context, children client.Client,
+	store *barbicanv1alpha1.BarbicanSecretStore, spec *barbicanv1alpha1.OpenBaoStoreSpec,
 ) (bool, ctrl.Result, error) {
 	instanceName := spec.InstanceRef.Name
 	instanceKey := client.ObjectKey{Namespace: store.Namespace, Name: instanceName}
 
 	var instance openbaov1alpha1.OpenBaoCluster
-	if err := r.Get(ctx, instanceKey, &instance); err != nil {
+	if err := children.Get(ctx, instanceKey, &instance); err != nil {
 		if apierrors.IsNotFound(err) {
 			return r.fail(store, conditionTypeProvisioningReady, conditionReasonInstanceNotFound,
 				fmt.Sprintf("OpenBaoCluster %s does not exist", instanceKey))
@@ -356,7 +412,7 @@ func (r *BarbicanSecretStoreReconciler) reconcileManaged(
 	}
 
 	caKey := client.ObjectKey{Namespace: store.Namespace, Name: instanceName + instanceCASecretSuffix}
-	caPEM, err := secrets.GetSecretValue(ctx, r.Client, caKey, barbicanv1alpha1.OpenBaoCAKey)
+	caPEM, err := secrets.GetSecretValue(ctx, children, caKey, barbicanv1alpha1.OpenBaoCAKey)
 	if err != nil {
 		if secrets.IsMissingSecretOrKey(err) {
 			return r.fail(store, conditionTypeProvisioningReady, conditionReasonWaitingForInstanceTLS,
@@ -370,7 +426,7 @@ func (r *BarbicanSecretStoreReconciler) reconcileManaged(
 	// accepts a token minted for this instance and nothing else, so a token
 	// auto-mounted into some other pod cannot be replayed against it.
 	saName := instanceName + instanceProvisionerSASuffix
-	token, err := r.mintToken(ctx, store.Namespace, saName, instanceName)
+	token, err := r.mintToken(ctx, children, store.Namespace, saName, instanceName)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return r.fail(store, conditionTypeProvisioningReady, conditionReasonWaitingForInstance,
@@ -440,7 +496,7 @@ func (r *BarbicanSecretStoreReconciler) reconcileManaged(
 	r.setCondition(store, conditionTypeProvisioningReady, metav1.ConditionTrue, conditionReasonProvisioned,
 		fmt.Sprintf("OpenBaoCluster %q carries the KV mount %q and the AppRole %q", instanceName, spec.KVMountpoint, storeAppRoleName))
 
-	return r.reconcileManagedCredentials(ctx, store, cfg, provisioner, roleID)
+	return r.reconcileManagedCredentials(ctx, children, store, cfg, provisioner, roleID)
 }
 
 // reconcileManagedCredentials decides whether the store's credentials Secret
@@ -453,15 +509,15 @@ func (r *BarbicanSecretStoreReconciler) reconcileManaged(
 // longer accepts it. A TTL of 0 means the secret ID does not expire, which
 // disables the timer — the probe stays.
 func (r *BarbicanSecretStoreReconciler) reconcileManagedCredentials(
-	ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore,
+	ctx context.Context, children client.Client, store *barbicanv1alpha1.BarbicanSecretStore,
 	cfg openbao.Config, provisioner openbao.Client, roleID string,
 ) (bool, ctrl.Result, error) {
 	credsKey := client.ObjectKey{Namespace: store.Namespace, Name: store.Name + approleSecretNameSuffix}
 
 	var creds corev1.Secret
-	if err := r.Get(ctx, credsKey, &creds); err != nil {
+	if err := children.Get(ctx, credsKey, &creds); err != nil {
 		if apierrors.IsNotFound(err) {
-			return r.mintCredentials(ctx, store, cfg, provisioner, roleID, credsKey, "")
+			return r.mintCredentials(ctx, children, store, cfg, provisioner, roleID, credsKey, "")
 		}
 		return false, ctrl.Result{}, fmt.Errorf("fetching the AppRole credentials Secret %s: %w", credsKey, err)
 	}
@@ -470,10 +526,10 @@ func (r *BarbicanSecretStoreReconciler) reconcileManagedCredentials(
 	currentRoleID := string(creds.Data[barbicanv1alpha1.OpenBaoRoleIDKey])
 	currentSecretID := string(creds.Data[barbicanv1alpha1.OpenBaoSecretIDKey])
 	if !stamped || currentRoleID == "" || currentSecretID == "" {
-		return r.mintCredentials(ctx, store, cfg, provisioner, roleID, credsKey, "")
+		return r.mintCredentials(ctx, children, store, cfg, provisioner, roleID, credsKey, "")
 	}
 	if ttl > 0 && r.now().Sub(mintedAt) > proactiveThreshold(ttl) {
-		return r.mintCredentials(ctx, store, cfg, provisioner, roleID, credsKey, remintTriggerProactive)
+		return r.mintCredentials(ctx, children, store, cfg, provisioner, roleID, credsKey, remintTriggerProactive)
 	}
 
 	if err := r.probeAppRole(ctx, cfg, currentRoleID, currentSecretID); err != nil {
@@ -489,7 +545,7 @@ func (r *BarbicanSecretStoreReconciler) reconcileManagedCredentials(
 			// workqueue as an error. Without the floor that is one new secret-ID
 			// accessor minted every retry interval, per store, indefinitely.
 			if r.now().Sub(mintedAt) >= reactiveRemintCooldown {
-				return r.mintCredentials(ctx, store, cfg, provisioner, roleID, credsKey, remintTriggerReactive)
+				return r.mintCredentials(ctx, children, store, cfg, provisioner, roleID, credsKey, remintTriggerReactive)
 			}
 			return r.fail(store, conditionTypeCredentialsReady, conditionReasonInvalidCredentials,
 				fmt.Sprintf("the server rejects the AppRole credentials of Secret %s, which were minted %s ago; "+
@@ -507,7 +563,7 @@ func (r *BarbicanSecretStoreReconciler) reconcileManagedCredentials(
 // an empty trigger marks an initial mint, which is not a re-mint and is not
 // counted.
 func (r *BarbicanSecretStoreReconciler) mintCredentials(
-	ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore,
+	ctx context.Context, children client.Client, store *barbicanv1alpha1.BarbicanSecretStore,
 	cfg openbao.Config, provisioner openbao.Client, roleID string, credsKey client.ObjectKey, trigger string,
 ) (bool, ctrl.Result, error) {
 	secretID, ttlSeconds, err := provisioner.GenerateSecretID(ctx, storeAppRoleName)
@@ -517,7 +573,7 @@ func (r *BarbicanSecretStoreReconciler) mintCredentials(
 	mintedAt := r.now().UTC()
 
 	creds := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: credsKey.Namespace, Name: credsKey.Name}}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, creds, func() error {
+	if _, err := controllerutil.CreateOrUpdate(ctx, children, creds, func() error {
 		if creds.Data == nil {
 			creds.Data = map[string][]byte{}
 		}
@@ -558,7 +614,8 @@ func (r *BarbicanSecretStoreReconciler) credentialsReady(
 // capability read, and nothing is ever written to the server — no mount, no
 // policy, no AppRole, no secret material.
 func (r *BarbicanSecretStoreReconciler) reconcileBrownfield(
-	ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore, spec *barbicanv1alpha1.OpenBaoStoreSpec,
+	ctx context.Context, children client.Client,
+	store *barbicanv1alpha1.BarbicanSecretStore, spec *barbicanv1alpha1.OpenBaoStoreSpec,
 ) (bool, ctrl.Result, error) {
 	// Nothing provisions a brownfield server, so the condition must not linger
 	// on a store that used to name an instanceRef.
@@ -566,14 +623,14 @@ func (r *BarbicanSecretStoreReconciler) reconcileBrownfield(
 
 	server := spec.Server
 	credsKey := client.ObjectKey{Namespace: store.Namespace, Name: server.CredentialsSecretRef.Name}
-	roleID, missing, err := r.readCredential(ctx, credsKey, barbicanv1alpha1.OpenBaoRoleIDKey)
+	roleID, missing, err := r.readCredential(ctx, children, credsKey, barbicanv1alpha1.OpenBaoRoleIDKey)
 	if err != nil {
 		return false, ctrl.Result{}, err
 	}
 	if missing {
 		return r.waitingForCredentials(store, credsKey, barbicanv1alpha1.OpenBaoRoleIDKey)
 	}
-	secretID, missing, err := r.readCredential(ctx, credsKey, barbicanv1alpha1.OpenBaoSecretIDKey)
+	secretID, missing, err := r.readCredential(ctx, children, credsKey, barbicanv1alpha1.OpenBaoSecretIDKey)
 	if err != nil {
 		return false, ctrl.Result{}, err
 	}
@@ -584,7 +641,7 @@ func (r *BarbicanSecretStoreReconciler) reconcileBrownfield(
 	var caPEM string
 	if server.CABundleSecretRef != nil {
 		caKey := client.ObjectKey{Namespace: store.Namespace, Name: server.CABundleSecretRef.Name}
-		caPEM, missing, err = r.readCredential(ctx, caKey, barbicanv1alpha1.OpenBaoCAKey)
+		caPEM, missing, err = r.readCredential(ctx, children, caKey, barbicanv1alpha1.OpenBaoCAKey)
 		if err != nil {
 			return false, ctrl.Result{}, err
 		}
@@ -638,8 +695,8 @@ func (r *BarbicanSecretStoreReconciler) reconcileBrownfield(
 // absent key and an empty value fold into missing: none of them is something the
 // operator can authenticate with, and all three are states GitOps ordering
 // produces routinely. Any other failure is a backend error and is propagated.
-func (r *BarbicanSecretStoreReconciler) readCredential(ctx context.Context, key client.ObjectKey, dataKey string) (string, bool, error) {
-	value, err := secrets.GetSecretValue(ctx, r.Client, key, dataKey)
+func (r *BarbicanSecretStoreReconciler) readCredential(ctx context.Context, children client.Client, key client.ObjectKey, dataKey string) (string, bool, error) {
+	value, err := secrets.GetSecretValue(ctx, children, key, dataKey)
 	if err != nil {
 		if secrets.IsMissingSecretOrKey(err) {
 			return "", true, nil
@@ -679,8 +736,8 @@ func (r *BarbicanSecretStoreReconciler) probeAppRole(ctx context.Context, cfg op
 // write, no event) must not strand the store. A transient Get failure returns
 // the error WITHOUT demoting a currently-True condition, so a converged store
 // does not flap on a cache blip.
-func (r *BarbicanSecretStoreReconciler) observeConfigProjected(ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore) (ctrl.Result, error) {
-	projected, err := r.isConfigProjected(ctx, store)
+func (r *BarbicanSecretStoreReconciler) observeConfigProjected(ctx context.Context, children client.Client, store *barbicanv1alpha1.BarbicanSecretStore) (ctrl.Result, error) {
+	projected, err := r.isConfigProjected(ctx, children, store)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -699,7 +756,10 @@ func (r *BarbicanSecretStoreReconciler) observeConfigProjected(ctx context.Conte
 // [secretstore:<store.Name>] section header. A missing parent, Deployment,
 // volume, or config Secret folds to (false, nil) — an authoritative "not
 // projected yet". Only a non-NotFound client failure returns an error.
-func (r *BarbicanSecretStoreReconciler) isConfigProjected(ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore) (bool, error) {
+//
+// The parent CR is read on the management cluster, the Deployment it projects on
+// the children one.
+func (r *BarbicanSecretStoreReconciler) isConfigProjected(ctx context.Context, children client.Client, store *barbicanv1alpha1.BarbicanSecretStore) (bool, error) {
 	var barbican barbicanv1alpha1.Barbican
 	barbicanKey := client.ObjectKey{Namespace: store.Namespace, Name: store.Spec.BarbicanRef.Name}
 	if err := r.Get(ctx, barbicanKey, &barbican); err != nil {
@@ -711,14 +771,14 @@ func (r *BarbicanSecretStoreReconciler) isConfigProjected(ctx context.Context, s
 
 	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Namespace: barbican.Namespace, Name: subResourceName(&barbican)}
-	if err := r.Get(ctx, deployKey, &deploy); err != nil {
+	if err := children.Get(ctx, deployKey, &deploy); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("fetching Deployment %s: %w", deployKey, err)
 	}
 
-	rendered, err := r.renderedConfig(ctx, &deploy)
+	rendered, err := r.renderedConfig(ctx, children, &deploy)
 	if err != nil {
 		return false, err
 	}
@@ -731,7 +791,7 @@ func (r *BarbicanSecretStoreReconciler) isConfigProjected(ctx context.Context, s
 // the whole document is credential-bearing. A config volume backed by anything
 // else, an absent volume, or an absent Secret yields no bytes, which reads as
 // "not projected yet".
-func (r *BarbicanSecretStoreReconciler) renderedConfig(ctx context.Context, deploy *appsv1.Deployment) ([]byte, error) {
+func (r *BarbicanSecretStoreReconciler) renderedConfig(ctx context.Context, children client.Client, deploy *appsv1.Deployment) ([]byte, error) {
 	var volume *corev1.Volume
 	for i := range deploy.Spec.Template.Spec.Volumes {
 		if deploy.Spec.Template.Spec.Volumes[i].Name == configVolumeName {
@@ -745,7 +805,7 @@ func (r *BarbicanSecretStoreReconciler) renderedConfig(ctx context.Context, depl
 
 	var secret corev1.Secret
 	key := client.ObjectKey{Namespace: deploy.Namespace, Name: volume.Secret.SecretName}
-	if err := r.Get(ctx, key, &secret); err != nil {
+	if err := children.Get(ctx, key, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -862,18 +922,20 @@ func (r *BarbicanSecretStoreReconciler) newOpenBaoClient(cfg openbao.Config) (op
 
 // mintToken mints a bound ServiceAccount token through the seam, defaulting to
 // the TokenRequest subresource.
-func (r *BarbicanSecretStoreReconciler) mintToken(ctx context.Context, saNamespace, saName, audience string) (string, error) {
+func (r *BarbicanSecretStoreReconciler) mintToken(ctx context.Context, children client.Client, saNamespace, saName, audience string) (string, error) {
 	if r.MintServiceAccountToken != nil {
 		return r.MintServiceAccountToken(ctx, saNamespace, saName, audience)
 	}
-	return r.mintServiceAccountToken(ctx, saNamespace, saName, audience)
+	return r.mintServiceAccountToken(ctx, children, saNamespace, saName, audience)
 }
 
 // mintServiceAccountToken requests a short-lived token for the named
 // ServiceAccount, bound to a single audience so it cannot be replayed against
 // any other consumer. The token lives only as long as the reconcile that uses
-// it, and it is never persisted.
-func (r *BarbicanSecretStoreReconciler) mintServiceAccountToken(ctx context.Context, saNamespace, saName, audience string) (string, error) {
+// it, and it is never persisted. It is minted on the children cluster: the
+// audience is the OpenBaoCluster the token is presented to, and that instance
+// only accepts tokens its own API server issued.
+func (r *BarbicanSecretStoreReconciler) mintServiceAccountToken(ctx context.Context, children client.Client, saNamespace, saName, audience string) (string, error) {
 	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Namespace: saNamespace, Name: saName}}
 	request := &authenticationv1.TokenRequest{
 		Spec: authenticationv1.TokenRequestSpec{
@@ -881,7 +943,7 @@ func (r *BarbicanSecretStoreReconciler) mintServiceAccountToken(ctx context.Cont
 			ExpirationSeconds: ptr.To(int64(provisionerTokenTTL.Seconds())),
 		},
 	}
-	if err := r.SubResource("token").Create(ctx, sa, request); err != nil {
+	if err := children.SubResource("token").Create(ctx, sa, request); err != nil {
 		return "", fmt.Errorf("minting a token for ServiceAccount %s/%s: %w", saNamespace, saName, err)
 	}
 	return request.Status.Token, nil

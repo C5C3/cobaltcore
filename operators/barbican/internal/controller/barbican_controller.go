@@ -35,6 +35,7 @@ import (
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/healthcheck"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
@@ -223,6 +224,13 @@ type BarbicanReconciler struct {
 	// health check uses http.DefaultClient; tests inject a stub transport.
 	HTTPClient healthcheck.HTTPDoer
 
+	// Resolver resolves the target cluster a Barbican CR names in
+	// spec.targetClusterRef into the client its children are read and written
+	// with. Nil means always-local: every CR keeps its children on the
+	// management cluster, which is what single-cluster tests and deployments
+	// want.
+	Resolver commonmulticluster.ClusterResolver
+
 	// apiReader is set during SetupWithManager from mgr.GetAPIReader(): a direct,
 	// uncached reader. The deployment step latches the two-phase narrowing of the
 	// API Service selector on the live Service, and the informer cache can still
@@ -281,10 +289,52 @@ func (r *BarbicanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Handle deletion via the finalizer: issue Delete on the MariaDB CRs, then
 	// release the finalizer once no live (not-yet-deleted) resource remains. The
-	// deletion path sets no conditions, so it returns directly without
-	// updateStatus.
+	// cleanup itself sets no conditions, so it returns directly without
+	// updateStatus; only the hold on an unresolvable target below reports.
+	//
+	// It comes before the target-cluster resolution below and uses the deletion
+	// variant, which never fails the pass: a CR whose cluster was deregistered
+	// after the finalizer went on would otherwise short-circuit on the
+	// unresolvable ref on every pass and stay Terminating forever. A target that
+	// has not resolved yet requeues instead of being given up on — engagement is
+	// asynchronous, so an operator restart looks exactly like a deregistration
+	// until the provider has synced.
 	if !barbican.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, &barbican)
+		children, wait := commonmulticluster.ResolveChildrenClientForDeletion(
+			ctx, r.Resolver, r.Client, barbican.Spec.TargetClusterRef, *barbican.DeletionTimestamp)
+		if wait {
+			// The hold goes on the CR, not only into the operator's log. It is a
+			// deliberate state a CR can sit in for minutes, and "Terminating,
+			// waiting on the target cluster" has to be distinguishable from a
+			// wedged finalizer without correlating logs across replicas. This exit
+			// precedes the pipeline's status snapshot below, so it takes its own
+			// baseline for the skip-unchanged write.
+			statusBefore := barbican.Status.DeepCopy()
+			barbicanSkeleton.MarkFailed(&barbican, "SecretsReady",
+				commonmulticluster.TargetClusterUnavailable,
+				fmt.Errorf("target cluster %s does not resolve; waiting at least %s before abandoning its children",
+					barbican.Spec.TargetClusterRef.Name, commonmulticluster.AbandonAfter))
+			return r.updateStatus(ctx, &barbican, statusBefore,
+				ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
+		}
+		return r.reconcileDelete(ctx, children, &barbican)
+	}
+
+	// Resolve the client every child object of this CR is read and written with.
+	// The embedded client stays on the management cluster (the CR, its status,
+	// its finalizer, and the sibling BarbicanSecretStores live there); children
+	// carries everything the CR projects into the target cluster. The resolution
+	// runs before the finalizer is added so a CR naming an unresolvable cluster
+	// stays clean of finalizers: nothing was created for it, so there is nothing
+	// to clean up, and a finalizer would only block its deletion.
+	children, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, barbican.Spec.TargetClusterRef)
+	if err != nil {
+		// This exit precedes the pipeline's status snapshot below, so it takes its
+		// own baseline for the skip-unchanged write.
+		statusBefore := barbican.Status.DeepCopy()
+		barbicanSkeleton.MarkFailed(&barbican, "SecretsReady", commonmulticluster.TargetClusterUnavailable, err)
+		return r.updateStatus(ctx, &barbican, statusBefore,
+			ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
 	}
 
 	// Ensure the finalizer is installed before any sub-reconciler runs so a
@@ -303,7 +353,7 @@ func (r *BarbicanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// there does not race a status write.
 	statusBefore := barbican.Status.DeepCopy()
 
-	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, r.pipelineSteps(&barbican))
+	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, r.pipelineSteps(children, &barbican))
 	return r.updateStatus(ctx, &barbican, statusBefore, result, err)
 }
 
@@ -313,7 +363,7 @@ func (r *BarbicanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 //
 // It is a method rather than a literal inside Reconcile so the drift guard can
 // enumerate the step names without running a reconcile.
-func (r *BarbicanReconciler) pipelineSteps(barbican *barbicanv1alpha1.Barbican) []commonreconcile.Step {
+func (r *BarbicanReconciler) pipelineSteps(children client.Client, barbican *barbicanv1alpha1.Barbican) []commonreconcile.Step {
 	// The values one sub-reconciler hands to a later one within a single
 	// reconcile pass, captured by the step closures. projection is the
 	// secret-store aggregation the config, deployment and networkpolicy steps
@@ -329,7 +379,7 @@ func (r *BarbicanReconciler) pipelineSteps(barbican *barbicanv1alpha1.Barbican) 
 
 	return []commonreconcile.Step{
 		{Name: "Secrets", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
-			res, authtokenDigest, err = r.reconcileSecrets(ctx, barbican)
+			res, authtokenDigest, err = r.reconcileSecrets(ctx, children, barbican)
 			return res, err
 		}},
 		// reconcileDBConnectionSecret materialises the DB URL into the derived
@@ -337,7 +387,7 @@ func (r *BarbicanReconciler) pipelineSteps(barbican *barbicanv1alpha1.Barbican) 
 		// credentials must be synced) and before Config; failures set
 		// SecretsReady=False, the same condition reconcileSecrets uses.
 		{Name: "DBConnectionSecret", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
-			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, barbican)
+			res, dsnDigest, err = r.reconcileDBConnectionSecret(ctx, children, barbican)
 			return res, err
 		}},
 		// reconcileSecretStores aggregates the attached, credential-ready
@@ -346,7 +396,7 @@ func (r *BarbicanReconciler) pipelineSteps(barbican *barbicanv1alpha1.Barbican) 
 		// result so first-install can proceed, and store status flips re-enqueue
 		// this Barbican through the store watch.
 		{Name: "SecretStores", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
-			res, projection, err = r.reconcileSecretStores(ctx, barbican)
+			res, projection, err = r.reconcileSecretStores(ctx, children, barbican)
 			return res, err
 		}},
 		// reconcileConfig renders barbican.conf and barbican-api-paste.ini into an
@@ -355,7 +405,7 @@ func (r *BarbicanReconciler) pipelineSteps(barbican *barbicanv1alpha1.Barbican) 
 		// SecretsReady=False on failure via markConfigFailed, so the wrapper only
 		// threads the result.
 		{Name: "Config", Fn: func(ctx context.Context) (res ctrl.Result, err error) {
-			res, configSecretName, err = r.reconcileConfig(ctx, barbican, projection)
+			res, configSecretName, err = r.reconcileConfig(ctx, children, barbican, projection)
 			return res, err
 		}},
 		// reconcileDBClean projects the recurring clean-up CronJob. It runs BEFORE
@@ -366,27 +416,27 @@ func (r *BarbicanReconciler) pipelineSteps(barbican *barbicanv1alpha1.Barbican) 
 		// during the one window that needs pausing. Its only input is the rendered
 		// config the CronJob mounts, which the Config step above already produced.
 		{Name: "DBClean", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDBClean(ctx, barbican, configSecretName)
+			return r.reconcileDBClean(ctx, children, barbican, configSecretName)
 		}},
 		// reconcileDatabase provisions the schema, gates the requested OpenStack
 		// release against the installed one, and runs the db-sync Job against the
 		// rendered config.
 		{Name: "Database", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDatabase(ctx, barbican, configSecretName)
+			return r.reconcileDatabase(ctx, children, barbican, configSecretName)
 		}},
 		// reconcileDeployment projects the API Deployment, its Service, and the
 		// PodDisruptionBudget. It runs after Database so the pods only start once
 		// the schema they query exists, and creates nothing while the secret-store
 		// projection is invalid.
 		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDeployment(ctx, barbican, projection, configSecretName, dsnDigest, authtokenDigest)
+			return r.reconcileDeployment(ctx, children, barbican, projection, configSecretName, dsnDigest, authtokenDigest)
 		}},
 		// Once the Deployment/Service outputs are in place, HTTPRoute, HealthCheck,
 		// HPA, and NetworkPolicy have no inter-dependency and run concurrently.
 		// Each member sets exactly one condition type; the group self-instruments
 		// its members, so this step carries no sub_reconciler name.
 		{Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileParallelGroup(ctx, barbican, r.parallelSteps(projection))
+			return r.reconcileParallelGroup(ctx, barbican, r.parallelSteps(children, projection))
 		}},
 	}
 }
@@ -399,13 +449,13 @@ func (r *BarbicanReconciler) pipelineSteps(barbican *barbicanv1alpha1.Barbican) 
 // It is a method rather than a literal inside pipelineSteps so the drift guard
 // can enumerate the member names and their condition types without running a
 // reconcile.
-func (r *BarbicanReconciler) parallelSteps(projection secretStoreProjection) []commonreconcile.ParallelStep[*barbicanv1alpha1.Barbican] {
+func (r *BarbicanReconciler) parallelSteps(children client.Client, projection secretStoreProjection) []commonreconcile.ParallelStep[*barbicanv1alpha1.Barbican] {
 	return []commonreconcile.ParallelStep[*barbicanv1alpha1.Barbican]{
 		{
 			Name:          "HTTPRoute",
 			ConditionType: conditionTypeHTTPRouteReady,
 			Fn: func(ctx context.Context, b *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
-				return r.reconcileHTTPRoute(ctx, b)
+				return r.reconcileHTTPRoute(ctx, children, b)
 			},
 		},
 		{
@@ -419,14 +469,14 @@ func (r *BarbicanReconciler) parallelSteps(projection secretStoreProjection) []c
 			Name:          "HPA",
 			ConditionType: "HPAReady",
 			Fn: func(ctx context.Context, b *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
-				return r.reconcileHPA(ctx, b)
+				return r.reconcileHPA(ctx, children, b)
 			},
 		},
 		{
 			Name:          "NetworkPolicy",
 			ConditionType: conditionTypeNetworkPolicyReady,
 			Fn: func(ctx context.Context, b *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
-				return r.reconcileNetworkPolicy(ctx, b, projection)
+				return r.reconcileNetworkPolicy(ctx, children, b, projection)
 			},
 		},
 	}
@@ -453,34 +503,44 @@ func (r *BarbicanReconciler) reconcileParallelGroup(
 // holds the finalizer for one more pass so the schema teardown is triggered
 // before the owner-ref chain disappears. Once no live resource remains it drops
 // the per-CR metrics, evicts the health-probe cache, and releases the finalizer.
-func (r *BarbicanReconciler) reconcileDelete(ctx context.Context, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
+//
+// A nil children client means the target cluster this CR named is no longer
+// registered. Its MariaDB CRs cannot be reached, so they are left behind (the
+// remote-ownership gap #837 tracks) and the finalizer is released anyway:
+// holding it would only strand the CR in Terminating.
+func (r *BarbicanReconciler) reconcileDelete(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(barbican, barbicanFinalizer) {
 		return ctrl.Result{}, nil
 	}
 
 	key := client.ObjectKey{Name: barbican.Name, Namespace: barbican.Namespace}
 
-	// Observe whether any MariaDB CR is still live BEFORE issuing the Delete: a
-	// Delete flips DeletionTimestamp, so a post-Delete check would always report
-	// none-live and release immediately. Gating on the pre-Delete observation
-	// keeps the CR alive one extra pass so the teardown is actually triggered.
-	hasLive, err := database.HasLiveResources(ctx, r.Client, key)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
+	if children == nil {
+		r.Recorder.Event(barbican, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
+			"Target cluster is no longer registered; releasing the finalizer without deleting the MariaDB Database, User, and Grant on it")
+	} else {
+		// Observe whether any MariaDB CR is still live BEFORE issuing the Delete: a
+		// Delete flips DeletionTimestamp, so a post-Delete check would always report
+		// none-live and release immediately. Gating on the pre-Delete observation
+		// keeps the CR alive one extra pass so the teardown is actually triggered.
+		hasLive, err := database.HasLiveResources(ctx, children, key)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 
-	if err := database.FinalizeResources(ctx, r.Client, key); err != nil {
-		return ctrl.Result{}, err
-	}
+		if err := database.FinalizeResources(ctx, children, key); err != nil {
+			return ctrl.Result{}, err
+		}
 
-	if hasLive {
-		r.Recorder.Event(barbican, corev1.EventTypeNormal, "FinalizingDatabase",
-			"Cleaning up MariaDB Database, User, and Grant before removing Barbican")
-		return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
-	}
+		if hasLive {
+			r.Recorder.Event(barbican, corev1.EventTypeNormal, "FinalizingDatabase",
+				"Cleaning up MariaDB Database, User, and Grant before removing Barbican")
+			return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
+		}
 
-	r.Recorder.Event(barbican, corev1.EventTypeNormal, "DatabaseFinalized",
-		"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
+		r.Recorder.Event(barbican, corev1.EventTypeNormal, "DatabaseFinalized",
+			"MariaDB Database, User, and Grant marked for deletion; releasing finalizer")
+	}
 
 	controllerutil.RemoveFinalizer(barbican, barbicanFinalizer)
 	if err := r.Update(ctx, barbican); err != nil {

@@ -42,7 +42,7 @@ func TestReconcileSecrets_StoreGate(t *testing.T) {
 			}
 			r := newBarbicanTestReconciler(objs...)
 
-			res, digest, err := r.reconcileSecrets(context.Background(), barbican)
+			res, digest, err := r.reconcileSecrets(context.Background(), r.Client, barbican)
 
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -101,7 +101,7 @@ func TestReconcileSecrets_CredentialGates(t *testing.T) {
 			objs := append([]client.Object{barbican, readyClusterSecretStore(openBaoClusterStoreName)}, tc.secrets...)
 			r := newBarbicanTestReconciler(objs...)
 
-			res, digest, err := r.reconcileSecrets(context.Background(), barbican)
+			res, digest, err := r.reconcileSecrets(context.Background(), r.Client, barbican)
 
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -121,7 +121,7 @@ func TestReconcileSecrets_AllPresentReturnsDigest(t *testing.T) {
 		readyClusterSecretStore(openBaoClusterStoreName),
 		barbicanDBSecret(), barbicanServiceUserSecret("svc-pw"))
 
-	res, digest, err := r.reconcileSecrets(context.Background(), barbican)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, barbican)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -137,7 +137,7 @@ func TestReconcileSecrets_AllPresentReturnsDigest(t *testing.T) {
 	rotated := newBarbicanTestReconciler(testBarbican(),
 		readyClusterSecretStore(openBaoClusterStoreName),
 		barbicanDBSecret(), barbicanServiceUserSecret("rotated-pw"))
-	_, rotatedDigest, err := rotated.reconcileSecrets(context.Background(), testBarbican())
+	_, rotatedDigest, err := rotated.reconcileSecrets(context.Background(), rotated.Client, testBarbican())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rotatedDigest).NotTo(Equal(digest))
 }
@@ -156,7 +156,7 @@ func TestReconcileSecrets_CustomServiceUserKeyIsGated(t *testing.T) {
 	r := newBarbicanTestReconciler(barbican,
 		readyClusterSecretStore(openBaoClusterStoreName), barbicanDBSecret(), serviceUser)
 
-	res, digest, err := r.reconcileSecrets(context.Background(), barbican)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, barbican)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -194,7 +194,7 @@ func TestReconcileSecrets_ReadErrorPropagatesWrapped(t *testing.T) {
 		Build()
 	r := &BarbicanReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
 
-	res, digest, err := r.reconcileSecrets(context.Background(), barbican)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, barbican)
 
 	g.Expect(err).To(MatchError(boom), "the client error must stay unwrappable")
 	g.Expect(err).To(MatchError(ContainSubstring("reading service-user password value:")))

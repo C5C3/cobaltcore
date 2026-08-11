@@ -45,6 +45,9 @@ func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
 		Scheme:           scheme,
 		LeaderElectionID: "barbican.openstack.c5c3.io",
+		// The reconcilers resolve spec.targetClusterRef, so the binary engages
+		// the clusters registered in --clusters-namespace.
+		TargetClusters: true,
 		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int) error {
 			mgr := mcMgr.GetLocalManager()
 			// Register the operator's Prometheus collectors on the
@@ -61,6 +64,7 @@ func main() {
 				Recorder:                mgr.GetEventRecorderFor("barbican-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 				OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
 				MaxConcurrentReconciles: maxConcurrentReconciles,
+				Resolver:                mcMgr,
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}
@@ -73,6 +77,7 @@ func main() {
 				Client:   mgr.GetClient(),
 				Scheme:   mgr.GetScheme(),
 				Recorder: mgr.GetEventRecorderFor("barbicansecretstore-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+				Resolver: mcMgr,
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}

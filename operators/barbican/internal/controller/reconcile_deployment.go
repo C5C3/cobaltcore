@@ -24,6 +24,7 @@ import (
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/keystoneauth"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/naming"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
@@ -146,7 +147,7 @@ func componentLabels(barbican *barbicanv1alpha1.Barbican, component string) map[
 // env-var-consumed, so they only take effect on a Pod restart. Each annotation
 // is omitted when its digest is empty (the requeue/error paths upstream).
 func (r *BarbicanReconciler) reconcileDeployment(
-	ctx context.Context, barbican *barbicanv1alpha1.Barbican,
+	ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican,
 	projection secretStoreProjection, configSecretName, dsnDigest, authtokenDigest string,
 ) (ctrl.Result, error) {
 	if !projection.valid {
@@ -161,7 +162,7 @@ func (r *BarbicanReconciler) reconcileDeployment(
 	}
 
 	deploy := buildBarbicanDeployment(barbican, projection, configSecretName, dsnDigest, authtokenDigest)
-	ready, err := deployment.EnsureDeployment(ctx, r.Client, r.Scheme, barbican, deploy)
+	ready, err := deployment.EnsureDeployment(ctx, children, r.Scheme, barbican, deploy)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Deployment: %w", err)
 	}
@@ -178,16 +179,25 @@ func (r *BarbicanReconciler) reconcileDeployment(
 	// built by an operator predating the component label produces pods the
 	// narrow selector misses. Re-widening on a later rollout would re-admit
 	// db-clean pods as endpoints for exactly as long as it lasts, reopening the
-	// race this narrowing closes. The latch reads the live Service through the
-	// uncached APIReader, so it cannot be decided from a cache that still
-	// predates the narrowing write (see deployment.APISelectorNarrowed);
-	// r.apiReader is nil only in unit tests, whose fake client is
-	// read-your-writes anyway.
+	// race this narrowing closes. The latch reads the live Service
+	// through the uncached APIReader of whichever cluster holds it, so it cannot
+	// be decided from a cache that still predates the narrowing write (see
+	// deployment.APISelectorNarrowed). A CR that names a target cluster latches
+	// off that cluster's own API reader: its cache lags after a relist or a
+	// fresh write exactly like the local one, and a latch decided from it would
+	// re-widen the selector. The reader is nil only in unit tests, whose fake
+	// client is read-your-writes anyway.
 	narrowSelector := deployment.TemplateConverged(deploy)
 	if !narrowSelector {
-		reader := client.Reader(r.Client)
-		if r.apiReader != nil {
-			reader = r.apiReader
+		reader, err := commonmulticluster.ResolveChildrenAPIReader(
+			ctx, r.Resolver, r.apiReader, barbican.Spec.TargetClusterRef)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if reader == nil {
+			// No manager behind this reconciler (unit tests): the fake client
+			// is read-your-writes, so it is a sound latch source.
+			reader = children
 		}
 		narrowSelector, err = deployment.APISelectorNarrowed(ctx, reader, barbican.Namespace, subResourceName(barbican))
 		if err != nil {
@@ -196,12 +206,12 @@ func (r *BarbicanReconciler) reconcileDeployment(
 	}
 
 	svc := buildBarbicanService(barbican, narrowSelector)
-	if err := deployment.EnsureService(ctx, r.Client, r.Scheme, barbican, svc); err != nil {
+	if err := deployment.EnsureService(ctx, children, r.Scheme, barbican, svc); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring Service: %w", err)
 	}
 
 	pdb := buildPodDisruptionBudget(barbican)
-	if err := deployment.EnsurePDB(ctx, r.Client, r.Scheme, barbican, pdb); err != nil {
+	if err := deployment.EnsurePDB(ctx, children, r.Scheme, barbican, pdb); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring PodDisruptionBudget: %w", err)
 	}
 

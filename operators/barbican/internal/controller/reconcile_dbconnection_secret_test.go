@@ -25,7 +25,7 @@ func TestReconcileDBConnectionSecret_DerivesSecretAndDigest(t *testing.T) {
 	barbican := testBarbican()
 	r := newBarbicanTestReconciler(barbican, barbicanDBSecret())
 
-	res, digest, err := r.reconcileDBConnectionSecret(context.Background(), barbican)
+	res, digest, err := r.reconcileDBConnectionSecret(context.Background(), r.Client, barbican)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -39,7 +39,7 @@ func TestReconcileDBConnectionSecret_DerivesSecretAndDigest(t *testing.T) {
 	g.Expect(string(derived.Data[database.ConnectionSecretKey])).To(HavePrefix("mysql+pymysql://"))
 
 	// The digest is stable across passes (it drives the deployment pod-roll).
-	_, digest2, err := r.reconcileDBConnectionSecret(context.Background(), barbican)
+	_, digest2, err := r.reconcileDBConnectionSecret(context.Background(), r.Client, barbican)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(digest2).To(Equal(digest))
 }
@@ -50,7 +50,7 @@ func TestReconcileDBConnectionSecret_MissingUpstreamWaits(t *testing.T) {
 	// No upstream DB credentials Secret: no derived Secret is materialised.
 	r := newBarbicanTestReconciler(barbican)
 
-	res, digest, err := r.reconcileDBConnectionSecret(context.Background(), barbican)
+	res, digest, err := r.reconcileDBConnectionSecret(context.Background(), r.Client, barbican)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -89,7 +89,7 @@ func TestReconcileDBConnectionSecret_UpstreamReadErrorPropagates(t *testing.T) {
 		Build()
 	r := &BarbicanReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
 
-	res, digest, err := r.reconcileDBConnectionSecret(context.Background(), barbican)
+	res, digest, err := r.reconcileDBConnectionSecret(context.Background(), r.Client, barbican)
 
 	g.Expect(err).To(MatchError(boom), "the client error must stay unwrappable")
 	g.Expect(err).To(MatchError(ContainSubstring("reading database credentials Secret openstack/barbican-db:")))

@@ -155,7 +155,7 @@ func effectiveDBClean(spec *barbicanv1alpha1.DBCleanSpec) barbicanv1alpha1.DBCle
 // controls, and reports on the newest that reached a terminal state. A failed
 // run surfaces as DBCleanReady=False plus a Warning event; every terminal run
 // also feeds the db-clean metric pair exactly once per Job UID.
-func (r *BarbicanReconciler) reconcileDBClean(ctx context.Context, barbican *barbicanv1alpha1.Barbican, configSecretName string) (ctrl.Result, error) {
+func (r *BarbicanReconciler) reconcileDBClean(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican, configSecretName string) (ctrl.Result, error) {
 	clean := effectiveDBClean(barbican.Spec.DBClean)
 
 	// No config yet means no credential-ready default secret store has produced a
@@ -179,12 +179,12 @@ func (r *BarbicanReconciler) reconcileDBClean(ctx context.Context, barbican *bar
 	// keeps the aggregate Ready False, and the pipeline attributes the error to
 	// this step.
 	cronJob := dbCleanCronJob(barbican, configSecretName)
-	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, barbican, cronJob); err != nil {
+	if err := job.EnsureCronJob(ctx, children, r.Scheme, barbican, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring db clean CronJob: %w", err)
 	}
 
 	var jobs batchv1.JobList
-	if err := r.List(ctx, &jobs, client.InNamespace(barbican.Namespace),
+	if err := children.List(ctx, &jobs, client.InNamespace(barbican.Namespace),
 		client.MatchingLabels(commonLabels(barbican))); err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing db clean Jobs: %w", err)
 	}
@@ -271,7 +271,8 @@ func (r *BarbicanReconciler) reconcileDBClean(ctx context.Context, barbican *bar
 	// Emit the terminal metrics for the observed run. The shared helper dedupes on
 	// the Job UID via an annotation on the Barbican CR, so a run is counted once
 	// no matter how many passes observe it, and a nil observed (no terminal run
-	// yet) is a no-op.
+	// yet) is a no-op. The annotation lands on the owner CR, which is why the
+	// patch goes through the embedded client rather than children.
 	job.RecordJobTerminalState(ctx, r.Client, r.Recorder, barbican, dbCleanComponent, observed,
 		"DBCleanMetricEmissionDeferred",
 		func(result string, duration time.Duration) {

@@ -78,7 +78,7 @@ const dbConnectionPlaceholder = "mysql+pymysql://placeholder"
 // When the secret-store projection is invalid, it does NOT re-render: it returns
 // the Secret name the live Deployment currently mounts so downstream steps keep
 // using the last-good config, or an empty name on first install.
-func (r *BarbicanReconciler) reconcileConfig(ctx context.Context, barbican *barbicanv1alpha1.Barbican, projection secretStoreProjection) (ctrl.Result, string, error) {
+func (r *BarbicanReconciler) reconcileConfig(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican, projection secretStoreProjection) (ctrl.Result, string, error) {
 	// The extraConfig ownership guard is a pure function of the spec, so it runs
 	// before the invalid-projection short-circuit: the condition is maintained on
 	// the last-good-retention path too. The ExtraConfigHealthy condition is
@@ -90,7 +90,7 @@ func (r *BarbicanReconciler) reconcileConfig(ctx context.Context, barbican *barb
 	if !projection.valid {
 		// Last-good retention: keep whatever the running Deployment mounts rather
 		// than re-rendering against an invalid projection.
-		return r.lastGoodConfigSecret(ctx, barbican)
+		return r.lastGoodConfigSecret(ctx, children, barbican)
 	}
 
 	merged := operatorDefaults(barbican, projection)
@@ -114,7 +114,7 @@ func (r *BarbicanReconciler) reconcileConfig(ctx context.Context, barbican *barb
 	// Handle PolicyOverrides: render policy.yaml and wire oslo_policy.policy_file.
 	var policyYAML string
 	if barbican.Spec.PolicyOverrides != nil {
-		rendered, err := buildPolicyYAML(ctx, r.Client, barbican)
+		rendered, err := buildPolicyYAML(ctx, children, barbican)
 		if err != nil {
 			markConfigFailed(barbican, err)
 			return ctrl.Result{}, "", fmt.Errorf("building policy: %w", err)
@@ -139,13 +139,13 @@ func (r *BarbicanReconciler) reconcileConfig(ctx context.Context, barbican *barb
 		data[policyFileDataKey] = []byte(policyYAML)
 	}
 
-	secretName, err := config.CreateImmutableSecret(ctx, r.Client, r.Scheme, barbican,
+	secretName, err := config.CreateImmutableSecret(ctx, children, r.Scheme, barbican,
 		barbican.Name+"-config", barbican.Namespace, data)
 	if err != nil {
 		markConfigFailed(barbican, err)
 		return ctrl.Result{}, "", fmt.Errorf("creating config Secret: %w", err)
 	}
-	if err := config.PruneImmutableSecrets(ctx, r.Client, barbican, config.PruneOptions{
+	if err := config.PruneImmutableSecrets(ctx, children, barbican, config.PruneOptions{
 		BaseName:    barbican.Name + "-config",
 		Namespace:   barbican.Namespace,
 		CurrentName: secretName,
@@ -391,10 +391,10 @@ func barbicanStaticPasteSections(requestID bool) map[string]map[string]string {
 // Deployment currently mounts, so an invalid secret-store projection keeps the
 // last-good config instead of re-rendering. On first install (no Deployment yet)
 // it returns an empty name.
-func (r *BarbicanReconciler) lastGoodConfigSecret(ctx context.Context, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, string, error) {
+func (r *BarbicanReconciler) lastGoodConfigSecret(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, string, error) {
 	var deploy appsv1.Deployment
 	key := client.ObjectKey{Namespace: barbican.Namespace, Name: subResourceName(barbican)}
-	if err := r.Get(ctx, key, &deploy); err != nil {
+	if err := children.Get(ctx, key, &deploy); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, "", nil
 		}

@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/database"
@@ -93,12 +94,12 @@ var barbicanDBSyncCommand = []string{"barbican-manage", "db", "upgrade"}
 // completes and reports nothing about the rollout that follows.
 //
 // configSecretName names the rendered config Secret the migration Job mounts.
-func (r *BarbicanReconciler) reconcileDatabase(ctx context.Context, barbican *barbicanv1alpha1.Barbican, configSecretName string) (ctrl.Result, error) {
+func (r *BarbicanReconciler) reconcileDatabase(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican, configSecretName string) (ctrl.Result, error) {
 	// Managed/brownfield provisioning: MariaDB cluster gate, Database/User/Grant
 	// ensure, Dynamic-credentials skip of the User/Grant. A non-zero result means
 	// the flow set a not-ready condition and we must return it unchanged.
 	res, err := database.ReconcileProvision(ctx, database.ProvisionFlowParams{
-		Client:             r.Client,
+		Client:             children,
 		Scheme:             r.Scheme,
 		Owner:              barbican,
 		InstanceName:       barbican.Name,
@@ -147,7 +148,7 @@ func (r *BarbicanReconciler) reconcileDatabase(ctx context.Context, barbican *ba
 	// revision in one pass, so there is no schema-check step (SchemaCheckCommand
 	// nil). InstalledRelease is promoted to spec.openStackRelease on Job success.
 	res, err = database.ReconcileSyncJobs(ctx, database.SyncFlowParams{
-		Client:   r.Client,
+		Client:   children,
 		Scheme:   r.Scheme,
 		Recorder: r.Recorder,
 		Owner:    barbican,
