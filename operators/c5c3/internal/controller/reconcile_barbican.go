@@ -62,10 +62,11 @@ const barbicanDeletionAllowedAnnotation = "c5c3.io/allow-barbican-deletion"
 // dedicated OpenBao ensemble.
 //
 // It is separate because the two annotations authorise different things. For
-// Keystone, Horizon, Glance and Placement, and for the Barbican child itself, the
-// worst case behind the shared annotation is a redeployable stateless workload.
-// Here the instance carries DeletionPolicy DeletePVCs, so deleting it wipes the
-// raft volume; the teardown also removes the static-seal Secret, so even a
+// Keystone, Horizon, Glance and Placement the worst case behind the shared
+// annotation is a redeployable stateless workload; for the Barbican child it also
+// drops the schema indexing the stored secrets, which deleteOrphanedBarbican
+// spells out. Here the instance carries DeletionPolicy DeletePVCs, so deleting it
+// wipes the raft volume; the teardown also removes the static-seal Secret, so even a
 // recovered volume is unreadable. There is no snapshot, no soft delete and no
 // grace period in between: every secret Barbican ever stored — the private keys
 // and certificates the service exists to hold for its tenants — is gone the moment
@@ -750,7 +751,13 @@ func (r *ControlPlaneReconciler) deleteOrphanedBarbican(ctx context.Context, cp 
 	// SECRETS, and destroying them takes its own opt-in on top of the one that got
 	// us here (see barbicanStoreDataDeletionAllowedAnnotation). Without it the
 	// service is gone and the store it wrote through stands, so re-declaring
-	// services.barbican reattaches to the same material.
+	// services.barbican reattaches to the same INSTANCE — but not to the same
+	// secrets: the Barbican child deleted above finalizes its MariaDB Database CR,
+	// which database.BuildDatabase leaves without a cleanupPolicy, so the
+	// mariadb-operator Delete default drops the schema holding
+	// secret_store_metadata and the secret rows. The payloads survive in the raft
+	// volume with nothing left referencing them; only a schema dump taken before
+	// the teardown makes this branch a round trip.
 	if !barbicanStoreDataDeletionAllowed(cp) {
 		log.FromContext(ctx).Info("preserving the dedicated OpenBao instance and its stored secrets; "+
 			"set the data-deletion annotation to destroy them with the service",
