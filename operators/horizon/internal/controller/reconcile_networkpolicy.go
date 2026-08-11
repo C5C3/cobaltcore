@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/networkpolicy"
 	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
@@ -29,7 +30,7 @@ const (
 // matches the desired state, via the shared network-policy flow. It keeps only
 // the service-specific parts: the desired policy builder (with its
 // keystone-endpoint egress) and the backend identity.
-func (r *HorizonReconciler) reconcileNetworkPolicy(ctx context.Context, horizon *horizonv1alpha1.Horizon) (ctrl.Result, error) {
+func (r *HorizonReconciler) reconcileNetworkPolicy(ctx context.Context, children client.Client, horizon *horizonv1alpha1.Horizon) (ctrl.Result, error) {
 	// buildHorizonNetworkPolicy is only applied on the enabled+non-empty path;
 	// build it lazily so a nil or empty-ingress spec takes the delete or
 	// fail-closed path without a wasted build.
@@ -41,7 +42,7 @@ func (r *HorizonReconciler) reconcileNetworkPolicy(ctx context.Context, horizon 
 			desired = buildHorizonNetworkPolicy(horizon, r.OperatorNamespace)
 		}
 	}
-	return networkpolicy.Reconcile(ctx, r.Client, r.Scheme, horizon, networkpolicy.FlowParams{
+	return networkpolicy.Reconcile(ctx, children, r.Scheme, horizon, networkpolicy.FlowParams{
 		Configured:         horizon.Spec.NetworkPolicy != nil,
 		IngressSourceCount: ingressCount,
 		Desired:            desired,

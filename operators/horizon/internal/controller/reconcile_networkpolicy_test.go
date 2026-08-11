@@ -36,7 +36,7 @@ func TestReconcileNetworkPolicy_DisabledDeletesAndNotRequired(t *testing.T) {
 	stale.Namespace = "default"
 	r := newTestReconciler(testScheme(), h, stale)
 
-	res, err := r.reconcileNetworkPolicy(context.Background(), h)
+	res, err := r.reconcileNetworkPolicy(context.Background(), r.Client, h)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -56,7 +56,7 @@ func TestReconcileNetworkPolicy_EmptyIngressFailsClosed(t *testing.T) {
 	h.Spec.NetworkPolicy = &horizonv1alpha1.NetworkPolicySpec{}
 	r := newTestReconciler(testScheme(), h)
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), h)
+	_, err := r.reconcileNetworkPolicy(context.Background(), r.Client, h)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("refusing to create NetworkPolicy that would allow all ingress"))

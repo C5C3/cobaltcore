@@ -33,7 +33,10 @@ func effectiveSecretKeyKey(horizon *horizonv1alpha1.Horizon) string {
 // material. The digest is stamped into a pod-template annotation by
 // reconcileDeployment so a rotated SECRET_KEY rolls the dashboard pods (the
 // key is env-var-consumed, not volume-mounted).
-func (r *HorizonReconciler) reconcileSecrets(ctx context.Context,
+//
+// Both the selected store and the SECRET_KEY Secret are read on the children
+// cluster: they are materialised beside the workload that consumes them.
+func (r *HorizonReconciler) reconcileSecrets(ctx context.Context, children client.Client,
 	horizon *horizonv1alpha1.Horizon,
 ) (ctrl.Result, string, error) {
 	// Check the selected secret store first so upstream backend outages surface
@@ -42,7 +45,7 @@ func (r *HorizonReconciler) reconcileSecrets(ctx context.Context,
 	// this Horizon selected via spec.secretStoreRef (default: the shared
 	// cluster-scoped openbao-cluster-store); a namespaced store is resolved in
 	// the Horizon's own namespace.
-	storeReady, err := secrets.GateStoreReady(ctx, r.Client,
+	storeReady, err := secrets.GateStoreReady(ctx, children,
 		secrets.EffectiveStoreRef(horizon.Spec.SecretStoreRef), horizon.Namespace,
 		&horizon.Status.Conditions, horizon.Generation, "SecretsReady")
 	if err != nil {
@@ -57,7 +60,7 @@ func (r *HorizonReconciler) reconcileSecrets(ctx context.Context,
 	// only consulted to attribute the cause of a miss.
 	key := client.ObjectKey{Namespace: horizon.Namespace, Name: horizon.Spec.SecretKeyRef.Name}
 	dataKey := effectiveSecretKeyKey(horizon)
-	state, err := secrets.GateSyncedSecret(ctx, r.Client, key, dataKey)
+	state, err := secrets.GateSyncedSecret(ctx, children, key, dataKey)
 	if err != nil {
 		return ctrl.Result{}, "", err
 	}
@@ -83,7 +86,7 @@ func (r *HorizonReconciler) reconcileSecrets(ctx context.Context,
 
 	// Digest the key material so reconcileDeployment can roll pods when it
 	// rotates at the OpenBao source.
-	value, err := secrets.GetSecretValue(ctx, r.Client, key, dataKey)
+	value, err := secrets.GetSecretValue(ctx, children, key, dataKey)
 	if err != nil {
 		return ctrl.Result{}, "", fmt.Errorf("reading SECRET_KEY value: %w", err)
 	}

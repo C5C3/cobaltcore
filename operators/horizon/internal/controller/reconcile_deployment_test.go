@@ -143,7 +143,7 @@ func TestReconcileDeployment_NotReadySetsConditionAndRequeues(t *testing.T) {
 	h := testHorizon()
 	r := newTestReconciler(testScheme(), h)
 
-	res, err := r.reconcileDeployment(context.Background(), h, "cm-name", "")
+	res, err := r.reconcileDeployment(context.Background(), r.Client, h, "cm-name", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
@@ -161,7 +161,7 @@ func TestReconcileDeployment_ReadySetsEndpoint(t *testing.T) {
 	ctx := context.Background()
 
 	// First pass creates the Deployment; then simulate availability.
-	_, err := r.reconcileDeployment(ctx, h, "cm-name", "")
+	_, err := r.reconcileDeployment(ctx, r.Client, h, "cm-name", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var deploy appsv1.Deployment
@@ -175,7 +175,7 @@ func TestReconcileDeployment_ReadySetsEndpoint(t *testing.T) {
 	}}
 	g.Expect(r.Status().Update(ctx, &deploy)).To(Succeed())
 
-	res, err := r.reconcileDeployment(ctx, h, "cm-name", "")
+	res, err := r.reconcileDeployment(ctx, r.Client, h, "cm-name", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -216,7 +216,7 @@ func TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout(t *testing.T) {
 			ctx := context.Background()
 
 			// First pass creates the Deployment; then stamp the rollout state.
-			_, err := r.reconcileDeployment(ctx, h, "cm-name", "")
+			_, err := r.reconcileDeployment(ctx, r.Client, h, "cm-name", "")
 			g.Expect(err).NotTo(HaveOccurred())
 
 			key := types.NamespacedName{Namespace: "default", Name: "test-horizon"}
@@ -231,7 +231,7 @@ func TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout(t *testing.T) {
 			}}
 			g.Expect(r.Status().Update(ctx, &deploy)).To(Succeed())
 
-			_, err = r.reconcileDeployment(ctx, h, "cm-name", "")
+			_, err = r.reconcileDeployment(ctx, r.Client, h, "cm-name", "")
 			g.Expect(err).NotTo(HaveOccurred())
 
 			var svc corev1.Service
@@ -277,7 +277,7 @@ func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
 
 	// Pass 1 creates the Deployment; stamping full convergence and reconciling
 	// again completes the migration and narrows the Service selector.
-	_, err := r.reconcileDeployment(ctx, h, "cm-name", "")
+	_, err := r.reconcileDeployment(ctx, r.Client, h, "cm-name", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	var deploy appsv1.Deployment
 	g.Expect(r.Get(ctx, key, &deploy)).To(Succeed())
@@ -290,7 +290,7 @@ func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
 	}}
 	g.Expect(r.Status().Update(ctx, &deploy)).To(Succeed())
 
-	_, err = r.reconcileDeployment(ctx, h, "cm-name", "")
+	_, err = r.reconcileDeployment(ctx, r.Client, h, "cm-name", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	var svc corev1.Service
 	g.Expect(r.Get(ctx, key, &svc)).To(Succeed())
@@ -304,7 +304,7 @@ func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
 	deploy.Status.Replicas = 4
 	g.Expect(r.Status().Update(ctx, &deploy)).To(Succeed())
 
-	_, err = r.reconcileDeployment(ctx, h, "cm-name", "")
+	_, err = r.reconcileDeployment(ctx, r.Client, h, "cm-name", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(r.Get(ctx, key, &svc)).To(Succeed())
 	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI),

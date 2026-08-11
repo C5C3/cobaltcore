@@ -35,6 +35,7 @@ import (
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/healthcheck"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
@@ -94,6 +95,13 @@ type HorizonReconciler struct {
 	// ownership guard's Warning event). Wired from
 	// mgr.GetEventRecorderFor in main.go; tests use record.NewFakeRecorder.
 	Recorder record.EventRecorder
+
+	// Resolver resolves the target cluster a Horizon CR names in
+	// spec.targetClusterRef into the client its children are read and written
+	// with. Nil means always-local: every CR keeps its children on the
+	// management cluster, which is what single-cluster tests and deployments
+	// want.
+	Resolver commonmulticluster.ClusterResolver
 
 	// OperatorNamespace is the Namespace the operator Pod runs in (resolved at
 	// startup by bootstrap.DetectOperatorNamespace). reconcileNetworkPolicy
@@ -175,6 +183,16 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// No finalizer: every owned resource is namespace-scoped and reclaimed by
 	// Kubernetes garbage collection via ownerReferences, so a deleting CR
 	// needs no cleanup pass — skip all work and let GC finish.
+	//
+	// That holds on the management cluster. Children written to a target
+	// cluster carry an owner reference to a CR that does not exist there, and
+	// the target's garbage collector cannot resolve it while the Horizon CRD is
+	// absent — which is what the reference documentation requires target
+	// clusters to be. Deleting such a CR therefore leaves its Deployment,
+	// Service, HTTPRoute, and Secret running on the target, unowned and
+	// unreconciled. That is the remote-ownership gap #837 tracks, and it is the
+	// same leak the other four operators take for everything their finalizers
+	// do not delete.
 	if !horizon.DeletionTimestamp.IsZero() {
 		log.FromContext(ctx).V(1).Info("Horizon resource is being deleted; owned resources are garbage-collected via ownerReferences")
 		r.evictHealthProbe(client.ObjectKeyFromObject(&horizon))
@@ -185,6 +203,19 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// pass leaves status unchanged (no write → no watch event → no
 	// resourceVersion churn).
 	statusBefore := horizon.Status.DeepCopy()
+
+	// Resolve the client every child object of this CR is read and written
+	// with. The embedded client stays on the management cluster (the CR and its
+	// status live there); children carries everything the CR projects into the
+	// target cluster. The deletion short-circuit above already returned, so a
+	// terminating CR never reaches this resolution — it installs no finalizer,
+	// so there is nothing here that could keep it from leaving etcd.
+	children, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, horizon.Spec.TargetClusterRef)
+	if err != nil {
+		horizonSkeleton.MarkFailed(&horizon, "SecretsReady", commonmulticluster.TargetClusterUnavailable, err)
+		return r.updateStatus(ctx, &horizon, statusBefore,
+			ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
+	}
 
 	// Run the sub-reconciler pipeline. Steps are attempted in dependency
 	// order; the first to return a non-zero result or an error short-circuits
@@ -203,7 +234,7 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				res ctrl.Result
 				err error
 			)
-			res, secretKeyHash, err = r.reconcileSecrets(ctx, &horizon)
+			res, secretKeyHash, err = r.reconcileSecrets(ctx, children, &horizon)
 			return res, err
 		}},
 		// reconcileConfig must run before Deployment, which mounts the
@@ -214,14 +245,14 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		// stay stale-True at the new generation.
 		{Name: "Config", Fn: func(ctx context.Context) (ctrl.Result, error) {
 			var err error
-			configMapName, err = r.reconcileConfig(ctx, &horizon)
+			configMapName, err = r.reconcileConfig(ctx, children, &horizon)
 			if err != nil {
 				markConfigFailed(&horizon, err)
 			}
 			return ctrl.Result{}, err
 		}},
 		{Name: "Deployment", Fn: func(ctx context.Context) (ctrl.Result, error) {
-			return r.reconcileDeployment(ctx, &horizon, configMapName, secretKeyHash)
+			return r.reconcileDeployment(ctx, children, &horizon, configMapName, secretKeyHash)
 		}},
 		// Prune stale immutable ConfigMaps after Deployment is ready so all
 		// pods run the new config before old ConfigMaps are deleted.
@@ -229,7 +260,7 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		// config-concern failure, so it flips ConfigReady=False via
 		// markConfigFailed rather than leaving the aggregate Ready stale-True.
 		{Fn: func(ctx context.Context) (ctrl.Result, error) {
-			if err := r.pruneStaleConfigMaps(ctx, &horizon, configMapName); err != nil {
+			if err := r.pruneStaleConfigMaps(ctx, children, &horizon, configMapName); err != nil {
 				markConfigFailed(&horizon, err)
 				return ctrl.Result{}, err
 			}
@@ -249,7 +280,7 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 					Name:          "HTTPRoute",
 					ConditionType: conditionTypeHTTPRouteReady,
 					Fn: func(ctx context.Context, h *horizonv1alpha1.Horizon) (ctrl.Result, error) {
-						return r.reconcileHTTPRoute(ctx, h)
+						return r.reconcileHTTPRoute(ctx, children, h)
 					},
 				},
 				{
@@ -263,14 +294,14 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 					Name:          "HPA",
 					ConditionType: "HPAReady",
 					Fn: func(ctx context.Context, h *horizonv1alpha1.Horizon) (ctrl.Result, error) {
-						return r.reconcileHPA(ctx, h)
+						return r.reconcileHPA(ctx, children, h)
 					},
 				},
 				{
 					Name:          "NetworkPolicy",
 					ConditionType: conditionTypeNetworkPolicyReady,
 					Fn: func(ctx context.Context, h *horizonv1alpha1.Horizon) (ctrl.Result, error) {
-						return r.reconcileNetworkPolicy(ctx, h)
+						return r.reconcileNetworkPolicy(ctx, children, h)
 					},
 				},
 			})

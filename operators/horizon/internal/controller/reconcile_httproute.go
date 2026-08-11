@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/gateway"
@@ -55,7 +56,7 @@ func internalDashboardURL(horizon *horizonv1alpha1.Horizon) string {
 // Gateway matches the desired state, via the shared route flow. It keeps only
 // the service-specific parts: the desired route builder, the backend identity,
 // and the exposure noun for the messages.
-func (r *HorizonReconciler) reconcileHTTPRoute(ctx context.Context, horizon *horizonv1alpha1.Horizon) (ctrl.Result, error) {
+func (r *HorizonReconciler) reconcileHTTPRoute(ctx context.Context, children client.Client, horizon *horizonv1alpha1.Horizon) (ctrl.Result, error) {
 	// buildHorizonHTTPRoute dereferences spec.gateway, so build the desired
 	// route only when external exposure is requested; the flow uses Desired only
 	// on the gateway-enabled path.
@@ -63,7 +64,7 @@ func (r *HorizonReconciler) reconcileHTTPRoute(ctx context.Context, horizon *hor
 	if horizon.Spec.Gateway != nil {
 		desired = buildHorizonHTTPRoute(horizon)
 	}
-	return gateway.ReconcileHTTPRoute(ctx, r.Client, r.Scheme, horizon, gateway.RouteFlowParams{
+	return gateway.ReconcileHTTPRoute(ctx, children, r.Scheme, horizon, gateway.RouteFlowParams{
 		GatewayAPIAvailable: r.gatewayAPIAvailable,
 		GatewayConfigured:   horizon.Spec.Gateway != nil,
 		Desired:             desired,
