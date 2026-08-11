@@ -13,6 +13,7 @@ import (
 	"time"
 
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -44,6 +45,9 @@ type ManagedEnvTestConfig struct {
 	// WebhookReadyTimeout bounds the wait for the webhook server to accept
 	// connections. Defaults to 10s when zero.
 	WebhookReadyTimeout time.Duration
+	// BuildManager substitutes the manager constructor (e.g. a multicluster
+	// manager wrapping the same options). Nil means ctrl.NewManager.
+	BuildManager func(cfg *rest.Config, opts ctrl.Options) (ctrl.Manager, error)
 }
 
 // StartManagedEnvTest starts an envtest API server with the configured CRDs and
@@ -78,9 +82,14 @@ func StartManagedEnvTest(t testing.TB, cfg ManagedEnvTestConfig) (client.Client,
 		t.Fatalf("failed to start %s envtest environment: %v", cfg.Name, err)
 	}
 
+	newManager := cfg.BuildManager
+	if newManager == nil {
+		newManager = ctrl.NewManager
+	}
+
 	// Host the webhook server on the host/port/certDir envtest allocated and
 	// patched into the webhook configurations.
-	mgr, err := ctrl.NewManager(restCfg, ctrl.Options{
+	mgr, err := newManager(restCfg, ctrl.Options{
 		Scheme: cfg.Scheme,
 		WebhookServer: webhook.NewServer(webhook.Options{
 			Host:    env.WebhookInstallOptions.LocalServingHost,

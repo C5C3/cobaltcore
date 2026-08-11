@@ -21,6 +21,7 @@ import (
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -43,6 +44,27 @@ func SetupEnvTest(t testing.TB) (client.Client, context.Context, context.CancelF
 func SetupEnvTestWithCRDs(t testing.TB, scheme *k8sruntime.Scheme, crdDirs []string) (client.Client, context.Context, context.CancelFunc) {
 	t.Helper()
 
+	c, _ := StartEnvTestWithConfig(t, scheme, crdDirs)
+
+	// Registered after the environment's own cleanup, so the LIFO order
+	// cancels the context before the API server goes away.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	return c, ctx, cancel
+}
+
+// StartEnvTestWithConfig starts a bare envtest API server with the given scheme
+// and CRD directories: no manager, no webhooks, no context. It returns a direct
+// (non-caching) client for assertions and the REST config the API server serves
+// on, which a caller turns into a kubeconfig (see KubeconfigBytes) to register
+// this environment as a target cluster. Tear-down is wired via t.Cleanup().
+//
+// This is the second environment in a dual-envtest multicluster test, where the
+// first one hosts the manager and this one only receives objects.
+func StartEnvTestWithConfig(t testing.TB, scheme *k8sruntime.Scheme, crdDirs []string) (client.Client, *rest.Config) {
+	t.Helper()
+
 	env := &envtest.Environment{
 		CRDDirectoryPaths:     crdDirs,
 		ErrorIfCRDPathMissing: true,
@@ -52,26 +74,18 @@ func SetupEnvTestWithCRDs(t testing.TB, scheme *k8sruntime.Scheme, crdDirs []str
 	if err != nil {
 		t.Fatalf("failed to start envtest environment: %v", err)
 	}
-
-	c, err := client.New(cfg, client.Options{Scheme: scheme})
-	if err != nil {
-		// Stop the environment before registering cleanup since client
-		// creation failed before we could register t.Cleanup for env.Stop().
-		if stopErr := env.Stop(); stopErr != nil {
-			t.Logf("additionally failed to stop envtest environment: %v", stopErr)
-		}
-		t.Fatalf("failed to create controller-runtime client: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
-		cancel()
 		if err := env.Stop(); err != nil {
 			t.Errorf("failed to stop envtest environment: %v", err)
 		}
 	})
 
-	return c, ctx, cancel
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		t.Fatalf("failed to create controller-runtime client: %v", err)
+	}
+
+	return c, cfg
 }
 
 // SkipIfEnvTestUnavailable skips the calling test if the KUBEBUILDER_ASSETS
