@@ -311,6 +311,38 @@ type SecretStoreRefSpec struct {
 	Name string `json:"name"`
 }
 
+// TargetClusterRefSpec names the cluster a CR's children are created on. The
+// referenced cluster is registered on the management cluster by a kubeconfig
+// Secret, and the operator resolves the name through its multicluster manager
+// to route every child write there: Deployments, ConfigMaps, Secrets, and the
+// database CRs. The CR itself does not move. It is created, reconciled, and
+// deleted on the management cluster, and so are its status, its finalizers,
+// and the webhooks that admit it.
+//
+// Omitting the ref selects the local cluster, meaning the management cluster
+// the operator itself runs on. The children are created there and the
+// deployment behaves exactly like a single-cluster one, so an existing CR
+// keeps its current behavior without an edit.
+//
+// The ref is immutable once the CR exists. Adding it, removing it, or renaming
+// it is rejected, because each of those strands the children already created
+// on the previously selected cluster.
+//
+// A remote child carries an owner reference to a CR that lives on a different
+// cluster, so that reference dangles. Until issue #837 replaces the owner
+// references with an explicit remote-cleanup path, a target cluster must not
+// have the service CRDs installed: with the CRDs present its garbage collector
+// resolves the owner reference to a missing object and deletes the children.
+// Without them it cannot resolve the reference at all and leaves them alone.
+type TargetClusterRefSpec struct {
+	// Name is the registered target cluster's name. It must be a non-empty
+	// DNS-1123 subdomain (the Kubernetes object-name grammar), matching
+	// SecretStoreRefSpec.Name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	Name string `json:"name"`
+}
+
 // PolicySpec defines oslo.policy override configuration for an OpenStack service.
 // The two XValidation rules below reject empty rule names and empty rule values
 // at the schema layer, mirroring policy.ValidatePolicyRules in the admission
