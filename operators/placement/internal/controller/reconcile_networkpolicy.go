@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/networkpolicy"
 	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
@@ -29,7 +30,7 @@ const (
 // deployment matches the desired state, via the shared network-policy flow. It
 // keeps only the service-specific part: the desired policy builder with its
 // database and cache egress.
-func (r *PlacementReconciler) reconcileNetworkPolicy(ctx context.Context, placement *placementv1alpha1.Placement) (ctrl.Result, error) {
+func (r *PlacementReconciler) reconcileNetworkPolicy(ctx context.Context, children client.Client, placement *placementv1alpha1.Placement) (ctrl.Result, error) {
 	// buildPlacementNetworkPolicy is only applied on the enabled+non-empty path;
 	// build it lazily so a nil or empty-ingress spec takes the delete or
 	// fail-closed path without a wasted build.
@@ -41,7 +42,7 @@ func (r *PlacementReconciler) reconcileNetworkPolicy(ctx context.Context, placem
 			desired = buildPlacementNetworkPolicy(placement, r.OperatorNamespace)
 		}
 	}
-	return networkpolicy.Reconcile(ctx, r.Client, r.Scheme, placement, networkpolicy.FlowParams{
+	return networkpolicy.Reconcile(ctx, children, r.Scheme, placement, networkpolicy.FlowParams{
 		Configured:         placement.Spec.NetworkPolicy != nil,
 		IngressSourceCount: ingressCount,
 		Desired:            desired,

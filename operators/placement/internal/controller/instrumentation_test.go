@@ -136,12 +136,12 @@ func TestPipelineStepNamesAreMapped(t *testing.T) {
 	// The parallel-group step carries no name of its own by design: it
 	// self-instruments its members (see commonreconcile.Step), which are
 	// collected from parallelSteps below.
-	for _, step := range r.pipelineSteps(testPlacement()) {
+	for _, step := range r.pipelineSteps(r.Client, testPlacement()) {
 		if step.Name != "" {
 			names = append(names, step.Name)
 		}
 	}
-	for _, sub := range r.parallelSteps() {
+	for _, sub := range r.parallelSteps(r.Client) {
 		names = append(names, sub.Name)
 		g.Expect(subReconcilerConditionTypes[sub.Name]).To(Equal(sub.ConditionType),
 			"parallel member %q reports condition %q but the metrics map says %q",

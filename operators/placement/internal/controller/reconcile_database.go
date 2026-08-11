@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/database"
@@ -63,12 +64,12 @@ const placementDBSyncScript = "placement-manage --config-file " + placementConfF
 // The release rules the phased flow enforces on its way in — no downgrades, no
 // multi-release jumps — are enforced by gateReleaseTransition instead, so an
 // unsupported transition is rejected before any Job runs.
-func (r *PlacementReconciler) reconcileDatabase(ctx context.Context, placement *placementv1alpha1.Placement, configMapName string) (ctrl.Result, error) {
+func (r *PlacementReconciler) reconcileDatabase(ctx context.Context, children client.Client, placement *placementv1alpha1.Placement, configMapName string) (ctrl.Result, error) {
 	// Managed/brownfield provisioning: MariaDB cluster gate, Database/User/Grant
 	// ensure, Dynamic-credentials skip of the User/Grant. A non-zero result means
 	// the flow set a not-ready condition and we must return it unchanged.
 	res, err := database.ReconcileProvision(ctx, database.ProvisionFlowParams{
-		Client:        r.Client,
+		Client:        children,
 		Scheme:        r.Scheme,
 		Owner:         placement,
 		InstanceName:  placement.Name,
@@ -98,7 +99,7 @@ func (r *PlacementReconciler) reconcileDatabase(ctx context.Context, placement *
 	// (SchemaCheckCommand nil). InstalledRelease is promoted to
 	// spec.openStackRelease on Job success.
 	res, err = database.ReconcileSyncJobs(ctx, database.SyncFlowParams{
-		Client:   r.Client,
+		Client:   children,
 		Scheme:   r.Scheme,
 		Recorder: r.Recorder,
 		Owner:    placement,

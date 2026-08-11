@@ -55,7 +55,7 @@ func TestReconcileNetworkPolicy_DisabledDeletesAndNotRequired(t *testing.T) {
 	stale.Namespace = "default"
 	r := newPlacementTestReconciler(placement, stale)
 
-	res, err := r.reconcileNetworkPolicy(context.Background(), placement)
+	res, err := r.reconcileNetworkPolicy(context.Background(), r.Client, placement)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -76,7 +76,7 @@ func TestReconcileNetworkPolicy_EnabledAppliesPolicy(t *testing.T) {
 	r := newNetworkPolicyTestReconciler(placement)
 	r.OperatorNamespace = "placement-system"
 
-	res, err := r.reconcileNetworkPolicy(context.Background(), placement)
+	res, err := r.reconcileNetworkPolicy(context.Background(), r.Client, placement)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -98,7 +98,7 @@ func TestReconcileNetworkPolicy_EmptyIngressFailsClosed(t *testing.T) {
 	placement.Spec.NetworkPolicy = &placementv1alpha1.NetworkPolicySpec{}
 	r := newPlacementTestReconciler(placement)
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), placement)
+	_, err := r.reconcileNetworkPolicy(context.Background(), r.Client, placement)
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("refusing to create NetworkPolicy that would allow all ingress"))

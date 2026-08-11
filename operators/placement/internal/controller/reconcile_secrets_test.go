@@ -43,7 +43,7 @@ func TestReconcileSecrets_StoreGate(t *testing.T) {
 			}
 			r := newPlacementTestReconciler(objs...)
 
-			res, digest, err := r.reconcileSecrets(context.Background(), placement)
+			res, digest, err := r.reconcileSecrets(context.Background(), r.Client, placement)
 
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -102,7 +102,7 @@ func TestReconcileSecrets_CredentialGates(t *testing.T) {
 			objs := append([]client.Object{placement, readyClusterSecretStore(openBaoClusterStoreName)}, tc.secrets...)
 			r := newPlacementTestReconciler(objs...)
 
-			res, digest, err := r.reconcileSecrets(context.Background(), placement)
+			res, digest, err := r.reconcileSecrets(context.Background(), r.Client, placement)
 
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -122,7 +122,7 @@ func TestReconcileSecrets_AllPresentReturnsDigest(t *testing.T) {
 		readyClusterSecretStore(openBaoClusterStoreName),
 		placementDBSecret(), placementServiceUserSecret("svc-pw"))
 
-	res, digest, err := r.reconcileSecrets(context.Background(), placement)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, placement)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -135,7 +135,7 @@ func TestReconcileSecrets_AllPresentReturnsDigest(t *testing.T) {
 
 	// A second pass returns the identical digest (no dependency on iteration
 	// order or wall-clock).
-	_, digest2, err := r.reconcileSecrets(context.Background(), placement)
+	_, digest2, err := r.reconcileSecrets(context.Background(), r.Client, placement)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(digest2).To(Equal(digest))
 
@@ -144,7 +144,7 @@ func TestReconcileSecrets_AllPresentReturnsDigest(t *testing.T) {
 	rotated := newPlacementTestReconciler(placement,
 		readyClusterSecretStore(openBaoClusterStoreName),
 		placementDBSecret(), placementServiceUserSecret("rotated-pw"))
-	_, rotatedDigest, err := rotated.reconcileSecrets(context.Background(), placement)
+	_, rotatedDigest, err := rotated.reconcileSecrets(context.Background(), rotated.Client, placement)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rotatedDigest).NotTo(Equal(digest))
 }
@@ -180,7 +180,7 @@ func TestReconcileSecrets_ReadErrorPropagatesWrapped(t *testing.T) {
 		Build()
 	r := &PlacementReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
 
-	res, digest, err := r.reconcileSecrets(context.Background(), placement)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, placement)
 
 	g.Expect(err).To(MatchError(boom), "the client error must stay unwrappable")
 	g.Expect(err).To(MatchError(ContainSubstring("reading service-user password value:")))

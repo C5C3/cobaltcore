@@ -61,7 +61,7 @@ const dbConnectionPlaceholder = "mysql+pymysql://placeholder"
 // the database and deployment steps. Config failures flip SecretsReady=False
 // (the Config→SecretsReady mapping the sibling operators use) so the aggregate
 // Ready cannot stay stale-True at the new generation.
-func (r *PlacementReconciler) reconcileConfig(ctx context.Context, placement *placementv1alpha1.Placement) (ctrl.Result, string, error) {
+func (r *PlacementReconciler) reconcileConfig(ctx context.Context, children client.Client, placement *placementv1alpha1.Placement) (ctrl.Result, string, error) {
 	// The extraConfig ownership guard is a pure function of the spec. The
 	// ExtraConfigHealthy condition is informational and deliberately stays out of
 	// subConditionTypes and subReconcilerConditionTypes.
@@ -82,7 +82,7 @@ func (r *PlacementReconciler) reconcileConfig(ctx context.Context, placement *pl
 	// Handle PolicyOverrides: render policy.yaml and wire oslo_policy.policy_file.
 	var policyYAML string
 	if placement.Spec.PolicyOverrides != nil {
-		rendered, err := buildPolicyYAML(ctx, r.Client, placement)
+		rendered, err := buildPolicyYAML(ctx, children, placement)
 		if err != nil {
 			markConfigFailed(placement, err)
 			return ctrl.Result{}, "", fmt.Errorf("building policy: %w", err)
@@ -103,13 +103,13 @@ func (r *PlacementReconciler) reconcileConfig(ctx context.Context, placement *pl
 		data["logging.conf"] = config.RenderLoggingConf(logging.Level)
 	}
 
-	configMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, placement,
+	configMapName, err := config.CreateImmutableConfigMap(ctx, children, r.Scheme, placement,
 		placement.Name+"-config", placement.Namespace, data)
 	if err != nil {
 		markConfigFailed(placement, err)
 		return ctrl.Result{}, "", fmt.Errorf("creating config ConfigMap: %w", err)
 	}
-	if err := config.PruneImmutableConfigMaps(ctx, r.Client, placement, config.PruneOptions{
+	if err := config.PruneImmutableConfigMaps(ctx, children, placement, config.PruneOptions{
 		BaseName:    placement.Name + "-config",
 		Namespace:   placement.Namespace,
 		CurrentName: configMapName,

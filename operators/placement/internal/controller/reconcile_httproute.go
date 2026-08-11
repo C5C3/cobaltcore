@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/gateway"
@@ -53,7 +54,7 @@ func internalPlacementURL(placement *placementv1alpha1.Placement) string {
 // through a Gateway matches the desired state, via the shared route flow. It
 // keeps only the service-specific parts: the desired route builder, the backend
 // identity, and the exposure noun for the messages.
-func (r *PlacementReconciler) reconcileHTTPRoute(ctx context.Context, placement *placementv1alpha1.Placement) (ctrl.Result, error) {
+func (r *PlacementReconciler) reconcileHTTPRoute(ctx context.Context, children client.Client, placement *placementv1alpha1.Placement) (ctrl.Result, error) {
 	// buildPlacementHTTPRoute dereferences spec.gateway, so build the desired
 	// route only when external exposure is requested; the flow uses Desired only
 	// on the gateway-enabled path.
@@ -61,7 +62,7 @@ func (r *PlacementReconciler) reconcileHTTPRoute(ctx context.Context, placement 
 	if placement.Spec.Gateway != nil {
 		desired = buildPlacementHTTPRoute(placement)
 	}
-	return gateway.ReconcileHTTPRoute(ctx, r.Client, r.Scheme, placement, gateway.RouteFlowParams{
+	return gateway.ReconcileHTTPRoute(ctx, children, r.Scheme, placement, gateway.RouteFlowParams{
 		GatewayAPIAvailable: r.gatewayAPIAvailable,
 		GatewayConfigured:   placement.Spec.Gateway != nil,
 		Desired:             desired,

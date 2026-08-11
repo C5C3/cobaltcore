@@ -9,6 +9,7 @@ import (
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/deployment"
 	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
@@ -17,12 +18,12 @@ import (
 // reconcileHPA ensures the HorizontalPodAutoscaler for the Placement API
 // deployment matches the desired state, via the shared HPA flow. It keeps only
 // the service-specific desired HPA builder.
-func (r *PlacementReconciler) reconcileHPA(ctx context.Context, placement *placementv1alpha1.Placement) (ctrl.Result, error) {
+func (r *PlacementReconciler) reconcileHPA(ctx context.Context, children client.Client, placement *placementv1alpha1.Placement) (ctrl.Result, error) {
 	var desired *autoscalingv2.HorizontalPodAutoscaler
 	if placement.Spec.Autoscaling != nil {
 		desired = buildPlacementHPA(placement)
 	}
-	return deployment.ReconcileHPA(ctx, r.Client, r.Scheme, placement, deployment.HPAFlowParams{
+	return deployment.ReconcileHPA(ctx, children, r.Scheme, placement, deployment.HPAFlowParams{
 		Enabled:       placement.Spec.Autoscaling != nil,
 		Desired:       desired,
 		Name:          subResourceName(placement),
