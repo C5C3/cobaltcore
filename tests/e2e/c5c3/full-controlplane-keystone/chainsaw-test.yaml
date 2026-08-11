@@ -812,6 +812,22 @@ spec:
           assert_eq "dedicated OpenBaoCluster Available" "True" \
             "$(kubectl get openbaoclusters.openbao.org "${BARBICAN_BAO}" -n "${CP_NS}" \
               -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
+          # The API-server egress allowance the operator resolves from the live
+          # cluster's EndpointSlice default/kubernetes. APIServerNetworkReady is the
+          # openbao-operator's own verdict on it, and it is Unknown (reason
+          # APIServerEndpointIPsRecommended) whenever only the in-cluster service VIP
+          # is allowed — the posture kindnet stops honouring from kind 0.32 onwards,
+          # where the instance then loses the API server and wedges its raft storage.
+          assert_eq "dedicated OpenBaoCluster APIServerNetworkReady" "True" \
+            "$(kubectl get openbaoclusters.openbao.org "${BARBICAN_BAO}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='APIServerNetworkReady')].status}")"
+          BAO_API_IPS="$(kubectl get openbaoclusters.openbao.org "${BARBICAN_BAO}" -n "${CP_NS}" \
+            -o 'jsonpath={.spec.network.apiServerEndpointIPs[*]}')"
+          if [ -z "${BAO_API_IPS}" ]; then
+            echo "ERROR: dedicated OpenBaoCluster carries no spec.network.apiServerEndpointIPs"
+            exit 1
+          fi
+          echo "OK: dedicated OpenBaoCluster pins API-server endpoint IPs ('${BAO_API_IPS}')"
           # The image version is deliberately NOT asserted: it is a Renovate-managed
           # pin in the operator (defaultOpenBaoVersion), and a bump PR must not have
           # to edit an e2e fixture to stay green.

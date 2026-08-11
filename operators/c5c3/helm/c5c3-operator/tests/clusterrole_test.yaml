@@ -1,11 +1,12 @@
 # ClusterRole RBAC rules unit tests.
 # Rules mirror the +kubebuilder:rbac markers on the ControlPlane and
 # CredentialRotation reconcilers (deduplicated), plus the leases rule for
-# leader election — 30 rules total (clustersecretstores read-only and
+# leader election — 31 rules total (clustersecretstores read-only and
 # secretstores read-write are separate rules since the operator provisions the
 # per-tenant SecretStore; the namespaces rule lets reconcileNamespaces ensure the
 # per-service dedicated namespaces; the clusterroles rule is bind-only on the
-# single name system:auth-delegator).
+# single name system:auth-delegator; the endpointslices rule is get-only, for the
+# API-server addresses a dedicated OpenBao instance needs egress to).
 suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
@@ -14,7 +15,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 30
+          count: 31
 
   - it: should grant full CRUD on controlplanes
     asserts:
@@ -581,6 +582,31 @@ tests:
               - watch
               - create
               - delete
+
+  - it: should grant get-only on endpointslices
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - discovery.k8s.io
+            resources:
+              - endpointslices
+            verbs:
+              - get
+      # list and watch would cover every EndpointSlice in the cluster, and the
+      # operator reads exactly one object under a well-known name.
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - discovery.k8s.io
+            resources:
+              - endpointslices
+            verbs:
+              - get
+              - list
+              - watch
 
   - it: should restrict events to create and patch only
     asserts:
