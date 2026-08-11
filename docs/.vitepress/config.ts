@@ -143,6 +143,18 @@ export default defineConfig({
             ],
           },
           {
+            text: 'Barbican',
+            link: '/reference/barbican/',
+            collapsed: true,
+            items: [
+              { text: 'Overview', link: '/reference/barbican/' },
+              { text: 'CRD', link: '/reference/barbican/barbican-crd' },
+              { text: 'Secret Store CRD', link: '/reference/barbican/barbican-secret-store-crd' },
+              { text: 'Controller Events', link: '/reference/barbican/barbican-events' },
+              { text: 'Reconciler Architecture', link: '/reference/barbican/barbican-reconciler' },
+            ],
+          },
+          {
             text: 'c5c3 (ControlPlane)',
             collapsed: true,
             items: [
