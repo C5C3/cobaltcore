@@ -62,6 +62,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_PREFIX: ghcr.io/c5c3
   KIND_CLUSTER: forge
+  KIND_VERSION: v0.32.0
   CONTROLLER_GEN_VERSION: v0.21.0
   GOFUMPT_VERSION: v0.10.0
   GOLANGCI_LINT_VERSION: v2.12.2
@@ -70,7 +71,14 @@ env:
 `REGISTRY` and `IMAGE_PREFIX` are referenced by the `build-and-push`, `helm-push`,
 `e2e-operator`, and `tempest` jobs to construct image names and registry URLs.
 `KIND_CLUSTER` is the single source of truth for every E2E job's kind cluster name
-(mirroring the `CLUSTER_NAME` default in `hack/deploy-infra.sh`).
+(mirroring the `CLUSTER_NAME` default in `hack/deploy-infra.sh`). `KIND_VERSION` is
+the kind binary every E2E job creates its cluster with, passed to
+`helm/kind-action`'s `version` input. The action defaults to v0.31.0, whose kindnetd
+does not enforce NetworkPolicy egress against the post-DNAT destination; pinning it
+keeps CI on the enforcing build and in lockstep with the `KIND_VERSION` in
+`hack/install-test-deps.sh` that local development installs. Renovate groups the two
+pins so they bump in one pull request, and
+`tests/unit/renovate/workflow_pins_custommanager_test.sh` asserts they agree.
 `CONTROLLER_GEN_VERSION` is used by `verify-codegen` to pin controller-gen to a specific
 version. `GOFUMPT_VERSION` is used by `format-check` to pin gofumpt to a specific version; the same version is mirrored in the Makefile (`GOFUMPT_VERSION ?= v0.10.0`) so
 that `make fmt` and `make format-check` use a consistent version locally.
@@ -555,7 +563,7 @@ validates health of all operators, CRs, and ExternalSecrets.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
-| 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
+| 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) at `KIND_VERSION` |
 | 4 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
 | 5 | `chainsaw test` | Runs E2E tests from `tests/e2e/infrastructure/` |
 | 6 | `make deploy-infra` (re-run) | Unchanged-parameter re-run (no `SKIP_KIND_CREATE`) — exercises the script's existing-cluster detection |
@@ -631,7 +639,7 @@ Chainsaw E2E test suites.
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
-| 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
+| 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) at `KIND_VERSION` |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
 | 5 | `kind load docker-image` | Loads operator, 2025.2 service, 2025.2-upgraded, and 2026.1 service images into kind |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
@@ -709,7 +717,7 @@ per-suite test directories explicitly.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
+| 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) at `KIND_VERSION` |
 | 3 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
 | 4 | `kind load docker-image` | Loads keystone operator and 2025.2 service images into kind |
 | 5 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true` |
@@ -775,7 +783,7 @@ genuine regression of the kind-only Quick Start observability story.
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
+| 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) at `KIND_VERSION` |
 | 3 | `load-e2e-images` composite | Restores prebuilt operator and service images from the build-e2e-images artifact |
 | 4 | `kind load docker-image` | Loads operator and service images into kind |
 | 5 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_PROMETHEUS: "true"` |
@@ -852,7 +860,7 @@ one under review — which is why the `e2e_controlplane` path filter also watche
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
-| 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
+| 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) at `KIND_VERSION` |
 | 3 | `load-e2e-images` composite | Restores `keystone-operator:dev`, `c5c3-operator:dev`, `keystone:2025.2`, `tempest:2025.2` from GHCR |
 | 4 | `kind load docker-image` | Loads the four images into kind |
 | 5 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=controlplane-keystone` |
@@ -947,7 +955,7 @@ these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
-| 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) |
+| 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`forge`) at `KIND_VERSION` |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
 | 5 | `kind load docker-image` | Loads keystone operator and service images into kind |
 | 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
