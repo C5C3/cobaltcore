@@ -46,7 +46,7 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # fixtures (00-, 01-) predate and are intentionally NOT generated. Bumping this
 # value requires adding the matching Fixture entry AND the matching
 # `file: <name>` line in chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 29
+_EXPECTED_FIXTURE_COUNT = 30
 
 
 def _load_generator() -> types.ModuleType:

@@ -114,3 +114,13 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'domainChoices')): true
+  # spec.targetClusterRef.name empty must be rejected by the MinLength=1 marker
+  # on the shared TargetClusterRefSpec.
+  - try:
+    - apply:
+        file: 11-targetclusterref-empty-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'targetClusterRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true

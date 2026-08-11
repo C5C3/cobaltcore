@@ -709,6 +709,21 @@ FIXTURES: list[Fixture] = [
 # Admission must reject this CR with an $error referencing the substring
 # "no such section in the keystone 2025.2 option catalog".""",
     ),
+    Fixture(
+        filename="26-targetclusterref-empty-name.yaml",
+        name="invalid-targetclusterref-empty-name",
+        trailing="""\
+  targetClusterRef:
+    name: ""
+""",
+        comment="""\
+# Keystone CR whose spec.targetClusterRef.name is empty. The shared
+# TargetClusterRefSpec.Name carries MinLength=1, so an unnamed target (which
+# names no registered cluster for the CR's children) is rejected at the CRD
+# schema layer before the webhook mirror in validation.TargetClusterRef runs.
+# Admission must reject this CR with an $error referencing the substring
+# "targetClusterRef.name".""",
+    ),
 ]
 
 
