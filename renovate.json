@@ -304,6 +304,19 @@
         "/\\.github/workflows/.*\\.yaml$/"
       ],
       "matchStrings": [
+        "KIND_VERSION:\\s*\"?(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"?"
+      ],
+      "depNameTemplate": "kubernetes-sigs/kind",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "kubernetes-sigs/kind",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/\\.github/workflows/.*\\.yaml$/"
+      ],
+      "matchStrings": [
         "YQ_VERSION:\\s*\"?(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"?"
       ],
       "depNameTemplate": "mikefarah/yq",
@@ -521,7 +534,6 @@
       "matchPackageNames": [
         "kyverno/chainsaw",
         "fluxcd/flux2",
-        "kubernetes-sigs/kind",
         "kubernetes/kubernetes"
       ],
       "matchUpdateTypes": ["major"],
@@ -533,13 +545,34 @@
       "matchPackageNames": [
         "kyverno/chainsaw",
         "fluxcd/flux2",
-        "kubernetes-sigs/kind",
         "kubernetes/kubernetes"
       ],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "test tooling (install-test-deps)"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "hack/install-test-deps.sh",
+        ".github/workflows/ci.yaml"
+      ],
+      "matchPackageNames": ["kubernetes-sigs/kind"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "hack/install-test-deps.sh",
+        ".github/workflows/ci.yaml"
+      ],
+      "matchPackageNames": ["kubernetes-sigs/kind"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "minimumReleaseAge": "3 days",
+      "groupName": "kind"
     },
     {
       "matchManagers": ["custom.regex"],
