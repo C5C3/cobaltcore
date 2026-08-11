@@ -41,9 +41,13 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 ```
 
 Follow that tutorial through to its final **Verify** step, so a `ControlPlane`
-CR named `controlplane` is `Ready` in the `openstack` namespace. That tutorial's
-CR declares no `services.barbican`; step 1 below adds it. Every resource name in
-the examples that follow is one this devstack produces.
+CR named `controlplane` is `Ready` in the `openstack` namespace. Its Step 3 CR
+already carries the `services.barbican` block step 1 shows, so on a devstack
+brought up from it the service is reconciled and step 1 reads as a check. A
+ControlPlane created before that block existed, or from the bundled minimal CR
+(`deploy/kind/controlplane/controlplane.yaml`, keystone and horizon only), gets
+the block added in step 1. Every resource name in the examples that follow is
+one this devstack produces.
 :::
 
 1. **The `python-barbicanclient` plugin on `PATH`.** The `openstack secret`
@@ -97,9 +101,10 @@ from the Keystone child's naming convention; none of them is set here.
 
 On the managed shared database the Barbican DB credential is engine-issued, and
 `setup-database-tenant.sh` provisions one engine connection and one role per
-declared service. It skips a service the ControlPlane does not declare, so the
-run from the tutorial's Step 4 provisioned no Barbican pair. Re-run it now that
-the block exists:
+declared service. It reads the live ControlPlane spec on every run and skips a
+service the CR does not declare, so a tenant setup that ran before
+`services.barbican` was declared provisioned no Barbican pair. Re-run it in that
+case:
 
 ```bash
 export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
@@ -108,12 +113,13 @@ deploy/openbao/bootstrap/setup-database-tenant.sh openstack controlplane
 unset BAO_TOKEN
 ```
 
-The script is idempotent: it refreshes the pairs of the other services in place
-and adds `database/mariadb/config/barbican-openstack` and
-`database/mariadb/roles/barbican-openstack`. Skipping it parks the next step on
-`BarbicanReady=False` with reason `WaitingForBarbicanDBCredential`, and the
-message names the `database/mariadb/creds/barbican-openstack` path it is waiting
-for.
+The script is idempotent: every config and role write is an upsert, so a repeat
+refreshes the pairs of the other services in place and writes
+`database/mariadb/config/barbican-openstack` and
+`database/mariadb/roles/barbican-openstack`, new when the earlier run skipped
+Barbican. Without that pair the next step parks on `BarbicanReady=False` with
+reason `WaitingForBarbicanDBCredential`, and the message names the
+`database/mariadb/creds/barbican-openstack` path it is waiting for.
 
 ## Step 3 — Watch BarbicanReady
 

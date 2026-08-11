@@ -136,7 +136,10 @@ credentials your operators issued.
 
 ## 3. Declare the Barbican service
 
-Add the service block to the `ControlPlane` the tutorial created:
+On a devstack built from the tutorial, `services.barbican` is already declared
+with `secretStore: {dedicated: {}}`, so this edit replaces the `dedicated` block
+with the `external` one. A ControlPlane that does not declare the service yet
+adds the whole block:
 
 ```bash
 kubectl edit controlplane controlplane -n openstack
@@ -158,6 +161,18 @@ spec:
           # explicitly. Get it right the first time (see below).
 ```
 
+On a ControlPlane that already ran the dedicated mode, this edit changes the
+store's mode, a field the `BarbicanSecretStore` CRD freezes. The reconciler
+answers that by deleting `controlplane-barbican-store` and recreating it against
+the external server on the next pass, and reports `BarbicanReady=False` with
+reason `RecreatingBarbicanSecretStore` in between. The dedicated instance
+`controlplane-barbican-bao` is left in place: nothing in the switch tears it
+down, and the c5c3-operator only removes it when `services.barbican` is dropped
+under both deletion annotations. It keeps running, with the material Barbican
+wrote through the old store, until you delete it by hand. What that deletion
+destroys is spelled out in step 6 of
+[Run Barbican on a Dedicated OpenBao](./barbican-dedicated-openbao.md).
+
 `external` and `dedicated` are mutually exclusive, and a block naming neither is
 rejected at admission. Two fields are worth setting deliberately:
 
@@ -178,8 +193,10 @@ rejected at admission. Two fields are worth setting deliberately:
 
 On the managed shared database the Barbican DB credential is engine-issued, and
 `setup-database-tenant.sh` provisions an engine connection and role only for the
-services the ControlPlane declares. The run from the tutorial's Step 4 predates
-the block you just added, so repeat it:
+services the ControlPlane declares. It reads the live spec on every run, so a
+tenant setup that ran before `services.barbican` was declared provisioned no
+Barbican pair. Re-run it in that case; the config and role writes are upserts,
+so a repeat on an already-onboarded ControlPlane refreshes the pair in place:
 
 ```bash
 export BAO_TOKEN=$(kubectl get secret openbao-init-keys -n shared-services \
