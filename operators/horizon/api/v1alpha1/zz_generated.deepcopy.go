@@ -101,6 +101,11 @@ func (in *HorizonSpec) DeepCopyInto(out *HorizonSpec) {
 		*out = new(types.SecretStoreRefSpec)
 		**out = **in
 	}
+	if in.TargetClusterRef != nil {
+		in, out := &in.TargetClusterRef, &out.TargetClusterRef
+		*out = new(types.TargetClusterRefSpec)
+		**out = **in
+	}
 	if in.Gateway != nil {
 		in, out := &in.Gateway, &out.Gateway
 		*out = new(GatewaySpec)
