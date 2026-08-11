@@ -143,7 +143,7 @@ func effectiveDBPurge(spec *glancev1alpha1.DBPurgeSpec) glancev1alpha1.DBPurgeSp
 // controls, and reports on the newest that reached a terminal state. A failed
 // run surfaces as DBPurgeReady=False plus a Warning event; every terminal run
 // also feeds the db-purge metric pair exactly once per Job UID.
-func (r *GlanceReconciler) reconcileDBPurge(ctx context.Context, glance *glancev1alpha1.Glance, configMapName string) (ctrl.Result, error) {
+func (r *GlanceReconciler) reconcileDBPurge(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance, configMapName string) (ctrl.Result, error) {
 	purge := effectiveDBPurge(glance.Spec.DBPurge)
 
 	// A failed ensure returns the wrapped error and sets no condition, matching
@@ -151,12 +151,12 @@ func (r *GlanceReconciler) reconcileDBPurge(ctx context.Context, glance *glancev
 	// DBPurgeReady then stays absent or stale, which already keeps the aggregate
 	// Ready False, and the pipeline attributes the error to this step.
 	cronJob := dbPurgeCronJob(glance, configMapName)
-	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, glance, cronJob); err != nil {
+	if err := job.EnsureCronJob(ctx, children, r.Scheme, glance, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring db purge CronJob: %w", err)
 	}
 
 	var jobs batchv1.JobList
-	if err := r.List(ctx, &jobs, client.InNamespace(glance.Namespace),
+	if err := children.List(ctx, &jobs, client.InNamespace(glance.Namespace),
 		client.MatchingLabels(commonLabels(glance))); err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing db purge Jobs: %w", err)
 	}
@@ -211,7 +211,8 @@ func (r *GlanceReconciler) reconcileDBPurge(ctx context.Context, glance *glancev
 	// Emit the terminal metrics for the observed run. The shared helper dedupes on
 	// the Job UID via an annotation on the Glance CR, so a run is counted once no
 	// matter how many passes observe it, and a nil observed (no terminal run yet)
-	// is a no-op.
+	// is a no-op. The annotation lands on the owner CR, which is why the patch
+	// goes through the embedded client rather than children.
 	job.RecordJobTerminalState(ctx, r.Client, r.Recorder, glance, "db-purge", observed,
 		"DBPurgeMetricEmissionDeferred",
 		func(result string, duration time.Duration) {

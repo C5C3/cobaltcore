@@ -39,7 +39,7 @@ func TestReconcileNetworkPolicy_DisabledDeletesAndNotRequired(t *testing.T) {
 	stale.Namespace = "default"
 	r := newGlanceTestReconciler(glance, stale)
 
-	res, err := r.reconcileNetworkPolicy(context.Background(), glance, backendsProjection{})
+	res, err := r.reconcileNetworkPolicy(context.Background(), r.Client, glance, backendsProjection{})
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -59,7 +59,7 @@ func TestReconcileNetworkPolicy_EmptyIngressFailsClosed(t *testing.T) {
 	glance.Spec.NetworkPolicy = &glancev1alpha1.NetworkPolicySpec{}
 	r := newGlanceTestReconciler(glance)
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), glance, backendsProjection{})
+	_, err := r.reconcileNetworkPolicy(context.Background(), r.Client, glance, backendsProjection{})
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("refusing to create NetworkPolicy that would allow all ingress"))

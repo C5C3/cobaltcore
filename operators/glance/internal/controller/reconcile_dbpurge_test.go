@@ -161,7 +161,7 @@ func TestReconcileDBPurge_CreatesCronJobWithDefaults(t *testing.T) {
 	glance := testGlance() // spec.dbPurge is nil
 	r := newGlanceTestReconciler(glance)
 
-	res, err := r.reconcileDBPurge(context.Background(), glance, dbPurgeConfigMapName)
+	res, err := r.reconcileDBPurge(context.Background(), r.Client, glance, dbPurgeConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue(), "the purge step never requeues on its own")
 
@@ -255,7 +255,7 @@ func TestReconcileDBPurge_HonorsSpecKnobs(t *testing.T) {
 	}
 	r := newGlanceTestReconciler(glance)
 
-	_, err := r.reconcileDBPurge(context.Background(), glance, dbPurgeConfigMapName)
+	_, err := r.reconcileDBPurge(context.Background(), r.Client, glance, dbPurgeConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -291,7 +291,7 @@ func TestReconcileDBPurge_SuspendedReportsItsOwnReason(t *testing.T) {
 	glance.Spec.DBPurge = &glancev1alpha1.DBPurgeSpec{Suspend: true}
 	r := newGlanceTestReconciler(glance)
 
-	_, err := r.reconcileDBPurge(context.Background(), glance, dbPurgeConfigMapName)
+	_, err := r.reconcileDBPurge(context.Background(), r.Client, glance, dbPurgeConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := conditions.GetCondition(glance.Status.Conditions, conditionTypeDBPurgeReady)
@@ -326,7 +326,7 @@ func TestReconcileDBPurge_SuspendedAfterAFailedRunStaysTrue(t *testing.T) {
 	recorder, ok := r.Recorder.(*record.FakeRecorder)
 	g.Expect(ok).To(BeTrue())
 
-	_, err := r.reconcileDBPurge(context.Background(), glance, dbPurgeConfigMapName)
+	_, err := r.reconcileDBPurge(context.Background(), r.Client, glance, dbPurgeConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := conditions.GetCondition(glance.Status.Conditions, conditionTypeDBPurgeReady)
@@ -381,7 +381,7 @@ func TestReconcileDBPurge_AppliesForAnOverlongGlanceName(t *testing.T) {
 	glance.Name = strings.Repeat("g", glancev1alpha1.MaxGlanceNameLength+20)
 	r := newGlanceTestReconciler(glance)
 
-	_, err := r.reconcileDBPurge(context.Background(), glance, dbPurgeConfigMapName)
+	_, err := r.reconcileDBPurge(context.Background(), r.Client, glance, dbPurgeConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -407,7 +407,7 @@ func TestReconcileDBPurge_ProjectsDBTLSMaterialWhenEnabled(t *testing.T) {
 	}
 	r := newGlanceTestReconciler(glance)
 
-	_, err := r.reconcileDBPurge(context.Background(), glance, dbPurgeConfigMapName)
+	_, err := r.reconcileDBPurge(context.Background(), r.Client, glance, dbPurgeConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -439,7 +439,7 @@ func TestReconcileDBPurge_FailedJobSetsConditionEventAndMetric(t *testing.T) {
 	recorder, ok := r.Recorder.(*record.FakeRecorder)
 	g.Expect(ok).To(BeTrue())
 
-	_, err := r.reconcileDBPurge(context.Background(), glance, dbPurgeConfigMapName)
+	_, err := r.reconcileDBPurge(context.Background(), r.Client, glance, dbPurgeConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred(),
 		"a failed run is a status signal, not a reconcile error: retrying the pass cannot fix it")
 
@@ -483,7 +483,7 @@ func TestReconcileDBPurge_SucceededJobKeepsConditionTrue(t *testing.T) {
 		batchv1.JobComplete, now)
 	r := newGlanceTestReconciler(glance, cronJob, older, newer)
 
-	_, err := r.reconcileDBPurge(context.Background(), glance, dbPurgeConfigMapName)
+	_, err := r.reconcileDBPurge(context.Background(), r.Client, glance, dbPurgeConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := conditions.GetCondition(glance.Status.Conditions, conditionTypeDBPurgeReady)
@@ -518,7 +518,7 @@ func TestReconcileDBPurge_IgnoresJobsItDoesNotControl(t *testing.T) {
 	foreign.OwnerReferences = nil
 	r := newGlanceTestReconciler(glance, cronJob, foreign)
 
-	_, err := r.reconcileDBPurge(context.Background(), glance, dbPurgeConfigMapName)
+	_, err := r.reconcileDBPurge(context.Background(), r.Client, glance, dbPurgeConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := conditions.GetCondition(glance.Status.Conditions, conditionTypeDBPurgeReady)
@@ -542,7 +542,7 @@ func TestReconcileDBPurge_RunningJobLeavesConditionOnTheSchedule(t *testing.T) {
 	running.Status.Conditions = nil
 	r := newGlanceTestReconciler(glance, cronJob, running)
 
-	_, err := r.reconcileDBPurge(context.Background(), glance, dbPurgeConfigMapName)
+	_, err := r.reconcileDBPurge(context.Background(), r.Client, glance, dbPurgeConfigMapName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := conditions.GetCondition(glance.Status.Conditions, conditionTypeDBPurgeReady)

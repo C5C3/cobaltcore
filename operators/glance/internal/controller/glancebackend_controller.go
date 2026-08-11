@@ -23,6 +23,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/secrets"
 	"github.com/c5c3/forge/internal/common/watch"
@@ -42,6 +43,7 @@ const (
 	// CredentialsReady reasons.
 	conditionReasonCredentialsAvailable  = "CredentialsAvailable"
 	conditionReasonWaitingForCredentials = "WaitingForCredentials"
+	conditionReasonWaitingForParent      = "WaitingForParent"
 
 	// ConfigProjected reasons.
 	conditionReasonConfigProjected      = "ConfigProjected"
@@ -85,6 +87,13 @@ type GlanceBackendReconciler struct {
 	// MaxConcurrentReconciles bounds how many backend CRs reconcile
 	// concurrently; a value <= 0 falls back to the shared default.
 	MaxConcurrentReconciles int
+
+	// Resolver resolves the target cluster the PARENT Glance names in
+	// spec.targetClusterRef into the client this backend's observations read
+	// from. A backend carries no target of its own: it exists to serve one
+	// Glance, so the credentials it gates on and the Deployment it observes
+	// belong wherever that Glance's workload runs. Nil means always-local.
+	Resolver commonmulticluster.ClusterResolver
 }
 
 // +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glancebackends,verbs=get;list;watch
@@ -124,8 +133,16 @@ func (r *GlanceBackendReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // projection. It short-circuits before the projection observation while the
 // credentials are not ready — the parent never projects a backend that is not
 // credential-ready, so there is nothing to observe yet.
+//
+// Both observations read objects that belong to the parent Glance, so it opens
+// by resolving that parent's target cluster into the children client.
 func (r *GlanceBackendReconciler) reconcileNormal(ctx context.Context, backend *glancev1alpha1.GlanceBackend) (ctrl.Result, error) {
-	ready, err := r.gateCredentials(ctx, backend)
+	children, result, err := r.resolveChildren(ctx, backend)
+	if children == nil {
+		return result, err
+	}
+
+	ready, err := r.gateCredentials(ctx, children, backend)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -138,7 +155,57 @@ func (r *GlanceBackendReconciler) reconcileNormal(ctx context.Context, backend *
 		// below.
 		return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
-	return r.observeConfigProjected(ctx, backend)
+	return r.observeConfigProjected(ctx, children, backend)
+}
+
+// resolveChildren returns the client this backend's observations read from: the
+// one the PARENT Glance's spec.targetClusterRef selects. The backend has no
+// target field of its own, so the S3 credentials Secret it gates on and the
+// Deployment it watches for its rendered store section resolve wherever the
+// parent's workload runs — the same cluster the API pods mount them from.
+//
+// A parent that does not exist holds the pass on CredentialsReady=False and
+// requeues, the same treatment an unresolvable target gets. Reading the
+// management cluster instead would gate this backend on whatever Secret of that
+// name happens to live there, so a backend attached to a Glance on a target
+// cluster could report credentials it will never use — and the store keyed the
+// same way mints into the wrong cluster, so both resolve alike.
+//
+// A missing parent also demotes a standing ConfigProjected=True: that condition
+// claims the parent's Deployment mounts this backend's store section, and with
+// the parent gone the claim is stale — the deletion-cleanup e2e pins the
+// surviving backend on ConfigProjected=False. A backend that never converged
+// keeps the condition absent (the observation never ran), and an unresolvable
+// target demotes nothing: unobservable is not un-projected, matching the
+// no-demote-on-error doctrine of observeConfigProjected.
+//
+// A named-but-unregistered target returns a nil client with the failure already
+// on CredentialsReady, the backend's first gate condition.
+func (r *GlanceBackendReconciler) resolveChildren(
+	ctx context.Context, backend *glancev1alpha1.GlanceBackend,
+) (client.Client, ctrl.Result, error) {
+	var parent glancev1alpha1.Glance
+	parentKey := client.ObjectKey{Namespace: backend.Namespace, Name: backend.Spec.GlanceRef.Name}
+	if err := r.Get(ctx, parentKey, &parent); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, ctrl.Result{}, fmt.Errorf("fetching parent Glance %s: %w", parentKey, err)
+		}
+		r.setCredentialsReady(backend, metav1.ConditionFalse, conditionReasonWaitingForParent,
+			fmt.Sprintf("parent Glance %s does not exist; the cluster this backend's credentials belong on is unknown", parentKey))
+		if projected := conditions.GetCondition(backend.Status.Conditions, conditionTypeConfigProjected); projected != nil && projected.Status == metav1.ConditionTrue {
+			r.setConfigProjected(backend, metav1.ConditionFalse, conditionReasonWaitingForProjection,
+				fmt.Sprintf("parent Glance %s does not exist; nothing mounts this backend's rendered store section", parentKey))
+		}
+		return nil, ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+	}
+
+	children, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, parent.Spec.TargetClusterRef)
+	if err != nil {
+		r.setCredentialsReady(backend, metav1.ConditionFalse,
+			commonmulticluster.TargetClusterUnavailable, err.Error())
+		return nil, ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+	}
+	return children, ctrl.Result{}, nil
 }
 
 // gateCredentials verifies the S3 credentials Secret exists and carries the
@@ -147,7 +214,10 @@ func (r *GlanceBackendReconciler) reconcileNormal(ctx context.Context, backend *
 // (which sets the False condition with a precise message) and stamps the True
 // condition itself on success. A backend error is propagated so the workqueue
 // backs off without demoting a currently-True condition.
-func (r *GlanceBackendReconciler) gateCredentials(ctx context.Context, backend *glancev1alpha1.GlanceBackend) (bool, error) {
+//
+// The Secret is read on the children cluster: the store credentials materialise
+// beside the Glance pods that authenticate with them.
+func (r *GlanceBackendReconciler) gateCredentials(ctx context.Context, children client.Client, backend *glancev1alpha1.GlanceBackend) (bool, error) {
 	if backend.Spec.S3 == nil {
 		// The schema union rule guarantees spec.s3 for a type-S3 backend; a
 		// bypassed admission leaves nothing to gate on.
@@ -169,7 +239,7 @@ func (r *GlanceBackendReconciler) gateCredentials(ctx context.Context, backend *
 			glancev1alpha1.S3SecretAccessKeyKey,
 		},
 	}
-	ready, err := secrets.GateCredential(ctx, r.Client, spec, &backend.Status.Conditions, backend.Generation, conditionTypeCredentialsReady)
+	ready, err := secrets.GateCredential(ctx, children, spec, &backend.Status.Conditions, backend.Generation, conditionTypeCredentialsReady)
 	if err != nil {
 		return false, err
 	}
@@ -189,8 +259,8 @@ func (r *GlanceBackendReconciler) gateCredentials(ctx context.Context, backend *
 // A transient Get/List failure returns the error WITHOUT demoting a
 // currently-True condition, so a converged backend does not flap on a cache
 // blip.
-func (r *GlanceBackendReconciler) observeConfigProjected(ctx context.Context, backend *glancev1alpha1.GlanceBackend) (ctrl.Result, error) {
-	projected, err := r.isConfigProjected(ctx, backend)
+func (r *GlanceBackendReconciler) observeConfigProjected(ctx context.Context, children client.Client, backend *glancev1alpha1.GlanceBackend) (ctrl.Result, error) {
+	projected, err := r.isConfigProjected(ctx, children, backend)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -209,7 +279,10 @@ func (r *GlanceBackendReconciler) observeConfigProjected(ctx context.Context, ba
 // carries the [<backend.Name>] section header. A missing parent, Deployment,
 // volume, or Secret folds to (false, nil) — an authoritative "not projected
 // yet". Only a non-NotFound client failure returns an error.
-func (r *GlanceBackendReconciler) isConfigProjected(ctx context.Context, backend *glancev1alpha1.GlanceBackend) (bool, error) {
+//
+// The parent CR is read on the management cluster, the Deployment it projects
+// and that Deployment's projection Secret on the children one.
+func (r *GlanceBackendReconciler) isConfigProjected(ctx context.Context, children client.Client, backend *glancev1alpha1.GlanceBackend) (bool, error) {
 	var glance glancev1alpha1.Glance
 	glanceKey := client.ObjectKey{Namespace: backend.Namespace, Name: backend.Spec.GlanceRef.Name}
 	if err := r.Get(ctx, glanceKey, &glance); err != nil {
@@ -221,7 +294,7 @@ func (r *GlanceBackendReconciler) isConfigProjected(ctx context.Context, backend
 
 	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Namespace: glance.Namespace, Name: subResourceName(&glance)}
-	if err := r.Get(ctx, deployKey, &deploy); err != nil {
+	if err := children.Get(ctx, deployKey, &deploy); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
@@ -242,7 +315,7 @@ func (r *GlanceBackendReconciler) isConfigProjected(ctx context.Context, backend
 
 	var secret corev1.Secret
 	secretKey := client.ObjectKey{Namespace: glance.Namespace, Name: secretName}
-	if err := r.Get(ctx, secretKey, &secret); err != nil {
+	if err := children.Get(ctx, secretKey, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}

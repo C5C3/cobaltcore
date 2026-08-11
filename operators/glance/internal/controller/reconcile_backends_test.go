@@ -44,12 +44,45 @@ func renderedBackendsConf(t *testing.T, r *GlanceReconciler, secretName string) 
 	return string(s.Data[backendsConfDataKey])
 }
 
+// TestBackendListReadsManagementCluster proves the attached-backends list stays
+// on the embedded client while the credentials it names — and the projection
+// Secret it renders them into — go to the children client. The children fake is
+// built without the glance API group, so a misrouted List fails with "no kind is
+// registered" instead of quietly returning an empty set that would read as "no
+// backend attached".
+func TestBackendListReadsManagementCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	glance := testGlance()
+	// Management: the CR and its sibling backend, with the field index the list
+	// selects on (SetupWithManager registers the same extractor).
+	r := newGlanceTestReconciler(glance, credentialReadyBackend("store", "test-glance", true))
+	children := childrenFake(t, testS3CredentialsSecret("store"))
+
+	_, proj, err := r.reconcileBackends(ctx, children, glance)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(proj.valid).To(BeTrue(), "the sibling backend was found beside the CR")
+	g.Expect(proj.defaultBackend).To(Equal("store"))
+	g.Expect(proj.enabledBackends).To(Equal("store:s3"))
+
+	// The S3 credentials the backend named resolved from the children cluster,
+	// the only place they exist here, and the rendered Secret landed there too.
+	projectionKey := client.ObjectKey{Namespace: "default", Name: proj.secretName}
+	var rendered corev1.Secret
+	g.Expect(children.Get(ctx, projectionKey, &rendered)).To(Succeed())
+	g.Expect(string(rendered.Data[backendsConfDataKey])).
+		To(ContainSubstring("s3_store_access_key = " + testS3AccessKeyID))
+	g.Expect(r.Get(ctx, projectionKey, &corev1.Secret{})).NotTo(Succeed(),
+		"the projection must not be written beside the CR, where no pod mounts it")
+}
+
 func TestReconcileBackends_ZeroAttachedIsNoDefault(t *testing.T) {
 	g := NewGomegaWithT(t)
 	glance := testGlance()
 	r := newGlanceTestReconciler(glance)
 
-	res, proj, err := r.reconcileBackends(context.Background(), glance)
+	res, proj, err := r.reconcileBackends(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue(), "waiting states never requeue")
@@ -68,7 +101,7 @@ func TestReconcileBackends_SingleReadyDefaultProjects(t *testing.T) {
 	backend := credentialReadyBackend("store", "test-glance", true)
 	r := newGlanceTestReconciler(glance, backend, testS3CredentialsSecret("store"))
 
-	res, proj, err := r.reconcileBackends(context.Background(), glance)
+	res, proj, err := r.reconcileBackends(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -100,7 +133,7 @@ func TestReconcileBackends_TwoReadyDefaultsIsNoDefault(t *testing.T) {
 		credentialReadyBackend("store", "test-glance", true), testS3CredentialsSecret("store"),
 		credentialReadyBackend("store2", "test-glance", true), testS3CredentialsSecret("store2"))
 
-	res, proj, err := r.reconcileBackends(context.Background(), glance)
+	res, proj, err := r.reconcileBackends(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -123,7 +156,7 @@ func TestReconcileBackends_DefaultNotCredentialReadyIsNoDefault(t *testing.T) {
 	notReady.Spec.IsDefault = true
 	r := newGlanceTestReconciler(glance, notReady, testS3CredentialsSecret("store"))
 
-	res, proj, err := r.reconcileBackends(context.Background(), glance)
+	res, proj, err := r.reconcileBackends(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -145,7 +178,7 @@ func TestReconcileBackends_ReadyDefaultWithPendingSiblingWaits(t *testing.T) {
 		credentialReadyBackend("store", "test-glance", true), testS3CredentialsSecret("store"),
 		pending)
 
-	res, proj, err := r.reconcileBackends(context.Background(), glance)
+	res, proj, err := r.reconcileBackends(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue(), "waiting states never requeue")
@@ -176,7 +209,7 @@ func TestReconcileBackends_ControlCharCredentialSkipsBackend(t *testing.T) {
 		credentialReadyBackend("store", "test-glance", true), testS3CredentialsSecret("store"),
 		credentialReadyBackend("bad", "test-glance", false), badCreds)
 
-	res, proj, err := r.reconcileBackends(context.Background(), glance)
+	res, proj, err := r.reconcileBackends(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -206,7 +239,7 @@ func TestReconcileBackends_MissingCredentialsSecretSkipsBackend(t *testing.T) {
 		credentialReadyBackend("store", "test-glance", true), testS3CredentialsSecret("store"),
 		credentialReadyBackend("gone", "test-glance", false))
 
-	res, proj, err := r.reconcileBackends(context.Background(), glance)
+	res, proj, err := r.reconcileBackends(context.Background(), r.Client, glance)
 
 	g.Expect(err).NotTo(HaveOccurred(), "a missing per-backend Secret never fails the step")
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -229,7 +262,7 @@ func TestReconcileBackends_ExtraOptionsRenderedOperatorKeysWin(t *testing.T) {
 	}
 	r := newGlanceTestReconciler(glance, backend, testS3CredentialsSecret("store"))
 
-	_, proj, err := r.reconcileBackends(context.Background(), glance)
+	_, proj, err := r.reconcileBackends(context.Background(), r.Client, glance)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(proj.valid).To(BeTrue())
 
@@ -249,7 +282,7 @@ func TestReconcileBackends_DeterministicSectionOrder(t *testing.T) {
 		credentialReadyBackend("bbb", "test-glance", false), testS3CredentialsSecret("bbb"),
 		credentialReadyBackend("aaa", "test-glance", true), testS3CredentialsSecret("aaa"))
 
-	_, proj, err := r.reconcileBackends(context.Background(), glance)
+	_, proj, err := r.reconcileBackends(context.Background(), r.Client, glance)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(proj.valid).To(BeTrue())
 	g.Expect(proj.enabledBackends).To(Equal("aaa:s3,bbb:s3"))

@@ -41,6 +41,9 @@ func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
 		Scheme:           scheme,
 		LeaderElectionID: "glance.openstack.c5c3.io",
+		// The reconcilers resolve spec.targetClusterRef, so the binary engages
+		// the clusters registered in --clusters-namespace.
+		TargetClusters: true,
 		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int) error {
 			mgr := mcMgr.GetLocalManager()
 			// Register the operator's Prometheus collectors on the
@@ -57,6 +60,7 @@ func main() {
 				Recorder:                mgr.GetEventRecorderFor("glance-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 				OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
 				MaxConcurrentReconciles: maxConcurrentReconciles,
+				Resolver:                mcMgr,
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}
@@ -70,6 +74,7 @@ func main() {
 				Scheme:                  mgr.GetScheme(),
 				Recorder:                mgr.GetEventRecorderFor("glancebackend-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 				MaxConcurrentReconciles: maxConcurrentReconciles,
+				Resolver:                mcMgr,
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}

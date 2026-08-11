@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/database"
@@ -47,12 +48,12 @@ const (
 // Contracting with glance-manage db expand|migrate|contract phase Jobs; fresh
 // installs and patch bumps stay on the single-pass glance-manage db sync path.
 // Both run only once a rendered config exists.
-func (r *GlanceReconciler) reconcileDatabase(ctx context.Context, glance *glancev1alpha1.Glance, configMapName string) (ctrl.Result, error) {
+func (r *GlanceReconciler) reconcileDatabase(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance, configMapName string) (ctrl.Result, error) {
 	// Managed/brownfield provisioning: MariaDB cluster gate, Database/User/Grant
 	// ensure, Dynamic-credentials skip of the User/Grant. A non-zero result means
 	// the flow set a not-ready condition and we must return it unchanged.
 	res, err := database.ReconcileProvision(ctx, database.ProvisionFlowParams{
-		Client:        r.Client,
+		Client:        children,
 		Scheme:        r.Scheme,
 		Owner:         glance,
 		InstanceName:  glance.Name,
@@ -104,7 +105,7 @@ func (r *GlanceReconciler) reconcileDatabase(ctx context.Context, glance *glance
 				return res, nil
 			}
 		}
-		return database.ReconcileUpgrade(ctx, r.upgradeFlowParams(ctx, glance, configMapName))
+		return database.ReconcileUpgrade(ctx, r.upgradeFlowParams(ctx, children, glance, configMapName))
 	}
 
 	// Enforce the decoupled-field contract before either the upgrade or the
@@ -116,14 +117,14 @@ func (r *GlanceReconciler) reconcileDatabase(ctx context.Context, glance *glance
 	// Detect a release upgrade (patch-only and same-release changes stay on the
 	// steady-state path).
 	if database.IsUpgrade(glance.Spec.OpenStackRelease, glance.Status.InstalledRelease) {
-		return database.InitiateUpgrade(ctx, r.upgradeFlowParams(ctx, glance, configMapName))
+		return database.InitiateUpgrade(ctx, r.upgradeFlowParams(ctx, children, glance, configMapName))
 	}
 
 	// Steady-state db-sync. glance-manage db sync applies every pending migration
 	// in one pass, so there is no schema-check step (SchemaCheckCommand nil).
 	// InstalledRelease is promoted to spec.openStackRelease on Job success.
 	return database.ReconcileSyncJobs(ctx, database.SyncFlowParams{
-		Client:   r.Client,
+		Client:   children,
 		Scheme:   r.Scheme,
 		Recorder: r.Recorder,
 		Owner:    glance,
@@ -232,9 +233,9 @@ func glanceJobSetParams(glance *glancev1alpha1.Glance, configMapName string) dat
 // bound here; the phase choreography itself lives in internal/common/database.
 // The three status pointers (UpgradePhase, InstalledRelease, TargetRelease) are
 // mutated in place by the flow and persisted by the caller after it returns.
-func (r *GlanceReconciler) upgradeFlowParams(ctx context.Context, glance *glancev1alpha1.Glance, configMapName string) database.UpgradeFlowParams {
+func (r *GlanceReconciler) upgradeFlowParams(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance, configMapName string) database.UpgradeFlowParams {
 	return database.UpgradeFlowParams{
-		Client:           r.Client,
+		Client:           children,
 		Scheme:           r.Scheme,
 		Recorder:         r.Recorder,
 		Owner:            glance,

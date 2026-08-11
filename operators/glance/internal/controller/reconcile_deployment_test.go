@@ -688,7 +688,7 @@ func TestReconcileDeployment_ServiceAndPDBEnsured(t *testing.T) {
 	glance := deployGlance("2026.1")
 	r := newGlanceTestReconciler(glance)
 
-	res, err := r.reconcileDeployment(context.Background(), glance, testArtifacts(), "", "")
+	res, err := r.reconcileDeployment(context.Background(), r.Client, glance, testArtifacts(), "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Fresh Deployment is not ready yet — requeue.
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
@@ -730,7 +730,7 @@ func TestReconcileDeployment_PDBSelectorCoversAPIPodsOnly(t *testing.T) {
 	r := newGlanceTestReconciler(glance)
 	art := testArtifacts()
 
-	_, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
+	_, err := r.reconcileDeployment(context.Background(), r.Client, glance, art, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var pdb policyv1.PodDisruptionBudget
@@ -797,7 +797,7 @@ func TestReconcileDeployment_SelectorsNarrowOnlyAfterRollout(t *testing.T) {
 			art := testArtifacts()
 			r := newGlanceTestReconciler(glance, tc.deploy(glance, art))
 
-			_, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
+			_, err := r.reconcileDeployment(context.Background(), r.Client, glance, art, "", "")
 			g.Expect(err).NotTo(HaveOccurred())
 
 			key := types.NamespacedName{Namespace: "default", Name: "test-glance"}
@@ -844,7 +844,7 @@ func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
 
 	// Pass 1: the Deployment is fully converged, so the migration completes and
 	// the Service selector narrows.
-	_, err := r.reconcileDeployment(ctx, glance, art, "", "")
+	_, err := r.reconcileDeployment(ctx, r.Client, glance, art, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	var svc corev1.Service
 	g.Expect(r.Get(ctx, key, &svc)).To(Succeed())
@@ -859,7 +859,7 @@ func TestReconcileDeployment_NarrowedServiceSelectorNeverWidens(t *testing.T) {
 	deploy.Status.ReadyReplicas = 0
 	g.Expect(r.Status().Update(ctx, &deploy)).To(Succeed())
 
-	_, err = r.reconcileDeployment(ctx, glance, art, "", "")
+	_, err = r.reconcileDeployment(ctx, r.Client, glance, art, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(r.Get(ctx, key, &svc)).To(Succeed())
 	g.Expect(svc.Spec.Selector).To(HaveKeyWithValue(naming.LabelKeyComponent, naming.ComponentAPI),
@@ -873,7 +873,7 @@ func TestReconcileDeployment_ReadyStampsEndpoint(t *testing.T) {
 	art := testArtifacts()
 	r := newGlanceTestReconciler(glance, readyGlanceDeployment(glance, art))
 
-	res, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
+	res, err := r.reconcileDeployment(context.Background(), r.Client, glance, art, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	cond := meta.FindStatusCondition(glance.Status.Conditions, "DeploymentReady")
@@ -895,7 +895,7 @@ func TestReconcileDeployment_GatewayEndpointStamped(t *testing.T) {
 	art := testArtifacts()
 	r := newGlanceTestReconciler(glance, readyGlanceDeployment(glance, art))
 
-	_, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
+	_, err := r.reconcileDeployment(context.Background(), r.Client, glance, art, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(glance.Status.Endpoint).To(Equal("https://glance.127-0-0-1.nip.io/"))
 }
@@ -907,7 +907,7 @@ func TestReconcileDeployment_InvalidProjectionNoDeploymentWaitsForBackends(t *te
 	r := newGlanceTestReconciler(glance)
 
 	// Empty artefacts (invalid projection, first install): no Deployment yet.
-	res, err := r.reconcileDeployment(context.Background(), glance, configArtifacts{}, "", "")
+	res, err := r.reconcileDeployment(context.Background(), r.Client, glance, configArtifacts{}, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	cond := meta.FindStatusCondition(glance.Status.Conditions, "DeploymentReady")
@@ -929,7 +929,7 @@ func TestReconcileDeployment_InvalidProjectionLiveDeploymentReAppliesLastGood(t 
 	lastGood := configArtifacts{configMapName: "glance-config-lastgood", backendsSecretName: "glance-backends-lastgood"}
 	r := newGlanceTestReconciler(glance, readyGlanceDeployment(glance, lastGood))
 
-	_, err := r.reconcileDeployment(context.Background(), glance, lastGood, "", "")
+	_, err := r.reconcileDeployment(context.Background(), r.Client, glance, lastGood, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var deploy appsv1.Deployment
@@ -958,7 +958,7 @@ func TestReconcileDeployment_RollingUpdateFlipsToContracting(t *testing.T) {
 	art := testArtifacts()
 	r := newGlanceTestReconciler(glance, readyGlanceDeployment(glance, art))
 
-	res, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
+	res, err := r.reconcileDeployment(context.Background(), r.Client, glance, art, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
 
@@ -1005,7 +1005,7 @@ func TestReconcileDeployment_RollingUpdateSurgeReadyHoldsContract(t *testing.T) 
 	}
 	r := newGlanceTestReconciler(glance, deploy)
 
-	res, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
+	res, err := r.reconcileDeployment(context.Background(), r.Client, glance, art, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Holds in RollingUpdate and requeues to wait for the old image to drain.
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueDeploymentPolling))
@@ -1032,7 +1032,7 @@ func TestReconcileDeployment_EmptyPhaseNoFlipStampsEndpoint(t *testing.T) {
 	art := testArtifacts()
 	r := newGlanceTestReconciler(glance, readyGlanceDeployment(glance, art))
 
-	res, err := r.reconcileDeployment(context.Background(), glance, art, "", "")
+	res, err := r.reconcileDeployment(context.Background(), r.Client, glance, art, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 
