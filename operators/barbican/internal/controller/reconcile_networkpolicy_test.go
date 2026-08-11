@@ -70,7 +70,7 @@ func TestReconcileNetworkPolicy_DisabledDeletesAndNotRequired(t *testing.T) {
 	stale.Namespace = testNamespace
 	r := newBarbicanTestReconciler(barbican, stale)
 
-	res, err := r.reconcileNetworkPolicy(context.Background(), barbican, validProjection())
+	res, err := r.reconcileNetworkPolicy(context.Background(), r.Client, barbican, validProjection())
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -93,7 +93,7 @@ func TestReconcileNetworkPolicy_EnabledAppliesPolicy(t *testing.T) {
 	r := newNetworkPolicyTestReconciler(barbican)
 	r.OperatorNamespace = "barbican-system"
 
-	res, err := r.reconcileNetworkPolicy(context.Background(), barbican, projection)
+	res, err := r.reconcileNetworkPolicy(context.Background(), r.Client, barbican, projection)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -116,7 +116,7 @@ func TestReconcileNetworkPolicy_EmptyIngressFailsClosed(t *testing.T) {
 	barbican.Spec.NetworkPolicy = &barbicanv1alpha1.NetworkPolicySpec{}
 	r := newBarbicanTestReconciler(barbican)
 
-	_, err := r.reconcileNetworkPolicy(context.Background(), barbican, validProjection())
+	_, err := r.reconcileNetworkPolicy(context.Background(), r.Client, barbican, validProjection())
 
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("refusing to create NetworkPolicy that would allow all ingress"))

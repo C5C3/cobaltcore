@@ -79,7 +79,7 @@ func TestReconcileDeployment_InvalidProjectionCreatesNothing(t *testing.T) {
 	barbican := testBarbican()
 	r := newBarbicanTestReconciler(barbican)
 
-	res, err := r.reconcileDeployment(context.Background(), barbican,
+	res, err := r.reconcileDeployment(context.Background(), r.Client, barbican,
 		secretStoreProjection{}, deploymentConfigSecretName, "dsn", "auth")
 
 	g.Expect(err).NotTo(HaveOccurred())
@@ -102,7 +102,7 @@ func TestReconcileDeployment_CreatesWorkloadAndWaitsForRollout(t *testing.T) {
 	barbican := testBarbican()
 	r := newBarbicanTestReconciler(barbican)
 
-	res, err := r.reconcileDeployment(context.Background(), barbican,
+	res, err := r.reconcileDeployment(context.Background(), r.Client, barbican,
 		validProjection(), deploymentConfigSecretName, "dsn", "auth")
 
 	g.Expect(err).NotTo(HaveOccurred())
@@ -152,7 +152,7 @@ func TestReconcileDeployment_ReadyStampsTheAdvertisedEndpoint(t *testing.T) {
 			barbican := tc.barbican()
 			r := newBarbicanTestReconciler(barbican, readyBarbicanDeployment(barbican))
 
-			res, err := r.reconcileDeployment(context.Background(), barbican,
+			res, err := r.reconcileDeployment(context.Background(), r.Client, barbican,
 				validProjection(), deploymentConfigSecretName, "", "")
 
 			g.Expect(err).NotTo(HaveOccurred())
@@ -324,7 +324,7 @@ func TestReconcileDeployment_SelectorLatchReadsTheUncachedReader(t *testing.T) {
 		barbican := testBarbican()
 		r := newBarbicanTestReconciler(barbican)
 
-		_, err := r.reconcileDeployment(context.Background(), barbican,
+		_, err := r.reconcileDeployment(context.Background(), r.Client, barbican,
 			validProjection(), deploymentConfigSecretName, "", "")
 		g.Expect(err).NotTo(HaveOccurred())
 
@@ -339,7 +339,7 @@ func TestReconcileDeployment_SelectorLatchReadsTheUncachedReader(t *testing.T) {
 		r := newBarbicanTestReconciler(barbican)
 		r.apiReader = narrowedServiceReader{barbican: barbican}
 
-		_, err := r.reconcileDeployment(context.Background(), barbican,
+		_, err := r.reconcileDeployment(context.Background(), r.Client, barbican,
 			validProjection(), deploymentConfigSecretName, "", "")
 		g.Expect(err).NotTo(HaveOccurred())
 

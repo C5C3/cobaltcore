@@ -504,7 +504,10 @@ func TestIntegrationBarbican_BrownfieldStoreDrivesParentToReady(t *testing.T) {
 // Only the OpenBao seam is faked. The provisioner token is minted through the
 // production TokenRequest path against the live API server, so the
 // "<instance>-provisioner" ServiceAccount below is load-bearing: without it the
-// store would park on WaitingForInstance.
+// store would park on WaitingForInstance. The parent Barbican CR is equally
+// load-bearing: the store resolves the cluster its children belong on through
+// the parent's spec.targetClusterRef, and without the parent it parks on
+// CredentialsReady=False/WaitingForParent before provisioning starts.
 func TestIntegrationBarbicanSecretStore_ManagedCredentialsSecretIsOwned(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -538,6 +541,11 @@ func TestIntegrationBarbicanSecretStore_ManagedCredentialsSecretIsOwned(t *testi
 	g.Expect(c.Create(ctx, &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: integrationInstanceName + instanceProvisionerSASuffix, Namespace: ns},
 	})).To(Succeed(), "create the provisioner ServiceAccount")
+
+	// The parent the store resolves its children cluster through. Its own
+	// reconciliation parks on the missing input Secrets, which this test never
+	// needs; only its existence and its nil targetClusterRef matter here.
+	g.Expect(c.Create(ctx, integrationBarbicanCR(integrationBarbicanName, ns))).To(Succeed(), "create the parent Barbican CR")
 
 	store := integrationManagedStore(integrationStoreName, ns, integrationBarbicanName, integrationInstanceName)
 	g.Expect(c.Create(ctx, store)).To(Succeed(), "create the managed BarbicanSecretStore")

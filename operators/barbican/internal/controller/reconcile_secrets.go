@@ -36,7 +36,10 @@ func effectiveServiceUserKey(barbican *barbicanv1alpha1.Barbican) string {
 // service-user password rolls the Barbican pods — the password is
 // env-var-consumed (oslo.config OS_KEYSTONE_AUTHTOKEN__PASSWORD), not
 // volume-mounted, so it only takes effect on a Pod restart.
-func (r *BarbicanReconciler) reconcileSecrets(ctx context.Context,
+//
+// The selected store and the credential Secrets are read on the children
+// cluster: they are materialised beside the workload that consumes them.
+func (r *BarbicanReconciler) reconcileSecrets(ctx context.Context, children client.Client,
 	barbican *barbicanv1alpha1.Barbican,
 ) (ctrl.Result, string, error) {
 	// Check the selected secret store first so upstream backend outages surface
@@ -45,7 +48,7 @@ func (r *BarbicanReconciler) reconcileSecrets(ctx context.Context,
 	// Barbican selected via spec.secretStoreRef (default: the shared
 	// cluster-scoped openbao-cluster-store); a namespaced store is resolved in the
 	// Barbican's own namespace.
-	storeReady, err := secrets.GateStoreReady(ctx, r.Client,
+	storeReady, err := secrets.GateStoreReady(ctx, children,
 		secrets.EffectiveStoreRef(barbican.Spec.SecretStoreRef), barbican.Namespace,
 		&barbican.Status.Conditions, barbican.Generation, "SecretsReady")
 	if err != nil {
@@ -76,7 +79,7 @@ func (r *BarbicanReconciler) reconcileSecrets(ctx context.Context,
 			ExpectedKeys: []string{serviceUserKey},
 		},
 	}
-	ready, err := secrets.GateCredentials(ctx, r.Client, credentialGates,
+	ready, err := secrets.GateCredentials(ctx, children, credentialGates,
 		&barbican.Status.Conditions, barbican.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, "", err
@@ -88,7 +91,7 @@ func (r *BarbicanReconciler) reconcileSecrets(ctx context.Context,
 	// Digest the service-user password so the deployment step can roll pods when
 	// it rotates at the OpenBao source.
 	key := client.ObjectKey{Namespace: barbican.Namespace, Name: barbican.Spec.ServiceUser.SecretRef.Name}
-	value, err := secrets.GetSecretValue(ctx, r.Client, key, serviceUserKey)
+	value, err := secrets.GetSecretValue(ctx, children, key, serviceUserKey)
 	if err != nil {
 		return ctrl.Result{}, "", fmt.Errorf("reading service-user password value: %w", err)
 	}

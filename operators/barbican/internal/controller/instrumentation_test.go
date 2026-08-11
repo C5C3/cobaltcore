@@ -48,12 +48,12 @@ func TestPipelineStepNamesAreMapped(t *testing.T) {
 	// collected from parallelSteps below. Its arguments are the outputs of
 	// earlier steps, and neither of them is read here — only the member names and
 	// condition types are.
-	for _, step := range r.pipelineSteps(testBarbican()) {
+	for _, step := range r.pipelineSteps(r.Client, testBarbican()) {
 		if step.Name != "" {
 			names = append(names, step.Name)
 		}
 	}
-	for _, sub := range r.parallelSteps(secretStoreProjection{}) {
+	for _, sub := range r.parallelSteps(r.Client, secretStoreProjection{}) {
 		names = append(names, sub.Name)
 		g.Expect(subReconcilerConditionTypes[sub.Name]).To(Equal(sub.ConditionType),
 			"parallel member %q reports condition %q but the metrics map says %q",

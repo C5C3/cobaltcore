@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/networkpolicy"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
@@ -30,7 +31,7 @@ const (
 // keeps only the service-specific parts: the desired policy builder (with its
 // DB/cache/OpenBao egress) and the backend identity. It takes the secret-store
 // projection so the OpenBao egress set tracks every attached store's host.
-func (r *BarbicanReconciler) reconcileNetworkPolicy(ctx context.Context, barbican *barbicanv1alpha1.Barbican, projection secretStoreProjection) (ctrl.Result, error) {
+func (r *BarbicanReconciler) reconcileNetworkPolicy(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican, projection secretStoreProjection) (ctrl.Result, error) {
 	// buildBarbicanNetworkPolicy is only applied on the enabled+non-empty path;
 	// build it lazily so a nil or empty-ingress spec takes the delete or
 	// fail-closed path without a wasted build.
@@ -42,7 +43,7 @@ func (r *BarbicanReconciler) reconcileNetworkPolicy(ctx context.Context, barbica
 			desired = buildBarbicanNetworkPolicy(barbican, r.OperatorNamespace, projection.hosts)
 		}
 	}
-	return networkpolicy.Reconcile(ctx, r.Client, r.Scheme, barbican, networkpolicy.FlowParams{
+	return networkpolicy.Reconcile(ctx, children, r.Scheme, barbican, networkpolicy.FlowParams{
 		Configured:         barbican.Spec.NetworkPolicy != nil,
 		IngressSourceCount: ingressCount,
 		Desired:            desired,

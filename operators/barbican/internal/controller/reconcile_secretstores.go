@@ -116,7 +116,10 @@ type secretStoreProjection struct {
 // BarbicanSecretStore watch wakes the parent when a store's status flips. Only
 // genuine infrastructure failures (List errors, non-NotFound read failures)
 // surface as errors.
-func (r *BarbicanReconciler) reconcileSecretStores(ctx context.Context, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, secretStoreProjection, error) {
+func (r *BarbicanReconciler) reconcileSecretStores(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, secretStoreProjection, error) {
+	// The attached stores are sibling configuration CRs on the management
+	// cluster, so this list goes through the embedded client and its field
+	// index; only the credentials they name are read on children.
 	var stores barbicanv1alpha1.BarbicanSecretStoreList
 	if err := r.List(
 		ctx, &stores,
@@ -198,7 +201,7 @@ func (r *BarbicanReconciler) reconcileSecretStores(ctx context.Context, barbican
 		return ctrl.Result{}, secretStoreProjection{hosts: retainedEgressHosts(barbican, hosts)}, nil
 	}
 
-	projection, err := r.renderStoreSections(ctx, barbican.Namespace, ready, defaultStore)
+	projection, err := r.renderStoreSections(ctx, children, barbican.Namespace, ready, defaultStore)
 	if err != nil {
 		// A missing or unreadable credentials Secret and a value carrying a control
 		// character are store-level faults the parent tolerates: the store passed
@@ -332,7 +335,7 @@ func (r *BarbicanReconciler) markSecretStoresWaiting(barbican *barbicanv1alpha1.
 // deployment step resolves; the caller stamps validity, hosts and the default's
 // name onto it.
 func (r *BarbicanReconciler) renderStoreSections(
-	ctx context.Context, namespace string,
+	ctx context.Context, children client.Client, namespace string,
 	ready []*barbicanv1alpha1.BarbicanSecretStore, defaultStore *barbicanv1alpha1.BarbicanSecretStore,
 ) (secretStoreProjection, error) {
 	names := make([]string, 0, len(ready))
@@ -365,7 +368,7 @@ func (r *BarbicanReconciler) renderStoreSections(
 	// The plugin section is derived from the DEFAULT store alone. It is
 	// process-global, and the multiple-OpenBao-stores gate guarantees the default
 	// is the only store that can contribute to it.
-	projection, section, err := r.renderVaultPlugin(ctx, namespace, defaultStore)
+	projection, section, err := r.renderVaultPlugin(ctx, children, namespace, defaultStore)
 	if err != nil {
 		return secretStoreProjection{}, err
 	}
@@ -390,7 +393,7 @@ func (r *BarbicanReconciler) renderStoreSections(
 // controller, while the env override keeps the secret ID's only copy in the
 // Secret the store itself owns.
 func (r *BarbicanReconciler) renderVaultPlugin(
-	ctx context.Context, namespace string, store *barbicanv1alpha1.BarbicanSecretStore,
+	ctx context.Context, children client.Client, namespace string, store *barbicanv1alpha1.BarbicanSecretStore,
 ) (secretStoreProjection, map[string]string, error) {
 	spec := store.Spec.OpenBao
 	if spec == nil {
@@ -411,11 +414,11 @@ func (r *BarbicanReconciler) renderVaultPlugin(
 	}
 
 	credsKey := client.ObjectKey{Namespace: namespace, Name: projection.credentialsSecretName}
-	roleID, err := secrets.GetSecretValue(ctx, r.Client, credsKey, barbicanv1alpha1.OpenBaoRoleIDKey)
+	roleID, err := secrets.GetSecretValue(ctx, children, credsKey, barbicanv1alpha1.OpenBaoRoleIDKey)
 	if err != nil {
 		return secretStoreProjection{}, nil, err
 	}
-	secretID, err := secrets.GetSecretValue(ctx, r.Client, credsKey, barbicanv1alpha1.OpenBaoSecretIDKey)
+	secretID, err := secrets.GetSecretValue(ctx, children, credsKey, barbicanv1alpha1.OpenBaoSecretIDKey)
 	if err != nil {
 		return secretStoreProjection{}, nil, err
 	}

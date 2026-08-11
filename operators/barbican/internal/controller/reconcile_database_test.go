@@ -170,7 +170,7 @@ func TestReconcileDatabase_SizesTheUserConnectionCap(t *testing.T) {
 	})
 	r := newBarbicanTestReconciler(barbican, readyMariaDB, readyDatabase)
 
-	_, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	user := &mariadbv1alpha1.User{}
@@ -187,7 +187,7 @@ func TestReconcileDatabase_SyncJobCommandAndMounts(t *testing.T) {
 	barbican := testBarbican()
 	r := newBarbicanTestReconciler(barbican)
 
-	_, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var syncJob batchv1.Job
@@ -236,7 +236,7 @@ func TestReconcileDatabase_SyncJobProjectsDBTLSKeypair(t *testing.T) {
 	}
 	r := newBarbicanTestReconciler(barbican)
 
-	_, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var syncJob batchv1.Job
@@ -255,7 +255,7 @@ func TestReconcileDatabase_ProvisionGatesOnClusterReady(t *testing.T) {
 	// The referenced MariaDB cluster does not exist yet, so provisioning gates.
 	r := newBarbicanTestReconciler(barbican)
 
-	res, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
@@ -275,7 +275,7 @@ func TestReconcileDatabase_WaitsWithoutARenderedConfig(t *testing.T) {
 	barbican := testBarbican()
 	r := newBarbicanTestReconciler(barbican)
 
-	res, err := r.reconcileDatabase(context.Background(), barbican, "")
+	res, err := r.reconcileDatabase(context.Background(), r.Client, barbican, "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
@@ -291,7 +291,7 @@ func TestReconcileDatabase_FreshInstallRunsOneJob(t *testing.T) {
 	barbican := testBarbican() // InstalledRelease empty
 	r := newBarbicanTestReconciler(barbican)
 
-	res, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
@@ -313,7 +313,7 @@ func TestReconcileDatabase_InstalledReleasePromotedOnSuccess(t *testing.T) {
 	barbican := testBarbican() // InstalledRelease empty, OpenStackRelease 2026.1
 	r := newBarbicanTestReconciler(barbican, terminatedSyncJob(barbican, batchv1.JobComplete, "sync-complete-uid"))
 
-	res, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -337,7 +337,7 @@ func TestReconcileDatabase_FailedJobIsAHardError(t *testing.T) {
 	failed := terminatedSyncJob(barbican, batchv1.JobFailed, "sync-failed-uid")
 	r := newBarbicanTestReconciler(barbican, failed)
 
-	_, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	_, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 
 	g.Expect(err).To(HaveOccurred(),
 		"a permanently failed db-sync surfaces as a reconcile error so the controller backs off")
@@ -363,7 +363,7 @@ func TestReconcileDatabase_ReleaseBumpTracksTargetRelease(t *testing.T) {
 	barbican.Status.InstalledRelease = "2025.2"
 	r := newBarbicanTestReconciler(barbican)
 
-	res, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
 	g.Expect(barbican.Status.TargetRelease).To(Equal("2026.1"))
@@ -384,7 +384,7 @@ func TestReconcileDatabase_ReleaseBumpTracksTargetRelease(t *testing.T) {
 	}
 	g.Expect(r.Status().Update(context.Background(), &syncJob)).To(Succeed())
 
-	res, err = r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	res, err = r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 	g.Expect(barbican.Status.InstalledRelease).To(Equal("2026.1"))
@@ -460,7 +460,7 @@ func TestReconcileDatabase_RejectedTransitions(t *testing.T) {
 			tc.mutate(barbican)
 			r := newBarbicanTestReconciler(barbican)
 
-			_, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+			_, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 
 			g.Expect(err).To(HaveOccurred())
 			g.Expect(err.Error()).To(ContainSubstring(tc.wantCause))
@@ -491,7 +491,7 @@ func TestReconcileDatabase_ImageReleaseMismatchBlocks(t *testing.T) {
 	barbican.Status.InstalledRelease = "2025.2"
 	r := newBarbicanTestReconciler(barbican)
 
-	res, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
@@ -515,7 +515,7 @@ func TestReconcileDatabase_DigestPinnedImageSkipsMismatchCheck(t *testing.T) {
 	barbican.Spec.Image.Digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
 	r := newBarbicanTestReconciler(barbican)
 
-	res, err := r.reconcileDatabase(context.Background(), barbican, dbConfigSecretName)
+	res, err := r.reconcileDatabase(context.Background(), r.Client, barbican, dbConfigSecretName)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))

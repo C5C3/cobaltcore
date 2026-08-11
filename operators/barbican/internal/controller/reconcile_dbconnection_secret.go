@@ -20,6 +20,7 @@ import (
 	"context"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/database"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
@@ -49,9 +50,9 @@ const dbTLSMountPath = "/etc/barbican-db-tls/"
 // roll the Pods when a Dynamic (engine-issued) credential rotates without
 // reading the Secret content itself; the digest is empty on the requeue/error
 // paths where no derived Secret was materialised.
-func (r *BarbicanReconciler) reconcileDBConnectionSecret(ctx context.Context, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, string, error) {
+func (r *BarbicanReconciler) reconcileDBConnectionSecret(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, string, error) {
 	return database.ReconcileConnectionSecret(ctx, database.ConnectionSecretFlowParams{
-		Client:        r.Client,
+		Client:        children,
 		Scheme:        r.Scheme,
 		Owner:         barbican,
 		InstanceName:  barbican.Name,

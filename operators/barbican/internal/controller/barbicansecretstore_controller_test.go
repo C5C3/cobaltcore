@@ -30,11 +30,15 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
+	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	"github.com/c5c3/forge/operators/barbican/internal/metrics"
@@ -252,6 +256,30 @@ type storeFixture struct {
 // newStoreFixture builds a reconciler over a fake client pre-loaded with objs,
 // wired to the given OpenBao fake and to the fixed test clock.
 func newStoreFixture(bao *fakeOpenBaoClient, objs ...client.Object) *storeFixture {
+	// A store always attaches to a parent Barbican, and the reconciler resolves
+	// the cluster its children belong on through that parent — without one it
+	// holds on WaitingForParent rather than guessing. Seed the shared parent so
+	// every fixture describes a store that can actually run; a test that brings
+	// its own (a targeted parent, say) keeps it.
+	if !containsBarbican(objs) {
+		objs = append(objs, testBarbican())
+	}
+	return newStoreFixtureWithoutParent(bao, objs...)
+}
+
+// containsBarbican reports whether the caller already supplied a parent CR.
+func containsBarbican(objs []client.Object) bool {
+	for _, obj := range objs {
+		if _, ok := obj.(*barbicanv1alpha1.Barbican); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// newStoreFixtureWithoutParent builds the fixture from exactly the objects
+// given. Only the dangling-spec.barbicanRef case needs it.
+func newStoreFixtureWithoutParent(bao *fakeOpenBaoClient, objs ...client.Object) *storeFixture {
 	scheme := testScheme()
 	factory := &fakeClientFactory{client: bao}
 	minter := &fakeTokenMinter{token: "sa-token"}
@@ -1314,6 +1342,168 @@ func TestSecretStoreReconcile_ConfigProjection(t *testing.T) {
 			g.Expect(result.RequeueAfter).To(Equal(RequeueSecretStoreRetry))
 		})
 	}
+}
+
+// --- parent target cluster -------------------------------------------------
+
+// fakeTargetCluster exposes a fake client as a registered cluster. Embedding the
+// interface leaves every other method nil, which panics if the resolver ever
+// reaches for one.
+type fakeTargetCluster struct {
+	cluster.Cluster
+	c client.Client
+}
+
+func (f fakeTargetCluster) GetClient() client.Client { return f.c }
+
+// childrenResolver registers exactly one cluster under every name and records
+// the names it was asked for, so a test can prove which ref the store resolved —
+// or that it resolved none at all.
+type childrenResolver struct {
+	children client.Client
+	names    []mcruntime.ClusterName
+}
+
+func (r *childrenResolver) GetCluster(_ context.Context, name mcruntime.ClusterName) (cluster.Cluster, error) {
+	r.names = append(r.names, name)
+	return fakeTargetCluster{c: r.children}, nil
+}
+
+// targetedBarbican returns the parent Barbican placing its workload on the named
+// target cluster.
+func targetedBarbican(target string) *barbicanv1alpha1.Barbican {
+	barbican := testBarbican()
+	barbican.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: target}
+	return barbican
+}
+
+// childrenFake builds the target cluster's client: core/apps plus the openbao
+// API a managed store reads its instance from, and deliberately WITHOUT the
+// barbican group — a store read or a status write misrouted to it then fails
+// with "no kind is registered" instead of passing on an empty result.
+func childrenFake(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("building the children scheme: %v", err)
+	}
+	if err := openbaov1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("building the children scheme: %v", err)
+	}
+	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
+}
+
+// TestSecretStoreReconcile_MintsCredentialsOnParentTargetCluster pins the split
+// a store inherits from its parent: the CR and its status stay on the management
+// cluster, while the OpenBao instance it authenticates against and the AppRole
+// credentials Secret it mints live on the cluster the parent's
+// spec.targetClusterRef names — the same one the API pods read that Secret from.
+func TestSecretStoreReconcile_MintsCredentialsOnParentTargetCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := testManagedStore()
+	bao := newProvisionedFakeClient()
+	// Management carries the store and its parent; the instance and its trust
+	// bundle exist ONLY on the target cluster, so a misrouted read reports
+	// InstanceNotFound instead of provisioning.
+	f := newStoreFixture(bao, store, targetedBarbican("edge-1"))
+	children := childrenFake(t, testInstance(true), testCASecret())
+	resolver := &childrenResolver{children: children}
+	f.reconciler.Resolver = resolver
+
+	_, err := f.reconcile(t, store)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(resolver.names).To(Equal([]mcruntime.ClusterName{"edge-1"}),
+		"the store resolves the target its parent names, having none of its own")
+
+	credsKey := client.ObjectKey{Namespace: testNamespace, Name: testStoreName + approleSecretNameSuffix}
+	var onChildren corev1.Secret
+	g.Expect(children.Get(ctx, credsKey, &onChildren)).To(Succeed())
+	g.Expect(onChildren.Data).To(HaveKeyWithValue(barbicanv1alpha1.OpenBaoSecretIDKey, []byte(testSecretID)))
+	g.Expect(f.reconciler.Get(ctx, credsKey, &corev1.Secret{})).NotTo(Succeed(),
+		"the credentials must not be minted beside the CR, where nothing consumes them")
+
+	// The instance side resolved from the target cluster too: its CA bundle is
+	// what the OpenBao client was configured with.
+	g.Expect(f.bao.configs).NotTo(BeEmpty())
+	g.Expect(f.bao.configs[0].CACertPEM).To(Equal([]byte(testCAPEM)))
+
+	// The status landed on the management cluster, the only one that carries the
+	// store CR at all.
+	updated := f.store(t)
+	g.Expect(condition(updated, conditionTypeProvisioningReady).Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(condition(updated, conditionTypeCredentialsReady).Status).To(Equal(metav1.ConditionTrue))
+}
+
+// TestSecretStoreReconcile_TargetClusterUnavailableGatesCredentials pins the
+// failure surface of a parent naming a cluster nothing registered: the store
+// reports it on its first gate condition and waits, rather than minting a
+// credential into the cluster the workload does not run on.
+func TestSecretStoreReconcile_TargetClusterUnavailableGatesCredentials(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	store := testManagedStore()
+	// The instance and its trust bundle ARE seeded here, so only the gate can
+	// explain an absent credentials Secret.
+	f := newStoreFixture(newProvisionedFakeClient(), store, targetedBarbican("nowhere"),
+		testInstance(true), testCASecret())
+	f.reconciler.Resolver = unresolvableResolver{}
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred(),
+		"an unregistered target cluster is a wait, not a reconcile failure")
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+
+	updated := f.store(t)
+	cond := condition(updated, conditionTypeCredentialsReady)
+	g.Expect(cond).NotTo(BeNil(), "the first gate condition must carry the failure")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+
+	var creds corev1.Secret
+	err = f.reconciler.Get(context.Background(),
+		client.ObjectKey{Namespace: testNamespace, Name: testStoreName + approleSecretNameSuffix}, &creds)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "nothing may be written before the target resolves")
+	g.Expect(f.bao.configs).To(BeEmpty(), "the server is not contacted either")
+}
+
+// TestSecretStoreReconcile_MissingParentHoldsCredentials covers the dangling
+// spec.barbicanRef, which is also the ordinary case of a GitOps apply landing
+// the store before its parent: there is no parent to read a target off, so
+// nothing says which cluster this store's credentials belong on. The store has
+// to wait for one. Falling back to the management cluster would MINT there — a
+// live AppRole secret ID against the wrong OpenBao, left behind unreferenced as
+// soon as the parent appears and the ref resolves elsewhere.
+func TestSecretStoreReconcile_MissingParentHoldsCredentials(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	store := testManagedStore()
+	f := newStoreFixtureWithoutParent(newProvisionedFakeClient(), store, testInstance(true), testCASecret())
+	resolver := &childrenResolver{children: childrenFake(t)}
+	f.reconciler.Resolver = resolver
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred(), "an absent parent is a wait, not a reconcile failure")
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+	g.Expect(resolver.names).To(BeEmpty(), "a store whose parent is gone costs no cluster lookup")
+
+	updated := f.store(t)
+	cond := condition(updated, conditionTypeCredentialsReady)
+	g.Expect(cond).NotTo(BeNil(), "the first gate condition must carry the wait")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForParent))
+	g.Expect(cond.Message).To(ContainSubstring(testBarbicanName))
+
+	var creds corev1.Secret
+	err = f.reconciler.Get(context.Background(),
+		client.ObjectKey{Namespace: testNamespace, Name: testStoreName + approleSecretNameSuffix}, &creds)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"no credential may be minted while the target cluster is unknown")
+	g.Expect(f.bao.configs).To(BeEmpty(), "the server is not contacted either")
 }
 
 // --- watch mappers ---------------------------------------------------------

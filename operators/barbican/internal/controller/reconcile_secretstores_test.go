@@ -12,9 +12,12 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/forge/internal/common/secrets"
@@ -48,11 +51,42 @@ func projectStores(t *testing.T, objs ...client.Object) (*BarbicanReconciler, *b
 	t.Helper()
 	barbican := testBarbican()
 	r := newBarbicanTestReconciler(append([]client.Object{barbican}, objs...)...)
-	res, projection, err := r.reconcileSecretStores(context.Background(), barbican)
+	res, projection, err := r.reconcileSecretStores(context.Background(), r.Client, barbican)
 	if !res.IsZero() {
 		t.Fatalf("the secret-store step must never requeue, got %v", res)
 	}
 	return r, barbican, projection, err
+}
+
+// TestSecretStoreListReadsManagementCluster proves the attached-stores list
+// stays on the embedded client while the credentials it names are read on the
+// children client. The children fake is built without the barbican API group,
+// so a misrouted List fails with "no kind is registered" instead of quietly
+// returning an empty set that would look like "no store attached".
+func TestSecretStoreListReadsManagementCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := testBarbican()
+	store := readyStore(managedStoreNamed(testStoreName, true))
+	// Management: the CR and its sibling store, with the field index the list
+	// selects on (SetupWithManager registers the same extractor).
+	r := newBarbicanTestReconciler(barbican, store)
+
+	childrenScheme := runtime.NewScheme()
+	g.Expect(clientgoscheme.AddToScheme(childrenScheme)).To(Succeed())
+	children := fake.NewClientBuilder().
+		WithScheme(childrenScheme).
+		WithObjects(managedApproleSecret(testStoreName, testRoleID, testSecretID)).
+		Build()
+
+	_, projection, err := r.reconcileSecretStores(context.Background(), children, barbican)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(projection.valid).To(BeTrue(), "the sibling store was found beside the CR")
+	g.Expect(projection.defaultStore).To(Equal(testStoreName))
+	// The AppRole credentials the store named resolved from the children
+	// cluster, which is the only place they exist in this test.
+	g.Expect(projection.sections["vault_plugin"]).To(HaveKeyWithValue("approle_role_id", testRoleID))
+	g.Expect(projection.secretIDDigest).NotTo(BeEmpty())
 }
 
 func TestReconcileSecretStores_NoStoresAttached(t *testing.T) {
@@ -307,7 +341,7 @@ func TestReconcileSecretStores_DroppedStoreWarnsAndUpdatesTheRecord(t *testing.T
 		readyStore(managedStoreNamed("store-b", true)),
 		managedApproleSecret("store-b", "role-id-value", "secret-id-value"))
 
-	_, projection, err := r.reconcileSecretStores(context.Background(), barbican)
+	_, projection, err := r.reconcileSecretStores(context.Background(), r.Client, barbican)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.valid).To(BeTrue())
 	g.Expect(barbican.Status.ProjectedSecretStores).To(Equal([]string{"store-b"}))
@@ -332,7 +366,7 @@ func TestReconcileSecretStores_UnchangedStoreSetIsSilent(t *testing.T) {
 		readyStore(managedStoreNamed("primary", true)),
 		managedApproleSecret("primary", "role-id-value", "secret-id-value"))
 
-	_, projection, err := r.reconcileSecretStores(context.Background(), barbican)
+	_, projection, err := r.reconcileSecretStores(context.Background(), r.Client, barbican)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.valid).To(BeTrue())
 	g.Expect(barbican.Status.ProjectedSecretStores).To(Equal([]string{"primary"}))
@@ -459,7 +493,7 @@ func TestReconcileSecretStores_CredentialBlipKeepsTheProjectedHost(t *testing.T)
 	// CredentialsReady is absent: the store contributes nothing to this pass.
 	r := newBarbicanTestReconciler(barbican, managedStoreNamed("primary", true))
 
-	_, projection, err := r.reconcileSecretStores(context.Background(), barbican)
+	_, projection, err := r.reconcileSecretStores(context.Background(), r.Client, barbican)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.valid).To(BeFalse())
@@ -486,7 +520,7 @@ func TestReconcileSecretStores_RetainedHostIgnoresTheLiveStoreSpec(t *testing.T)
 	repointed := brownfieldStoreNamed("external", "https://attacker.example.com:9999", true)
 	r := newBarbicanTestReconciler(barbican, repointed)
 
-	_, projection, err := r.reconcileSecretStores(context.Background(), barbican)
+	_, projection, err := r.reconcileSecretStores(context.Background(), r.Client, barbican)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.valid).To(BeFalse())
@@ -503,7 +537,7 @@ func TestReconcileSecretStores_UnprojectedStoreContributesNoRetainedHost(t *test
 	barbican := testBarbican()
 	r := newBarbicanTestReconciler(barbican, managedStoreNamed("primary", true))
 
-	_, projection, err := r.reconcileSecretStores(context.Background(), barbican)
+	_, projection, err := r.reconcileSecretStores(context.Background(), r.Client, barbican)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.valid).To(BeFalse())
@@ -529,7 +563,7 @@ func TestReconcileSecretStores_ListErrorPropagates(t *testing.T) {
 		Build()
 	r := &BarbicanReconciler{Client: c, Scheme: testScheme(), Recorder: record.NewFakeRecorder(10)}
 
-	_, projection, err := r.reconcileSecretStores(context.Background(), barbican)
+	_, projection, err := r.reconcileSecretStores(context.Background(), r.Client, barbican)
 
 	g.Expect(err).To(MatchError(boom), "the client error must stay unwrappable")
 	g.Expect(err).To(MatchError(ContainSubstring("listing BarbicanSecretStores")))
