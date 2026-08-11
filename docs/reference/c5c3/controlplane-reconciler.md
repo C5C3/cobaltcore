@@ -56,7 +56,8 @@ const leaderElectionID = "c5c3.openstack.c5c3.io"
 bootstrap.Run(bootstrap.ManagerConfig{
     Scheme:           scheme,
     LeaderElectionID: leaderElectionID,
-    SetupFunc: func(mgr ctrl.Manager, webhooks bool) error {
+    SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool) error {
+        mgr := mcMgr.GetLocalManager()
         if err := (&controller.ControlPlaneReconciler{
             Client:   mgr.GetClient(),
             Scheme:   mgr.GetScheme(),

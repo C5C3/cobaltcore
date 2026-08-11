@@ -32,6 +32,7 @@ import (
 	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
 // leaderElectionID is the unique leader-election lock identifier for the c5c3
@@ -96,7 +97,11 @@ func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
 		Scheme:           scheme,
 		LeaderElectionID: leaderElectionID,
-		SetupFunc: func(mgr ctrl.Manager, webhooks bool, maxConcurrentReconciles int) error {
+		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int) error {
+			// The ControlPlane reconciler projects service CRs on the management
+			// cluster and never creates children of its own, so it stays on the
+			// local manager.
+			mgr := mcMgr.GetLocalManager()
 			// Register the operator's Prometheus collectors on the
 			// controller-runtime registry before wiring controllers, so a
 			// duplicate-registration fails startup cleanly instead of panicking

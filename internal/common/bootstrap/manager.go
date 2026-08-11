@@ -11,12 +11,16 @@ import (
 	"os"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 )
 
 // ManagerConfig holds per-operator configuration for the shared manager
@@ -40,13 +44,16 @@ type ManagerConfig struct {
 	//
 	Namespace string
 
-	// SetupFunc is an optional callback invoked after manager creation to
-	// register controllers and webhooks. This is where each operator wires
-	// its reconcilers. Corresponds to the +kubebuilder:scaffold:builder
-	// marker in a standard kubebuilder project. The third argument is the
-	// resolved --max-concurrent-reconciles value; controllers that do not tune
-	// concurrency may ignore it.
-	SetupFunc func(mgr ctrl.Manager, webhooks bool, maxConcurrentReconciles int) error
+	// SetupFunc is an optional, nil-safe callback invoked after manager
+	// creation to register controllers and webhooks. This is where each
+	// operator wires its reconcilers. Corresponds to the
+	// +kubebuilder:scaffold:builder marker in a standard kubebuilder project.
+	// It receives the multicluster manager, because only that manager can hand
+	// out a client for a cluster other than the local one; operators that talk
+	// to the management cluster only take its GetLocalManager. The third
+	// argument is the resolved --max-concurrent-reconciles value; controllers
+	// that do not tune concurrency may ignore it.
+	SetupFunc func(mgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int) error
 
 	// RegisterFlags is an optional, nil-safe hook for registering
 	// operator-specific flags on the shared flag set. It is invoked after the
@@ -54,6 +61,15 @@ type ManagerConfig struct {
 	// binary-local flags (e.g. keystone's --federation-metadata-allow-cidrs)
 	// without leaking them into the other operator binaries.
 	RegisterFlags func(fs *flag.FlagSet)
+
+	// TargetClusters enables the kubeconfig cluster provider: the operator
+	// watches --clusters-namespace for registration Secrets and engages the
+	// clusters they describe. Only operators whose reconcilers resolve
+	// spec.targetClusterRef set it; one that only ever touches the management
+	// cluster (the c5c3 ControlPlane operator) leaves it false and then holds
+	// no per-cluster caches, no target-cluster credentials, and needs no Secret
+	// read outside its own namespace.
+	TargetClusters bool
 }
 
 // validate returns an error if required fields are missing.
@@ -70,13 +86,31 @@ func (c *ManagerConfig) validate() error {
 // cacheOptions builds cache.Options with the given sync period and optional
 // namespace restriction. When namespace is non-empty, DefaultNamespaces is
 // populated to restrict the informer cache to that single namespace.
-func cacheOptions(syncPeriod time.Duration, namespace string) cache.Options {
+//
+// Secrets are the exception: their informer is widened to clustersNamespace as
+// well, because the kubeconfig cluster provider reads the target-cluster
+// registration Secrets from there and a cache restricted to the operator's own
+// namespace would never deliver them. An unrestricted cache (empty namespace)
+// already covers clustersNamespace, so it stays untouched. An empty
+// clustersNamespace is dropped rather than written into the map: the empty
+// string is the cache's all-namespaces key and would widen the Secret informer
+// cluster-wide.
+func cacheOptions(syncPeriod time.Duration, namespace, clustersNamespace string) cache.Options {
 	opts := cache.Options{
 		SyncPeriod: &syncPeriod,
 	}
 	if namespace != "" {
 		opts.DefaultNamespaces = map[string]cache.Config{
 			namespace: {},
+		}
+		secretNamespaces := map[string]cache.Config{
+			namespace: {},
+		}
+		if clustersNamespace != "" {
+			secretNamespaces[clustersNamespace] = cache.Config{}
+		}
+		opts.ByObject = map[client.Object]cache.ByObject{
+			&corev1.Secret{}: {Namespaces: secretNamespaces},
 		}
 	}
 	return opts
@@ -104,6 +138,7 @@ type runOptions struct {
 	enableWebhooks          bool
 	syncPeriod              time.Duration
 	namespace               string
+	clustersNamespace       string
 	maxConcurrentReconciles int
 	zapOpts                 zap.Options
 }
@@ -135,6 +170,9 @@ func parseRunOptions(cfg ManagerConfig, args []string) (runOptions, error) {
 		"If set, restricts the operator to watch resources in this namespace only. "+
 			"Used for namespace-scoped deployments. "+
 			"Overrides ManagerConfig.Namespace when provided.")
+	fs.StringVar(&o.clustersNamespace, "clusters-namespace", "c5c3-clusters",
+		"Namespace on the management cluster watched for target-cluster "+
+			"kubeconfig Secrets.")
 
 	fs.IntVar(&o.maxConcurrentReconciles, "max-concurrent-reconciles", DefaultMaxConcurrentReconciles,
 		"Maximum number of reconciles that may run concurrently for a controller "+
@@ -178,10 +216,15 @@ func Run(cfg ManagerConfig) error {
 func run(cfg ManagerConfig, opts runOptions) error {
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts.zapOpts)))
 	setupLog := ctrl.Log.WithName("setup")
+	ctx := ctrl.SetupSignalHandler()
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	provider := kubeconfigprovider.New(kubeconfigprovider.Options{
+		Namespace: opts.clustersNamespace,
+	})
+
+	mgr, err := mcmanager.New(ctrl.GetConfigOrDie(), provider, ctrl.Options{
 		Scheme: cfg.Scheme,
-		Cache:  cacheOptions(opts.syncPeriod, opts.namespace),
+		Cache:  cacheOptions(opts.syncPeriod, opts.namespace, opts.clustersNamespace),
 		Metrics: metricsserver.Options{
 			BindAddress: opts.metricsAddr,
 		},
@@ -191,6 +234,12 @@ func run(cfg ManagerConfig, opts runOptions) error {
 	})
 	if err != nil {
 		return fmt.Errorf("unable to start manager: %w", err)
+	}
+
+	// The provider's engagement machinery has to be registered before the
+	// controllers, so that cluster engagement precedes the first reconcile.
+	if err := provider.SetupWithManager(ctx, mgr); err != nil {
+		return fmt.Errorf("unable to set up cluster provider: %w", err)
 	}
 
 	if cfg.SetupFunc != nil {
@@ -210,7 +259,7 @@ func run(cfg ManagerConfig, opts runOptions) error {
 		setupLog.Info("namespace-scoped mode enabled", "namespace", opts.namespace)
 	}
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		return fmt.Errorf("problem running manager: %w", err)
 	}
 	return nil
