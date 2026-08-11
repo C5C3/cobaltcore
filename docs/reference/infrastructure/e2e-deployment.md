@@ -349,7 +349,7 @@ Covers the openbao-operator and the proving `OpenBaoCluster` instance:
 | --- | --- | --- | --- |
 | 1 | openbao-operator Deployment ready + HelmRelease Ready | `openbao-operator-system` | `Deployment`, `HelmRelease` |
 | 2 | Unseal-key ExternalSecret SecretSynced, and the instance's `ownerReference` adoption of the Secret it materialized | `openstack` | `ExternalSecret`, `Secret`, `OpenBaoCluster` |
-| 3 | OpenBaoCluster `Available` with `readyReplicas: 1` | `openstack` | `OpenBaoCluster` |
+| 3 | OpenBaoCluster `Available` with `readyReplicas: 1`, `APIServerNetworkReady`, and a non-empty `spec.network.apiServerEndpointIPs` | `openstack` | `OpenBaoCluster` |
 | 4 | Kubernetes auth to AppRole to KV v2 round-trip, including a rejected login with a wrong secret ID | `openstack` | `script` (`kubectl exec` into the instance pod) |
 | 5 | Pod deletion, then the replacement pod reports `sealed: false` without any unseal command | `openstack` | `script` (`kubectl exec` into the instance pod) |
 

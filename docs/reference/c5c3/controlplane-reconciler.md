@@ -1467,6 +1467,26 @@ identity, the Kubernetes auth method, and the two policies scoping them) run onc
 against freshly initialised storage, so changing them requires recreating the
 instance and its PVC.
 
+The instance's `spec.network` carries two allowlists. `trustedIngressPeers` names
+the barbican operator's pods and the Barbican API pods, the only sources admitted
+to the API port. `apiServerEndpointIPs` is the egress half, and
+`resolveAPIServerEndpointIPs` resolves it per pass from the EndpointSlice
+`kubernetes` in `default`, deduplicated and sorted. Without it the operator-rendered
+NetworkPolicy allows the API server only at the in-cluster service VIP on port 443,
+which a CNI enforcing egress against the post-DNAT destination never matches, and
+the instance loses the API server: raft auto-join times out, self-init cannot
+complete, and the partial raft state wedges every later initialization attempt.
+Sorting keeps the desired-versus-live comparison from reading endpoint reordering as
+drift, and the read goes through the uncached reader so no cluster-wide EndpointSlice
+informer starts for one well-known object.
+
+That resolution fails closed. An instance created without the egress rules is
+recoverable only by deleting it together with its PVC, so a pass that cannot resolve
+the addresses writes no `OpenBaoCluster` at all and reports
+`BarbicanReady=False/BarbicanOpenBaoError`. Under `rbac.namespaceScoped`, where the
+operator's Role cannot read across into `default`, every dedicated store takes that
+path.
+
 The store, and with it the child, waits until the instance is `Available`
 (`BarbicanReady=False/WaitingForOpenBaoInstance`): a store attached to an
 instance that is still initialising reports `ProvisioningDenied` and would have to

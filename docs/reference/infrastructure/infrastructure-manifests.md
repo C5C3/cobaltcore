@@ -958,7 +958,7 @@ on. All live in the `openstack` namespace except the cluster-scoped ClusterRoleB
 | `Certificate` | `cert-manager.io/v1` | `openbao-instance-tls-ca` | Delivers the trust-domain CA into the fixed-name Secret the operator reads (data key `ca.crt`) |
 | `ServiceAccount` | `v1` | `openbao-instance-provisioner` | Client identity the Kubernetes-auth role `provisioner` binds to |
 | `ClusterRoleBinding` | `rbac.authorization.k8s.io/v1` | `openbao-instance-auth-delegator` | Grants `system:auth-delegator` to the operator-created instance ServiceAccount `openbao-instance-serviceaccount` |
-| `OpenBaoCluster` | `openbao.org/v1alpha1` | `openbao-instance` | Profile `Development`, version `2.6.1`, one replica, 1Gi raft storage, TLS mode `External`, static seal, self-init enabled, applied `paused` |
+| `OpenBaoCluster` | `openbao.org/v1alpha1` | `openbao-instance` | Profile `Development`, version `2.6.1`, one replica, 1Gi raft storage, TLS mode `External`, static seal, self-init enabled, applied `paused`, API-server egress patched in at deploy time |
 
 The instance runs in every kind deploy, so the primitives a managed Barbican secret store
 needs are exercised with no Barbican attached: static-seal auto-unseal, cert-manager TLS
@@ -1049,6 +1049,23 @@ re-seeded while the instance's own PVC survives. No PushSecret targets the path.
 > create Secrets in the namespace before the instance first initializes can plant a seal
 > key of their choosing. Accepted because this instance is CI/dev-only; a production
 > instance must not depend on that guard.
+
+**API-server egress.** The operator wraps the instance pods in a deny-by-default
+NetworkPolicy and derives the API-server egress rule from the in-cluster service VIP on
+port 443. kindnet enforces egress against the post-DNAT destination from kind 0.32
+onwards, and the packet it inspects is addressed to the API server's own endpoint on port
+6443, so the VIP rule never matches. The instance then loses the API server: raft
+auto-join times out, self-init cannot complete, and the partial raft state wedges every
+later initialization attempt, recoverable only by deleting the CR together with its PVC.
+
+`spec.network.apiServerEndpointIPs` closes that gap with one egress rule per address on
+port 6443. The manifest sets no value, because a kind node address does not survive a
+cluster re-creation. `hack/deploy-infra.sh` reads the addresses from the EndpointSlice
+`kubernetes` in `default`, which kube-apiserver maintains itself, and applies them in the
+same patch that un-pauses the CR, so the operator's first reconcile already renders the
+rules. Resolving no address aborts the deploy. The operator reports its own verdict on the
+result as condition `APIServerNetworkReady`, which stays `Unknown` with reason
+`APIServerEndpointIPsRecommended` while only the service VIP is allowed.
 
 **Self-init surface.** The operator renders `spec.selfInit.requests` into OpenBao's
 initialize stanzas, which run once against freshly initialized storage; OpenBao revokes
