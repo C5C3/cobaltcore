@@ -251,7 +251,8 @@ func withBarbicanGatesPassed(objs []client.Object) []client.Object {
 func newBarbicanTestReconciler(t *testing.T, objs ...client.Object) *ControlPlaneReconciler {
 	t.Helper()
 	s := barbicanTestScheme(t)
-	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(withBarbicanGatesPassed(objs)...).
+	cb := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(seedAPIServerEndpointSlice(withBarbicanGatesPassed(objs))...).
 		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
 			&openbaov1alpha1.OpenBaoCluster{})
 	return &ControlPlaneReconciler{Client: cb.Build(), Scheme: s}

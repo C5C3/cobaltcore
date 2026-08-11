@@ -443,6 +443,20 @@ coordination.k8s.io/leases rule required for leader election.
     - watch
     - create
     - delete
+# discovery.k8s.io - endpointslices
+# Read-only on the single well-known EndpointSlice default/kubernetes, which
+# carries the addresses the API server answers on. A dedicated Barbican secret
+# store projects them into the OpenBaoCluster's
+# spec.network.apiServerEndpointIPs, without which the operator-rendered
+# NetworkPolicy denies the instance its API-server egress on a CNI that enforces
+# against the post-DNAT destination. No list or watch: the name is well known and
+# the read goes through the uncached reader.
+- apiGroups:
+    - discovery.k8s.io
+  resources:
+    - endpointslices
+  verbs:
+    - get
 # core - events
 - apiGroups:
     - ""

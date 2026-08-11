@@ -12,9 +12,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -517,13 +519,21 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 ) (*openbaov1alpha1.OpenBaoCluster, error) {
 	key := types.NamespacedName{Name: barbicanOpenBaoName(cp), Namespace: cp.BarbicanNamespace()}
 
+	// Resolved before the read, so a cluster whose API-server endpoints cannot be
+	// determined writes no instance at all. See resolveAPIServerEndpointIPs for why
+	// this fails closed rather than projecting without the egress allowance.
+	apiServerIPs, err := r.resolveAPIServerEndpointIPs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	instance := &openbaov1alpha1.OpenBaoCluster{}
-	err := r.Get(ctx, key, instance)
+	err = r.Get(ctx, key, instance)
 	switch {
 	case apierrors.IsNotFound(err):
 		instance.Name = key.Name
 		instance.Namespace = key.Namespace
-		instance.Spec = r.barbicanOpenBaoClusterSpec(cp)
+		instance.Spec = r.barbicanOpenBaoClusterSpec(cp, apiServerIPs)
 		instance.Spec.Storage = openbaov1alpha1.StorageConfig{Size: barbicanOpenBaoStorageSize}
 		if oerr := claimChildOwnership(cp, instance, r.Scheme); oerr != nil {
 			return nil, fmt.Errorf("claiming ownership of OpenBaoCluster %q: %w", key.Name, oerr)
@@ -537,7 +547,7 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 		if aerr := refuseForeignAdoption(cp, instance, r.Scheme); aerr != nil {
 			return nil, aerr
 		}
-		desired := r.barbicanOpenBaoClusterSpec(cp)
+		desired := r.barbicanOpenBaoClusterSpec(cp, apiServerIPs)
 		desired.Storage = instance.Spec.Storage
 		if !equality.Semantic.DeepEqual(instance.Spec, desired) {
 			instance.Spec = desired
@@ -562,7 +572,9 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 // from the ControlPlane name, so a re-created ControlPlane of the same name meets
 // the previous instance's data-<instance>-0 PVC — raft storage initialised under a
 // seal key that no longer exists — and never unseals.
-func (r *ControlPlaneReconciler) barbicanOpenBaoClusterSpec(cp *c5c3v1alpha1.ControlPlane) openbaov1alpha1.OpenBaoClusterSpec {
+func (r *ControlPlaneReconciler) barbicanOpenBaoClusterSpec(
+	cp *c5c3v1alpha1.ControlPlane, apiServerIPs []string,
+) openbaov1alpha1.OpenBaoClusterSpec {
 	name, namespace := barbicanOpenBaoName(cp), cp.BarbicanNamespace()
 	return openbaov1alpha1.OpenBaoClusterSpec{
 		Profile:  openbaov1alpha1.ProfileDevelopment,
@@ -582,12 +594,82 @@ func (r *ControlPlaneReconciler) barbicanOpenBaoClusterSpec(cp *c5c3v1alpha1.Con
 		DeletionPolicy: openbaov1alpha1.DeletionPolicyDeletePVCs,
 		Network: &openbaov1alpha1.NetworkConfig{
 			TrustedIngressPeers: barbicanOpenBaoIngressPeers(namespace, r.barbicanOperatorNamespace()),
+			// The API server, addressed by the endpoints it actually answers on.
+			// The openbao-operator's own detection allows the in-cluster service
+			// VIP on port 443, which a CNI enforcing egress against the post-DNAT
+			// destination never matches.
+			APIServerEndpointIPs: apiServerIPs,
 		},
 		SelfInit: &openbaov1alpha1.SelfInitConfig{
 			Enabled:  true,
 			Requests: barbicanOpenBaoSelfInitRequests(name, namespace),
 		},
 	}
+}
+
+// The Kubernetes API server publishes its own endpoints in this EndpointSlice.
+// kube-apiserver maintains it directly rather than through the controller manager,
+// so it is present on every conformant cluster.
+const (
+	apiServerEndpointSliceName      = "kubernetes"
+	apiServerEndpointSliceNamespace = "default"
+)
+
+// resolveAPIServerEndpointIPs returns the addresses the Kubernetes API server
+// answers on, deduplicated and sorted.
+//
+// The openbao-operator renders a deny-by-default NetworkPolicy over the instance
+// pods and derives its API-server egress rule from the in-cluster service VIP on
+// port 443. A CNI that enforces egress against the post-DNAT destination, which
+// kindnet does from kind 0.32 onwards, never matches that rule: the packet it
+// inspects is addressed to the API server's own endpoint on port 6443.
+// spec.network.apiServerEndpointIPs is the upstream remedy, adding one
+// least-privilege egress rule per address on that port. The operator does not
+// auto-detect the addresses, because doing so needs cluster permissions outside
+// its trust model, so they are resolved here instead.
+//
+// The read goes through the uncached reader. A cached Get would have
+// controller-runtime start a cluster-wide EndpointSlice informer to track a single
+// well-known object.
+//
+// Both failure paths return an error rather than a partial answer, and the caller
+// then writes no instance at all. An instance that comes up without these rules
+// does not merely stay unavailable: its raft auto-join times out, self-init never
+// completes, and the partial raft state wedges every later initialisation attempt,
+// recoverable only by deleting the instance together with its PVC.
+func (r *ControlPlaneReconciler) resolveAPIServerEndpointIPs(ctx context.Context) ([]string, error) {
+	key := types.NamespacedName{
+		Name:      apiServerEndpointSliceName,
+		Namespace: apiServerEndpointSliceNamespace,
+	}
+
+	slice := &discoveryv1.EndpointSlice{}
+	if err := r.apiReader().Get(ctx, key, slice); err != nil {
+		return nil, fmt.Errorf("getting EndpointSlice %s/%s: %w",
+			apiServerEndpointSliceNamespace, apiServerEndpointSliceName, err)
+	}
+
+	seen := make(map[string]struct{})
+	ips := make([]string, 0, len(slice.Endpoints))
+	for i := range slice.Endpoints {
+		for _, address := range slice.Endpoints[i].Addresses {
+			if _, duplicate := seen[address]; duplicate {
+				continue
+			}
+			seen[address] = struct{}{}
+			ips = append(ips, address)
+		}
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("EndpointSlice %s/%s carries no API server address",
+			apiServerEndpointSliceNamespace, apiServerEndpointSliceName)
+	}
+
+	// Sorted because ensureBarbicanOpenBaoCluster compares the desired spec against
+	// the live one, and the API server guarantees no endpoint order. Unsorted, a
+	// reordered read would look like drift and rewrite the instance every pass.
+	slices.Sort(ips)
+	return ips, nil
 }
 
 // barbicanOpenBaoIngressPeers names the only two sources allowed to reach the

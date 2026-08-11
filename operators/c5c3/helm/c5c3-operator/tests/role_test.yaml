@@ -41,7 +41,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should have 30 rules matching ClusterRole
+  - it: should have 31 rules matching ClusterRole
     set:
       rbac:
         namespaceScoped: true
@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 30
+          count: 31
 
   - it: should grant full CRUD on controlplanes
     set:
@@ -542,6 +542,28 @@ tests:
               - watch
               - create
               - delete
+
+  # The rule is shared with the ClusterRole, so it renders here too. In
+  # namespace-scoped mode it grants nothing usable: the EndpointSlice the operator
+  # reads lives in default, not in the operator's own namespace, so a dedicated
+  # Barbican secret store fails closed on BarbicanOpenBaoError rather than
+  # projecting an instance whose API-server egress would be denied.
+  - it: should grant get-only on endpointslices
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - discovery.k8s.io
+            resources:
+              - endpointslices
+            verbs:
+              - get
 
   - it: should restrict events to create and patch only
     set:

@@ -28,6 +28,7 @@ import (
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -1583,6 +1584,24 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	g.Expect(instance.Spec.TLS.Mode).To(Equal(openbaov1alpha1.TLSModeExternal))
 	g.Expect(instance.Spec.Unseal).NotTo(BeNil())
 	g.Expect(instance.Spec.Unseal.Type).To(Equal("static"))
+
+	// The API-server egress allowance, resolved from the live cluster rather than
+	// hardcoded: without it the operator-rendered NetworkPolicy admits only the
+	// in-cluster service VIP on port 443, which a CNI enforcing egress against the
+	// post-DNAT destination never matches. envtest's apiserver maintains the
+	// well-known EndpointSlice itself, so the addresses asserted here are the ones a
+	// real cluster would supply.
+	g.Expect(instance.Spec.Network).NotTo(BeNil())
+	apiServerSlice := &discoveryv1.EndpointSlice{}
+	g.Expect(c.Get(ctx, client.ObjectKey{
+		Name: apiServerEndpointSliceName, Namespace: apiServerEndpointSliceNamespace,
+	}, apiServerSlice)).To(Succeed(), "envtest must publish the API server's EndpointSlice")
+	liveAddresses := []string{}
+	for i := range apiServerSlice.Endpoints {
+		liveAddresses = append(liveAddresses, apiServerSlice.Endpoints[i].Addresses...)
+	}
+	g.Expect(liveAddresses).NotTo(BeEmpty())
+	g.Expect(instance.Spec.Network.APIServerEndpointIPs).To(ConsistOf(liveAddresses))
 
 	// self-init is one-shot, so the eight requests and their order are frozen at
 	// create time: a mount or auth method must be enabled before anything writes

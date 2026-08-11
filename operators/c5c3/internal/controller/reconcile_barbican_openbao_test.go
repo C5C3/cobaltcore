@@ -15,7 +15,9 @@ import (
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -77,9 +79,53 @@ func barbicanOpenBaoControlPlane() *c5c3v1alpha1.ControlPlane {
 	}
 }
 
-// barbicanOpenBaoReconciler builds a reconciler over a fake client seeded with cp
-// and objs.
+// defaultKubernetesEndpointSlice builds the EndpointSlice kube-apiserver publishes
+// for itself under a well-known name. Seeding it is what makes a fake client
+// resemble the cluster the reconciler actually runs against: every conformant
+// cluster carries one, and resolveAPIServerEndpointIPs reads it on every dedicated
+// secret-store pass.
+//
+// With no addresses given it carries one, which is the single-control-plane shape
+// of a kind cluster.
+func defaultKubernetesEndpointSlice(addresses ...string) *discoveryv1.EndpointSlice {
+	if len(addresses) == 0 {
+		addresses = []string{"172.18.0.2"}
+	}
+	return &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      apiServerEndpointSliceName,
+			Namespace: apiServerEndpointSliceNamespace,
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints:   []discoveryv1.Endpoint{{Addresses: addresses}},
+	}
+}
+
+// seedAPIServerEndpointSlice appends the API server's EndpointSlice unless the
+// caller already supplied one, so a test that pins particular addresses keeps
+// control of them without the fake client rejecting a duplicate key.
+func seedAPIServerEndpointSlice(objs []client.Object) []client.Object {
+	for _, o := range objs {
+		if _, ok := o.(*discoveryv1.EndpointSlice); ok {
+			return objs
+		}
+	}
+	return append(objs, defaultKubernetesEndpointSlice())
+}
+
+// barbicanOpenBaoReconciler builds a reconciler over a fake client seeded with cp,
+// objs, and the API server's EndpointSlice.
 func barbicanOpenBaoReconciler(t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object) *ControlPlaneReconciler {
+	t.Helper()
+	return barbicanOpenBaoReconcilerWithExactSeeds(t, cp, seedAPIServerEndpointSlice(objs)...)
+}
+
+// barbicanOpenBaoReconcilerWithExactSeeds seeds exactly what it is given, so a test
+// can model the cluster resolveAPIServerEndpointIPs must refuse to project against:
+// one with no API-server EndpointSlice at all.
+func barbicanOpenBaoReconcilerWithExactSeeds(
+	t *testing.T, cp *c5c3v1alpha1.ControlPlane, objs ...client.Object,
+) *ControlPlaneReconciler {
 	t.Helper()
 	s := barbicanOpenBaoTestScheme(t)
 	seeded := append([]client.Object{cp}, objs...)
@@ -237,6 +283,129 @@ func TestEnsureBarbicanOpenBao_PinsIngressPeers(t *testing.T) {
 		HaveKeyWithValue("kubernetes.io/metadata.name", barbicanOpenBaoTestNamespace))
 	g.Expect(peers[1].PodSelector.MatchLabels).To(
 		HaveKeyWithValue("app.kubernetes.io/name", "barbican"))
+}
+
+// TestEnsureBarbicanOpenBao_ProjectsAPIServerEndpointIPs asserts the API server's
+// endpoint addresses reach the instance's egress allowlist, deduplicated and
+// sorted. Without them the operator-rendered NetworkPolicy allows only the
+// in-cluster service VIP on port 443, which a CNI enforcing egress against the
+// post-DNAT destination never matches, and the instance loses the API server.
+//
+// The sort is load-bearing rather than cosmetic: the projection is compared
+// against the live spec on every pass, and the API server guarantees no endpoint
+// order, so an unsorted list would read as drift and rewrite the instance forever.
+func TestEnsureBarbicanOpenBao_ProjectsAPIServerEndpointIPs(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanOpenBaoControlPlane()
+	// Deliberately unsorted, and with one address repeated across two endpoints.
+	r := barbicanOpenBaoReconciler(t, cp, &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      apiServerEndpointSliceName,
+			Namespace: apiServerEndpointSliceNamespace,
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints: []discoveryv1.Endpoint{
+			{Addresses: []string{"172.18.0.4", "172.18.0.2"}},
+			{Addresses: []string{"172.18.0.3", "172.18.0.2"}},
+		},
+	})
+
+	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	instance := getBarbicanOpenBaoCluster(t, r, cp)
+	g.Expect(instance.Spec.Network).NotTo(BeNil())
+	g.Expect(instance.Spec.Network.APIServerEndpointIPs).To(
+		Equal([]string{"172.18.0.2", "172.18.0.3", "172.18.0.4"}))
+	// The egress allowance is additive to the ingress allowlist, never a
+	// replacement for it.
+	g.Expect(instance.Spec.Network.TrustedIngressPeers).To(HaveLen(2))
+}
+
+// TestEnsureBarbicanOpenBao_TracksAPIServerEndpointDrift asserts a live instance is
+// corrected when the API server's endpoint addresses change, which is what happens
+// when a kind cluster is re-created under a control plane of the same name.
+func TestEnsureBarbicanOpenBao_TracksAPIServerEndpointDrift(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanOpenBaoControlPlane()
+	r := barbicanOpenBaoReconciler(t, cp, defaultKubernetesEndpointSlice("172.18.0.2"))
+
+	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getBarbicanOpenBaoCluster(t, r, cp).Spec.Network.APIServerEndpointIPs).
+		To(Equal([]string{"172.18.0.2"}))
+
+	slice := &discoveryv1.EndpointSlice{}
+	key := types.NamespacedName{
+		Name:      apiServerEndpointSliceName,
+		Namespace: apiServerEndpointSliceNamespace,
+	}
+	g.Expect(r.Get(context.Background(), key, slice)).To(Succeed())
+	slice.Endpoints = []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.7"}}}
+	g.Expect(r.Update(context.Background(), slice)).To(Succeed())
+
+	_, err = r.ensureBarbicanOpenBao(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getBarbicanOpenBaoCluster(t, r, cp).Spec.Network.APIServerEndpointIPs).
+		To(Equal([]string{"10.0.0.7"}))
+}
+
+// TestEnsureBarbicanOpenBao_RefusesWithoutAPIServerEndpointSlice asserts the
+// projection fails closed when the EndpointSlice is absent, writing no instance at
+// all.
+//
+// Creating one anyway is the expensive mistake. An instance whose NetworkPolicy
+// denies API-server egress cannot finish self-init, and the partial raft state it
+// leaves behind wedges every later initialisation attempt: recovering it means
+// deleting the instance together with its PVC, so an instance never created is
+// strictly cheaper than one created wrong.
+func TestEnsureBarbicanOpenBao_RefusesWithoutAPIServerEndpointSlice(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanOpenBaoControlPlane()
+	r := barbicanOpenBaoReconcilerWithExactSeeds(t, cp)
+
+	available, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("getting EndpointSlice default/kubernetes"))
+	g.Expect(available).To(BeFalse())
+
+	instance := &openbaov1alpha1.OpenBaoCluster{}
+	instanceKey := types.NamespacedName{
+		Namespace: cp.BarbicanNamespace(), Name: barbicanOpenBaoName(cp),
+	}
+	g.Expect(apierrors.IsNotFound(r.Get(context.Background(), instanceKey, instance))).To(BeTrue(),
+		"no OpenBaoCluster may be written when the API-server addresses cannot be resolved")
+}
+
+// TestEnsureBarbicanOpenBao_RefusesEmptyAPIServerEndpointSlice asserts the same
+// fail-closed outcome for an EndpointSlice that exists but carries no address. A
+// present-but-empty slice would otherwise project an empty allowlist, which the
+// openbao-operator renders as no egress rule at all — the very posture this
+// resolves.
+func TestEnsureBarbicanOpenBao_RefusesEmptyAPIServerEndpointSlice(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanOpenBaoControlPlane()
+	r := barbicanOpenBaoReconciler(t, cp, &discoveryv1.EndpointSlice{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      apiServerEndpointSliceName,
+			Namespace: apiServerEndpointSliceNamespace,
+		},
+		AddressType: discoveryv1.AddressTypeIPv4,
+		Endpoints:   []discoveryv1.Endpoint{},
+	})
+
+	available, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(
+		"EndpointSlice default/kubernetes carries no API server address"))
+	g.Expect(available).To(BeFalse())
+
+	instance := &openbaov1alpha1.OpenBaoCluster{}
+	instanceKey := types.NamespacedName{
+		Namespace: cp.BarbicanNamespace(), Name: barbicanOpenBaoName(cp),
+	}
+	g.Expect(apierrors.IsNotFound(r.Get(context.Background(), instanceKey, instance))).To(BeTrue(),
+		"no OpenBaoCluster may be written when the API-server addresses cannot be resolved")
 }
 
 // TestEnsureBarbicanOpenBao_ProjectsSelfInitRequests pins the eight self-init
