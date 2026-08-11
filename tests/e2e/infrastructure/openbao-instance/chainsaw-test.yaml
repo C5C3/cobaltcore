@@ -121,8 +121,20 @@ spec:
           metadata:
             name: openbao-instance
             namespace: openstack
+          spec:
+            network:
+              # Patched in by hack/deploy-infra.sh together with the un-pause,
+              # resolved from EndpointSlice default/kubernetes. Empty here means the
+              # operator's NetworkPolicy allows only the in-cluster service VIP on
+              # port 443, which kindnet stops honouring from kind 0.32 onwards.
+              (length(apiServerEndpointIPs) > `0`): true
           status:
             (conditions[?type == 'Available']):
+            - status: "True"
+            # The openbao-operator's own verdict on the egress posture. It reports
+            # Unknown (reason APIServerEndpointIPsRecommended) while only the service
+            # VIP is allowed, so True is what proves the post-DNAT rules are rendered.
+            (conditions[?type == 'APIServerNetworkReady']):
             - status: "True"
             readyReplicas: 1
   # ── Step 4: Kubernetes auth to AppRole to KV round-trip ─────────────────

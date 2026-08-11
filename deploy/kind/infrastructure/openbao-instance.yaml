@@ -35,6 +35,17 @@
 # The key is never rotated: a static seal that loses its key material seals the
 # instance permanently.
 #
+# API-server egress: spec.network.apiServerEndpointIPs is DELIBERATELY absent here
+# and patched in by hack/deploy-infra.sh, in the same patch that un-pauses the CR.
+# The operator's default-deny NetworkPolicy derives its API-server egress from the
+# in-cluster service VIP on port 443, which kindnet stops honouring from kind 0.32
+# onwards: it enforces egress against the post-DNAT destination, the API server's
+# own endpoint on 6443. Without the explicit allowance the instance loses the API
+# server, raft auto-join times out, and the partial raft state wedges every later
+# initialization attempt. The value cannot live in this file because a kind node
+# address does not survive a cluster re-creation, so the deploy resolves it from
+# EndpointSlice default/kubernetes at apply time.
+#
 # ACCEPTED RISK (openbao-operator upstream): the operator's adoption guard for a
 # pre-existing unseal Secret is metadata carrying the CR's UID — either a
 # controller ownerReference or the openbao.org/owner-uid annotation — and that

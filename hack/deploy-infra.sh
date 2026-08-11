@@ -2519,8 +2519,44 @@ main() {
     -o jsonpath='{.metadata.uid}')
   kubectl patch secret openbao-instance-unseal-key -n openstack --type merge \
     -p "{\"metadata\":{\"ownerReferences\":[{\"apiVersion\":\"openbao.org/v1alpha1\",\"kind\":\"OpenBaoCluster\",\"name\":\"openbao-instance\",\"uid\":\"${openbao_instance_uid}\",\"controller\":true,\"blockOwnerDeletion\":true}]}}"
+
+  # The instance's API-server egress, resolved from the live cluster and applied in
+  # the SAME patch as the un-pause, so the operator's very first reconcile already
+  # renders the port-6443 rules.
+  #
+  # The openbao-operator's default-deny NetworkPolicy derives its API-server egress
+  # from the in-cluster service VIP on port 443. kindnet enforces egress against the
+  # POST-DNAT destination from kind 0.32 onwards, so that rule never matches: the
+  # packet it inspects is addressed to the API server's own endpoint on 6443. The
+  # instance then loses the API server, raft auto-join times out, self-init never
+  # completes, and the partial raft state wedges every later initialization attempt
+  # — recoverable only by deleting the CR AND its PVC.
+  #
+  # The addresses are read rather than hardcoded because a kind node address does
+  # not survive a cluster re-creation. EndpointSlice default/kubernetes is where
+  # kube-apiserver publishes them itself, so it needs no controller-manager and
+  # exists on every conformant cluster.
+  # The read runs under `if !` so a failed lookup reports through the same branch as
+  # an empty one, rather than tripping `set -e` and dying without saying why.
+  local api_server_endpoint_ips=""
+  if ! api_server_endpoint_ips="$(kubectl get endpointslice kubernetes -n default -o json |
+    jq -c '[.endpoints[]?.addresses[]?] | unique')"; then
+    api_server_endpoint_ips=""
+  fi
+  if [[ -z "${api_server_endpoint_ips}" || "${api_server_endpoint_ips}" == "[]" ]]; then
+    log "ERROR: no API server address in EndpointSlice default/kubernetes."
+    log "       The OpenBao instance's NetworkPolicy would deny its API-server"
+    log "       egress, wedging the raft store on first initialization. Aborting"
+    log "       rather than un-pausing the instance into that state."
+    exit 1
+  fi
+  log "Pinning the instance's API-server egress to ${api_server_endpoint_ips}..."
+
+  # A JSON merge patch merges objects key by key, so spec.network.trustedIngressPeers
+  # from the overlay survives. A later `kubectl apply -k` re-run cannot drop the
+  # field either: it appears in neither the overlay nor the last-applied annotation.
   kubectl patch openbaocluster openbao-instance -n openstack --type merge \
-    -p '{"spec":{"paused":false}}'
+    -p "{\"spec\":{\"network\":{\"apiServerEndpointIPs\":${api_server_endpoint_ips}},\"paused\":false}}"
 
   # Garage object store (S3 backend for the Glance e2e suites). Its
   # GarageCluster/GarageBucket/GarageKey CRs live in shared-services and are

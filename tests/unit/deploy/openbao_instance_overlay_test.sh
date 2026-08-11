@@ -50,6 +50,7 @@ KIND_INFRA_DIR="$PROJECT_ROOT/deploy/kind/infrastructure"
 PROD_INFRA_DIR="$PROJECT_ROOT/deploy/flux-system/infrastructure"
 INSTANCE_FILE="$KIND_INFRA_DIR/openbao-instance.yaml"
 OPERATOR_RELEASE_FILE="$PROJECT_ROOT/deploy/flux-system/releases/openbao-operator.yaml"
+DEPLOY_SCRIPT="$PROJECT_ROOT/hack/deploy-infra.sh"
 
 # The complete permanent configuration of the instance, in declaration order.
 SELF_INIT_REQUESTS="barbican_kv barbican_secretstore_policy approle_auth \
@@ -213,11 +214,53 @@ test_operator_release_runs_multi_tenant() {
   assert_eq "the kind overlay onboards the openstack namespace" "openstack" "$tenant_target"
 }
 
+# --- Test 5: the deploy resolves the API-server egress and patches it with the un-pause ---
+test_deploy_patches_api_server_egress() {
+  echo "Test: hack/deploy-infra.sh resolves the API-server endpoints and patches them with the un-pause"
+
+  if [[ ! -f "$DEPLOY_SCRIPT" ]]; then
+    echo "  FAIL: $DEPLOY_SCRIPT does not exist"
+    FAIL=$((FAIL + 3))
+    return
+  fi
+
+  # The overlay must NOT set the field: a kind node address does not survive a
+  # cluster re-creation, so a hardcoded value would be wrong on the second cluster.
+  if command -v yq >/dev/null 2>&1; then
+    local overlay_ips
+    overlay_ips="$(yq -r \
+      'select(.kind == "OpenBaoCluster") | .spec.network.apiServerEndpointIPs // "null"' \
+      "$INSTANCE_FILE" 2>/dev/null | head -n1)"
+    assert_eq "the overlay hardcodes no API-server endpoint IPs" "null" "$overlay_ips"
+  else
+    echo "  SKIP: yq not installed (1 check skipped)"
+    SKIP=$((SKIP + 1))
+  fi
+
+  # Resolved from the object kube-apiserver maintains for itself.
+  assert_file_contains "the deploy resolves the API-server endpoints from EndpointSlice default/kubernetes" \
+    "$DEPLOY_SCRIPT" "kubectl get endpointslice kubernetes -n default"
+
+  # One patch, not two. Un-pausing first would let the operator render its
+  # NetworkPolicy without the port-6443 egress rules, and the instance wedges its
+  # raft store on that first reconcile — recoverable only by deleting the CR AND
+  # its PVC. The single patch is therefore the contract, not a tidiness preference.
+  # Backslashes are stripped so the assertions hold for either shell quoting style.
+  local unpause_patch
+  unpause_patch="$(grep -A2 'kubectl patch openbaocluster openbao-instance' "$DEPLOY_SCRIPT" |
+    tr -d '\\' | tr '\n' ' ')"
+  assert_contains "the un-pause patch carries apiServerEndpointIPs" \
+    "$unpause_patch" "apiServerEndpointIPs"
+  assert_contains "the un-pause patch still clears spec.paused" \
+    "$unpause_patch" '"paused":false'
+}
+
 # --- Run ---
 test_kind_overlay_renders_paused_instance
 test_production_overlay_renders_no_instance
 test_self_init_request_list_is_pinned
 test_operator_release_runs_multi_tenant
+test_deploy_patches_api_server_egress
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
