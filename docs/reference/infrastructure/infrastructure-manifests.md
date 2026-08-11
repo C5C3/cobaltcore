@@ -961,9 +961,9 @@ on. All live in the `openstack` namespace except the cluster-scoped ClusterRoleB
 | `OpenBaoCluster` | `openbao.org/v1alpha1` | `openbao-instance` | Profile `Development`, version `2.6.1`, one replica, 1Gi raft storage, TLS mode `External`, static seal, self-init enabled, applied `paused` |
 
 The instance runs in every kind deploy, so the primitives a managed Barbican secret store
-needs are exercised before Barbican itself lands: static-seal auto-unseal, cert-manager
-TLS in External mode, declarative self-init, and the AppRole and Kubernetes-auth methods
-a service and its operator log in with.
+needs are exercised with no Barbican attached: static-seal auto-unseal, cert-manager TLS
+in External mode, declarative self-init, and the AppRole and Kubernetes-auth methods a
+service and its operator log in with.
 
 **Why it is kind-only.** Everything above is a proving posture, not a production one. The
 `Development` profile is what keeps the instance on a single node — one replica, so no
@@ -973,8 +973,10 @@ external-KMS unseal and three replicas, is the production control, and this inst
 deliberately opts out of it to exercise the static-seal path. Shipping that from
 `deploy/flux-system/infrastructure/` would put it, a cluster-scoped RBAC binding, and a
 self-initialized AppRole with no consumer into every production deployment. Only the
-[openbao-operator](#openbao-operator) itself ships in the production base; the
-production-shaped instance arrives with the Barbican onboarding.
+[openbao-operator](#openbao-operator) itself ships in the production base. The dedicated
+instance a ControlPlane projects for a managed Barbican secret store carries the same
+proving-grade `Development` profile; a `Hardened` production-shaped instance is still
+future work.
 [`tests/unit/deploy/openbao_instance_overlay_test.sh`](https://github.com/c5c3/forge/blob/main/tests/unit/deploy/openbao_instance_overlay_test.sh)
 asserts both directions of that split.
 

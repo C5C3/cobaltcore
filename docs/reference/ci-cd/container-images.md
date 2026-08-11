@@ -707,4 +707,5 @@ the user via `USER openstack` without needing its own user creation step.
 The `# DEVIATION` comment appears in `images/python-base/Dockerfile` (where the
 user is created) and in every service Dockerfile that uses it instead of a
 per-service user (`images/keystone/Dockerfile`, `images/horizon/Dockerfile`,
-`images/glance/Dockerfile`, `images/placement/Dockerfile`).
+`images/glance/Dockerfile`, `images/placement/Dockerfile`,
+`images/barbican/Dockerfile`).
