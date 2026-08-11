@@ -159,18 +159,29 @@ func defaultMultiDomain(md *MultiDomainSpec) {
 
 // ValidateCreate implements admission.Validator[*Horizon].
 func (w *HorizonWebhook) ValidateCreate(ctx context.Context, obj *Horizon) (admission.Warnings, error) {
-	return nil, w.validate(ctx, obj)
+	return nil, w.validate(ctx, obj, nil)
 }
 
 // ValidateUpdate implements admission.Validator[*Horizon].
-func (w *HorizonWebhook) ValidateUpdate(ctx context.Context, _, newObj *Horizon) (admission.Warnings, error) {
-	return nil, w.validate(ctx, newObj)
+//
+// spec.targetClusterRef is compared across both revisions here, the webhook-layer
+// twin of the two transition CEL rules on HorizonSpec.
+func (w *HorizonWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Horizon) (admission.Warnings, error) {
+	updateErrs := validation.TargetClusterRefImmutable(
+		field.NewPath("spec", "targetClusterRef"),
+		oldObj.Spec.TargetClusterRef,
+		newObj.Spec.TargetClusterRef,
+	)
+	return nil, w.validate(ctx, newObj, updateErrs)
 }
 
 // validate runs all validation rules against the Horizon spec, accumulating
 // every violation so users see the full list in one admission response.
 // ctx is required for cluster-scoped lookups (PriorityClass validation).
-func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon) error {
+// extra carries the errors accumulated by the caller (on update the
+// targetClusterRef immutability check) so they aggregate into the single Invalid
+// error alongside the rest.
+func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon, extra field.ErrorList) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
 
@@ -200,6 +211,7 @@ func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon) error {
 	// type, via the shared validator.
 	allErrs = append(allErrs, validation.CacheXOR(specPath.Child("cache"), &h.Spec.Cache)...)
 	allErrs = append(allErrs, validation.SecretStoreRef(specPath.Child("secretStoreRef"), h.Spec.SecretStoreRef)...)
+	allErrs = append(allErrs, validation.TargetClusterRef(specPath.Child("targetClusterRef"), h.Spec.TargetClusterRef)...)
 
 	// Defense-in-depth keystoneEndpoint URL check alongside the
 	// +kubebuilder:validation:Pattern=^https?:// marker. The dashboard hands
@@ -477,6 +489,8 @@ func (w *HorizonWebhook) validate(ctx context.Context, h *Horizon) error {
 			},
 		)...)
 	}
+
+	allErrs = append(allErrs, extra...)
 
 	if len(allErrs) > 0 {
 		return apierrors.NewInvalid(

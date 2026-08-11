@@ -174,22 +174,31 @@ func validateNameLength(name string) field.ErrorList {
 // (scaling replicas, say) from retroactively rejecting a CR whose extraConfig was
 // accepted at create time but has since been invalidated by a regenerated
 // catalog.
+//
+// spec.targetClusterRef is compared across both revisions here, the webhook-layer
+// twin of the two transition CEL rules on BarbicanSpec.
 func (w *BarbicanWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Barbican) (admission.Warnings, error) {
 	var warnings admission.Warnings
-	var catalogErrs field.ErrorList
+	var updateErrs field.ErrorList
 	if extraConfigCatalogInputsChanged(oldObj, newObj) {
-		warnings, catalogErrs = validateExtraConfigOptions(field.NewPath("spec"), newObj)
+		warnings, updateErrs = validateExtraConfigOptions(field.NewPath("spec"), newObj)
 	}
+	updateErrs = append(updateErrs, validation.TargetClusterRefImmutable(
+		field.NewPath("spec", "targetClusterRef"),
+		oldObj.Spec.TargetClusterRef,
+		newObj.Spec.TargetClusterRef,
+	)...)
 	warnings = append(warnings, warnDBCleanRetention(oldObj.Spec.DBClean, newObj.Spec.DBClean)...)
-	return warnings, w.validate(ctx, newObj, catalogErrs)
+	return warnings, w.validate(ctx, newObj, updateErrs)
 }
 
 // validate runs all validation rules against the Barbican spec, accumulating
 // every violation so users see the full list in one admission response.
 // ctx is required for cluster-scoped lookups (PriorityClass validation).
 // extra carries the errors accumulated by the caller (the extraConfig
-// option-catalog check, and on create the metadata.name bound) so they aggregate
-// into the single Invalid error alongside the rest.
+// option-catalog check, on create the metadata.name bound, and on update the
+// targetClusterRef immutability check) so they aggregate into the single Invalid
+// error alongside the rest.
 func (w *BarbicanWebhook) validate(ctx context.Context, b *Barbican, extra field.ErrorList) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
@@ -229,6 +238,7 @@ func (w *BarbicanWebhook) validate(ctx context.Context, b *Barbican, extra field
 	// commonv1.CacheSpec carries, for objects that bypass schema validation.
 	allErrs = append(allErrs, validation.CacheNoControlChars(specPath.Child("cache"), &b.Spec.Cache)...)
 	allErrs = append(allErrs, validation.SecretStoreRef(specPath.Child("secretStoreRef"), b.Spec.SecretStoreRef)...)
+	allErrs = append(allErrs, validation.TargetClusterRef(specPath.Child("targetClusterRef"), b.Spec.TargetClusterRef)...)
 
 	// keystoneEndpoint is required (rendered as [keystone_authtoken] auth_url):
 	// empty is Required, otherwise it must parse as an absolute http(s) URL.

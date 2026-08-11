@@ -195,6 +195,45 @@ func SecretStoreRef(fldPath *field.Path, ref *commonv1.SecretStoreRefSpec) field
 	return allErrs
 }
 
+// TargetClusterRef is the defense-in-depth twin of the CRD markers on
+// commonv1.TargetClusterRefSpec: a nil ref is valid (the CR's children are
+// created on the management cluster the operator runs on) and an empty name is
+// field.Required. It lets the webhook reject an unresolvable cluster reference
+// that reached etcd through a bypass of schema validation.
+func TargetClusterRef(fldPath *field.Path, ref *commonv1.TargetClusterRefSpec) field.ErrorList {
+	if ref == nil {
+		return nil
+	}
+	if ref.Name == "" {
+		return field.ErrorList{field.Required(fldPath.Child("name"), "target cluster name must be set")}
+	}
+	return nil
+}
+
+// TargetClusterRefImmutable is the webhook-layer twin of the two transition CEL
+// rules the workload CRDs carry on spec.targetClusterRef: adding the ref,
+// removing it, or renaming it is rejected once the CR exists, because each of
+// those strands the children already created on the previously selected
+// cluster. Both messages contain the string the CEL rules pin, so a client sees
+// the same wording whichever layer rejects the update.
+func TargetClusterRefImmutable(fldPath *field.Path, oldRef, newRef *commonv1.TargetClusterRefSpec) field.ErrorList {
+	if (oldRef == nil) != (newRef == nil) {
+		return field.ErrorList{field.Invalid(
+			fldPath,
+			newRef,
+			"targetClusterRef is immutable (adding or removing it after creation is not permitted)",
+		)}
+	}
+	if oldRef == nil || oldRef.Name == newRef.Name {
+		return nil
+	}
+	return field.ErrorList{field.Invalid(
+		fldPath.Child("name"),
+		newRef.Name,
+		"targetClusterRef is immutable (the children already exist on the previously named cluster)",
+	)}
+}
+
 // PriorityClassExists verifies that name references an existing
 // scheduling.k8s.io/v1 PriorityClass, catching typos at admission time. A nil
 // Reader or an empty name skips the check — programmatically constructed

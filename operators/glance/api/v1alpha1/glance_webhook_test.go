@@ -2301,3 +2301,81 @@ func TestGlanceValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
 		g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the glance 2025.2 option catalog"))
 	})
 }
+
+// --- spec.targetClusterRef (multicluster routing) ---
+
+// TestGlanceValidateUpdate_TargetClusterRefAddedRejected covers the presence
+// flip upwards: the children of a CR created without a target cluster live on
+// the management cluster, so naming one afterwards is rejected.
+func TestGlanceValidateUpdate_TargetClusterRefAddedRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	old := validGlance()
+	newObj := validGlance()
+	newObj.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+
+	_, err := w.ValidateUpdate(context.Background(), old, newObj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("targetClusterRef is immutable"))
+}
+
+// TestGlanceValidateUpdate_TargetClusterRefRemovedRejected covers the presence
+// flip downwards: dropping the ref would strand the children on the cluster it
+// named.
+func TestGlanceValidateUpdate_TargetClusterRefRemovedRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	old := validGlance()
+	old.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	newObj := validGlance()
+
+	_, err := w.ValidateUpdate(context.Background(), old, newObj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("targetClusterRef is immutable"))
+}
+
+// TestGlanceValidateUpdate_TargetClusterRefChangedRejected covers a rename,
+// which would re-point the reconciler at a cluster that holds none of the
+// children.
+func TestGlanceValidateUpdate_TargetClusterRefChangedRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	old := validGlance()
+	old.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	newObj := validGlance()
+	newObj.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-2"}
+
+	_, err := w.ValidateUpdate(context.Background(), old, newObj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("targetClusterRef is immutable"))
+}
+
+// TestGlanceValidateUpdate_TargetClusterRefUnchangedAccepted proves the check
+// freezes only the ref: an unrelated edit on a CR that names a target cluster
+// still passes.
+func TestGlanceValidateUpdate_TargetClusterRefUnchangedAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	old := validGlance()
+	old.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	newObj := old.DeepCopy()
+	newObj.Spec.Deployment.Replicas = 2
+
+	_, err := w.ValidateUpdate(context.Background(), old, newObj)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// TestGlanceValidateCreate_EmptyTargetClusterRefNameRejected is the
+// defense-in-depth twin of the MinLength marker: a present ref must name a
+// cluster.
+func TestGlanceValidateCreate_EmptyTargetClusterRefNameRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &GlanceWebhook{}
+	obj := validGlance()
+	obj.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: ""}
+
+	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("targetClusterRef.name"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("target cluster name must be set"))
+}

@@ -624,3 +624,81 @@ func TestBarbicanValidateUpdate_ExtraConfigCatalogGate(t *testing.T) {
 	g.Expect(err).To(gomega.HaveOccurred())
 	g.Expect(err.Error()).To(gomega.ContainSubstring("no such option in the barbican 2025.2 option catalog"))
 }
+
+// --- spec.targetClusterRef (multicluster routing) ---
+
+// TestBarbicanValidateUpdate_TargetClusterRefAddedRejected covers the presence
+// flip upwards: the children of a CR created without a target cluster live on
+// the management cluster, so naming one afterwards is rejected.
+func TestBarbicanValidateUpdate_TargetClusterRefAddedRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &BarbicanWebhook{}
+	old := validBarbican()
+	newObj := validBarbican()
+	newObj.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+
+	_, err := w.ValidateUpdate(context.Background(), old, newObj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("targetClusterRef is immutable"))
+}
+
+// TestBarbicanValidateUpdate_TargetClusterRefRemovedRejected covers the presence
+// flip downwards: dropping the ref would strand the children on the cluster it
+// named.
+func TestBarbicanValidateUpdate_TargetClusterRefRemovedRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &BarbicanWebhook{}
+	old := validBarbican()
+	old.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	newObj := validBarbican()
+
+	_, err := w.ValidateUpdate(context.Background(), old, newObj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("targetClusterRef is immutable"))
+}
+
+// TestBarbicanValidateUpdate_TargetClusterRefChangedRejected covers a rename,
+// which would re-point the reconciler at a cluster that holds none of the
+// children.
+func TestBarbicanValidateUpdate_TargetClusterRefChangedRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &BarbicanWebhook{}
+	old := validBarbican()
+	old.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	newObj := validBarbican()
+	newObj.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-2"}
+
+	_, err := w.ValidateUpdate(context.Background(), old, newObj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("targetClusterRef is immutable"))
+}
+
+// TestBarbicanValidateUpdate_TargetClusterRefUnchangedAccepted proves the check
+// freezes only the ref: an unrelated edit on a CR that names a target cluster
+// still passes.
+func TestBarbicanValidateUpdate_TargetClusterRefUnchangedAccepted(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &BarbicanWebhook{}
+	old := validBarbican()
+	old.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge-1"}
+	newObj := old.DeepCopy()
+	newObj.Spec.Deployment.Replicas = 2
+
+	_, err := w.ValidateUpdate(context.Background(), old, newObj)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+}
+
+// TestBarbicanValidateCreate_EmptyTargetClusterRefNameRejected is the
+// defense-in-depth twin of the MinLength marker: a present ref must name a
+// cluster.
+func TestBarbicanValidateCreate_EmptyTargetClusterRefNameRejected(t *testing.T) {
+	g := gomega.NewWithT(t)
+	w := &BarbicanWebhook{}
+	obj := validBarbican()
+	obj.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: ""}
+
+	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).To(gomega.HaveOccurred())
+	g.Expect(err.Error()).To(gomega.ContainSubstring("targetClusterRef.name"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("target cluster name must be set"))
+}

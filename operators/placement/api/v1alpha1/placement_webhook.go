@@ -159,21 +159,29 @@ func (w *PlacementWebhook) ValidateCreate(ctx context.Context, obj *Placement) (
 // (scaling replicas, say) from retroactively rejecting a CR whose extraConfig was
 // accepted at create time but has since been invalidated by a regenerated
 // catalog.
+//
+// spec.targetClusterRef is compared across both revisions here, the webhook-layer
+// twin of the two transition CEL rules on PlacementSpec.
 func (w *PlacementWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Placement) (admission.Warnings, error) {
 	var warnings admission.Warnings
-	var catalogErrs field.ErrorList
+	var updateErrs field.ErrorList
 	if extraConfigCatalogInputsChanged(oldObj, newObj) {
-		warnings, catalogErrs = validateExtraConfigOptions(field.NewPath("spec"), newObj)
+		warnings, updateErrs = validateExtraConfigOptions(field.NewPath("spec"), newObj)
 	}
-	return warnings, w.validate(ctx, newObj, catalogErrs)
+	updateErrs = append(updateErrs, validation.TargetClusterRefImmutable(
+		field.NewPath("spec", "targetClusterRef"),
+		oldObj.Spec.TargetClusterRef,
+		newObj.Spec.TargetClusterRef,
+	)...)
+	return warnings, w.validate(ctx, newObj, updateErrs)
 }
 
 // validate runs all validation rules against the Placement spec, accumulating
 // every violation so users see the full list in one admission response.
 // ctx is required for cluster-scoped lookups (PriorityClass validation).
 // extra carries the errors accumulated by the caller (the extraConfig
-// option-catalog check) so they aggregate into the single Invalid error
-// alongside the rest.
+// option-catalog check, and on update the targetClusterRef immutability check)
+// so they aggregate into the single Invalid error alongside the rest.
 func (w *PlacementWebhook) validate(ctx context.Context, p *Placement, extra field.ErrorList) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
@@ -213,6 +221,7 @@ func (w *PlacementWebhook) validate(ctx context.Context, p *Placement, extra fie
 	// commonv1.CacheSpec carries, for objects that bypass schema validation.
 	allErrs = append(allErrs, validation.CacheNoControlChars(specPath.Child("cache"), &p.Spec.Cache)...)
 	allErrs = append(allErrs, validation.SecretStoreRef(specPath.Child("secretStoreRef"), p.Spec.SecretStoreRef)...)
+	allErrs = append(allErrs, validation.TargetClusterRef(specPath.Child("targetClusterRef"), p.Spec.TargetClusterRef)...)
 
 	// keystoneEndpoint is required (rendered as [keystone_authtoken] auth_url):
 	// empty is Required, otherwise it must parse as an absolute http(s) URL.

@@ -216,3 +216,53 @@ func TestSecretStoreRef(t *testing.T) {
 		})
 	}
 }
+
+func TestTargetClusterRef(t *testing.T) {
+	path := field.NewPath("spec", "targetClusterRef")
+	cases := []struct {
+		name     string
+		ref      *commonv1.TargetClusterRefSpec
+		wantErrs int
+		wantSub  string
+	}{
+		{"nil selects the management cluster", nil, 0, ""},
+		{"valid ref", &commonv1.TargetClusterRefSpec{Name: "edge-1"}, 0, ""},
+		{"empty name is required", &commonv1.TargetClusterRefSpec{}, 1, "targetClusterRef.name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs := TargetClusterRef(path, tc.ref)
+			g.Expect(errs).To(gomega.HaveLen(tc.wantErrs))
+			if tc.wantSub != "" {
+				g.Expect(errs.ToAggregate().Error()).To(gomega.ContainSubstring(tc.wantSub))
+			}
+		})
+	}
+}
+
+func TestTargetClusterRefImmutable(t *testing.T) {
+	path := field.NewPath("spec", "targetClusterRef")
+	cases := []struct {
+		name     string
+		oldRef   *commonv1.TargetClusterRefSpec
+		newRef   *commonv1.TargetClusterRefSpec
+		wantErrs int
+	}{
+		{"both nil is unchanged", nil, nil, 0},
+		{"same name is unchanged", &commonv1.TargetClusterRefSpec{Name: "edge-1"}, &commonv1.TargetClusterRefSpec{Name: "edge-1"}, 0},
+		{"adding the ref rejected", nil, &commonv1.TargetClusterRefSpec{Name: "edge-1"}, 1},
+		{"removing the ref rejected", &commonv1.TargetClusterRefSpec{Name: "edge-1"}, nil, 1},
+		{"renaming the ref rejected", &commonv1.TargetClusterRefSpec{Name: "edge-1"}, &commonv1.TargetClusterRefSpec{Name: "edge-2"}, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs := TargetClusterRefImmutable(path, tc.oldRef, tc.newRef)
+			g.Expect(errs).To(gomega.HaveLen(tc.wantErrs))
+			if tc.wantErrs > 0 {
+				g.Expect(errs.ToAggregate().Error()).To(gomega.ContainSubstring("targetClusterRef is immutable"))
+			}
+		})
+	}
+}
