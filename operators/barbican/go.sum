@@ -16,6 +16,8 @@ github.com/dc-tec/openbao-operator v0.0.0-20260715104034-1a88724c31ec h1:kN5BU3g
 github.com/dc-tec/openbao-operator v0.0.0-20260715104034-1a88724c31ec/go.mod h1:+E/0zfpjtL7GxwVhUrUcqvkJp68rqzrSSteIFYcko3k=
 github.com/dc-tec/openbao-operator v0.0.0-20260808005538-409f4827aa44 h1:Sj7N9iuMyp6Hyi8/mDvNzJyOIhs+qW5PXMBuSBxIAjE=
 github.com/dc-tec/openbao-operator v0.0.0-20260808005538-409f4827aa44/go.mod h1:32/MvdQKRlFXpGedjNqBnYHDThH6M4sTAoUhFAJpcIg=
+github.com/dc-tec/openbao-operator v0.0.0-20260809153555-40bc6cd5a2c2 h1:c4dwtT2wtNtkNk4Yt2lQnqvsgmYGadVM8q0Twl4FJXE=
+github.com/dc-tec/openbao-operator v0.0.0-20260809153555-40bc6cd5a2c2/go.mod h1:32/MvdQKRlFXpGedjNqBnYHDThH6M4sTAoUhFAJpcIg=
 github.com/distribution/reference v0.6.0 h1:0IXCQ5g4/QMHHkarYzh5l+u8T3t73zM5QvfrDyIgxBk=
 github.com/distribution/reference v0.6.0/go.mod h1:BbU0aIcezP1/5jX/8MP0YiH4SdvB5Y4f/wlDRiLyi3E=
 github.com/emicklei/go-restful/v3 v3.13.0 h1:C4Bl2xDndpU6nJ4bc1jXd+uTmYPVUwkD6bFY/oTyCes=

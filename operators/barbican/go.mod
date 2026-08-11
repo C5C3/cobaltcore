@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/c5c3/forge/internal/common v0.0.0
-	github.com/dc-tec/openbao-operator v0.0.0-20260808005538-409f4827aa44
+	github.com/dc-tec/openbao-operator v0.0.0-20260809153555-40bc6cd5a2c2
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260803120615-8552ed8d11d1
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.42.1
