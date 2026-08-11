@@ -28,7 +28,7 @@ func TestReconcileConfig_RendersLocalSettings(t *testing.T) {
 	h := testHorizon()
 	r := newTestReconciler(testScheme(), h)
 
-	name, err := r.reconcileConfig(context.Background(), h)
+	name, err := r.reconcileConfig(context.Background(), r.Client, h)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(name).To(HavePrefix("test-horizon-config-"))
 
@@ -77,7 +77,7 @@ func TestReconcileConfig_ExtraConfigOverridesDefaults(t *testing.T) {
 	}
 	r := newTestReconciler(testScheme(), h)
 
-	name, err := r.reconcileConfig(context.Background(), h)
+	name, err := r.reconcileConfig(context.Background(), r.Client, h)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cm corev1.ConfigMap
@@ -104,7 +104,7 @@ func TestReconcileConfig_ExtraConfigSecretKeyNeverEntersConfigMap(t *testing.T) 
 	}
 	r := newTestReconciler(testScheme(), h)
 
-	name, err := r.reconcileConfig(context.Background(), h)
+	name, err := r.reconcileConfig(context.Background(), r.Client, h)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cm corev1.ConfigMap
@@ -127,7 +127,7 @@ func TestReconcileConfig_AllowedHostsIncludesGatewayHostname(t *testing.T) {
 	h.Spec.Gateway = gatewaySpec()
 	r := newTestReconciler(testScheme(), h)
 
-	name, err := r.reconcileConfig(context.Background(), h)
+	name, err := r.reconcileConfig(context.Background(), r.Client, h)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cm corev1.ConfigMap
@@ -148,7 +148,7 @@ func TestReconcileConfig_InvalidExtraConfigJSONFails(t *testing.T) {
 	}
 	r := newTestReconciler(testScheme(), h)
 
-	_, err := r.reconcileConfig(context.Background(), h)
+	_, err := r.reconcileConfig(context.Background(), r.Client, h)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("rendering local_settings.py"))
 }
@@ -162,7 +162,7 @@ func TestReconcileConfig_PerLoggerLevelsReachLoggingDict(t *testing.T) {
 	}
 	r := newTestReconciler(testScheme(), h)
 
-	name, err := r.reconcileConfig(context.Background(), h)
+	name, err := r.reconcileConfig(context.Background(), r.Client, h)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cm corev1.ConfigMap
@@ -184,13 +184,13 @@ func TestPruneStaleConfigMaps_RetainsNewestAndCurrent(t *testing.T) {
 		h.Spec.ExtraConfig = map[string]apiextensionsv1.JSON{
 			"SESSION_TIMEOUT": {Raw: []byte(fmt.Sprintf(`%d`, 1000+i))},
 		}
-		name, err := r.reconcileConfig(ctx, h)
+		name, err := r.reconcileConfig(ctx, r.Client, h)
 		g.Expect(err).NotTo(HaveOccurred())
 		names = append(names, name)
 	}
 
 	current := names[len(names)-1]
-	g.Expect(r.pruneStaleConfigMaps(ctx, h, current)).To(Succeed())
+	g.Expect(r.pruneStaleConfigMaps(ctx, r.Client, h, current)).To(Succeed())
 
 	var cms corev1.ConfigMapList
 	g.Expect(r.List(ctx, &cms, client.InNamespace("default"),
@@ -431,7 +431,7 @@ func TestReconcileConfig_OwnedSettingOverrideReported(t *testing.T) {
 	}
 	r := newTestReconciler(testScheme(), h)
 
-	name, err := r.reconcileConfig(context.Background(), h)
+	name, err := r.reconcileConfig(context.Background(), r.Client, h)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := conditions.GetCondition(h.Status.Conditions, config.ConditionTypeExtraConfigHealthy)
@@ -467,7 +467,7 @@ func TestReconcileConfig_NoOwnedOverridesConditionTrue(t *testing.T) {
 	}
 	r := newTestReconciler(testScheme(), h)
 
-	_, err := r.reconcileConfig(context.Background(), h)
+	_, err := r.reconcileConfig(context.Background(), r.Client, h)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := conditions.GetCondition(h.Status.Conditions, config.ConditionTypeExtraConfigHealthy)

@@ -21,7 +21,7 @@ func TestReconcileSecrets_StoreNotReady(t *testing.T) {
 	h := testHorizon()
 	r := newTestReconciler(testScheme(), h, notReadyClusterSecretStore(openBaoClusterStoreName))
 
-	res, digest, err := r.reconcileSecrets(context.Background(), h)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, h)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -38,7 +38,7 @@ func TestReconcileSecrets_SecretMissing(t *testing.T) {
 	// Store ready, but neither the Secret nor its ExternalSecret exists.
 	r := newTestReconciler(testScheme(), h, readyClusterSecretStore(openBaoClusterStoreName))
 
-	res, digest, err := r.reconcileSecrets(context.Background(), h)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, h)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -62,7 +62,7 @@ func TestReconcileSecrets_SecretMissingExpectedKey(t *testing.T) {
 		secretKeySecret("horizon-secret-key", "default", "wrong-key", "value"),
 	)
 
-	res, digest, err := r.reconcileSecrets(context.Background(), h)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, h)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
@@ -82,7 +82,7 @@ func TestReconcileSecrets_ReadyReturnsDigest(t *testing.T) {
 		secretKeySecret("horizon-secret-key", "default", "secret-key", "super-secret"),
 	)
 
-	res, digest, err := r.reconcileSecrets(context.Background(), h)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, h)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -103,7 +103,7 @@ func TestReconcileSecrets_DigestChangesWithKeyMaterial(t *testing.T) {
 		readyClusterSecretStore(openBaoClusterStoreName),
 		secretKeySecret("horizon-secret-key", "default", "secret-key", "value-one"),
 	)
-	_, digest1, err := r1.reconcileSecrets(context.Background(), h)
+	_, digest1, err := r1.reconcileSecrets(context.Background(), r1.Client, h)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	r2 := newTestReconciler(
@@ -111,7 +111,7 @@ func TestReconcileSecrets_DigestChangesWithKeyMaterial(t *testing.T) {
 		readyClusterSecretStore(openBaoClusterStoreName),
 		secretKeySecret("horizon-secret-key", "default", "secret-key", "value-two"),
 	)
-	_, digest2, err := r2.reconcileSecrets(context.Background(), h)
+	_, digest2, err := r2.reconcileSecrets(context.Background(), r2.Client, h)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(digest1).NotTo(Equal(digest2), "a rotated SECRET_KEY must produce a different digest so the Deployment rolls")
@@ -133,7 +133,7 @@ func TestReconcileSecrets_NamespacedStoreReady_GatesThroughTenantStore(t *testin
 		secretKeySecret("horizon-secret-key", "default", "secret-key", "super-secret"),
 	)
 
-	res, digest, err := r.reconcileSecrets(context.Background(), h)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, h)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
@@ -156,7 +156,7 @@ func TestReconcileSecrets_NamespacedStoreMissing_SetsCondition(t *testing.T) {
 	}
 	r := newTestReconciler(testScheme(), h)
 
-	res, digest, err := r.reconcileSecrets(context.Background(), h)
+	res, digest, err := r.reconcileSecrets(context.Background(), r.Client, h)
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))

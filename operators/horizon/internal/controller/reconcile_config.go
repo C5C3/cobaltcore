@@ -13,6 +13,7 @@ import (
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/cache"
 	"github.com/c5c3/forge/internal/common/conditions"
@@ -38,7 +39,7 @@ const (
 // reconcileConfig renders local_settings.py, creates an immutable ConfigMap
 // holding it, and sets ConfigReady. It returns the name of the created
 // ConfigMap (with content-hash suffix).
-func (r *HorizonReconciler) reconcileConfig(ctx context.Context, horizon *horizonv1alpha1.Horizon) (string, error) {
+func (r *HorizonReconciler) reconcileConfig(ctx context.Context, children client.Client, horizon *horizonv1alpha1.Horizon) (string, error) {
 	// The extraConfig ownership guard is a pure function of the spec, so it
 	// runs before the render. The ExtraConfigHealthy condition is
 	// informational and deliberately stays out of subConditionTypes.
@@ -54,7 +55,7 @@ func (r *HorizonReconciler) reconcileConfig(ctx context.Context, horizon *horizo
 		return "", fmt.Errorf("rendering local_settings.py: %w", err)
 	}
 
-	configMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, horizon,
+	configMapName, err := config.CreateImmutableConfigMap(ctx, children, r.Scheme, horizon,
 		fmt.Sprintf("%s-config", horizon.Name), horizon.Namespace,
 		map[string]string{localSettingsFileName: rendered})
 	if err != nil {
@@ -388,9 +389,9 @@ func cacheLocations(horizon *horizonv1alpha1.Horizon) []any {
 // pruneStaleConfigMaps removes historical immutable ConfigMaps that exceed
 // the retain count, keeping only the newest historical ConfigMaps plus the
 // currently active one.
-func (r *HorizonReconciler) pruneStaleConfigMaps(ctx context.Context, horizon *horizonv1alpha1.Horizon, configMapName string) error {
+func (r *HorizonReconciler) pruneStaleConfigMaps(ctx context.Context, children client.Client, horizon *horizonv1alpha1.Horizon, configMapName string) error {
 	baseName := fmt.Sprintf("%s-config", horizon.Name)
-	return config.PruneImmutableConfigMaps(ctx, r.Client, horizon, config.PruneOptions{
+	return config.PruneImmutableConfigMaps(ctx, children, horizon, config.PruneOptions{
 		BaseName:    baseName,
 		Namespace:   horizon.Namespace,
 		CurrentName: configMapName,
