@@ -47,16 +47,16 @@ func normalizedCredentialMaxActiveKeys(keystone *keystonev1alpha1.Keystone) int 
 
 // reconcileCredentialKeys ensures that a credential keys Secret exists, a rotation
 // CronJob is configured, and a PushSecret backs up the keys to OpenBao.
-func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
+func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context, children client.Client,
 	keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string,
 ) (ctrl.Result, error) {
 	// 1. Ensure the credential keys Secret exists.
 	secretName := fmt.Sprintf("%s-credential-keys", keystone.Name)
 
 	existing := &corev1.Secret{}
-	err := r.Get(ctx, client.ObjectKey{Namespace: keystone.Namespace, Name: secretName}, existing)
+	err := children.Get(ctx, client.ObjectKey{Namespace: keystone.Namespace, Name: secretName}, existing)
 	if apierrors.IsNotFound(err) {
-		if err := r.createKeysSecret(ctx, keystone, secretName, normalizedCredentialMaxActiveKeys(keystone)); err != nil {
+		if err := r.createKeysSecret(ctx, children, keystone, secretName, normalizedCredentialMaxActiveKeys(keystone)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("creating credential keys secret: %w", err)
 		}
 		r.Recorder.Event(keystone, corev1.EventTypeNormal, "CredentialKeysGenerated", "Initial credential encryption keys have been generated")
@@ -83,7 +83,7 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 	//    and the CronJob owns the Data — this is the split-compute-write
 	//    boundary that keeps token-forgery primitives out of the CronJob's
 	//    RBAC on the production Secret.
-	staging, err := r.ensureCredentialStagingSecret(ctx, keystone)
+	staging, err := r.ensureCredentialStagingSecret(ctx, children, keystone)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -106,6 +106,7 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 	//    The staging and production Secrets are threaded in rather than re-read.
 	applied, err := r.applyRotationOutput(
 		ctx,
+		children,
 		keystone,
 		staging,
 		existing,
@@ -132,12 +133,12 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 	}
 
 	// 4. Ensure the RBAC resources for the rotation CronJob exist.
-	if err := r.ensureCredentialRotationRBAC(ctx, keystone, secretName); err != nil {
+	if err := r.ensureCredentialRotationRBAC(ctx, children, keystone, secretName); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring credential rotation RBAC: %w", err)
 	}
 
 	// 5. Create the immutable ConfigMap containing the rotation script.
-	scriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
+	scriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, children, r.Scheme, keystone,
 		fmt.Sprintf("%s-credential-rotate-script", keystone.Name), keystone.Namespace,
 		map[string]string{"credential_rotate.sh": credentialRotateScript})
 	if err != nil {
@@ -146,13 +147,13 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 
 	// 6. Ensure the rotation CronJob exists.
 	cronJob := credentialRotationCronJob(keystone, configMapName, scriptConfigMapName, domainsSecretName)
-	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, keystone, cronJob); err != nil {
+	if err := job.EnsureCronJob(ctx, children, r.Scheme, keystone, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring credential rotation cronjob: %w", err)
 	}
 
 	// 7. Ensure the PushSecret for OpenBao backup exists.
 	ps := credentialKeysPushSecret(keystone)
-	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, keystone, ps); err != nil {
+	if err := secrets.EnsurePushSecret(ctx, children, r.Scheme, keystone, ps); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring credential keys pushsecret: %w", err)
 	}
 
@@ -172,8 +173,8 @@ func (r *KeystoneReconciler) reconcileCredentialKeys(ctx context.Context,
 // for the credential rotation CronJob via the shared ensureRotationRBAC helper:
 // read-only `get` on the production credential-keys Secret and `get`+`patch` on
 // the dedicated staging Secret.
-func (r *KeystoneReconciler) ensureCredentialRotationRBAC(ctx context.Context, keystone *keystonev1alpha1.Keystone, secretName string) error {
-	return r.ensureRotationRBAC(ctx, keystone,
+func (r *KeystoneReconciler) ensureCredentialRotationRBAC(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, secretName string) error {
+	return r.ensureRotationRBAC(ctx, children, keystone,
 		fmt.Sprintf("%s-credential-rotate", keystone.Name), secretName, credentialStagingSecretName(keystone))
 }
 
@@ -181,8 +182,8 @@ func (r *KeystoneReconciler) ensureCredentialRotationRBAC(ctx context.Context, k
 // with the `credential-keys` rotation-target label. Thin wrapper
 // over the shared ensureStagingSecret helper; see rotation_staging.go for the
 // field-ownership contract.
-func (r *KeystoneReconciler) ensureCredentialStagingSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) (*corev1.Secret, error) {
-	return r.ensureStagingSecret(ctx, keystone, credentialStagingSecretName(keystone), "credential-keys")
+func (r *KeystoneReconciler) ensureCredentialStagingSecret(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (*corev1.Secret, error) {
+	return r.ensureStagingSecret(ctx, children, keystone, credentialStagingSecretName(keystone), "credential-keys")
 }
 
 // credentialRotationCronJob builds the CronJob that rotates credential keys

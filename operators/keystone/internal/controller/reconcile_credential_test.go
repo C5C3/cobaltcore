@@ -102,7 +102,7 @@ func TestReconcileCredentialKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T)
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	result, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	// Must requeue to confirm the secret is available before proceeding. Uses
@@ -163,7 +163,7 @@ func TestReconcileCredentialKeys_SecretAlreadyExists(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	result, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -262,7 +262,7 @@ func TestReconcileCredentialKeys_CronJobScheduleUpdated(t *testing.T) {
 	// Change the schedule in the spec.
 	ks.Spec.CredentialKeys.RotationSchedule = "0 */6 * * *"
 
-	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	result, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
@@ -293,7 +293,7 @@ func TestReconcileCredentialKeys_GeneratedKeysAreValid(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
@@ -334,7 +334,7 @@ func TestReconcileCredentialKeys_CronJobScheduleMatchesSpec(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -372,7 +372,7 @@ func TestReconcileCredentialKeys_PushSecretDeletionPolicyDelete(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var ps esov1alpha1.PushSecret
@@ -406,7 +406,7 @@ func TestReconcileCredentialKeys_PushSecretReferencesCorrectSecret(t *testing.T)
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var ps esov1alpha1.PushSecret
@@ -567,7 +567,7 @@ func TestReconcileCredentialKeys_MinActiveKeysFloor(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var secret corev1.Secret
@@ -605,7 +605,7 @@ func TestReconcileCredentialKeys_ConditionMessages(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// The final condition should be CredentialKeysAvailable with the correct message.
@@ -655,7 +655,7 @@ func TestReconcileCredentialKeys_CronJobSpec(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var cronJob batchv1.CronJob
@@ -992,7 +992,7 @@ func TestReconcileCredentialKeys_ConditionObservedGeneration(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, "CredentialKeysReady")
@@ -1023,7 +1023,7 @@ func TestReconcileCredentialKeys_ConditionObservedGeneration(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err = r2.reconcileCredentialKeys(context.Background(), ks2, "test-keystone-config-abc123", "")
+	_, err = r2.reconcileCredentialKeys(context.Background(), r2.Client, ks2, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, "CredentialKeysReady")
@@ -1104,7 +1104,7 @@ func TestEnsureCredentialRotationRBAC_MainSecretIsReadOnly(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	g.Expect(r.ensureCredentialRotationRBAC(context.Background(), ks, "test-keystone-credential-keys")).To(Succeed())
+	g.Expect(r.ensureCredentialRotationRBAC(context.Background(), r.Client, ks, "test-keystone-credential-keys")).To(Succeed())
 
 	var role rbacv1.Role
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
@@ -1153,7 +1153,7 @@ func TestEnsureCredentialRotationRBAC_StagingSecretHasGetPatchOnly(t *testing.T)
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	g.Expect(r.ensureCredentialRotationRBAC(context.Background(), ks, "test-keystone-credential-keys")).To(Succeed())
+	g.Expect(r.ensureCredentialRotationRBAC(context.Background(), r.Client, ks, "test-keystone-credential-keys")).To(Succeed())
 
 	var role rbacv1.Role
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
@@ -1217,7 +1217,7 @@ func TestReconcileCredentialKeys_CreatesEmptyStagingSecret(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	_, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Verify the staging Secret exists with the expected name.
@@ -1261,7 +1261,7 @@ func TestEnsureCredentialRotationRBAC_IsIdempotent_CC0081(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	g.Expect(r.ensureCredentialRotationRBAC(context.Background(), ks, "test-keystone-credential-keys")).To(Succeed())
+	g.Expect(r.ensureCredentialRotationRBAC(context.Background(), r.Client, ks, "test-keystone-credential-keys")).To(Succeed())
 	var first rbacv1.Role
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
@@ -1269,7 +1269,7 @@ func TestEnsureCredentialRotationRBAC_IsIdempotent_CC0081(t *testing.T) {
 	}, &first)).To(Succeed())
 	rulesFirst := append([]rbacv1.PolicyRule{}, first.Rules...)
 
-	g.Expect(r.ensureCredentialRotationRBAC(context.Background(), ks, "test-keystone-credential-keys")).To(Succeed())
+	g.Expect(r.ensureCredentialRotationRBAC(context.Background(), r.Client, ks, "test-keystone-credential-keys")).To(Succeed())
 	var second rbacv1.Role
 	g.Expect(c.Get(context.Background(), client.ObjectKey{
 		Namespace: "default",
@@ -1346,7 +1346,7 @@ func TestReconcileCredentialKeys_AppliesStagedKeysWhenAnnotationPresent(t *testi
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	result, err := r.reconcileCredentialKeys(context.Background(), ks, "test-keystone-config-abc123", "")
+	result, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-keystone-config-abc123", "")
 
 	g.Expect(err).NotTo(HaveOccurred())
 	// Rotation applied: short-circuit via RequeueAfter so the parallel group's
@@ -1431,7 +1431,7 @@ func TestCredentialReconcileUpdatesRotationAgeGauge(t *testing.T) {
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-cm", "")
+	_, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-cm", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	gaugeLabels := map[string]string{
@@ -1476,7 +1476,7 @@ func TestCredentialReconcileSkipsRotationAgeGaugeWhenAnnotationAbsent(t *testing
 		Recorder: record.NewFakeRecorder(10),
 	}
 
-	_, err := r.reconcileCredentialKeys(context.Background(), ks, "test-cm", "")
+	_, err := r.reconcileCredentialKeys(context.Background(), r.Client, ks, "test-cm", "")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	gaugeLabels := map[string]string{

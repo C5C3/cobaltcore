@@ -55,7 +55,7 @@ const dbCAIssuerName = "openstack-db-ca-issuer"
 // reconcileDatabaseTLS provisions (or, for the disabled/brownfield paths,
 // records the absence of) the client certificate Keystone uses for mutual TLS
 // to the database.
-func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
+func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context, children client.Client,
 	keystone *keystonev1alpha1.Keystone,
 ) (ctrl.Result, error) {
 	tlsSpec := keystone.Spec.Database.TLS
@@ -67,7 +67,7 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 	// via the owner-reference cascade — mirroring HPA/NetworkPolicy/HTTPRoute,
 	// which all delete their managed objects on disable (issue #475).
 	if !tlsSpec.IsEnabled() {
-		if err := r.deleteManagedDBClientCertificate(ctx, keystone); err != nil {
+		if err := r.deleteManagedDBClientCertificate(ctx, children, keystone); err != nil {
 			return ctrl.Result{}, err
 		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -116,7 +116,7 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 	// brownfield must not leave the operator-owned <name>-db-client Certificate
 	// being renewed indefinitely (issue #475).
 	if keystone.Spec.Database.ClusterRef == nil {
-		if err := r.deleteManagedDBClientCertificate(ctx, keystone); err != nil {
+		if err := r.deleteManagedDBClientCertificate(ctx, children, keystone); err != nil {
 			return ctrl.Result{}, err
 		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -135,7 +135,7 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context,
 	// Managed: issue the client Certificate from the shared OpenStack DB CA
 	// issuer.
 	cert := dbClientCertificate(keystone)
-	ready, err := commontls.EnsureCertificate(ctx, r.Client, r.Scheme, keystone, cert)
+	ready, err := commontls.EnsureCertificate(ctx, children, r.Scheme, keystone, cert)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring database client Certificate %s/%s: %w",
 			cert.Namespace, cert.Name, err)
@@ -182,11 +182,11 @@ func dbClientCertificateName(keystone *keystonev1alpha1.Keystone) string {
 // Certificate can exist in that case, and an unconditional Delete would fail
 // with "no matches for kind Certificate" — the same CRD-availability gate
 // reconcileHTTPRoute applies before deleting an HTTPRoute (issue #475).
-func (r *KeystoneReconciler) deleteManagedDBClientCertificate(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
+func (r *KeystoneReconciler) deleteManagedDBClientCertificate(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) error {
 	if !r.certManagerAvailable {
 		return nil
 	}
-	return deleteDBClientCertificate(ctx, r.Client, keystone.Namespace, dbClientCertificateName(keystone))
+	return deleteDBClientCertificate(ctx, children, keystone.Namespace, dbClientCertificateName(keystone))
 }
 
 // deleteDBClientCertificate deletes the Certificate identified by namespace and

@@ -192,14 +192,14 @@ func certDERFromPEM(certPEM []byte) ([]byte, error) {
 // <name>-saml-sp Secret with an operator-generated self-signed keypair. The
 // keypair is create-once and NEVER regenerated — regeneration would invalidate
 // the out-of-band IdP registration.
-func (r *KeystoneReconciler) ensureSAMLSPKeypair(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (certPEM, keyPEM, certDER []byte, err error) {
+func (r *KeystoneReconciler) ensureSAMLSPKeypair(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (certPEM, keyPEM, certDER []byte, err error) {
 	if sp := backend.Spec.SAML.SP; sp != nil && sp.CertificateSecretRef != nil {
 		key := client.ObjectKey{Namespace: keystone.Namespace, Name: sp.CertificateSecretRef.Name}
-		crt, err := secrets.GetSecretValue(ctx, r.Client, key, "tls.crt")
+		crt, err := secrets.GetSecretValue(ctx, children, key, "tls.crt")
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		k, err := secrets.GetSecretValue(ctx, r.Client, key, "tls.key")
+		k, err := secrets.GetSecretValue(ctx, children, key, "tls.key")
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -213,7 +213,7 @@ func (r *KeystoneReconciler) ensureSAMLSPKeypair(ctx context.Context, keystone *
 	name := samlSPKeypairSecretName(keystone)
 	key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
 	var secret corev1.Secret
-	switch err := r.Get(ctx, key, &secret); {
+	switch err := children.Get(ctx, key, &secret); {
 	case err == nil:
 		crt := secret.Data["tls.crt"]
 		k := secret.Data["tls.key"]
@@ -245,7 +245,7 @@ func (r *KeystoneReconciler) ensureSAMLSPKeypair(ctx context.Context, keystone *
 	if err := controllerutil.SetControllerReference(keystone, &secret, r.Scheme); err != nil {
 		return nil, nil, nil, fmt.Errorf("setting owner reference on SP keypair Secret: %w", err)
 	}
-	if err := r.Create(ctx, &secret); err != nil {
+	if err := children.Create(ctx, &secret); err != nil {
 		return nil, nil, nil, fmt.Errorf("creating SP keypair Secret %s: %w", key, err)
 	}
 	return crt, k, der, nil
@@ -338,8 +338,8 @@ func (r *KeystoneReconciler) fetchSAMLIdPMetadata(ctx context.Context, backend *
 // lastKnownGoodSAMLMetadata returns the IdP metadata a prior successful
 // reconcile persisted for backend in the newest federation Secret, or nil when
 // none exists — the SAML analog of lastKnownGoodProviderMetadata.
-func (r *KeystoneReconciler) lastKnownGoodSAMLMetadata(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) []byte {
-	newest := r.newestFederationSecret(ctx, keystone)
+func (r *KeystoneReconciler) lastKnownGoodSAMLMetadata(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) []byte {
+	newest := r.newestFederationSecret(ctx, children, keystone)
 	if newest == nil {
 		return nil
 	}
@@ -354,7 +354,7 @@ func (r *KeystoneReconciler) lastKnownGoodSAMLMetadata(ctx context.Context, keys
 // matches spec.saml.idpEntityID. A URL fetch rides out a transient IdP outage on
 // a cache miss via the last-known-good copy (issuer-verified) so federation
 // stays up, mirroring the OIDC discovery-document fallback.
-func (r *KeystoneReconciler) resolveSAMLIdPMetadata(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) ([]byte, error) {
+func (r *KeystoneReconciler) resolveSAMLIdPMetadata(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) ([]byte, error) {
 	s := backend.Spec.SAML
 	var document []byte
 	switch {
@@ -362,7 +362,7 @@ func (r *KeystoneReconciler) resolveSAMLIdPMetadata(ctx context.Context, keyston
 		document = []byte(s.IdPMetadata.Inline)
 	case s.IdPMetadata.SecretRef != nil:
 		key := client.ObjectKey{Namespace: keystone.Namespace, Name: s.IdPMetadata.SecretRef.Name}
-		v, err := secrets.GetSecretValue(ctx, r.Client, key, "idp-metadata.xml")
+		v, err := secrets.GetSecretValue(ctx, children, key, "idp-metadata.xml")
 		if err != nil {
 			return nil, err
 		}
@@ -370,7 +370,7 @@ func (r *KeystoneReconciler) resolveSAMLIdPMetadata(ctx context.Context, keyston
 	case s.IdPMetadata.URL != "":
 		doc, err := r.fetchSAMLIdPMetadata(ctx, backend)
 		if err != nil && errors.Is(err, errProviderMetadataUnavailable) {
-			if lkg := r.lastKnownGoodSAMLMetadata(ctx, keystone, backend); lkg != nil {
+			if lkg := r.lastKnownGoodSAMLMetadata(ctx, children, keystone, backend); lkg != nil {
 				if id, e := keystonev1alpha1.SAMLEntityIDFromMetadata(lkg); e == nil && id == s.IdPEntityID {
 					r.cacheProviderMetadata(backend, lkg)
 					r.Recorder.Eventf(keystone, corev1.EventTypeWarning, "FederationMetadataStale",
@@ -406,7 +406,7 @@ func (r *KeystoneReconciler) resolveSAMLIdPMetadata(ctx context.Context, keyston
 // keypair (consumed from spec or operator-generated), the deterministic SP
 // metadata, and the resolved+verified IdP metadata, plus the proxy.conf
 // parameters (strip headers, forwarded attribute env mappings).
-func (r *KeystoneReconciler) renderSAMLBackend(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (samlRender, error) {
+func (r *KeystoneReconciler) renderSAMLBackend(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (samlRender, error) {
 	s := backend.Spec.SAML
 	if s == nil {
 		// The webhook + CEL union rule prevent this; fail loudly rather than
@@ -417,7 +417,7 @@ func (r *KeystoneReconciler) renderSAMLBackend(ctx context.Context, keystone *ke
 		return samlRender{}, err
 	}
 
-	spCert, spKey, spCertDER, err := r.ensureSAMLSPKeypair(ctx, keystone, backend)
+	spCert, spKey, spCertDER, err := r.ensureSAMLSPKeypair(ctx, children, keystone, backend)
 	if err != nil {
 		return samlRender{}, err
 	}
@@ -427,7 +427,7 @@ func (r *KeystoneReconciler) renderSAMLBackend(ctx context.Context, keystone *ke
 	spEntityID := endpointBase + "/metadata"
 	spMetadata := renderSAMLSPMetadata(spEntityID, endpointBase, spCertDER)
 
-	idpMetadata, err := r.resolveSAMLIdPMetadata(ctx, keystone, backend)
+	idpMetadata, err := r.resolveSAMLIdPMetadata(ctx, children, keystone, backend)
 	if err != nil {
 		return samlRender{}, err
 	}
@@ -509,7 +509,7 @@ func writeMellonConf(w func(string, ...any), rd *samlRender) {
 // Secret (data keys "sp-metadata.xml" and "entityID"), owner-ref'd to the
 // Keystone CR, so an operator can register the service provider with the IdP out
 // of band. Update-on-drift.
-func (r *KeystoneReconciler) ensureSAMLSPMetadataSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone, rd *samlRender) error {
+func (r *KeystoneReconciler) ensureSAMLSPMetadataSecret(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, rd *samlRender) error {
 	name := samlSPMetadataSecretName(keystone)
 	key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
 	desired := map[string][]byte{
@@ -518,7 +518,7 @@ func (r *KeystoneReconciler) ensureSAMLSPMetadataSecret(ctx context.Context, key
 	}
 
 	var existing corev1.Secret
-	err := r.Get(ctx, key, &existing)
+	err := children.Get(ctx, key, &existing)
 	if apierrors.IsNotFound(err) {
 		secret := corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -531,7 +531,7 @@ func (r *KeystoneReconciler) ensureSAMLSPMetadataSecret(ctx context.Context, key
 		if err := controllerutil.SetControllerReference(keystone, &secret, r.Scheme); err != nil {
 			return fmt.Errorf("setting owner reference on SP metadata Secret: %w", err)
 		}
-		if err := r.Create(ctx, &secret); err != nil {
+		if err := children.Create(ctx, &secret); err != nil {
 			return fmt.Errorf("creating SP metadata Secret %s: %w", key, err)
 		}
 		return nil
@@ -541,7 +541,7 @@ func (r *KeystoneReconciler) ensureSAMLSPMetadataSecret(ctx context.Context, key
 	}
 	if !reflect.DeepEqual(existing.Data, desired) {
 		existing.Data = desired
-		if err := r.Update(ctx, &existing); err != nil {
+		if err := children.Update(ctx, &existing); err != nil {
 			return fmt.Errorf("updating SP metadata Secret %s: %w", key, err)
 		}
 	}
@@ -550,12 +550,12 @@ func (r *KeystoneReconciler) ensureSAMLSPMetadataSecret(ctx context.Context, key
 
 // deleteSAMLSPMetadataSecret removes the SP metadata export Secret when no SAML
 // backend is attached anymore. Not-found is a clean no-op.
-func (r *KeystoneReconciler) deleteSAMLSPMetadataSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
+func (r *KeystoneReconciler) deleteSAMLSPMetadataSecret(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) error {
 	secret := corev1.Secret{ObjectMeta: metav1.ObjectMeta{
 		Name:      samlSPMetadataSecretName(keystone),
 		Namespace: keystone.Namespace,
 	}}
-	if err := r.Delete(ctx, &secret); err != nil && !apierrors.IsNotFound(err) {
+	if err := children.Delete(ctx, &secret); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("deleting SP metadata Secret: %w", err)
 	}
 	return nil

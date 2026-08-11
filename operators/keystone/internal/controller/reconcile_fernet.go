@@ -42,7 +42,7 @@ var fernetRotateScript string
 
 // reconcileFernetKeys ensures that a Fernet keys Secret exists, a rotation
 // CronJob is configured, and a PushSecret backs up the keys to OpenBao.
-func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
+func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context, children client.Client,
 	keystone *keystonev1alpha1.Keystone, configMapName, domainsSecretName string,
 ) (ctrl.Result, error) {
 	// 1. Ensure the Fernet keys Secret exists.
@@ -50,10 +50,10 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 	secretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: secretName}
 
 	existing := &corev1.Secret{}
-	err := r.Get(ctx, secretKey, existing)
+	err := children.Get(ctx, secretKey, existing)
 	if apierrors.IsNotFound(err) {
 		// Generate initial Fernet keys.
-		if err := r.createKeysSecret(ctx, keystone, secretName, normalizedFernetMaxActiveKeys(keystone)); err != nil {
+		if err := r.createKeysSecret(ctx, children, keystone, secretName, normalizedFernetMaxActiveKeys(keystone)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("creating fernet keys secret: %w", err)
 		}
 		r.Recorder.Event(keystone, corev1.EventTypeNormal, "FernetKeysGenerated", "Initial Fernet encryption keys have been generated")
@@ -79,7 +79,7 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 	//    and the CronJob owns the Data — this is the split-compute-write
 	//    boundary that keeps token-forgery primitives out of the CronJob's
 	//    RBAC on the production Secret.
-	staging, err := r.ensureFernetStagingSecret(ctx, keystone)
+	staging, err := r.ensureFernetStagingSecret(ctx, children, keystone)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -100,7 +100,7 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 	//    path with the production Secret already updated. The staging and
 	//    production Secrets are threaded in rather than re-read.
 	applied, err := r.applyRotationOutput(
-		ctx, keystone,
+		ctx, children, keystone,
 		staging,
 		existing,
 		"FernetKeysRotated",
@@ -126,12 +126,12 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 	}
 
 	// 4. Ensure the RBAC resources for the rotation CronJob exist.
-	if err := r.ensureFernetRotationRBAC(ctx, keystone, secretName); err != nil {
+	if err := r.ensureFernetRotationRBAC(ctx, children, keystone, secretName); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring fernet rotation RBAC: %w", err)
 	}
 
 	// 5. Create the immutable ConfigMap containing the rotation script.
-	scriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
+	scriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, children, r.Scheme, keystone,
 		fmt.Sprintf("%s-fernet-rotate-script", keystone.Name), keystone.Namespace,
 		map[string]string{"fernet_rotate.sh": fernetRotateScript})
 	if err != nil {
@@ -140,13 +140,13 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 
 	// 6. Ensure the rotation CronJob exists.
 	cronJob := fernetRotationCronJob(keystone, configMapName, scriptConfigMapName, domainsSecretName)
-	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, keystone, cronJob); err != nil {
+	if err := job.EnsureCronJob(ctx, children, r.Scheme, keystone, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring fernet rotation cronjob: %w", err)
 	}
 
 	// 7. Ensure the PushSecret for OpenBao backup exists.
 	ps := fernetKeysPushSecret(keystone)
-	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, keystone, ps); err != nil {
+	if err := secrets.EnsurePushSecret(ctx, children, r.Scheme, keystone, ps); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring fernet keys pushsecret: %w", err)
 	}
 
@@ -166,8 +166,8 @@ func (r *KeystoneReconciler) reconcileFernetKeys(ctx context.Context,
 // the Fernet rotation CronJob via the shared ensureRotationRBAC helper:
 // read-only `get` on the production fernet keys Secret and `get`+`patch` on the
 // dedicated staging Secret.
-func (r *KeystoneReconciler) ensureFernetRotationRBAC(ctx context.Context, keystone *keystonev1alpha1.Keystone, secretName string) error {
-	return r.ensureRotationRBAC(ctx, keystone,
+func (r *KeystoneReconciler) ensureFernetRotationRBAC(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, secretName string) error {
+	return r.ensureRotationRBAC(ctx, children, keystone,
 		fmt.Sprintf("%s-fernet-rotate", keystone.Name), secretName, fernetStagingSecretName(keystone))
 }
 
@@ -175,8 +175,8 @@ func (r *KeystoneReconciler) ensureFernetRotationRBAC(ctx context.Context, keyst
 // `fernet-keys` rotation-target label. Thin wrapper over the shared
 // ensureStagingSecret helper; see rotation_staging.go for the field-ownership
 // contract.
-func (r *KeystoneReconciler) ensureFernetStagingSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) (*corev1.Secret, error) {
-	return r.ensureStagingSecret(ctx, keystone, fernetStagingSecretName(keystone), "fernet-keys")
+func (r *KeystoneReconciler) ensureFernetStagingSecret(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (*corev1.Secret, error) {
+	return r.ensureStagingSecret(ctx, children, keystone, fernetStagingSecretName(keystone), "fernet-keys")
 }
 
 // normalizedFernetMaxActiveKeys returns the effective maximum number of active
@@ -190,7 +190,7 @@ func normalizedFernetMaxActiveKeys(keystone *keystonev1alpha1.Keystone) int {
 // with padding) and creates the named Secret to hold them, owned by keystone.
 // Shared by the Fernet and credential sub-reconcilers, which use the identical
 // key format and differ only in the configured key count.
-func (r *KeystoneReconciler) createKeysSecret(ctx context.Context,
+func (r *KeystoneReconciler) createKeysSecret(ctx context.Context, children client.Client,
 	keystone *keystonev1alpha1.Keystone, secretName string, numKeys int,
 ) error {
 	data := make(map[string][]byte, numKeys)
@@ -215,7 +215,7 @@ func (r *KeystoneReconciler) createKeysSecret(ctx context.Context,
 		return fmt.Errorf("setting owner reference on keys secret %s: %w", secretName, err)
 	}
 
-	if err := r.Create(ctx, secret); err != nil {
+	if err := children.Create(ctx, secret); err != nil {
 		return fmt.Errorf("creating keys secret %s: %w", secretName, err)
 	}
 

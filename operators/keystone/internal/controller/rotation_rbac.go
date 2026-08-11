@@ -7,6 +7,8 @@ package controller
 import (
 	"context"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
 	"github.com/c5c3/forge/internal/common/rotation"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -17,6 +19,6 @@ import (
 // split into a read-only get on readSecret and a get+patch scoped to
 // stagingSecret so a compromised CronJob can neither forge production keys nor
 // write outside its staging Secret.
-func (r *KeystoneReconciler) ensureRotationRBAC(ctx context.Context, keystone *keystonev1alpha1.Keystone, saName, readSecret, stagingSecret string) error {
-	return rotation.EnsureRBAC(ctx, r.Client, r.Scheme, keystone, saName, readSecret, stagingSecret)
+func (r *KeystoneReconciler) ensureRotationRBAC(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, saName, readSecret, stagingSecret string) error {
+	return rotation.EnsureRBAC(ctx, children, r.Scheme, keystone, saName, readSecret, stagingSecret)
 }

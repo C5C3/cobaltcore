@@ -55,8 +55,10 @@ const esoCleanupFinalizer = "external-secrets.io/cleanup"
 
 // reconcileSecrets checks that ESO-provided Kubernetes Secrets exist before
 // proceeding. It verifies the DB credentials and admin credentials
-// ExternalSecrets are ready.
-func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
+// ExternalSecrets are ready. Both the selected store and the credential
+// Secrets are read on the children cluster: they are materialised beside the
+// workload that consumes them.
+func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context, children client.Client,
 	keystone *keystonev1alpha1.Keystone,
 ) (ctrl.Result, error) {
 	// Check the selected secret store first so upstream backend outages surface
@@ -65,7 +67,7 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 	// Keystone selected via spec.secretStoreRef (default: the shared
 	// cluster-scoped openbao-cluster-store); a namespaced store is resolved in
 	// the Keystone's own namespace.
-	storeReady, err := secrets.GateStoreReady(ctx, r.Client,
+	storeReady, err := secrets.GateStoreReady(ctx, children,
 		secrets.EffectiveStoreRef(keystone.Spec.SecretStoreRef), keystone.Namespace,
 		&keystone.Status.Conditions, keystone.Generation, "SecretsReady")
 	if err != nil {
@@ -96,7 +98,7 @@ func (r *KeystoneReconciler) reconcileSecrets(ctx context.Context,
 			ExpectedKeys: []string{"password"},
 		},
 	}
-	ready, err := secrets.GateCredentials(ctx, r.Client, credentialGates,
+	ready, err := secrets.GateCredentials(ctx, children, credentialGates,
 		&keystone.Status.Conditions, keystone.Generation, "SecretsReady")
 	if err != nil {
 		return ctrl.Result{}, err
@@ -160,6 +162,7 @@ func openBaoBackupPushSecretNames(keystone *keystonev1alpha1.Keystone) []string 
 // Non-NotFound errors propagate so controller-runtime retries with backoff
 func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 	ctx context.Context,
+	children client.Client,
 	keystone *keystonev1alpha1.Keystone,
 ) (done bool, err error) {
 	logger := log.FromContext(ctx).WithValues(
@@ -189,7 +192,7 @@ func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 	for _, name := range names {
 		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
 		ps := &esov1alpha1.PushSecret{}
-		getErr := r.Get(ctx, key, ps)
+		getErr := children.Get(ctx, key, ps)
 		if apierrors.IsNotFound(getErr) {
 			// Already deleted elsewhere — nothing to adopt, nothing to delete.
 			continue
@@ -230,7 +233,7 @@ func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 		ps := &esov1alpha1.PushSecret{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: keystone.Namespace},
 		}
-		if delErr := r.Delete(ctx, ps); delErr != nil {
+		if delErr := children.Delete(ctx, ps); delErr != nil {
 			if !apierrors.IsNotFound(delErr) {
 				return false, fmt.Errorf("deleting PushSecret %s: %w", key, delErr)
 			}
@@ -245,7 +248,7 @@ func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 	// re-check the remaining names.
 	for _, name := range names {
 		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
-		getErr := r.Get(ctx, key, &esov1alpha1.PushSecret{})
+		getErr := children.Get(ctx, key, &esov1alpha1.PushSecret{})
 		if apierrors.IsNotFound(getErr) {
 			continue
 		}

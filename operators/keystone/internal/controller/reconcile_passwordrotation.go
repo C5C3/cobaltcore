@@ -153,7 +153,7 @@ func normalizedAdminPasswordLength(keystone *keystonev1alpha1.Keystone) int32 {
 //   - passwordRotation Enabled: ensure the push-source Secret, staging Secret,
 //     apply any completed rotation, RBAC, script ConfigMap, CronJob, and the
 //     clobber-safe PushSecret, then report PasswordRotationReady=True.
-func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
+func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context, children client.Client,
 	keystone *keystonev1alpha1.Keystone, _ string,
 ) (ctrl.Result, error) {
 	pr := keystone.Spec.PasswordRotation
@@ -163,7 +163,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	// materialize it); Enabled=false means it was switched off. Both tear down
 	// all Model B resources and report ready.
 	if pr == nil || !pr.Enabled {
-		if err := r.teardownPasswordRotation(ctx, keystone); err != nil {
+		if err := r.teardownPasswordRotation(ctx, children, keystone); err != nil {
 			return ctrl.Result{}, err
 		}
 		conditions.SetCondition(&keystone.Status.Conditions, metav1.Condition{
@@ -180,13 +180,13 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 
 	// 1. Ensure the operator-owned push-source Secret. applyAdminPasswordRotation
 	//    commits into it and the PushSecret selects it, so it must exist first.
-	pushSource, err := r.ensureAdminPasswordPushSourceSecret(ctx, keystone)
+	pushSource, err := r.ensureAdminPasswordPushSourceSecret(ctx, children, keystone)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
 	// 2. Ensure the staging Secret the CronJob PATCHes rotated passwords into.
-	staging, err := r.ensureStagingSecret(ctx, keystone, adminPasswordStagingSecretName(keystone), "admin-password")
+	staging, err := r.ensureStagingSecret(ctx, children, keystone, adminPasswordStagingSecretName(keystone), "admin-password")
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -213,7 +213,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	//    On a valid apply, short-circuit and requeue so the next pass re-enters
 	//    the happy path with the push-source Secret already updated. The staging
 	//    and push-source Secrets are threaded in rather than re-read.
-	applied, err := r.applyAdminPasswordRotation(ctx, keystone, staging, pushSource, minLength)
+	applied, err := r.applyAdminPasswordRotation(ctx, children, keystone, staging, pushSource, minLength)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("applying admin password rotation output: %w", err)
 	}
@@ -229,12 +229,12 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	}
 
 	// 5. Ensure the RBAC resources for the rotation CronJob.
-	if err := r.ensureAdminPasswordRotationRBAC(ctx, keystone); err != nil {
+	if err := r.ensureAdminPasswordRotationRBAC(ctx, children, keystone); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring admin password rotation RBAC: %w", err)
 	}
 
 	// 6. Create the immutable ConfigMap containing the rotation script.
-	scriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
+	scriptConfigMapName, err := config.CreateImmutableConfigMap(ctx, children, r.Scheme, keystone,
 		adminPasswordRotateScriptBaseName(keystone), keystone.Namespace,
 		map[string]string{"admin_password_rotate.sh": adminPasswordRotateScript})
 	if err != nil {
@@ -243,7 +243,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 
 	// 7. Ensure the rotation CronJob.
 	cronJob := adminPasswordRotationCronJob(keystone, scriptConfigMapName)
-	if err := job.EnsureCronJob(ctx, r.Client, r.Scheme, keystone, cronJob); err != nil {
+	if err := job.EnsureCronJob(ctx, children, r.Scheme, keystone, cronJob); err != nil {
 		return ctrl.Result{}, fmt.Errorf("ensuring admin password rotation cronjob: %w", err)
 	}
 
@@ -254,7 +254,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 	//    bootstrap/{namespace}/{name}/admin value with nothing.
 	if r.adminPasswordPushSourceReady(pushSource, minLength) {
 		ps := adminPasswordPushSecret(keystone)
-		if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, keystone, ps); err != nil {
+		if err := secrets.EnsurePushSecret(ctx, children, r.Scheme, keystone, ps); err != nil {
 			return ctrl.Result{}, fmt.Errorf("ensuring admin password pushsecret: %w", err)
 		}
 	}
@@ -276,8 +276,8 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context,
 // adminPasswordPushSecret), so deleting it here leaves the last-pushed password
 // intact in OpenBao at the per-CR path — disabling rotation must never lock the
 // admin out.
-func (r *KeystoneReconciler) teardownPasswordRotation(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
-	if err := job.DeleteCronJob(ctx, r.Client, keystone.Namespace, adminPasswordRotateCronJobName(keystone)); err != nil {
+func (r *KeystoneReconciler) teardownPasswordRotation(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) error {
+	if err := job.DeleteCronJob(ctx, children, keystone.Namespace, adminPasswordRotateCronJobName(keystone)); err != nil {
 		return fmt.Errorf("deleting admin password rotation CronJob: %w", err)
 	}
 
@@ -291,14 +291,14 @@ func (r *KeystoneReconciler) teardownPasswordRotation(ctx context.Context, keyst
 		&esov1alpha1.PushSecret{ObjectMeta: metav1.ObjectMeta{Name: adminPasswordPushSecretName(keystone), Namespace: keystone.Namespace}},
 	}
 	for _, obj := range toDelete {
-		if err := client.IgnoreNotFound(r.Delete(ctx, obj)); err != nil {
+		if err := client.IgnoreNotFound(children.Delete(ctx, obj)); err != nil {
 			return fmt.Errorf("deleting %T %s: %w", obj, obj.GetName(), err)
 		}
 	}
 
 	// Delete every script ConfigMap (CurrentName="", Retain=0 prunes all
 	// hash-suffixed ConfigMaps for this base name owned by the CR).
-	if err := config.PruneImmutableConfigMaps(ctx, r.Client, keystone, config.PruneOptions{
+	if err := config.PruneImmutableConfigMaps(ctx, children, keystone, config.PruneOptions{
 		BaseName:  adminPasswordRotateScriptBaseName(keystone),
 		Namespace: keystone.Namespace,
 	}); err != nil {
@@ -316,14 +316,14 @@ func (r *KeystoneReconciler) teardownPasswordRotation(ctx context.Context, keyst
 // It returns the ensured Secret so the caller can thread it into
 // observeRotationAge, applyAdminPasswordRotation, and adminPasswordPushSourceReady
 // without re-reading it (issue #361).
-func (r *KeystoneReconciler) ensureAdminPasswordPushSourceSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) (*corev1.Secret, error) {
+func (r *KeystoneReconciler) ensureAdminPasswordPushSourceSecret(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (*corev1.Secret, error) {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      adminPasswordNextSecretName(keystone),
 			Namespace: keystone.Namespace,
 		},
 	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
+	if _, err := controllerutil.CreateOrUpdate(ctx, children, secret, func() error {
 		secret.Labels = commonLabels(keystone)
 		// Do NOT touch secret.Data — applyAdminPasswordRotation owns it.
 		return controllerutil.SetControllerReference(keystone, secret, r.Scheme)
@@ -337,8 +337,8 @@ func (r *KeystoneReconciler) ensureAdminPasswordPushSourceSecret(ctx context.Con
 // RoleBinding for the admin-password rotation CronJob via the shared
 // ensureRotationRBAC helper: read-only `get` on the operator-owned push-source
 // Secret and `get`+`patch` on the dedicated staging Secret.
-func (r *KeystoneReconciler) ensureAdminPasswordRotationRBAC(ctx context.Context, keystone *keystonev1alpha1.Keystone) error {
-	return r.ensureRotationRBAC(ctx, keystone,
+func (r *KeystoneReconciler) ensureAdminPasswordRotationRBAC(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) error {
+	return r.ensureRotationRBAC(ctx, children, keystone,
 		adminPasswordRotateSAName(keystone), adminPasswordNextSecretName(keystone), adminPasswordStagingSecretName(keystone))
 }
 
@@ -436,11 +436,12 @@ func validateAdminPasswordRotationOutput(data map[string][]byte, minLength int) 
 // operator inspection (issue #475).
 func (r *KeystoneReconciler) applyAdminPasswordRotation(
 	ctx context.Context,
+	children client.Client,
 	keystone *keystonev1alpha1.Keystone,
 	staging, pushSource *corev1.Secret,
 	minLength int,
 ) (applied bool, err error) {
-	return r.commitStagedRotation(ctx, keystone, staging, pushSource, rotation.CommitSpec{
+	return r.commitStagedRotation(ctx, children, keystone, staging, pushSource, rotation.CommitSpec{
 		TargetNoun:              "push-source secret",
 		Validate:                func(data map[string][]byte) error { return validateAdminPasswordRotationOutput(data, minLength) },
 		AnnotationInvalidReason: "AdminPasswordRotationAnnotationInvalid",

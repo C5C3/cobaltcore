@@ -151,7 +151,7 @@ func TestEnsureAdminPasswordPushSourceSecret_CreatesOwnedEmptySecret(t *testing.
 	ks := pwRotationTestKeystone()
 	r, _ := newPWRotationReconciler(ks)
 
-	_, err := r.ensureAdminPasswordPushSourceSecret(context.Background(), ks)
+	_, err := r.ensureAdminPasswordPushSourceSecret(context.Background(), r.Client, ks)
 	g.Expect(err).To(Succeed())
 
 	var sec corev1.Secret
@@ -169,7 +169,7 @@ func TestEnsureStagingSecret_AdminPasswordLabel(t *testing.T) {
 	ks := pwRotationTestKeystone()
 	r, _ := newPWRotationReconciler(ks)
 
-	_, err := r.ensureStagingSecret(context.Background(), ks, adminPasswordStagingSecretName(ks), "admin-password")
+	_, err := r.ensureStagingSecret(context.Background(), r.Client, ks, adminPasswordStagingSecretName(ks), "admin-password")
 	g.Expect(err).To(Succeed())
 
 	var sec corev1.Secret
@@ -185,7 +185,7 @@ func TestEnsureAdminPasswordRotationRBAC_SplitRoleShape(t *testing.T) {
 	r, _ := newPWRotationReconciler(ks)
 	saName := adminPasswordRotateSAName(ks)
 
-	g.Expect(r.ensureAdminPasswordRotationRBAC(context.Background(), ks)).To(Succeed())
+	g.Expect(r.ensureAdminPasswordRotationRBAC(context.Background(), r.Client, ks)).To(Succeed())
 
 	var sa corev1.ServiceAccount
 	g.Expect(r.Get(context.Background(), types.NamespacedName{Name: saName, Namespace: ks.Namespace}, &sa)).To(Succeed())
@@ -350,7 +350,7 @@ func runApplyAdminPasswordRotation(t *testing.T, r *KeystoneReconciler, ks *keys
 	}, &s); err == nil {
 		staging = &s
 	}
-	return r.applyAdminPasswordRotation(ctx, ks, staging, &pushSource, minLength)
+	return r.applyAdminPasswordRotation(ctx, r.Client, ks, staging, &pushSource, minLength)
 }
 
 func TestApplyAdminPasswordRotation_ValidCommit(t *testing.T) {
@@ -647,7 +647,7 @@ func TestReconcilePasswordRotation_Enabled_HappyPath(t *testing.T) {
 	ks := pwRotationTestKeystone()
 	r, _ := newPWRotationReconciler(ks)
 
-	res, err := r.reconcilePasswordRotation(context.Background(), ks, "test-config-cm")
+	res, err := r.reconcilePasswordRotation(context.Background(), r.Client, ks, "test-config-cm")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 
@@ -686,7 +686,7 @@ func TestReconcilePasswordRotation_Enabled_Suspended(t *testing.T) {
 	ks.Spec.PasswordRotation.Suspend = true
 	r, _ := newPWRotationReconciler(ks)
 
-	res, err := r.reconcilePasswordRotation(ctx, ks, "test-config-cm")
+	res, err := r.reconcilePasswordRotation(ctx, r.Client, ks, "test-config-cm")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 
@@ -718,7 +718,7 @@ func TestReconcilePasswordRotation_ValidPushSource_EnsuresPushSecret(t *testing.
 	}
 	r, _ := newPWRotationReconciler(ks, pushSource)
 
-	res, err := r.reconcilePasswordRotation(context.Background(), ks, "test-config-cm")
+	res, err := r.reconcilePasswordRotation(context.Background(), r.Client, ks, "test-config-cm")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 
@@ -744,7 +744,7 @@ func TestReconcilePasswordRotation_AppliesCompletedRotation_Requeues(t *testing.
 	}
 	r, rec := newPWRotationReconciler(ks, pushSource, staging)
 
-	res, err := r.reconcilePasswordRotation(context.Background(), ks, "test-config-cm")
+	res, err := r.reconcilePasswordRotation(context.Background(), r.Client, ks, "test-config-cm")
 	g.Expect(err).NotTo(HaveOccurred())
 	// Apply short-circuits with a requeue (non-zero Result). IsZero() avoids the
 	// deprecated Result.Requeue field while still asserting the requeue happened.
@@ -773,7 +773,7 @@ func TestReconcilePasswordRotation_Disabled_TearsDownEverything(t *testing.T) {
 	// First, run the enabled path to materialize all Model B resources.
 	ks := pwRotationTestKeystone()
 	r, _ := newPWRotationReconciler(ks)
-	_, err := r.reconcilePasswordRotation(ctx, ks, "test-config-cm")
+	_, err := r.reconcilePasswordRotation(ctx, r.Client, ks, "test-config-cm")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Sanity: CronJob exists before teardown.
@@ -781,7 +781,7 @@ func TestReconcilePasswordRotation_Disabled_TearsDownEverything(t *testing.T) {
 
 	// Now disable rotation and reconcile again.
 	ks.Spec.PasswordRotation.Enabled = false
-	res, err := r.reconcilePasswordRotation(ctx, ks, "test-config-cm")
+	res, err := r.reconcilePasswordRotation(ctx, r.Client, ks, "test-config-cm")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(res.IsZero()).To(BeTrue())
 
@@ -813,7 +813,7 @@ func TestReconcilePasswordRotation_NilSpec_TeardownIdempotent(t *testing.T) {
 
 	// Two consecutive teardown reconciles must both succeed (idempotent).
 	for i := 0; i < 2; i++ {
-		res, err := r.reconcilePasswordRotation(context.Background(), ks, "test-config-cm")
+		res, err := r.reconcilePasswordRotation(context.Background(), r.Client, ks, "test-config-cm")
 		g.Expect(err).NotTo(HaveOccurred())
 		g.Expect(res.IsZero()).To(BeTrue())
 	}

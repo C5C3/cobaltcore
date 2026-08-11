@@ -659,8 +659,8 @@ func providerMetadataIssuer(document []byte) string {
 // restart drops the in-memory cache) instead of tearing federation down: the
 // document is stable, so the last-known-good copy is a safe stand-in until the
 // IdP recovers.
-func (r *KeystoneReconciler) lastKnownGoodProviderMetadata(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) []byte {
-	newest := r.newestFederationSecret(ctx, keystone)
+func (r *KeystoneReconciler) lastKnownGoodProviderMetadata(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) []byte {
+	newest := r.newestFederationSecret(ctx, children, keystone)
 	if newest == nil {
 		return nil
 	}
@@ -675,10 +675,10 @@ func (r *KeystoneReconciler) lastKnownGoodProviderMetadata(ctx context.Context, 
 // none exists. Shared by the OIDC and SAML last-known-good metadata fallbacks so
 // a transient IdP metadata-endpoint outage on a cache miss does not tear
 // federation down.
-func (r *KeystoneReconciler) newestFederationSecret(ctx context.Context, keystone *keystonev1alpha1.Keystone) *corev1.Secret {
+func (r *KeystoneReconciler) newestFederationSecret(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) *corev1.Secret {
 	baseName := federationSecretBaseName(keystone)
 	var list corev1.SecretList
-	if err := r.List(ctx, &list, client.InNamespace(keystone.Namespace),
+	if err := children.List(ctx, &list, client.InNamespace(keystone.Namespace),
 		client.MatchingLabels{config.ConfigBaseLabelKey: baseName}); err != nil {
 		return nil
 	}
@@ -751,7 +751,7 @@ func providerMetadataEgressPorts(document []byte) []int32 {
 // pre-provisioned .provider discovery document (the read-only projection
 // prevents the module's self-caching), the .client credentials document, and
 // the per-provider .conf tuning document.
-func (r *KeystoneReconciler) renderOIDCBackend(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (oidcRender, error) {
+func (r *KeystoneReconciler) renderOIDCBackend(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (oidcRender, error) {
 	o := backend.Spec.OIDC
 	if o == nil {
 		// The webhook + CEL union rule prevent this; fail loudly rather than
@@ -763,7 +763,7 @@ func (r *KeystoneReconciler) renderOIDCBackend(ctx context.Context, keystone *ke
 	}
 
 	secretKey := client.ObjectKey{Namespace: keystone.Namespace, Name: o.ClientSecretRef.Name}
-	clientSecret, err := secrets.GetSecretValue(ctx, r.Client, secretKey, "clientSecret")
+	clientSecret, err := secrets.GetSecretValue(ctx, children, secretKey, "clientSecret")
 	if err != nil {
 		return oidcRender{}, err
 	}
@@ -786,7 +786,7 @@ func (r *KeystoneReconciler) renderOIDCBackend(ctx context.Context, keystone *ke
 			// provider. Seeding the cache stops us from re-hammering the failing
 			// IdP each reconcile (a spec edit bumps the generation and forces a
 			// real refetch); the Warning surfaces the degraded state.
-			if lkg := r.lastKnownGoodProviderMetadata(ctx, keystone, backend); lkg != nil && providerMetadataIssuer(lkg) == o.Issuer {
+			if lkg := r.lastKnownGoodProviderMetadata(ctx, children, keystone, backend); lkg != nil && providerMetadataIssuer(lkg) == o.Issuer {
 				r.cacheProviderMetadata(backend, lkg)
 				r.Recorder.Eventf(keystone, corev1.EventTypeWarning, "FederationMetadataStale",
 					"Identity backend %s: provider metadata unavailable (%v); reusing the last-known-good discovery document so federation stays up", backend.Name, err)
@@ -1055,11 +1055,11 @@ func renderProxyConf(keystone *keystonev1alpha1.Keystone, oidcRenders []oidcRend
 // there is deliberately NO PushSecret/OpenBao backup. Because the passphrase
 // is embedded into proxy.conf, a regenerated value re-hashes the federation
 // Secret and rolls every pod together.
-func (r *KeystoneReconciler) ensureOIDCCryptoPassphrase(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error) {
+func (r *KeystoneReconciler) ensureOIDCCryptoPassphrase(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (string, error) {
 	name := oidcCryptoPassphraseSecretName(keystone)
 	key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
 	var secret corev1.Secret
-	err := r.Get(ctx, key, &secret)
+	err := children.Get(ctx, key, &secret)
 	if err == nil {
 		if v := secret.Data["passphrase"]; len(v) > 0 {
 			return string(v), nil
@@ -1085,7 +1085,7 @@ func (r *KeystoneReconciler) ensureOIDCCryptoPassphrase(ctx context.Context, key
 	if err := controllerutil.SetControllerReference(keystone, &secret, r.Scheme); err != nil {
 		return "", fmt.Errorf("setting owner reference on crypto passphrase Secret: %w", err)
 	}
-	if err := r.Create(ctx, &secret); err != nil {
+	if err := children.Create(ctx, &secret); err != nil {
 		return "", fmt.Errorf("creating crypto passphrase Secret %s: %w", key, err)
 	}
 	return passphrase, nil
@@ -1096,12 +1096,12 @@ func (r *KeystoneReconciler) ensureOIDCCryptoPassphrase(ctx context.Context, key
 // deployment builders consume. At least one of oidcRenders / samlRenders must be
 // non-empty; both must be name-sorted. remoteIDAttribute is the OIDC [openid]
 // remote_id_attribute (empty when SAML-only).
-func (r *KeystoneReconciler) buildFederationProjection(ctx context.Context, keystone *keystonev1alpha1.Keystone, oidcRenders []oidcRender, samlRenders []samlRender, remoteIDAttribute string, proxyImage commonv1.ImageSpec) (*federationProjection, error) {
+func (r *KeystoneReconciler) buildFederationProjection(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, oidcRenders []oidcRender, samlRenders []samlRender, remoteIDAttribute string, proxyImage commonv1.ImageSpec) (*federationProjection, error) {
 	// Only OIDC needs the crypto passphrase (client-cookie session/state); a
 	// SAML-only Keystone must not create the passphrase Secret.
 	var passphrase string
 	if len(oidcRenders) > 0 {
-		p, err := r.ensureOIDCCryptoPassphrase(ctx, keystone)
+		p, err := r.ensureOIDCCryptoPassphrase(ctx, children, keystone)
 		if err != nil {
 			return nil, err
 		}
@@ -1163,7 +1163,7 @@ func (r *KeystoneReconciler) buildFederationProjection(ctx context.Context, keys
 		samlRemoteIDAttribute = rd.remoteIDAttr
 	}
 
-	name, err := config.CreateImmutableSecret(ctx, r.Client, r.Scheme, keystone,
+	name, err := config.CreateImmutableSecret(ctx, children, r.Scheme, keystone,
 		federationSecretBaseName(keystone), keystone.Namespace, data)
 	if err != nil {
 		return nil, fmt.Errorf("creating federation Secret: %w", err)
@@ -1173,7 +1173,7 @@ func (r *KeystoneReconciler) buildFederationProjection(ctx context.Context, keys
 	// register the service provider with the IdP out of band. Independent of
 	// IdP-metadata availability (resolving the register-first chicken-and-egg).
 	for i := range samlRenders {
-		if err := r.ensureSAMLSPMetadataSecret(ctx, keystone, &samlRenders[i]); err != nil {
+		if err := r.ensureSAMLSPMetadataSecret(ctx, children, keystone, &samlRenders[i]); err != nil {
 			return nil, err
 		}
 	}
@@ -1194,12 +1194,12 @@ func (r *KeystoneReconciler) buildFederationProjection(ctx context.Context, keys
 // Secrets past the retain count. When federation is inactive (empty
 // currentName) every historical Secret is removed — the last federation
 // backend detached, so no client secret, passphrase, or SP key copy may linger.
-func (r *KeystoneReconciler) pruneStaleFederationSecrets(ctx context.Context, keystone *keystonev1alpha1.Keystone, federationSecretName string) error {
+func (r *KeystoneReconciler) pruneStaleFederationSecrets(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, federationSecretName string) error {
 	retain := defaultConfigMapRetainCount
 	if federationSecretName == "" {
 		retain = 0
 	}
-	return config.PruneImmutableSecrets(ctx, r.Client, keystone, config.PruneOptions{
+	return config.PruneImmutableSecrets(ctx, children, keystone, config.PruneOptions{
 		BaseName:    federationSecretBaseName(keystone),
 		Namespace:   keystone.Namespace,
 		CurrentName: federationSecretName,

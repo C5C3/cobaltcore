@@ -123,7 +123,7 @@ const ssoCallbackTemplateHTML = `<!DOCTYPE html>
 // keystone.conf gains the openid auth method, the [openid]
 // remote_id_attribute, and the [federation] section, and the ConfigMap ships
 // the WebSSO callback template.
-func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keystonev1alpha1.Keystone, domainsProjected bool, fed *federationProjection) (string, error) {
+func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, domainsProjected bool, fed *federationProjection) (string, error) {
 	// The extraConfig ownership guard is a pure function of the spec, so it
 	// runs before the render-cache short-circuit and needs no render or cache
 	// participation. The ExtraConfigHealthy condition is informational and
@@ -139,7 +139,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	// current. Skip the INI/paste/policy rendering and the immutable-ConfigMap
 	// write; the extraConfig ownership guard above already ran, so it needs no
 	// re-run here.
-	policyCMRV, err := r.policyConfigMapResourceVersion(ctx, keystone)
+	policyCMRV, err := r.policyConfigMapResourceVersion(ctx, children, keystone)
 	if err != nil {
 		return "", err
 	}
@@ -147,7 +147,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		// Confirm the cached ConfigMap still exists: an out-of-band delete must
 		// fall through to a full render/recreate. Owns(ConfigMap) enqueues us on
 		// the delete, but the cache would otherwise hand back a deleted name.
-		exists, existsErr := r.configMapExists(ctx, keystone.Namespace, name)
+		exists, existsErr := r.configMapExists(ctx, children, keystone.Namespace, name)
 		if existsErr != nil {
 			return "", existsErr
 		}
@@ -185,7 +185,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 	// Step 4: Handle PolicyOverrides.
 	var policyYAML string
 	if keystone.Spec.PolicyOverrides != nil {
-		yaml, err := buildPolicyYAML(ctx, r.Client, keystone)
+		yaml, err := buildPolicyYAML(ctx, children, keystone)
 		if err != nil {
 			return "", fmt.Errorf("building policy: %w", err)
 		}
@@ -262,7 +262,7 @@ func (r *KeystoneReconciler) reconcileConfig(ctx context.Context, keystone *keys
 		data["sso_callback_template.html"] = ssoCallbackTemplateHTML
 	}
 
-	configMapName, err := config.CreateImmutableConfigMap(ctx, r.Client, r.Scheme, keystone,
+	configMapName, err := config.CreateImmutableConfigMap(ctx, children, r.Scheme, keystone,
 		fmt.Sprintf("%s-config", keystone.Name), keystone.Namespace, data)
 	if err != nil {
 		return "", fmt.Errorf("creating config ConfigMap: %w", err)
@@ -406,13 +406,13 @@ func operatorDefaults(keystone *keystonev1alpha1.Keystone, domainsProjected bool
 // CR spec, so it is folded into the config-render cache key. A NotFound is
 // reported as "" so the render path runs and surfaces the missing-ConfigMap
 // error via buildPolicyYAML rather than caching against a phantom.
-func (r *KeystoneReconciler) policyConfigMapResourceVersion(ctx context.Context, keystone *keystonev1alpha1.Keystone) (string, error) {
+func (r *KeystoneReconciler) policyConfigMapResourceVersion(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (string, error) {
 	po := keystone.Spec.PolicyOverrides
 	if po == nil || po.ConfigMapRef == nil {
 		return "", nil
 	}
 	var cm corev1.ConfigMap
-	if err := r.Get(ctx, client.ObjectKey{Namespace: keystone.Namespace, Name: po.ConfigMapRef.Name}, &cm); err != nil {
+	if err := children.Get(ctx, client.ObjectKey{Namespace: keystone.Namespace, Name: po.ConfigMapRef.Name}, &cm); err != nil {
 		if apierrors.IsNotFound(err) {
 			return "", nil
 		}
@@ -498,9 +498,9 @@ func (r *KeystoneReconciler) evictConfigRender(key types.NamespacedName) {
 
 // configMapExists reports whether the named ConfigMap is present, treating
 // NotFound as a clean "absent" rather than an error.
-func (r *KeystoneReconciler) configMapExists(ctx context.Context, namespace, name string) (bool, error) {
+func (r *KeystoneReconciler) configMapExists(ctx context.Context, children client.Client, namespace, name string) (bool, error) {
 	var cm corev1.ConfigMap
-	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &cm); err != nil {
+	if err := children.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &cm); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
@@ -512,9 +512,9 @@ func (r *KeystoneReconciler) configMapExists(ctx context.Context, namespace, nam
 // pruneStaleConfigMaps removes historical immutable ConfigMaps that exceed
 // the retain count, keeping only the newest historical ConfigMaps plus the
 // currently active one.
-func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context, keystone *keystonev1alpha1.Keystone, configMapName string) error {
+func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, configMapName string) error {
 	baseName := fmt.Sprintf("%s-config", keystone.Name)
-	return config.PruneImmutableConfigMaps(ctx, r.Client, keystone, config.PruneOptions{
+	return config.PruneImmutableConfigMaps(ctx, children, keystone, config.PruneOptions{
 		BaseName:    baseName,
 		Namespace:   keystone.Namespace,
 		CurrentName: configMapName,

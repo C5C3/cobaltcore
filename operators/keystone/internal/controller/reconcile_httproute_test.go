@@ -362,7 +362,7 @@ func TestReconcileHTTPRoute_GatewaySet_CreatesHTTPRoute(t *testing.T) {
 	ks.Spec.Gateway = hrTestGateway()
 	r := newHRTestReconciler(s, ks)
 
-	result, err := r.reconcileHTTPRoute(context.Background(), ks)
+	result, err := r.reconcileHTTPRoute(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	// No Accepted status yet on the fresh HTTPRoute: expect a requeue so the
 	// operator re-checks parent status.
@@ -393,7 +393,7 @@ func TestReconcileHTTPRoute_GatewayNil_NoExisting_SetsNotRequired(t *testing.T) 
 	// gateway is nil by default.
 	r := newHRTestReconciler(s, ks)
 
-	result, err := r.reconcileHTTPRoute(context.Background(), ks)
+	result, err := r.reconcileHTTPRoute(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -425,7 +425,7 @@ func TestReconcileHTTPRoute_GatewayNil_ExistingRoute_DeletesHTTPRoute(t *testing
 	}, &route)).To(Succeed())
 
 	// reconcileHTTPRoute with nil gateway should delete the route.
-	result, err := r.reconcileHTTPRoute(ctx, ks)
+	result, err := r.reconcileHTTPRoute(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -453,7 +453,7 @@ func TestReconcileHTTPRoute_GatewaySet_ConditionObservedGeneration(t *testing.T)
 	ks.Spec.Gateway = hrTestGateway()
 	r := newHRTestReconciler(s, ks)
 
-	_, err := r.reconcileHTTPRoute(context.Background(), ks)
+	_, err := r.reconcileHTTPRoute(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeHTTPRouteReady)
@@ -465,7 +465,7 @@ func TestReconcileHTTPRoute_GatewaySet_ConditionObservedGeneration(t *testing.T)
 	ks2.Generation = 14
 	r2 := newHRTestReconciler(s, ks2)
 
-	_, err = r2.reconcileHTTPRoute(context.Background(), ks2)
+	_, err = r2.reconcileHTTPRoute(context.Background(), r2.Client, ks2)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	cond2 := meta.FindStatusCondition(ks2.Status.Conditions, conditionTypeHTTPRouteReady)
@@ -482,12 +482,12 @@ func TestReconcileHTTPRoute_GatewaySet_HTTPRouteUpdated(t *testing.T) {
 	ctx := context.Background()
 
 	// First reconcile creates the HTTPRoute.
-	_, err := r.reconcileHTTPRoute(ctx, ks)
+	_, err := r.reconcileHTTPRoute(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Change hostname and re-reconcile — the HTTPRoute should be updated.
 	ks.Spec.Gateway.Hostname = "keystone.new-example.com"
-	_, err = r.reconcileHTTPRoute(ctx, ks)
+	_, err = r.reconcileHTTPRoute(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var route gatewayv1.HTTPRoute
@@ -511,9 +511,9 @@ func TestReconcileHTTPRoute_RepeatedReconcileIsIdempotent(t *testing.T) {
 	r := newHRTestReconciler(s, ks)
 	ctx := context.Background()
 
-	_, err := r.reconcileHTTPRoute(ctx, ks)
+	_, err := r.reconcileHTTPRoute(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
-	_, err = r.reconcileHTTPRoute(ctx, ks)
+	_, err = r.reconcileHTTPRoute(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	list := &gatewayv1.HTTPRouteList{}
@@ -549,7 +549,7 @@ func TestReconcileHTTPRoute_EnsureError_Propagated(t *testing.T) {
 		gatewayAPIAvailable: true,
 	}
 
-	_, err := r.reconcileHTTPRoute(context.Background(), ks)
+	_, err := r.reconcileHTTPRoute(context.Background(), r.Client, ks)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ensuring HTTPRoute"))
 	g.Expect(err.Error()).To(ContainSubstring("simulated HTTPRoute apply error"))
@@ -589,7 +589,7 @@ func TestReconcileHTTPRoute_DeleteError_Propagated(t *testing.T) {
 		gatewayAPIAvailable: true,
 	}
 
-	_, err := r.reconcileHTTPRoute(context.Background(), ks)
+	_, err := r.reconcileHTTPRoute(context.Background(), r.Client, ks)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("deleting HTTPRoute"))
 	g.Expect(err.Error()).To(ContainSubstring("simulated HTTPRoute deletion error"))
@@ -610,7 +610,7 @@ func TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute(t *testing
 	ctx := context.Background()
 
 	// First reconcile creates the HTTPRoute with both annotations.
-	_, err := r.reconcileHTTPRoute(ctx, ks)
+	_, err := r.reconcileHTTPRoute(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var route gatewayv1.HTTPRoute
@@ -626,7 +626,7 @@ func TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute(t *testing
 	ks.Spec.Gateway.Annotations = map[string]string{
 		"nginx.ingress.k8s.io": "test",
 	}
-	_, err = r.reconcileHTTPRoute(ctx, ks)
+	_, err = r.reconcileHTTPRoute(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(r.Get(ctx, types.NamespacedName{
@@ -639,7 +639,7 @@ func TestReconcileHTTPRoute_AnnotationRemoval_RemovesKeyFromLiveRoute(t *testing
 
 	// Remove all annotations and re-reconcile — all previously-owned keys go.
 	ks.Spec.Gateway.Annotations = nil
-	_, err = r.reconcileHTTPRoute(ctx, ks)
+	_, err = r.reconcileHTTPRoute(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(r.Get(ctx, types.NamespacedName{
@@ -696,7 +696,7 @@ func TestReconcileHTTPRoute_AcceptedCondition_True(t *testing.T) {
 	}
 	r := newHRTestReconciler(s, ks, acceptedRoute)
 
-	result, err := r.reconcileHTTPRoute(context.Background(), ks)
+	result, err := r.reconcileHTTPRoute(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	// No requeue once Accepted=True is observed.
 	g.Expect(result.RequeueAfter).To(BeZero())
@@ -746,7 +746,7 @@ func TestReconcileHTTPRoute_AcceptedCondition_False_Requeues(t *testing.T) {
 	}
 	r := newHRTestReconciler(s, ks, rejectedRoute)
 
-	result, err := r.reconcileHTTPRoute(context.Background(), ks)
+	result, err := r.reconcileHTTPRoute(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	// Requeue so the operator re-checks parent status.
 	g.Expect(result.RequeueAfter).NotTo(BeZero())
@@ -772,7 +772,7 @@ func TestReconcileHTTPRoute_GatewayAPIUnavailable_GatewayNil_SetsNotRequired(t *
 	r := newHRTestReconciler(s, ks)
 	r.gatewayAPIAvailable = false
 
-	result, err := r.reconcileHTTPRoute(context.Background(), ks)
+	result, err := r.reconcileHTTPRoute(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 
@@ -795,7 +795,7 @@ func TestReconcileHTTPRoute_GatewayAPIUnavailable_GatewaySet_SurfacesCondition(t
 	r := newHRTestReconciler(s, ks)
 	r.gatewayAPIAvailable = false
 
-	result, err := r.reconcileHTTPRoute(context.Background(), ks)
+	result, err := r.reconcileHTTPRoute(context.Background(), r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result).To(Equal(ctrl.Result{}))
 

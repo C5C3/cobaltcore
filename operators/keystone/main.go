@@ -49,6 +49,9 @@ func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
 		Scheme:           scheme,
 		LeaderElectionID: "keystone.openstack.c5c3.io",
+		// The reconcilers resolve spec.targetClusterRef, so the binary engages
+		// the clusters registered in --clusters-namespace.
+		TargetClusters: true,
 		RegisterFlags: func(fs *flag.FlagSet) {
 			fs.StringVar(&federationMetadataAllowCIDRs, "federation-metadata-allow-cidrs", "",
 				"Comma-separated CIDRs the operator may additionally dial when fetching "+
@@ -80,6 +83,7 @@ func main() {
 				OperatorNamespace:            bootstrap.DetectOperatorNamespace(),
 				MaxConcurrentReconciles:      maxConcurrentReconciles,
 				FederationMetadataAllowCIDRs: allowCIDRs,
+				Resolver:                     mcMgr,
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}

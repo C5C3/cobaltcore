@@ -37,16 +37,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/gateway"
 	"github.com/c5c3/forge/internal/common/healthcheck"
 	"github.com/c5c3/forge/internal/common/job"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -307,7 +310,7 @@ func testComputeConfigMapName(t testing.TB) string {
 		Scheme:   s,
 		Recorder: record.NewFakeRecorder(10),
 	}
-	name, err := r.reconcileConfig(context.Background(), ks, false, nil)
+	name, err := r.reconcileConfig(context.Background(), r.Client, ks, false, nil)
 	if err != nil {
 		t.Fatalf("computing config map name: %v", err)
 	}
@@ -1954,6 +1957,158 @@ func TestReconcile_FinalizerUpdateConflict_ReturnsError(t *testing.T) {
 		"error must preserve the 'adding finalizer' wrapper from Reconcile")
 	g.Expect(apierrors.IsConflict(err)).To(BeTrue(),
 		"wrapped Conflict must remain recognizable via apierrors.IsConflict")
+}
+
+// unresolvableResolver is a ClusterResolver that never knows any cluster. It
+// returns the upstream sentinel so the test asserts the message an operator
+// actually reads on the CR, not a locally invented string.
+type unresolvableResolver struct{}
+
+func (unresolvableResolver) GetCluster(_ context.Context, _ mcruntime.ClusterName) (cluster.Cluster, error) {
+	return nil, mcruntime.ErrClusterNotFound
+}
+
+// TestReconcile_TargetClusterUnavailableGatesBeforeFinalizer pins the failure
+// surface of an unresolvable spec.targetClusterRef: the CR reports
+// SecretsReady=False with the shared reason, the pass requeues instead of
+// erroring, and the CR is left with neither a finalizer nor a single child
+// object, because the resolution runs ahead of the finalizer-add.
+func TestReconcile_TargetClusterUnavailableGatesBeforeFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Finalizers = nil
+	ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "nowhere"}
+	r := newTestReconciler(ks)
+	r.Resolver = unresolvableResolver{}
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred(),
+		"an unregistered target cluster is a wait, not a reconcile failure")
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+
+	cond := meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil(), "the first gate condition must carry the failure")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+
+	g.Expect(updated.Finalizers).To(BeEmpty(),
+		"a CR whose target never resolves must not be pinned by a finalizer")
+
+	// Nothing was projected: the pass returned before any sub-reconciler could
+	// write, and the management cluster is the only one a fake resolver could
+	// have handed back.
+	var deployments appsv1.DeploymentList
+	g.Expect(r.List(ctx, &deployments)).To(Succeed())
+	g.Expect(deployments.Items).To(BeEmpty())
+	var configMaps corev1.ConfigMapList
+	g.Expect(r.List(ctx, &configMaps)).To(Succeed())
+	g.Expect(configMaps.Items).To(BeEmpty())
+	var secrets corev1.SecretList
+	g.Expect(r.List(ctx, &secrets)).To(Succeed())
+	g.Expect(secrets.Items).To(BeEmpty())
+}
+
+// TestReconcile_TerminatingCR_UnresolvableTargetReleasesFinalizers is the guard
+// against a CR that can never be deleted. Deregistering a target cluster is a
+// documented operation, and a CR that already provisioned on it carries both
+// finalizers by then. While the resolution ran ahead of the deletion branch,
+// every pass short-circuited on "cluster not found" before reconcileDelete, the
+// finalizers were never released, and the CR — with its namespace — stayed
+// Terminating until someone stripped them by hand.
+func TestReconcile_TerminatingCR_UnresolvableTargetReleasesFinalizers(t *testing.T) {
+	g := NewGomegaWithT(t)
+	// The window this process has to sit out starts on its own first failure to
+	// resolve, so it has to be compressed for the second pass to reach past it.
+	abandonAfter := commonmulticluster.AbandonAfter
+	t.Cleanup(func() { commonmulticluster.AbandonAfter = abandonAfter })
+	commonmulticluster.AbandonAfter = time.Millisecond
+
+	ks := testKeystone()
+	ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "deregistered"}
+	// A foreign finalizer keeps the CR in etcd so the test can read back which
+	// finalizers the pass released.
+	ks.Finalizers = append(ks.Finalizers, "foreign.example.com/keep-alive")
+	// Terminating for far longer than the window, which by itself must not be
+	// enough: a CR blocked in the OpenBao cleanup for minutes is ordinary, and
+	// giving up on it the moment the operator comes back would strand its
+	// children.
+	deletedAt := metav1.NewTime(time.Now().Add(-10 * time.Minute))
+	ks.DeletionTimestamp = &deletedAt
+
+	r := newTestReconciler(ks)
+	r.Resolver = unresolvableResolver{}
+	ctx := context.Background()
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	result, err := r.Reconcile(ctx, req)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling),
+		"the first pass this process fails to resolve on starts the window, it does not end it")
+	time.Sleep(10 * commonmulticluster.AbandonAfter)
+
+	result, err = r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a target cluster that is gone must not fail the deletion pass")
+	g.Expect(result).To(Equal(ctrl.Result{}), "the deletion resolves once the window is out")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	g.Expect(controllerutil.ContainsFinalizer(&updated, keystoneFinalizer)).To(BeFalse(),
+		"the MariaDB finalizer must be released even without a reachable target cluster")
+	g.Expect(controllerutil.ContainsFinalizer(&updated, keystoneOpenBaoFinalizer)).To(BeFalse(),
+		"the OpenBao finalizer must be released too, or the CR stays Terminating forever")
+	g.Expect(updated.Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
+
+	// The abandoned children are announced rather than silently dropped.
+	expectEvent(g, r, "Warning RemoteChildrenAbandoned")
+}
+
+// TestReconcile_TerminatingCR_TargetNotEngagedYetKeepsFinalizers pins the other
+// half of that contract. Cluster engagement is asynchronous, so a registered
+// cluster does not resolve either while the provider is still syncing after an
+// operator restart. A CR deleted in that window must requeue rather than release
+// its finalizers: abandoning here would leave its children running on a cluster
+// that is perfectly reachable, with no CR left to retry from.
+func TestReconcile_TerminatingCR_TargetNotEngagedYetKeepsFinalizers(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "not-engaged-yet"}
+
+	r := newTestReconciler(ks)
+	r.Resolver = unresolvableResolver{}
+	ctx := context.Background()
+	// Deleted just now, so the whole abandon window is still ahead.
+	_ = markKeystoneTerminating(t, r.Client, ks)
+
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	g.Expect(controllerutil.ContainsFinalizer(&updated, keystoneFinalizer)).To(BeTrue(),
+		"a target that may still be engaging must not cost the CR its finalizers")
+	g.Expect(controllerutil.ContainsFinalizer(&updated, keystoneOpenBaoFinalizer)).To(BeTrue())
+
+	// The hold lasts minutes, so it has to be readable off the CR: without it,
+	// a namespace stuck Terminating looks like a wedged finalizer and can only
+	// be told apart by correlating operator logs across replicas.
+	cond := meta.FindStatusCondition(updated.Status.Conditions, "SecretsReady")
+	g.Expect(cond).NotTo(BeNil(), "the deliberate hold must be visible on the CR")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("not-engaged-yet"))
 }
 
 // TestReconcile_TerminatingCR_SkipsSubReconcilers verifies that when the CR is
@@ -4134,7 +4289,7 @@ func TestReconcileDeleteRemovesRotationAgeSeries(t *testing.T) {
 	var terminating keystonev1alpha1.Keystone
 	g.Expect(r.Get(ctx, client.ObjectKeyFromObject(ks), &terminating)).To(Succeed())
 
-	_, err := r.reconcileDelete(ctx, &terminating)
+	_, err := r.reconcileDelete(ctx, r.Client, &terminating)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds", fernetLabels)).

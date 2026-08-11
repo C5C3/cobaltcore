@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/gateway"
@@ -88,7 +89,7 @@ const requeueHTTPRouteAccepted = commonreconcile.RequeueDeploymentPolling
 // through a Gateway matches the desired state, via the shared route flow. It
 // keeps only the service-specific parts: the desired route builder, the backend
 // identity, and the exposure noun for the messages.
-func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
+func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	// buildKeystoneHTTPRoute dereferences spec.gateway, so build the desired
 	// route only when external exposure is requested; the flow uses Desired
 	// only on the gateway-enabled path.
@@ -96,7 +97,7 @@ func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, keystone *k
 	if keystone.Spec.Gateway != nil {
 		desired = buildKeystoneHTTPRoute(keystone)
 	}
-	return gateway.ReconcileHTTPRoute(ctx, r.Client, r.Scheme, keystone, gateway.RouteFlowParams{
+	return gateway.ReconcileHTTPRoute(ctx, children, r.Scheme, keystone, gateway.RouteFlowParams{
 		GatewayAPIAvailable: r.gatewayAPIAvailable,
 		GatewayConfigured:   keystone.Spec.Gateway != nil,
 		Desired:             desired,

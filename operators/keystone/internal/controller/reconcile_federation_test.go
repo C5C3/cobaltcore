@@ -610,7 +610,7 @@ func TestRenderOIDCBackend_DiscoveryModeEgressPortsFromDocument(t *testing.T) {
 		`"token_endpoint":"https://tokens.example.com:9443/token",` +
 		`"jwks_uri":"https://keys.example.com:7443/certs"}`}
 
-	render, err := r.renderOIDCBackend(context.Background(), testFederationKeystone(), backend)
+	render, err := r.renderOIDCBackend(context.Background(), r.Client, testFederationKeystone(), backend)
 	g.Expect(err).NotTo(HaveOccurred())
 	// 443 from the issuer + authorization_endpoint, plus the endpoint-specific
 	// ports the sidecar would otherwise be blocked from reaching.
@@ -641,7 +641,7 @@ func TestReconcileIdentityBackends_OIDCRendersFederationSecret(t *testing.T) {
 	backend.Spec.OIDC.Endpoints.IntrospectionEndpoint = "https://idp.example.com/introspect"
 	r := newTestReconciler(ks, backend, testOIDCClientSecret("corp-oidc"))
 
-	projection, err := r.reconcileIdentityBackends(ctx, ks)
+	projection, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.DomainsSecretName).To(BeEmpty(), "no LDAP backend is attached")
 	g.Expect(projection.Federation).NotTo(BeNil())
@@ -683,7 +683,7 @@ func TestReconcileIdentityBackends_OIDCRendersFederationSecret(t *testing.T) {
 	// The Deployment converges onto the federation projection. The second pass
 	// reuses the passphrase (stable content hash) and may then report True.
 	g.Expect(r.Client.Create(ctx, testProjectedDeployment(ks, "", projection.Federation.SecretName))).To(Succeed())
-	projection2, err := r.reconcileIdentityBackends(ctx, ks)
+	projection2, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection2.Federation.SecretName).To(Equal(projection.Federation.SecretName))
 
@@ -708,7 +708,7 @@ func TestReconcileIdentityBackends_SameIssuerSkipsCollidingSet(t *testing.T) {
 	g.Expect(a.Spec.OIDC.Issuer).To(Equal(b.Spec.OIDC.Issuer), "fixture precondition: shared issuer")
 	r := newTestReconciler(ks, a, b, testOIDCClientSecret("alpha-oidc"), testOIDCClientSecret("beta-oidc"))
 
-	projection, err := r.reconcileIdentityBackends(ctx, ks)
+	projection, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.Federation).To(BeNil(), "the colliding same-issuer set must not be projected")
 
@@ -734,7 +734,7 @@ func TestReconcileIdentityBackends_MetadataOutageReusesLastKnownGood(t *testing.
 	r.HTTPClient = doer
 
 	// First reconcile fetches and persists the discovery document.
-	first, err := r.reconcileIdentityBackends(ctx, ks)
+	first, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(first.Federation).NotTo(BeNil())
 
@@ -742,7 +742,7 @@ func TestReconcileIdentityBackends_MetadataOutageReusesLastKnownGood(t *testing.
 	r.federationMetadataCache = nil
 	doer.fail = true
 
-	second, err := r.reconcileIdentityBackends(ctx, ks)
+	second, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(second.Federation).NotTo(BeNil(), "federation must not be torn down by a transient metadata outage")
 	g.Expect(second.Federation.SecretName).To(Equal(first.Federation.SecretName), "last-known-good metadata reproduces the same Secret")
@@ -751,7 +751,7 @@ func TestReconcileIdentityBackends_MetadataOutageReusesLastKnownGood(t *testing.
 	// The fallback seeds the cache, so a subsequent reconcile serves from it
 	// without re-hitting the still-failing IdP.
 	callsBefore := doer.calls
-	third, err := r.reconcileIdentityBackends(ctx, ks)
+	third, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(third.Federation).NotTo(BeNil())
 	g.Expect(doer.calls).To(Equal(callsBefore), "cache seeded by the fallback prevents re-hammering the IdP")
@@ -765,7 +765,7 @@ func TestReconcileIdentityBackends_MixedLDAPAndOIDC(t *testing.T) {
 	oidc := testProjectableOIDCBackend("corp-oidc")
 	r := newTestReconciler(ks, ldap, oidc, testBindSecret("corp-ldap"), testOIDCClientSecret("corp-oidc"))
 
-	projection, err := r.reconcileIdentityBackends(ctx, ks)
+	projection, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.DomainsSecretName).To(HavePrefix("test-keystone-domains-"))
 	g.Expect(projection.Federation).NotTo(BeNil())
@@ -783,7 +783,7 @@ func TestReconcileIdentityBackends_OIDCWithoutProxyImageStaysPending(t *testing.
 	backend := testProjectableOIDCBackend("corp-oidc")
 	r := newTestReconciler(ks, backend, testOIDCClientSecret("corp-oidc"))
 
-	projection, err := r.reconcileIdentityBackends(ctx, ks)
+	projection, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.Federation).To(BeNil(), "no sidecar may be projected without an image")
 
@@ -801,7 +801,7 @@ func TestReconcileIdentityBackends_OIDCMissingClientSecretSkips(t *testing.T) {
 	backend := testProjectableOIDCBackend("corp-oidc")
 	r := newTestReconciler(ks, backend) // client Secret deliberately absent
 
-	projection, err := r.reconcileIdentityBackends(ctx, ks)
+	projection, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred(), "a missing client Secret is a per-backend fault, not a pipeline failure")
 	g.Expect(projection.Federation).To(BeNil())
 
@@ -820,7 +820,7 @@ func TestReconcileIdentityBackends_OIDCControlCharSkips(t *testing.T) {
 	backend.Spec.OIDC.RemoteIDAttribute = "HTTP_OIDC_ISS\nOIDCOAuthClientSecret pwned"
 	r := newTestReconciler(ks, backend, testOIDCClientSecret("corp-oidc"))
 
-	projection, err := r.reconcileIdentityBackends(ctx, ks)
+	projection, err := r.reconcileIdentityBackends(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projection.Federation).To(BeNil())
 	expectEvent(g, r, "Warning IdentityBackendSkipped")
@@ -854,7 +854,7 @@ func TestRenderOIDCBackend_HTTPIntrospectionEndpointSkips(t *testing.T) {
 	r.HTTPClient = &metadataDoer{body: `{"issuer":"http://idp.example.com/realms/forge","introspection_endpoint":"http://idp.example.com/realms/forge/introspect"}`}
 
 	ks := testFederationKeystone()
-	_, err := r.renderOIDCBackend(context.Background(), ks, backend)
+	_, err := r.renderOIDCBackend(context.Background(), r.Client, ks, backend)
 	g.Expect(err).To(MatchError(errProviderMetadataUnavailable))
 	g.Expect(err.Error()).To(ContainSubstring("is not https"))
 }

@@ -79,7 +79,7 @@ func TestReconcileDBConnectionSecret_ReadsCredentialPairAtomically(t *testing.T)
 		Recorder: base.Recorder,
 	}
 
-	_, digest, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, digest, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(digest).NotTo(BeEmpty())
 
@@ -112,7 +112,7 @@ func TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_Brownfield(t *t
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	result, _, err := r.reconcileDBConnectionSecret(ctx, ks)
+	result, _, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -146,7 +146,7 @@ func TestReconcileDBConnectionSecret_CreatesSecretWithCorrectURL_Managed(t *test
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ignored", "secret123")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	result, _, err := r.reconcileDBConnectionSecret(ctx, ks)
+	result, _, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 
@@ -181,7 +181,7 @@ func TestReconcileDBConnectionSecret_DynamicManaged_UsesSecretUsername(t *testin
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "v-kube-abc123", "leaseSecret")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	result, digest, err := r.reconcileDBConnectionSecret(ctx, ks)
+	result, digest, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(BeZero())
 	g.Expect(digest).NotTo(BeEmpty())
@@ -219,7 +219,7 @@ func TestReconcileDBConnectionSecret_DynamicManaged_MissingUsername_Requeues(t *
 	}
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	result, digest, err := r.reconcileDBConnectionSecret(ctx, ks)
+	result, digest, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 	g.Expect(digest).To(BeEmpty())
@@ -255,10 +255,10 @@ func TestReconcileDBConnectionSecret_DigestChangesWithCredential(t *testing.T) {
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "v-kube-1", "pass-1")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	_, digest1, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, digest1, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	// Second reconcile with unchanged inputs yields the same digest.
-	_, digest1b, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, digest1b, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(digest1b).To(Equal(digest1))
 
@@ -269,7 +269,7 @@ func TestReconcileDBConnectionSecret_DigestChangesWithCredential(t *testing.T) {
 	current.Data["password"] = []byte("pass-2")
 	g.Expect(r.Update(ctx, current)).To(Succeed())
 
-	_, digest2, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, digest2, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(digest2).NotTo(Equal(digest1))
 }
@@ -284,7 +284,7 @@ func TestReconcileDBConnectionSecret_UpdatesOnPasswordRotation(t *testing.T) {
 	r := newConfigTestReconciler(s, ks, upstream)
 
 	// First reconcile: derived Secret created with the old password.
-	_, _, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, _, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	derivedKey := client.ObjectKey{
@@ -302,7 +302,7 @@ func TestReconcileDBConnectionSecret_UpdatesOnPasswordRotation(t *testing.T) {
 	current.Data["password"] = []byte("new")
 	g.Expect(r.Update(ctx, current)).To(Succeed())
 
-	_, _, err = r.reconcileDBConnectionSecret(ctx, ks)
+	_, _, err = r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	second := &corev1.Secret{}
@@ -324,7 +324,7 @@ func TestReconcileDBConnectionSecret_UpstreamSecretMissing_RequeueAndCondition(t
 	// Deliberately do NOT seed the upstream credentials Secret.
 	r := newConfigTestReconciler(s, ks)
 
-	result, _, err := r.reconcileDBConnectionSecret(ctx, ks)
+	result, _, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
@@ -376,7 +376,7 @@ func TestReconcileDBConnectionSecret_UpstreamSecretMissingKey_RequeueAndConditio
 	}
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	result, _, err := r.reconcileDBConnectionSecret(ctx, ks)
+	result, _, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
 
@@ -417,7 +417,7 @@ func TestReconcile_NoPushSecretOrExternalSecretForDBConnection(t *testing.T) {
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	_, _, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, _, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	derivedName := derivedDBConnectionSecretName(ks.Name)
@@ -469,7 +469,7 @@ func TestReconcileDBConnectionSecret_TLSDisabled_NoSSLParams(t *testing.T) {
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	_, _, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, _, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	derived := &corev1.Secret{}
@@ -512,7 +512,7 @@ func TestReconcileDBConnectionSecret_TLSEnabled_AppendsModeSSLParams(t *testing.
 			upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 			r := newConfigTestReconciler(s, ks, upstream)
 
-			_, _, err := r.reconcileDBConnectionSecret(ctx, ks)
+			_, _, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 			g.Expect(err).NotTo(HaveOccurred())
 
 			derived := &corev1.Secret{}
@@ -568,7 +568,7 @@ func TestReconcileDBConnectionSecret_TLSDisabledMode_NoSSLParams(t *testing.T) {
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	_, _, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, _, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	derived := &corev1.Secret{}
@@ -604,7 +604,7 @@ func TestReconcileDBConnectionSecret_TLSEnabled_NoPercentEncodedSlashes(t *testi
 	upstream := dbCredentialsSecret("default", "keystone-db-credentials", "ks_user", "ks_pass")
 	r := newConfigTestReconciler(s, ks, upstream)
 
-	_, _, err := r.reconcileDBConnectionSecret(ctx, ks)
+	_, _, err := r.reconcileDBConnectionSecret(ctx, r.Client, ks)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	derived := &corev1.Secret{}
