@@ -20,6 +20,7 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
 var scheme = bootstrap.NewScheme(
@@ -35,7 +36,8 @@ func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
 		Scheme:           scheme,
 		LeaderElectionID: "horizon.openstack.c5c3.io",
-		SetupFunc: func(mgr ctrl.Manager, webhooks bool, maxConcurrentReconciles int) error {
+		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int) error {
+			mgr := mcMgr.GetLocalManager()
 			// Register the operator's Prometheus collectors on the
 			// controller-runtime registry before wiring controllers, so a
 			// duplicate-registration fails startup cleanly instead of panicking

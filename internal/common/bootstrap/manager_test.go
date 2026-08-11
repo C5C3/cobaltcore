@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
 func TestManagerConfig_validate_nilScheme(t *testing.T) {
@@ -57,7 +58,7 @@ func TestManagerConfig_validate_validWithSetupFunc(t *testing.T) {
 	cfg := ManagerConfig{
 		Scheme:           runtime.NewScheme(),
 		LeaderElectionID: "test.c5c3.io",
-		SetupFunc: func(_ ctrl.Manager, _ bool, _ int) error {
+		SetupFunc: func(_ mcmanager.Manager, _ bool, _ int) error {
 			return nil
 		},
 	}
@@ -107,6 +108,9 @@ func TestParseRunOptions_defaults(t *testing.T) {
 	if opts.namespace != "tenant-a" {
 		t.Fatalf("namespace = %q, want tenant-a (from cfg)", opts.namespace)
 	}
+	if opts.clustersNamespace != "c5c3-clusters" {
+		t.Fatalf("clustersNamespace = %q, want c5c3-clusters (default)", opts.clustersNamespace)
+	}
 	// The flag defaults to the shared default of 2.
 	if opts.maxConcurrentReconciles != DefaultMaxConcurrentReconciles {
 		t.Fatalf("maxConcurrentReconciles = %d, want %d (shared default)",
@@ -126,6 +130,7 @@ func TestParseRunOptions_injectedArgs(t *testing.T) {
 		"--enable-webhooks=false",
 		"--sync-period=5m",
 		"--namespace=tenant-b",
+		"--clusters-namespace=foo",
 		"--max-concurrent-reconciles=8",
 	}
 	opts, err := parseRunOptions(cfg, args)
@@ -150,6 +155,9 @@ func TestParseRunOptions_injectedArgs(t *testing.T) {
 	}
 	if opts.namespace != "tenant-b" {
 		t.Fatalf("namespace = %q, want tenant-b (CLI override)", opts.namespace)
+	}
+	if opts.clustersNamespace != "foo" {
+		t.Fatalf("clustersNamespace = %q, want foo (CLI override)", opts.clustersNamespace)
 	}
 }
 
@@ -212,12 +220,27 @@ func TestParseRunOptions_registerFlags(t *testing.T) {
 	}
 }
 
+// secretNamespaces returns the namespaces the options scope the Secret
+// informer to. ByObject is keyed by a client.Object pointer, so a lookup with a
+// fresh &corev1.Secret{} never matches the stored key and the entry has to be
+// found by type.
+func secretNamespaces(t *testing.T, opts cache.Options) map[string]cache.Config {
+	t.Helper()
+	for obj, byObject := range opts.ByObject {
+		if _, ok := obj.(*corev1.Secret); ok {
+			return byObject.Namespaces
+		}
+	}
+	t.Fatal("expected a ByObject entry for *corev1.Secret")
+	return nil
+}
+
 // TestCacheOptions_withNamespace verifies that cacheOptions with a non-empty
 // namespace returns cache.Options with DefaultNamespaces containing that
 // namespace key.
 func TestCacheOptions_withNamespace(t *testing.T) {
 	syncPeriod := 10 * time.Minute
-	opts := cacheOptions(syncPeriod, "tenant-a")
+	opts := cacheOptions(syncPeriod, "tenant-a", "c5c3-clusters")
 
 	if opts.DefaultNamespaces == nil {
 		t.Fatal("expected DefaultNamespaces to be non-nil when namespace is set")
@@ -229,13 +252,17 @@ func TestCacheOptions_withNamespace(t *testing.T) {
 
 // TestCacheOptions_withoutNamespace verifies that cacheOptions with an empty
 // namespace returns cache.Options with nil DefaultNamespaces, allowing
-// cluster-wide watches.
+// cluster-wide watches. A cluster-wide cache already reaches the clusters
+// namespace, so Secrets need no per-object scope either.
 func TestCacheOptions_withoutNamespace(t *testing.T) {
 	syncPeriod := 10 * time.Minute
-	opts := cacheOptions(syncPeriod, "")
+	opts := cacheOptions(syncPeriod, "", "c5c3-clusters")
 
 	if opts.DefaultNamespaces != nil {
 		t.Fatalf("expected DefaultNamespaces to be nil when namespace is empty, got: %v", opts.DefaultNamespaces)
+	}
+	if opts.ByObject != nil {
+		t.Fatalf("expected ByObject to be nil when namespace is empty, got: %v", opts.ByObject)
 	}
 }
 
@@ -244,12 +271,12 @@ func TestCacheOptions_withoutNamespace(t *testing.T) {
 func TestCacheOptions_syncPeriodPreserved(t *testing.T) {
 	syncPeriod := 10 * time.Minute
 
-	opts := cacheOptions(syncPeriod, "tenant-a")
+	opts := cacheOptions(syncPeriod, "tenant-a", "c5c3-clusters")
 	if opts.SyncPeriod == nil || *opts.SyncPeriod != syncPeriod {
 		t.Fatalf("expected SyncPeriod %v with namespace set, got: %v", syncPeriod, opts.SyncPeriod)
 	}
 
-	opts = cacheOptions(syncPeriod, "")
+	opts = cacheOptions(syncPeriod, "", "c5c3-clusters")
 	if opts.SyncPeriod == nil || *opts.SyncPeriod != syncPeriod {
 		t.Fatalf("expected SyncPeriod %v without namespace, got: %v", syncPeriod, opts.SyncPeriod)
 	}
@@ -259,7 +286,7 @@ func TestCacheOptions_syncPeriodPreserved(t *testing.T) {
 // exactly one entry with an empty cache.Config value when namespace is set
 func TestCacheOptions_singleNamespaceEntry(t *testing.T) {
 	syncPeriod := 10 * time.Minute
-	opts := cacheOptions(syncPeriod, "tenant-a")
+	opts := cacheOptions(syncPeriod, "tenant-a", "c5c3-clusters")
 
 	if len(opts.DefaultNamespaces) != 1 {
 		t.Fatalf("expected exactly 1 entry in DefaultNamespaces, got: %d", len(opts.DefaultNamespaces))
@@ -267,5 +294,57 @@ func TestCacheOptions_singleNamespaceEntry(t *testing.T) {
 	cfg := opts.DefaultNamespaces["tenant-a"]
 	if !reflect.DeepEqual(cfg, cache.Config{}) {
 		t.Fatalf("expected empty cache.Config value, got: %+v", cfg)
+	}
+}
+
+// TestCacheOptions_scopedSecretsSpanTheClustersNamespace verifies that under
+// namespace scoping the Secret informer covers the clusters namespace as well.
+// Without it the kubeconfig provider would never observe a registration Secret,
+// and no target cluster would ever be engaged.
+func TestCacheOptions_scopedSecretsSpanTheClustersNamespace(t *testing.T) {
+	syncPeriod := 10 * time.Minute
+	opts := cacheOptions(syncPeriod, "tenant-a", "c5c3-clusters")
+
+	nss := secretNamespaces(t, opts)
+	if len(nss) != 2 {
+		t.Fatalf("expected the Secret informer to span 2 namespaces, got %d: %v", len(nss), nss)
+	}
+	for _, ns := range []string{"tenant-a", "c5c3-clusters"} {
+		if _, ok := nss[ns]; !ok {
+			t.Fatalf("expected the Secret informer to cover %q, got: %v", ns, nss)
+		}
+	}
+}
+
+// TestCacheOptions_scopedSecretsCollapseEqualNamespaces verifies that an
+// operator watching the clusters namespace itself ends up with a single Secret
+// informer entry rather than a duplicated one.
+func TestCacheOptions_scopedSecretsCollapseEqualNamespaces(t *testing.T) {
+	syncPeriod := 10 * time.Minute
+	opts := cacheOptions(syncPeriod, "c5c3-clusters", "c5c3-clusters")
+
+	nss := secretNamespaces(t, opts)
+	if len(nss) != 1 {
+		t.Fatalf("expected exactly 1 Secret namespace when both are equal, got %d: %v", len(nss), nss)
+	}
+	if _, ok := nss["c5c3-clusters"]; !ok {
+		t.Fatalf("expected the Secret informer to cover 'c5c3-clusters', got: %v", nss)
+	}
+}
+
+// TestCacheOptions_scopedSecretsDropEmptyClustersNamespace verifies that an
+// empty clusters namespace is left out of the map. The empty string is the
+// cache's all-namespaces key, so writing it would widen the Secret informer
+// cluster-wide and break the namespace scoping the operator was started with.
+func TestCacheOptions_scopedSecretsDropEmptyClustersNamespace(t *testing.T) {
+	syncPeriod := 10 * time.Minute
+	opts := cacheOptions(syncPeriod, "tenant-a", "")
+
+	nss := secretNamespaces(t, opts)
+	if len(nss) != 1 {
+		t.Fatalf("expected exactly 1 Secret namespace, got %d: %v", len(nss), nss)
+	}
+	if _, ok := nss[cache.AllNamespaces]; ok {
+		t.Fatalf("expected no all-namespaces key in the Secret informer, got: %v", nss)
 	}
 }

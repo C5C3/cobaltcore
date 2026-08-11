@@ -27,6 +27,7 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
 var scheme = bootstrap.NewScheme(
@@ -56,7 +57,8 @@ func main() {
 					"link-local (cloud IMDS), multicast, and unspecified addresses stay blocked "+
 					"even when covered. Empty (default) keeps all non-public addresses blocked.")
 		},
-		SetupFunc: func(mgr ctrl.Manager, webhooks bool, maxConcurrentReconciles int) error {
+		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int) error {
+			mgr := mcMgr.GetLocalManager()
 			// Register the operator's Prometheus collectors on the
 			// controller-runtime registry before wiring controllers, so a
 			// duplicate-registration fails startup cleanly instead of panicking
