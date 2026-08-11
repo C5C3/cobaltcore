@@ -411,26 +411,35 @@ func validateNameLength(name string) field.ErrorList {
 // This keeps an unrelated update — for example scaling replicas — from
 // retroactively rejecting a CR whose extraConfig was accepted at create time but
 // has since been invalidated by a regenerated catalog.
+//
+// spec.targetClusterRef is compared across both revisions here, the webhook-layer
+// twin of the two transition CEL rules on GlanceSpec.
 func (w *GlanceWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Glance) (admission.Warnings, error) {
 	var catalogWarnings admission.Warnings
-	var catalogErrs field.ErrorList
+	var updateErrs field.ErrorList
 	if extraConfigCatalogInputsChanged(oldObj, newObj) {
-		catalogWarnings, catalogErrs = validateExtraConfigOptions(field.NewPath("spec"), newObj)
+		catalogWarnings, updateErrs = validateExtraConfigOptions(field.NewPath("spec"), newObj)
 	}
+	updateErrs = append(updateErrs, validation.TargetClusterRefImmutable(
+		field.NewPath("spec", "targetClusterRef"),
+		oldObj.Spec.TargetClusterRef,
+		newObj.Spec.TargetClusterRef,
+	)...)
 	warnings := append(warnInertLaunchModeKnobs(newObj), catalogWarnings...)
 	warnings = append(warnings, WarnImportFiltering(
 		field.NewPath("spec", "importFiltering"), newObj.Spec.ImportFiltering,
 	)...)
 	warnings = append(warnings, warnDBPurgeRetention(oldObj.Spec.DBPurge, newObj.Spec.DBPurge)...)
-	return warnings, w.validate(ctx, newObj, catalogErrs)
+	return warnings, w.validate(ctx, newObj, updateErrs)
 }
 
 // validate runs all validation rules against the Glance spec, accumulating
 // every violation so users see the full list in one admission response.
 // ctx is required for cluster-scoped lookups (PriorityClass validation).
 // extra carries errors accumulated by the caller (the extraConfig option-catalog
-// check, and on create the metadata.name bound) so they aggregate into the
-// single Invalid error alongside the rest.
+// check, on create the metadata.name bound, and on update the targetClusterRef
+// immutability check) so they aggregate into the single Invalid error alongside
+// the rest.
 func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.ErrorList) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
@@ -470,6 +479,7 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 	// commonv1.CacheSpec carries, for objects that bypass schema validation.
 	allErrs = append(allErrs, validation.CacheNoControlChars(specPath.Child("cache"), &g.Spec.Cache)...)
 	allErrs = append(allErrs, validation.SecretStoreRef(specPath.Child("secretStoreRef"), g.Spec.SecretStoreRef)...)
+	allErrs = append(allErrs, validation.TargetClusterRef(specPath.Child("targetClusterRef"), g.Spec.TargetClusterRef)...)
 
 	// keystoneEndpoint is required (rendered as [keystone_authtoken] auth_url):
 	// empty is Required, otherwise it must parse as an absolute http(s) URL.

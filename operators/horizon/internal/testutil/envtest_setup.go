@@ -24,6 +24,29 @@ import (
 // integration tests. Call as the first statement in each integration test function.
 var SkipIfEnvTestUnavailable = commonenvtest.SkipIfEnvTestUnavailable
 
+// SetupHorizonEnvTestNoWebhook starts an envtest API server with only the
+// Horizon CRD installed — no webhook configurations, no webhooks. It returns a
+// direct controller-runtime client so tests can submit CRs and observe exactly
+// the schema-layer validation the API server enforces (kubebuilder validation
+// markers + x-kubernetes-validations CEL rules) without the defense-in-depth
+// webhooks short-circuiting the rejection or filling defaults. Tear-down is
+// wired via t.Cleanup().
+//
+// This is intended for tests that must attribute a rejection to the CRD layer
+// alone, such as the spec.targetClusterRef transition rules. The validating
+// webhook carries a defense-in-depth copy of those rules, so a webhook-enabled
+// test would keep passing even if a CEL rule were dropped; this helper makes the
+// CRD-layer rule the only enforcement point in scope.
+func SetupHorizonEnvTestNoWebhook(
+	t testing.TB,
+	addToScheme func(*k8sruntime.Scheme) error,
+) (client.Client, context.Context, context.CancelFunc) {
+	t.Helper()
+
+	crdDir, _ := horizonPaths()
+	return commonenvtest.SetupEnvTestWithCRDs(t, commonenvtest.BuildScheme(addToScheme), []string{crdDir})
+}
+
 // SetupHorizonEnvTestWithController starts an envtest API server with the
 // Horizon CRD, webhook configurations, fake CRDs for external operators
 // (ESO, Gateway API), and a controller-runtime Manager running the

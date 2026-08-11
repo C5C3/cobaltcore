@@ -479,6 +479,75 @@ func TestIntegration_CELRejectsDatabaseNameChange(t *testing.T) {
 		"database", "immutable")
 }
 
+// TestIntegration_CRD_CELOnly_RejectsTargetClusterRefChange pins the
+// targetClusterRef rename rule: re-pointing a Keystone at another target cluster
+// is rejected by the CRD CEL rule alone. The base CR the shared helper creates
+// carries no ref, so this test builds its own.
+func TestIntegration_CRD_CELOnly_RejectsTargetClusterRefChange(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-celonly-targetcluster-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	k := validIntegrationKeystone("keystone", ns.Name)
+	k.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "cluster-a"}
+	g.Expect(c.Create(ctx, k)).To(Succeed(), "valid Keystone should be accepted")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "keystone", Namespace: ns.Name}, got)).To(Succeed())
+	got.Spec.TargetClusterRef.Name = "cluster-b"
+
+	err := c.Update(ctx, got)
+	g.Expect(err).To(HaveOccurred(), "renaming targetClusterRef must be rejected on update")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(ContainSubstring("targetClusterRef is immutable"))
+}
+
+// TestIntegration_CRD_CELOnly_RejectsTargetClusterRefPresenceFlip pins the
+// presence rule in both directions: a CR created without the ref cannot gain
+// one, and a CR created with it cannot drop it. Either edit would move the
+// children away from the cluster that already holds them.
+func TestIntegration_CRD_CELOnly_RejectsTargetClusterRefPresenceFlip(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupEnvTestNoWebhook(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-celonly-targetcluster-flip-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	local := validIntegrationKeystone("keystone-local", ns.Name)
+	g.Expect(c.Create(ctx, local)).To(Succeed(), "Keystone without targetClusterRef should be accepted")
+
+	got := &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "keystone-local", Namespace: ns.Name}, got)).To(Succeed())
+	got.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "cluster-a"}
+
+	err := c.Update(ctx, got)
+	g.Expect(err).To(HaveOccurred(), "adding targetClusterRef must be rejected on update")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(ContainSubstring("targetClusterRef is immutable"))
+
+	remote := validIntegrationKeystone("keystone-remote", ns.Name)
+	remote.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "cluster-a"}
+	g.Expect(c.Create(ctx, remote)).To(Succeed(), "Keystone with targetClusterRef should be accepted")
+
+	got = &Keystone{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: "keystone-remote", Namespace: ns.Name}, got)).To(Succeed())
+	got.Spec.TargetClusterRef = nil
+
+	err = c.Update(ctx, got)
+	g.Expect(err).To(HaveOccurred(), "removing targetClusterRef must be rejected on update")
+	g.Expect(apierrors.IsInvalid(err) || apierrors.IsForbidden(err)).To(BeTrue(),
+		fmt.Sprintf("expected Invalid or Forbidden status error, got: %v", err))
+	g.Expect(err.Error()).To(ContainSubstring("targetClusterRef is immutable"))
+}
+
 // --- Task 2.3: Webhook defaulting tests ---
 
 func TestIntegration_WebhookDefaultsSetsZeroValues(t *testing.T) {

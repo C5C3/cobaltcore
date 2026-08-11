@@ -220,19 +220,28 @@ func (w *KeystoneWebhook) ValidateCreate(ctx context.Context, obj *Keystone) (ad
 // keeps an unrelated update — for example scaling replicas — from retroactively
 // rejecting a CR whose extraConfig was accepted at create time but has since
 // been invalidated by a regenerated catalog.
+//
+// spec.targetClusterRef is compared across both revisions here, the webhook-layer
+// twin of the two transition CEL rules on KeystoneSpec.
 func (w *KeystoneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj *Keystone) (admission.Warnings, error) {
 	var catalogWarnings admission.Warnings
-	var catalogErrs field.ErrorList
+	var updateErrs field.ErrorList
 	if extraConfigCatalogInputsChanged(oldObj, newObj) {
-		catalogWarnings, catalogErrs = validateExtraConfigOptions(field.NewPath("spec"), newObj)
+		catalogWarnings, updateErrs = validateExtraConfigOptions(field.NewPath("spec"), newObj)
 	}
-	return append(warnCleartextTrustedDashboards(newObj), catalogWarnings...), w.validate(ctx, newObj, catalogErrs)
+	updateErrs = append(updateErrs, validation.TargetClusterRefImmutable(
+		field.NewPath("spec", "targetClusterRef"),
+		oldObj.Spec.TargetClusterRef,
+		newObj.Spec.TargetClusterRef,
+	)...)
+	return append(warnCleartextTrustedDashboards(newObj), catalogWarnings...), w.validate(ctx, newObj, updateErrs)
 }
 
 // validate runs all validation rules against the Keystone spec.
 // ctx is required for cluster-scoped lookups (PriorityClass validation).
 // extra carries errors accumulated by the caller (the extraConfig option-catalog
-// check) so they aggregate into the single Invalid error alongside the rest.
+// check, and on update the targetClusterRef immutability check) so they
+// aggregate into the single Invalid error alongside the rest.
 func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field.ErrorList) error {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")
@@ -315,6 +324,7 @@ func (w *KeystoneWebhook) validate(ctx context.Context, k *Keystone, extra field
 	allErrs = append(allErrs, validation.DatabaseXOR(specPath.Child("database"), &k.Spec.Database)...)
 	allErrs = append(allErrs, validation.DynamicCredentialsRequireClusterRef(specPath.Child("database"), &k.Spec.Database)...)
 	allErrs = append(allErrs, validation.SecretStoreRef(specPath.Child("secretStoreRef"), k.Spec.SecretStoreRef)...)
+	allErrs = append(allErrs, validation.TargetClusterRef(specPath.Child("targetClusterRef"), k.Spec.TargetClusterRef)...)
 
 	// Defense-in-depth database TLS validation alongside the
 	// +kubebuilder:validation:Enum marker on DatabaseTLSSpec.Mode and the
