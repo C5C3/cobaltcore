@@ -128,6 +128,9 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Glance` | `Owns()` | Re-reconciles when the projected Glance image-service child status changes |
 | `GlanceBackend` | `Owns()` | Re-reconciles when a projected GlanceBackend child status changes |
 | `Placement` | `Owns()` | Re-reconciles when the projected Placement child status changes |
+| `Barbican` | `Owns()` | Re-reconciles when the projected Barbican key-manager child status changes |
+| `BarbicanSecretStore` | `Owns()` | Re-reconciles when the projected BarbicanSecretStore status changes |
+| `OpenBaoCluster`, `OpenBaoTenant` | `Owns()` | Re-reconciles when the OpenBao instance provisioned for a dedicated Barbican secret store, or the tenant admitting its namespace, changes. The openbao-operator is installed only for that mode, so a ControlPlane without one runs on a cluster that never serves these kinds; both legs sit behind the discovery probe with the other sibling-operator kinds (`probeOptionalWatches`, which skips the leg and registers a leader-gated re-check that restarts the operator once the CRD appears) |
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
 | K-ORC `Endpoint` | `Owns()` | Re-reconciles when the public identity Endpoint changes |
@@ -138,7 +141,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Secret` | `Watches()` | Maps Secret events to referencing ControlPlane CRs via the `ControlPlaneSecretNameIndexKey` field indexer (`secretToControlPlaneMapper`) |
 | `ClusterSecretStore` | `Watches()` | Per-ref fan-out via `storeToControlPlaneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind): a status change on a cluster-scoped store enqueues only the ControlPlanes whose effective `spec.secretStoreRef` resolves to it |
 | `SecretStore` | `Watches()` | The namespaced twin, scoped to the store's own namespace, so a ControlPlane pinned to a per-tenant `SecretStore` reacts to its backend health (`storeToControlPlaneMapper` for the namespaced kind) |
-| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `Placement` / `MariaDB` / `Memcached` / `ExternalSecret` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
+| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `Placement` / `Barbican` / `BarbicanSecretStore` / `OpenBaoCluster` / `OpenBaoTenant` / `MariaDB` / `Memcached` / `ExternalSecret` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
 
 The `Secret` watch uses `Watches()` with a `MapFunc` rather than `Owns()`
 because the admin-password Secret
@@ -222,6 +225,10 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `memcached.c5c3.io` | `memcacheds` | get, list, watch, create, update, patch, delete |
 | `keystone.openstack.c5c3.io` | `keystones` | get, list, watch, create, update, patch, delete |
 | `placement.openstack.c5c3.io` | `placements` | get, list, watch, create, update, patch, delete |
+| `barbican.openstack.c5c3.io` | `barbicans`, `barbicansecretstores` | get, list, watch, create, update, patch, delete |
+| `openbao.org` | `openbaoclusters`, `openbaotenants` | get, list, watch, create, update, patch, delete |
+| `rbac.authorization.k8s.io` | `roles`, `rolebindings`, `clusterrolebindings` | get, create, patch, delete |
+| `rbac.authorization.k8s.io` | `clusterroles` (`resourceNames: system:auth-delegator`) | bind |
 | `openstack.k-orc.cloud` | `applicationcredentials`, `services`, `endpoints` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
@@ -253,9 +260,14 @@ details that privilege-escalation path. Two specifics apply to this operator:
 - It amplifies the exposure itself: `reconcileAdminPassword` and `reconcileKORC`
   project the OpenStack admin password **in cleartext** into a `clouds.yaml`
   `Secret`, so cluster-wide read access exposes every projected admin password.
-- Unlike the keystone operator, this `ClusterRole` holds no `roles` /
-  `rolebindings` verbs, so it lacks the RoleBinding-forgery escalation
-  primitive — the cluster-wide Secret read is the dominant risk.
+- It writes RBAC. The dedicated Barbican secret store needs `get`, `create`,
+  `patch`, and `delete` on `roles`, `rolebindings`, and `clusterrolebindings` to
+  give the OpenBao instance its TokenReview and the barbican operator a bound
+  provisioner token. What a forged binding can grant is still capped by the API
+  server's privilege-escalation check: the operator holds `escalate` nowhere and
+  `bind` only on `system:auth-delegator` (narrowed by `resourceNames`), so it can
+  hand out no permission it does not already hold. The cluster-wide Secret read
+  therefore remains the dominant risk.
 
 A single-namespace deployment — one where no service is placed in a namespace of
 its own — co-locates every projected resource in the ControlPlane's own
@@ -371,6 +383,13 @@ grants. The markers therefore add `core/namespaces` with
 │  ║  │ reconcilePlacement       │  Project the Placement child CR                  ║ │
 │  ║  │ (gate: KS + placement SA)│  Sets: PlacementReady (not-managed when unset)   ║ │
 │  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
+│  ║           │                                                                    ║ │
+│  ║           ▼                                                                    ║ │
+│  ║  ┌──────────────────────────┐                                                  ║ │
+│  ║  │ reconcileBarbican        │  Project the Barbican child, its secret store,   ║ │
+│  ║  │ (gate: KS + barbican SA) │  and a dedicated OpenBao instance                ║ │
+│  ║  └────────┬─────────────────┘  Sets: BarbicanReady (not-managed when unset)    ║ │
+│  ║                                Requeue: 5s gated / 15s instance or child       ║ │
 │  ║                                                                                ║ │
 │  ║  member requeues → ShortestRequeue · member errors → errors.Join               ║ │
 │  ╚═══════════╤════════════════════════════════════════════════════════════════════╝ │
@@ -402,19 +421,20 @@ in `instrumenter.Instrument` (see
 error counter are emitted under a stable `sub_reconciler` label.
 
 **Phase 2 — the tail group.** Horizon, KORC, AdminCredential, Catalog,
-ServiceAccounts, Glance and Placement are the seven named members of one
-`commonreconcile.RunSequentialGroup`, embedded as the pipeline's final **bare
-(unnamed)** `Step`. The group members self-instrument through
+ServiceAccounts, Glance, Placement and Barbican are the eight named members of
+one `commonreconcile.RunSequentialGroup`, embedded as the pipeline's final
+**bare (unnamed)** `Step`. The group members self-instrument through
 `instrumenter.Instrument` — following the keystone self-instrumenting-group
 convention — which is why the enclosing group step carries no `sub_reconciler`
 name of its own. `RunSequentialGroup` attempts **every** member on **every**
 pass and never short-circuits: each member self-gates on the conditions it needs
 (Horizon on `KeystoneReady`; KORC until the admin-password Secret is readable;
 AdminCredential on `KORCReady`; Catalog and ServiceAccounts on
-`AdminCredentialReady`; Glance on `KeystoneReady` and the glance service
-account's per-account readiness; Placement on `KeystoneReady` and the placement
-service account's per-account readiness), so running all of them each pass is
-safe.
+`AdminCredentialReady`; Glance, Placement and Barbican on `KeystoneReady` and
+their own service account's per-account readiness), so running all of them each
+pass is safe. Barbican carries one gate the others do not: on a dedicated secret
+store it holds the projection until the OpenBao instance it provisions serves
+requests.
 
 ```go
 pipeline := []commonreconcile.Step{
@@ -431,7 +451,7 @@ pipeline := []commonreconcile.Step{
             []commonreconcile.Step{
                 {Name: "Horizon", Fn: /* ... */},
                 // KORC, AdminCredential, Catalog, ServiceAccounts, Glance,
-                // Placement
+                // Placement, Barbican
             })
     }},
 }
@@ -448,8 +468,8 @@ This guarantees:
 2. **Group (phase 2) — every member runs each pass.** No member's non-zero
    result or error prevents a later member from running, so a still-converging
    or failing Horizon no longer parks KORC, the
-   AdminCredential/Catalog/ServiceAccounts identity bootstrap, Glance, or
-   Placement. Each member's condition therefore always persists.
+   AdminCredential/Catalog/ServiceAccounts identity bootstrap, Glance,
+   Placement, or Barbican. Each member's condition therefore always persists.
 3. **Group result aggregation.** When no member errors, the group result is the
    **shortest** member requeue (`commonreconcile.ShortestRequeue`) and the error
    is nil. When one or more members error, the group returns `ctrl.Result{}`
@@ -510,7 +530,7 @@ The aggregated sub-condition types (the source-of-truth `subConditionTypes`
 slice in `controlplane_controller.go`) are:
 
 ```text
-NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, PlacementReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady
+NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, PlacementReady, BarbicanReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
@@ -529,7 +549,7 @@ fields that the schema declared but the reconciler previously never wrote:
 | Field | Value |
 | --- | --- |
 | `status.updatePhase` | Fixed at `Idle` — the release-update state machine is not implemented and the other `UpdatePhase` values are reserved, so "no update in progress" is the current state |
-| `status.services` | one entry per managed service, in a stable order: `keystone` (present when `spec.services.keystone` is set), then `horizon` (present when `spec.services.horizon` is set), then `glance` (present when `spec.services.glance` is set), then `placement` (present when `spec.services.placement` is set). Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` sub-condition (via `conditions.AllTrue`) and `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported |
+| `status.services` | one entry per managed service, in a stable order: `keystone` (present when `spec.services.keystone` is set), then `horizon` (present when `spec.services.horizon` is set), then `glance` (present when `spec.services.glance` is set), then `placement` (present when `spec.services.placement` is set), then `barbican` (present when `spec.services.barbican` is set). Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` / `BarbicanReady` sub-condition (via `conditions.AllTrue`) and `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported |
 
 ---
 
@@ -1330,6 +1350,175 @@ labels.
 | Placement create/update fails | False | `PlacementError` | returns the error |
 | Placement child Ready | True | `PlacementReady` | — |
 
+### reconcileBarbican
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_barbican.go`, `reconcile_barbican_openbao.go`, `reconcile_barbican_dbcredentials.go` |
+| Condition | `BarbicanReady` |
+| Gate | `KeystoneReady == True` (Barbican validates every token against the Keystone child) **and** the injected `barbican` service account being Ready |
+| Projects / Owns | a trio in `cp.BarbicanNamespace()`: one `Barbican` child `{controlplane.Name}-barbican` (`barbicanNameSuffix`), one `BarbicanSecretStore` `{controlplane.Name}-barbican-store` (`barbicanSecretStoreNameSuffix`), and — on a dedicated secret store only — one `OpenBaoCluster` `{controlplane.Name}-barbican-bao` (`barbicanOpenBaoNameSuffix`) with the ensemble below. Plus, on a managed database only, the per-ControlPlane DB-credential objects in the same namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `barbican-db-creds`, an mTLS client Certificate `{controlplane.Name}-barbican-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/barbican-{barbican-namespace}` (auth role `barbican-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-barbican-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/barbican/{barbican-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.barbican` is set |
+| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `barbican` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed; `infraRequeueAfter` = **15s** while the OpenBao instance is not Available, while the secret store is being recreated, and while the child is not Ready |
+
+`reconcileBarbican` runs last in the tail group, after `reconcileServiceAccounts`
+(and after `reconcileGlance` and `reconcilePlacement`), because it gates on the
+per-account readiness that stage computes into status in the same pass. It is
+optional: `spec.services.barbican` unset means this ControlPlane manages no key
+manager, and the sub-reconciler reports `BarbicanReady=True` /
+`BarbicanNotManaged` so the aggregate is not blocked (staged adoption).
+
+Unsetting the block deletes nothing on its own.
+`c5c3.io/allow-barbican-deletion: "true"` opts in to releasing the child, its
+secret store, its DB-credential ExternalSecret, and the key-manager catalog
+K-ORC CRs; destroying a dedicated OpenBao instance takes a second annotation on
+top of that one. Each object is only removed while this ControlPlane still owns
+it, so a foreign object colliding on a name is left alone. See
+[Barbican secret-store teardown](#barbican-secret-store-teardown) for the order
+and for what each annotation authorises.
+
+The credential minter comes down either way. On the preserve branch the
+`VaultDynamicSecret`, its client Certificate, and the `barbican-db-creds`
+ServiceAccount are torn down before the condition is written: a live generator
+keeps issuing a fresh MySQL user with all privileges on the `barbican` schema at
+every refresh interval, for a service this ControlPlane no longer manages, behind
+a `BarbicanReady=True` condition that surfaces none of it.
+
+When managed, the projection follows the same thin discipline as its Keystone,
+Horizon, Glance, and Placement siblings:
+
+- **Image:** repository defaults to `ghcr.io/c5c3/barbican` with the tag derived
+  from `spec.openStackRelease`; `spec.services.barbican.image` overrides the
+  whole image reference when set.
+- **Database:** a DeepCopy of the **effective** database
+  (`effectiveBarbicanDatabase`: Barbican's
+  [dedicated](./controlplane-crd.md#barbicandedicatedbackingservicesspec)
+  database when it opted into one, the shared `spec.infrastructure.database`
+  otherwise) with its logical database name forced to `barbican`. The name is
+  fixed: the pre-wired OpenBao bootstrap grants the dynamic credential access to
+  that schema alone. In managed mode (`clusterRef` set) the
+  `secretRef` is repointed at the operator-owned
+  `{controlplane.Name}-barbican-db-credentials` Secret (key `password`), and the
+  projected `credentialsMode` is the **effective** mode: `Dynamic`
+  (engine-issued) by default on the managed shared database, drawn from the
+  engine role `barbican-{barbican-ns}` that `setup-database-tenant.sh`
+  provisions, flipped to `Static` by the shared-block opt-out or the per-service
+  `services.barbican.databaseCredentialsMode` override, and always `Static` for a
+  dedicated barbican database (fail-closed even when the stored mode says
+  otherwise). A brownfield database keeps the user-supplied `secretRef` and
+  `credentialsMode`.
+- **Cache:** a DeepCopy of the **effective** cache (`effectiveBarbicanCache`).
+- **Keystone endpoint:** `keystoneEndpoint` is derived top-down via
+  `barbicanKeystoneEndpoint(cp)`, always the cluster-local
+  `{controlplane.Name}-keystone` Service URL (the same URL K-ORC authenticates
+  against) and never the external `publicEndpoint` or gateway hostname, because
+  Barbican validates tokens server-side and the pods have to reach it
+  in-cluster. `keystonePublicEndpoint` is a pass-through of the Keystone
+  service's own public endpoint, the URL Barbican advertises on a 401 (empty when
+  Keystone is not externally exposed, in which case the child falls back to the
+  internal endpoint).
+- **Service user:** derived from the auto-injected `barbican` service account,
+  its `username`, project, and user/project domains, with the password read from
+  the account's materialized consumer Secret
+  `{controlplane.Name}-service-account-barbican-credentials`.
+- **ExtraConfig:** `spec.globalExtraConfig` merged with
+  `services.barbican.extraConfig` (the per-service value winning key by key),
+  assigned unconditionally so clearing the ControlPlane block reverts the child
+  instead of pinning the last projected value.
+- **Gateway / Replicas / SecretStoreRef / Region:** `gateway` is a DeepCopy of
+  `spec.services.barbican.gateway` (a nil source clears it, tearing the HTTPRoute
+  down); `replicas` defaults to `commonv1.DefaultReplicas`, overridden by
+  `spec.services.barbican.replicas`; the resolved store selection and
+  `spec.region` are projected through. `spec.apiServer` and `spec.dbClean` are
+  not set, so the child-side uWSGI parameters and clean-up schedule keep tracking
+  the barbican operator's defaults.
+
+The DB-credential objects are ensured **before** the child, so the Secret it
+references exists when the barbican operator resolves it. In `Dynamic` mode the
+projection is held (`WaitingForBarbicanDBCredential`) until the generator-backed
+ExternalSecret reports Ready **and** the Secret it targets carries an
+engine-issued username.
+
+#### The dedicated OpenBao ensemble
+
+A `secretStore.dedicated` Barbican gets an OpenBao instance of its own in the
+Barbican service namespace, projected by `ensureBarbicanOpenBao` in dependency
+order before the store that points at it. Every object is named after the
+instance `{controlplane.Name}-barbican-bao`, because the openbao-operator derives
+several of its own object names from that name:
+
+| Object | Name | Purpose |
+| --- | --- | --- |
+| `OpenBaoTenant` | `{instance}-tenant` | Admits the service namespace to the openbao-operator |
+| `Secret` | `{instance}-unseal-key` | The static-seal key, under data key `key`. Written before the CR exists, or the operator blind-creates an immutable Secret of its own and the generated key is lost |
+| `Certificate` (cert-manager) | `{instance}-tls-server`, `{instance}-tls-ca` | The two fixed-name Secrets the instance's `External` TLS mode consumes |
+| `ServiceAccount` | `{instance}-provisioner` | The identity the Kubernetes-auth role `provisioner` binds to, which the barbican operator logs in with |
+| `Role` + `RoleBinding` | `{instance}-provisioner-token` | Let the barbican operator mint a bound token for that account |
+| `ClusterRoleBinding` | `{instance}-{hash}-auth-delegator` | Grants the TokenReview every Kubernetes-auth login is validated with. Cluster-scoped, so the name folds in eight bytes of `sha256("{namespace}/{instance}")`: two ControlPlanes of the same name in different namespaces derive the same instance name and would otherwise collide on one binding |
+
+The instance runs the `Development` profile at a single replica with a static
+seal (see
+[BarbicanDedicatedSecretStoreSpec](./controlplane-crd.md#barbicandedicatedsecretstorespec)
+for what that posture costs) and `deletionPolicy: DeletePVCs`. The deletion policy
+is not optional: the instance name is derived from the ControlPlane name, so a
+re-created ControlPlane of the same name would meet the previous instance's
+`data-{instance}-0` PVC, raft storage initialised under a seal key that no longer
+exists, and never unseal. Its self-init requests (the KV mount, the AppRole
+identity, the Kubernetes auth method, and the two policies scoping them) run once
+against freshly initialised storage, so changing them requires recreating the
+instance and its PVC.
+
+The store, and with it the child, waits until the instance is `Available`
+(`BarbicanReady=False/WaitingForOpenBaoInstance`): a store attached to an
+instance that is still initialising reports `ProvisioningDenied` and would have to
+be re-driven from a failure state.
+
+#### Projecting the secret store
+
+`reconcileBarbicanSecretStore` projects the one
+[`BarbicanSecretStore`](../barbican/barbican-secret-store-crd.md) the service
+attaches to. It references its Barbican by name (inverted attachment), so it can
+be applied before the child exists.
+
+A store whose frozen fields moved cannot be updated: the CRD's transition rules
+reject the write, and the loop would re-attempt it on every requeue with no
+self-heal. `barbicanSecretStoreImmutableDrift` compares the four fields the CRD
+freezes (the `barbicanRef`, the `type`, the store mode `instanceRef` vs
+`server`, and the KV mountpoint); when one moved, the live store is deleted and
+recreated on the
+next pass, with `BarbicanReady=False/RecreatingBarbicanSecretStore` reported in
+between. The AppRole credentials the barbican operator minted for it carry its
+owner reference, so they are collected with it rather than left pointing at the
+retired mount.
+
+Every write routes through `ensureUnownedOrOwned`, and the prune sweep deletes
+only c5c3-owned stores carrying the Barbican child's name prefix, so a
+hand-created store attached to the same Barbican is never pruned or overwritten.
+
+The key-manager catalog entry, a `key-manager`-type K-ORC `Service` with an
+internal and a public `Endpoint`, is registered by
+[`reconcileCatalog`](#reconcilecatalog) rather than here. A child placed outside
+the ControlPlane's namespace (`services.barbican.namespace`) carries no owner
+reference: it is stamped with the ownership labels and applied unowned, and the
+finalizer sweeps it by those labels.
+
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| `spec.services.barbican` unset | True | `BarbicanNotManaged` | staged adoption; the child, its store, and the catalog CRs are preserved unless `c5c3.io/allow-barbican-deletion: "true"` is set, and the dedicated OpenBao instance until `c5c3.io/allow-barbican-secret-store-data-deletion: "true"` is set on top of it. The dynamic DB-credential generator, ServiceAccount, and client Certificate are torn down either way. The message names whichever annotation is still missing |
+| `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Barbican CR is projected while Keystone is unready |
+| no `barbican` service account declared | False | `ServiceAccountNotDeclared` | no requeue; admission was bypassed (the defaulting webhook injects it), so it fails loud rather than projecting a Barbican with no Keystone user |
+| `barbican` service account not yet Ready | False | `WaitingForServiceAccount` | requeue 10s; deferred until its Keystone user and password are provisioned |
+| DB-credential ensure or read fails (Dynamic generator objects or Static ExternalSecret) | False | `BarbicanDBCredentialError` | returns the error (managed database only) |
+| Dynamic DB credential not yet materialised | False | `WaitingForBarbicanDBCredential` | requeue 10s; the message names the `database/mariadb/creds/barbican-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant, or the non-engine-issued username it found in the target Secret |
+| provisioning the dedicated OpenBao ensemble fails | False | `BarbicanOpenBaoError` | returns the error |
+| dedicated OpenBao instance not yet `Available` | False | `WaitingForOpenBaoInstance` | requeue 15s; the store and the child are projected once it serves requests |
+| `BarbicanSecretStore` project or prune fails | False | `BarbicanSecretStoreError` | returns the error |
+| projected `BarbicanSecretStore` rejected (HTTP 422 Invalid) | False | `BarbicanSecretStoreProjectionRejected` | returns the error; reconcile `services.barbican.secretStore` to a valid projection to recover |
+| live store's frozen fields moved, so it was deleted | False | `RecreatingBarbicanSecretStore` | requeue 15s; recreated on the next pass |
+| Barbican child not yet Ready | False | `WaitingForBarbican` | requeue 15s |
+| projected Barbican spec rejected (HTTP 422 Invalid) | False | `BarbicanProjectionRejected` | returns the error; the projection violates a Barbican CRD/webhook rule, so reconcile the ControlPlane spec to a valid projection to recover |
+| Barbican create/update fails | False | `BarbicanError` | returns the error |
+| Barbican child Ready | True | `BarbicanReady` | — |
+
 ### reconcileKORC
 
 | Aspect | Value |
@@ -1646,7 +1835,7 @@ OpenBao:
 | File | `reconcile_catalog.go` (Managed), `reconcile_catalog_external.go` (External) |
 | Condition | `CatalogReady` |
 | Gate | `AdminCredentialReady == True`, **and** every catalog child reports `Available` |
-| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`), plus — when `spec.services.glance` is set — an image `Service` (`{controlplane.Name}-image-service`) with an internal **and** a public `Endpoint` (`{controlplane.Name}-image-endpoint-internal` / `{controlplane.Name}-image-endpoint-public`), and the same pair of interfaces for a placement `Service` (`{controlplane.Name}-placement-service`, Endpoints `{controlplane.Name}-placement-endpoint-internal` / `{controlplane.Name}-placement-endpoint-public`) when `spec.services.placement` is set. External mode: the same identity `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, plus one managed `Service`/`Endpoint` set per declared entry (`{controlplane.Name}-catalog-{type}[-{interface}]`). All in `childNamespace(cp)` |
+| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`), plus — when `spec.services.glance` is set — an image `Service` (`{controlplane.Name}-image-service`) with an internal **and** a public `Endpoint` (`{controlplane.Name}-image-endpoint-internal` / `{controlplane.Name}-image-endpoint-public`), the same pair of interfaces for a placement `Service` (`{controlplane.Name}-placement-service`, Endpoints `{controlplane.Name}-placement-endpoint-internal` / `{controlplane.Name}-placement-endpoint-public`) when `spec.services.placement` is set, and again for a key-manager `Service` (`{controlplane.Name}-key-manager-service`, Endpoints `{controlplane.Name}-key-manager-endpoint-internal` / `{controlplane.Name}-key-manager-endpoint-public`) when `spec.services.barbican` is set. External mode: the same identity `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, plus one managed `Service`/`Endpoint` set per declared entry (`{controlplane.Name}-catalog-{type}[-{interface}]`). All in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while gated, while a child is not yet Available, or on a terminal K-ORC failure |
 
 `reconcileCatalog` drives `CatalogReady`. Everything up to and including the
@@ -1691,6 +1880,24 @@ suffix, and the CR names follow the generic convention:
 `{controlplane.Name}-placement-service` and
 `{controlplane.Name}-placement-endpoint-{interface}`.
 
+`spec.services.barbican` adds the fourth row, a `key-manager`-type `Service`
+named `barbican` with both Endpoints. The `internal` one advertises the
+in-cluster Barbican API Service URL
+`http://{controlplane.Name}-barbican.<barbican-namespace>.svc:9311`
+(`barbicanEndpointURL`); the `public` one resolves through the same preference
+order (`barbicanCatalogURL`: an explicit `services.barbican.publicEndpoint`,
+then `https://{gateway.hostname}`, then that in-cluster URL). The Barbican API is
+served at the root, so there is no `/v3` path suffix here either. The CR names
+take the OpenStack service type: `{controlplane.Name}-key-manager-service` and
+`{controlplane.Name}-key-manager-endpoint-{interface}`, while the catalog row
+they register is named `barbican`.
+
+No managed row carries a region: `managedCatalogService` and
+`managedCatalogEndpoint` set the management policy, the credentials ref, and the
+resource block (type/name/enabled, and interface/URL/serviceRef), and nothing
+else. The region every client filters on comes from the `clouds.yaml`
+`region_name` the admin credential renders from `spec.region`.
+
 Registering the child CRs only instructs K-ORC to create the catalog entries — it
 does not mean they exist in Keystone — so `CatalogReady` is gated on both children
 reporting `Available` for their current generation (`korcAvailableUpToDate`, which
@@ -1708,7 +1915,7 @@ surfaced as the distinct `CatalogFailed` reason instead of a false-positive Read
 | Endpoint create/update fails | False | `EndpointError` | returns the error |
 | a catalog entry's Service/Endpoint reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s (Service before its Endpoints, so the root stuck dependency surfaces) |
 | a catalog entry's Service/Endpoint registered but not yet Available | False | `WaitingForCatalog` | requeue 10s |
-| every catalog entry registered and Available | True | `CatalogRegistered` | message counts the registered entries — identity always, plus the image (Glance) entry when `spec.services.glance` is set and the placement entry when `spec.services.placement` is set |
+| every catalog entry registered and Available | True | `CatalogRegistered` | message counts the registered entries: identity always, plus the image (Glance) entry when `spec.services.glance` is set, the placement entry when `spec.services.placement` is set, and the key-manager (Barbican) entry when `spec.services.barbican` is set |
 
 #### External mode — import-first
 
@@ -1805,6 +2012,14 @@ is owned by the imports.
 managed K-ORC `User` and `Project` with an operator-generated, OpenBao-backed,
 rotatable password. It is **mode-independent**: the same rules apply against a
 managed in-cluster Keystone and an external one.
+
+Not every entry is hand-written. Declaring a service makes the defaulting webhook
+inject the account that service authenticates to Keystone as, each with role
+`service` and a `targetNamespace` naming the namespace its service is placed in:
+`glance` in project `service`, `placement` in `service-placement`, and `barbican`
+in `service-barbican`. The projects differ because each injected entry carries
+`create: true`, and two such entries naming one project would each adopt the
+other's Keystone row, which the validating webhook rejects as a duplicate.
 
 Per declared entry it, in order:
 
@@ -2139,9 +2354,14 @@ projected. On deletion it:
    and credential material that follow it — carries no owner reference, so no GC
    cascade reaches it; releasing the finalizer first would strand every one of
    them. `teardownDedicatedNamespaces` deletes them by hand, in order: the
-   service children (`Keystone`/`Horizon`) first, waiting for them (their
-   operators run a sequenced ESO cleanup through the tenant store in the same
-   namespace), then the namespace per its lifecycle. A **`Managed`** namespace is
+   service children (`Keystone`/`Horizon`, and for a Barbican placed apart its
+   `Barbican`, `BarbicanSecretStore` and `OpenBaoCluster` together) first,
+   waiting for them (their operators run a sequenced ESO cleanup through the
+   tenant store in the same namespace), then the namespace per its lifecycle. The
+   OpenBao instance belongs in that wait set because its own finalizer runs under
+   the tenant RBAC living in the same namespace: deleting the namespace first
+   reaps that RBAC out from under it and leaves the instance unfinalizable, with
+   the namespace stuck `Terminating`. A **`Managed`** namespace is
    deleted, which cascades everything left in it — but only when it carries the
    ownership labels; an unlabelled one is left standing with a **Warning**
    `NamespaceNotOwned`, because the operator never destroys a namespace it did
@@ -2153,10 +2373,19 @@ projected. On deletion it:
    `orcTeardownStallTimeout` the sweep stops waiting, emits a **Warning**
    `NamespaceTeardownStalled` naming what is stuck, and releases anyway — a wedged
    child must not make a namespace undeletable forever.
-4. **Releases the finalizer once the ORC CRs, PushSecrets, and cross-namespace
+4. **Removes the auth-delegator `ClusterRoleBinding` by hand.** A dedicated
+   Barbican secret store places one cluster-scoped object,
+   `{instance}-{hash}-auth-delegator`. A namespaced owner cannot own it, so no GC
+   cascade collects it, and the per-namespace sweep in step 3 reaches it only
+   when Barbican was placed in a namespace of its own. `deleteBarbicanAuthDelegatorBinding`
+   therefore runs on every ControlPlane teardown, Barbican or not, reading through
+   the uncached API reader (a cached read would install a cluster-wide
+   `ClusterRoleBinding` informer for one object) and deleting only a binding
+   carrying this ControlPlane's ownership labels.
+5. **Releases the finalizer once the ORC CRs, PushSecrets, and cross-namespace
    children are gone**, letting GC cascade-delete the same-namespace Keystone,
    the infrastructure, and the remaining children.
-5. **Releases an unmanaged-only remainder immediately.** K-ORC re-fetches the
+6. **Releases an unmanaged-only remainder immediately.** K-ORC re-fetches the
    imported resource through an *authenticated* actuator before releasing any
    finalizer, and the unmanaged imports authenticate with the admin application
    credential whose revocation step 1 already triggered — so once every CR
@@ -2165,13 +2394,13 @@ projected. On deletion it:
    `openstack.k-orc.cloud/*` finalizers right away and emits a **Normal**
    `ORCImportsReleased` event. An import's deletion is CR-only, so the external
    installation is untouched and nothing is orphaned.
-6. **Bounds the wait.** If managed ORC CRs stay Terminating longer than the
+7. **Bounds the wait.** If managed ORC CRs stay Terminating longer than the
    `orcTeardownStallTimeout` (5 minutes) — typically because Keystone is already
    gone and K-ORC cannot revoke — the reconciler force-removes the stuck
    `openstack.k-orc.cloud/*` finalizers (preserving any non-K-ORC finalizers),
    emits a **Warning** `ORCTeardownStalled` event, and releases the ControlPlane
    finalizer so deletion completes rather than wedging forever.
-7. **Names what the escape orphaned.** The escape strips the very finalizer that
+8. **Names what the escape orphaned.** The escape strips the very finalizer that
    would have revoked the credential or removed the catalog row, so every
    `Managed` CR it releases leaves its OpenStack resource behind with no
    Kubernetes object naming it. A second **Warning**, `ORCResourcesOrphaned`,
@@ -2229,6 +2458,48 @@ The `{name}-admin-app-credential-backup` PushSecret is the one child kept on
 | `Endpoint` (K-ORC) | `{name}-identity-endpoint-{interface}` | ControlPlane CR | External mode only; one unmanaged import per interface (`public`, `internal`, `admin`) |
 | `Service` (K-ORC) | `{name}-catalog-{type}` | ControlPlane CR | External mode only; one managed CR per declared `managedEntries` entry |
 | `Endpoint` (K-ORC) | `{name}-catalog-{type}-{interface}` | ControlPlane CR | External mode only; one managed CR per declared entry endpoint |
+
+#### Barbican secret-store teardown
+
+Unsetting `spec.services.barbican` takes a different path from deleting the
+ControlPlane, and `deleteOrphanedBarbican` gates it on two annotations rather
+than one. `c5c3.io/allow-barbican-deletion: "true"` releases the
+`BarbicanSecretStore` (first, so its controller can still reach the server while
+it finalizes), then the `Barbican` child, the DB-credential objects, and the
+key-manager catalog CRs. Reaching the dedicated OpenBao instance takes
+`c5c3.io/allow-barbican-secret-store-data-deletion: "true"` on top: the instance
+carries `deletionPolicy: DeletePVCs`, so the delete wipes the raft volume, and
+the teardown removes the static-seal Secret with it, leaving even a recovered
+volume unreadable. Without the second annotation the instance, its PVC, its seal
+key and the rest of the ensemble stand, and `BarbicanReady` says so, so
+re-declaring the service reattaches to the same instance.
+
+It does not reattach to the same secrets. The first annotation already deletes
+the `Barbican` child, whose finalizer deletes the MariaDB `Database` CR, and
+`database.BuildDatabase` sets no `cleanupPolicy`, so mariadb-operator applies its
+`Delete` default and drops the schema. The secret and container rows,
+`secret_store_metadata`, the ACLs and the quotas go with it, and db-sync recreates
+the schema empty on the next projection, leaving the surviving OpenBao payloads
+unreferenced. A dump of the `barbican` schema taken before the teardown is the
+only thing that makes the preserve branch a round trip.
+
+With both set the order is store, child, credentials, catalog rows, then the
+`OpenBaoCluster`. The sweep then **waits** for the instance to leave etcd before
+deleting the `OpenBaoTenant` and the rest of the ensemble. The tenant is what
+admits the namespace to the openbao-operator, and the instance's own finalizer
+runs under that admission, so removing it first would leave the instance
+unfinalizable. Each object is ownership-checked, and an object already gone is
+tolerated.
+
+Both annotations are read from the live CR on every reconcile of that sweep, so
+the decision is not latched. Removing one while the instance is still finalizing
+resumes on the preserve branch after the `OpenBaoCluster` is already deleted, and
+the ensemble behind it is never swept. The cluster-scoped auth-delegator binding
+is the object that then has nothing left to collect it.
+
+Deleting the **ControlPlane** takes the ensemble down either way, with no second
+opt-in: tearing down a whole control plane is already an explicit destructive
+act.
 
 #### External-mode deletion resource set
 
@@ -2364,6 +2635,7 @@ The `condition_type` label is resolved from the package-private
 | `DBCredentials` | `DBCredentialsReady` |
 | `Keystone` | `KeystoneReady` |
 | `Placement` | `PlacementReady` |
+| `Barbican` | `BarbicanReady` |
 | `KORC` | `KORCReady` |
 | `AdminCredential` | `AdminCredentialReady` |
 | `AdminPassword` | `AdminPasswordReady` |
@@ -2483,6 +2755,10 @@ operators/c5c3/
     │   │                                        children, DB-credential ExternalSecret)
     │   ├── reconcile_placement.go              reconcilePlacement projection (Placement child)
     │   ├── reconcile_placement_dbcredentials.go Placement DB-credential names, OpenBao paths, mode
+    │   ├── reconcile_barbican.go               reconcileBarbican projection (Barbican +
+    │   │                                        BarbicanSecretStore children, orphan teardown)
+    │   ├── reconcile_barbican_openbao.go       Dedicated OpenBao instance and its ensemble
+    │   ├── reconcile_barbican_dbcredentials.go Barbican DB-credential names, OpenBao paths, mode
     │   ├── reconcile_korc.go                   reconcileKORC (AC mint/re-mint, drift detection)
     │   ├── reconcile_admincredential.go        reconcileAdminCredential (assemble + push + re-push
     │   │                                        nudges, semantic clouds.yaml gate)
@@ -2511,6 +2787,9 @@ operators/c5c3/
     │   ├── reconcile_glance_test.go            Glance projection tests
     │   ├── reconcile_placement_test.go         Placement projection tests
     │   ├── reconcile_placement_dbcredentials_test.go Placement DB-credential tests
+    │   ├── reconcile_barbican_test.go          Barbican projection tests
+    │   ├── reconcile_barbican_openbao_test.go  Dedicated OpenBao ensemble tests
+    │   ├── reconcile_barbican_dbcredentials_test.go Barbican DB-credential tests
     │   ├── reconcile_korc_test.go              K-ORC mint/re-mint tests
     │   ├── reconcile_admincredential_test.go   AdminCredential tests
     │   ├── reconcile_catalog_test.go           Catalog (managed-mode) tests

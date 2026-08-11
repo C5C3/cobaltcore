@@ -311,9 +311,9 @@ that adopts a pre-existing MariaDB/Memcached leaves its topology untouched.
 ## ServicesSpec
 
 Declares the per-service configuration of the control plane. Today
-Keystone, the Horizon dashboard, the Glance image service, and the Placement
-service are modeled; additional services are added as fields as the operator
-grows.
+Keystone, the Horizon dashboard, the Glance image service, the Placement
+service, and the Barbican key manager are modeled; additional services are added
+as fields as the operator grows.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
@@ -321,6 +321,7 @@ grows.
 | `horizon` | [`*ServiceHorizonSpec`](#servicehorizonspec) | No | `nil` | Configuration for the Horizon dashboard projected by the reconciler. Optional: when unset, this ControlPlane manages no dashboard and `HorizonReady` is reported as not-managed (`HorizonNotManaged`), so the aggregate `Ready` is not blocked. **Forbidden in External mode** — the dashboard needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Horizon child by default; set the `c5c3.io/allow-horizon-deletion: "true"` annotation to opt in to deleting the child on unset. |
 | `glance` | [`*ServiceGlanceSpec`](#serviceglancespec) | No | `nil` | Configuration for the Glance image service projected by the reconciler. Optional: when unset, this ControlPlane manages no image service and `GlanceReady` is reported as not-managed (`GlanceNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** — Glance validates every token against the ControlPlane's Keystone child. **Forbidden in External mode** — Glance needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Glance child by default; set the `c5c3.io/allow-glance-deletion: "true"` annotation to opt in to deleting the child (and its `GlanceBackend` children and DB-credential ExternalSecret) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation — preserving a running service does not imply preserving a credential minter. |
 | `placement` | [`*ServicePlacementSpec`](#serviceplacementspec) | No | `nil` | Configuration for the Placement service projected by the reconciler. Optional: when unset, this ControlPlane manages no placement service and `PlacementReady` is reported as not-managed (`PlacementNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Placement validates every token against the ControlPlane's Keystone child) and on the injected `placement` service account being Ready. **Forbidden in External mode**: Placement needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Placement child by default; set the `c5c3.io/allow-placement-deletion: "true"` annotation to opt in to deleting the child (with its DB-credential ExternalSecret and the placement catalog CRs) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation, so no credential minter outlives the service. |
+| `barbican` | [`*ServiceBarbicanSpec`](#servicebarbicanspec) | No | `nil` | Configuration for the Barbican key manager projected by the reconciler. Optional: when unset, this ControlPlane manages no key manager and `BarbicanReady` is reported as not-managed (`BarbicanNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Barbican validates every token against the ControlPlane's Keystone child) and on the injected `barbican` service account being Ready. **Forbidden in External mode**: Barbican needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Barbican child by default; set the `c5c3.io/allow-barbican-deletion: "true"` annotation to opt in to deleting the child (with its `BarbicanSecretStore`, its DB-credential ExternalSecret, and the key-manager catalog CRs) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation. Destroying a **dedicated** OpenBao instance and the secrets in it takes a second annotation on top, `c5c3.io/allow-barbican-secret-store-data-deletion: "true"`; see [ServiceBarbicanSecretStoreSpec](#servicebarbicansecretstorespec). |
 
 ---
 
@@ -536,6 +537,144 @@ Placement.
 
 ---
 
+## ServiceBarbicanSpec
+
+A **curated local subset** of the knobs the ControlPlane exposes for the Barbican
+key manager, mirroring `ServiceKeystoneSpec` and `ServicePlacementSpec`. The
+reconciler (L2) **projects** it into a
+[`Barbican`](../barbican/barbican-crd.md) CR; the database, cache, and Keystone
+endpoint of that child are **derived** from the ControlPlane
+(`infrastructure.*` and the Keystone child's naming convention) rather than set
+here. `spec.apiServer` and `spec.dbClean` on the child are not projected, so the
+barbican operator's own uWSGI parameters and clean-up schedule stay
+authoritative.
+
+The curated fields match the Placement ones plus
+[`secretStore`](#servicebarbicansecretstorespec), which no other service has.
+Barbican keeps its secret material in an OpenBao (or API-compatible Vault) KV
+mount rather than in its own database, so the store is part of the service's
+definition.
+
+Forbidden entirely when `services.keystone.mode` is `External` (Barbican needs
+its own External-mode design), so, like `ServicePlacementSpec`, none of its
+fields carry per-field External-mode forbid-rules.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `replicas` | `*int32` | No | `nil` | Overrides the number of Barbican API replicas. When `nil` the reconciler projects the shared default of 3 (`commonv1.DefaultReplicas`). Minimum 1. |
+| `image` | [`*commonv1.ImageSpec`](../keystone/keystone-crd.md#imagespec) | No | `nil` | Overrides the Barbican container image. When `nil` the reconciler derives `ghcr.io/c5c3/barbican:{spec.openStackRelease}`. When set, the validating webhook mirrors the `commonv1.ImageSpec` tag/digest XOR, so an override naming neither or both is rejected at admission. |
+| `gateway` | [`*commonv1.GatewaySpec`](#gatewayspec) | No | `nil` | Exposes the projected Barbican API externally via a Gateway API HTTPRoute. When `nil` (the default) no HTTPRoute is projected and the Barbican API is reachable in-cluster only. When a `gateway` is set its `hostname` must be non-empty and a usable DNS name, enforced at admission by the validating webhook. |
+| `publicEndpoint` | `string` | No | `""` | Externally routable Barbican endpoint URL (e.g. `https://barbican.127-0-0-1.nip.io:8443`). Used **only** for the K-ORC public key-manager catalog Endpoint, the URL every client resolves to store and read its secret material; it is projected into no child CR, so the validating webhook is the only gate on it. When set, it must match `^https?://`, parse to a bare origin with a host (no path, query, or fragment, since the Barbican API is served at the root and clients append the API path to the catalog URL), and be at most 512 characters; a single trailing slash is tolerated. When a `gateway` is configured the scheme must be `https` and the host must equal `gateway.hostname` (the port may differ); see [Validation Rules](#validation-rules). Without a gateway an `http://` value stays admissible for development and raises an admission warning, because every call carries the caller's scoped Keystone token and the secret payload to this URL. When empty and `gateway` is set, the reconciler derives `https://{gateway.hostname}` (the default-443 form); set it explicitly when the externally reachable port differs (e.g. a kind host-port mapping like `:8443`). |
+| `databaseCredentialsMode` | `string` (`Static` \| `Dynamic`) | No | `""` (inherits `spec.infrastructure.database.credentialsMode`) | Per-service override of the ControlPlane-wide credentials mode for the managed **shared** database, so a staged migration can run Barbican on one mode while another service stays on the other. Empty (the default) **inherits** the shared mode, and is not materialized by the defaulting webhook, so "inherit" stays distinguishable from an explicit override. A `Dynamic` override is **rejected** when Barbican declares a [dedicated](#barbicandedicatedbackingservicesspec) database (dedicated is `Static`-only; set `dedicatedBackingServices.database.credentialsMode` instead, see [Credential modes](#credential-modes)) and when the shared database is **brownfield** (`clusterRef` unset); `Static` is always admitted. |
+| `extraConfig` | `map[string]map[string]string` | No | `nil` | Free-form INI sections for the Barbican service. Merged **key by key** with `spec.globalExtraConfig` (this per-service value winning per key) and the merged result projected onto the Barbican child's `spec.extraConfig`. Admission runs shape, operator-owned-key, and option-catalog checks on the merged block; the always-rejected owned keys are the three credential ones (`[keystone_authtoken] password`, `[vault_plugin] approle_secret_id`, and `[vault_plugin] root_token_id`). Each arrives through an environment override at runtime, so a file value is inert and would only copy credential material into the config Secret every API pod mounts. See [ExtraConfig admission checks](#extraconfig-admission-checks). |
+| `secretStore` | [`ServiceBarbicanSecretStoreSpec`](#servicebarbicansecretstorespec) | Yes | — | The secret-store backend the key manager writes its secret material to. Required: a Barbican with no store attached parks on `SecretStoresReady=False/NoDefaultSecretStore` for as long as it exists, so a store-less service block would only ever project a child that can never reach Ready. |
+| `dedicatedBackingServices` | [`*BarbicanDedicatedBackingServicesSpec`](#barbicandedicatedbackingservicesspec) | No | `nil` (shares the ControlPlane-wide instances) | Opts Barbican **out** of the shared `spec.infrastructure` instances and gives it a `database` and/or `cache` of its own. Barbican consumes both classes, so it can take either or both dedicated; a declared block must name at least one. |
+| `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the Barbican service, and the backing services, secret store, dedicated OpenBao instance, and credential material that follow it, in a namespace of its own. Create-only: the validating webhook freezes the block after creation. See [Service Namespaces](#service-namespaces). |
+
+The logical database name is not exposed here. The projection forces it to
+`barbican` on the child, because the OpenBao database engine grants the dynamic
+Barbican credential access to that schema alone; any other name would be issued
+a credential it cannot use.
+
+Setting `services.barbican` makes the defaulting webhook inject a `barbican`
+entry into [`spec.korc.serviceAccounts`](#serviceaccountspec): project
+`service-barbican` with `create: true`, role `service`, and a `targetNamespace`
+naming the namespace Barbican is placed in whenever that differs from the
+ControlPlane's. It creates its own project rather than reusing Glance's
+`service`, since two `create: true` entries naming one project would each adopt
+the other's Keystone row. That account is the Keystone user the projected child
+authenticates as, so the validating webhook also requires it: a CR that reaches
+admission without the entry is rejected instead of projecting a Barbican with no
+service user.
+
+Setting `services.barbican` bounds the ControlPlane's own name too. The projected
+child is `{controlplane.Name}-barbican`, and the Barbican CRD caps
+`metadata.name` at **43** characters so the barbican operator's db-clean CronJob
+name (`{name}-db-clean`) still fits the API server's 52-character CronJob bound.
+The ControlPlane name may therefore be at most **34** characters while
+`services.barbican` is set. The rule runs on create and on the update that newly
+enables Barbican.
+
+### ServiceBarbicanSecretStoreSpec
+
+Selects the secret-store backend of the Barbican service, in one of two modes.
+`dedicated` has the ControlPlane provision an OpenBao instance for this Barbican
+and wire the store to it; `external` points the service at an OpenBao or
+HashiCorp Vault server run outside this control plane, whose AppRole credentials
+the operator only reads.
+
+The two modes address different servers with different credentials, so one of
+them must be set and not the other. A type-level CEL `XValidation` rule on
+`ServiceBarbicanSecretStoreSpec` carries the union
+(`has(self.dedicated) != has(self.external)`), with the message
+`exactly one of dedicated or external must be set`, and the validating webhook
+mirrors it, so an API server old enough to skip `x-kubernetes-validations`
+cannot admit a block naming neither.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `dedicated` | [`*BarbicanDedicatedSecretStoreSpec`](#barbicandedicatedsecretstorespec) | Conditional | `nil` | Has the ControlPlane provision an OpenBao instance for this Barbican and attach the store to it. Required when `external` is unset, forbidden otherwise. |
+| `external` | [`*BarbicanExternalSecretStoreSpec`](#barbicanexternalsecretstorespec) | Conditional | `nil` | Attaches the store to an OpenBao or HashiCorp Vault server provisioned outside this control plane. Required when `dedicated` is unset, forbidden otherwise. |
+
+### BarbicanDedicatedSecretStoreSpec
+
+Field-less. The instance name, its KV mount, and the AppRole credentials are all
+derived by convention from the ControlPlane, so there is nothing left to spell
+out.
+
+The instance the operator provisions is **proving-grade**. It runs the
+openbao-operator's `Development` profile at a single replica with no
+PodDisruptionBudget, so any disruption of that one pod stops every secret read
+and write. It is sealed by a static key held in a plain Secret
+(`{instance}-unseal-key`) in the same namespace as the raft volume that key
+seals, so read access to that namespace's Secrets, or a single etcd or namespace
+backup, yields both the ciphertext and the key. Admission repeats this as a
+warning on every apply. A production key manager belongs on
+[`external`](#barbicanexternalsecretstorespec), against a hardened server with a
+KMS unseal and a real replica count. See
+[reconcileBarbican](./controlplane-reconciler.md#reconcilebarbican) for the
+ensemble the reconciler projects around it.
+
+### BarbicanExternalSecretStoreSpec
+
+Addresses an OpenBao or HashiCorp Vault server provisioned outside this control
+plane. The operator reads the referenced Secrets and renders the store
+configuration; it never creates a mount, a policy, or an AppRole on such a
+server. The field surface mirrors the barbican module's `OpenBaoServerSpec` /
+`OpenBaoStoreSpec`, so a value admitted here can never be rejected downstream by
+the [`BarbicanSecretStore`](../barbican/barbican-secret-store-crd.md) CRD.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `url` | `string` | Yes | — | The server's API base URL, e.g. `https://openbao.example.com:8200`. TLS is mandatory (`MinLength` 1, pattern `^https://`, mirrored by the webhook): the operator's AppRole login and every secret barbican stores travel this URL, so a plaintext scheme would put the role ID, the secret ID, and the keys and certificates the service exists to protect on the wire in the clear. |
+| `credentialsSecretRef` | [`barbicanv1alpha1.SecretNameRefSpec`](../barbican/barbican-secret-store-crd.md#secretnamerefspec) | Yes | — | References the Secret holding the AppRole credentials barbican authenticates with, under the fixed data keys `role-id` and `secret-id`. The barbican operator reads it from the store's namespace, so place the Secret in the namespace the Barbican service is placed in (`services.barbican.namespace`, or the ControlPlane's own). |
+| `caBundleSecretRef` | [`*barbicanv1alpha1.SecretNameRefSpec`](../barbican/barbican-secret-store-crd.md#secretnamerefspec) | No | `nil` | References the Secret holding the PEM CA bundle that authenticates the server, under the fixed data key `ca.crt`. Resolves in the same namespace as `credentialsSecretRef`. Omit it when the server presents a certificate the pods already trust through their system store. |
+| `kvMountpoint` | `string` | No | `barbican` | The path the KV v2 secrets engine holding barbican's secret material is mounted at on that server. The `+kubebuilder:default` only fills an absent field, so the `MinLength` 1 marker is what rejects an explicitly empty mount path. |
+| `namespace` | `string` | No | `""` | Scopes every request to an OpenBao/Vault namespace (the enterprise-style multi-tenancy header). Brownfield only, which is the only mode this block describes: a dedicated instance is provisioned at the root namespace. |
+
+### BarbicanDedicatedBackingServicesSpec
+
+Declares the backing-service instances the Barbican service gets for itself
+instead of the ControlPlane-wide shared ones, on the same contract as
+[`KeystoneDedicatedBackingServicesSpec`](#dedicatedbackingservices). Barbican
+consumes both a database and a cache, so it can take either or both dedicated; a
+class left unset resolves to the ControlPlane-wide instance in
+`spec.infrastructure`.
+
+The block is optional, but a declared one must name at least one class. A CEL
+`XValidation` rule (`has(self.database) || has(self.cache)`) rejects an empty
+block, which would request nothing, with the message
+`dedicatedBackingServices must declare at least one backing-service class (database, cache)`.
+The Barbican child CRD requires `spec.cache`, so the effective cache has to
+resolve on every path the projection takes.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `database` | [`*commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | `nil` (shares `spec.infrastructure.database`) | Gives Barbican its own database cluster. In managed mode `clusterRef.name` defaults to `{controlplane}-barbican-db`. A dedicated **managed** database is **`Static`-only** — the defaulting webhook materializes `credentialsMode: Static` and an explicit `Dynamic` is rejected, for the same reason as Keystone (see [Credential modes](#credential-modes)): the OpenBao database engine is bootstrapped once per namespace against the shared cluster, so no engine role can issue credentials for a dedicated instance. Seed and rotate the credential at the OpenBao source. |
+| `cache` | [`*commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | `nil` (shares `spec.infrastructure.cache`) | Gives Barbican its own cache. In managed mode `clusterRef.name` defaults to `{controlplane}-barbican-cache`. |
+
+---
+
 ## DedicatedBackingServices
 
 By default every service a ControlPlane manages connects to the **shared**
@@ -605,6 +744,12 @@ and keep sharing the cache.
 
 Glance consumes both a database and a cache, so it can take either or both
 dedicated; a class left unset resolves to the ControlPlane-wide instance.
+
+`BarbicanDedicatedBackingServicesSpec` carries the same two classes on the same
+terms and is documented under
+[ServiceBarbicanSpec](#barbicandedicatedbackingservicesspec); its managed
+`clusterRef.name` defaults are `{controlplane}-barbican-db` and
+`{controlplane}-barbican-cache`.
 
 Declaring the block with **no class set** is rejected — it would request nothing.
 Omit it entirely to share.
@@ -693,7 +838,8 @@ resolve to a single child CR that both projections then fight over — silently
 voiding the isolation the opt-in exists for — so the validating webhook rejects
 the duplicate. The derived defaults (`{controlplane}-keystone-db`,
 `{controlplane}-keystone-cache`, `{controlplane}-horizon-cache`,
-`{controlplane}-glance-db`, `{controlplane}-glance-cache`) never collide
+`{controlplane}-glance-db`, `{controlplane}-glance-cache`,
+`{controlplane}-barbican-db`, `{controlplane}-barbican-cache`) never collide
 with each other or with the shared defaults (`openstack-db`,
 `openstack-memcached`).
 
