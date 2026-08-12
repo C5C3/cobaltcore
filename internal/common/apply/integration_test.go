@@ -11,6 +11,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
+	"github.com/c5c3/forge/internal/common/multicluster"
 	envtestutil "github.com/c5c3/forge/internal/common/testutil/envtest"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -100,4 +101,44 @@ func TestIntegration_EnsureObject_takesOverFromUpdate(t *testing.T) {
 	g.Expect(c.Get(ctx, client.ObjectKey{Name: "ssa-demo", Namespace: ns.Name}, fetched)).To(Succeed())
 	g.Expect(fetched.Spec.Template.Spec.Containers[0].Image).To(Equal("busybox:1.36"))
 	g.Expect(fetched.OwnerReferences).To(HaveLen(1))
+}
+
+// TestIntegration_EnsureObject_remoteShedsOwnerReference proves the self-heal the
+// target-cluster path relies on, which only a real API server can show: a child
+// written before ownership moved to the labels carries a controller owner
+// reference under the shared field manager, and the first apply that no longer
+// asserts that field is what removes it, because Server-Side Apply drops the
+// fields its manager stops claiming. On a target cluster that reference names a
+// UID nothing there can resolve, so shedding it is the point.
+func TestIntegration_EnsureObject_remoteShedsOwnerReference(t *testing.T) {
+	envtestutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := envtestutil.SetupEnvTest(t)
+	scheme := envtestutil.SharedScheme()
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-apply-remote"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: ns.Name}}
+	g.Expect(c.Create(ctx, owner)).To(Succeed())
+
+	// The child as an operator predating the labels left it: same field manager,
+	// owner-referenced.
+	g.Expect(EnsureObject(ctx, c, scheme, owner, integrationDeployment(ns.Name), FieldManager)).To(Succeed())
+	pre := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: "ssa-demo", Namespace: ns.Name}, pre)).To(Succeed())
+	g.Expect(pre.OwnerReferences).To(HaveLen(1))
+
+	// The same desired object, now written through a target-cluster client. The
+	// pre-check recognizes the reference as this owner's own and re-applies.
+	remote := multicluster.Remote(c)
+	g.Expect(EnsureObject(ctx, remote, scheme, owner, integrationDeployment(ns.Name), FieldManager)).To(Succeed())
+
+	fetched := &appsv1.Deployment{}
+	g.Expect(c.Get(ctx, client.ObjectKey{Name: "ssa-demo", Namespace: ns.Name}, fetched)).To(Succeed())
+	g.Expect(fetched.OwnerReferences).To(BeEmpty(),
+		"the apply must shed the reference its field manager no longer asserts")
+	g.Expect(fetched.Labels).To(HaveKeyWithValue(multicluster.OwnerKindLabel, "ConfigMap"))
+	g.Expect(fetched.Labels).To(HaveKeyWithValue(multicluster.OwnerNameLabel, "owner"))
+	g.Expect(fetched.Labels).To(HaveKeyWithValue(multicluster.OwnerNamespaceLabel, ns.Name))
 }
