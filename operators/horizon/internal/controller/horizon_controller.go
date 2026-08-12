@@ -6,8 +6,12 @@
 //
 // Horizon is the deliberately thin operator profile: a stateless Django/WSGI
 // dashboard with no database, message bus, fernet, bootstrap, or upgrade
-// machinery, and no finalizer — every owned resource is namespace-scoped and
-// garbage-collected via ownerReferences when the CR is deleted.
+// machinery. A CR that keeps its children on the management cluster carries no
+// finalizer either: every owned resource is namespace-scoped and
+// garbage-collected via ownerReferences when the CR is deleted. Only a CR that
+// projects onto a target cluster is finalized, because no garbage collection
+// cascade crosses a cluster boundary and the operator has to delete those
+// children itself.
 package controller
 
 import (
@@ -28,6 +32,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
@@ -153,6 +158,27 @@ var httpRouteGVK = schema.GroupVersionKind{
 	Kind:    "HTTPRoute",
 }
 
+// horizonRemoteChildKinds are the kinds a Horizon CR projects into the namespace
+// of the target cluster it names, and the kinds reconcileDeleteRemoteChildren
+// sweeps by ownership label when that CR is deleted. Nothing on the target
+// cluster collects them, so a kind missing from this list is a kind that keeps
+// running after its CR is gone.
+//
+// The list is cross-checked against the create verbs of the kubebuilder RBAC
+// markers on this controller below: the operator can only leave behind what it
+// is allowed to create. It is the shortest of the operators' lists, because
+// horizon composes no Secret, Job, CronJob, or MariaDB CR — it reads the
+// SECRET_KEY Secret that ESO materializes rather than writing one.
+var horizonRemoteChildKinds = []schema.GroupVersionKind{
+	appsv1.SchemeGroupVersion.WithKind("Deployment"),
+	corev1.SchemeGroupVersion.WithKind("Service"),
+	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
+	policyv1.SchemeGroupVersion.WithKind("PodDisruptionBudget"),
+	autoscalingv2.SchemeGroupVersion.WithKind("HorizontalPodAutoscaler"),
+	networkingv1.SchemeGroupVersion.WithKind("NetworkPolicy"),
+	httpRouteGVK,
+}
+
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons/finalizers,verbs=update
@@ -180,20 +206,45 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, fmt.Errorf("fetching Horizon: %w", err)
 	}
 
-	// No finalizer: every owned resource is namespace-scoped and reclaimed by
-	// Kubernetes garbage collection via ownerReferences, so a deleting CR
-	// needs no cleanup pass — skip all work and let GC finish.
+	// A CR whose children stay on the management cluster carries no finalizer:
+	// every owned resource is namespace-scoped and reclaimed by Kubernetes
+	// garbage collection via ownerReferences, so a deleting CR needs no cleanup
+	// pass — skip all work and let GC finish.
 	//
-	// That holds on the management cluster. Children written to a target
-	// cluster carry an owner reference to a CR that does not exist there, and
-	// the target's garbage collector cannot resolve it while the Horizon CRD is
-	// absent — which is what the reference documentation requires target
-	// clusters to be. Deleting such a CR therefore leaves its Deployment,
-	// Service, HTTPRoute, and Secret running on the target, unowned and
-	// unreconciled. That is the remote-ownership gap #837 tracks, and it is the
-	// same leak the other four operators take for everything their finalizers
-	// do not delete.
+	// A CR that projects onto a target cluster carries the remote-children
+	// finalizer and sweeps instead. Its children are written unowned there (an
+	// owner reference would name a UID that cluster cannot resolve) and no
+	// cascade crosses the boundary, so the projection is deleted from here. A
+	// target cluster that stays unresolvable past the abandon window is the one
+	// case that keeps the projection.
+	//
+	// The sweep resolves through the deletion variant, which never fails the
+	// pass: a CR whose cluster was deregistered after the finalizer went on would
+	// otherwise short-circuit on the unresolvable ref on every pass and stay
+	// Terminating forever. A target that has not resolved yet requeues instead of
+	// being given up on — engagement is asynchronous, so an operator restart
+	// looks exactly like a deregistration until the provider has synced.
 	if !horizon.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&horizon, commonmulticluster.RemoteChildrenFinalizer) {
+			children, wait := commonmulticluster.ResolveChildrenClientForDeletion(
+				ctx, r.Resolver, r.Client, horizon.Spec.TargetClusterRef, *horizon.DeletionTimestamp)
+			if wait {
+				// The hold goes on the CR, not only into the operator's log. It is a
+				// deliberate state a CR can sit in for minutes, and "Terminating,
+				// waiting on the target cluster" has to be distinguishable from a
+				// wedged finalizer without correlating logs across replicas.
+				statusBefore := horizon.Status.DeepCopy()
+				horizonSkeleton.MarkFailed(&horizon, "SecretsReady",
+					commonmulticluster.TargetClusterUnavailable,
+					fmt.Errorf("target cluster %s does not resolve; waiting at least %s before abandoning its children",
+						horizon.Spec.TargetClusterRef.Name, commonmulticluster.AbandonAfter))
+				return r.updateStatus(ctx, &horizon, statusBefore,
+					ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
+			}
+			if err := r.reconcileDeleteRemoteChildren(ctx, children, &horizon); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		log.FromContext(ctx).V(1).Info("Horizon resource is being deleted; owned resources are garbage-collected via ownerReferences")
 		r.evictHealthProbe(client.ObjectKeyFromObject(&horizon))
 		return ctrl.Result{}, nil
@@ -207,14 +258,30 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// Resolve the client every child object of this CR is read and written
 	// with. The embedded client stays on the management cluster (the CR and its
 	// status live there); children carries everything the CR projects into the
-	// target cluster. The deletion short-circuit above already returned, so a
-	// terminating CR never reaches this resolution — it installs no finalizer,
-	// so there is nothing here that could keep it from leaving etcd.
+	// target cluster. The deletion branch above already returned, so a
+	// terminating CR never reaches this resolution: it fails the pass on an
+	// unresolvable ref, which would keep a finalized CR from ever reaching its
+	// sweep.
 	children, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, horizon.Spec.TargetClusterRef)
 	if err != nil {
 		horizonSkeleton.MarkFailed(&horizon, "SecretsReady", commonmulticluster.TargetClusterUnavailable, err)
 		return r.updateStatus(ctx, &horizon, statusBefore,
 			ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
+	}
+
+	// The remote-children finalizer is horizon's first and only finalizer, and
+	// it goes on only when the CR projects onto a target cluster. A local CR
+	// keeps the garbage collection cascade, which reaps its children from their
+	// owner references, so it stays finalizer-free: a finalizer it does not need
+	// is one more deletion-time step that can fail. spec.targetClusterRef is
+	// immutable, so the condition cannot flip under a live CR.
+	if horizon.Spec.TargetClusterRef != nil {
+		if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &horizon,
+			commonmulticluster.RemoteChildrenFinalizer); err != nil {
+			return ctrl.Result{}, err
+		} else if added {
+			return ctrl.Result{Requeue: true}, nil
+		}
 	}
 
 	// Run the sub-reconciler pipeline. Steps are attempted in dependency
@@ -313,6 +380,15 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	// through updateStatus, which recomputes the aggregate Ready condition.
 	result, err := commonreconcile.RunPipeline(ctx, instrumenter.Instrument, pipeline)
 	return r.updateStatus(ctx, &horizon, statusBefore, result, err)
+}
+
+// reconcileDeleteRemoteChildren deletes everything this Horizon projected onto
+// the target cluster it names, selected on the ownership labels Claim stamped on
+// those objects, and releases the remote-children finalizer that held the CR in
+// etcd for it, as commonmulticluster.SweepRemoteChildren documents.
+func (r *HorizonReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, horizon *horizonv1alpha1.Horizon) error {
+	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+		horizon, horizon.Spec.TargetClusterRef, children, horizonRemoteChildKinds)
 }
 
 // updateStatus persists the current status conditions and returns the given
