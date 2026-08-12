@@ -1421,12 +1421,15 @@ spec:
                   behaves exactly like a single-cluster one. The field is immutable (see the
                   transition rules on this spec).
 
-                  A remote child carries an owner reference to a CR that lives on a
-                  different cluster, so that reference dangles. Until issue #837 replaces
-                  the owner references with an explicit remote-cleanup path, a target
-                  cluster must not have the service CRDs installed: with the CRDs present
-                  its garbage collector resolves the owner reference to a missing object and
-                  deletes the children.
+                  A child written to the target carries no owner reference, since nothing
+                  on that cluster resolves one into the management cluster. Three labels
+                  name the owner instead: openstack.c5c3.io/owner-kind,
+                  openstack.c5c3.io/owner-name, and openstack.c5c3.io/owner-namespace.
+                  Deleting the CR deletes the children that carry its labels, under a
+                  finalizer the CR installs whenever the ref is set, so a target cluster
+                  may have the service CRDs installed. A cluster deregistered past the
+                  abandon window is the exception: its children cannot be reached and stay
+                  behind on it.
                 properties:
                   name:
                     description: |-

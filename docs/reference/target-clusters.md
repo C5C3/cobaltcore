@@ -198,23 +198,88 @@ CRD sets are therefore required on the management cluster whatever
 See [Infrastructure Manifests](./infrastructure/infrastructure-manifests.md) for
 the Flux sources and the dependency order these three ride in.
 
-## Owner references dangle on the target
+## Ownership and teardown on the target
 
-::: warning A target cluster must not have the service CRDs installed
-A child written to a target carries an owner reference to a CR that lives on the
-management cluster, so on the target that reference points at nothing. With the
-service CRDs installed there, the target's garbage collector resolves the owner
-as absent and deletes the children. Keep the service CRDs off target clusters
-until #837 replaces the owner references with an explicit remote-cleanup path.
+A child written to a target cluster carries no owner references at all. Nothing
+on that cluster can resolve an owner into the management cluster, so ownership
+is recorded in three labels the operator stamps on every remote child:
+
+| Label | Value |
+| --- | --- |
+| `openstack.c5c3.io/owner-kind` | The owning CR's kind: `Keystone`, `Barbican`, `Horizon`, `Glance`, or `Placement` |
+| `openstack.c5c3.io/owner-name` | The owning CR's name |
+| `openstack.c5c3.io/owner-namespace` | The owning CR's namespace, which is the namespace the child lands in |
+
+The kind is part of the key because a Keystone and a Barbican of the same name
+in the same namespace project into one target namespace, and each has to select
+only its own. Installing the service CRDs on a target cluster is safe: no child
+there points at an owner, so no garbage collector has one to resolve.
+
+A label value may not exceed 63 characters, so the name of a CR that names a
+target cluster may not either. A longer one is refused at the first child write,
+before anything is created.
+
+::: warning One target namespace belongs to one management cluster
+The three labels name the owning CR and say nothing about where it lives. Two
+management clusters that each run these operators, each hold a CR of the same
+kind and name in the same namespace, and each name the same target cluster would
+project into that namespace under one identity: either would take the other's
+children for its own, overwrite their specs, and delete them when its own CR is
+deleted. Give each management cluster its own namespace on a shared target, or
+its own target cluster.
 :::
 
-The same dangling reference is what makes deletion incomplete. Deleting a CR
-removes the MariaDB CRs its finalizer cleans up, and leaves everything else —
-Deployment, Service, ConfigMaps, Secrets, HTTPRoute — running on the target,
-where no garbage collector can resolve the owner that is gone. Horizon installs
-no finalizer at all, so a deleted Horizon leaves its whole projection behind,
-including the Secret carrying the Django `SECRET_KEY`. Delete the CR's namespace
-on the target cluster, or the objects in it, to reclaim them.
+Deleting a CR that names a target cluster tears its children down explicitly.
+The finalizer `openstack.c5c3.io/remote-children` goes on whenever
+`targetClusterRef` is set, and holds the CR in etcd until the sweep has run. The
+sweep deletes every object of that operator's projected kinds the CR owns, in the
+CR's namespace on the target — by the three labels, or by a controller owner
+reference an older operator left on it. It runs after the cleanup
+flows that delete objects by name, the MariaDB CRs and, for Keystone, the backup
+PushSecrets. That PushSecret flow holds the CR across passes until ESO has
+purged the kv-v2 paths, and a sweep running first would delete the PushSecrets
+out from under it. The order also matches the local one, where the cascade
+starts only once every finalizer has released.
+
+The sweep does not wait for the deleted objects to leave etcd. A child holding a
+finalizer of its own, the MariaDB CRs being the slow ones, finishes terminating
+on the target after the CR is gone, the way it does under the local cascade.
+
+Horizon needs no finalizer for a local deletion, since the cascade reclaims
+every child it composes. A Horizon that names a target cluster carries the
+remote-children finalizer and the same sweep.
+
+A `BarbicanSecretStore` whose parent Barbican resolves to a target cluster
+carries that finalizer too, plus the annotation
+`openstack.c5c3.io/children-cluster` naming the cluster. Both are written before
+the first credentials write. Its deletion deletes the AppRole credentials Secret
+on the cluster its parent names and on the annotated one — the same cluster on
+every ordinary teardown — so neither a parent deleted first nor a parent
+re-created against a different target strands it. Only a Secret carrying this
+store's ownership labels is taken. The AppRole on the OpenBao instance stays: it
+is shared instance state, owned by the self-init contract rather than by one
+store.
+
+A cluster deregistered under a CR that is already being deleted holds the
+deletion open. The pass requeues and the finalizer stays on until the two
+five-minute windows run out. Then it is released without a sweep, under a
+`RemoteChildrenAbandoned` warning event naming what went undeleted, and the
+children stay on the unreachable cluster, to be removed there by hand.
+
+::: warning Children written once keep an owner reference from an older operator
+A child written by an operator predating this contract carries an owner
+reference to the management-cluster CR. Children on the Server-Side Apply and
+`CreateOrUpdate` paths shed it on the operator's first pass over them. Children
+created once and never rewritten do not: the immutable config ConfigMaps and
+Secrets, the derived db-connection Secret, the fernet and credential key
+Secrets, the Certificates, and completed Jobs keep the stale reference for as
+long as they exist. The sweep still reaches them — it recognizes the reference as
+readily as the labels — so deleting the CR removes them. Until it is deleted the
+reference is a hazard on a target cluster that has the service CRDs installed:
+that cluster's garbage collector resolves it to a missing object and collects the
+child as an orphan. Delete such a CR and create it anew before the CRDs go onto
+its target cluster; everything it writes afterwards carries the labels alone.
+:::
 
 ## Interim constraints
 
@@ -222,4 +287,3 @@ on the target cluster, or the objects in it, to reclaim them.
 - The capability probes (Gateway API, cert-manager) run against the management cluster, not the target (#839). The API Service selector latch does read the target: it goes through that cluster's own uncached API reader, so a lagging cache cannot re-widen the selector.
 - `KeystoneIdentityBackend` carries no `targetClusterRef`, and its reconciler stays management-side. A backend attached to a Keystone that names a target cluster looks for the parent's Deployment and projection Secret locally, where they do not exist, and holds `ConfigProjected=False` with reason `WaitingForProjection`.
 - RBAC and access packaging for a target cluster, together with the two-cluster development flow, are #841.
-- Garbage-collection-safe ownership for remote children is #837.
