@@ -19,8 +19,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/c5c3/forge/internal/common/multicluster"
 )
 
 // RenderINI renders a map of INI sections into an INI format string.
@@ -237,7 +238,7 @@ func CreateImmutableConfigMap(ctx context.Context, c client.Client, scheme *runt
 		Immutable: &immutable,
 	}
 
-	if err := controllerutil.SetControllerReference(owner, cm, scheme); err != nil {
+	if err := multicluster.Claim(c, scheme, owner, cm); err != nil {
 		return "", fmt.Errorf("setting owner reference on ConfigMap %s/%s: %w", namespace, name, err)
 	}
 
@@ -252,8 +253,11 @@ func CreateImmutableConfigMap(ctx context.Context, c client.Client, scheme *runt
 		if getErr := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, existingCM); getErr != nil {
 			return "", fmt.Errorf("fetching existing ConfigMap %s/%s: %w", namespace, name, getErr)
 		}
-		controllerRef := metav1.GetControllerOf(existingCM)
-		if controllerRef == nil || controllerRef.UID != owner.GetUID() {
+		owned, ownErr := multicluster.Controls(scheme, owner, existingCM)
+		if ownErr != nil {
+			return "", fmt.Errorf("checking ownership of existing ConfigMap %s/%s: %w", namespace, name, ownErr)
+		}
+		if !owned {
 			return "", fmt.Errorf("existing ConfigMap %s/%s is not owned by %s/%s",
 				namespace, name, owner.GetNamespace(), owner.GetName())
 		}
@@ -303,7 +307,7 @@ func CreateImmutableSecret(ctx context.Context, c client.Client, scheme *runtime
 		Immutable: &immutable,
 	}
 
-	if err := controllerutil.SetControllerReference(owner, secret, scheme); err != nil {
+	if err := multicluster.Claim(c, scheme, owner, secret); err != nil {
 		return "", fmt.Errorf("setting owner reference on Secret %s/%s: %w", namespace, name, err)
 	}
 
@@ -317,8 +321,11 @@ func CreateImmutableSecret(ctx context.Context, c client.Client, scheme *runtime
 		if getErr := c.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, existing); getErr != nil {
 			return "", fmt.Errorf("fetching existing Secret %s/%s: %w", namespace, name, getErr)
 		}
-		controllerRef := metav1.GetControllerOf(existing)
-		if controllerRef == nil || controllerRef.UID != owner.GetUID() {
+		owned, ownErr := multicluster.Controls(scheme, owner, existing)
+		if ownErr != nil {
+			return "", fmt.Errorf("checking ownership of existing Secret %s/%s: %w", namespace, name, ownErr)
+		}
+		if !owned {
 			return "", fmt.Errorf("existing Secret %s/%s is not owned by %s/%s",
 				namespace, name, owner.GetNamespace(), owner.GetName())
 		}
@@ -377,13 +384,19 @@ type PruneOptions struct {
 // repeated runs prune and retain the same objects rather than an arbitrary
 // subset.
 //
+// Only ConfigMaps owner owns are pruned, and scheme is what answers that: a
+// ConfigMap on a target cluster carries the ownership labels instead of a
+// controller owner reference, and resolving owner's kind for those labels needs
+// the scheme. Without the label recognition a target cluster's config history
+// would never be pruned and would grow without bound.
+//
 // Known limitation: ConfigMaps created before the ConfigBaseLabelKey label was
 // introduced lack the label and are invisible to the server-side
 // selector used by this function. These pre-existing ConfigMaps will not be
 // pruned but are bounded in number (no new unlabeled ConfigMaps are created
 // after the upgrade) and will be garbage-collected by Kubernetes when the
 // owning CR is deleted, since they carry a controller owner reference.
-func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client.Object, opts PruneOptions) error {
+func PruneImmutableConfigMaps(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, opts PruneOptions) error {
 	var allConfigMaps corev1.ConfigMapList
 	if err := c.List(ctx, &allConfigMaps, client.InNamespace(opts.Namespace), client.MatchingLabels{ConfigBaseLabelKey: opts.BaseName}); err != nil {
 		return fmt.Errorf("listing ConfigMaps in namespace %s: %w", opts.Namespace, err)
@@ -392,7 +405,7 @@ func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client
 	for i := range allConfigMaps.Items {
 		items = append(items, &allConfigMaps.Items[i])
 	}
-	return pruneImmutableObjects(ctx, c, owner, opts, items, "ConfigMap")
+	return pruneImmutableObjects(ctx, c, scheme, owner, opts, items, "ConfigMap")
 }
 
 // PruneImmutableSecrets deletes stale immutable Secrets previously created by
@@ -400,7 +413,7 @@ func PruneImmutableConfigMaps(ctx context.Context, c client.Client, owner client
 // PruneImmutableConfigMaps. Retain: 0 combined with an empty CurrentName
 // removes every historical Secret for the base name — the full-cleanup path a
 // caller takes when the feature that produced the Secrets is turned off.
-func PruneImmutableSecrets(ctx context.Context, c client.Client, owner client.Object, opts PruneOptions) error {
+func PruneImmutableSecrets(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, opts PruneOptions) error {
 	var allSecrets corev1.SecretList
 	if err := c.List(ctx, &allSecrets, client.InNamespace(opts.Namespace), client.MatchingLabels{ConfigBaseLabelKey: opts.BaseName}); err != nil {
 		return fmt.Errorf("listing Secrets in namespace %s: %w", opts.Namespace, err)
@@ -409,7 +422,7 @@ func PruneImmutableSecrets(ctx context.Context, c client.Client, owner client.Ob
 	for i := range allSecrets.Items {
 		items = append(items, &allSecrets.Items[i])
 	}
-	return pruneImmutableObjects(ctx, c, owner, opts, items, "Secret")
+	return pruneImmutableObjects(ctx, c, scheme, owner, opts, items, "Secret")
 }
 
 // pruneImmutableObjects implements the shared prune algorithm for the
@@ -417,7 +430,7 @@ func PruneImmutableSecrets(ctx context.Context, c client.Client, owner client.Ob
 // (never the CurrentName), sort newest-first with a deterministic name
 // tie-break, and delete everything past the retain count. kind is only used
 // for error/log messages.
-func pruneImmutableObjects(ctx context.Context, c client.Client, owner client.Object, opts PruneOptions, items []client.Object, kind string) error {
+func pruneImmutableObjects(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, opts PruneOptions, items []client.Object, kind string) error {
 	logger := log.FromContext(ctx)
 
 	// Clamp negative retain to 0 to prevent panics from misconfigured values.
@@ -435,8 +448,11 @@ func pruneImmutableObjects(ctx context.Context, c client.Client, owner client.Ob
 		if obj.GetName() == opts.CurrentName {
 			continue
 		}
-		controllerRef := metav1.GetControllerOf(obj)
-		if controllerRef == nil || controllerRef.UID != owner.GetUID() {
+		owned, err := multicluster.Controls(scheme, owner, obj)
+		if err != nil {
+			return fmt.Errorf("checking ownership of %s %s/%s: %w", kind, opts.Namespace, obj.GetName(), err)
+		}
+		if !owned {
 			continue
 		}
 		candidates = append(candidates, obj)

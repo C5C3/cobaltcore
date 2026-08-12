@@ -298,7 +298,7 @@ func (r *KeystoneReconciler) teardownPasswordRotation(ctx context.Context, child
 
 	// Delete every script ConfigMap (CurrentName="", Retain=0 prunes all
 	// hash-suffixed ConfigMaps for this base name owned by the CR).
-	if err := config.PruneImmutableConfigMaps(ctx, children, keystone, config.PruneOptions{
+	if err := config.PruneImmutableConfigMaps(ctx, children, r.Scheme, keystone, config.PruneOptions{
 		BaseName:  adminPasswordRotateScriptBaseName(keystone),
 		Namespace: keystone.Namespace,
 	}); err != nil {

@@ -6,6 +6,7 @@ package multicluster
 
 import (
 	"fmt"
+	"maps"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -171,6 +172,36 @@ func Claim(c client.Client, scheme *runtime.Scheme, owner, obj client.Object) er
 
 	dropControllerRef(obj, gvk, owner)
 	stampLabels(obj, labels)
+	return nil
+}
+
+// ClaimWithLabels claims obj for owner and rebuilds its labels from labels in
+// one step, for the write sites that own their child's whole label set: the
+// caller's set is authoritative, so a label the operator stopped setting is
+// dropped, and the ownership labels a claim on a target cluster adds survive the
+// rebuild.
+//
+// The two have to happen in this order and that is the whole reason they are one
+// call. On a target cluster the ownership labels are the only mark identifying
+// obj as owner's child, so a rebuild done first would hand Claim an object it no
+// longer recognizes and have it refuse its own child. labels is not mutated.
+func ClaimWithLabels(c client.Client, scheme *runtime.Scheme, owner, obj client.Object, labels map[string]string) error {
+	if err := Claim(c, scheme, owner, obj); err != nil {
+		return err
+	}
+
+	rebuilt := maps.Clone(labels)
+	if IsRemote(c) {
+		ownership, err := OwnerLabels(scheme, owner)
+		if err != nil {
+			return err
+		}
+		if rebuilt == nil {
+			rebuilt = map[string]string{}
+		}
+		maps.Copy(rebuilt, ownership)
+	}
+	obj.SetLabels(rebuilt)
 	return nil
 }
 

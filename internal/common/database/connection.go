@@ -17,9 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
@@ -230,7 +230,7 @@ func ReconcileConnectionSecret(ctx context.Context, p ConnectionSecretFlowParams
 				ConnectionSecretKey: []byte(connStr),
 			},
 		}
-		if err := controllerutil.SetControllerReference(p.Owner, derived, p.Scheme); err != nil {
+		if err := multicluster.Claim(p.Client, p.Scheme, p.Owner, derived); err != nil {
 			return ctrl.Result{}, "", fmt.Errorf("setting owner reference on derived Secret %s/%s: %w",
 				derived.Namespace, derived.Name, err)
 		}

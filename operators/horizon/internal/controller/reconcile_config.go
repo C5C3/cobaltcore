@@ -391,7 +391,7 @@ func cacheLocations(horizon *horizonv1alpha1.Horizon) []any {
 // currently active one.
 func (r *HorizonReconciler) pruneStaleConfigMaps(ctx context.Context, children client.Client, horizon *horizonv1alpha1.Horizon, configMapName string) error {
 	baseName := fmt.Sprintf("%s-config", horizon.Name)
-	return config.PruneImmutableConfigMaps(ctx, children, horizon, config.PruneOptions{
+	return config.PruneImmutableConfigMaps(ctx, children, r.Scheme, horizon, config.PruneOptions{
 		BaseName:    baseName,
 		Namespace:   horizon.Namespace,
 		CurrentName: configMapName,

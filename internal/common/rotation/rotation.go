@@ -21,6 +21,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	"github.com/c5c3/forge/internal/common/multicluster"
 )
 
 // StagingSecretLabelKey labels staging Secrets so operator watches and
@@ -69,11 +71,12 @@ func ObserveAge(mainSecret, stagingSecret *corev1.Secret, record func(completedA
 
 // EnsureStagingSecret creates (or ensures) an empty staging Secret that the
 // rotation CronJob PATCHes rotated payload into. The operator owns the object's
-// metadata and lifecycle — labels, owner reference — while the CronJob owns the
-// `.data` field via a narrow get+patch RBAC grant. Data is deliberately left nil
-// on creation and untouched on update so the CronJob's PATCH is never clobbered
-// by a reconcile. labels is the complete label set applied on every call
-// (rebuilt so operator-owned labels stay authoritative).
+// metadata and lifecycle — labels and the ownership claim — while the CronJob
+// owns the `.data` field via a narrow get+patch RBAC grant. Data is deliberately
+// left nil on creation and untouched on update so the CronJob's PATCH is never
+// clobbered by a reconcile. labels is the complete label set applied on every
+// call (rebuilt so operator-owned labels stay authoritative), except for the
+// ownership labels a claim on a target cluster adds.
 //
 // It returns the ensured Secret so the caller can thread it into ObserveAge and
 // CommitStaged without re-reading it; its UID/ResourceVersion drive the commit's
@@ -86,9 +89,8 @@ func EnsureStagingSecret(ctx context.Context, c client.Client, scheme *runtime.S
 		},
 	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, c, secret, func() error {
-		secret.Labels = labels
 		// Do NOT touch secret.Data — the CronJob's PATCH owns that field.
-		return controllerutil.SetControllerReference(owner, secret, scheme)
+		return multicluster.ClaimWithLabels(c, scheme, owner, secret, labels)
 	}); err != nil {
 		return nil, fmt.Errorf("ensuring staging secret %s: %w", name, err)
 	}
@@ -237,7 +239,7 @@ func EnsureRBAC(ctx context.Context, c client.Client, scheme *runtime.Scheme, ow
 
 	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: saName, Namespace: namespace}}
 	if _, err := controllerutil.CreateOrUpdate(ctx, c, sa, func() error {
-		return controllerutil.SetControllerReference(owner, sa, scheme)
+		return multicluster.Claim(c, scheme, owner, sa)
 	}); err != nil {
 		return fmt.Errorf("ensuring ServiceAccount %s: %w", saName, err)
 	}
@@ -258,7 +260,7 @@ func EnsureRBAC(ctx context.Context, c client.Client, scheme *runtime.Scheme, ow
 				ResourceNames: []string{stagingSecret},
 			},
 		}
-		return controllerutil.SetControllerReference(owner, role, scheme)
+		return multicluster.Claim(c, scheme, owner, role)
 	}); err != nil {
 		return fmt.Errorf("ensuring Role %s: %w", saName, err)
 	}
@@ -277,7 +279,7 @@ func EnsureRBAC(ctx context.Context, c client.Client, scheme *runtime.Scheme, ow
 				Name:     saName,
 			}
 		}
-		return controllerutil.SetControllerReference(owner, rb, scheme)
+		return multicluster.Claim(c, scheme, owner, rb)
 	}); err != nil {
 		return fmt.Errorf("ensuring RoleBinding %s: %w", saName, err)
 	}

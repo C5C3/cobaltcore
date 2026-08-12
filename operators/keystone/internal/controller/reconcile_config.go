@@ -514,7 +514,7 @@ func (r *KeystoneReconciler) configMapExists(ctx context.Context, children clien
 // currently active one.
 func (r *KeystoneReconciler) pruneStaleConfigMaps(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone, configMapName string) error {
 	baseName := fmt.Sprintf("%s-config", keystone.Name)
-	return config.PruneImmutableConfigMaps(ctx, children, keystone, config.PruneOptions{
+	return config.PruneImmutableConfigMaps(ctx, children, r.Scheme, keystone, config.PruneOptions{
 		BaseName:    baseName,
 		Namespace:   keystone.Namespace,
 		CurrentName: configMapName,
