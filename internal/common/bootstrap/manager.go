@@ -16,10 +16,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 )
 
@@ -116,6 +118,43 @@ func cacheOptions(syncPeriod time.Duration, namespace, clustersNamespace string)
 	return opts
 }
 
+// clusterOptions builds the options every target cluster the kubeconfig
+// provider engages is created with. The per-cluster clients must decode the
+// same kinds the local manager does: cluster.New otherwise defaults to the
+// client-go global scheme, which carries no CRD kind, and a child write of a
+// CRD-backed kind fails on the target with "no kind is registered".
+//
+// The cache is restricted exactly like the local one. cluster.New otherwise
+// builds an all-namespaces cache, and the first child read would start a
+// cluster-wide LIST+WATCH per kind on the target — every Secret, ConfigMap,
+// Deployment, and Job in every namespace of a cluster the operator only ever
+// touches one namespace of. The clusters namespace is deliberately not passed
+// on: the registration Secrets live on the management cluster, so no target
+// cache has to be widened for them.
+func clusterOptions(scheme *runtime.Scheme, syncPeriod time.Duration, namespace string) []cluster.Option {
+	return []cluster.Option{func(o *cluster.Options) {
+		o.Scheme = scheme
+		o.Cache = cacheOptions(syncPeriod, namespace, "")
+	}}
+}
+
+// targetClustersNamespace returns the namespace registration Secrets are read
+// from, and with it the one switch for everything target clusters cost: the
+// kubeconfig provider, its registration-Secret watch, and the one-namespace
+// widening of the Secret informer that watch needs.
+//
+// It is empty — target clusters off — for an operator that does not resolve
+// spec.targetClusterRef, and for an install that clears --clusters-namespace. A
+// namespace-scoped deployment does exactly that: its Role grants nothing
+// outside its own namespace, so a widened Secret informer would never sync and
+// the manager would fail to start.
+func targetClustersNamespace(cfg ManagerConfig, opts runOptions) string {
+	if !cfg.TargetClusters {
+		return ""
+	}
+	return opts.clustersNamespace
+}
+
 // zapOptions returns the base zap logging options shared by all operators.
 // Development is false so the production operator binaries default to the
 // controller-runtime production logging profile: JSON encoder, info-level
@@ -172,7 +211,9 @@ func parseRunOptions(cfg ManagerConfig, args []string) (runOptions, error) {
 			"Overrides ManagerConfig.Namespace when provided.")
 	fs.StringVar(&o.clustersNamespace, "clusters-namespace", "c5c3-clusters",
 		"Namespace on the management cluster watched for target-cluster "+
-			"kubeconfig Secrets.")
+			"kubeconfig Secrets. Empty disables target clusters entirely: no "+
+			"cluster is engaged and no Secret is read outside the watched "+
+			"namespace. Ignored by operators that do not support target clusters.")
 
 	fs.IntVar(&o.maxConcurrentReconciles, "max-concurrent-reconciles", DefaultMaxConcurrentReconciles,
 		"Maximum number of reconciles that may run concurrently for a controller "+
@@ -218,13 +259,24 @@ func run(cfg ManagerConfig, opts runOptions) error {
 	setupLog := ctrl.Log.WithName("setup")
 	ctx := ctrl.SetupSignalHandler()
 
-	provider := kubeconfigprovider.New(kubeconfigprovider.Options{
-		Namespace: opts.clustersNamespace,
-	})
+	clustersNamespace := targetClustersNamespace(cfg, opts)
+
+	// Typed as the interface, so leaving it unset really is a nil provider:
+	// mcmanager then reports a named cluster as unresolvable instead of
+	// dereferencing a typed nil.
+	var provider mcruntime.Provider
+	var clusters *kubeconfigprovider.Provider
+	if clustersNamespace != "" {
+		clusters = kubeconfigprovider.New(kubeconfigprovider.Options{
+			Namespace:      clustersNamespace,
+			ClusterOptions: clusterOptions(cfg.Scheme, opts.syncPeriod, opts.namespace),
+		})
+		provider = clusters
+	}
 
 	mgr, err := mcmanager.New(ctrl.GetConfigOrDie(), provider, ctrl.Options{
 		Scheme: cfg.Scheme,
-		Cache:  cacheOptions(opts.syncPeriod, opts.namespace, opts.clustersNamespace),
+		Cache:  cacheOptions(opts.syncPeriod, opts.namespace, clustersNamespace),
 		Metrics: metricsserver.Options{
 			BindAddress: opts.metricsAddr,
 		},
@@ -238,8 +290,10 @@ func run(cfg ManagerConfig, opts runOptions) error {
 
 	// The provider's engagement machinery has to be registered before the
 	// controllers, so that cluster engagement precedes the first reconcile.
-	if err := provider.SetupWithManager(ctx, mgr); err != nil {
-		return fmt.Errorf("unable to set up cluster provider: %w", err)
+	if clusters != nil {
+		if err := clusters.SetupWithManager(ctx, mgr); err != nil {
+			return fmt.Errorf("unable to set up cluster provider: %w", err)
+		}
 	}
 
 	if cfg.SetupFunc != nil {
@@ -257,6 +311,9 @@ func run(cfg ManagerConfig, opts runOptions) error {
 
 	if opts.namespace != "" {
 		setupLog.Info("namespace-scoped mode enabled", "namespace", opts.namespace)
+	}
+	if clustersNamespace != "" {
+		setupLog.Info("target clusters enabled", "clustersNamespace", clustersNamespace)
 	}
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctx); err != nil {

@@ -1,6 +1,6 @@
 dependencies:
 - name: operator-library
   repository: file://../../../shared/helm/operator-library
-  version: 0.6.0
-digest: sha256:7f9f50916d8bcfbb0d3747626c7518c22a7eb76ac1c13f36d6f8d8681f9d442a
-generated: "2026-08-10T10:06:24.794078+02:00"
+  version: 0.7.0
+digest: sha256:afc2a935ea26e8f733b8f3b4a0f06c76ebb5908772e60dff95f8af17f19b8623
+generated: "2026-08-12T04:34:15.777301+02:00"

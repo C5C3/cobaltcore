@@ -184,6 +184,26 @@ tests:
           path: spec.template.spec.containers[0].args
           content: --namespace=NAMESPACE
 
+  # A namespace-scoped install grants nothing outside the release namespace, so
+  # the operator must not be pointed at the clusters namespace: the widened
+  # Secret informer would never sync and the manager would fail to start.
+  - it: should disable target clusters when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --clusters-namespace=
+
+  - it: should leave the clusters namespace at its default when cluster-scoped
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].args
+          content: --clusters-namespace=
+
   - it: should include both --leader-elect and --namespace when both enabled
     set:
       rbac:
