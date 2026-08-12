@@ -269,6 +269,31 @@ func markConfigFailed(glance *glancev1alpha1.Glance, err error) {
 	glanceSkeleton.MarkFailed(glance, "SecretsReady", conditionReasonConfigError, err)
 }
 
+// glanceRemoteChildKinds are the kinds a Glance CR projects into the namespace
+// of the target cluster it names, and the kinds reconcileDeleteRemoteChildren
+// sweeps by ownership label when that CR is deleted. Nothing on the target
+// cluster collects them, so a kind missing from this list is a kind that keeps
+// running after its CR is gone.
+//
+// The list is cross-checked against the create verbs of the kubebuilder RBAC
+// markers on this controller below: the operator can only leave behind what it
+// is allowed to create.
+var glanceRemoteChildKinds = []schema.GroupVersionKind{
+	appsv1.SchemeGroupVersion.WithKind("Deployment"),
+	corev1.SchemeGroupVersion.WithKind("Service"),
+	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
+	corev1.SchemeGroupVersion.WithKind("Secret"),
+	batchv1.SchemeGroupVersion.WithKind("Job"),
+	batchv1.SchemeGroupVersion.WithKind("CronJob"),
+	policyv1.SchemeGroupVersion.WithKind("PodDisruptionBudget"),
+	autoscalingv2.SchemeGroupVersion.WithKind("HorizontalPodAutoscaler"),
+	networkingv1.SchemeGroupVersion.WithKind("NetworkPolicy"),
+	httpRouteGVK,
+	mariadbv1alpha1.GroupVersion.WithKind("Database"),
+	mariadbv1alpha1.GroupVersion.WithKind("User"),
+	mariadbv1alpha1.GroupVersion.WithKind("Grant"),
+}
+
 // +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glances,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glances/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=glance.openstack.c5c3.io,resources=glances/finalizers,verbs=update
@@ -334,7 +359,18 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			return r.updateStatus(ctx, &glance, statusBefore,
 				ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil)
 		}
-		return r.reconcileDelete(ctx, children, &glance)
+		if result, err := r.reconcileDelete(ctx, children, &glance); !result.IsZero() || err != nil {
+			return result, err
+		}
+		// The label-selected sweep runs after the named MariaDB cleanup, never
+		// before it: that flow waits one pass on the CRs it deletes by name, and a
+		// sweep running first would delete them out from under it. The ordering
+		// mirrors the local one, where the garbage collection cascade starts only
+		// once every finalizer has been released.
+		if err := r.reconcileDeleteRemoteChildren(ctx, children, &glance); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// Resolve the client every child object of this CR is read and written with.
@@ -362,6 +398,20 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	} else if added {
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// The remote-children finalizer goes on only when the CR projects onto a
+	// target cluster. A local CR keeps the garbage collection cascade, which
+	// reaps its children from their owner references, so it has nothing for this
+	// finalizer to hold the CR open for. spec.targetClusterRef is immutable, so
+	// the condition cannot flip under a live CR.
+	if glance.Spec.TargetClusterRef != nil {
+		if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &glance,
+			commonmulticluster.RemoteChildrenFinalizer); err != nil {
+			return ctrl.Result{}, err
+		} else if added {
+			return ctrl.Result{Requeue: true}, nil
+		}
 	}
 
 	// Snapshot the persisted status so updateStatus can skip the write when a
@@ -510,9 +560,9 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 // the per-CR metrics, evicts the health-probe cache, and releases the finalizer.
 //
 // A nil children client means the target cluster this CR named is no longer
-// registered. Its MariaDB CRs cannot be reached, so they are left behind (the
-// remote-ownership gap #837 tracks) and the finalizer is released anyway:
-// holding it would only strand the CR in Terminating.
+// registered. Its MariaDB CRs cannot be reached, so they stay behind on a
+// cluster that has not resolved for the whole abandon window, and the finalizer
+// is released anyway: holding it would only strand the CR in Terminating.
 func (r *GlanceReconciler) reconcileDelete(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(glance, glanceFinalizer) {
 		return ctrl.Result{}, nil
@@ -556,6 +606,16 @@ func (r *GlanceReconciler) reconcileDelete(ctx context.Context, children client.
 	// name/namespace never serves a stale probe keyed on the deleted CR's UID.
 	r.evictHealthProbe(client.ObjectKeyFromObject(glance))
 	return ctrl.Result{}, nil
+}
+
+// reconcileDeleteRemoteChildren deletes everything this Glance projected onto
+// the target cluster it names and releases the remote-children finalizer, as
+// commonmulticluster.SweepRemoteChildren documents. reconcileDelete above
+// deletes the three MariaDB CRs it tracks by name; this pass is what reaches the
+// rest, selected on the ownership labels Claim stamped on them.
+func (r *GlanceReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, glance *glancev1alpha1.Glance) error {
+	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+		glance, glance.Spec.TargetClusterRef, children, glanceRemoteChildKinds)
 }
 
 // updateStatus persists the current status conditions and returns the given
