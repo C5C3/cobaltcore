@@ -1199,7 +1199,7 @@ func (r *KeystoneReconciler) pruneStaleFederationSecrets(ctx context.Context, ch
 	if federationSecretName == "" {
 		retain = 0
 	}
-	return config.PruneImmutableSecrets(ctx, children, keystone, config.PruneOptions{
+	return config.PruneImmutableSecrets(ctx, children, r.Scheme, keystone, config.PruneOptions{
 		BaseName:    federationSecretBaseName(keystone),
 		Namespace:   keystone.Namespace,
 		CurrentName: federationSecretName,

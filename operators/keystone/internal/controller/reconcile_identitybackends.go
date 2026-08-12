@@ -686,7 +686,7 @@ func (r *KeystoneReconciler) pruneStaleDomainsSecrets(ctx context.Context, child
 	if domainsSecretName == "" {
 		retain = 0
 	}
-	return config.PruneImmutableSecrets(ctx, children, keystone, config.PruneOptions{
+	return config.PruneImmutableSecrets(ctx, children, r.Scheme, keystone, config.PruneOptions{
 		BaseName:    domainsSecretBaseName(keystone),
 		Namespace:   keystone.Namespace,
 		CurrentName: domainsSecretName,

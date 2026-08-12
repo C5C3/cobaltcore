@@ -19,6 +19,8 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"github.com/c5c3/forge/internal/common/multicluster"
 )
 
 func rotationScheme(t *testing.T) *runtime.Scheme {
@@ -84,6 +86,97 @@ func TestEnsureStagingSecret_CreatesOwnedEmpty(t *testing.T) {
 	g.Expect(secret.Data).To(gomega.BeNil(), "staging data is owned by the CronJob PATCH, not this call")
 	g.Expect(secret.Labels).To(gomega.HaveKeyWithValue(StagingSecretLabelKey, "fernet-keys"))
 	g.Expect(secret.OwnerReferences).To(gomega.HaveLen(1))
+}
+
+// rotationOwnerLabels are the ownership labels a child of rotationOwner carries
+// on a target cluster.
+func rotationOwnerLabels() map[string]string {
+	return map[string]string{
+		multicluster.OwnerKindLabel:      "ConfigMap",
+		multicluster.OwnerNameLabel:      "keystone",
+		multicluster.OwnerNamespaceLabel: "openstack",
+	}
+}
+
+// TestEnsureStagingSecret_remoteLabelledAndUnowned pins the target-cluster path:
+// the staging Secret keeps the caller's rotation labels and gains the ownership
+// labels on top, and carries no owner reference, because a reference to a CR on
+// another cluster names a UID this one cannot resolve.
+func TestEnsureStagingSecret_remoteLabelledAndUnowned(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := rotationScheme(t)
+	owner := rotationOwner()
+	c := multicluster.Remote(fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build())
+
+	_, err := EnsureStagingSecret(context.Background(), c, s, owner, "keystone-fernet-keys-rotation",
+		map[string]string{StagingSecretLabelKey: "fernet-keys"})
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	fetched := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), apitypes.NamespacedName{Namespace: "openstack", Name: "keystone-fernet-keys-rotation"}, fetched)).To(gomega.Succeed())
+	g.Expect(fetched.Labels).To(gomega.HaveKeyWithValue(StagingSecretLabelKey, "fernet-keys"))
+	for key, value := range rotationOwnerLabels() {
+		g.Expect(fetched.Labels).To(gomega.HaveKeyWithValue(key, value))
+	}
+	g.Expect(fetched.OwnerReferences).To(gomega.BeEmpty(), "a remote child must carry no owner reference")
+}
+
+// TestEnsureStagingSecret_remoteRebuildKeepsOwnershipLabels covers the steady
+// state, where the rebuild of the operator-owned labels meets a live Secret: the
+// ownership labels are the only thing marking it as this owner's child, so
+// dropping them would have the next pass refuse the Secret as somebody else's.
+// A label the operator no longer sets is still dropped.
+func TestEnsureStagingSecret_remoteRebuildKeepsOwnershipLabels(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := rotationScheme(t)
+	owner := rotationOwner()
+
+	live := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      "keystone-fernet-keys-rotation",
+		Namespace: "openstack",
+		UID:       "live-uid",
+		Labels:    rotationOwnerLabels(),
+	}}
+	live.Labels[StagingSecretLabelKey] = "fernet-keys"
+	live.Labels["forge.c5c3.io/retired"] = "yes"
+	c := multicluster.Remote(fake.NewClientBuilder().WithScheme(s).WithObjects(owner, live).Build())
+
+	_, err := EnsureStagingSecret(context.Background(), c, s, owner, "keystone-fernet-keys-rotation",
+		map[string]string{StagingSecretLabelKey: "fernet-keys"})
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	fetched := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), apitypes.NamespacedName{Namespace: "openstack", Name: "keystone-fernet-keys-rotation"}, fetched)).To(gomega.Succeed())
+	g.Expect(fetched.Labels).To(gomega.HaveKeyWithValue(StagingSecretLabelKey, "fernet-keys"))
+	for key, value := range rotationOwnerLabels() {
+		g.Expect(fetched.Labels).To(gomega.HaveKeyWithValue(key, value))
+	}
+	g.Expect(fetched.Labels).NotTo(gomega.HaveKey("forge.c5c3.io/retired"), "the caller's set stays authoritative")
+	g.Expect(fetched.OwnerReferences).To(gomega.BeEmpty())
+}
+
+// TestEnsureRBAC_remoteLabelledAndUnowned pins the same claim for the CronJob's
+// RBAC: on a target cluster the ServiceAccount and its Role are labelled rather
+// than referenced.
+func TestEnsureRBAC_remoteLabelledAndUnowned(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := rotationScheme(t)
+	owner := rotationOwner()
+	c := multicluster.Remote(fake.NewClientBuilder().WithScheme(s).WithObjects(owner).Build())
+
+	g.Expect(EnsureRBAC(context.Background(), c, s, owner, "keystone-fernet-rotate", "keystone-fernet-keys", "keystone-fernet-keys-rotation")).To(gomega.Succeed())
+
+	key := apitypes.NamespacedName{Namespace: "openstack", Name: "keystone-fernet-rotate"}
+	sa := &corev1.ServiceAccount{}
+	g.Expect(c.Get(context.Background(), key, sa)).To(gomega.Succeed())
+	g.Expect(sa.Labels).To(gomega.Equal(rotationOwnerLabels()))
+	g.Expect(sa.OwnerReferences).To(gomega.BeEmpty())
+
+	role := &rbacv1.Role{}
+	g.Expect(c.Get(context.Background(), key, role)).To(gomega.Succeed())
+	g.Expect(role.Labels).To(gomega.Equal(rotationOwnerLabels()))
+	g.Expect(role.OwnerReferences).To(gomega.BeEmpty())
+	g.Expect(role.Rules).To(gomega.HaveLen(2), "the claim must not disturb the least-privilege rules")
 }
 
 func TestEnsureRBAC_LeastPrivilege(t *testing.T) {

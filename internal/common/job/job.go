@@ -18,9 +18,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/forge/internal/common/apply"
+	"github.com/c5c3/forge/internal/common/multicluster"
 )
 
 // PodSpecHashAnnotation stores a Job's re-run gate value at creation time. By
@@ -109,6 +109,26 @@ func RunJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Sc
 		return false, nil, fmt.Errorf("getting Job %s/%s: %w", job.Namespace, job.Name, err)
 	}
 
+	// The same claim the create branch makes, on the Job that is actually there.
+	// Everything below reads it as this owner's own — a completion reported as
+	// the owner's, a stale re-run key answered by deleting it — so the claim is
+	// what licenses that. On a target cluster it is a strict test: a live Job of
+	// this name carrying neither an owner reference nor the ownership labels is
+	// somebody else's and is refused rather than adopted and deleted, which is the
+	// only guard there, since no cluster-crossing owner reference exists to be one.
+	// Locally the claim keeps exactly the reach SetControllerReference always had:
+	// it refuses a Job another controller owns and adopts one carrying no
+	// controller reference at all. Narrowing that would change how a
+	// single-cluster install treats a Job of this name it did not create — a
+	// decision about existing deployments rather than about where children live,
+	// so moving ownership does not make it here.
+	//
+	// It is claimed on a copy: the claim exists to answer the ownership question,
+	// and the Job the caller observes must stay what the API server returned.
+	if err := multicluster.Claim(c, scheme, owner, existing.DeepCopy()); err != nil {
+		return false, nil, err
+	}
+
 	if isJobFailed(existing) {
 		// A permanently failed Job (exceeded backoffLimit) is re-run when its
 		// re-run key changes — the desired spec was fixed since the failure
@@ -153,7 +173,7 @@ func RunJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Sc
 // AlreadyExists (old Job still terminating).
 func createJobWithRerunKey(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, job *batchv1.Job, rerunKey string) error {
 	toCreate := job.DeepCopy()
-	if err := controllerutil.SetControllerReference(owner, toCreate, scheme); err != nil {
+	if err := multicluster.Claim(c, scheme, owner, toCreate); err != nil {
 		return fmt.Errorf("setting owner reference on Job %s/%s: %w", job.Namespace, job.Name, err)
 	}
 	if toCreate.Annotations == nil {

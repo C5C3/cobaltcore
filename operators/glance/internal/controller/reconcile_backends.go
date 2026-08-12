@@ -194,7 +194,7 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 	if err != nil {
 		return ctrl.Result{}, backendsProjection{}, fmt.Errorf("creating backends Secret: %w", err)
 	}
-	if err := config.PruneImmutableSecrets(ctx, children, glance, config.PruneOptions{
+	if err := config.PruneImmutableSecrets(ctx, children, r.Scheme, glance, config.PruneOptions{
 		BaseName:    glance.Name + "-backends",
 		Namespace:   glance.Namespace,
 		CurrentName: secretName,

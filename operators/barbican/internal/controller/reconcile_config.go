@@ -145,7 +145,7 @@ func (r *BarbicanReconciler) reconcileConfig(ctx context.Context, children clien
 		markConfigFailed(barbican, err)
 		return ctrl.Result{}, "", fmt.Errorf("creating config Secret: %w", err)
 	}
-	if err := config.PruneImmutableSecrets(ctx, children, barbican, config.PruneOptions{
+	if err := config.PruneImmutableSecrets(ctx, children, r.Scheme, barbican, config.PruneOptions{
 		BaseName:    barbican.Name + "-config",
 		Namespace:   barbican.Namespace,
 		CurrentName: secretName,

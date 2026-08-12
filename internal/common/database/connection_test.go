@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
@@ -186,6 +187,34 @@ func TestReconcileConnectionSecret_createsStaticSecret(t *testing.T) {
 	g.Expect(conn).To(ContainSubstring("charset=utf8"))
 	g.Expect(derived.OwnerReferences).To(HaveLen(1))
 	g.Expect(derived.OwnerReferences[0].Name).To(Equal("keystone-owner"))
+}
+
+// TestReconcileConnectionSecret_remoteCreatesLabelledAndUnowned pins the
+// target-cluster path: the derived Secret is stamped with the ownership labels
+// and carries no owner reference, because a reference to a CR on another cluster
+// names a UID this one cannot resolve.
+func TestReconcileConnectionSecret_remoteCreatesLabelledAndUnowned(t *testing.T) {
+	g := NewWithT(t)
+	s := connScheme()
+	owner := connOwner()
+	var conds []metav1.Condition
+	c := multicluster.Remote(fake.NewClientBuilder().WithScheme(s).
+		WithObjects(owner, upstreamSecret(map[string][]byte{"password": []byte("s3cr3t")})).
+		Build())
+
+	_, digest, err := ReconcileConnectionSecret(context.Background(), connParams(c, s, owner, staticDBSpec(), &conds))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(digest).NotTo(BeEmpty())
+
+	derived := &corev1.Secret{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "keystone-db-connection", Namespace: connNamespace}, derived)).To(Succeed())
+	g.Expect(derived.Data).To(HaveLen(1))
+	g.Expect(derived.Labels).To(Equal(map[string]string{
+		multicluster.OwnerKindLabel:      "ConfigMap",
+		multicluster.OwnerNameLabel:      "keystone-owner",
+		multicluster.OwnerNamespaceLabel: connNamespace,
+	}))
+	g.Expect(derived.OwnerReferences).To(BeEmpty(), "a remote child must carry no owner reference")
 }
 
 func TestReconcileConnectionSecret_dynamicUsesSecretUsername(t *testing.T) {

@@ -109,7 +109,7 @@ func (r *PlacementReconciler) reconcileConfig(ctx context.Context, children clie
 		markConfigFailed(placement, err)
 		return ctrl.Result{}, "", fmt.Errorf("creating config ConfigMap: %w", err)
 	}
-	if err := config.PruneImmutableConfigMaps(ctx, children, placement, config.PruneOptions{
+	if err := config.PruneImmutableConfigMaps(ctx, children, r.Scheme, placement, config.PruneOptions{
 		BaseName:    placement.Name + "-config",
 		Namespace:   placement.Namespace,
 		CurrentName: configMapName,

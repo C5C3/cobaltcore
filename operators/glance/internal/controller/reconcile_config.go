@@ -178,7 +178,7 @@ func (r *GlanceReconciler) reconcileConfig(ctx context.Context, children client.
 		markConfigFailed(glance, err)
 		return ctrl.Result{}, configArtifacts{}, fmt.Errorf("creating config ConfigMap: %w", err)
 	}
-	if err := config.PruneImmutableConfigMaps(ctx, children, glance, config.PruneOptions{
+	if err := config.PruneImmutableConfigMaps(ctx, children, r.Scheme, glance, config.PruneOptions{
 		BaseName:    glance.Name + "-config",
 		Namespace:   glance.Namespace,
 		CurrentName: configMapName,

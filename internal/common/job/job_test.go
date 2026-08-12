@@ -20,6 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	"github.com/c5c3/forge/internal/common/multicluster"
 )
 
 func newScheme() *runtime.Scheme {
@@ -190,6 +192,106 @@ func TestRunJob_creates(t *testing.T) {
 	g.Expect(created.OwnerReferences).To(HaveLen(1))
 	g.Expect(created.OwnerReferences[0].Name).To(Equal("test-owner"))
 	g.Expect(created.Annotations[PodSpecHashAnnotation]).NotTo(BeEmpty(), "created Job should carry pod-spec hash annotation")
+}
+
+// testOwnerLabels are the ownership labels a child of testOwner carries on a
+// target cluster.
+func testOwnerLabels() map[string]string {
+	return map[string]string{
+		multicluster.OwnerKindLabel:      "ConfigMap",
+		multicluster.OwnerNameLabel:      "test-owner",
+		multicluster.OwnerNamespaceLabel: "default",
+	}
+}
+
+// TestRunJob_remoteCreatesLabelledAndUnowned pins the target-cluster path: the
+// Job is stamped with the ownership labels and carries no owner reference,
+// because a reference to a CR on another cluster names a UID this one cannot
+// resolve.
+func TestRunJob_remoteCreatesLabelledAndUnowned(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	c := multicluster.Remote(fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner).
+		Build())
+
+	ready, _, err := RunJob(context.Background(), c, s, owner, testJob())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse())
+
+	created := &batchv1.Job{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-job", Namespace: "default"}, created)).To(Succeed())
+	g.Expect(created.Labels).To(Equal(testOwnerLabels()))
+	g.Expect(created.OwnerReferences).To(BeEmpty(), "a remote child must carry no owner reference")
+	g.Expect(created.Annotations[PodSpecHashAnnotation]).NotTo(BeEmpty())
+	g.Expect(created.Spec.Template.Labels).To(BeEmpty(), "the pod template's own labels must stay untouched")
+}
+
+// TestRunJob_remoteRecreatesStaleLabelledAndUnowned covers the recreate path on
+// a target cluster: the replacement of a completed Job whose re-run key changed
+// goes through the same create, so it must be labelled and unowned too.
+func TestRunJob_remoteRecreatesStaleLabelledAndUnowned(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	// A completed remote Job: labelled, unowned, and carrying a stale re-run key.
+	stale := testCompletedJobWithHash()
+	stale.Labels = testOwnerLabels()
+	stale.Annotations[PodSpecHashAnnotation] = "stale-key"
+
+	c := multicluster.Remote(fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, stale).
+		WithStatusSubresource(stale).
+		Build())
+
+	ready, observed, err := RunJob(context.Background(), c, s, owner, testJob())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse(), "the stale Job is recreated, so this pass reports it unfinished")
+	g.Expect(observed).NotTo(BeNil())
+
+	recreated := &batchv1.Job{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-job", Namespace: "default"}, recreated)).To(Succeed())
+	g.Expect(recreated.Annotations[PodSpecHashAnnotation]).NotTo(Equal("stale-key"))
+	g.Expect(recreated.Labels).To(Equal(testOwnerLabels()))
+	g.Expect(recreated.OwnerReferences).To(BeEmpty())
+}
+
+// TestRunJob_remoteRefusesAForeignJob covers the Job that is already there. A
+// target cluster may already run an OpenStack deployment of its own, and its
+// completed bootstrap or db-sync Job carries no re-run key at all — so the
+// stale-key branch would read it as this owner's, delete it with its pods and
+// its logs, and run its own in place of it.
+func TestRunJob_remoteRefusesAForeignJob(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := newScheme()
+	owner := testOwner()
+
+	foreign := testCompletedJobWithHash()
+	// Nobody else stamps the re-run key, and the API server assigned the UID
+	// that makes this Job live rather than freshly built.
+	foreign.Annotations = nil
+	foreign.UID = "foreign-job-uid"
+
+	c := multicluster.Remote(fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, foreign).
+		WithStatusSubresource(foreign).
+		Build())
+
+	ready, _, err := RunJob(context.Background(), c, s, owner, testJob())
+
+	g.Expect(err).To(MatchError(ContainSubstring("refusing to adopt pre-existing")))
+	g.Expect(ready).To(BeFalse())
+
+	survivor := &batchv1.Job{}
+	g.Expect(c.Get(context.Background(), client.ObjectKey{Name: "test-job", Namespace: "default"}, survivor)).To(Succeed())
+	g.Expect(string(survivor.UID)).To(Equal("foreign-job-uid"), "the foreign Job must be the one still standing")
+	g.Expect(survivor.Labels).To(BeEmpty(), "a refused Job must not be marked for this owner's teardown")
 }
 
 func TestRunJob_existingIncomplete(t *testing.T) {

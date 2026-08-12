@@ -14,7 +14,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+
+	"github.com/c5c3/forge/internal/common/multicluster"
 )
 
 // EnsureCertificate creates a cert-manager Certificate if it does not exist or
@@ -26,7 +27,7 @@ func EnsureCertificate(ctx context.Context, c client.Client, scheme *runtime.Sch
 	err := c.Get(ctx, client.ObjectKeyFromObject(cert), existing)
 
 	if apierrors.IsNotFound(err) {
-		if err := controllerutil.SetControllerReference(owner, cert, scheme); err != nil {
+		if err := multicluster.Claim(c, scheme, owner, cert); err != nil {
 			return false, fmt.Errorf("setting owner reference on Certificate %s/%s: %w", cert.Namespace, cert.Name, err)
 		}
 		if err := c.Create(ctx, cert); err != nil {
@@ -38,7 +39,28 @@ func EnsureCertificate(ctx context.Context, c client.Client, scheme *runtime.Sch
 		return false, fmt.Errorf("getting Certificate %s/%s: %w", cert.Namespace, cert.Name, err)
 	}
 
-	if !apiequality.Semantic.DeepEqual(existing.Spec, cert.Spec) {
+	// The same claim the create branch makes, on the object that is actually
+	// about to be rewritten. A Certificate of this name somebody else provisioned
+	// is refused rather than adopted: its spec would be replaced and reissued
+	// under the operator's issuer, dnsNames and secretName, breaking the workload
+	// that depends on it. On a target cluster the claim is also what stamps the
+	// ownership labels, so a Certificate this operator does own is picked up by
+	// the teardown sweep.
+	before := existing.DeepCopy()
+	if err := multicluster.Claim(c, scheme, owner, existing); err != nil {
+		return false, err
+	}
+
+	// The claim mutates metadata in place, and the Update below is the only thing
+	// that carries those mutations to the cluster. A Certificate written before
+	// ownership moved to the labels still has its spec, so a spec-only gate would
+	// recompute the claim and throw it away on every pass: the dangling controller
+	// reference would stay on the object, and the target's garbage collector
+	// resolves it to a missing owner and collects the Certificate as an orphan the
+	// moment the owner's kind is registered there.
+	claimed := !apiequality.Semantic.DeepEqual(before.ObjectMeta, existing.ObjectMeta)
+
+	if claimed || !apiequality.Semantic.DeepEqual(existing.Spec, cert.Spec) {
 		existing.Spec = cert.Spec
 		if err := c.Update(ctx, existing); err != nil {
 			return false, fmt.Errorf("updating Certificate %s/%s: %w", cert.Namespace, cert.Name, err)
