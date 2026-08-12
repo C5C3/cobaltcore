@@ -19,11 +19,11 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/config"
 	"github.com/c5c3/forge/internal/common/job"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/secrets"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -211,7 +211,7 @@ func (r *KeystoneReconciler) createKeysSecret(ctx context.Context, children clie
 		Data: data,
 	}
 
-	if err := controllerutil.SetControllerReference(keystone, secret, r.Scheme); err != nil {
+	if err := commonmulticluster.Claim(children, r.Scheme, keystone, secret); err != nil {
 		return fmt.Errorf("setting owner reference on keys secret %s: %w", secretName, err)
 	}
 

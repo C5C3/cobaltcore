@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/naming"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -162,6 +163,104 @@ func TestEnsureAdminPasswordPushSourceSecret_CreatesOwnedEmptySecret(t *testing.
 	g.Expect(sec.Data).To(BeEmpty())
 	g.Expect(metav1.GetControllerOf(&sec)).NotTo(BeNil())
 	g.Expect(metav1.GetControllerOf(&sec).UID).To(Equal(ks.UID))
+}
+
+// pwRotationOwnerLabels are the ownership labels a child of pwRotationTestKeystone()
+// carries on a target cluster.
+func pwRotationOwnerLabels() map[string]string {
+	return map[string]string{
+		commonmulticluster.OwnerKindLabel:      "Keystone",
+		commonmulticluster.OwnerNameLabel:      "test-keystone",
+		commonmulticluster.OwnerNamespaceLabel: "default",
+	}
+}
+
+// TestEnsureAdminPasswordPushSourceSecret_RemoteChildLabelledAndUnowned pins the
+// target-cluster path of the push-source Secret: it is stamped with the
+// ownership labels and carries no owner reference, because a reference to a CR
+// on another cluster names a UID that cluster cannot resolve.
+func TestEnsureAdminPasswordPushSourceSecret_RemoteChildLabelledAndUnowned(t *testing.T) {
+	g := NewWithT(t)
+	ks := pwRotationTestKeystone()
+	s := pwRotationTestScheme()
+	children := commonmulticluster.Remote(fake.NewClientBuilder().WithScheme(s).WithObjects(ks).Build())
+	r := &KeystoneReconciler{Client: children, Scheme: s, Recorder: record.NewFakeRecorder(20)}
+
+	_, err := r.ensureAdminPasswordPushSourceSecret(context.Background(), children, ks)
+	g.Expect(err).To(Succeed())
+
+	var sec corev1.Secret
+	g.Expect(children.Get(context.Background(), types.NamespacedName{
+		Name: adminPasswordNextSecretName(ks), Namespace: ks.Namespace,
+	}, &sec)).To(Succeed())
+	g.Expect(sec.OwnerReferences).To(BeEmpty(), "a remote child must carry no owner reference")
+	for key, value := range pwRotationOwnerLabels() {
+		g.Expect(sec.Labels).To(HaveKeyWithValue(key, value))
+	}
+	g.Expect(sec.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(sec.Data).To(BeEmpty(), "applyAdminPasswordRotation owns .data")
+}
+
+// TestEnsureAdminPasswordPushSourceSecret_RemoteRebuildKeepsOwnershipLabels
+// covers the steady state, where the rebuild of the operator-owned labels meets
+// a live Secret. The ownership labels are the only mark identifying it as the
+// CR's child there, so a rebuild that dropped them would hand the claim an
+// object it no longer recognizes and have it refuse the Secret it wrote itself
+// one reconcile earlier. A label the operator no longer sets is still dropped.
+func TestEnsureAdminPasswordPushSourceSecret_RemoteRebuildKeepsOwnershipLabels(t *testing.T) {
+	g := NewWithT(t)
+	ks := pwRotationTestKeystone()
+	s := pwRotationTestScheme()
+
+	live := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      adminPasswordNextSecretName(ks),
+		Namespace: ks.Namespace,
+		UID:       "live-uid",
+		Labels:    pwRotationOwnerLabels(),
+	}}
+	live.Labels["forge.c5c3.io/retired"] = "yes"
+	children := commonmulticluster.Remote(fake.NewClientBuilder().WithScheme(s).WithObjects(ks, live).Build())
+	r := &KeystoneReconciler{Client: children, Scheme: s, Recorder: record.NewFakeRecorder(20)}
+
+	_, err := r.ensureAdminPasswordPushSourceSecret(context.Background(), children, ks)
+	g.Expect(err).To(Succeed())
+
+	var sec corev1.Secret
+	g.Expect(children.Get(context.Background(), types.NamespacedName{
+		Name: adminPasswordNextSecretName(ks), Namespace: ks.Namespace,
+	}, &sec)).To(Succeed())
+	g.Expect(sec.OwnerReferences).To(BeEmpty())
+	for key, value := range pwRotationOwnerLabels() {
+		g.Expect(sec.Labels).To(HaveKeyWithValue(key, value))
+	}
+	g.Expect(sec.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
+	g.Expect(sec.Labels).NotTo(HaveKey("forge.c5c3.io/retired"), "the operator's label set stays authoritative")
+}
+
+// TestEnsureAdminPasswordPushSourceSecret_RemoteRefusesForeignSecret covers the
+// collision the claim exists for: a Secret of the same name that nobody
+// provisioned as this CR's child is left alone instead of being adopted, since
+// adopting it would overwrite it and delete it at teardown.
+func TestEnsureAdminPasswordPushSourceSecret_RemoteRefusesForeignSecret(t *testing.T) {
+	g := NewWithT(t)
+	ks := pwRotationTestKeystone()
+	s := pwRotationTestScheme()
+	foreign := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      adminPasswordNextSecretName(ks),
+		Namespace: ks.Namespace,
+		UID:       "foreign-uid",
+	}}
+	children := commonmulticluster.Remote(fake.NewClientBuilder().WithScheme(s).WithObjects(ks, foreign).Build())
+	r := &KeystoneReconciler{Client: children, Scheme: s, Recorder: record.NewFakeRecorder(20)}
+
+	_, err := r.ensureAdminPasswordPushSourceSecret(context.Background(), children, ks)
+	g.Expect(err).To(MatchError(ContainSubstring("refusing to adopt pre-existing Secret")))
+
+	var sec corev1.Secret
+	g.Expect(children.Get(context.Background(), types.NamespacedName{
+		Name: adminPasswordNextSecretName(ks), Namespace: ks.Namespace,
+	}, &sec)).To(Succeed())
+	g.Expect(sec.Labels).To(BeEmpty(), "the refused Secret must not be stamped")
 }
 
 func TestEnsureStagingSecret_AdminPasswordLabel(t *testing.T) {

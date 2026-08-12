@@ -25,8 +25,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/secrets"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -242,7 +242,7 @@ func (r *KeystoneReconciler) ensureSAMLSPKeypair(ctx context.Context, children c
 		Type: corev1.SecretTypeTLS,
 		Data: map[string][]byte{"tls.crt": crt, "tls.key": k},
 	}
-	if err := controllerutil.SetControllerReference(keystone, &secret, r.Scheme); err != nil {
+	if err := commonmulticluster.Claim(children, r.Scheme, keystone, &secret); err != nil {
 		return nil, nil, nil, fmt.Errorf("setting owner reference on SP keypair Secret: %w", err)
 	}
 	if err := children.Create(ctx, &secret); err != nil {
@@ -528,7 +528,7 @@ func (r *KeystoneReconciler) ensureSAMLSPMetadataSecret(ctx context.Context, chi
 			},
 			Data: desired,
 		}
-		if err := controllerutil.SetControllerReference(keystone, &secret, r.Scheme); err != nil {
+		if err := commonmulticluster.Claim(children, r.Scheme, keystone, &secret); err != nil {
 			return fmt.Errorf("setting owner reference on SP metadata Secret: %w", err)
 		}
 		if err := children.Create(ctx, &secret); err != nil {

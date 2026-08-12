@@ -24,10 +24,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/config"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -672,9 +672,16 @@ func (r *KeystoneReconciler) lastKnownGoodProviderMetadata(ctx context.Context, 
 
 // newestFederationSecret returns the newest content-hashed federation Secret
 // owned by keystone (name tie-break for same-second creations), or nil when
-// none exists. Shared by the OIDC and SAML last-known-good metadata fallbacks so
-// a transient IdP metadata-endpoint outage on a cache miss does not tear
-// federation down.
+// none exists. Ownership is read from the controller reference locally and from
+// the ownership labels on a target cluster, so the fallback also finds the copy
+// a remote projection wrote. Shared by the OIDC and SAML last-known-good
+// metadata fallbacks so a transient IdP metadata-endpoint outage on a cache miss
+// does not tear federation down.
+//
+// Every lookup failure yields nil, the same answer as "no copy exists". The
+// callers turn a nil into the original errProviderMetadataUnavailable, which
+// keeps the fault per-backend; surfacing a lookup error instead would fail the
+// whole projection and take the healthy siblings down with it.
 func (r *KeystoneReconciler) newestFederationSecret(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) *corev1.Secret {
 	baseName := federationSecretBaseName(keystone)
 	var list corev1.SecretList
@@ -689,7 +696,11 @@ func (r *KeystoneReconciler) newestFederationSecret(ctx context.Context, childre
 		if !strings.HasPrefix(s.Name, prefix) {
 			continue
 		}
-		if ref := metav1.GetControllerOf(s); ref == nil || ref.UID != keystone.UID {
+		mine, err := commonmulticluster.Controls(r.Scheme, keystone, s)
+		if err != nil {
+			return nil
+		}
+		if !mine {
 			continue
 		}
 		if newest == nil {
@@ -1082,7 +1093,7 @@ func (r *KeystoneReconciler) ensureOIDCCryptoPassphrase(ctx context.Context, chi
 		},
 		Data: map[string][]byte{"passphrase": []byte(passphrase)},
 	}
-	if err := controllerutil.SetControllerReference(keystone, &secret, r.Scheme); err != nil {
+	if err := commonmulticluster.Claim(children, r.Scheme, keystone, &secret); err != nil {
 		return "", fmt.Errorf("setting owner reference on crypto passphrase Secret: %w", err)
 	}
 	if err := children.Create(ctx, &secret); err != nil {

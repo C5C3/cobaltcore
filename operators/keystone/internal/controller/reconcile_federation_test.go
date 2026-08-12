@@ -12,13 +12,17 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/config"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -615,6 +619,64 @@ func TestRenderOIDCBackend_DiscoveryModeEgressPortsFromDocument(t *testing.T) {
 	// 443 from the issuer + authorization_endpoint, plus the endpoint-specific
 	// ports the sidecar would otherwise be blocked from reaching.
 	g.Expect(render.egressPorts).To(ConsistOf(int32(443), int32(9443), int32(7443)))
+}
+
+// testFederationSecret returns a content-hashed federation Secret candidate for
+// the newestFederationSecret tests, created at the given offset from a fixed
+// base time so the newest-wins tie-break is deterministic.
+func testFederationSecret(nameSuffix string, ageOffset time.Duration, labels map[string]string) *corev1.Secret {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	labels[config.ConfigBaseLabelKey] = "test-keystone-federation"
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "test-keystone-federation-" + nameSuffix,
+			Namespace:         "default",
+			Labels:            labels,
+			CreationTimestamp: metav1.Time{Time: base.Add(ageOffset)},
+		},
+	}
+}
+
+// TestNewestFederationSecret_OwnershipFilter pins which candidates the
+// last-known-good fallback may read from: the locally referenced Secret, the
+// remote one marked by the ownership labels alone, and never a Secret that is
+// nobody's child — even when that one is the newest of the three.
+func TestNewestFederationSecret_OwnershipFilter(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testFederationKeystone()
+
+	referenced := testFederationSecret("aaa", 0, map[string]string{})
+	referenced.OwnerReferences = []metav1.OwnerReference{{
+		APIVersion: keystonev1alpha1.GroupVersion.String(),
+		Kind:       "Keystone",
+		Name:       ks.Name,
+		UID:        ks.UID,
+		Controller: ptr.To(true),
+	}}
+	labelled := testFederationSecret("bbb", time.Hour, map[string]string{
+		commonmulticluster.OwnerKindLabel:      "Keystone",
+		commonmulticluster.OwnerNameLabel:      ks.Name,
+		commonmulticluster.OwnerNamespaceLabel: ks.Namespace,
+	})
+	foreign := testFederationSecret("ccc", 2*time.Hour, map[string]string{})
+
+	r := newTestReconciler(referenced, labelled, foreign)
+
+	newest := r.newestFederationSecret(context.Background(), r.Client, ks)
+	g.Expect(newest).NotTo(BeNil())
+	g.Expect(newest.Name).To(Equal(labelled.Name),
+		"the label-owned Secret is a candidate and is newer than the referenced one; the foreign Secret is not a candidate at all")
+}
+
+// TestNewestFederationSecret_ForeignOnlyYieldsNil covers the empty result: a
+// Secret carrying neither an owner reference nor the ownership labels leaves the
+// fallback with nothing to reuse.
+func TestNewestFederationSecret_ForeignOnlyYieldsNil(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testFederationKeystone()
+	r := newTestReconciler(testFederationSecret("aaa", 0, map[string]string{}))
+
+	g.Expect(r.newestFederationSecret(context.Background(), r.Client, ks)).To(BeNil())
 }
 
 // TestProviderMetadataEgressPorts covers the discovery-document port extraction:
