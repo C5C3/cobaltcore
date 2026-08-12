@@ -62,13 +62,19 @@ sub-conditions are `True`, and `False` (`NotAllReady`) otherwise.
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
-| `SecretsReady` | `SecretsAvailable` | `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
+| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
 | `DatabaseReady` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `DBSyncInProgress`, `DBSyncFailed`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `ImageReleaseMismatch` |
 | `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment` |
 | `PlacementAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | — (errors propagate) |
 | `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled` |
+
+`TargetClusterUnavailable` is set ahead of every sub-reconciler, when
+`spec.targetClusterRef` names a target cluster that is not registered or no
+longer resolves. The message carries the resolver's error, the CR requeues after
+15 seconds and acquires no finalizer, and nothing is created on any cluster. See
+[Target Clusters](../target-clusters.md).
 
 One further condition is set and never aggregated. `ExtraConfigHealthy` reports
 whether `spec.extraConfig` overrides an operator-owned key: `True` with reason
@@ -187,7 +193,11 @@ image the first one cannot read.
   Every other owned resource is namespace-scoped with a controller owner
   reference, so Kubernetes garbage collection reclaims it. Releasing the
   finalizer also drops the CR's metric series and evicts its health-probe cache
-  entry.
+  entry. A CR whose target cluster was deregistered in the meantime cannot
+  reach any of it: the finalizer is released against no cleanup at all, a
+  `RemoteChildrenAbandoned` Warning names what stays behind, and the CR
+  leaves etcd instead of hanging in Terminating. See
+  [Target Clusters](../target-clusters.md).
 
 ## Watches
 

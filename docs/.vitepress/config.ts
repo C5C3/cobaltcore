@@ -214,6 +214,7 @@ export default defineConfig({
               { text: 'OpenBao Bootstrap', link: '/reference/infrastructure/openbao-bootstrap' },
             ],
           },
+          { text: 'Target Clusters', link: '/reference/target-clusters' },
         ],
       },
       {

@@ -57,7 +57,7 @@ nine sub-conditions are `True`; otherwise `False` (`NotAllReady`).
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
-| `SecretsReady` | `SecretsAvailable` | `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
+| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
 | `BackendsReady` | `AllBackendsProjected` | `WaitingForBackends`, `NoDefaultBackend` |
 | `DatabaseReady` | `DatabaseSynced` | `ClusterNotReady`, `WaitingForDatabase`, `DBSyncFailed`, `DBSyncInProgress`, `WaitingForBackends`, `ImageReleaseMismatch`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `UpgradeTargetChanged`, `ExpandInProgress`, `MigrateInProgress`, `UpgradeRollingUpdate`, `ContractInProgress`, `ExpandFailed`, `MigrateFailed`, `ContractFailed` |
 | `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment`, `WaitingForBackends` |
@@ -66,6 +66,13 @@ nine sub-conditions are `True`; otherwise `False` (`NotAllReady`).
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | — (errors propagate) |
 | `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled` |
 | `DBPurgeReady` | `DBPurgeScheduled`, `DBPurgeSuspended` | `DBPurgeJobFailed` |
+
+`TargetClusterUnavailable` is set ahead of every sub-reconciler, when
+`spec.targetClusterRef` names a target cluster that is not registered or no
+longer resolves. The message carries the resolver's error, the CR requeues after
+15 seconds and acquires no finalizer, and nothing is created on any cluster. An
+attached `GlanceBackend` reports the same reason on `CredentialsReady`. See
+[Target Clusters](../target-clusters.md).
 
 Both `DatabaseReady` and `DeploymentReady` carry a `WaitingForBackends` reason:
 the schema cannot be `db sync`-ed and the Deployment cannot be created until a
@@ -203,7 +210,12 @@ across a planned upgrade to avoid the noise.
   disappears, emitting `FinalizingDatabase` while cleanup remains and
   `DatabaseFinalized` when the finalizer is released. Every other owned resource
   is namespace-scoped with a controller owner reference, so Kubernetes garbage
-  collection reclaims it. The `GlanceBackend` controller has no finalizer: the
+  collection reclaims it. A CR whose target cluster was deregistered in the meantime cannot
+  reach any of it: the finalizer is released against no cleanup at all, a
+  `RemoteChildrenAbandoned` Warning names what stays behind, and the CR
+  leaves etcd instead of hanging in Terminating. See
+  [Target Clusters](../target-clusters.md).
+  The `GlanceBackend` controller has no finalizer: the
   operator provisions no S3 resources, so there is nothing to clean up remotely.
   Deletion still **de-registers the store** — the bucket and its objects are
   external state, and image location rows referencing that store id are left

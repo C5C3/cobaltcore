@@ -40,13 +40,19 @@ all seven sub-conditions are `True`:
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
-| `SecretsReady` | `SecretsAvailable` | `SecretStoreNotReady`, `WaitingForSecretKey` |
+| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForSecretKey` |
 | `ConfigReady` | `ConfigRendered` | `ConfigError` |
 | `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment` |
 | `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled` |
 | `HorizonAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | — (errors propagate) |
+
+`TargetClusterUnavailable` is set ahead of every sub-reconciler, when
+`spec.targetClusterRef` names a target cluster that is not registered or no
+longer resolves. The message carries the resolver's error, the CR requeues after
+15 seconds, and nothing is created on any cluster. See
+[Target Clusters](../target-clusters.md).
 
 ## Requeue semantics
 
@@ -64,7 +70,11 @@ all seven sub-conditions are `True`:
   environment variable, so a restart is required for it to take effect.
 - **Deletion needs no finalizer**: every owned resource is namespace-scoped
   and carries a controller owner reference, so Kubernetes garbage collection
-  reclaims the whole set when the CR is deleted.
+  reclaims the whole set when the CR is deleted. That holds on the management
+  cluster. A projection on a target cluster carries an owner reference that
+  cluster cannot resolve, so deleting a Horizon with a `targetClusterRef` leaves
+  its Deployment, Service, HTTPRoute, and Secret running there. See
+  [Target Clusters](../target-clusters.md).
 
 ## Watches
 
