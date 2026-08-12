@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -46,6 +47,7 @@ import (
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonenvtest "github.com/c5c3/forge/internal/common/testutil/envtest"
@@ -59,8 +61,10 @@ import (
 // management cluster with a second envtest environment registered as target
 // cluster, and walks the target-cluster lifecycle: registration, a CR that
 // projects its children onto the target, a CR that keeps them local, a CR
-// naming an unregistered cluster, deregistration under a running CR, and a
-// registration Secret the provider cannot parse.
+// naming an unregistered cluster, deregistration under a running CR, a
+// registration Secret the provider cannot parse, re-registration of the cluster
+// that was deregistered, and the deletion of a targeted CR sweeping every child
+// it projected off the target.
 func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -83,6 +87,11 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 		unknownKeystone  = "mc-unknown-keystone"
 		brokenNamespace  = "mc-broken"
 		brokenKeystone   = "mc-broken-keystone"
+
+		// The teardown CR gets its own namespace on both clusters so its sweep
+		// is observed against a namespace no earlier subtest wrote to.
+		teardownNamespace = "mc-teardown"
+		teardownKeystone  = "mc-teardown-keystone"
 
 		// engageTimeout bounds cluster engagement: the provider has to parse
 		// the kubeconfig, build a cluster, and sync its cache before
@@ -233,6 +242,48 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 		g.Expect(simulators.SimulateMariaDBReady(ctx, targetClient, mariadbKey, 1)).
 			To(Succeed(), "simulate the MariaDB cluster ready")
 
+		// A Service as the operator wrote it before ownership moved to the
+		// labels: claimed by a controller owner reference to a Keystone UID this
+		// cluster cannot resolve. It is seeded before the CR so the reconciler
+		// meets it on its first pass and has to heal it. Two properties of the
+		// seed are load-bearing, and the test would prove nothing without
+		// either:
+		//
+		//   - The ownership labels. The adoption pre-check refuses a live object
+		//     it does not already own, because adopting one would overwrite a
+		//     stranger's spec and delete it at teardown. Unlabelled, this
+		//     Service would make the reconciler report that refusal instead of
+		//     applying over it.
+		//   - The field manager. Server-Side Apply drops a field only when the
+		//     manager that owns it stops asserting it. Written under any manager
+		//     other than the operator's own, the dangling reference would
+		//     survive every apply the operator makes.
+		staleService := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      targetKeystone,
+				Namespace: targetNamespace,
+				Labels: map[string]string{
+					commonmulticluster.OwnerKindLabel:      "Keystone",
+					commonmulticluster.OwnerNameLabel:      targetKeystone,
+					commonmulticluster.OwnerNamespaceLabel: targetNamespace,
+				},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: keystonev1alpha1.GroupVersion.String(),
+					Kind:       "Keystone",
+					Name:       targetKeystone,
+					// A UID nothing on either cluster carries, which is what a
+					// reference across a cluster boundary always degenerates to.
+					UID:        types.UID("11111111-2222-3333-4444-555555555555"),
+					Controller: ptr.To(true),
+				}},
+			},
+			Spec: corev1.ServiceSpec{
+				Ports: []corev1.ServicePort{{Port: 5000, Protocol: corev1.ProtocolTCP}},
+			},
+		}
+		g.Expect(apply.EnsureUnownedObject(ctx, targetClient, targetScheme, staleService, apply.FieldManager)).
+			To(Succeed(), "seed the stale Service under the operator's own field manager")
+
 		ks := integrationManagedKeystone(targetKeystone, targetNamespace)
 		ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetClusterName}
 		g.Expect(mgmtClient.Create(ctx, ks)).To(Succeed())
@@ -268,11 +319,28 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 		// The workload itself.
 		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &appsv1.Deployment{}, "Deployment", eventuallyLongTimeout)
 		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &corev1.Service{}, "Service", eventuallyTimeout)
-		multiclusterEventuallyExists(t, ctx, targetClient,
-			client.ObjectKey{Namespace: targetNamespace, Name: fmt.Sprintf("%s-fernet-keys", targetKeystone)},
-			&corev1.Secret{}, "fernet-keys Secret", eventuallyTimeout)
-		g.Expect(multiclusterConfigMapNames(t, ctx, targetClient, targetNamespace, targetKeystone+"-config-")).
-			To(HaveLen(1), "expected exactly one rendered config ConfigMap on the target cluster")
+		fernetKey := client.ObjectKey{Namespace: targetNamespace, Name: fmt.Sprintf("%s-fernet-keys", targetKeystone)}
+		multiclusterEventuallyExists(t, ctx, targetClient, fernetKey, &corev1.Secret{}, "fernet-keys Secret", eventuallyTimeout)
+		configMaps := multiclusterConfigMapNames(t, ctx, targetClient, targetNamespace, targetKeystone+"-config-")
+		g.Expect(configMaps).To(HaveLen(1), "expected exactly one rendered config ConfigMap on the target cluster")
+
+		// Every child is claimed by the ownership labels and by nothing else. A
+		// reference would name a UID this cluster cannot resolve, and the labels
+		// are the only handle the teardown sweep has on these objects.
+		multiclusterExpectRemoteOwnership(t, ctx, targetClient, childKey,
+			&appsv1.Deployment{}, "Deployment", targetKeystone, targetNamespace)
+		multiclusterExpectRemoteOwnership(t, ctx, targetClient, childKey,
+			&mariadbv1alpha1.Database{}, "MariaDB Database", targetKeystone, targetNamespace)
+		multiclusterExpectRemoteOwnership(t, ctx, targetClient,
+			client.ObjectKey{Namespace: targetNamespace, Name: configMaps[0]},
+			&corev1.ConfigMap{}, "config ConfigMap", targetKeystone, targetNamespace)
+		multiclusterExpectRemoteOwnership(t, ctx, targetClient, fernetKey,
+			&corev1.Secret{}, "fernet-keys Secret", targetKeystone, targetNamespace)
+
+		// The seeded Service is the self-heal: its dangling controller owner
+		// reference is gone, shed by the apply that no longer asserts it.
+		multiclusterExpectRemoteOwnership(t, ctx, targetClient, childKey,
+			&corev1.Service{}, "Service", targetKeystone, targetNamespace)
 
 		// None of it on the management cluster, where only the CR lives.
 		multiclusterExpectAbsent(t, ctx, mgmtClient, childKey, &appsv1.Deployment{}, "Deployment")
@@ -281,9 +349,7 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 		multiclusterExpectAbsent(t, ctx, mgmtClient, childKey, &mariadbv1alpha1.User{}, "MariaDB User")
 		multiclusterExpectAbsent(t, ctx, mgmtClient, childKey, &mariadbv1alpha1.Grant{}, "MariaDB Grant")
 		multiclusterExpectAbsent(t, ctx, mgmtClient, dbSyncKey, &batchv1.Job{}, "db-sync Job")
-		multiclusterExpectAbsent(t, ctx, mgmtClient,
-			client.ObjectKey{Namespace: targetNamespace, Name: fmt.Sprintf("%s-fernet-keys", targetKeystone)},
-			&corev1.Secret{}, "fernet-keys Secret")
+		multiclusterExpectAbsent(t, ctx, mgmtClient, fernetKey, &corev1.Secret{}, "fernet-keys Secret")
 		g.Expect(multiclusterConfigMapNames(t, ctx, mgmtClient, targetNamespace, targetKeystone+"-config-")).
 			To(BeEmpty(), "no config ConfigMap should be rendered on the management cluster")
 
@@ -295,6 +361,8 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 			"the main finalizer should be on the CR")
 		g.Expect(controllerutil.ContainsFinalizer(ksAfter, keystoneOpenBaoFinalizer)).To(BeTrue(),
 			"the OpenBao finalizer should be on the CR")
+		g.Expect(controllerutil.ContainsFinalizer(ksAfter, commonmulticluster.RemoteChildrenFinalizer)).To(BeTrue(),
+			"the remote-children finalizer should be on a CR whose children live on another cluster")
 	})
 
 	t.Run("CR without a ref keeps its children local", func(t *testing.T) {
@@ -318,6 +386,14 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 
 		multiclusterExpectAbsent(t, ctx, targetClient, childKey, &appsv1.Deployment{}, "Deployment")
 		multiclusterExpectAbsent(t, ctx, targetClient, fernetKey, &corev1.Secret{}, "fernet-keys Secret")
+
+		// The garbage collection cascade reaps these children from their owner
+		// references, so there is nothing for the remote-children finalizer to
+		// hold the CR open for.
+		ksAfter := &keystonev1alpha1.Keystone{}
+		g.Expect(mgmtClient.Get(ctx, types.NamespacedName{Name: localKeystone, Namespace: localNamespace}, ksAfter)).To(Succeed())
+		g.Expect(controllerutil.ContainsFinalizer(ksAfter, commonmulticluster.RemoteChildrenFinalizer)).To(BeFalse(),
+			"a CR that keeps its children local must not carry the remote-children finalizer")
 	})
 
 	t.Run("CR naming an unregistered cluster creates nothing", func(t *testing.T) {
@@ -458,6 +534,174 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 			multiclusterExpectAbsent(t, ctx, c, fernetKey, &corev1.Secret{}, "fernet-keys Secret")
 		}
 	})
+
+	t.Run("re-registering the target cluster engages it again", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// The deregistration subtest deleted this Secret, and the teardown
+		// subtest below needs the cluster reachable again. Re-registering under
+		// a name the provider already tore down is a case of its own: what
+		// GetCluster answers with afterwards has to be a freshly built cluster,
+		// not the disengaged one.
+		kubeconfig, err := commonenvtest.KubeconfigBytes(targetCfg, targetClusterName)
+		g.Expect(err).NotTo(HaveOccurred(), "build kubeconfig for the target environment")
+
+		g.Expect(mgmtClient.Create(ctx, &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      targetClusterName,
+				Namespace: clustersNamespace,
+				Labels:    map[string]string{"sigs.k8s.io/multicluster-runtime-kubeconfig": "true"},
+			},
+			Data: map[string][]byte{"kubeconfig": kubeconfig},
+		})).To(Succeed(), "recreate the registration Secret")
+
+		g.Eventually(func() error {
+			_, err := mcMgr.GetCluster(ctx, mcruntime.ClusterName(targetClusterName))
+			return err
+		}, engageTimeout, pollInterval).Should(Succeed(),
+			"the provider should engage the target cluster again")
+	})
+
+	t.Run("deleting a targeted CR sweeps its children off the target cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// Everything the CR needs is seeded on the target cluster, as in the
+		// first targeted subtest, but in a namespace of its own so the sweep is
+		// observed against objects only this CR produced. Nothing on this
+		// envtest environment runs a controller, so what disappears here
+		// disappeared because the operator deleted it.
+		multiclusterEnsureNamespace(t, ctx, mgmtClient, teardownNamespace)
+		multiclusterEnsureNamespace(t, ctx, targetClient, teardownNamespace)
+		createPrerequisites(t, ctx, targetClient, teardownNamespace)
+
+		mariadbKey := client.ObjectKey{Namespace: teardownNamespace, Name: "mariadb"}
+		g.Expect(targetClient.Create(ctx, &mariadbv1alpha1.MariaDB{
+			ObjectMeta: metav1.ObjectMeta{Name: mariadbKey.Name, Namespace: mariadbKey.Namespace},
+		})).To(Succeed(), "create the MariaDB cluster CR on the target cluster")
+		g.Expect(simulators.SimulateMariaDBReady(ctx, targetClient, mariadbKey, 1)).
+			To(Succeed(), "simulate the MariaDB cluster ready")
+
+		ks := integrationManagedKeystone(teardownKeystone, teardownNamespace)
+		ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetClusterName}
+		g.Expect(mgmtClient.Create(ctx, ks)).To(Succeed())
+
+		crKey := types.NamespacedName{Name: teardownKeystone, Namespace: teardownNamespace}
+		childKey := client.ObjectKey{Namespace: teardownNamespace, Name: teardownKeystone}
+
+		waitForCondition(t, ctx, mgmtClient, crKey, "SecretsReady", metav1.ConditionTrue, eventuallyTimeout)
+		waitForCondition(t, ctx, mgmtClient, crKey, "FernetKeysReady", metav1.ConditionTrue, eventuallyTimeout)
+
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &mariadbv1alpha1.Database{}, "MariaDB Database", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateDatabaseReady(ctx, targetClient, childKey)).To(Succeed())
+
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &mariadbv1alpha1.User{}, "MariaDB User", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateUserReady(ctx, targetClient, childKey)).To(Succeed())
+
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &mariadbv1alpha1.Grant{}, "MariaDB Grant", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateGrantReady(ctx, targetClient, childKey)).To(Succeed())
+
+		dbSyncKey := client.ObjectKey{Namespace: teardownNamespace, Name: fmt.Sprintf("%s-db-sync", teardownKeystone)}
+		multiclusterEventuallyExists(t, ctx, targetClient, dbSyncKey, &batchv1.Job{}, "db-sync Job", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateJobComplete(ctx, targetClient, dbSyncKey)).To(Succeed())
+
+		schemaCheckKey := client.ObjectKey{Namespace: teardownNamespace, Name: fmt.Sprintf("%s-schema-check", teardownKeystone)}
+		multiclusterEventuallyExists(t, ctx, targetClient, schemaCheckKey, &batchv1.Job{}, "schema-check Job", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateJobComplete(ctx, targetClient, schemaCheckKey)).To(Succeed())
+
+		waitForCondition(t, ctx, mgmtClient, crKey, "DatabaseReady", metav1.ConditionTrue, eventuallyLongTimeout)
+
+		// Every kind the sweep has to reach must be on the cluster before the
+		// deletion, or its absence afterwards would prove nothing.
+		fernetKey := client.ObjectKey{Namespace: teardownNamespace, Name: fmt.Sprintf("%s-fernet-keys", teardownKeystone)}
+		dbConnectionKey := client.ObjectKey{Namespace: teardownNamespace, Name: fmt.Sprintf("%s-db-connection", teardownKeystone)}
+		fernetRotateKey := client.ObjectKey{Namespace: teardownNamespace, Name: fmt.Sprintf("%s-fernet-rotate", teardownKeystone)}
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &appsv1.Deployment{}, "Deployment", eventuallyLongTimeout)
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &corev1.Service{}, "Service", eventuallyTimeout)
+		multiclusterEventuallyExists(t, ctx, targetClient, fernetKey, &corev1.Secret{}, "fernet-keys Secret", eventuallyTimeout)
+		multiclusterEventuallyExists(t, ctx, targetClient, dbConnectionKey, &corev1.Secret{}, "db-connection Secret", eventuallyTimeout)
+		multiclusterEventuallyExists(t, ctx, targetClient, fernetRotateKey, &batchv1.CronJob{}, "fernet rotation CronJob", eventuallyTimeout)
+		g.Expect(multiclusterConfigMapNames(t, ctx, targetClient, teardownNamespace, teardownKeystone+"-config-")).
+			To(HaveLen(1), "expected exactly one rendered config ConfigMap on the target cluster")
+
+		// The OpenBao cleanup flow runs before the sweep and waits for ESO to
+		// adopt and then release the backup PushSecrets. No ESO runs on this
+		// cluster, so the test plays both halves; without it the CR would sit in
+		// Terminating for the ten-minute adoption timeout.
+		backupKeys := []client.ObjectKey{
+			{Namespace: teardownNamespace, Name: fmt.Sprintf("%s-fernet-keys-backup", teardownKeystone)},
+			{Namespace: teardownNamespace, Name: fmt.Sprintf("%s-credential-keys-backup", teardownKeystone)},
+		}
+		for _, key := range backupKeys {
+			multiclusterEventuallyExists(t, ctx, targetClient, key, &esov1alpha1.PushSecret{}, "backup PushSecret", eventuallyLongTimeout)
+			addESOFinalizerToPushSecret(t, ctx, targetClient, key)
+		}
+
+		g.Expect(mgmtClient.Delete(ctx, ks)).To(Succeed(), "delete the targeted Keystone CR")
+
+		g.Eventually(func(ig Gomega) {
+			for _, key := range backupKeys {
+				ps := &esov1alpha1.PushSecret{}
+				ig.Expect(targetClient.Get(ctx, key, ps)).To(Succeed(),
+					"PushSecret %s should still exist while the ESO finalizer is held", key)
+				ig.Expect(ps.GetDeletionTimestamp().IsZero()).To(BeFalse(),
+					"PushSecret %s should be Terminating once the OpenBao flow issued its Delete", key)
+			}
+		}, eventuallyTimeout, pollInterval).Should(Succeed())
+		for _, key := range backupKeys {
+			clearESOFinalizerFromPushSecret(t, ctx, targetClient, key)
+		}
+
+		g.Eventually(func() bool {
+			return apierrors.IsNotFound(mgmtClient.Get(ctx, crKey, &keystonev1alpha1.Keystone{}))
+		}, eventuallyLongTimeout, pollInterval).Should(BeTrue(),
+			"the CR should leave etcd once all three finalizers are released")
+
+		// The sweep does not wait for the objects it deleted, and a delete is
+		// asynchronous, so each child is polled until it is gone rather than
+		// read once.
+		swept := []struct {
+			key  client.ObjectKey
+			obj  client.Object
+			what string
+		}{
+			{childKey, &appsv1.Deployment{}, "Deployment"},
+			{childKey, &corev1.Service{}, "Service"},
+			{fernetKey, &corev1.Secret{}, "fernet-keys Secret"},
+			{dbConnectionKey, &corev1.Secret{}, "db-connection Secret"},
+			{dbSyncKey, &batchv1.Job{}, "db-sync Job"},
+			{schemaCheckKey, &batchv1.Job{}, "schema-check Job"},
+			{fernetRotateKey, &batchv1.CronJob{}, "fernet rotation CronJob"},
+			{childKey, &mariadbv1alpha1.Database{}, "MariaDB Database"},
+			{childKey, &mariadbv1alpha1.User{}, "MariaDB User"},
+			{childKey, &mariadbv1alpha1.Grant{}, "MariaDB Grant"},
+		}
+		g.Eventually(func(ig Gomega) {
+			for _, child := range swept {
+				ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, child.key, child.obj))).
+					To(BeTrue(), "%s %s should be swept off the target cluster", child.what, child.key)
+			}
+			// Every ConfigMap this Keystone projected is content-addressed —
+			// the rendered config and the two rotation scripts — so the CR's
+			// name is all they have in common and the prefix is the only way
+			// to ask for them.
+			ig.Expect(multiclusterConfigMapNames(t, ctx, targetClient, teardownNamespace, teardownKeystone)).
+				To(BeEmpty(), "no ConfigMap of this Keystone should survive the sweep")
+			cronJobs := &batchv1.CronJobList{}
+			ig.Expect(targetClient.List(ctx, cronJobs, client.InNamespace(teardownNamespace))).To(Succeed())
+			ig.Expect(cronJobs.Items).To(BeEmpty(), "no CronJob should survive the sweep")
+		}, eventuallyLongTimeout, pollInterval).Should(Succeed())
+
+		// What the CR only ever read stays. The sweep selects on the ownership
+		// labels, and the operator never stamped them on the input Secrets or on
+		// the MariaDB cluster CR, so a sweep that took these would be taking
+		// somebody else's objects.
+		g.Expect(targetClient.Get(ctx, client.ObjectKey{Namespace: teardownNamespace, Name: "keystone-db"},
+			&corev1.Secret{})).To(Succeed(), "the database credentials Secret should survive the teardown")
+		g.Expect(targetClient.Get(ctx, client.ObjectKey{Namespace: teardownNamespace, Name: "keystone-admin"},
+			&corev1.Secret{})).To(Succeed(), "the admin password Secret should survive the teardown")
+		g.Expect(targetClient.Get(ctx, mariadbKey, &mariadbv1alpha1.MariaDB{})).
+			To(Succeed(), "the MariaDB cluster CR should survive the teardown")
+	})
 }
 
 // multiclusterKeystonePaths returns the Keystone CRD and webhook manifest
@@ -504,6 +748,47 @@ func multiclusterEventuallyExists(
 	g.Eventually(func() error {
 		return c.Get(ctx, key, obj)
 	}, timeout, pollInterval).Should(Succeed(), "%s %s should exist", what, key)
+}
+
+// multiclusterExpectRemoteOwnership polls c until the object at key is claimed
+// the way a remote child has to be: by the three ownership labels naming the
+// Keystone owner, and by no owner reference at all. It polls rather than reads
+// once because the projection is asynchronous, and because an object that was
+// seeded with a stale reference only loses it on the operator's first apply.
+func multiclusterExpectRemoteOwnership(
+	t testing.TB,
+	ctx context.Context,
+	c client.Client,
+	key client.ObjectKey,
+	obj client.Object,
+	what, ownerName, ownerNamespace string,
+) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	want := map[string]string{
+		commonmulticluster.OwnerKindLabel:      "Keystone",
+		commonmulticluster.OwnerNameLabel:      ownerName,
+		commonmulticluster.OwnerNamespaceLabel: ownerNamespace,
+	}
+
+	g.Eventually(func() error {
+		if err := c.Get(ctx, key, obj); err != nil {
+			return err
+		}
+		if refs := obj.GetOwnerReferences(); len(refs) != 0 {
+			return fmt.Errorf("%s %s still carries owner references: %v", what, key, refs)
+		}
+		labels := obj.GetLabels()
+		for label, value := range want {
+			if labels[label] != value {
+				return fmt.Errorf("%s %s label %s is %q, want %q", what, key, label, labels[label], value)
+			}
+		}
+		return nil
+	}, eventuallyTimeout, pollInterval).Should(Succeed(),
+		"%s %s should be labelled as owned by Keystone %s/%s and carry no owner reference",
+		what, key, ownerNamespace, ownerName)
 }
 
 // multiclusterExpectAbsent asserts the object at key does not exist on c. A
