@@ -2,14 +2,14 @@ apiVersion: v2
 name: horizon-operator
 description: A Helm chart for deploying the Horizon OpenStack dashboard operator
 type: application
-version: 0.2.2
+version: 0.2.3
 appVersion: "0.1.0"
 # The shared naming/label helpers and the Deployment skeleton live in the
 # operator-library library chart so they are defined once for all operator
 # charts. It is vendored into charts/ at package time (helm dependency build).
 dependencies:
   - name: operator-library
-    version: 0.6.0
+    version: 0.7.0
     repository: "file://../../../shared/helm/operator-library"
 # Helm validates values against values.schema.json automatically.
 annotations:
@@ -19,3 +19,5 @@ annotations:
       description: Optional image.digest value pins the operator image by immutable digest (rendered as repository:tag@digest)
     - kind: added
       description: Initial horizon-operator chart on the shared operator-library (deployment, webhook, RBAC, PDB, ServiceMonitor, opt-in NetworkPolicy)
+    - kind: changed
+      description: Namespace-scoped installs clear --clusters-namespace, so the operator engages no target cluster and reads no Secret outside its release namespace

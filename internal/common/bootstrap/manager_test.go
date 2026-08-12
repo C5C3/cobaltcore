@@ -13,6 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 )
 
@@ -161,6 +162,21 @@ func TestParseRunOptions_injectedArgs(t *testing.T) {
 	}
 }
 
+// TestParseRunOptions_emptyClustersNamespace pins the form the namespace-scoped
+// chart renders: `--clusters-namespace=` has to parse to the empty string, the
+// value that switches target clusters off.
+func TestParseRunOptions_emptyClustersNamespace(t *testing.T) {
+	cfg := ManagerConfig{Scheme: runtime.NewScheme(), LeaderElectionID: "test.c5c3.io"}
+
+	opts, err := parseRunOptions(cfg, []string{"--clusters-namespace="})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if opts.clustersNamespace != "" {
+		t.Fatalf("clustersNamespace = %q, want the empty string", opts.clustersNamespace)
+	}
+}
+
 // TestParseRunOptions_reentrant proves the parser is callable more than once
 // with different args, without the flag-redefinition panic that the previous
 // flag.CommandLine + flag.Parse implementation would raise on a second call.
@@ -217,6 +233,114 @@ func TestParseRunOptions_registerFlags(t *testing.T) {
 	}
 	if opts.metricsAddr != ":8080" {
 		t.Fatalf("metricsAddr = %q, want :8080 (shared default)", opts.metricsAddr)
+	}
+}
+
+// applyClusterOptions applies the options for the given scheme and namespace to
+// a fresh cluster.Options and returns the result.
+func applyClusterOptions(scheme *runtime.Scheme, namespace string, into cluster.Options) cluster.Options {
+	for _, opt := range clusterOptions(scheme, 10*time.Minute, namespace) {
+		opt(&into)
+	}
+	return into
+}
+
+// TestClusterOptions_appliesTheOperatorScheme verifies that a target cluster
+// the kubeconfig provider engages is built with the operator's own scheme.
+// Leaving it unset would hand the cluster the client-go global scheme, which
+// knows no CRD kind, and every child write of a CRD-backed kind would fail on
+// the target cluster.
+func TestClusterOptions_appliesTheOperatorScheme(t *testing.T) {
+	s := runtime.NewScheme()
+
+	applied := applyClusterOptions(s, "", cluster.Options{})
+	if applied.Scheme != s {
+		t.Fatalf("cluster Scheme = %v, want the operator scheme", applied.Scheme)
+	}
+}
+
+// TestClusterOptions_overridesAPresetScheme covers the case where the options
+// are applied on top of a cluster.Options that already carries a scheme: the
+// operator's scheme has to win, otherwise a caller-side default would decide
+// which kinds the target cluster can decode.
+func TestClusterOptions_overridesAPresetScheme(t *testing.T) {
+	s := runtime.NewScheme()
+	preset := runtime.NewScheme()
+
+	applied := applyClusterOptions(s, "", cluster.Options{Scheme: preset})
+	if applied.Scheme != s {
+		t.Fatal("expected the operator scheme to replace the preset one")
+	}
+}
+
+// TestClusterOptions_restrictsTheTargetCacheToTheWatchedNamespace is the guard
+// against a namespace-scoped operator holding one namespace at home and an
+// entire cluster abroad: cluster.New builds an all-namespaces cache when Cache
+// is left at its zero value, so the first child read would start a cluster-wide
+// LIST+WATCH per kind on the target.
+func TestClusterOptions_restrictsTheTargetCacheToTheWatchedNamespace(t *testing.T) {
+	applied := applyClusterOptions(runtime.NewScheme(), "tenant-a", cluster.Options{})
+
+	if len(applied.Cache.DefaultNamespaces) != 1 {
+		t.Fatalf("expected exactly 1 cached namespace on the target cluster, got: %v",
+			applied.Cache.DefaultNamespaces)
+	}
+	if _, ok := applied.Cache.DefaultNamespaces["tenant-a"]; !ok {
+		t.Fatalf("expected the target cache to cover 'tenant-a', got: %v", applied.Cache.DefaultNamespaces)
+	}
+	if applied.Cache.SyncPeriod == nil || *applied.Cache.SyncPeriod != 10*time.Minute {
+		t.Fatalf("expected the operator's sync period on the target cache, got: %v", applied.Cache.SyncPeriod)
+	}
+	// The registration Secrets are read on the management cluster, so the
+	// clusters-namespace widening must not travel to the target: it would pull
+	// a second namespace of Secrets out of every engaged cluster.
+	nss := secretNamespaces(t, applied.Cache)
+	if len(nss) != 1 {
+		t.Fatalf("expected the target Secret informer to span exactly the watched namespace, got: %v", nss)
+	}
+	if _, ok := nss["tenant-a"]; !ok {
+		t.Fatalf("expected the target Secret informer to cover 'tenant-a', got: %v", nss)
+	}
+}
+
+// TestClusterOptions_clusterWideOperatorKeepsAnUnrestrictedTargetCache pins the
+// other half of the mirror: an operator that watches all namespaces at home
+// watches all namespaces on the target too, because that is the scope it was
+// deliberately started with.
+func TestClusterOptions_clusterWideOperatorKeepsAnUnrestrictedTargetCache(t *testing.T) {
+	applied := applyClusterOptions(runtime.NewScheme(), "", cluster.Options{})
+
+	if applied.Cache.DefaultNamespaces != nil {
+		t.Fatalf("expected an unrestricted target cache, got: %v", applied.Cache.DefaultNamespaces)
+	}
+}
+
+// TestTargetClustersNamespace verifies the single gate that decides whether an
+// operator pays for target clusters at all. An operator that never resolves
+// spec.targetClusterRef must not engage clusters or widen its Secret informer,
+// and an install that clears --clusters-namespace must be able to switch the
+// whole feature off — a namespace-scoped deployment relies on it, because its
+// Role covers its own namespace only and a widened informer would never sync.
+func TestTargetClustersNamespace(t *testing.T) {
+	tests := []struct {
+		name              string
+		targetClusters    bool
+		clustersNamespace string
+		want              string
+	}{
+		{"enabled", true, "c5c3-clusters", "c5c3-clusters"},
+		{"operator opts out", false, "c5c3-clusters", ""},
+		{"install opts out", true, "", ""},
+		{"both off", false, "", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := ManagerConfig{TargetClusters: tc.targetClusters}
+			opts := runOptions{clustersNamespace: tc.clustersNamespace}
+			if got := targetClustersNamespace(cfg, opts); got != tc.want {
+				t.Fatalf("targetClustersNamespace() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

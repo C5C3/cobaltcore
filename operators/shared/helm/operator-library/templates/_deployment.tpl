@@ -54,6 +54,13 @@ spec:
             {{- end }}
             {{- if .Values.rbac.namespaceScoped }}
             - --namespace={{ .Release.Namespace }}
+            # Target clusters off: a namespace-scoped install renders a Role in
+            # the release namespace and nothing anywhere else, so the operator
+            # may not read the registration Secrets in the clusters namespace.
+            # Left at its default the Secret informer would be widened to a
+            # namespace the operator has no grant for, the cache would never
+            # sync, and the manager would fail to start.
+            - --clusters-namespace=
             {{- end }}
             {{- if not .Values.webhook.enabled }}
             - --enable-webhooks=false
