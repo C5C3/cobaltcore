@@ -727,9 +727,9 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // finalizers or via GC.
 //
 // A nil children client means the target cluster this CR named is no longer
-// registered. Its MariaDB CRs cannot be reached, so they are left behind (the
-// remote-ownership gap #837 tracks) and the finalizer is released anyway:
-// holding it would only strand the CR in Terminating.
+// registered. Its MariaDB CRs cannot be reached, so they are left behind and
+// the finalizer is released anyway: holding it would only strand the CR in
+// Terminating.
 func (r *KeystoneReconciler) reconcileDelete(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(keystone, keystoneFinalizer) {
 		return ctrl.Result{}, nil
@@ -800,8 +800,8 @@ func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, childre
 
 	// A nil children client means the target cluster holding the PushSecrets is
 	// no longer registered. ESO cannot be waited on across a cluster that
-	// cannot be reached, so the kv-v2 paths stay as they are (#837) and the
-	// finalizer is released rather than blocking the CR forever.
+	// cannot be reached, so the kv-v2 paths stay as they are and the finalizer
+	// is released rather than blocking the CR forever.
 	if children == nil {
 		r.Recorder.Event(keystone, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
 			"Target cluster is no longer registered; releasing the openbao-finalizer without deleting the backup PushSecrets on it")
