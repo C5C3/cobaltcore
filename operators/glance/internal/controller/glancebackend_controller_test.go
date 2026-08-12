@@ -97,6 +97,10 @@ type fakeTargetCluster struct {
 
 func (f fakeTargetCluster) GetClient() client.Client { return f.c }
 
+// A fake client is read-your-writes, so it stands in for both the cached client
+// and the uncached reader the write sites read live state through.
+func (f fakeTargetCluster) GetAPIReader() client.Reader { return f.c }
+
 // childrenResolver registers exactly one cluster under every name and records
 // the names it was asked for, so a test can prove which ref a backend resolved —
 // or that it resolved none at all.
