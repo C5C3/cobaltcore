@@ -849,12 +849,14 @@ No manual migration of existing CRs is required.
 ### Events
 
 Two Normal Events are emitted on the Keystone CR during finalizer-driven
-cleanup, captured via `record.EventRecorder`:
+cleanup, captured via `record.EventRecorder`, plus one Warning for the CR whose
+target cluster is gone:
 
 | Reason | Type | Message | Emitted When |
 | --- | --- | --- | --- |
 | `FinalizingDatabase` | `Normal` | `"Cleaning up MariaDB Database, User, and Grant before removing Keystone"` | First terminating reconcile pass where at least one MariaDB CR is still live (not emitted for brownfield CRs or when all CRs are already gone) |
 | `DatabaseFinalized` | `Normal` | `"MariaDB Database, User, and Grant removed; releasing finalizer"` | Once per termination, immediately before `RemoveFinalizer` + `Update` |
+| `RemoteChildrenAbandoned` | `Warning` | `"Target cluster is no longer registered; releasing the finalizer without deleting the MariaDB Database, User, and Grant on it"` | The CR's `spec.targetClusterRef` no longer resolves while it terminates. Replaces both Normal Events for that pass: nothing on the deregistered cluster can be reached, so each finalizer is released against no cleanup at all. See [Target Clusters](../target-clusters.md) |
 
 > **Note:** The two Events are intentionally asymmetric. A
 > brownfield-terminating CR (or a managed CR whose MariaDB resources were
@@ -1512,6 +1514,7 @@ shared cluster store `openbao-cluster-store`), and gated with the store-ref-awar
 
 | Status | Reason | Message | RequeueAfter |
 | --- | --- | --- | --- |
+| `False` | `TargetClusterUnavailable` | The resolver's error verbatim, `cluster not found` when `spec.targetClusterRef` names a cluster that is not registered or no longer resolves. Set before this sub-reconciler runs: the CR gets no finalizer and nothing is created on any cluster. See [Target Clusters](../target-clusters.md) | 15s |
 | `False` | `SecretStoreNotReady` | `"<kind> \"<name>\" is not ready; upstream secret backend unreachable"` — the message names the selected store's kind and name, e.g. `ClusterSecretStore "openbao-cluster-store"` or `SecretStore "openbao-tenant-store"` | 15s |
 | `False` | `WaitingForDBCredentials` | "Waiting for ESO to sync database credentials from OpenBao" | 15s |
 | `False` | `WaitingForAdminCredentials` | "Waiting for ESO to sync admin credentials from OpenBao" | 15s |

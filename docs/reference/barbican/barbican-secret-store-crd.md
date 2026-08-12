@@ -242,6 +242,8 @@ aggregated `SecretStoresReady` condition onto the Barbican CR instead.
 | `CredentialsReady` | BarbicanSecretStore | False | `InvalidCredentials` | The server rejects the credentials. A managed store re-mints once, at most once per ten minutes, and reports the rejection in between |
 | `CredentialsReady` | BarbicanSecretStore | False | `InsufficientCapabilities` | The AppRole policy does not grant all five capabilities on the probe path |
 | `CredentialsReady` | BarbicanSecretStore | False | `OpenBaoUnreachable` | The server did not answer, or the client could not be built |
+| `CredentialsReady` | BarbicanSecretStore | False | `WaitingForParent` | No Barbican of the name in `spec.barbicanRef` exists, so which cluster this store's credentials belong on is unknown. The store waits and requeues after 15 seconds rather than minting an AppRole secret ID against the management cluster |
+| `CredentialsReady` | BarbicanSecretStore | False | `TargetClusterUnavailable` | The parent Barbican's `spec.targetClusterRef` names a target cluster that is not registered or no longer resolves. The message carries the resolver's error, the store requeues after 15 seconds, and nothing is created on any cluster. See [Target Clusters](../target-clusters.md) |
 | `ProvisioningReady` | BarbicanSecretStore | True | `Provisioned` | The referenced `OpenBaoCluster` is Available and carries the `barbican` KV mount and the `barbican` AppRole |
 | `ProvisioningReady` | BarbicanSecretStore | False | `InstanceNotFound` | No `OpenBaoCluster` of that name exists in the store's namespace |
 | `ProvisioningReady` | BarbicanSecretStore | False | `WaitingForInstance` | The instance is not Available yet, or its provisioner ServiceAccount does not exist |

@@ -171,6 +171,7 @@ CRs (no MariaDB CRs) and repeated requeue polls do not produce noise:
 | `DatabaseFinalized` | Normal | MariaDB resources marked for deletion; database finalizer released | `MariaDB Database, User, and Grant marked for deletion; releasing finalizer` |
 | `FinalizingOpenBaoSecrets` | Normal | Deletion begins while OpenBao backup PushSecrets are still live | `Cleaning up OpenBao backup PushSecrets before removing Keystone` |
 | `OpenBaoSecretsFinalized` | Normal | Backup PushSecrets deleted; OpenBao finalizer released | `OpenBao backup PushSecrets deleted; releasing openbao-finalizer` |
+| `RemoteChildrenAbandoned` | Warning | Deletion begins while the target cluster the CR named no longer resolves; the finalizers are released without touching what was written there | `Target cluster is no longer registered; releasing the finalizer without deleting the MariaDB Database, User, and Grant on it` |
 | `ESOAdoptionTimedOut` | Warning | A backup PushSecret was not adopted by ESO within the bounded wait after deletion; the controller force-deletes it to release the finalizer | `PushSecret "<name>" not adopted by ESO within <timeout> of deletion; force-deleting to release the openbao-finalizer (the OpenBao kv-v2 path may be orphaned only if ESO is not running)` |
 
 **Source:** finalizer handlers in `keystone_controller.go`; `ESOAdoptionTimedOut`

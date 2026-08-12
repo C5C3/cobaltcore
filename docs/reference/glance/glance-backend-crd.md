@@ -184,6 +184,8 @@ CR instead.
 | --- | --- | --- | --- | --- |
 | `CredentialsReady` | GlanceBackend | True | `CredentialsAvailable` | The credentials Secret exists and carries `access-key-id` / `secret-access-key`. |
 | `CredentialsReady` | GlanceBackend | False | `WaitingForCredentials` | The Secret is absent or missing a contract key (polled as a backstop). |
+| `CredentialsReady` | GlanceBackend | False | `WaitingForParent` | No Glance of the name in `spec.glanceRef` exists, so which cluster this backend's credentials live on is unknown. The backend waits and requeues after 15 seconds rather than gating on a same-named Secret beside the CR. |
+| `CredentialsReady` | GlanceBackend | False | `TargetClusterUnavailable` | The parent Glance's `spec.targetClusterRef` names a target cluster that is not registered or no longer resolves. The message carries the resolver's error, the backend requeues after 15 seconds, and nothing is created on any cluster. See [Target Clusters](../target-clusters.md). |
 | `ConfigProjected` | GlanceBackend | True | `ConfigProjected` | The parent Glance Deployment mounts a `backends.conf` carrying this backend's `[<name>]` store section. |
 | `ConfigProjected` | GlanceBackend | False | `WaitingForProjection` | The projection has not landed in the Deployment yet. |
 | `Ready` | GlanceBackend | True | `AllReady` | Both sub-conditions are True. |

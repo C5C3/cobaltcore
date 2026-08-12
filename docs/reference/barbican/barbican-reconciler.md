@@ -87,7 +87,7 @@ sub-conditions are `True`, and `False` (`NotAllReady`) otherwise.
 
 | Type | True reasons | False reasons |
 | --- | --- | --- |
-| `SecretsReady` | `SecretsAvailable` | `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
+| `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForDBCredentials`, `WaitingForServiceUserCredentials`, `ConfigError` |
 | `SecretStoresReady` | `AllStoresProjected` | `NoDefaultSecretStore`, `MultipleOpenBaoStores`, `WaitingForSecretStores` |
 | `DBCleanReady` | `DBCleanScheduled`, `DBCleanSuspended` | `DBCleanJobFailed`, `DBCleanBlocked`, `WaitingForSecretStores` |
 | `DatabaseReady` | `DatabaseSynced` | `WaitingForSecretStores`, `WaitingForDatabase`, `DBSyncInProgress`, `DBSyncFailed`, `VersionParseError`, `DowngradeNotSupported`, `UpgradePathInvalid`, `ImageReleaseMismatch`, plus the shared cluster-gate reason the provisioning flow sets while the referenced MariaDB is unavailable |
@@ -96,6 +96,13 @@ sub-conditions are `True`, and `False` (`NotAllReady`) otherwise.
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | — (errors propagate) |
 | `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled` |
+
+`TargetClusterUnavailable` is set ahead of every sub-reconciler, when
+`spec.targetClusterRef` names a target cluster that is not registered or no
+longer resolves. The message carries the resolver's error, the CR requeues after
+15 seconds and acquires no finalizer, and nothing is created on any cluster. The
+attached `BarbicanSecretStore` reports the same reason on `CredentialsReady`.
+See [Target Clusters](../target-clusters.md).
 
 `WaitingForSecretStores` appears on four condition types. On
 `SecretStoresReady` it reports a credentials Secret this pass could not read. On
@@ -258,7 +265,12 @@ while the credential in the pods is still valid.
   Every other owned resource is namespace-scoped with a controller owner
   reference, so Kubernetes garbage collection reclaims it. Releasing the
   finalizer also drops the CR's metric series and evicts its health-probe cache
-  entry. A `BarbicanSecretStore` carries no finalizer at all; see
+  entry. A CR whose target cluster was deregistered in the meantime cannot
+  reach any of it: the finalizer is released against no cleanup at all, a
+  `RemoteChildrenAbandoned` Warning names what stays behind, and the CR
+  leaves etcd instead of hanging in Terminating. See
+  [Target Clusters](../target-clusters.md).
+  A `BarbicanSecretStore` carries no finalizer at all; see
   [Retained Artefacts](./barbican-secret-store-crd.md#retained-artefacts).
 
 ## Watches
