@@ -37,6 +37,13 @@ const TargetClusterUnavailable = "TargetClusterUnavailable"
 // nil ref (the CR names no target cluster) both select local, so a
 // single-cluster deployment never leaves the management cluster.
 //
+// A named cluster's client comes back marked as remote, and the local one comes
+// back unmarked. That mark is what Claim reads to decide whether a child is
+// owned by a controller owner reference or by the ownership labels, so a write
+// site never has to know which cluster it is writing to. The mark also carries
+// that cluster's uncached API reader, which LiveReader hands to the write sites
+// that must decide from live state rather than from a cache.
+//
 // The resolver's error is returned unwrapped. Callers put its text straight
 // into a status condition under the TargetClusterUnavailable reason, where the
 // upstream message ("cluster not found" for an unregistered name) is the part
@@ -57,7 +64,7 @@ func ResolveChildrenClient(
 		return nil, err
 	}
 
-	return cl.GetClient(), nil
+	return remoteClient{Client: cl.GetClient(), reader: cl.GetAPIReader()}, nil
 }
 
 // AbandonAfter is how long a terminating CR keeps waiting for a target cluster
@@ -146,7 +153,9 @@ func forgetUnresolvable(name string) {
 // reachable, with no CR left to retry from. AbandonAfter separates the two.
 //
 // The children on a cluster that stays unresolvable are unreachable either way
-// and are left where they are, which is the remote-ownership gap #837 tracks.
+// and are left where they are. Abandoning the cluster is therefore also
+// abandoning them: they keep running on it, and once the finalizers are
+// released no CR remains to reclaim them if it ever comes back.
 func ResolveChildrenClientForDeletion(
 	ctx context.Context,
 	resolver ClusterResolver,

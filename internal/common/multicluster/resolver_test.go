@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -58,6 +59,8 @@ func TestResolveChildrenClientNilResolverReturnsLocal(t *testing.T) {
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(got).To(gomega.BeIdenticalTo(local))
+	g.Expect(IsRemote(got)).To(gomega.BeFalse(),
+		"a client on the management cluster must keep claiming its children by owner reference")
 }
 
 func TestResolveChildrenClientNilRefSkipsResolver(t *testing.T) {
@@ -70,6 +73,7 @@ func TestResolveChildrenClientNilRefSkipsResolver(t *testing.T) {
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
 	g.Expect(got).To(gomega.BeIdenticalTo(local))
+	g.Expect(IsRemote(got)).To(gomega.BeFalse())
 	// Not merely "local came back": a CR without a ref must not cost a lookup.
 	g.Expect(resolver.calls).To(gomega.BeEmpty())
 }
@@ -94,15 +98,21 @@ func TestResolveChildrenClientReturnsTargetClusterClient(t *testing.T) {
 	g := gomega.NewWithT(t)
 
 	local := fake.NewClientBuilder().Build()
-	remote := fake.NewClientBuilder().Build()
+	onTheTarget := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "there", Namespace: "openstack"}}
+	remote := fake.NewClientBuilder().WithObjects(onTheTarget).Build()
 	resolver := &fakeResolver{cl: fakeCluster{c: remote}}
 
 	got, err := ResolveChildrenClient(context.Background(), resolver, local,
 		&commonv1.TargetClusterRefSpec{Name: "remote-a"})
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
-	g.Expect(got).To(gomega.BeIdenticalTo(remote))
+	// The mark is what tells every write site to claim its children by label
+	// rather than by an owner reference the target cluster cannot resolve.
+	g.Expect(IsRemote(got)).To(gomega.BeTrue())
 	g.Expect(got).NotTo(gomega.BeIdenticalTo(local))
+	// It is a wrapper, so the calls still land on the target cluster.
+	g.Expect(got.Get(context.Background(), client.ObjectKeyFromObject(onTheTarget), &corev1.ConfigMap{})).
+		To(gomega.Succeed())
 	g.Expect(resolver.calls).To(gomega.Equal([]mcruntime.ClusterName{"remote-a"}))
 }
 
@@ -216,14 +226,20 @@ func TestResolveChildrenClientForDeletionResolvableYieldsTheTargetClient(t *test
 	g := gomega.NewWithT(t)
 
 	local := fake.NewClientBuilder().Build()
-	remote := fake.NewClientBuilder().Build()
+	onTheTarget := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "there", Namespace: "openstack"}}
+	remote := fake.NewClientBuilder().WithObjects(onTheTarget).Build()
 	resolver := &fakeResolver{cl: fakeCluster{c: remote}}
 
 	got, wait := ResolveChildrenClientForDeletion(context.Background(), resolver, local,
 		&commonv1.TargetClusterRefSpec{Name: "remote-a"}, metav1.Now())
 
 	g.Expect(wait).To(gomega.BeFalse())
-	g.Expect(got).To(gomega.BeIdenticalTo(remote))
+	// The deletion path resolves through ResolveChildrenClient, so the teardown
+	// gets the same marked client the projection did and recognizes the children
+	// it has to delete by the same labels it stamped them with.
+	g.Expect(IsRemote(got)).To(gomega.BeTrue())
+	g.Expect(got.Get(context.Background(), client.ObjectKeyFromObject(onTheTarget), &corev1.ConfigMap{})).
+		To(gomega.Succeed())
 }
 
 func TestResolveChildrenClientForDeletionNilRefYieldsLocal(t *testing.T) {
@@ -236,6 +252,7 @@ func TestResolveChildrenClientForDeletionNilRefYieldsLocal(t *testing.T) {
 
 	g.Expect(wait).To(gomega.BeFalse())
 	g.Expect(got).To(gomega.BeIdenticalTo(local))
+	g.Expect(IsRemote(got)).To(gomega.BeFalse())
 	g.Expect(resolver.calls).To(gomega.BeEmpty())
 }
 
