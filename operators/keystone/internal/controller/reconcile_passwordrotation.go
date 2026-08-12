@@ -24,6 +24,7 @@ import (
 	"github.com/c5c3/forge/internal/common/config"
 	"github.com/c5c3/forge/internal/common/deployment"
 	"github.com/c5c3/forge/internal/common/job"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/rotation"
 	"github.com/c5c3/forge/internal/common/secrets"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -324,9 +325,8 @@ func (r *KeystoneReconciler) ensureAdminPasswordPushSourceSecret(ctx context.Con
 		},
 	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, children, secret, func() error {
-		secret.Labels = commonLabels(keystone)
 		// Do NOT touch secret.Data — applyAdminPasswordRotation owns it.
-		return controllerutil.SetControllerReference(keystone, secret, r.Scheme)
+		return commonmulticluster.ClaimWithLabels(children, r.Scheme, keystone, secret, commonLabels(keystone))
 	}); err != nil {
 		return nil, fmt.Errorf("ensuring admin password push-source secret %s: %w", adminPasswordNextSecretName(keystone), err)
 	}

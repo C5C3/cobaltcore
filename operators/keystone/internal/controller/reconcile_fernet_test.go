@@ -33,6 +33,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/database"
 	"github.com/c5c3/forge/internal/common/deployment"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/naming"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -128,6 +129,42 @@ func TestReconcileFernetKeys_NoSecret_CreatesSecretAndRequeues(t *testing.T) {
 	g.Expect(cond.Reason).To(Equal("GeneratingKeys"))
 
 	expectEvent(g, r, "Normal FernetKeysGenerated")
+}
+
+// TestReconcileFernetKeys_RemoteChildLabelledAndUnowned pins the target-cluster
+// path of the keys Secret: it is stamped with the ownership labels and carries
+// no owner reference, because a reference to a CR on another cluster names a UID
+// that cluster cannot resolve.
+func TestReconcileFernetKeys_RemoteChildLabelledAndUnowned(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := fernetTestScheme()
+	ks := fernetTestKeystone()
+
+	children := commonmulticluster.Remote(fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(ks).
+		Build())
+
+	r := &KeystoneReconciler{
+		Client:   children,
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(10),
+	}
+
+	_, err := r.reconcileFernetKeys(context.Background(), children, ks, "test-keystone-config-abc123", "")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var secret corev1.Secret
+	g.Expect(children.Get(context.Background(), client.ObjectKey{
+		Namespace: "default",
+		Name:      "test-keystone-fernet-keys",
+	}, &secret)).To(Succeed())
+	g.Expect(secret.OwnerReferences).To(BeEmpty(), "a remote child must carry no owner reference")
+	g.Expect(secret.Labels).To(HaveKeyWithValue(commonmulticluster.OwnerKindLabel, "Keystone"))
+	g.Expect(secret.Labels).To(HaveKeyWithValue(commonmulticluster.OwnerNameLabel, "test-keystone"))
+	g.Expect(secret.Labels).To(HaveKeyWithValue(commonmulticluster.OwnerNamespaceLabel, "default"))
+	// The claim adds to the operator's label set rather than replacing it.
+	g.Expect(secret.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 }
 
 func TestReconcileFernetKeys_SecretAlreadyExists(t *testing.T) {
