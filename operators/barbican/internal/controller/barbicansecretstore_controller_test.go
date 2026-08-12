@@ -28,8 +28,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -314,6 +316,20 @@ func (f *storeFixture) reconcile(t *testing.T, store *barbicanv1alpha1.BarbicanS
 	return f.reconciler.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: client.ObjectKeyFromObject(store),
 	})
+}
+
+// reconcileRemote drives a store whose parent names a target cluster past its
+// two teardown marks and returns the result of the pass that does the work. The
+// annotation and the finalizer are written one per pass, each requeuing so the
+// next pass reads its own write back.
+func (f *storeFixture) reconcileRemote(t *testing.T, store *barbicanv1alpha1.BarbicanSecretStore) (reconcile.Result, error) {
+	t.Helper()
+	for range 2 {
+		if result, err := f.reconcile(t, store); err != nil {
+			return result, err
+		}
+	}
+	return f.reconcile(t, store)
 }
 
 // store re-reads the reconciled store.
@@ -1351,26 +1367,39 @@ func TestSecretStoreReconcile_ConfigProjection(t *testing.T) {
 // reaches for one.
 type fakeTargetCluster struct {
 	cluster.Cluster
-	c client.Client
+	c      client.Client
+	reader client.Reader
 }
 
 func (f fakeTargetCluster) GetClient() client.Client { return f.c }
 
-// A fake client is read-your-writes, so it stands in for the cluster's uncached
-// reader as readily as for its cached client.
-func (f fakeTargetCluster) GetAPIReader() client.Reader { return f.c }
+// GetAPIReader answers with the cluster's uncached reader. A test that sets none
+// gets the client itself, which for a fake is read-your-writes anyway.
+func (f fakeTargetCluster) GetAPIReader() client.Reader {
+	if f.reader != nil {
+		return f.reader
+	}
+	return f.c
+}
 
 // childrenResolver registers exactly one cluster under every name and records
 // the names it was asked for, so a test can prove which ref the store resolved —
-// or that it resolved none at all.
+// or that it resolved none at all. reader is the cluster's uncached view, set
+// only by the test that has the cache trail it. byName overrides children per
+// name, for the tests that need two clusters to hold different objects.
 type childrenResolver struct {
 	children client.Client
+	reader   client.Reader
+	byName   map[string]client.Client
 	names    []mcruntime.ClusterName
 }
 
 func (r *childrenResolver) GetCluster(_ context.Context, name mcruntime.ClusterName) (cluster.Cluster, error) {
 	r.names = append(r.names, name)
-	return fakeTargetCluster{c: r.children}, nil
+	if c, named := r.byName[string(name)]; named {
+		return fakeTargetCluster{c: c}, nil
+	}
+	return fakeTargetCluster{c: r.children, reader: r.reader}, nil
 }
 
 // targetedBarbican returns the parent Barbican placing its workload on the named
@@ -1385,7 +1414,7 @@ func targetedBarbican(target string) *barbicanv1alpha1.Barbican {
 // API a managed store reads its instance from, and deliberately WITHOUT the
 // barbican group — a store read or a status write misrouted to it then fails
 // with "no kind is registered" instead of passing on an empty result.
-func childrenFake(t *testing.T, objs ...client.Object) client.Client {
+func childrenFake(t *testing.T, objs ...client.Object) client.WithWatch {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(scheme); err != nil {
@@ -1416,9 +1445,10 @@ func TestSecretStoreReconcile_MintsCredentialsOnParentTargetCluster(t *testing.T
 	resolver := &childrenResolver{children: children}
 	f.reconciler.Resolver = resolver
 
-	_, err := f.reconcile(t, store)
+	_, err := f.reconcileRemote(t, store)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(resolver.names).To(Equal([]mcruntime.ClusterName{"edge-1"}),
+	g.Expect(resolver.names).NotTo(BeEmpty())
+	g.Expect(resolver.names).To(HaveEach(mcruntime.ClusterName("edge-1")),
 		"the store resolves the target its parent names, having none of its own")
 
 	credsKey := client.ObjectKey{Namespace: testNamespace, Name: testStoreName + approleSecretNameSuffix}
@@ -1508,6 +1538,468 @@ func TestSecretStoreReconcile_MissingParentHoldsCredentials(t *testing.T) {
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
 		"no credential may be minted while the target cluster is unknown")
 	g.Expect(f.bao.configs).To(BeEmpty(), "the server is not contacted either")
+}
+
+// --- remote teardown -------------------------------------------------------
+
+// terminatingRemoteStore returns a managed store that minted its credentials
+// onto childrenCluster and is now being deleted. It carries the remote-children
+// finalizer plus a foreign one, so the CR survives the release and a test can
+// read back which finalizer the pass dropped. An empty childrenCluster leaves
+// the annotation off, which is the crash window between the two teardown marks.
+func terminatingRemoteStore(childrenCluster string, deletedAt time.Time) *barbicanv1alpha1.BarbicanSecretStore {
+	store := testManagedStore()
+	if childrenCluster != "" {
+		store.Annotations = map[string]string{childrenClusterAnnotation: childrenCluster}
+	}
+	store.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer, "foreign.example.com/keep-alive"}
+	timestamp := metav1.NewTime(deletedAt)
+	store.DeletionTimestamp = &timestamp
+	return store
+}
+
+// claimedByStore stamps the ownership labels the remote claim writes, so a
+// Secret on the target cluster is recognizable as this store's child — the mark
+// that stands in for the owner reference no cross-cluster owner can carry.
+func claimedByStore(t *testing.T, store *barbicanv1alpha1.BarbicanSecretStore, secret *corev1.Secret) *corev1.Secret {
+	t.Helper()
+	labels, err := commonmulticluster.OwnerLabels(testScheme(), store)
+	NewGomegaWithT(t).Expect(err).NotTo(HaveOccurred())
+	secret.Labels = labels
+	return secret
+}
+
+// credentialsKey names the AppRole credentials Secret of the fixture store.
+var credentialsKey = client.ObjectKey{Namespace: testNamespace, Name: testStoreName + approleSecretNameSuffix}
+
+// TestSecretStoreReconcile_RemoteStoreStampsTheAnnotationBeforeTheFinalizer
+// pins the ordering the teardown depends on. The finalizer commits this
+// controller to deleting a Secret on another cluster; the annotation is the only
+// record of which cluster that is once the parent Barbican is gone. Writing them
+// in this order means a crash between the two writes leaves an annotation
+// without a finalizer, which costs nothing, and never a finalizer whose handler
+// cannot name its cluster.
+func TestSecretStoreReconcile_RemoteStoreStampsTheAnnotationBeforeTheFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := testManagedStore()
+	f := newStoreFixture(newProvisionedFakeClient(), store, targetedBarbican("edge-1"))
+	children := childrenFake(t, testInstance(true), testCASecret())
+	f.reconciler.Resolver = &childrenResolver{children: children}
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}),
+		"the mark is read back from etcd on the next pass, not trusted in memory")
+	marked := f.store(t)
+	g.Expect(marked.Annotations).To(HaveKeyWithValue(childrenClusterAnnotation, "edge-1"))
+	g.Expect(marked.Finalizers).To(BeEmpty(), "the annotation is written first, on a pass of its own")
+	g.Expect(children.Get(ctx, credentialsKey, &corev1.Secret{})).NotTo(Succeed(),
+		"nothing is minted before both marks are on the store")
+
+	result, err = f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+	marked = f.store(t)
+	g.Expect(marked.Finalizers).To(ConsistOf(commonmulticluster.RemoteChildrenFinalizer))
+	g.Expect(marked.Annotations).To(HaveKeyWithValue(childrenClusterAnnotation, "edge-1"),
+		"a finalizer never exists without the annotation naming the cluster it cleans up on")
+	g.Expect(children.Get(ctx, credentialsKey, &corev1.Secret{})).NotTo(Succeed())
+
+	_, err = f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(children.Get(ctx, credentialsKey, &corev1.Secret{})).To(Succeed(),
+		"the credential lands only once the teardown can find it again")
+}
+
+// TestSecretStoreReconcile_RemoteStoreCorrectsAPlantedAnnotation covers the
+// annotation as what it is: an ordinary field of a user-created CR. Anyone who
+// may update the store can put a value under that key before the operator's
+// first pass, and a stamp guarded on presence alone would keep it. The teardown
+// would then resolve a cluster the credentials were never minted onto — or, for
+// the empty value, none at all — abandon the live AppRole secret ID on the real
+// target, and release the finalizer reporting a clean deletion.
+func TestSecretStoreReconcile_RemoteStoreCorrectsAPlantedAnnotation(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	store := testManagedStore()
+	store.Annotations = map[string]string{childrenClusterAnnotation: ""}
+	f := newStoreFixture(newProvisionedFakeClient(), store, targetedBarbican("edge-1"))
+	f.reconciler.Resolver = &childrenResolver{children: childrenFake(t, testInstance(true), testCASecret())}
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(f.store(t).Annotations).To(HaveKeyWithValue(childrenClusterAnnotation, "edge-1"),
+		"the resolved cluster is authoritative, not whatever the annotation already said")
+}
+
+// TestSecretStoreReconcile_RemoteCredentialsAreClaimedByLabel pins how the
+// Secret is owned on a cluster the store CR does not live on. An owner reference
+// there names a UID the target's garbage collector cannot resolve, so the claim
+// is three labels instead, and they are what the teardown selects on.
+func TestSecretStoreReconcile_RemoteCredentialsAreClaimedByLabel(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := testManagedStore()
+	f := newStoreFixture(newProvisionedFakeClient(), store, targetedBarbican("edge-1"))
+	children := childrenFake(t, testInstance(true), testCASecret())
+	f.reconciler.Resolver = &childrenResolver{children: children}
+
+	_, err := f.reconcileRemote(t, store)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var creds corev1.Secret
+	g.Expect(children.Get(ctx, credentialsKey, &creds)).To(Succeed())
+	g.Expect(creds.OwnerReferences).To(BeEmpty())
+	g.Expect(creds.Labels).To(HaveKeyWithValue(commonmulticluster.OwnerKindLabel, "BarbicanSecretStore"))
+	g.Expect(creds.Labels).To(HaveKeyWithValue(commonmulticluster.OwnerNameLabel, testStoreName))
+	g.Expect(creds.Labels).To(HaveKeyWithValue(commonmulticluster.OwnerNamespaceLabel, testNamespace))
+}
+
+// TestSecretStoreReconcile_RemintDoesNotRefuseItsOwnRemoteSecret covers the
+// second pass over a Secret that is already there. The claim refuses to adopt a
+// live object it does not own, and a Secret read back from the API server is
+// live by definition (it has a UID), so a re-mint that could not recognize its
+// own child would fail every rotation from the first one on.
+func TestSecretStoreReconcile_RemintDoesNotRefuseItsOwnRemoteSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := testManagedStore()
+	store.Annotations = map[string]string{childrenClusterAnnotation: "edge-1"}
+	store.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer}
+
+	// Minted an hour ago against a one-hour TTL, so the pass is past the
+	// proactive threshold and re-mints. The UID is the one the API server would
+	// have assigned; the fake client assigns none on Create.
+	live := claimedByStore(t, store, testMintedSecret(testClock.Add(-time.Hour), "3600", testSecretID))
+	live.UID = types.UID("live-credentials-uid")
+
+	bao := newProvisionedFakeClient()
+	bao.secretIDs = []string{"fresh-secret-id"}
+	f := newStoreFixture(bao, store, targetedBarbican("edge-1"))
+	children := childrenFake(t, testInstance(true), testCASecret(), live)
+	f.reconciler.Resolver = &childrenResolver{children: children}
+
+	_, err := f.reconcile(t, store)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var creds corev1.Secret
+	g.Expect(children.Get(ctx, credentialsKey, &creds)).To(Succeed())
+	g.Expect(creds.Data).To(HaveKeyWithValue(barbicanv1alpha1.OpenBaoSecretIDKey, []byte("fresh-secret-id")))
+	g.Expect(creds.Labels).To(HaveKeyWithValue(commonmulticluster.OwnerNameLabel, testStoreName),
+		"the claim survives the update that re-mints")
+	g.Expect(condition(f.store(t), conditionTypeCredentialsReady).Status).To(Equal(metav1.ConditionTrue))
+}
+
+// TestSecretStoreReconcile_RemoteMintRefusesAForeignSecret is the other side of
+// that recognition. A live Secret of the same name that nobody claimed belongs
+// to whoever put it there: overwriting its data and stamping the ownership
+// labels on it would also get it deleted at this store's teardown.
+func TestSecretStoreReconcile_RemoteMintRefusesAForeignSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := testManagedStore()
+	store.Annotations = map[string]string{childrenClusterAnnotation: "edge-1"}
+	store.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer}
+
+	foreign := managedApproleSecret(testStoreName, "someone-elses-role", "someone-elses-secret")
+	foreign.UID = types.UID("foreign-credentials-uid")
+
+	f := newStoreFixture(newProvisionedFakeClient(), store, targetedBarbican("edge-1"))
+	children := childrenFake(t, testInstance(true), testCASecret(), foreign)
+	f.reconciler.Resolver = &childrenResolver{children: children}
+
+	_, err := f.reconcile(t, store)
+
+	g.Expect(err).To(MatchError(ContainSubstring("refusing to adopt pre-existing")))
+	var untouched corev1.Secret
+	g.Expect(children.Get(ctx, credentialsKey, &untouched)).To(Succeed())
+	g.Expect(untouched.Data).To(HaveKeyWithValue(barbicanv1alpha1.OpenBaoSecretIDKey, []byte("someone-elses-secret")))
+	g.Expect(untouched.Labels).To(BeEmpty())
+}
+
+// TestSecretStoreDelete_DeletesRemoteCredentialsWithoutTheParent is what the
+// finalizer is for. The Secret sits on a cluster no garbage collection cascade
+// reaches from here, and the parent Barbican that named that cluster is already
+// gone — the ordinary order when a whole namespace is deleted. The annotation is
+// what still answers where to clean up.
+func TestSecretStoreDelete_DeletesRemoteCredentialsWithoutTheParent(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := terminatingRemoteStore("edge-1", testClock)
+	creds := claimedByStore(t, store, managedApproleSecret(testStoreName, testRoleID, testSecretID))
+	f := newStoreFixtureWithoutParent(newProvisionedFakeClient(), store)
+	children := childrenFake(t, creds)
+	f.reconciler.Resolver = &childrenResolver{children: children}
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	err = children.Get(ctx, credentialsKey, &corev1.Secret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"nothing on the target cluster deletes the Secret, so the teardown has to")
+	g.Expect(f.store(t).Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
+}
+
+// TestSecretStoreDelete_ForeignSecretOfTheSameNameSurvives keeps the teardown as
+// narrow as the claim: the store name reserves nothing in a namespace it shares,
+// and a Secret carrying none of this store's ownership labels is not its to
+// delete. Leaving it standing must still release the finalizer, or the CR would
+// hang on an object it may never touch.
+func TestSecretStoreDelete_ForeignSecretOfTheSameNameSurvives(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := terminatingRemoteStore("edge-1", testClock)
+	foreign := managedApproleSecret(testStoreName, "someone-elses-role", "someone-elses-secret")
+	f := newStoreFixtureWithoutParent(newProvisionedFakeClient(), store)
+	children := childrenFake(t, foreign)
+	f.reconciler.Resolver = &childrenResolver{children: children}
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	var survivor corev1.Secret
+	g.Expect(children.Get(ctx, credentialsKey, &survivor)).To(Succeed())
+	g.Expect(survivor.Data).To(HaveKeyWithValue(barbicanv1alpha1.OpenBaoSecretIDKey, []byte("someone-elses-secret")))
+	g.Expect(f.store(t).Finalizers).To(ConsistOf("foreign.example.com/keep-alive"),
+		"a Secret this store may not delete must not pin it either")
+}
+
+// TestSecretStoreDelete_ReadsTheCredentialsThroughTheUncachedReader pins where
+// the teardown looks. A NotFound is what licenses the finalizer release, so a
+// Secret the target's informer cache has not caught up on — an operator
+// restarted, a cluster engaged moments ago — would be reported as already gone
+// and left behind: a live OpenBao role ID and secret ID materialized on a
+// cluster with no CR left to delete them.
+func TestSecretStoreDelete_ReadsTheCredentialsThroughTheUncachedReader(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := terminatingRemoteStore("edge-1", testClock)
+	creds := claimedByStore(t, store, managedApproleSecret(testStoreName, testRoleID, testSecretID))
+	children := childrenFake(t, creds)
+	// One cluster, two views of it: the cache has not caught up with the Secret
+	// the API server already serves.
+	stale := interceptor.NewClient(children, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if key == credentialsKey {
+				return apierrors.NewNotFound(corev1.Resource("secrets"), key.Name)
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+
+	f := newStoreFixtureWithoutParent(newProvisionedFakeClient(), store)
+	f.reconciler.Resolver = &childrenResolver{children: stale, reader: children}
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	err = children.Get(ctx, credentialsKey, &corev1.Secret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"the credential must be deleted from live state, not declared gone by a cache")
+	g.Expect(f.store(t).Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
+}
+
+// TestSecretStoreDelete_FallsBackToTheParentTargetRef covers the crash window
+// between the two teardown marks: a store that carries the finalizer without the
+// annotation. The parent Barbican still names the cluster, so the cleanup runs
+// off it rather than giving up.
+func TestSecretStoreDelete_FallsBackToTheParentTargetRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := terminatingRemoteStore("", testClock)
+	creds := claimedByStore(t, store, managedApproleSecret(testStoreName, testRoleID, testSecretID))
+	f := newStoreFixture(newProvisionedFakeClient(), store, targetedBarbican("edge-1"))
+	children := childrenFake(t, creds)
+	resolver := &childrenResolver{children: children}
+	f.reconciler.Resolver = resolver
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(resolver.names).To(ConsistOf(mcruntime.ClusterName("edge-1")))
+	err = children.Get(ctx, credentialsKey, &corev1.Secret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+	g.Expect(f.store(t).Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
+}
+
+// TestSecretStoreDelete_PlantedAnnotationCannotDivertTheSweep is the
+// deletion-path half of the guard the normal path carries. Nothing corrects the
+// annotation once the store has a deletionTimestamp — the API server takes
+// annotation writes on a terminating object, and the normal path no longer runs
+// — so a planted name must not be able to send the teardown somewhere else and
+// have the finalizer released on a live AppRole secret ID abandoned on the real
+// target. The parent still names that target, so the Secret goes; the planted
+// cluster is visited too, and finds nothing to take.
+func TestSecretStoreDelete_PlantedAnnotationCannotDivertTheSweep(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := terminatingRemoteStore("planted-edge", testClock)
+	creds := claimedByStore(t, store, managedApproleSecret(testStoreName, testRoleID, testSecretID))
+	f := newStoreFixture(newProvisionedFakeClient(), store, targetedBarbican("edge-1"))
+	children := childrenFake(t, creds)
+	planted := childrenFake(t)
+	resolver := &childrenResolver{byName: map[string]client.Client{"edge-1": children, "planted-edge": planted}}
+	f.reconciler.Resolver = resolver
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(resolver.names).To(HaveExactElements(
+		mcruntime.ClusterName("edge-1"), mcruntime.ClusterName("planted-edge")),
+		"the cluster the parent names is visited, and first")
+	err = children.Get(ctx, credentialsKey, &corev1.Secret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"the finalizer may only be released once the real Secret is gone")
+	g.Expect(f.store(t).Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
+}
+
+// TestSecretStoreDelete_ReachesTheClusterOnlyTheAnnotationStillNames covers the
+// parent that answers with the wrong cluster. spec.targetClusterRef is immutable
+// under a CEL transition rule, and a transition rule is evaluated on UPDATE
+// only: deleting the parent Barbican and re-creating it under the same name
+// against another target moves it without one ever firing. The annotation still
+// names where this store minted, so the Secret there is deleted rather than left
+// holding a live secret ID with no CR to reclaim it.
+func TestSecretStoreDelete_ReachesTheClusterOnlyTheAnnotationStillNames(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := terminatingRemoteStore("edge-1", testClock)
+	creds := claimedByStore(t, store, managedApproleSecret(testStoreName, testRoleID, testSecretID))
+	// The parent was re-created against edge-2 since the mint; nothing on it
+	// records that this store's Secret is still on edge-1.
+	f := newStoreFixture(newProvisionedFakeClient(), store, targetedBarbican("edge-2"))
+	minted := childrenFake(t, creds)
+	current := childrenFake(t)
+	resolver := &childrenResolver{byName: map[string]client.Client{"edge-1": minted, "edge-2": current}}
+	f.reconciler.Resolver = resolver
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(resolver.names).To(ContainElement(mcruntime.ClusterName("edge-1")),
+		"the cluster the annotation names is visited even while the parent answers")
+	err = minted.Get(ctx, credentialsKey, &corev1.Secret{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"a Secret the parent no longer points at is still this store's to delete")
+	g.Expect(f.store(t).Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
+}
+
+// TestSecretStoreDelete_WithoutAnyClusterNameWaitsThenAbandons covers the one
+// state neither mark answers: no annotation and no parent either. Waiting cannot
+// produce the name, but a parent deleted moments ago may still be readable on
+// the next pass, so the store sits out the abandon window before it gives the
+// Secret up rather than stranding itself in Terminating.
+func TestSecretStoreDelete_WithoutAnyClusterNameWaitsThenAbandons(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	waiting := terminatingRemoteStore("", testClock)
+	f := newStoreFixtureWithoutParent(newProvisionedFakeClient(), waiting)
+
+	result, err := f.reconcile(t, waiting)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+	g.Expect(f.store(t).Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer))
+	g.Expect(f.warnings()).To(BeEmpty(), "nothing is abandoned while the name may still appear")
+
+	// The same store, deleted longer ago than the window: the Secret is given up,
+	// and it is announced rather than dropped silently.
+	abandoned := terminatingRemoteStore("", testClock.Add(-2*commonmulticluster.AbandonAfter))
+	f = newStoreFixtureWithoutParent(newProvisionedFakeClient(), abandoned)
+
+	result, err = f.reconcile(t, abandoned)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(f.warnings()).To(ContainElement(ContainSubstring("RemoteChildrenAbandoned")))
+	g.Expect(f.store(t).Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
+}
+
+// TestSecretStoreDelete_AbandonsAnUnresolvableTargetCluster covers the cluster
+// the store can name but nothing can reach: deregistering a target is a
+// documented operation, and the store that minted onto it carries the finalizer
+// by then. Its Secret is unreachable either way, so the CR is released rather
+// than left Terminating — but only after the window, because engagement is
+// asynchronous and a cluster that has not been engaged yet looks the same.
+func TestSecretStoreDelete_AbandonsAnUnresolvableTargetCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+	abandonAfter := commonmulticluster.AbandonAfter
+	t.Cleanup(func() { commonmulticluster.AbandonAfter = abandonAfter })
+	commonmulticluster.AbandonAfter = time.Millisecond
+
+	// Deleted at wall-clock now: the two windows the resolver weighs run against
+	// the real clock, not this controller's injected one.
+	store := terminatingRemoteStore("deregistered-edge", time.Now())
+	f := newStoreFixtureWithoutParent(newProvisionedFakeClient(), store)
+	f.reconciler.Resolver = unresolvableResolver{}
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling),
+		"the first pass this process fails to resolve on starts the window, it does not end it")
+	g.Expect(f.store(t).Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer))
+	time.Sleep(10 * commonmulticluster.AbandonAfter)
+
+	result, err = f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	g.Expect(f.warnings()).To(ContainElement(ContainSubstring("RemoteChildrenAbandoned")))
+	g.Expect(f.store(t).Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
+}
+
+// TestSecretStoreDelete_LocalStoreCarriesNoTeardownMarks pins the unchanged half.
+// A store whose parent keeps its workload on the management cluster owns its
+// Secret by owner reference, so the cascade collects it: no annotation, no
+// finalizer, and deleting the CR takes it straight out of etcd.
+func TestSecretStoreDelete_LocalStoreCarriesNoTeardownMarks(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := testManagedStore()
+	f := newStoreFixture(newProvisionedFakeClient(),
+		append(projectedConfigObjects(), store, testInstance(true), testCASecret())...)
+
+	_, err := f.reconcile(t, store)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	local := f.store(t)
+	g.Expect(local.Annotations).NotTo(HaveKey(childrenClusterAnnotation))
+	g.Expect(local.Finalizers).To(BeEmpty())
+	creds := f.credentialsSecret(t)
+	g.Expect(creds.OwnerReferences).To(HaveLen(1), "the cascade needs the reference the labels stand in for remotely")
+	g.Expect(creds.Labels).NotTo(HaveKey(commonmulticluster.OwnerKindLabel))
+
+	g.Expect(f.reconciler.Delete(ctx, local)).To(Succeed())
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+	err = f.reconciler.Get(ctx, client.ObjectKeyFromObject(store), &barbicanv1alpha1.BarbicanSecretStore{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "no finalizer holds a local store back")
 }
 
 // --- watch mappers ---------------------------------------------------------

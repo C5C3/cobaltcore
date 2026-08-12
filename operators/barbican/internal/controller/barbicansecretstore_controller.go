@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,7 @@ import (
 	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/secrets"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	"github.com/c5c3/forge/operators/barbican/internal/metrics"
@@ -124,6 +126,16 @@ const (
 	// #nosec G101 -- annotation key naming the mint TTL, not a credential.
 	secretIDTTLSecondsAnnotation = "barbican.c5c3.io/secret-id-ttl-seconds"
 )
+
+// childrenClusterAnnotation names the target cluster this store's credentials
+// Secret was minted onto. The store itself has no target field: it inherits one
+// from its parent Barbican, and the teardown has to reach that cluster after the
+// parent may already be gone. Stamping the resolved name on the store is what
+// keeps the deletion independent of the parent's own lifetime. Both inputs it is
+// derived from are immutable, so the operator never has cause to rewrite what it
+// wrote — but it is an ordinary annotation on a user-created CR, so the value is
+// reconciled against the resolved name rather than trusted for being present.
+const childrenClusterAnnotation = "openstack.c5c3.io/children-cluster"
 
 // The values of the trigger label on the re-mint counter.
 const (
@@ -229,12 +241,23 @@ func barbicanSecretStoreInstanceRefExtractor(obj client.Object) []string {
 // only reads it (a ready store gates config projection) and writes an aggregated
 // condition onto the Barbican CR instead.
 //
-// There is deliberately NO finalizer. A managed store's credentials Secret is
-// owned by the CR and garbage-collected with it, and the AppRole itself is
-// shared instance state the self-init contract owns, not this CR — revoking it
-// on delete would break every other store on the same instance. Deleting a store
-// therefore only detaches it, and the parent Barbican de-projects the dropped
-// section on its next pass.
+// A store has two deletion lifecycles, and which one applies follows from where
+// its parent Barbican places its workload:
+//
+//   - Local parent. The credentials Secret is owned by the store CR and
+//     garbage-collected with it, so the store carries no finalizer and deleting
+//     it only detaches it.
+//   - Remote parent (the Barbican names spec.targetClusterRef). The Secret lives
+//     on that cluster, where an owner reference to this CR means nothing, so it
+//     is unowned and carries the ownership labels instead. The store records the
+//     cluster in the childrenClusterAnnotation and carries
+//     multicluster.RemoteChildrenFinalizer, and its deletion removes the Secret
+//     explicitly: no garbage collection cascade crosses the cluster boundary.
+//
+// The AppRole is shared instance state the self-init contract owns either way,
+// not this CR, and is never revoked: revoking it on delete would break every
+// other store on the same instance. In both cases the parent Barbican
+// de-projects the dropped section on its next pass.
 type BarbicanSecretStoreReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -267,7 +290,7 @@ type BarbicanSecretStoreReconciler struct {
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores/finalizers,verbs=update
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicans,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // The TokenRequest grant is namespace-bound, not part of the operator's
 // ClusterRole: a cluster-wide grant would let anyone reaching this operator's
@@ -292,12 +315,20 @@ func (r *BarbicanSecretStoreReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, fmt.Errorf("fetching BarbicanSecretStore: %w", err)
 	}
 
-	// No finalizer (see the type doc): a deleting store only sheds its metric
-	// series, so the re-mint counter does not keep reporting a CR that is gone.
-	// Status is left untouched — writing to a terminating object is a no-op at
-	// best and a conflict at worst.
+	// A deleting store sheds its metric series on every pass, so the re-mint
+	// counter does not keep reporting a CR that is gone; the eviction is
+	// idempotent, which matters because the remote teardown below can requeue for
+	// minutes. Status is left untouched — writing to a terminating object is a
+	// no-op at best and a conflict at worst.
+	//
+	// A local store is done here (see the type doc): its credentials Secret is
+	// collected from the owner reference. Only a store whose Secret sits on a
+	// target cluster carries the finalizer, and only that one has cleanup to do.
 	if store.DeletionTimestamp != nil {
 		metrics.DeleteForBarbicanSecretStore(store.Name, store.Namespace)
+		if controllerutil.ContainsFinalizer(&store, commonmulticluster.RemoteChildrenFinalizer) {
+			return r.reconcileDeleteRemoteCredentials(ctx, &store)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -315,9 +346,17 @@ func (r *BarbicanSecretStoreReconciler) Reconcile(ctx context.Context, req ctrl.
 // Barbican, so it opens by resolving that parent's target cluster into the
 // children client the rest of the pass reads and writes with.
 func (r *BarbicanSecretStoreReconciler) reconcileNormal(ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore) (ctrl.Result, error) {
-	children, result, err := r.resolveChildren(ctx, store)
+	children, childrenCluster, result, err := r.resolveChildren(ctx, store)
 	if children == nil {
 		return result, err
+	}
+
+	// Both marks go on before anything is minted onto the target cluster, so a
+	// Secret can never exist there without a finalizer that deletes it.
+	if commonmulticluster.IsRemote(children) {
+		if result, err := r.ensureRemoteTeardownMarks(ctx, store, childrenCluster); !result.IsZero() || err != nil {
+			return result, err
+		}
 	}
 
 	spec := store.Spec.OpenBao
@@ -350,7 +389,9 @@ func (r *BarbicanSecretStoreReconciler) reconcileNormal(ctx context.Context, sto
 // with: the one the PARENT Barbican's spec.targetClusterRef selects. The store
 // has no target field of its own, so the AppRole credentials Secret it mints and
 // the OpenBao instance it authenticates against land wherever the parent's
-// workload runs — the same cluster the API pods read them from.
+// workload runs — the same cluster the API pods read them from. It also returns
+// the name of that cluster, empty for a parent that keeps its workload local, so
+// the caller can record it on the store for the teardown.
 //
 // A parent that does not exist holds the pass on CredentialsReady=False and
 // requeues, the same treatment an unresolvable target gets. Guessing the local
@@ -364,26 +405,231 @@ func (r *BarbicanSecretStoreReconciler) reconcileNormal(ctx context.Context, sto
 // on CredentialsReady, the store's first gate condition.
 func (r *BarbicanSecretStoreReconciler) resolveChildren(
 	ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore,
-) (client.Client, ctrl.Result, error) {
+) (client.Client, string, ctrl.Result, error) {
 	var parent barbicanv1alpha1.Barbican
 	parentKey := client.ObjectKey{Namespace: store.Namespace, Name: store.Spec.BarbicanRef.Name}
 	if err := r.Get(ctx, parentKey, &parent); err != nil {
 		if !apierrors.IsNotFound(err) {
-			return nil, ctrl.Result{}, fmt.Errorf("fetching parent Barbican %s: %w", parentKey, err)
+			return nil, "", ctrl.Result{}, fmt.Errorf("fetching parent Barbican %s: %w", parentKey, err)
 		}
 		r.setCondition(store, conditionTypeCredentialsReady, metav1.ConditionFalse,
 			conditionReasonWaitingForParent,
 			fmt.Sprintf("parent Barbican %s does not exist; the cluster this store's credentials belong on is unknown", parentKey))
-		return nil, ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+		return nil, "", ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
 
 	children, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, parent.Spec.TargetClusterRef)
 	if err != nil {
 		r.setCondition(store, conditionTypeCredentialsReady, metav1.ConditionFalse,
 			commonmulticluster.TargetClusterUnavailable, err.Error())
-		return nil, ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+		return nil, "", ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
 	}
-	return children, ctrl.Result{}, nil
+
+	var childrenCluster string
+	if parent.Spec.TargetClusterRef != nil {
+		childrenCluster = parent.Spec.TargetClusterRef.Name
+	}
+	return children, childrenCluster, ctrl.Result{}, nil
+}
+
+// ensureRemoteTeardownMarks records what the deletion path needs to find the
+// credentials Secret again: the annotation naming the cluster it is minted onto,
+// and the finalizer that keeps the store in etcd long enough to delete it. Both
+// are written before the mint, so a Secret on a target cluster always has a
+// finalizer behind it.
+//
+// The order between them is the invariant, and it is why this is two writes
+// rather than one: the annotation goes first, so a crash between them leaves an
+// annotation without a finalizer (which costs nothing, since nothing was minted
+// either) and never a finalizer whose handler cannot name the cluster it has to
+// clean up on. The name is derived from two immutable fields, so a second pass
+// finds the annotation it wrote and neither write repeats.
+func (r *BarbicanSecretStoreReconciler) ensureRemoteTeardownMarks(
+	ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore, childrenCluster string,
+) (ctrl.Result, error) {
+	// Compared against the resolved name, not merely tested for presence: the
+	// store is a user-created CR, so a principal who may update it can put any
+	// value under this key — an empty one included — before the operator's first
+	// pass. Left standing, that value would send the teardown at a cluster the
+	// Secret was never minted onto, or at none at all, and the credentials would
+	// be abandoned on the real target while the CR reported a clean deletion.
+	if store.Annotations[childrenClusterAnnotation] != childrenCluster {
+		if store.Annotations == nil {
+			store.Annotations = map[string]string{}
+		}
+		store.Annotations[childrenClusterAnnotation] = childrenCluster
+		if err := r.Update(ctx, store); err != nil {
+			return ctrl.Result{}, fmt.Errorf("recording the children cluster on the store: %w", err)
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
+	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, store, commonmulticluster.RemoteChildrenFinalizer); err != nil {
+		return ctrl.Result{}, err
+	} else if added {
+		return ctrl.Result{Requeue: true}, nil
+	}
+	return ctrl.Result{}, nil
+}
+
+// reconcileDeleteRemoteCredentials deletes the AppRole credentials Secret this
+// store minted onto a target cluster and then releases the remote-children
+// finalizer. Nothing on that cluster collects the Secret: it carries the
+// ownership labels rather than an owner reference, because a reference to a CR
+// living on the management cluster names a UID the target's garbage collector
+// cannot resolve.
+//
+// The AppRole behind those credentials is NOT touched. It is shared instance
+// state the self-init contract provisions, and every other store on the same
+// instance authenticates with it; only the Secret holding this store's secret ID
+// is this CR's to remove.
+//
+// The clusters to visit are named by the parent Barbican wherever it can still
+// be read and by the annotation the normal path stamped, which are usually the
+// same one and are each visited when they are not (see childrenClusters). The
+// annotation is what lets the store be deleted after its parent already is,
+// which is the ordinary order when a whole namespace goes.
+func (r *BarbicanSecretStoreReconciler) reconcileDeleteRemoteCredentials(
+	ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore,
+) (ctrl.Result, error) {
+	clusters, err := r.childrenClusters(ctx, store)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if len(clusters) == 0 {
+		// Neither mark survived: the annotation is absent and the parent is gone
+		// too, so nothing names the cluster the Secret is on. Waiting cannot
+		// produce the name, but the parent may still be terminating and about to
+		// be read one more time, so the store waits out the same window an
+		// unresolvable cluster gets before it gives the Secret up.
+		if r.now().Sub(store.DeletionTimestamp.Time) < commonmulticluster.AbandonAfter {
+			return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+		}
+		r.Recorder.Event(store, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
+			"Neither this store nor a parent Barbican names the cluster its AppRole credentials Secret was minted onto; "+
+				"releasing the remote-children finalizer without deleting it")
+		return r.releaseRemoteChildrenFinalizer(ctx, store)
+	}
+
+	for _, cluster := range clusters {
+		children, wait := commonmulticluster.ResolveChildrenClientForDeletion(ctx, r.Resolver, r.Client,
+			&commonv1.TargetClusterRefSpec{Name: cluster}, *store.DeletionTimestamp)
+		if wait {
+			return ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+		}
+		if children == nil {
+			r.Recorder.Event(store, corev1.EventTypeWarning, "RemoteChildrenAbandoned",
+				fmt.Sprintf("Target cluster %s is no longer registered; releasing the remote-children finalizer without "+
+					"deleting the AppRole credentials Secret on it", cluster))
+			continue
+		}
+
+		if err := r.deleteRemoteCredentialsSecret(ctx, children, cluster, store); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return r.releaseRemoteChildrenFinalizer(ctx, store)
+}
+
+// childrenClusters names every cluster this store's credentials Secret may sit
+// on: the parent Barbican's target wherever the parent can still answer, and the
+// annotation the normal path stamped. They name the same cluster on every
+// ordinary teardown, and then this is one name. An empty result means neither
+// source answered, which is the parent having been deleted inside the crash
+// window between the annotation write and the finalizer add.
+//
+// Both are visited when they disagree, because neither source is authoritative
+// on its own and picking one leaves a live AppRole secret ID on the other with
+// no CR left to reclaim it:
+//
+//   - The parent can be gone, which is the ordinary order when a whole namespace
+//     is deleted, and it can also have been deleted and re-created under the same
+//     name against a different target since the mint. Its
+//     spec.targetClusterRef is immutable, but immutability is a transition rule
+//     the API server evaluates on UPDATE, and a delete/create pair is not one.
+//   - The annotation is an ordinary field of a user-created CR: anyone who may
+//     update the store can put a different registered cluster under that key, and
+//     nothing corrects the value once the store carries a deletionTimestamp,
+//     since the API server takes annotation writes on a terminating object and
+//     ensureRemoteTeardownMarks no longer runs.
+//
+// Visiting a cluster the Secret was never minted onto costs one read that finds
+// nothing, and the delete is gated on ownership either way (see
+// deleteRemoteCredentialsSecret), so a planted name cannot reach anything that
+// is not this store's own child.
+func (r *BarbicanSecretStoreReconciler) childrenClusters(ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore) ([]string, error) {
+	var clusters []string
+
+	var parent barbicanv1alpha1.Barbican
+	parentKey := client.ObjectKey{Namespace: store.Namespace, Name: store.Spec.BarbicanRef.Name}
+	switch err := r.Get(ctx, parentKey, &parent); {
+	case err == nil:
+		if parent.Spec.TargetClusterRef != nil {
+			clusters = append(clusters, parent.Spec.TargetClusterRef.Name)
+		}
+	case !apierrors.IsNotFound(err):
+		return nil, fmt.Errorf("fetching parent Barbican %s: %w", parentKey, err)
+	}
+
+	// A store carrying the finalizer minted somewhere, and the annotation is the
+	// only record of where that survives its parent.
+	annotated := store.Annotations[childrenClusterAnnotation]
+	if annotated != "" && !slices.Contains(clusters, annotated) {
+		clusters = append(clusters, annotated)
+	}
+	return clusters, nil
+}
+
+// deleteRemoteCredentialsSecret removes the credentials Secret from the named
+// target cluster, and only when this store owns it. A Secret of the same name
+// that somebody else provisioned there carries no ownership labels of ours and
+// is left standing: the store name is not a reservation on that namespace. That
+// gate is also what makes it safe to visit every cluster childrenClusters
+// returns rather than to pick one of them.
+func (r *BarbicanSecretStoreReconciler) deleteRemoteCredentialsSecret(
+	ctx context.Context, children client.Client, cluster string, store *barbicanv1alpha1.BarbicanSecretStore,
+) error {
+	credsKey := client.ObjectKey{Namespace: store.Namespace, Name: store.Name + approleSecretNameSuffix}
+
+	// Read through the target cluster's uncached API reader, never through the
+	// children client's cache. A NotFound here licenses the finalizer release, so
+	// a Secret the cache has not caught up on — an operator restart, a cluster
+	// engaged moments ago — would leave a live OpenBao secret ID materialized on
+	// the target with no CR left to delete it.
+	var creds corev1.Secret
+	if err := commonmulticluster.LiveReader(children).Get(ctx, credsKey, &creds); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("fetching the AppRole credentials Secret %s for teardown: %w", credsKey, err)
+	}
+
+	owned, err := commonmulticluster.Controls(r.Scheme, store, &creds)
+	if err != nil {
+		return err
+	}
+	if !owned {
+		log.FromContext(ctx).Info("leaving a foreign Secret of the store's credentials name behind",
+			"secret", credsKey, "targetCluster", cluster)
+		return nil
+	}
+
+	if err := children.Delete(ctx, &creds); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("deleting the AppRole credentials Secret %s: %w", credsKey, err)
+	}
+	return nil
+}
+
+// releaseRemoteChildrenFinalizer drops the finalizer and persists the store, the
+// single exit of every teardown path above.
+func (r *BarbicanSecretStoreReconciler) releaseRemoteChildrenFinalizer(
+	ctx context.Context, store *barbicanv1alpha1.BarbicanSecretStore,
+) (ctrl.Result, error) {
+	controllerutil.RemoveFinalizer(store, commonmulticluster.RemoteChildrenFinalizer)
+	if err := r.Update(ctx, store); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing remote-children finalizer: %w", err)
+	}
+	return ctrl.Result{}, nil
 }
 
 // reconcileManaged provisions the store against the OpenBaoCluster it names: it
@@ -584,7 +830,11 @@ func (r *BarbicanSecretStoreReconciler) mintCredentials(
 		}
 		creds.Annotations[secretIDMintedAtAnnotation] = mintedAt.Format(time.RFC3339)
 		creds.Annotations[secretIDTTLSecondsAnnotation] = strconv.FormatInt(ttlSeconds, 10)
-		return controllerutil.SetControllerReference(store, creds, r.Scheme)
+		// A local Secret is claimed by a controller owner reference, one on a
+		// target cluster by the ownership labels the teardown selects on. The
+		// mutate touches no labels of its own, so the claim is the only writer of
+		// them and nothing can drop what it stamped.
+		return commonmulticluster.Claim(children, r.Scheme, store, creds)
 	}); err != nil {
 		return false, ctrl.Result{}, fmt.Errorf("writing the AppRole credentials Secret %s: %w", credsKey, err)
 	}
