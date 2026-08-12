@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
@@ -4296,4 +4297,209 @@ func TestReconcileDeleteRemovesRotationAgeSeries(t *testing.T) {
 		To(BeNil(), "reconcileDelete MUST remove the fernet rotation-age gauge series")
 	g.Expect(findMetricByLabels(t, ctrlmetrics.Registry, "keystone_operator_key_rotation_age_seconds", credLabels)).
 		To(BeNil(), "reconcileDelete MUST remove the credential rotation-age gauge series")
+}
+
+// remoteChildrenScheme is the scheme the target-cluster fake client is built
+// with: testScheme plus cert-manager, so every kind in
+// keystoneRemoteChildKinds is registered and the sweep's unstructured Lists
+// all resolve. A target cluster that does not serve one of them is the
+// teardown helper's own concern and is covered there.
+func remoteChildrenScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := testScheme()
+	NewGomegaWithT(t).Expect(certmanagerv1.AddToScheme(s)).To(Succeed())
+	return s
+}
+
+// ownedRemoteChild stamps the ownership labels the projection wrote on a child
+// it put on the target cluster, so the sweep selects it exactly as it would
+// there.
+func ownedRemoteChild(t *testing.T, s *runtime.Scheme, owner, child client.Object) client.Object {
+	t.Helper()
+	labels, err := commonmulticluster.OwnerLabels(s, owner)
+	NewGomegaWithT(t).Expect(err).NotTo(HaveOccurred())
+	child.SetLabels(labels)
+	return child
+}
+
+// terminatingRemoteKeystone returns a Keystone that names a target cluster and
+// is being deleted, carrying the remote-children finalizer plus a foreign one
+// so the CR survives the release and the test can read back which finalizers
+// the pass dropped.
+func terminatingRemoteKeystone(t *testing.T) (*KeystoneReconciler, *keystonev1alpha1.Keystone) {
+	t.Helper()
+	ks := testKeystone()
+	ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "target"}
+	ks.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer, "foreign.example.com/keep-alive"}
+	r := newTestReconciler(ks)
+	return r, markKeystoneTerminating(t, r.Client, ks)
+}
+
+// TestReconcileDeleteRemoteChildren_SweepsEveryLabelledChild is the whole point
+// of the finalizer: no garbage collection cascade crosses the cluster
+// boundary, so the objects this CR projected have to be deleted by name from
+// here, across every API group they live in. What the sweep leaves standing
+// matters as much: a target cluster carries other people's objects, and an
+// object nobody claimed or another CR claimed is not ours to remove.
+func TestReconcileDeleteRemoteChildren_SweepsEveryLabelledChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r, terminating := terminatingRemoteKeystone(t)
+
+	s := remoteChildrenScheme(t)
+	deployment := ownedRemoteChild(t, s, terminating,
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "test-keystone", Namespace: "default"}})
+	service := ownedRemoteChild(t, s, terminating,
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-api", Namespace: "default"}})
+	pushSecret := ownedRemoteChild(t, s, terminating,
+		&esov1alpha1.PushSecret{ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-fernet-backup", Namespace: "default"}})
+	grant := ownedRemoteChild(t, s, terminating,
+		&mariadbv1alpha1.Grant{ObjectMeta: metav1.ObjectMeta{Name: "test-keystone", Namespace: "default"}})
+	unlabelled := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cluster-ca", Namespace: "default"}}
+	foreign := ownedRemoteChild(t, s,
+		&keystonev1alpha1.Keystone{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "default"}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "other-credentials", Namespace: "default"}})
+	target := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(deployment, service, pushSecret, grant, unlabelled, foreign).Build()
+
+	ctx := context.Background()
+	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+
+	g.Expect(err).NotTo(HaveOccurred())
+
+	for _, child := range []client.Object{deployment, service, pushSecret, grant} {
+		err := target.Get(ctx, client.ObjectKeyFromObject(child), child.DeepCopyObject().(client.Object))
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+			"%T %s must be swept", child, child.GetName())
+	}
+	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(unlabelled), &corev1.ConfigMap{})).To(Succeed(),
+		"an object nobody claimed is nobody's child")
+	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(foreign), &corev1.Secret{})).To(Succeed(),
+		"another Keystone's child must survive this one's teardown")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, client.ObjectKeyFromObject(terminating), &updated)).To(Succeed())
+	g.Expect(controllerutil.ContainsFinalizer(&updated, commonmulticluster.RemoteChildrenFinalizer)).To(BeFalse(),
+		"a completed sweep must release the finalizer")
+	g.Expect(updated.Finalizers).To(ConsistOf("foreign.example.com/keep-alive"))
+}
+
+// TestReconcileDeleteRemoteChildren_NilChildrenAbandonsAndReleases covers the
+// deregistered target cluster. Its children cannot be reached, so holding the
+// finalizer would only strand the CR in Terminating; the objects left running
+// are announced rather than silently dropped. Any attempt to sweep through the
+// nil client would fault, which is what proves nothing was deleted.
+func TestReconcileDeleteRemoteChildren_NilChildrenAbandonsAndReleases(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r, terminating := terminatingRemoteKeystone(t)
+
+	ctx := context.Background()
+	err := r.reconcileDeleteRemoteChildren(ctx, nil, terminating)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	expectEvent(g, r, "Warning RemoteChildrenAbandoned")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, client.ObjectKeyFromObject(terminating), &updated)).To(Succeed())
+	g.Expect(controllerutil.ContainsFinalizer(&updated, commonmulticluster.RemoteChildrenFinalizer)).To(BeFalse(),
+		"an unreachable target cluster must not pin the CR forever")
+}
+
+// TestReconcileDeleteRemoteChildren_WithoutFinalizerIsANoOp pins the guard a
+// local CR relies on. It never carries the finalizer, its children are
+// collected from their owner references, and a sweep running anyway would
+// delete objects on the management cluster that the cascade already owns.
+func TestReconcileDeleteRemoteChildren_WithoutFinalizerIsANoOp(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	r := newTestReconciler(ks)
+
+	s := remoteChildrenScheme(t)
+	child := ownedRemoteChild(t, s, ks,
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "test-keystone", Namespace: "default"}})
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(child).Build()
+
+	ctx := context.Background()
+	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed(),
+		"a CR without the finalizer must not sweep anything")
+	expectNoEvent(g, r)
+}
+
+// TestReconcileDeleteRemoteChildren_SweepFailureKeepsFinalizer is the guard
+// against a CR that leaves etcd while its children keep running. A list the
+// target cluster refuses says nothing about whether children exist, so the
+// pass has to fail and sweep again on the next one.
+func TestReconcileDeleteRemoteChildren_SweepFailureKeepsFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r, terminating := terminatingRemoteKeystone(t)
+
+	s := remoteChildrenScheme(t)
+	child := ownedRemoteChild(t, s, terminating,
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "test-keystone", Namespace: "default"}})
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(child).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if list.GetObjectKind().GroupVersionKind().Kind == "DeploymentList" {
+					return apierrors.NewForbidden(appsv1.Resource("deployments"), "", nil)
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).Build()
+
+	ctx := context.Background()
+	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+
+	g.Expect(err).To(MatchError(ContainSubstring("listing remote Deployment children for teardown")))
+	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed())
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, client.ObjectKeyFromObject(terminating), &updated)).To(Succeed())
+	g.Expect(controllerutil.ContainsFinalizer(&updated, commonmulticluster.RemoteChildrenFinalizer)).To(BeTrue(),
+		"a failed sweep must keep the finalizer so the next pass retries")
+}
+
+// TestReconcile_InstallsRemoteChildrenFinalizerForATargetCluster verifies that
+// a CR naming a target cluster is pinned before anything is projected onto it,
+// so a deletion issued between this pass and the next still funnels through
+// the sweep.
+func TestReconcile_InstallsRemoteChildrenFinalizerForATargetCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone()
+	ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "target"}
+	r := newTestReconciler(ks)
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	result, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}),
+		"the pass installing the finalizer must requeue before any sub-reconciler runs")
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	g.Expect(controllerutil.ContainsFinalizer(&updated, commonmulticluster.RemoteChildrenFinalizer)).To(BeTrue())
+}
+
+// TestReconcile_LocalCRNeverCarriesTheRemoteChildrenFinalizer pins the other
+// half. A CR that keeps its children on the management cluster has nothing for
+// the sweep to do, and a finalizer it does not need is one more thing that can
+// block its deletion.
+func TestReconcile_LocalCRNeverCarriesTheRemoteChildrenFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ks := testKeystone() // No spec.targetClusterRef: children stay local.
+	r := newTestReconciler(ks)
+
+	ctx := context.Background()
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: ks.Name, Namespace: ks.Namespace}}
+	_, err := r.Reconcile(ctx, req)
+
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var updated keystonev1alpha1.Keystone
+	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
+	g.Expect(controllerutil.ContainsFinalizer(&updated, commonmulticluster.RemoteChildrenFinalizer)).To(BeFalse(),
+		"a local CR must keep the finalizer set it always had")
 }

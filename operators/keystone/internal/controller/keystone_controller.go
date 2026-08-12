@@ -21,6 +21,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -319,6 +320,38 @@ var certificateGVK = schema.GroupVersionKind{
 	Kind:    "Certificate",
 }
 
+// keystoneRemoteChildKinds are the kinds a Keystone CR projects into the
+// namespace of the target cluster it names, and the kinds
+// reconcileDeleteRemoteChildren sweeps by ownership label when that CR is
+// deleted. Nothing on the target cluster collects them, so a kind missing from
+// this list is a kind that keeps running after its CR is gone.
+//
+// The list is cross-checked against the create verbs of the kubebuilder RBAC
+// markers on this controller below: the operator can only leave behind what it
+// is allowed to create. ExternalSecret is the one create verb deliberately not
+// swept: the marker grants it, but no code composes an ExternalSecret, so no
+// Keystone owns one.
+var keystoneRemoteChildKinds = []schema.GroupVersionKind{
+	appsv1.SchemeGroupVersion.WithKind("Deployment"),
+	corev1.SchemeGroupVersion.WithKind("Service"),
+	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
+	corev1.SchemeGroupVersion.WithKind("Secret"),
+	corev1.SchemeGroupVersion.WithKind("ServiceAccount"),
+	rbacv1.SchemeGroupVersion.WithKind("Role"),
+	rbacv1.SchemeGroupVersion.WithKind("RoleBinding"),
+	batchv1.SchemeGroupVersion.WithKind("Job"),
+	batchv1.SchemeGroupVersion.WithKind("CronJob"),
+	policyv1.SchemeGroupVersion.WithKind("PodDisruptionBudget"),
+	autoscalingv2.SchemeGroupVersion.WithKind("HorizontalPodAutoscaler"),
+	networkingv1.SchemeGroupVersion.WithKind("NetworkPolicy"),
+	httpRouteGVK,
+	certificateGVK,
+	esov1alpha1.SchemeGroupVersion.WithKind("PushSecret"),
+	mariadbv1alpha1.GroupVersion.WithKind("Database"),
+	mariadbv1alpha1.GroupVersion.WithKind("User"),
+	mariadbv1alpha1.GroupVersion.WithKind("Grant"),
+}
+
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/finalizers,verbs=update
@@ -397,6 +430,14 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if result, err := r.reconcileDeleteOpenBao(ctx, children, &keystone); !result.IsZero() || err != nil {
 			return r.updateStatus(ctx, &keystone, statusBefore, result, err)
 		}
+		// The label-selected sweep runs after the two named cleanup flows, never
+		// before them: it would delete the backup PushSecrets out from under the
+		// ESO purge the OpenBao flow waits for. The ordering mirrors the local
+		// one, where the garbage collection cascade starts only once every
+		// finalizer has been released.
+		if err := r.reconcileDeleteRemoteChildren(ctx, children, &keystone); err != nil {
+			return r.updateStatus(ctx, &keystone, statusBefore, ctrl.Result{}, err)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -433,6 +474,20 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	} else if added {
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// The remote-children finalizer goes on only when the CR projects onto a
+	// target cluster. A local CR keeps the garbage collection cascade, which
+	// reaps its children from their owner references, so it has nothing for this
+	// finalizer to hold the CR open for. spec.targetClusterRef is immutable, so
+	// the condition cannot flip under a live CR.
+	if keystone.Spec.TargetClusterRef != nil {
+		if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &keystone,
+			commonmulticluster.RemoteChildrenFinalizer); err != nil {
+			return ctrl.Result{}, err
+		} else if added {
+			return ctrl.Result{Requeue: true}, nil
+		}
 	}
 
 	// Run the sub-reconciler pipeline. Steps are attempted in dependency order;
@@ -821,6 +876,16 @@ func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context
 		}
 	}
 	return false, nil
+}
+
+// reconcileDeleteRemoteChildren deletes everything this Keystone projected onto
+// the target cluster it names and releases the remote-children finalizer, as
+// commonmulticluster.SweepRemoteChildren documents. The two cleanup flows above
+// it delete the handful of objects they track by name; this pass is what reaches
+// the rest, selected on the ownership labels Claim stamped on them.
+func (r *KeystoneReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) error {
+	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
+		keystone, keystone.Spec.TargetClusterRef, children, keystoneRemoteChildKinds)
 }
 
 // updateStatus persists the current status conditions and returns the given
