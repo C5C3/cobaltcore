@@ -21,6 +21,8 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
@@ -398,4 +400,163 @@ func TestSecretNameIndexResolvesBarbican(t *testing.T) {
 
 	g.Expect(list.Items).To(HaveLen(1))
 	g.Expect(list.Items[0].Name).To(Equal(testBarbicanName))
+}
+
+// --- remote children -------------------------------------------------------
+
+// ownedRemoteChild stamps the ownership labels the projection wrote on a child
+// it put on the target cluster, so the sweep selects it exactly as it would
+// there.
+func ownedRemoteChild(t *testing.T, owner, child client.Object) client.Object {
+	t.Helper()
+	labels, err := commonmulticluster.OwnerLabels(testScheme(), owner)
+	NewGomegaWithT(t).Expect(err).NotTo(HaveOccurred())
+	child.SetLabels(labels)
+	return child
+}
+
+// terminatingRemoteBarbican returns a Barbican that names a target cluster and
+// is being deleted, carrying the remote-children finalizer plus a foreign one so
+// the CR survives the release and the test can read back which finalizers the
+// pass dropped.
+func terminatingRemoteBarbican(t *testing.T) (*BarbicanReconciler, *barbicanv1alpha1.Barbican) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	barbican := testBarbican()
+	barbican.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "target"}
+	barbican.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer, "foreign.example.com/keep-alive"}
+	deletedAt := metav1.NewTime(time.Now())
+	barbican.DeletionTimestamp = &deletedAt
+
+	r := newBarbicanTestReconciler(barbican)
+	var terminating barbicanv1alpha1.Barbican
+	g.Expect(r.Get(context.Background(), barbicanRequest.NamespacedName, &terminating)).To(Succeed())
+	return r, &terminating
+}
+
+// TestReconcileDeleteRemoteChildren_SweepsEveryLabelledChild is the whole point
+// of the finalizer: no garbage collection cascade crosses the cluster boundary,
+// so the objects this CR projected have to be deleted by name from here, across
+// every API group they live in. What the sweep leaves standing matters as much:
+// a target cluster carries other people's objects, and an object nobody claimed
+// or another CR claimed is not ours to remove.
+func TestReconcileDeleteRemoteChildren_SweepsEveryLabelledChild(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r, terminating := terminatingRemoteBarbican(t)
+
+	deployment := ownedRemoteChild(t, terminating,
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: testBarbicanName, Namespace: testNamespace}})
+	service := ownedRemoteChild(t, terminating,
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: testBarbicanName, Namespace: testNamespace}})
+	cronJob := ownedRemoteChild(t, terminating,
+		&batchv1.CronJob{ObjectMeta: metav1.ObjectMeta{Name: testBarbicanName + "-db-clean", Namespace: testNamespace}})
+	grant := ownedRemoteChild(t, terminating,
+		&mariadbv1alpha1.Grant{ObjectMeta: metav1.ObjectMeta{Name: testBarbicanName, Namespace: testNamespace}})
+	unlabelled := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cluster-ca", Namespace: testNamespace}}
+	foreign := ownedRemoteChild(t,
+		&barbicanv1alpha1.Barbican{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: testNamespace}},
+		&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "other-config", Namespace: testNamespace}})
+	target := fake.NewClientBuilder().WithScheme(testScheme()).
+		WithObjects(deployment, service, cronJob, grant, unlabelled, foreign).Build()
+
+	ctx := context.Background()
+	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+
+	g.Expect(err).NotTo(HaveOccurred())
+
+	for _, child := range []client.Object{deployment, service, cronJob, grant} {
+		err := target.Get(ctx, client.ObjectKeyFromObject(child), child.DeepCopyObject().(client.Object))
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "%T %s must be swept", child, child.GetName())
+	}
+	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(unlabelled), &corev1.ConfigMap{})).To(Succeed(),
+		"an object nobody claimed is nobody's child")
+	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(foreign), &corev1.Secret{})).To(Succeed(),
+		"another Barbican's child must survive this one's teardown")
+
+	updated := getBarbican(t, r.Client)
+	g.Expect(updated.Finalizers).To(ConsistOf("foreign.example.com/keep-alive"),
+		"a completed sweep must release the remote-children finalizer and nothing else")
+}
+
+// TestReconcileDeleteRemoteChildren_NilChildrenAbandonsAndReleases covers the
+// deregistered target cluster. Its children cannot be reached, so holding the
+// finalizer would only strand the CR in Terminating; the objects left running
+// are announced rather than silently dropped. Any attempt to sweep through the
+// nil client would fault, which is what proves nothing was deleted.
+func TestReconcileDeleteRemoteChildren_NilChildrenAbandonsAndReleases(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r, terminating := terminatingRemoteBarbican(t)
+
+	err := r.reconcileDeleteRemoteChildren(context.Background(), nil, terminating)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(collectEvents(r.Recorder.(*record.FakeRecorder))).
+		To(ContainElement(ContainSubstring("RemoteChildrenAbandoned")))
+	g.Expect(getBarbican(t, r.Client).Finalizers).NotTo(ContainElement(commonmulticluster.RemoteChildrenFinalizer),
+		"an unreachable target cluster must not pin the CR forever")
+}
+
+// TestReconcileDeleteRemoteChildren_SweepFailureKeepsFinalizer is the guard
+// against a CR that leaves etcd while its children keep running. A list the
+// target cluster refuses says nothing about whether children exist, so the pass
+// has to fail and sweep again on the next one.
+func TestReconcileDeleteRemoteChildren_SweepFailureKeepsFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	r, terminating := terminatingRemoteBarbican(t)
+
+	child := ownedRemoteChild(t, terminating,
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: testBarbicanName, Namespace: testNamespace}})
+	target := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(child).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if list.GetObjectKind().GroupVersionKind().Kind == "DeploymentList" {
+					return apierrors.NewForbidden(appsv1.Resource("deployments"), "", nil)
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).Build()
+
+	ctx := context.Background()
+	err := r.reconcileDeleteRemoteChildren(ctx, commonmulticluster.Remote(target), terminating)
+
+	g.Expect(err).To(MatchError(ContainSubstring("listing remote Deployment children for teardown")))
+	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(child), &appsv1.Deployment{})).To(Succeed())
+	g.Expect(getBarbican(t, r.Client).Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer),
+		"a failed sweep must keep the finalizer so the next pass retries")
+}
+
+// TestReconcile_InstallsRemoteChildrenFinalizerForATargetCluster verifies that a
+// CR naming a target cluster is pinned before anything is projected onto it, so
+// a deletion issued between this pass and the next still funnels through the
+// sweep.
+func TestReconcile_InstallsRemoteChildrenFinalizerForATargetCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := testBarbican()
+	barbican.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "target"}
+	barbican.Finalizers = []string{barbicanFinalizer} // skip the database finalizer-add requeue
+	r := newBarbicanTestReconciler(barbican)
+
+	res, err := r.Reconcile(context.Background(), barbicanRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}),
+		"the pass installing the finalizer must requeue before any sub-reconciler runs")
+	g.Expect(getBarbican(t, r.Client).Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer))
+}
+
+// TestReconcile_LocalCRNeverCarriesTheRemoteChildrenFinalizer pins the other
+// half. A CR that keeps its children on the management cluster has nothing for
+// the sweep to do, and a finalizer it does not need is one more thing that can
+// block its deletion.
+func TestReconcile_LocalCRNeverCarriesTheRemoteChildrenFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	barbican := testBarbican() // no spec.targetClusterRef: children stay local
+	barbican.Finalizers = []string{barbicanFinalizer}
+	r := newBarbicanTestReconciler(barbican)
+
+	_, err := r.Reconcile(context.Background(), barbicanRequest)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getBarbican(t, r.Client).Finalizers).To(ConsistOf(barbicanFinalizer),
+		"a local CR must keep the finalizer set it always had")
 }
