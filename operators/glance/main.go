@@ -61,7 +61,7 @@ func main() {
 				OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
 				MaxConcurrentReconciles: maxConcurrentReconciles,
 				Resolver:                mcMgr,
-			}).SetupWithManager(mgr); err != nil {
+			}).SetupWithManager(mcMgr); err != nil {
 				return err
 			}
 			// The dedicated GlanceBackend controller runs in the same manager (a
