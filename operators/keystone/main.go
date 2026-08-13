@@ -84,7 +84,7 @@ func main() {
 				MaxConcurrentReconciles:      maxConcurrentReconciles,
 				FederationMetadataAllowCIDRs: allowCIDRs,
 				Resolver:                     mcMgr,
-			}).SetupWithManager(mgr); err != nil {
+			}).SetupWithManager(mcMgr); err != nil {
 				return err
 			}
 			// The dedicated identity-backend controller runs in the same

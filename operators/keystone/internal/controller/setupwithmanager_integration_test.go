@@ -26,6 +26,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	ctrl "sigs.k8s.io/controller-runtime"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/forge/operators/keystone/internal/testutil"
@@ -60,7 +61,15 @@ func TestSetupWithManager_StartsManagerWithAllWatches(t *testing.T) {
 				Recorder:   mgr.GetEventRecorderFor("keystone-controller"),
 				HTTPClient: testHealthyHTTPClient(),
 			}
-			return r.SetupWithManager(mgr)
+			// A nil provider engages no remote cluster, so the remote legs add
+			// nothing and every local informer must still sync. That is the
+			// single-cluster default path: an operator started with an empty
+			// --clusters-namespace clears the provider the same way.
+			mcMgr, err := mcmanager.WithMultiCluster(mgr, nil)
+			if err != nil {
+				return err
+			}
+			return r.SetupWithManager(mcMgr)
 		},
 	)
 

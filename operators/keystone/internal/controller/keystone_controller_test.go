@@ -4301,7 +4301,7 @@ func TestReconcileDeleteRemovesRotationAgeSeries(t *testing.T) {
 
 // remoteChildrenScheme is the scheme the target-cluster fake client is built
 // with: testScheme plus cert-manager, so every kind in
-// keystoneRemoteChildKinds is registered and the sweep's unstructured Lists
+// KeystoneRemoteChildKinds is registered and the sweep's unstructured Lists
 // all resolve. A target cluster that does not serve one of them is the
 // teardown helper's own concern and is covered there.
 func remoteChildrenScheme(t *testing.T) *runtime.Scheme {

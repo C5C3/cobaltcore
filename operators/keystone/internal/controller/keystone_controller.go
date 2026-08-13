@@ -29,12 +29,14 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/database"
@@ -320,7 +322,7 @@ var certificateGVK = schema.GroupVersionKind{
 	Kind:    "Certificate",
 }
 
-// keystoneRemoteChildKinds are the kinds a Keystone CR projects into the
+// KeystoneRemoteChildKinds are the kinds a Keystone CR projects into the
 // namespace of the target cluster it names, and the kinds
 // reconcileDeleteRemoteChildren sweeps by ownership label when that CR is
 // deleted. Nothing on the target cluster collects them, so a kind missing from
@@ -331,7 +333,7 @@ var certificateGVK = schema.GroupVersionKind{
 // is allowed to create. ExternalSecret is the one create verb deliberately not
 // swept: the marker grants it, but no code composes an ExternalSecret, so no
 // Keystone owns one.
-var keystoneRemoteChildKinds = []schema.GroupVersionKind{
+var KeystoneRemoteChildKinds = []schema.GroupVersionKind{
 	appsv1.SchemeGroupVersion.WithKind("Deployment"),
 	corev1.SchemeGroupVersion.WithKind("Service"),
 	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
@@ -885,7 +887,7 @@ func (r *KeystoneReconciler) hasLiveOpenBaoBackupPushSecrets(ctx context.Context
 // the rest, selected on the ownership labels Claim stamped on them.
 func (r *KeystoneReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) error {
 	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
-		keystone, keystone.Spec.TargetClusterRef, children, keystoneRemoteChildKinds)
+		keystone, keystone.Spec.TargetClusterRef, children, KeystoneRemoteChildKinds)
 }
 
 // updateStatus persists the current status conditions and returns the given
@@ -951,16 +953,31 @@ func (r *KeystoneReconciler) reconcileParallelGroup(
 	return keystoneSkeleton.RunParallelGroup(ctx, keystone, instrumenter.Instrument, subs)
 }
 
-// SetupWithManager registers the KeystoneReconciler with the controller manager.
-func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
+// SetupWithManager registers the KeystoneReconciler with the controller
+// manager. The shared controller options it applies let independent CRs
+// reconcile in parallel instead of serialising at the controller-runtime
+// default of 1, and the tuned RateLimiter caps per-item failure backoff at 30s
+// rather than the default 1000s (see bootstrap.TypedControllerOptions).
+func (r *KeystoneReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+	return r.setupWithOptions(mgr, bootstrap.TypedControllerOptions[mcreconcile.Request](r.MaxConcurrentReconciles))
+}
+
+// setupWithOptions carries the production watch wiring SetupWithManager
+// applies. The controller options are a parameter so the dual-envtest
+// integration suite can register this exact chain with SkipNameValidation set,
+// rather than a hand-built copy of it that drifts the moment a leg is added
+// here.
+func (r *KeystoneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcontroller.TypedOptions[mcreconcile.Request]) error {
+	local := mgr.GetLocalManager()
+
 	// Detect whether the Gateway API CRD is installed. spec.gateway is
 	// optional, so the operator must run on clusters without
 	// Gateway API. Adding Owns(HTTPRoute) unconditionally would cause the
 	// controller to fail at Start with "no matches for kind HTTPRoute"
 	// when the CRD is missing, preventing every Keystone CR from being
 	// reconciled — including those that do not use spec.gateway.
-	r.gatewayAPIAvailable = gateway.IsGVKAvailable(mgr.GetRESTMapper(), httpRouteGVK)
-	r.apiReader = mgr.GetAPIReader()
+	r.gatewayAPIAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), httpRouteGVK)
+	r.apiReader = local.GetAPIReader()
 	setupLog := ctrl.Log.WithName("keystone-setup")
 	if r.gatewayAPIAvailable {
 		setupLog.Info("Gateway API detected; enabling HTTPRoute watch and reconciliation")
@@ -973,7 +990,7 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// so reconcileDatabaseTLS knows whether a managed Certificate can exist on
 	// the TLS-disable path. spec.database.tls is optional, so the operator must
 	// run on clusters without cert-manager (issue #475).
-	r.certManagerAvailable = gateway.IsGVKAvailable(mgr.GetRESTMapper(), certificateGVK)
+	r.certManagerAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), certificateGVK)
 	if r.certManagerAvailable {
 		setupLog.Info("cert-manager detected; enabling Certificate watch for DatabaseTLSReady")
 	} else {
@@ -981,8 +998,12 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	// Register the Keystone field indexer before Watches so
-	// secretToKeystoneMapper can rely on it for its MatchingFields lookup
-	if err := registerSecretNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
+	// secretToKeystoneMapper can rely on it for its MatchingFields lookup.
+	// The indexes go on the LOCAL field indexer, not mgr's: with a provider
+	// configured, the multicluster manager's field indexer registers against
+	// the provider clusters, which hold no Keystone CR. Indexing the fleet is
+	// issue #839's business.
+	if err := registerSecretNameIndex(context.Background(), local.GetFieldIndexer()); err != nil {
 		return err
 	}
 
@@ -990,73 +1011,110 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// registration site for both controllers (this reconciler is set up
 	// before KeystoneIdentityBackendReconciler in main.go and in the envtest
 	// helper). reconcileIdentityBackends and the mappers rely on them.
-	if err := registerIdentityBackendIndexes(context.Background(), mgr.GetFieldIndexer()); err != nil {
+	if err := registerIdentityBackendIndexes(context.Background(), local.GetFieldIndexer()); err != nil {
 		return err
 	}
 
-	b := ctrl.NewControllerManagedBy(mgr).
-		// Shared controller options: MaxConcurrentReconciles lets independent
-		// CRs reconcile in parallel instead of serialising at the
-		// controller-runtime default of 1, and the tuned RateLimiter caps
-		// per-item failure backoff at 30s rather than the default 1000s (see
-		// bootstrap.ControllerOptions).
-		WithOptions(bootstrap.ControllerOptions(r.MaxConcurrentReconciles)).
+	// Every leg watching the management cluster carries both engage options
+	// below; see their definition for why an unpinned leg would stop watching
+	// it once a provider is configured.
+	engageLocal := commonmulticluster.EngageLocalCluster
+	engageNoProviders := commonmulticluster.EngageNoProviderClusters
+
+	// Every leg watching a target cluster is engaged on all of them, not on the
+	// ones some CR names, so it has to drop the events belonging to a CR that
+	// projects somewhere else (see commonmulticluster.RemoteRequests).
+	targets := commonmulticluster.TargetClusterOf(local.GetClient(),
+		func(keystone *keystonev1alpha1.Keystone) *commonv1.TargetClusterRefSpec {
+			return keystone.Spec.TargetClusterRef
+		})
+
+	b := mcbuilder.ControllerManagedBy(mgr).
+		WithOptions(opts).
 		// Filter the CR's own status-only updates so Status().Update does not
 		// re-wake the controller (see watch.CRUpdatePredicate).
-		For(&keystonev1alpha1.Keystone{}, builder.WithPredicates(watch.CRUpdatePredicate())).
-		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.Service{}).
-		Owns(&corev1.ConfigMap{}).
-		Owns(&batchv1.Job{}).
-		Owns(&policyv1.PodDisruptionBudget{}).
-		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
-		Owns(&networkingv1.NetworkPolicy{}).
-		Owns(&batchv1.CronJob{})
+		For(&keystonev1alpha1.Keystone{}, mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders).
+		Owns(&appsv1.Deployment{}, engageLocal, engageNoProviders).
+		Owns(&corev1.Service{}, engageLocal, engageNoProviders).
+		Owns(&corev1.ConfigMap{}, engageLocal, engageNoProviders).
+		Owns(&batchv1.Job{}, engageLocal, engageNoProviders).
+		Owns(&policyv1.PodDisruptionBudget{}, engageLocal, engageNoProviders).
+		Owns(&autoscalingv2.HorizontalPodAutoscaler{}, engageLocal, engageNoProviders).
+		Owns(&networkingv1.NetworkPolicy{}, engageLocal, engageNoProviders).
+		Owns(&batchv1.CronJob{}, engageLocal, engageNoProviders)
 
 	if r.gatewayAPIAvailable {
-		b = b.Owns(&gatewayv1.HTTPRoute{})
+		b = b.Owns(&gatewayv1.HTTPRoute{}, engageLocal, engageNoProviders)
 	}
 
 	if r.certManagerAvailable {
-		b = b.Owns(&certmanagerv1.Certificate{})
+		b = b.Owns(&certmanagerv1.Certificate{}, engageLocal, engageNoProviders)
+	}
+
+	// The same children, once more, on the clusters a CR can project onto.
+	// Owns cannot see them: an owner reference does not cross a cluster
+	// boundary, so the ownership labels are what maps a child back to its CR.
+	// The PushSecret predicate keeps ESO's status-only ticks on the target from
+	// waking the CR, exactly as it does locally; the other remote legs carry no
+	// predicate, mirroring what Owns admits locally.
+	b, err := commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &keystonev1alpha1.Keystone{},
+		targets, KeystoneRemoteChildKinds,
+		map[schema.GroupVersionKind][]mcbuilder.WatchesOption{
+			esov1alpha1.SchemeGroupVersion.WithKind("PushSecret"): {mcbuilder.WithPredicates(pushSecretRelevantChangePredicate)},
+		})
+	if err != nil {
+		return err
+	}
+
+	// Watch Secrets and map to the Keystone CRs that reference them.
+	// ESO-managed secrets (spec.database.secretRef, spec.bootstrap.adminPasswordSecretRef)
+	// are owned by the ExternalSecret controller, not by the Keystone CR, so
+	// EnqueueRequestForOwner would never match them. This MapFunc performs a
+	// namespace-scoped lookup instead. The identity-backend leg additionally
+	// maps LDAP bind/CA Secrets to the attached Keystone so a rotated bind
+	// credential re-renders the content-hashed domains Secret.
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &corev1.Secret{},
+		secretToKeystoneWithBackendsMapper(local.GetClient()))
+	if err != nil {
+		return err
+	}
+
+	// Watch KeystoneIdentityBackends and map to their Keystone: backend
+	// status flips (DomainReady) trigger projection, DeletionTimestamp
+	// flips trigger de-projection. No generation predicate — the status
+	// transitions ARE the signal. The leg stays local-only: a
+	// KeystoneIdentityBackend is a management-plane CR and lives nowhere else.
+	b = b.Watches(&keystonev1alpha1.KeystoneIdentityBackend{}, commonmulticluster.LocalRequests(
+		identityBackendToKeystoneMapper(),
+	), engageLocal, engageNoProviders)
+
+	// Watch the MariaDB cluster CR referenced by spec.database.clusterRef so
+	// that the operator reflects upstream database outages in DatabaseReady
+	// without waiting for the next periodic requeue.
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &mariadbv1alpha1.MariaDB{},
+		mariaDBToKeystoneMapper(local.GetClient()))
+	if err != nil {
+		return err
+	}
+
+	// Watch both the cluster-scoped ClusterSecretStore and the namespaced
+	// SecretStore a Keystone can select via spec.secretStoreRef, so the
+	// operator reflects upstream secret-backend outages in SecretsReady as
+	// soon as ESO flips the selected store's Ready condition, rather than
+	// waiting for the next periodic requeue. Each mapper enqueues only the
+	// Keystones whose effective store ref matches the changed store.
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &esov1.ClusterSecretStore{},
+		storeToKeystoneMapper(local.GetClient(), commonv1.SecretStoreKindCluster))
+	if err != nil {
+		return err
+	}
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &esov1.SecretStore{},
+		storeToKeystoneMapper(local.GetClient(), commonv1.SecretStoreKindNamespaced))
+	if err != nil {
+		return err
 	}
 
 	return b.
-		// Watch Secrets and map to the Keystone CRs that reference them.
-		// ESO-managed secrets (spec.database.secretRef, spec.bootstrap.adminPasswordSecretRef)
-		// are owned by the ExternalSecret controller, not by the Keystone CR, so
-		// EnqueueRequestForOwner would never match them. This MapFunc performs a
-		// namespace-scoped lookup instead. The identity-backend leg additionally
-		// maps LDAP bind/CA Secrets to the attached Keystone so a rotated bind
-		// credential re-renders the content-hashed domains Secret.
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
-			secretToKeystoneWithBackendsMapper(mgr.GetClient()),
-		)).
-		// Watch KeystoneIdentityBackends and map to their Keystone: backend
-		// status flips (DomainReady) trigger projection, DeletionTimestamp
-		// flips trigger de-projection. No generation predicate — the status
-		// transitions ARE the signal.
-		Watches(&keystonev1alpha1.KeystoneIdentityBackend{}, handler.EnqueueRequestsFromMapFunc(
-			identityBackendToKeystoneMapper(),
-		)).
-		// Watch the MariaDB cluster CR referenced by spec.database.clusterRef so
-		// that the operator reflects upstream database outages in DatabaseReady
-		// without waiting for the next periodic requeue.
-		Watches(&mariadbv1alpha1.MariaDB{}, handler.EnqueueRequestsFromMapFunc(
-			mariaDBToKeystoneMapper(mgr.GetClient()),
-		)).
-		// Watch both the cluster-scoped ClusterSecretStore and the namespaced
-		// SecretStore a Keystone can select via spec.secretStoreRef, so the
-		// operator reflects upstream secret-backend outages in SecretsReady as
-		// soon as ESO flips the selected store's Ready condition, rather than
-		// waiting for the next periodic requeue. Each mapper enqueues only the
-		// Keystones whose effective store ref matches the changed store.
-		Watches(&esov1.ClusterSecretStore{}, handler.EnqueueRequestsFromMapFunc(
-			storeToKeystoneMapper(mgr.GetClient(), commonv1.SecretStoreKindCluster),
-		)).
-		Watches(&esov1.SecretStore{}, handler.EnqueueRequestsFromMapFunc(
-			storeToKeystoneMapper(mgr.GetClient(), commonv1.SecretStoreKindNamespaced),
-		)).
 		// Watch backup PushSecrets via a name-based mapper + predicate instead
 		// of Owns(). Owns() wakes Keystone on every status-only PushSecret tick
 		// ESO emits (SyncedResourceVersion, conditions); the explicit Watches
@@ -1069,8 +1127,15 @@ func (r *KeystoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// Owns() wiring
 		Watches(
 			&esov1alpha1.PushSecret{},
-			handler.EnqueueRequestsFromMapFunc(pushSecretToKeystoneMapper(mgr.GetClient())),
-			builder.WithPredicates(pushSecretRelevantChangePredicate),
+			commonmulticluster.LocalRequests(pushSecretToKeystoneMapper(local.GetClient())),
+			mcbuilder.WithPredicates(pushSecretRelevantChangePredicate),
+			engageLocal, engageNoProviders,
 		).
-		Complete(r)
+		// The default wrapper turns an error matching multicluster.ErrClusterNotFound
+		// into a successful reconcile. This operator instead surfaces an
+		// unresolvable cluster as a TargetClusterUnavailable condition and
+		// requeues, so the wrapper stays off and the error semantics remain
+		// byte-identical to the classic builder's.
+		WithClusterNotFoundWrapper(false).
+		Complete(commonmulticluster.LocalReconciler(r))
 }
