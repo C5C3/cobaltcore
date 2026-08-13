@@ -56,7 +56,7 @@ func main() {
 				OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
 				MaxConcurrentReconciles: maxConcurrentReconciles,
 				Resolver:                mcMgr,
-			}).SetupWithManager(mgr); err != nil {
+			}).SetupWithManager(mcMgr); err != nil {
 				return err
 			}
 			if webhooks {

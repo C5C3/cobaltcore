@@ -247,7 +247,7 @@ func TestReconcileDeleteRemoteChildren_SweepsEveryProjectedKind(t *testing.T) {
 		ownedRemoteChild(t, terminating,
 			&gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "test-horizon", Namespace: "default"}}),
 	}
-	g.Expect(projected).To(HaveLen(len(horizonRemoteChildKinds)),
+	g.Expect(projected).To(HaveLen(len(HorizonRemoteChildKinds)),
 		"every kind the sweep covers needs a child here, or the list grew untested")
 
 	unlabelled := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cluster-ca", Namespace: "default"}}
