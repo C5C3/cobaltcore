@@ -36,25 +36,34 @@ const (
 	rateLimiterMaxDelay = 30 * time.Second
 )
 
-// ControllerOptions builds the shared controller.Options every operator's
-// SetupWithManager applies: MaxConcurrentReconciles lets independent CRs
-// reconcile in parallel instead of serialising at the controller-runtime
-// default of 1 (a value <= 0 falls back to DefaultMaxConcurrentReconciles so
-// the zero value is safe for programmatically constructed reconcilers), and
-// the tuned RateLimiter caps per-item failure backoff at 30s rather than the
-// default 1000s.
-func ControllerOptions(maxConcurrentReconciles int) crcontroller.Options {
+// TypedControllerOptions builds the shared controller.TypedOptions every
+// operator's SetupWithManager applies: MaxConcurrentReconciles lets
+// independent CRs reconcile in parallel instead of serialising at the
+// controller-runtime default of 1 (a value <= 0 falls back to
+// DefaultMaxConcurrentReconciles so the zero value is safe for
+// programmatically constructed reconcilers), and the tuned RateLimiter caps
+// per-item failure backoff at 30s rather than the default 1000s. The request
+// type is a parameter so a multicluster controller, whose builder works on
+// mcreconcile.Request, gets the same defaults; ControllerOptions is the
+// reconcile.Request instantiation.
+func TypedControllerOptions[request comparable](maxConcurrentReconciles int) crcontroller.TypedOptions[request] {
 	if maxConcurrentReconciles <= 0 {
 		maxConcurrentReconciles = DefaultMaxConcurrentReconciles
 	}
-	return crcontroller.Options{
+	return crcontroller.TypedOptions[request]{
 		MaxConcurrentReconciles: maxConcurrentReconciles,
-		RateLimiter:             rateLimiter(),
+		RateLimiter:             typedRateLimiter[request](),
 	}
 }
 
-// rateLimiter builds the controllers' workqueue rate limiter. It is the same
-// composition as workqueue.DefaultTypedControllerRateLimiter — a per-item
+// ControllerOptions is TypedControllerOptions instantiated over
+// reconcile.Request, the request type of a single-cluster controller.
+func ControllerOptions(maxConcurrentReconciles int) crcontroller.Options {
+	return TypedControllerOptions[reconcile.Request](maxConcurrentReconciles)
+}
+
+// typedRateLimiter builds the controllers' workqueue rate limiter. It is the
+// same composition as workqueue.DefaultTypedControllerRateLimiter — a per-item
 // exponential failure limiter maxed against a 10 qps / 100 burst token bucket
 // — but with the per-item cap lowered from the controller-runtime default of
 // 1000s to rateLimiterMaxDelay (30s). The 1000s default is far too
@@ -62,9 +71,9 @@ func ControllerOptions(maxConcurrentReconciles int) crcontroller.Options {
 // off toward a ~16-minute retry. Lowering only the per-item cap keeps the
 // overall 10 qps / 100-burst ceiling intact while bounding failure backoff to
 // 30s.
-func rateLimiter() workqueue.TypedRateLimiter[reconcile.Request] {
+func typedRateLimiter[request comparable]() workqueue.TypedRateLimiter[request] {
 	return workqueue.NewTypedMaxOfRateLimiter(
-		workqueue.NewTypedItemExponentialFailureRateLimiter[reconcile.Request](rateLimiterBaseDelay, rateLimiterMaxDelay),
-		&workqueue.TypedBucketRateLimiter[reconcile.Request]{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
+		workqueue.NewTypedItemExponentialFailureRateLimiter[request](rateLimiterBaseDelay, rateLimiterMaxDelay),
+		&workqueue.TypedBucketRateLimiter[request]{Limiter: rate.NewLimiter(rate.Limit(10), 100)},
 	)
 }
