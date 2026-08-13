@@ -13,6 +13,13 @@
 // register. One manager, one provider, one function: the scenarios are ordered
 // subtests over the shared setup, and each one builds on the state the previous
 // left behind.
+//
+// The reconciler itself is registered through the production watch wiring
+// (setupWithOptions, the chain SetupWithManager applies) with
+// SkipNameValidation set. A skipped registration never claims the controller
+// name, so the constraint that only one registration per test binary may run
+// under the real name stays intact; it is documented with
+// TestSetupWithManager_StartsManagerWithAllWatches.
 
 package controller
 
@@ -40,14 +47,15 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
-	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 
 	"github.com/c5c3/forge/internal/common/apply"
+	"github.com/c5c3/forge/internal/common/bootstrap"
+	"github.com/c5c3/forge/internal/common/database"
 	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonenvtest "github.com/c5c3/forge/internal/common/testutil/envtest"
@@ -63,8 +71,9 @@ import (
 // projects its children onto the target, a CR that keeps them local, a CR
 // naming an unregistered cluster, deregistration under a running CR, a
 // registration Secret the provider cannot parse, re-registration of the cluster
-// that was deregistered, and the deletion of a targeted CR sweeping every child
-// it projected off the target.
+// that was deregistered, the deletion of a targeted CR sweeping every child it
+// projected off the target, a child deleted on the target being put back, and a
+// rotated input Secret on the target re-rendering what was derived from it.
 func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -92,6 +101,18 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 		// is observed against a namespace no earlier subtest wrote to.
 		teardownNamespace = "mc-teardown"
 		teardownKeystone  = "mc-teardown-keystone"
+
+		// The drift CR, likewise in a namespace of its own. Every earlier
+		// targeted CR has been deleted by the time it is created, so what
+		// happens in its namespace is its own doing. The last two subtests
+		// share it: the first settles it, the second rotates an input under it.
+		driftNamespace = "mc-drift"
+		driftKeystone  = "mc-drift-keystone"
+
+		// rotatedPassword replaces the "secret" the input fixture seeds, and is
+		// distinctive enough that finding it in the derived DSN cannot be an
+		// accident.
+		rotatedPassword = "rotated-password-4242"
 
 		// engageTimeout bounds cluster engagement: the provider has to parse
 		// the kubeconfig, build a cluster, and sync its cache before
@@ -165,35 +186,22 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 				// The Resolver is the whole point of this test: it turns
 				// spec.targetClusterRef into the client the children are
 				// written with.
-				Resolver:            mcMgr,
-				HTTPClient:          testHealthyHTTPClient(),
-				gatewayAPIAvailable: true,
+				Resolver:   mcMgr,
+				HTTPClient: testHealthyHTTPClient(),
 			}
-			// The sibling-backend list selects on a local cache field index,
-			// so both indexes go on the local manager, mirroring what
-			// SetupWithManager does in production.
-			if err := registerSecretNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
-				return err
-			}
-			if err := registerIdentityBackendIndexes(context.Background(), mgr.GetFieldIndexer()); err != nil {
-				return err
-			}
-			// Only the children the local-cluster subtest waits on are owned
-			// here. A child on the target cluster produces no watch event on
-			// this manager at all, so that CR advances on the sub-reconcilers'
-			// own requeues.
-			return ctrl.NewControllerManagedBy(mgr).
-				For(&keystonev1alpha1.Keystone{}).
-				Owns(&appsv1.Deployment{}).
-				Owns(&corev1.Service{}).
-				Owns(&corev1.ConfigMap{}).
-				Owns(&batchv1.Job{}).
-				Owns(&batchv1.CronJob{}).
-				Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
-					secretToKeystoneWithBackendsMapper(mgr.GetClient()),
-				)).
-				WithOptions(controller.Options{SkipNameValidation: ptr.To(true)}).
-				Complete(r)
+			// The production watch wiring, shared with SetupWithManager: the
+			// legs pinned to the management cluster, the remote child legs
+			// keyed on the ownership labels, and the remote input legs. A child
+			// or an input object written on the target cluster therefore
+			// produces a watch event here, and the field indexes and the
+			// Gateway API / cert-manager RESTMapper probes come with the same
+			// call. The fake CRDs on the management environment latch both
+			// probes true. SkipNameValidation keeps the
+			// one-real-controller-name-per-test-binary constraint at the top of
+			// this file intact.
+			opts := bootstrap.TypedControllerOptions[mcreconcile.Request](1)
+			opts.SkipNameValidation = ptr.To(true)
+			return r.setupWithOptions(mcMgr, opts)
 		},
 	})
 
@@ -701,6 +709,168 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 			&corev1.Secret{})).To(Succeed(), "the admin password Secret should survive the teardown")
 		g.Expect(targetClient.Get(ctx, mariadbKey, &mariadbv1alpha1.MariaDB{})).
 			To(Succeed(), "the MariaDB cluster CR should survive the teardown")
+	})
+
+	t.Run("drift on the target cluster is corrected by the child watch", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// THE ACCEPTANCE RULE OF THIS SUBTEST: it never writes the Keystone CR.
+		// No annotation poke, no spec touch, nothing. Once the CR is settled the
+		// only write left is the Delete of one child on the target cluster, and
+		// the operator has to get from there to a fresh Deployment on its own. A
+		// version of this subtest that needs a poke to go green is a failed one:
+		// the remote child watch is what makes the poke unnecessary. The
+		// simulators below write children and never the CR, and the operator's
+		// own status writes are its business.
+		//
+		// The CR is driven all the way to Ready before the drift, and that is
+		// what makes the assertion discriminating. A Keystone short of Ready
+		// carries a standing requeue from whichever sub-reconciler is still
+		// waiting (10s from the deployment reconciler while the Deployment has
+		// no ready replicas, 15s from the Secret pollers), and any of those
+		// would repair the drift on a timer with no watch involved. At Ready
+		// every sub-reconciler returns a zero result, so the pipeline asks for
+		// no requeue at all: the fernet and credential rotation cadences live in
+		// CronJobs on the target cluster, and the health probe serves from its
+		// TTL cache and returns zero too. Nothing wakes this CR inside the
+		// budget below except an event. Take the remote child leg away and this
+		// subtest sits out the full budget and fails.
+		multiclusterEnsureNamespace(t, ctx, mgmtClient, driftNamespace)
+		multiclusterEnsureNamespace(t, ctx, targetClient, driftNamespace)
+		createPrerequisites(t, ctx, targetClient, driftNamespace)
+
+		mariadbKey := client.ObjectKey{Namespace: driftNamespace, Name: "mariadb"}
+		g.Expect(targetClient.Create(ctx, &mariadbv1alpha1.MariaDB{
+			ObjectMeta: metav1.ObjectMeta{Name: mariadbKey.Name, Namespace: mariadbKey.Namespace},
+		})).To(Succeed(), "create the MariaDB cluster CR on the target cluster")
+		g.Expect(simulators.SimulateMariaDBReady(ctx, targetClient, mariadbKey, 1)).
+			To(Succeed(), "simulate the MariaDB cluster ready")
+
+		ks := integrationManagedKeystone(driftKeystone, driftNamespace)
+		ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetClusterName}
+		g.Expect(mgmtClient.Create(ctx, ks)).To(Succeed())
+
+		crKey := types.NamespacedName{Name: driftKeystone, Namespace: driftNamespace}
+		childKey := client.ObjectKey{Namespace: driftNamespace, Name: driftKeystone}
+
+		// Settle the CR: the same sequence the teardown subtest walks, each
+		// MariaDB CR gated on the previous one reporting ready.
+		waitForCondition(t, ctx, mgmtClient, crKey, "SecretsReady", metav1.ConditionTrue, eventuallyTimeout)
+		waitForCondition(t, ctx, mgmtClient, crKey, "FernetKeysReady", metav1.ConditionTrue, eventuallyTimeout)
+
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &mariadbv1alpha1.Database{}, "MariaDB Database", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateDatabaseReady(ctx, targetClient, childKey)).To(Succeed())
+
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &mariadbv1alpha1.User{}, "MariaDB User", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateUserReady(ctx, targetClient, childKey)).To(Succeed())
+
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &mariadbv1alpha1.Grant{}, "MariaDB Grant", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateGrantReady(ctx, targetClient, childKey)).To(Succeed())
+
+		dbSyncKey := client.ObjectKey{Namespace: driftNamespace, Name: fmt.Sprintf("%s-db-sync", driftKeystone)}
+		multiclusterEventuallyExists(t, ctx, targetClient, dbSyncKey, &batchv1.Job{}, "db-sync Job", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateJobComplete(ctx, targetClient, dbSyncKey)).To(Succeed())
+
+		schemaCheckKey := client.ObjectKey{Namespace: driftNamespace, Name: fmt.Sprintf("%s-schema-check", driftKeystone)}
+		multiclusterEventuallyExists(t, ctx, targetClient, schemaCheckKey, &batchv1.Job{}, "schema-check Job", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateJobComplete(ctx, targetClient, schemaCheckKey)).To(Succeed())
+
+		waitForCondition(t, ctx, mgmtClient, crKey, "DatabaseReady", metav1.ConditionTrue, eventuallyLongTimeout)
+
+		// The rest of the way to Ready, the same phases driveFullReconciliation
+		// walks on a single cluster: the workload readiness the envtest
+		// environment cannot produce on its own, then the bootstrap Job.
+		deployment := &appsv1.Deployment{}
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, deployment, "Deployment", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateDeploymentReady(ctx, targetClient, childKey, ptr.Deref(deployment.Spec.Replicas, 1))).
+			To(Succeed(), "simulate the Deployment ready on the target cluster")
+		waitForCondition(t, ctx, mgmtClient, crKey, "DeploymentReady", metav1.ConditionTrue, eventuallyTimeout)
+
+		bootstrapKey := client.ObjectKey{Namespace: driftNamespace, Name: fmt.Sprintf("%s-bootstrap", driftKeystone)}
+		multiclusterEventuallyExists(t, ctx, targetClient, bootstrapKey, &batchv1.Job{}, "bootstrap Job", eventuallyTimeout)
+		g.Expect(simulators.SimulateJobComplete(ctx, targetClient, bootstrapKey)).To(Succeed())
+
+		waitForCondition(t, ctx, mgmtClient, crKey, "BootstrapReady", metav1.ConditionTrue, eventuallyTimeout)
+		waitForCondition(t, ctx, mgmtClient, crKey, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+
+		// Read the Deployment once more, so the UID recorded here is the one the
+		// quiescent CR is standing on.
+		g.Expect(targetClient.Get(ctx, childKey, deployment)).To(Succeed())
+		deletedUID := deployment.UID
+		g.Expect(deletedUID).NotTo(BeEmpty(), "the settled Deployment should have been read back with its UID")
+
+		// The drift: somebody removes the workload on the target cluster.
+		g.Expect(targetClient.Delete(ctx, deployment)).To(Succeed(),
+			"delete the Deployment on the target cluster")
+
+		// The UID separates a recreation from a stale read of the deleted
+		// object, and the API server is what assigns it.
+		g.Eventually(func(ig Gomega) {
+			recreated := &appsv1.Deployment{}
+			ig.Expect(targetClient.Get(ctx, childKey, recreated)).To(Succeed())
+			ig.Expect(recreated.UID).NotTo(Equal(deletedUID))
+		}, eventuallyTimeout, pollInterval).Should(Succeed(),
+			"the deleted Deployment should be recreated on the target cluster with no write to the CR")
+	})
+
+	t.Run("rotating the target-side input Secret re-renders the derived db-connection Secret", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// This subtest runs on the CR the previous one settled. The suite's
+		// subtests are ordered and share state throughout, and settling a
+		// second Keystone here would only repeat the simulator sequence above.
+		//
+		// THE ACCEPTANCE RULE, once more: no write to the Keystone CR. The
+		// rotated Secret is an input rather than a child. ESO writes it in
+		// production, so the operator never stamped the ownership labels on it
+		// (the teardown subtest above proves the sweep leaves it standing), and
+		// ChildToOwner maps it to no request at all. The remote input leg, with
+		// its own Secret mapper, is the only wiring that can turn this rotation
+		// into a reconcile.
+		crKey := types.NamespacedName{Name: driftKeystone, Namespace: driftNamespace}
+		childKey := client.ObjectKey{Namespace: driftNamespace, Name: driftKeystone}
+
+		// The drift left a Deployment with no ready replicas behind, which put
+		// the deployment reconciler's 10s requeue back on the CR. Settle it
+		// again first, or that requeue would re-render the derived Secret on a
+		// timer and the assertion below would hold with no watch at all. Waiting
+		// out DeploymentReady=False first pins the CR to the post-drift status,
+		// so the True that follows cannot be the pre-drift one read early. The
+		// bootstrap Job does not re-run: it is gated on the admin-password
+		// digest, which nothing here touches.
+		waitForCondition(t, ctx, mgmtClient, crKey, "DeploymentReady", metav1.ConditionFalse, eventuallyTimeout)
+		recreated := &appsv1.Deployment{}
+		g.Expect(targetClient.Get(ctx, childKey, recreated)).To(Succeed())
+		g.Expect(simulators.SimulateDeploymentReady(ctx, targetClient, childKey, ptr.Deref(recreated.Spec.Replicas, 1))).
+			To(Succeed(), "simulate the recreated Deployment ready on the target cluster")
+		waitForCondition(t, ctx, mgmtClient, crKey, "Ready", metav1.ConditionTrue, eventuallyTimeout)
+
+		dbConnectionKey := client.ObjectKey{
+			Namespace: driftNamespace,
+			Name:      database.ConnectionSecretName(driftKeystone),
+		}
+
+		derived := &corev1.Secret{}
+		g.Expect(targetClient.Get(ctx, dbConnectionKey, derived)).To(Succeed(),
+			"the derived db-connection Secret should exist on the target cluster")
+		g.Expect(string(derived.Data[database.ConnectionSecretKey])).To(ContainSubstring(":secret@"),
+			"the DSN should carry the password the input fixture was seeded with")
+
+		input := &corev1.Secret{}
+		inputKey := client.ObjectKey{Namespace: driftNamespace, Name: "keystone-db"}
+		g.Expect(targetClient.Get(ctx, inputKey, input)).To(Succeed())
+		input.Data["password"] = []byte(rotatedPassword)
+		g.Expect(targetClient.Update(ctx, input)).To(Succeed(),
+			"rotate the database password in the input Secret on the target cluster")
+
+		g.Eventually(func(ig Gomega) {
+			rerendered := &corev1.Secret{}
+			ig.Expect(targetClient.Get(ctx, dbConnectionKey, rerendered)).To(Succeed())
+			dsn := string(rerendered.Data[database.ConnectionSecretKey])
+			ig.Expect(dsn).To(ContainSubstring(":" + rotatedPassword + "@"))
+			ig.Expect(dsn).NotTo(ContainSubstring(":secret@"))
+		}, eventuallyTimeout, pollInterval).Should(Succeed(),
+			"the rotated password should reach the derived db-connection Secret with no write to the CR")
 	})
 }
 
