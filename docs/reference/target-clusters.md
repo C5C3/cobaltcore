@@ -173,6 +173,27 @@ The Barbican secret store mints a token through the target's TokenRequest API,
 so the operator's credentials there need the corresponding RBAC. Packaging the
 access a target cluster has to grant is #841.
 
+Registering a cluster is a commitment to let every service operator cache it in
+full. Each one watches, on every registered cluster, the kinds it projects there
+and the inputs it reads (both enumerated in the next section), so its
+credentials there need cluster-wide `list` and `watch` on all of them —
+including `secrets`, `roles` and `rolebindings`. The operator install that
+engages target clusters is cluster-scoped (see the next section), so those
+informers are not restricted to a namespace: each operator process holds every
+object of every watched kind, in every namespace of every registered cluster,
+resident for its lifetime. Two consequences are worth weighing before a cluster
+is registered rather than after:
+
+- Anyone who obtains the operator's target-cluster credentials can read every
+  Secret in every namespace of that cluster, and a heap dump or an exec into one
+  operator pod yields the same material.
+- The memory the operator needs scales with the whole fleet, not with the
+  namespaces it projects into.
+
+Restricting those caches to the namespaces that actually hold projecting CRs is
+#841. Until it lands, do not register a target cluster you are not willing to
+grant fleet-wide read on and to cache in full.
+
 ## Prerequisites on the management cluster
 
 Target clusters need a cluster-scoped operator install. The registration Secrets
@@ -183,11 +204,38 @@ switching target clusters off: the operator engages no cluster and reads no
 Secret it has no grant for. Left on, the widened Secret informer would fail to
 sync and the manager would not start.
 
-The operators' child watches stay local: each controller registers its watches
-against the management-cluster cache, so a controller whose children all live on
-a target still needs the child kinds installed at home. The three third-party
-CRD sets are therefore required on the management cluster whatever
-`targetClusterRef` says.
+Every service operator watches, on each registered cluster, the kinds it
+projects there and the inputs it reads: the credential Secrets, the database CR
+for the services that have one, the OpenBao instance a Barbican secret store
+waits on, and the ESO SecretStores and ClusterSecretStores. A child event maps
+back to the owning CR through the ownership labels, an input event through the
+same mappers the management-side watches use. A Deployment deleted on a target,
+or a database password rotated there, is corrected within watch latency,
+whatever cluster the infrastructure runs on. Engagement is provider-level: a
+registered cluster serves one informer per watched kind to each service
+operator, whether or not a CR names it — see the target-cluster prerequisites
+above for what that costs. A watch is set up on a cluster only when that cluster
+serves the kind, and the check runs once, as the cluster is engaged. A CRD
+installed on a target after that is watched from the next engagement on, after a
+registration-Secret rotation or an operator restart.
+
+A child is matched to its owner only in the namespace that owner lives in, which
+is the namespace its children land in. The ownership labels are readable and
+writable by anyone with access to the target namespace, so an object carrying
+them anywhere else is not treated as a child at all.
+
+Nor is an event on a cluster the CR does not name. Because a leg is engaged on
+every registered cluster, an event only reaches a CR if that CR's
+`targetClusterRef` names the cluster the event came from — read from the CR on
+the management cluster, never from the object that raised the event. Both the
+child watches and the input watches apply it: without it, anyone able to create
+an object in one shared namespace on any registered cluster could name any CR in
+the fleet and have the operator reconcile it on their timing.
+
+The watches against the management cluster register at builder time, so a
+controller whose children all live on a target still needs the child kinds
+installed at home. The three third-party CRD sets are therefore required on the
+management cluster whatever `targetClusterRef` says.
 
 | CRD set | Installed in this repo from |
 | --- | --- |
@@ -283,7 +331,6 @@ its target cluster; everything it writes afterwards carries the labels alone.
 
 ## Interim constraints
 
-- Drift on a target cluster is corrected on CR events and requeues only. The operators do not watch child objects on target clusters, so an edit made directly on the target survives until the next pass (#838).
 - The capability probes (Gateway API, cert-manager) run against the management cluster, not the target (#839). The API Service selector latch does read the target: it goes through that cluster's own uncached API reader, so a lagging cache cannot re-widen the selector.
 - `KeystoneIdentityBackend` carries no `targetClusterRef`, and its reconciler stays management-side. A backend attached to a Keystone that names a target cluster looks for the parent's Deployment and projection Secret locally, where they do not exist, and holds `ConfigProjected=False` with reason `WaitingForProjection`.
 - RBAC and access packaging for a target cluster, together with the two-cluster development flow, are #841.
