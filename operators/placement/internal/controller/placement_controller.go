@@ -23,12 +23,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/database"
@@ -196,7 +197,7 @@ type PlacementReconciler struct {
 	healthProbeCache healthcheck.ProbeCache
 }
 
-// placementRemoteChildKinds are the kinds a Placement CR projects into the
+// PlacementRemoteChildKinds are the kinds a Placement CR projects into the
 // namespace of the target cluster it names, and the kinds
 // reconcileDeleteRemoteChildren sweeps by ownership label when that CR is
 // deleted. Nothing on the target cluster collects them, so a kind missing from
@@ -207,7 +208,7 @@ type PlacementReconciler struct {
 // is allowed to create. CronJob is the one kind the sibling operators sweep and
 // this one does not: the markers grant create on jobs alone, because placement
 // renders no CronJob.
-var placementRemoteChildKinds = []schema.GroupVersionKind{
+var PlacementRemoteChildKinds = []schema.GroupVersionKind{
 	appsv1.SchemeGroupVersion.WithKind("Deployment"),
 	corev1.SchemeGroupVersion.WithKind("Service"),
 	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
@@ -508,7 +509,7 @@ func (r *PlacementReconciler) reconcileDelete(ctx context.Context, children clie
 // rest, selected on the ownership labels Claim stamped on them.
 func (r *PlacementReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, placement *placementv1alpha1.Placement) error {
 	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
-		placement, placement.Spec.TargetClusterRef, children, placementRemoteChildKinds)
+		placement, placement.Spec.TargetClusterRef, children, PlacementRemoteChildKinds)
 }
 
 // updateStatus persists the current status conditions and returns the given
@@ -546,13 +547,15 @@ func (r *PlacementReconciler) reconcileParallelGroup(
 // SetupWithManager registers the PlacementReconciler with the controller
 // manager. It probes Gateway API availability, registers the Placement field
 // index, and wires the owned resources and cross-resource watches.
-func (r *PlacementReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *PlacementReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+	local := mgr.GetLocalManager()
+
 	// Detect whether the Gateway API CRD is installed. spec.gateway is optional,
 	// so the operator must run on clusters without Gateway API. Adding
 	// Owns(HTTPRoute) unconditionally would fail at Start with "no matches for
 	// kind HTTPRoute" when the CRD is missing, blocking every Placement CR.
-	r.gatewayAPIAvailable = gateway.IsGVKAvailable(mgr.GetRESTMapper(), httpRouteGVK)
-	r.apiReader = mgr.GetAPIReader()
+	r.gatewayAPIAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), httpRouteGVK)
+	r.apiReader = local.GetAPIReader()
 	setupLog := ctrl.Log.WithName("placement-setup")
 	if r.gatewayAPIAvailable {
 		setupLog.Info("Gateway API detected; enabling HTTPRoute watch and reconciliation")
@@ -561,54 +564,99 @@ func (r *PlacementReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	// Register the Placement field indexer before Watches so
-	// secretToPlacementMapper can rely on it for its MatchingFields lookup.
-	if err := registerPlacementIndexes(context.Background(), mgr.GetFieldIndexer()); err != nil {
+	// secretToPlacementMapper can rely on it for its MatchingFields lookup. The
+	// index goes on the LOCAL field indexer, not mgr's: with a provider
+	// configured, the multicluster manager's field indexer registers against the
+	// provider clusters, which hold no Placement CR. Indexing the fleet is issue
+	// #839's business.
+	if err := registerPlacementIndexes(context.Background(), local.GetFieldIndexer()); err != nil {
 		return err
 	}
 
-	b := ctrl.NewControllerManagedBy(mgr).
+	// Every leg watching the management cluster carries both engage options
+	// below; see their definition for why an unpinned leg would stop watching
+	// it once a provider is configured.
+	engageLocal := commonmulticluster.EngageLocalCluster
+	engageNoProviders := commonmulticluster.EngageNoProviderClusters
+
+	// Every leg watching a target cluster is engaged on all of them, not on the
+	// ones some CR names, so it has to drop the events belonging to a CR that
+	// projects somewhere else (see commonmulticluster.RemoteRequests).
+	targets := commonmulticluster.TargetClusterOf(local.GetClient(),
+		func(placement *placementv1alpha1.Placement) *commonv1.TargetClusterRefSpec {
+			return placement.Spec.TargetClusterRef
+		})
+
+	b := mcbuilder.ControllerManagedBy(mgr).
 		// Shared controller options: MaxConcurrentReconciles lets independent CRs
 		// reconcile in parallel, and the tuned RateLimiter caps per-item failure
-		// backoff at 30s (see bootstrap.ControllerOptions).
-		WithOptions(bootstrap.ControllerOptions(r.MaxConcurrentReconciles)).
+		// backoff at 30s (see bootstrap.TypedControllerOptions).
+		WithOptions(bootstrap.TypedControllerOptions[mcreconcile.Request](r.MaxConcurrentReconciles)).
 		// Filter the CR's own status-only updates so Status().Update does not
 		// re-wake the controller (see watch.CRUpdatePredicate).
-		For(&placementv1alpha1.Placement{}, builder.WithPredicates(watch.CRUpdatePredicate())).
-		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.Service{}).
-		Owns(&corev1.ConfigMap{}).
-		Owns(&corev1.Secret{}).
-		Owns(&policyv1.PodDisruptionBudget{}).
-		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
-		Owns(&networkingv1.NetworkPolicy{}).
-		Owns(&batchv1.Job{})
+		For(&placementv1alpha1.Placement{}, mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders).
+		Owns(&appsv1.Deployment{}, engageLocal, engageNoProviders).
+		Owns(&corev1.Service{}, engageLocal, engageNoProviders).
+		Owns(&corev1.ConfigMap{}, engageLocal, engageNoProviders).
+		Owns(&corev1.Secret{}, engageLocal, engageNoProviders).
+		Owns(&policyv1.PodDisruptionBudget{}, engageLocal, engageNoProviders).
+		Owns(&autoscalingv2.HorizontalPodAutoscaler{}, engageLocal, engageNoProviders).
+		Owns(&networkingv1.NetworkPolicy{}, engageLocal, engageNoProviders).
+		Owns(&batchv1.Job{}, engageLocal, engageNoProviders)
 
 	if r.gatewayAPIAvailable {
-		b = b.Owns(&gatewayv1.HTTPRoute{})
+		b = b.Owns(&gatewayv1.HTTPRoute{}, engageLocal, engageNoProviders)
+	}
+
+	// The same children, once more, on the clusters a CR can project onto. Owns
+	// cannot see them: an owner reference does not cross a cluster boundary, so
+	// the ownership labels are what maps a child back to its CR. No leg carries a
+	// predicate, mirroring what Owns admits locally.
+	b, err := commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &placementv1alpha1.Placement{},
+		targets, PlacementRemoteChildKinds, nil)
+	if err != nil {
+		return err
+	}
+
+	// Watch Secrets and map to the Placement CRs that reference them.
+	// ESO-managed Secrets are owned by the ExternalSecret controller, not the
+	// Placement CR, so EnqueueRequestForOwner would never match them.
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &corev1.Secret{},
+		secretToPlacementMapper(local.GetClient()))
+	if err != nil {
+		return err
+	}
+
+	// Watch the MariaDB cluster CR referenced by spec.database.clusterRef so
+	// the operator reflects upstream database outages in DatabaseReady without
+	// waiting for the next periodic requeue.
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &mariadbv1alpha1.MariaDB{},
+		mariaDBToPlacementMapper(local.GetClient()))
+	if err != nil {
+		return err
+	}
+
+	// Watch both the cluster-scoped ClusterSecretStore and the namespaced
+	// SecretStore a Placement can select via spec.secretStoreRef, so the
+	// operator reflects upstream secret-backend outages in SecretsReady as soon
+	// as ESO flips the selected store's Ready condition.
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &esov1.ClusterSecretStore{},
+		storeToPlacementMapper(local.GetClient(), commonv1.SecretStoreKindCluster))
+	if err != nil {
+		return err
+	}
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &esov1.SecretStore{},
+		storeToPlacementMapper(local.GetClient(), commonv1.SecretStoreKindNamespaced))
+	if err != nil {
+		return err
 	}
 
 	return b.
-		// Watch Secrets and map to the Placement CRs that reference them.
-		// ESO-managed Secrets are owned by the ExternalSecret controller, not the
-		// Placement CR, so EnqueueRequestForOwner would never match them.
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
-			secretToPlacementMapper(mgr.GetClient()),
-		)).
-		// Watch the MariaDB cluster CR referenced by spec.database.clusterRef so
-		// the operator reflects upstream database outages in DatabaseReady without
-		// waiting for the next periodic requeue.
-		Watches(&mariadbv1alpha1.MariaDB{}, handler.EnqueueRequestsFromMapFunc(
-			mariaDBToPlacementMapper(mgr.GetClient()),
-		)).
-		// Watch both the cluster-scoped ClusterSecretStore and the namespaced
-		// SecretStore a Placement can select via spec.secretStoreRef, so the
-		// operator reflects upstream secret-backend outages in SecretsReady as soon
-		// as ESO flips the selected store's Ready condition.
-		Watches(&esov1.ClusterSecretStore{}, handler.EnqueueRequestsFromMapFunc(
-			storeToPlacementMapper(mgr.GetClient(), commonv1.SecretStoreKindCluster),
-		)).
-		Watches(&esov1.SecretStore{}, handler.EnqueueRequestsFromMapFunc(
-			storeToPlacementMapper(mgr.GetClient(), commonv1.SecretStoreKindNamespaced),
-		)).
-		Complete(r)
+		// The default wrapper turns an error matching multicluster.ErrClusterNotFound
+		// into a successful reconcile. This operator instead surfaces an
+		// unresolvable cluster as a TargetClusterUnavailable condition and
+		// requeues, so the wrapper stays off and the error semantics remain
+		// byte-identical to the classic builder's.
+		WithClusterNotFoundWrapper(false).
+		Complete(commonmulticluster.LocalReconciler(r))
 }
