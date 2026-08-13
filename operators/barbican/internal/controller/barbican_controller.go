@@ -24,12 +24,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/database"
@@ -253,7 +254,7 @@ type BarbicanReconciler struct {
 	healthProbeCache healthcheck.ProbeCache
 }
 
-// barbicanRemoteChildKinds are the kinds a Barbican CR projects into the
+// BarbicanRemoteChildKinds are the kinds a Barbican CR projects into the
 // namespace of the target cluster it names, and the kinds
 // reconcileDeleteRemoteChildren sweeps by ownership label when that CR is
 // deleted. Nothing on the target cluster collects them, so a kind missing from
@@ -262,7 +263,7 @@ type BarbicanReconciler struct {
 // The list is cross-checked against the create verbs of the kubebuilder RBAC
 // markers on this controller below: the operator can only leave behind what it
 // is allowed to create.
-var barbicanRemoteChildKinds = []schema.GroupVersionKind{
+var BarbicanRemoteChildKinds = []schema.GroupVersionKind{
 	appsv1.SchemeGroupVersion.WithKind("Deployment"),
 	corev1.SchemeGroupVersion.WithKind("Service"),
 	corev1.SchemeGroupVersion.WithKind("ConfigMap"),
@@ -610,7 +611,7 @@ func (r *BarbicanReconciler) reconcileDelete(ctx context.Context, children clien
 // rest, selected on the ownership labels Claim stamped on them.
 func (r *BarbicanReconciler) reconcileDeleteRemoteChildren(ctx context.Context, children client.Client, barbican *barbicanv1alpha1.Barbican) error {
 	return commonmulticluster.SweepRemoteChildren(ctx, r.Client, r.Resolver, r.Recorder, r.Scheme,
-		barbican, barbican.Spec.TargetClusterRef, children, barbicanRemoteChildKinds)
+		barbican, barbican.Spec.TargetClusterRef, children, BarbicanRemoteChildKinds)
 }
 
 // updateStatus persists the current status conditions and returns the given
@@ -637,13 +638,15 @@ func setReadyCondition(barbican *barbicanv1alpha1.Barbican) {
 // controllers, so this reconciler MUST be set up before
 // BarbicanSecretStoreReconciler), and wires the owned resources and
 // cross-resource watches.
-func (r *BarbicanReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *BarbicanReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+	local := mgr.GetLocalManager()
+
 	// Detect whether the Gateway API CRD is installed. spec.gateway is optional,
 	// so the operator must run on clusters without Gateway API. Adding
 	// Owns(HTTPRoute) unconditionally would fail at Start with "no matches for
 	// kind HTTPRoute" when the CRD is missing, blocking every Barbican CR.
-	r.gatewayAPIAvailable = gateway.IsGVKAvailable(mgr.GetRESTMapper(), httpRouteGVK)
-	r.apiReader = mgr.GetAPIReader()
+	r.gatewayAPIAvailable = gateway.IsGVKAvailable(local.GetRESTMapper(), httpRouteGVK)
+	r.apiReader = local.GetAPIReader()
 	setupLog := ctrl.Log.WithName("barbican-setup")
 	if r.gatewayAPIAvailable {
 		setupLog.Info("Gateway API detected; enabling HTTPRoute watch and reconciliation")
@@ -653,69 +656,115 @@ func (r *BarbicanReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	// Register the Barbican field indexer before Watches so
 	// secretToBarbicanWithStoresMapper can rely on it for its MatchingFields
-	// lookup.
-	if err := registerBarbicanIndexes(context.Background(), mgr.GetFieldIndexer()); err != nil {
+	// lookup. The indexes go on the LOCAL field indexer, not mgr's: with a
+	// provider configured, the multicluster manager's field indexer registers
+	// against the provider clusters, which hold no Barbican CR. Indexing the
+	// fleet is issue #839's business.
+	if err := registerBarbicanIndexes(context.Background(), local.GetFieldIndexer()); err != nil {
 		return err
 	}
 	// Register the BarbicanSecretStore indexes here — the single registration
 	// site for both controllers (this reconciler is set up before
 	// BarbicanSecretStoreReconciler in main.go and the envtest helper).
-	// reconcileSecretStores and the mappers rely on them.
-	if err := registerBarbicanSecretStoreIndexes(context.Background(), mgr.GetFieldIndexer()); err != nil {
+	// reconcileSecretStores and the mappers rely on them. They go on the LOCAL
+	// field indexer for the same reason as the Barbican indexes above.
+	if err := registerBarbicanSecretStoreIndexes(context.Background(), local.GetFieldIndexer()); err != nil {
 		return err
 	}
 
-	b := ctrl.NewControllerManagedBy(mgr).
+	// Every leg watching the management cluster carries both engage options
+	// below; see their definition for why an unpinned leg would stop watching
+	// it once a provider is configured.
+	engageLocal := commonmulticluster.EngageLocalCluster
+	engageNoProviders := commonmulticluster.EngageNoProviderClusters
+
+	// Every leg watching a target cluster is engaged on all of them, not on the
+	// ones some CR names, so it has to drop the events belonging to a CR that
+	// projects somewhere else (see commonmulticluster.RemoteRequests).
+	targets := commonmulticluster.TargetClusterOf(local.GetClient(),
+		func(barbican *barbicanv1alpha1.Barbican) *commonv1.TargetClusterRefSpec {
+			return barbican.Spec.TargetClusterRef
+		})
+
+	b := mcbuilder.ControllerManagedBy(mgr).
 		// Shared controller options: MaxConcurrentReconciles lets independent CRs
 		// reconcile in parallel, and the tuned RateLimiter caps per-item failure
-		// backoff at 30s (see bootstrap.ControllerOptions).
-		WithOptions(bootstrap.ControllerOptions(r.MaxConcurrentReconciles)).
+		// backoff at 30s (see bootstrap.TypedControllerOptions).
+		WithOptions(bootstrap.TypedControllerOptions[mcreconcile.Request](r.MaxConcurrentReconciles)).
 		// Filter the CR's own status-only updates so Status().Update does not
 		// re-wake the controller (see watch.CRUpdatePredicate).
-		For(&barbicanv1alpha1.Barbican{}, builder.WithPredicates(watch.CRUpdatePredicate())).
-		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.Service{}).
-		Owns(&corev1.Secret{}).
-		Owns(&policyv1.PodDisruptionBudget{}).
-		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
-		Owns(&networkingv1.NetworkPolicy{}).
-		Owns(&batchv1.Job{}).
-		Owns(&batchv1.CronJob{})
+		For(&barbicanv1alpha1.Barbican{}, mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders).
+		Owns(&appsv1.Deployment{}, engageLocal, engageNoProviders).
+		Owns(&corev1.Service{}, engageLocal, engageNoProviders).
+		Owns(&corev1.Secret{}, engageLocal, engageNoProviders).
+		Owns(&policyv1.PodDisruptionBudget{}, engageLocal, engageNoProviders).
+		Owns(&autoscalingv2.HorizontalPodAutoscaler{}, engageLocal, engageNoProviders).
+		Owns(&networkingv1.NetworkPolicy{}, engageLocal, engageNoProviders).
+		Owns(&batchv1.Job{}, engageLocal, engageNoProviders).
+		Owns(&batchv1.CronJob{}, engageLocal, engageNoProviders)
 
 	if r.gatewayAPIAvailable {
-		b = b.Owns(&gatewayv1.HTTPRoute{})
+		b = b.Owns(&gatewayv1.HTTPRoute{}, engageLocal, engageNoProviders)
+	}
+
+	// The same children, once more, on the clusters a CR can project onto. Owns
+	// cannot see them: an owner reference does not cross a cluster boundary, so
+	// the ownership labels are what maps a child back to its CR. No leg carries a
+	// predicate, mirroring what Owns admits locally.
+	b, err := commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &barbicanv1alpha1.Barbican{},
+		targets, BarbicanRemoteChildKinds, nil)
+	if err != nil {
+		return err
+	}
+
+	// Watch Secrets and map to the Barbican CRs that reference them (directly
+	// or via an attached BarbicanSecretStore's AppRole credentials/CA Secret).
+	// ESO-managed Secrets are owned by the ExternalSecret controller, not the
+	// Barbican CR, so EnqueueRequestForOwner would never match them.
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &corev1.Secret{},
+		secretToBarbicanWithStoresMapper(local.GetClient()))
+	if err != nil {
+		return err
+	}
+
+	// Watch the MariaDB cluster CR referenced by spec.database.clusterRef so
+	// the operator reflects upstream database outages in DatabaseReady without
+	// waiting for the next periodic requeue.
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &mariadbv1alpha1.MariaDB{},
+		mariaDBToBarbicanMapper(local.GetClient()))
+	if err != nil {
+		return err
+	}
+
+	// Watch both the cluster-scoped ClusterSecretStore and the namespaced
+	// SecretStore a Barbican can select via spec.secretStoreRef, so the
+	// operator reflects upstream secret-backend outages in SecretsReady as soon
+	// as ESO flips the selected store's Ready condition.
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &esov1.ClusterSecretStore{},
+		esoStoreToBarbicanMapper(local.GetClient(), commonv1.SecretStoreKindCluster))
+	if err != nil {
+		return err
+	}
+	b, err = commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &esov1.SecretStore{},
+		esoStoreToBarbicanMapper(local.GetClient(), commonv1.SecretStoreKindNamespaced))
+	if err != nil {
+		return err
 	}
 
 	return b.
-		// Watch Secrets and map to the Barbican CRs that reference them (directly
-		// or via an attached BarbicanSecretStore's AppRole credentials/CA Secret).
-		// ESO-managed Secrets are owned by the ExternalSecret controller, not the
-		// Barbican CR, so EnqueueRequestForOwner would never match them.
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
-			secretToBarbicanWithStoresMapper(mgr.GetClient()),
-		)).
 		// Watch BarbicanSecretStores and map to their parent Barbican: store
 		// status flips (CredentialsReady turning True) trigger projection,
 		// DeletionTimestamp flips trigger de-projection. No generation predicate —
-		// the status transitions ARE the signal.
-		Watches(&barbicanv1alpha1.BarbicanSecretStore{}, handler.EnqueueRequestsFromMapFunc(
+		// the status transitions ARE the signal. The leg stays local-only: a
+		// BarbicanSecretStore is a management-plane CR and lives nowhere else.
+		Watches(&barbicanv1alpha1.BarbicanSecretStore{}, commonmulticluster.LocalRequests(
 			barbicanSecretStoreToBarbicanMapper(),
-		)).
-		// Watch the MariaDB cluster CR referenced by spec.database.clusterRef so
-		// the operator reflects upstream database outages in DatabaseReady without
-		// waiting for the next periodic requeue.
-		Watches(&mariadbv1alpha1.MariaDB{}, handler.EnqueueRequestsFromMapFunc(
-			mariaDBToBarbicanMapper(mgr.GetClient()),
-		)).
-		// Watch both the cluster-scoped ClusterSecretStore and the namespaced
-		// SecretStore a Barbican can select via spec.secretStoreRef, so the
-		// operator reflects upstream secret-backend outages in SecretsReady as soon
-		// as ESO flips the selected store's Ready condition.
-		Watches(&esov1.ClusterSecretStore{}, handler.EnqueueRequestsFromMapFunc(
-			esoStoreToBarbicanMapper(mgr.GetClient(), commonv1.SecretStoreKindCluster),
-		)).
-		Watches(&esov1.SecretStore{}, handler.EnqueueRequestsFromMapFunc(
-			esoStoreToBarbicanMapper(mgr.GetClient(), commonv1.SecretStoreKindNamespaced),
-		)).
-		Complete(r)
+		), engageLocal, engageNoProviders).
+		// The default wrapper turns an error matching multicluster.ErrClusterNotFound
+		// into a successful reconcile. This operator instead surfaces an
+		// unresolvable cluster as a TargetClusterUnavailable condition and
+		// requeues, so the wrapper stays off and the error semantics remain
+		// byte-identical to the classic builder's.
+		WithClusterNotFoundWrapper(false).
+		Complete(commonmulticluster.LocalReconciler(r))
 }
