@@ -20,15 +20,17 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
@@ -1340,27 +1342,85 @@ func listStoreRequests(ctx context.Context, c client.Reader, namespace string, m
 	return requests
 }
 
+// storeTargetCluster is the lookup this controller's remote legs gate their
+// requests on (see commonmulticluster.RemoteRequests). A BarbicanSecretStore has
+// no target field of its own, so the cluster its children belong on is the one
+// its parent Barbican names — the same two hops resolveChildren walks for the
+// write side. A store whose parent does not exist has no known cluster, and its
+// events on every target are dropped until it does.
+func storeTargetCluster(c client.Reader) commonmulticluster.TargetClusterFunc {
+	return func(ctx context.Context, key client.ObjectKey) (string, error) {
+		var store barbicanv1alpha1.BarbicanSecretStore
+		if err := c.Get(ctx, key, &store); err != nil {
+			return "", err
+		}
+
+		var parent barbicanv1alpha1.Barbican
+		parentKey := client.ObjectKey{Namespace: key.Namespace, Name: store.Spec.BarbicanRef.Name}
+		if err := c.Get(ctx, parentKey, &parent); err != nil {
+			return "", err
+		}
+		if parent.Spec.TargetClusterRef == nil {
+			return "", nil
+		}
+		return parent.Spec.TargetClusterRef.Name, nil
+	}
+}
+
 // SetupWithManager registers the BarbicanSecretStoreReconciler with the
 // controller manager. The BarbicanSecretStore field indexes both mappers resolve
 // against are registered by BarbicanReconciler.SetupWithManager (the single
 // registration site — both controllers run in one manager and that reconciler is
 // set up first), so this controller registers none.
-func (r *BarbicanSecretStoreReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+func (r *BarbicanSecretStoreReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+	local := mgr.GetLocalManager()
+
+	// Every leg watching the management cluster carries both engage options
+	// below; see their definition for why an unpinned leg would stop watching
+	// it once a provider is configured.
+	engageLocal := commonmulticluster.EngageLocalCluster
+	engageNoProviders := commonmulticluster.EngageNoProviderClusters
+
+	// Every leg watching a target cluster is engaged on all of them, not on the
+	// ones a store's parent names, so it has to drop the events belonging to a
+	// store that projects somewhere else (see commonmulticluster.RemoteRequests).
+	targets := storeTargetCluster(local.GetClient())
+
+	b := mcbuilder.ControllerManagedBy(mgr).
 		// Filter the CR's own status-only updates so Status().Update does not
 		// re-wake the controller (see watch.CRUpdatePredicate).
-		For(&barbicanv1alpha1.BarbicanSecretStore{}, builder.WithPredicates(watch.CRUpdatePredicate())).
+		For(&barbicanv1alpha1.BarbicanSecretStore{}, mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders).
 		// Watch the referenced Barbican WITHOUT a generation predicate: Barbican
 		// status flips (the store config landing in the Deployment) are exactly
 		// the wake signal the ConfigProjected gate waits on.
-		Watches(&barbicanv1alpha1.Barbican{}, handler.EnqueueRequestsFromMapFunc(
-			barbicanToSecretStoresMapper(mgr.GetClient()),
-		)).
-		// Watch the referenced OpenBaoCluster for the same reason: its Available
-		// condition is a status-only transition, and it is what a managed store
-		// waiting on WaitingForInstance needs to hear about.
-		Watches(&openbaov1alpha1.OpenBaoCluster{}, handler.EnqueueRequestsFromMapFunc(
-			openBaoClusterToSecretStoresMapper(mgr.GetClient()),
-		)).
-		Complete(r)
+		Watches(&barbicanv1alpha1.Barbican{}, commonmulticluster.LocalRequests(
+			barbicanToSecretStoresMapper(local.GetClient()),
+		), engageLocal, engageNoProviders)
+
+	// Watch the referenced OpenBaoCluster for the same reason: its Available
+	// condition is a status-only transition, and it is what a managed store
+	// waiting on WaitingForInstance needs to hear about. The leg is paired onto
+	// the clusters a store's parent can project onto because in the hardened
+	// topology the instance lives on the target.
+	b, err := commonmulticluster.AddInputWatch(b, local.GetScheme(), targets, &openbaov1alpha1.OpenBaoCluster{},
+		openBaoClusterToSecretStoresMapper(local.GetClient()))
+	if err != nil {
+		return err
+	}
+
+	// The AppRole credentials Secret is this controller's own remote child: it
+	// writes it onto the target cluster, where no owner reference reaches back
+	// across the boundary, so the ownership labels map it to the store again.
+	b, err = commonmulticluster.AddRemoteChildWatches(b, local.GetScheme(), &barbicanv1alpha1.BarbicanSecretStore{},
+		targets, []schema.GroupVersionKind{corev1.SchemeGroupVersion.WithKind("Secret")}, nil)
+	if err != nil {
+		return err
+	}
+
+	return b.
+		// The wrapper stays off for the same reason as on the Barbican
+		// controller: an unresolvable cluster is surfaced as a condition and
+		// requeued, not swallowed into a successful reconcile.
+		WithClusterNotFoundWrapper(false).
+		Complete(commonmulticluster.LocalReconciler(r))
 }

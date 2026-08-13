@@ -65,7 +65,7 @@ func main() {
 				OperatorNamespace:       bootstrap.DetectOperatorNamespace(),
 				MaxConcurrentReconciles: maxConcurrentReconciles,
 				Resolver:                mcMgr,
-			}).SetupWithManager(mgr); err != nil {
+			}).SetupWithManager(mcMgr); err != nil {
 				return err
 			}
 			// The dedicated BarbicanSecretStore controller runs in the same manager
@@ -78,7 +78,7 @@ func main() {
 				Scheme:   mgr.GetScheme(),
 				Recorder: mgr.GetEventRecorderFor("barbicansecretstore-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 				Resolver: mcMgr,
-			}).SetupWithManager(mgr); err != nil {
+			}).SetupWithManager(mcMgr); err != nil {
 				return err
 			}
 			if webhooks {
