@@ -184,10 +184,13 @@ type PlacementReconciler struct {
 	// (read-your-writes) fake client.
 	apiReader client.Reader
 
-	// gatewayAPIAvailable is set during SetupWithManager from the cluster's
-	// RESTMapper and indicates whether the gateway.networking.k8s.io/v1 HTTPRoute
-	// CRD is installed. When false, the controller skips the HTTPRoute watch
-	// entirely so it does not crash on a missing kind.
+	// gatewayAPIAvailable is set during SetupWithManager from the management
+	// cluster's RESTMapper and indicates whether the
+	// gateway.networking.k8s.io/v1 HTTPRoute CRD is installed there. Two
+	// consumers read it: the local HTTPRoute watch leg, which SetupWithManager
+	// skips when false so the controller does not crash on a missing kind, and
+	// commonmulticluster.ChildrenServeKind, which answers with it for local
+	// children while probing the target cluster's RESTMapper for remote ones.
 	gatewayAPIAvailable bool
 
 	// healthProbeCache memoizes the last successful Placement API probe per CR
@@ -567,8 +570,14 @@ func (r *PlacementReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	// secretToPlacementMapper can rely on it for its MatchingFields lookup. The
 	// index goes on the LOCAL field indexer, not mgr's: with a provider
 	// configured, the multicluster manager's field indexer registers against the
-	// provider clusters, which hold no Placement CR. Indexing the fleet is issue
-	// #839's business.
+	// provider clusters, which hold no Placement CR. Registration stays local
+	// by contract: the indexes are on CR kinds, which exist on the management
+	// cluster alone, and every request the watches emit is pinned to that
+	// cluster (LocalRequests / RemoteRequests,
+	// internal/common/multicluster/watch.go), so a remote event resolves to its
+	// CR through the local cache. Registering on the fleet would fail the
+	// engagement of every target cluster, because the kubeconfig provider
+	// applies its stored indexes while engaging one.
 	if err := registerPlacementIndexes(context.Background(), local.GetFieldIndexer()); err != nil {
 		return err
 	}
