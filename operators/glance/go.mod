@@ -1,6 +1,6 @@
 module github.com/c5c3/forge/operators/glance
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/c5c3/forge/internal/common v0.0.0
