@@ -68,7 +68,7 @@ sub-conditions are `True`, and `False` (`NotAllReady`) otherwise.
 | `PlacementAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | — (errors propagate) |
-| `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled` |
+| `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled`, `CapabilityProbeFailed` |
 
 `TargetClusterUnavailable` is set ahead of every sub-reconciler, when
 `spec.targetClusterRef` names a target cluster that is not registered or no
@@ -204,9 +204,13 @@ image the first one cannot read.
 The Placement controller `Owns` its Deployment, Service, ConfigMap, Secret,
 PodDisruptionBudget, HorizontalPodAutoscaler, NetworkPolicy, and, for the db-sync
 migration, Job. The HTTPRoute is added to the `Owns` set only when the Gateway
-API CRD is installed, probed at setup through the RESTMapper; without it
-`spec.gateway` surfaces `HTTPRouteReady=False / GatewayAPINotInstalled` instead
-of failing the controller at start with an unknown kind. The CR's own
+API CRD is installed on the management cluster, probed at setup through the
+RESTMapper; without it `spec.gateway` surfaces
+`HTTPRouteReady=False / GatewayAPINotInstalled` instead of failing the
+controller at start with an unknown kind. That setup probe answers for CRs
+without a `spec.targetClusterRef`; a CR that names a target cluster has the
+kind probed against that cluster's RESTMapper on every pass, so the verdict
+follows the cluster its children land on. The CR's own
 status-only updates are filtered out, so a status write does not re-wake the
 controller.
 

@@ -767,9 +767,16 @@ CRD must be installed in the cluster before the Keystone operator starts. The
 operator probes for the CRD at startup (via the manager `RESTMapper`); when the
 CRD is missing it disables the HTTPRoute watch so Keystone CRs without
 `spec.gateway` still reconcile, and reports `HTTPRouteReady=False` with reason
-`GatewayAPINotInstalled` for any CR that sets `spec.gateway`. Installing the
-CRD after the operator has started requires restarting the operator for the
-watch to become active. The quickstart stack (`make deploy-infra`) installs
+`GatewayAPINotInstalled` for any CR that sets `spec.gateway`. A Keystone with
+`spec.targetClusterRef` is re-probed against its target cluster on every
+reconcile, so installing Gateway API there heals the CR on the next pass;
+restoring the `HTTPRoute` drift watch on that cluster still needs a rotation of
+its kubeconfig Secret (see
+[Target Clusters](../target-clusters.md#per-cluster-capabilities)). For a
+Keystone that names no target cluster the startup probe is the whole answer,
+and installing the CRD after the operator has started requires restarting the
+operator for the watch to become active. The quickstart stack
+(`make deploy-infra`) installs
 the upstream Gateway API standard CRDs for this reason; the pinned version is
 set via `GATEWAY_API_VERSION` in `hack/deploy-infra.sh` and tracks
 `sigs.k8s.io/gateway-api` in `operators/keystone/go.mod`. That pin is `v1.6.1`
@@ -1187,6 +1194,8 @@ condition using these typed reasons:
 | `ExternallyManaged` | `enabled=true` but the database is brownfield (`spec.database.host` set, no `clusterRef`) — the operator does not own the trust domain and expects the client keypair to be supplied out-of-band via `clientCertSecretRef`. |
 | `CertificatePending` | Managed mode; the operator has created the cert-manager `Certificate` but cert-manager has not yet issued it. The condition is `False` until issuance completes. |
 | `CertificateIssued` | Managed mode; the client `Certificate` is issued into Secret `<name>-db-client` and ready for mount. |
+| `CertificateError` | Managed mode; applying the `Certificate` to the cluster the children are written to failed — a target cluster without cert-manager answers `no matches for kind Certificate`. The condition is `False` and the pass returns the error. |
+| `CapabilityProbeFailed` | The cluster the children are written to could not be asked whether it serves the `cert-manager.io/v1 Certificate` kind (target API server unreachable, or throttling the discovery request). The condition is `False` and the pass returns the error, so a `DatabaseTLSReady` left at its previous verdict cannot report the CR converged at a spec that was never applied. |
 
 ### CacheSpec
 

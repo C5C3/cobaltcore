@@ -43,7 +43,7 @@ all seven sub-conditions are `True`:
 | `SecretsReady` | `SecretsAvailable` | `TargetClusterUnavailable`, `SecretStoreNotReady`, `WaitingForSecretKey` |
 | `ConfigReady` | `ConfigRendered` | `ConfigError` |
 | `DeploymentReady` | `DeploymentReady` | `WaitingForDeployment` |
-| `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled` |
+| `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled`, `CapabilityProbeFailed` |
 | `HorizonAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | — (errors propagate) |
@@ -86,9 +86,12 @@ namespaced `SecretStore` — each bound to `storeToHorizonMapper` (the shared
 `spec.secretStoreRef` resolves to the changed store, so upstream
 credential and backend changes retrigger reconciliation without waiting for
 a periodic requeue. The HTTPRoute watch is registered only when the Gateway
-API CRD is installed; without it, `spec.gateway` surfaces
-`HTTPRouteReady=False` with reason `GatewayAPINotInstalled` instead of
-crashing the controller.
+API CRD is installed on the management cluster; without it, `spec.gateway`
+surfaces `HTTPRouteReady=False` with reason `GatewayAPINotInstalled` instead
+of crashing the controller. That setup probe answers for CRs without a
+`spec.targetClusterRef`; a CR that names a target cluster has the kind probed
+against that cluster's RESTMapper on every pass, so the verdict follows the
+cluster its children land on.
 
 ## WebSSO and multi-domain rendering
 

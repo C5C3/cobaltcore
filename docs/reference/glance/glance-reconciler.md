@@ -64,7 +64,7 @@ nine sub-conditions are `True`; otherwise `False` (`NotAllReady`).
 | `GlanceAPIReady` | `APIHealthy` | `APIUnhealthy`, `EndpointNotReady`, `HealthCheckTimeout`, `ConnectionFailed`, `HealthCheckFailed` |
 | `HPAReady` | `HPAReady`, `HPANotRequired` | — (errors propagate) |
 | `NetworkPolicyReady` | `NetworkPolicyReady`, `NetworkPolicyNotRequired` | — (errors propagate) |
-| `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled` |
+| `HTTPRouteReady` | `HTTPRouteAccepted`, `HTTPRouteNotRequired` | `HTTPRouteNotAccepted`, `GatewayAPINotInstalled`, `CapabilityProbeFailed` |
 | `DBPurgeReady` | `DBPurgeScheduled`, `DBPurgeSuspended` | `DBPurgeJobFailed` |
 
 `TargetClusterUnavailable` is set ahead of every sub-reconciler, when
@@ -229,9 +229,13 @@ PodDisruptionBudget, HorizontalPodAutoscaler, NetworkPolicy, and — for the
 db-sync migration — Job, plus the db-purge CronJob: its `status.active` list
 changes as each spawned run starts and finishes, which is what wakes the
 reconcile that refreshes `DBPurgeReady`. The HTTPRoute is added to the `Owns`
-set only when the Gateway API CRD is installed (otherwise `spec.gateway`
-surfaces `HTTPRouteReady=False / GatewayAPINotInstalled` instead of crashing
-the controller). Beyond the owned set it watches:
+set only when the Gateway API CRD is installed on the management cluster
+(otherwise `spec.gateway` surfaces
+`HTTPRouteReady=False / GatewayAPINotInstalled` instead of crashing the
+controller). That setup probe answers for CRs without a
+`spec.targetClusterRef`; a CR that names a target cluster has the kind probed
+against that cluster's RESTMapper on every pass. Beyond the owned set it
+watches:
 
 - **Secrets**, mapped to the Glance CRs that reference them directly (via the
   `spec.serviceUser.secretRef.name` / `spec.database.secretRef.name` field

@@ -71,8 +71,8 @@ The controller watches the primary Keystone CR and all owned resources:
 | `PodDisruptionBudget` | `Owns()` | Triggers reconciliation when owned PDB changes |
 | `HorizontalPodAutoscaler` | `Owns()` | Triggers reconciliation when owned HPA changes |
 | `CronJob` | `Owns()` | Triggers reconciliation when owned CronJob changes |
-| `HTTPRoute` | `Owns()` (optional) | Registered only when the `gateway.networking.k8s.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. Triggers reconciliation when owned HTTPRoute changes (only created when `spec.gateway` is set). |
-| `Certificate` | `Owns()` (optional) | Registered only when the `cert-manager.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. Triggers reconciliation when the managed `<name>-db-client` Certificate changes, so later issuance failures surface in `DatabaseTLSReady` (only created when managed DB TLS is enabled). |
+| `HTTPRoute` | `Owns()` (optional) | Registered only when the `gateway.networking.k8s.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. That detection gates the local watch leg and answers for Keystone CRs whose children stay on the management cluster; a CR naming a target cluster is probed against that cluster's `RESTMapper` on every pass. Triggers reconciliation when owned HTTPRoute changes (only created when `spec.gateway` is set). |
+| `Certificate` | `Owns()` (optional) | Registered only when the `cert-manager.io/v1` CRD is installed; detected at startup via the manager's `RESTMapper`. As with the HTTPRoute leg, that detection gates the local watch and answers for CRs without a target cluster, while a CR that names one is probed against its target per pass. Triggers reconciliation when the managed `<name>-db-client` Certificate changes, so later issuance failures surface in `DatabaseTLSReady` (only created when managed DB TLS is enabled). |
 | `Secret` | `Watches()` | Maps Secret events to referencing Keystone CRs via the `KeystoneSecretNameIndexKey` field indexer, with an owner-ref fallback for rotation staging Secrets |
 | `MariaDB` | `Watches()` | Propagates upstream DB cluster health into `DatabaseReady` |
 | `ClusterSecretStore` | `Watches()` | Propagates OpenBao-backend health into `SecretsReady`; per-ref fan-out via `storeToKeystoneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind) enqueues only the Keystone CRs whose effective `spec.secretStoreRef` resolves to the changed cluster store |
@@ -1470,7 +1470,7 @@ after a full reconcile loop, every condition in the status carries the correct
 | `PolicyValidReady` | `reconcilePolicyValidation` | Policy override validation passed or not required |
 | `DeploymentReady` | `reconcileDeployment` | Deployment available and Service created |
 | `KeystoneAPIReady` | `reconcileHealthCheck` | Keystone API responding to HTTP health check |
-| `HTTPRouteReady` | `reconcileHTTPRoute` | HTTPRoute accepted by Gateway, not required (no `spec.gateway`), or Gateway API CRD missing (reason `GatewayAPINotInstalled`) |
+| `HTTPRouteReady` | `reconcileHTTPRoute` | HTTPRoute accepted by Gateway, not required (no `spec.gateway`), Gateway API CRD missing on the cluster the children land on (reason `GatewayAPINotInstalled`), or that cluster could not be probed for the kind (reason `CapabilityProbeFailed`) |
 | `HPAReady` | `reconcileHPA` | HPA configured or not required |
 | `BootstrapReady` | `reconcileBootstrap` | Bootstrap Job completed successfully |
 | `TrustFlushReady` | `reconcileTrustFlush` | Trust flush CronJob configured or not required |
@@ -2515,17 +2515,28 @@ Keystone API outside the cluster via a pre-existing `Gateway`. The
 Gateway is owned by the platform team; this sub-reconciler only ensures the
 route that attaches the Keystone Service to it. Four lifecycle paths:
 
-0. **Gateway API not installed** (`r.gatewayAPIAvailable` is false): The
-   CRD presence check in `SetupWithManager` found no mapping for
-   `HTTPRoute.gateway.networking.k8s.io/v1`, so the `Owns(HTTPRoute)` watch
-   was skipped. When `spec.gateway` is nil, set `HTTPRouteReady=True` with
-   reason `HTTPRouteNotRequired` (no delete attempt — `c.Delete` would fail
-   with `no matches for kind`). When `spec.gateway` is set, set
-   `HTTPRouteReady=False` with reason `GatewayAPINotInstalled` and a message
-   pointing the user at the missing CRD; the operator otherwise keeps
-   reconciling so that Keystone CRs without `spec.gateway` still become
-   Ready. Runtime installation of the CRD requires an operator restart for
-   the RESTMapper probe and the `Owns()` watch to pick it up.
+0. **The children's cluster does not serve the HTTPRoute kind**
+   (`commonmulticluster.ChildrenServeKind` answers false): When `spec.gateway`
+   is nil, set `HTTPRouteReady=True` with reason `HTTPRouteNotRequired` (no
+   delete attempt — `c.Delete` would fail with `no matches for kind`). When
+   `spec.gateway` is set, set `HTTPRouteReady=False` with reason
+   `GatewayAPINotInstalled`; the operator otherwise keeps reconciling so that
+   Keystone CRs without `spec.gateway` still become Ready. Where the answer
+   comes from, and what the message asks for, depends on the CR:
+   - **Without `spec.targetClusterRef`:** from `r.gatewayAPIAvailable`, the
+     latch `SetupWithManager` probed against the management cluster's
+     `RESTMapper`. It found no mapping for
+     `HTTPRoute.gateway.networking.k8s.io/v1`, so the `Owns(HTTPRoute)` watch
+     was skipped too. Installing the CRD at runtime requires an operator
+     restart for the probe and the watch to pick it up, and the message says
+     so.
+   - **With `spec.targetClusterRef`:** from the target cluster's own
+     `RESTMapper`, probed on every pass with nothing memoized, so a CRD
+     installed on the target is seen on the next reconcile. The drift watch is
+     fixed at cluster engagement and does not come back with it, so the message
+     asks for Gateway API on the target plus a rotation of the cluster's
+     kubeconfig Secret, which re-engages the cluster and restores the
+     `HTTPRoute` watch.
 1. **Gateway disabled** (`spec.gateway` is nil, CRD present): Delete any
    existing `{name}` HTTPRoute and set `HTTPRouteReady=True` with reason
    `HTTPRouteNotRequired`.
@@ -2537,7 +2548,11 @@ route that attaches the Keystone Service to it. Four lifecycle paths:
    reason `HTTPRouteAccepted`; otherwise condition `False` with reason
    `HTTPRouteNotAccepted` and a 10s requeue.
 3. **Error**: Propagate errors from ensure/delete/get operations with
-   descriptive context.
+   descriptive context. A capability probe that fails instead of answering
+   (the target API server unreachable, or throttling the discovery request)
+   belongs here as well: it sets `HTTPRouteReady=False` with reason
+   `CapabilityProbeFailed` and returns the wrapped error, so the pass is
+   retried with backoff.
 
 **Placement rationale:** Runs after `reconcileDeployment` + `pruneStaleConfigMaps`
 so the backend Service (`{name}`) is guaranteed to exist before the HTTPRoute
