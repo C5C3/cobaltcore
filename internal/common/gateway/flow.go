@@ -16,6 +16,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/multicluster"
 )
 
 // Condition reason constants for the HTTPRoute readiness condition, shared so
@@ -33,8 +34,11 @@ const (
 // exposure noun for the messages, and the condition type — are supplied by the
 // caller; the three-path flow itself is identical across operators.
 type RouteFlowParams struct {
-	// GatewayAPIAvailable reports whether the HTTPRoute CRD is installed (the
-	// watch was registered at startup).
+	// GatewayAPIAvailable reports whether the cluster holding the children
+	// serves the HTTPRoute CRD. For local children it is the management
+	// cluster's setup-time latch, probed once in SetupWithManager. For remote
+	// children it is the per-pass multicluster.ChildrenServeKind probe against
+	// the target cluster's RESTMapper.
 	GatewayAPIAvailable bool
 	// GatewayConfigured reports whether the CR requests external exposure
 	// (spec.gateway != nil).
@@ -84,14 +88,25 @@ func ReconcileHTTPRoute(ctx context.Context, c client.Client, scheme *runtime.Sc
 			})
 			return ctrl.Result{}, nil
 		}
+		// The remote message names the target cluster and its per-reconcile
+		// re-check, because the availability answer for remote children comes
+		// from a probe against the target's RESTMapper rather than from the
+		// setup-time latch a restart would refresh.
+		notInstalledMsg := fmt.Sprintf("spec.gateway is set but the gateway.networking.k8s.io/v1 HTTPRoute CRD is "+
+			"not installed in this cluster; install Gateway API and restart the operator to enable "+
+			"external %s exposure", p.ExposureNoun)
+		if multicluster.IsRemote(c) {
+			notInstalledMsg = "spec.gateway is set but the target cluster does not serve the " +
+				"gateway.networking.k8s.io/v1 HTTPRoute CRD; install Gateway API on the target cluster " +
+				"(the operator re-checks on every reconcile) and rotate the cluster's kubeconfig Secret " +
+				"to restore the HTTPRoute drift watch"
+		}
 		conditions.SetCondition(p.Conditions, metav1.Condition{
 			Type:               p.ConditionType,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: p.Generation,
 			Reason:             ReasonGatewayAPINotInstalled,
-			Message: fmt.Sprintf("spec.gateway is set but the gateway.networking.k8s.io/v1 HTTPRoute CRD is "+
-				"not installed in this cluster; install Gateway API and restart the operator to enable "+
-				"external %s exposure", p.ExposureNoun),
+			Message:            notInstalledMsg,
 		})
 		return ctrl.Result{}, nil
 	}
