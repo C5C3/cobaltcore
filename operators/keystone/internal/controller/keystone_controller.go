@@ -242,12 +242,16 @@ type KeystoneReconciler struct {
 	// determined, in which case no operator-namespace peer is added.
 	OperatorNamespace string
 
-	// gatewayAPIAvailable is set during SetupWithManager from the cluster's
-	// RESTMapper and indicates whether the gateway.networking.k8s.io/v1
-	// HTTPRoute CRD is installed. When false, the controller skips the
-	// HTTPRoute watch entirely so it does not crash on a missing kind, and
-	// reconcileHTTPRoute surfaces a clear HTTPRouteReady=False condition if
-	// the user nonetheless sets spec.gateway.
+	// gatewayAPIAvailable is set during SetupWithManager from the
+	// management cluster's RESTMapper and indicates whether the
+	// gateway.networking.k8s.io/v1 HTTPRoute CRD is installed there. Two
+	// consumers read it: the local HTTPRoute watch leg, which
+	// setupWithOptions skips when false so the controller does not crash on
+	// a missing kind, and commonmulticluster.ChildrenServeKind, which
+	// answers with it for local children while probing the target cluster's
+	// RESTMapper for remote ones. reconcileHTTPRoute takes that verdict and
+	// surfaces a clear HTTPRouteReady=False condition if the user
+	// nonetheless sets spec.gateway.
 	gatewayAPIAvailable bool
 
 	// apiReader is set during SetupWithManager from mgr.GetAPIReader(): a
@@ -259,13 +263,17 @@ type KeystoneReconciler struct {
 	// fall back to the (read-your-writes) fake client.
 	apiReader client.Reader
 
-	// certManagerAvailable is set during SetupWithManager from the cluster's
-	// RESTMapper and indicates whether the cert-manager.io/v1 Certificate CRD
-	// is installed. When false, the controller skips the Certificate watch and
-	// reconcileDatabaseTLS skips the disable-path Certificate delete (no
-	// Certificate can exist), so the default no-TLS configuration never errors
-	// with "no matches for kind Certificate" on clusters without cert-manager
-	// (issue #475).
+	// certManagerAvailable is set during SetupWithManager from the
+	// management cluster's RESTMapper and indicates whether the
+	// cert-manager.io/v1 Certificate CRD is installed there. Two consumers
+	// read it: the local Certificate watch leg, which setupWithOptions
+	// skips when false, and commonmulticluster.ChildrenServeKind, which
+	// answers with it for local children while probing the target cluster's
+	// RESTMapper for remote ones. deleteManagedDBClientCertificate takes
+	// that verdict and skips the disable-path Certificate delete where no
+	// Certificate can exist, so the default no-TLS configuration never
+	// errors with "no matches for kind Certificate" on a cluster without
+	// cert-manager (issue #475).
 	certManagerAvailable bool
 
 	// MaxConcurrentReconciles bounds how many Keystone CRs reconcile
@@ -1001,8 +1009,14 @@ func (r *KeystoneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcont
 	// secretToKeystoneMapper can rely on it for its MatchingFields lookup.
 	// The indexes go on the LOCAL field indexer, not mgr's: with a provider
 	// configured, the multicluster manager's field indexer registers against
-	// the provider clusters, which hold no Keystone CR. Indexing the fleet is
-	// issue #839's business.
+	// the provider clusters, which hold no Keystone CR. Registration stays
+	// local by contract: the indexes are on CR kinds, which exist on the
+	// management cluster alone, and every request the watches emit is
+	// pinned to that cluster (LocalRequests / RemoteRequests,
+	// internal/common/multicluster/watch.go), so a remote event resolves to
+	// its CR through the local cache. Registering on the fleet would fail
+	// the engagement of every target cluster, because the kubeconfig
+	// provider applies its stored indexes while engaging one.
 	if err := registerSecretNameIndex(context.Background(), local.GetFieldIndexer()); err != nil {
 		return err
 	}
