@@ -329,8 +329,50 @@ child as an orphan. Delete such a CR and create it anew before the CRDs go onto
 its target cluster; everything it writes afterwards carries the labels alone.
 :::
 
+## Per-cluster capabilities
+
+Two of the kinds these operators project are optional: the Gateway API
+`HTTPRoute`, and the cert-manager `Certificate` Keystone issues for a managed
+database client keypair. Whether a kind can be written is a property of the
+cluster the children land on, so that is the cluster asked. A CR without
+`targetClusterRef` takes the answer from the latch its operator probed against
+the management cluster's `RESTMapper` at setup, and a CRD installed there
+afterwards is picked up on the next operator restart. A CR that names a target
+cluster is probed against that cluster's `RESTMapper` on every pass, with
+nothing memoized in between. Install Gateway API on the target and the next
+reconcile writes the route.
+
+The verdict decides what the pass does. A `spec.gateway` set against a cluster
+that does not serve `HTTPRoute` holds `HTTPRouteReady=False` with reason
+`GatewayAPINotInstalled`, under a message naming the cluster that lacks the
+CRD. Keystone's Certificate delete, the one that runs when database TLS is
+switched off or pointed at a brownfield database, is skipped on a target
+without cert-manager, where no Certificate can exist. A probe that fails
+instead of answering is its own outcome: a target API server that is
+unreachable, or throttling the discovery request, sets the sub-reconciler's own
+condition — `HTTPRouteReady` or `DatabaseTLSReady` — to `False` with reason
+`CapabilityProbeFailed`, and the pass is retried with backoff. That condition is
+what keeps an aborted pass honest, since the aggregate `Ready` is re-computed
+and `status.observedGeneration` stamped on every exit path.
+
+A watch leg is fixed when its cluster is engaged (see above); the probe is not.
+A CRD installed on a target after that takes effect on the next reconcile,
+while the drift watch for that kind stays absent until the registration Secret
+is rotated: an `HTTPRoute` deleted by hand on that cluster is corrected on the
+next periodic requeue instead of within watch latency.
+
+Field indexes are registered on the management cluster only. Every index is on
+a CR kind, and the CRs exist there alone; a remote event finds its CR through
+the local cache, because the mappers pin every request they emit to the
+management cluster. Registering the indexes on the fleet would break cluster
+engagement outright, since the kubeconfig provider applies its stored indexes
+while engaging a cluster.
+
+The API Service selector latch reads the target too: it goes through that
+cluster's own uncached API reader, so a lagging cache cannot re-widen the
+selector.
+
 ## Interim constraints
 
-- The capability probes (Gateway API, cert-manager) run against the management cluster, not the target (#839). The API Service selector latch does read the target: it goes through that cluster's own uncached API reader, so a lagging cache cannot re-widen the selector.
 - `KeystoneIdentityBackend` carries no `targetClusterRef`, and its reconciler stays management-side. A backend attached to a Keystone that names a target cluster looks for the parent's Deployment and projection Secret locally, where they do not exist, and holds `ConfigProjected=False` with reason `WaitingForProjection`.
 - RBAC and access packaging for a target cluster, together with the two-cluster development flow, are #841.
