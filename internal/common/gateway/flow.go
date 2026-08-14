@@ -29,17 +29,17 @@ const (
 )
 
 // RouteFlowParams carries everything ReconcileHTTPRoute needs. The
-// service-specific parts — whether the Gateway API is installed, whether
+// service-specific parts — the setup-time Gateway API latch, whether
 // spec.gateway is set, the built desired route, the route identity, the
 // exposure noun for the messages, and the condition type — are supplied by the
 // caller; the three-path flow itself is identical across operators.
 type RouteFlowParams struct {
-	// GatewayAPIAvailable reports whether the cluster holding the children
-	// serves the HTTPRoute CRD. For local children it is the management
-	// cluster's setup-time latch, probed once in SetupWithManager. For remote
-	// children it is the per-pass multicluster.ChildrenServeKind probe against
-	// the target cluster's RESTMapper.
-	GatewayAPIAvailable bool
+	// LocalGatewayAPIAvailable reports whether the management cluster serves
+	// the HTTPRoute CRD: the setup-time latch the operator probed once in
+	// SetupWithManager. It answers for local children alone; children on a
+	// target cluster are probed against that cluster's RESTMapper on every
+	// pass.
+	LocalGatewayAPIAvailable bool
 	// GatewayConfigured reports whether the CR requests external exposure
 	// (spec.gateway != nil).
 	GatewayConfigured bool
@@ -67,8 +67,9 @@ type RouteFlowParams struct {
 // Gateway matches the desired state. It is the shared body of every operator's
 // reconcileHTTPRoute sub-reconciler and implements three lifecycle paths:
 //
-//   - Gateway API CRD absent: skip the delete (which would fail with "no matches
-//     for kind HTTPRoute") and surface a clear condition.
+//   - Gateway API CRD absent on the cluster the children are written to: skip
+//     the delete (which would fail with "no matches for kind HTTPRoute") and
+//     surface a clear condition.
 //   - spec.gateway nil: delete any existing HTTPRoute and set the condition
 //     True/HTTPRouteNotRequired.
 //   - spec.gateway set: apply the route via SSA and reflect the parent Accepted
@@ -76,8 +77,23 @@ type RouteFlowParams struct {
 func ReconcileHTTPRoute(ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, p RouteFlowParams) (ctrl.Result, error) {
 	notConfiguredMsg := fmt.Sprintf("External %s exposure via Gateway API is not configured", p.ExposureNoun)
 
-	// Path 0: Gateway API CRD is not installed.
-	if !p.GatewayAPIAvailable {
+	// The setup-time latch answers for the management cluster only, so it is the
+	// answer for local children alone; a CR that names a target cluster has its
+	// children's cluster probed on every pass.
+	available, err := multicluster.ChildrenServeKind(c, p.LocalGatewayAPIAvailable, httpRouteGVK)
+	if err != nil {
+		conditions.SetCondition(p.Conditions, metav1.Condition{
+			Type:               p.ConditionType,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: p.Generation,
+			Reason:             multicluster.CapabilityProbeFailed,
+			Message:            fmt.Sprintf("Probing the target cluster for the HTTPRoute kind failed: %v", err),
+		})
+		return ctrl.Result{}, fmt.Errorf("probing the target cluster for the HTTPRoute kind: %w", err)
+	}
+
+	// Path 0: the children's cluster does not serve the HTTPRoute kind.
+	if !available {
 		if !p.GatewayConfigured {
 			conditions.SetCondition(p.Conditions, metav1.Condition{
 				Type:               p.ConditionType,

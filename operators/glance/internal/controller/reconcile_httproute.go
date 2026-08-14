@@ -70,16 +70,16 @@ func (r *GlanceReconciler) reconcileHTTPRoute(ctx context.Context, children clie
 		desired = buildGlanceHTTPRoute(glance)
 	}
 	return gateway.ReconcileHTTPRoute(ctx, children, r.Scheme, glance, gateway.RouteFlowParams{
-		GatewayAPIAvailable: r.gatewayAPIAvailable,
-		GatewayConfigured:   glance.Spec.Gateway != nil,
-		Desired:             desired,
-		RouteName:           subResourceName(glance),
-		RouteNamespace:      glance.Namespace,
-		ExposureNoun:        "Glance API",
-		Conditions:          &glance.Status.Conditions,
-		Generation:          glance.Generation,
-		ConditionType:       conditionTypeHTTPRouteReady,
-		RequeueAccepted:     requeueHTTPRouteAccepted,
+		LocalGatewayAPIAvailable: r.gatewayAPIAvailable,
+		GatewayConfigured:        glance.Spec.Gateway != nil,
+		Desired:                  desired,
+		RouteName:                subResourceName(glance),
+		RouteNamespace:           glance.Namespace,
+		ExposureNoun:             "Glance API",
+		Conditions:               &glance.Status.Conditions,
+		Generation:               glance.Generation,
+		ConditionType:            conditionTypeHTTPRouteReady,
+		RequeueAccepted:          requeueHTTPRouteAccepted,
 	})
 }
 

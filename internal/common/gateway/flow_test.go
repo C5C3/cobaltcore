@@ -11,6 +11,7 @@ import (
 
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/multicluster"
+	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
 )
 
 func flowScheme(t *testing.T) *runtime.Scheme {
@@ -57,7 +59,7 @@ func TestReconcileHTTPRoute_APIAbsentGatewaySet(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).Build()
 	var conds []metav1.Condition
 	p := baseRouteParams(&conds)
-	p.GatewayAPIAvailable = false
+	p.LocalGatewayAPIAvailable = false
 	p.GatewayConfigured = true
 
 	res, err := ReconcileHTTPRoute(context.Background(), c, s, flowOwner(), p)
@@ -79,7 +81,7 @@ func TestReconcileHTTPRoute_APIAbsentGatewaySetRemote(t *testing.T) {
 	c := multicluster.Remote(fake.NewClientBuilder().WithScheme(s).Build())
 	var conds []metav1.Condition
 	p := baseRouteParams(&conds)
-	p.GatewayAPIAvailable = false
+	p.LocalGatewayAPIAvailable = false
 	p.GatewayConfigured = true
 
 	res, err := ReconcileHTTPRoute(context.Background(), c, s, flowOwner(), p)
@@ -100,7 +102,7 @@ func TestReconcileHTTPRoute_APIAbsentGatewayNil(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).Build()
 	var conds []metav1.Condition
 	p := baseRouteParams(&conds)
-	p.GatewayAPIAvailable = false
+	p.LocalGatewayAPIAvailable = false
 	p.GatewayConfigured = false
 
 	res, err := ReconcileHTTPRoute(context.Background(), c, s, flowOwner(), p)
@@ -119,7 +121,7 @@ func TestReconcileHTTPRoute_GatewayNilDeletes(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(existing).Build()
 	var conds []metav1.Condition
 	p := baseRouteParams(&conds)
-	p.GatewayAPIAvailable = true
+	p.LocalGatewayAPIAvailable = true
 	p.GatewayConfigured = false
 
 	res, err := ReconcileHTTPRoute(context.Background(), c, s, flowOwner(), p)
@@ -133,13 +135,39 @@ func TestReconcileHTTPRoute_GatewayNilDeletes(t *testing.T) {
 	g.Expect(cond.Reason).To(gomega.Equal(ReasonHTTPRouteNotRequired))
 }
 
+// The inversion the delete path turns on: the management cluster has no Gateway
+// API, the target cluster has, and the route revoked by removing spec.gateway
+// has to go from the target. Answering that sweep from the latch would leave the
+// route serving public traffic while the CR says the exposure is gone.
+func TestReconcileHTTPRoute_GatewayNilDeletesThroughRemoteChildrenDespiteTheLatch(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := flowScheme(t)
+	existing := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "ks", Namespace: "openstack"}}
+	target := mctestutil.TargetFake(fake.NewClientBuilder().WithScheme(s).WithObjects(existing), httpRouteGVK)
+	c := multicluster.Remote(target)
+	var conds []metav1.Condition
+	p := baseRouteParams(&conds)
+	p.LocalGatewayAPIAvailable = false
+	p.GatewayConfigured = false
+
+	res, err := ReconcileHTTPRoute(context.Background(), c, s, flowOwner(), p)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(res.IsZero()).To(gomega.BeTrue())
+	err = target.Get(context.Background(), types.NamespacedName{Namespace: "openstack", Name: "ks"},
+		&gatewayv1.HTTPRoute{})
+	g.Expect(apierrors.IsNotFound(err)).To(gomega.BeTrue(),
+		"the target serves the kind, so the management latch must not skip the sweep")
+	cond := conditions.GetCondition(conds, p.ConditionType)
+	g.Expect(cond.Reason).To(gomega.Equal(ReasonHTTPRouteNotRequired))
+}
+
 func TestReconcileHTTPRoute_GatewayEnabledNotAccepted(t *testing.T) {
 	g := gomega.NewWithT(t)
 	s := flowScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(flowOwner()).Build()
 	var conds []metav1.Condition
 	p := baseRouteParams(&conds)
-	p.GatewayAPIAvailable = true
+	p.LocalGatewayAPIAvailable = true
 	p.GatewayConfigured = true
 	p.Desired = BuildHTTPRoute(testGatewaySpec(), RouteParams{
 		Name: "ks", Namespace: "openstack", BackendService: "ks", BackendPort: 5000,

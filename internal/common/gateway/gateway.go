@@ -31,6 +31,14 @@ import (
 // is empty.
 const defaultHTTPRoutePath = "/"
 
+// httpRouteGVK identifies the kind the route flow probes for on the cluster
+// the children are written to.
+var httpRouteGVK = schema.GroupVersionKind{
+	Group:   gatewayv1.GroupVersion.Group,
+	Version: gatewayv1.GroupVersion.Version,
+	Kind:    "HTTPRoute",
+}
+
 // IsGVKAvailable probes the given RESTMapper for the GVK. It returns false
 // when the mapper has no mapping (CRD not installed) and true when the
 // mapping exists. Other mapper errors are treated as "unknown"; returning

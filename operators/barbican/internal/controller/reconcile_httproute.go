@@ -52,16 +52,16 @@ func (r *BarbicanReconciler) reconcileHTTPRoute(ctx context.Context, children cl
 		desired = buildBarbicanHTTPRoute(barbican)
 	}
 	return gateway.ReconcileHTTPRoute(ctx, children, r.Scheme, barbican, gateway.RouteFlowParams{
-		GatewayAPIAvailable: r.gatewayAPIAvailable,
-		GatewayConfigured:   barbican.Spec.Gateway != nil,
-		Desired:             desired,
-		RouteName:           subResourceName(barbican),
-		RouteNamespace:      barbican.Namespace,
-		ExposureNoun:        "Barbican API",
-		Conditions:          &barbican.Status.Conditions,
-		Generation:          barbican.Generation,
-		ConditionType:       conditionTypeHTTPRouteReady,
-		RequeueAccepted:     requeueHTTPRouteAccepted,
+		LocalGatewayAPIAvailable: r.gatewayAPIAvailable,
+		GatewayConfigured:        barbican.Spec.Gateway != nil,
+		Desired:                  desired,
+		RouteName:                subResourceName(barbican),
+		RouteNamespace:           barbican.Namespace,
+		ExposureNoun:             "Barbican API",
+		Conditions:               &barbican.Status.Conditions,
+		Generation:               barbican.Generation,
+		ConditionType:            conditionTypeHTTPRouteReady,
+		RequeueAccepted:          requeueHTTPRouteAccepted,
 	})
 }
 

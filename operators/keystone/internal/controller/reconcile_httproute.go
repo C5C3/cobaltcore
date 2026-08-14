@@ -98,16 +98,16 @@ func (r *KeystoneReconciler) reconcileHTTPRoute(ctx context.Context, children cl
 		desired = buildKeystoneHTTPRoute(keystone)
 	}
 	return gateway.ReconcileHTTPRoute(ctx, children, r.Scheme, keystone, gateway.RouteFlowParams{
-		GatewayAPIAvailable: r.gatewayAPIAvailable,
-		GatewayConfigured:   keystone.Spec.Gateway != nil,
-		Desired:             desired,
-		RouteName:           subResourceName(keystone),
-		RouteNamespace:      keystone.Namespace,
-		ExposureNoun:        "API",
-		Conditions:          &keystone.Status.Conditions,
-		Generation:          keystone.Generation,
-		ConditionType:       conditionTypeHTTPRouteReady,
-		RequeueAccepted:     requeueHTTPRouteAccepted,
+		LocalGatewayAPIAvailable: r.gatewayAPIAvailable,
+		GatewayConfigured:        keystone.Spec.Gateway != nil,
+		Desired:                  desired,
+		RouteName:                subResourceName(keystone),
+		RouteNamespace:           keystone.Namespace,
+		ExposureNoun:             "API",
+		Conditions:               &keystone.Status.Conditions,
+		Generation:               keystone.Generation,
+		ConditionType:            conditionTypeHTTPRouteReady,
+		RequeueAccepted:          requeueHTTPRouteAccepted,
 	})
 }
 
