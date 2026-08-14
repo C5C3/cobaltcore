@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -22,8 +23,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
+	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
@@ -378,4 +382,187 @@ func TestReconcileDatabaseTLS_DisabledSkipsDeleteWhenCertManagerAbsent(t *testin
 	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeDatabaseTLSReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Reason).To(Equal(reasonNotRequired))
+}
+
+// --- Remote children: the cert-manager answer comes from the target cluster ---
+
+// dbTLSTargetFake builds a target cluster's client the way dbTLSReconciler
+// builds the management cluster's, behind the RESTMapper the capability probe
+// asks. servesCertificate is what separates a target cluster carrying the
+// cert-manager CRDs from one without them.
+func dbTLSTargetFake(s *runtime.Scheme, servesCertificate bool, objs ...client.Object) client.Client {
+	builder := fake.NewClientBuilder().WithScheme(s).WithObjects(objs...)
+	if servesCertificate {
+		return mctestutil.TargetFake(builder, certificateGVK)
+	}
+	return mctestutil.TargetFake(builder)
+}
+
+// dbTLSStaleCertificate is the leftover managed Certificate a CR leaves on its
+// children's cluster when it moves off the managed path.
+func dbTLSStaleCertificate() *certmanagerv1.Certificate {
+	return &certmanagerv1.Certificate{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-keystone-db-client", Namespace: "default"},
+	}
+}
+
+// The management cluster has no cert-manager and the target cluster has, so the
+// latch would skip a delete the target needs. Left undeleted, the Certificate
+// keeps being renewed on the target for a CR that no longer wants TLS.
+func TestReconcileDatabaseTLS_DisabledDeletesThroughRemoteChildrenDespiteTheLatch(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTLSTestScheme()
+	ks := dbTLSBaseKeystone() // TLS == nil → NotRequired
+	r := dbTLSReconciler(s, ks)
+	r.certManagerAvailable = false
+	target := dbTLSTargetFake(s, true, dbTLSStaleCertificate())
+
+	result, err := r.reconcileDatabaseTLS(context.Background(), mctestutil.RemoteChildren(t, r.Client, target), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	getErr := target.Get(context.Background(),
+		client.ObjectKey{Name: "test-keystone-db-client", Namespace: "default"}, &certmanagerv1.Certificate{})
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"the target cluster serves the kind, so the management latch must not skip the delete")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeDatabaseTLSReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(reasonNotRequired))
+}
+
+// The same inversion on the brownfield path: the CR keeps TLS but hands the
+// keypair to an external issuer, and the operator-owned Certificate on the
+// target must go with it.
+func TestReconcileDatabaseTLS_BrownfieldDeletesThroughRemoteChildrenDespiteTheLatch(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTLSTestScheme()
+	ks := dbTLSBaseKeystone()
+	ks.Spec.Database.Host = "db.example.com"
+	ks.Spec.Database.Port = 3306
+	ks.Spec.Database.TLS = &commonv1.DatabaseTLSSpec{
+		Mode:                "verify-full",
+		CABundleSecretRef:   commonv1.SecretRefSpec{Name: "db-server-ca"},
+		ClientCertSecretRef: commonv1.SecretRefSpec{Name: "external-db-client"},
+	}
+	r := dbTLSReconciler(s, ks)
+	r.certManagerAvailable = false
+	target := dbTLSTargetFake(s, true, dbTLSStaleCertificate())
+
+	result, err := r.reconcileDatabaseTLS(context.Background(), mctestutil.RemoteChildren(t, r.Client, target), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	getErr := target.Get(context.Background(),
+		client.ObjectKey{Name: "test-keystone-db-client", Namespace: "default"}, &certmanagerv1.Certificate{})
+	g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+		"the target cluster serves the kind, so the management latch must not skip the delete")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeDatabaseTLSReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(reasonExternallyManaged))
+}
+
+// The latch says the management cluster has cert-manager, the target does not,
+// and the delete against the target would fail with "no matches for kind
+// Certificate" on every pass, leaving DatabaseTLSReady unset. The seeded
+// Certificate proves the delete was never attempted.
+func TestReconcileDatabaseTLS_RemoteChildrenWithoutTheKindSkipTheDelete(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTLSTestScheme()
+	ks := dbTLSBaseKeystone() // TLS == nil → NotRequired
+	r := dbTLSReconciler(s, ks)
+	target := dbTLSTargetFake(s, false, dbTLSStaleCertificate())
+
+	result, err := r.reconcileDatabaseTLS(context.Background(), mctestutil.RemoteChildren(t, r.Client, target), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	g.Expect(target.Get(context.Background(),
+		client.ObjectKey{Name: "test-keystone-db-client", Namespace: "default"},
+		&certmanagerv1.Certificate{})).To(Succeed(),
+		"no delete may be attempted against a cluster that does not serve the kind")
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeDatabaseTLSReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(reasonNotRequired))
+}
+
+// A probe that fails establishes nothing about the target, so the pass fails
+// rather than guessing — and says so on the CR. The pipeline aborts at this
+// step while updateStatus still re-aggregates Ready and stamps
+// observedGeneration, so a DatabaseTLSReady left at its last conclusive verdict
+// would report the CR converged at a spec nothing past this step applied.
+func TestReconcileDatabaseTLS_RemoteProbeFailureSurfacesCapabilityProbeFailed(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTLSTestScheme()
+	ks := dbTLSBaseKeystone() // TLS == nil → NotRequired
+	// The verdict the last conclusive pass left behind: a failed probe must not
+	// be allowed to keep it.
+	meta.SetStatusCondition(&ks.Status.Conditions, metav1.Condition{
+		Type: conditionTypeDatabaseTLSReady, Status: metav1.ConditionTrue,
+		Reason: reasonNotRequired, ObservedGeneration: ks.Generation - 1,
+	})
+	r := dbTLSReconciler(s, ks)
+
+	_, err := r.reconcileDatabaseTLS(context.Background(), mctestutil.UnprobeableChildren(r.Client), ks)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("probing the target cluster for the Certificate kind:"))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeDatabaseTLSReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+		"a failed probe must not leave the aggregate Ready re-aggregating a stale True")
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.CapabilityProbeFailed))
+	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
+}
+
+// The managed path writes to the children's cluster too, so the Certificate has
+// to land on the target rather than on the management cluster the reconciler
+// holds a client for.
+func TestReconcileDatabaseTLS_ManagedIssuesTheCertificateOnTheTargetCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTLSTestScheme()
+	ks := dbTLSManagedKeystone("verify-full")
+	r := dbTLSReconciler(s, ks)
+	target := dbTLSTargetFake(s, true)
+
+	result, err := r.reconcileDatabaseTLS(context.Background(), mctestutil.RemoteChildren(t, r.Client, target), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.RequeueAfter).To(Equal(commonreconcile.RequeueSecretPolling))
+
+	key := client.ObjectKey{Name: "test-keystone-db-client", Namespace: "default"}
+	g.Expect(target.Get(context.Background(), key, &certmanagerv1.Certificate{})).To(Succeed(),
+		"the Certificate belongs on the cluster the children are written to")
+	g.Expect(apierrors.IsNotFound(r.Get(context.Background(), key, &certmanagerv1.Certificate{}))).To(BeTrue(),
+		"nothing may be written to the management cluster for a CR that names a target")
+}
+
+// A managed apply that fails — a children's cluster without cert-manager
+// answers "no matches for kind Certificate" — aborts the pipeline, so it has to
+// leave a verdict behind for the same reason a failed probe does.
+func TestReconcileDatabaseTLS_ManagedApplyFailureSurfacesOnTheCondition(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := dbTLSTestScheme()
+	ks := dbTLSManagedKeystone("verify-full")
+	r := dbTLSReconciler(s, ks)
+	boom := errors.New("no matches for kind \"Certificate\" in version \"cert-manager.io/v1\"")
+	target := fake.NewClientBuilder().WithScheme(s).WithInterceptorFuncs(interceptor.Funcs{
+		Create: func(context.Context, client.WithWatch, client.Object, ...client.CreateOption) error {
+			return boom
+		},
+	}).Build()
+
+	_, err := r.reconcileDatabaseTLS(context.Background(), mctestutil.RemoteChildren(t, r.Client, target), ks)
+	g.Expect(err).To(MatchError(boom))
+
+	cond := meta.FindStatusCondition(ks.Status.Conditions, conditionTypeDatabaseTLSReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+		"an unissued Certificate must not leave the aggregate Ready re-aggregating a stale True")
+	g.Expect(cond.Reason).To(Equal(reasonCertificateError))
+	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
