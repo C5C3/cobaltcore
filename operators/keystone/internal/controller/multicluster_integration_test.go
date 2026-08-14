@@ -48,6 +48,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -72,8 +73,9 @@ import (
 // naming an unregistered cluster, deregistration under a running CR, a
 // registration Secret the provider cannot parse, re-registration of the cluster
 // that was deregistered, the deletion of a targeted CR sweeping every child it
-// projected off the target, a child deleted on the target being put back, and a
-// rotated input Secret on the target re-rendering what was derived from it.
+// projected off the target, a child deleted on the target being put back, a
+// rotated input Secret on the target re-rendering what was derived from it, and
+// a targeted CR whose HTTPRoute the management cluster could not serve.
 func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -108,6 +110,12 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 		// share it: the first settles it, the second rotates an input under it.
 		driftNamespace = "mc-drift"
 		driftKeystone  = "mc-drift-keystone"
+
+		// The gateway CR, in a namespace of its own as well. It is the only CR
+		// in this test that asks for external exposure, so the HTTPRoute found
+		// in this namespace is the one it projected.
+		gatewayNamespace = "mc-gateway"
+		gatewayKeystone  = "mc-gateway-keystone"
 
 		// rotatedPassword replaces the "secret" the input fixture seeds, and is
 		// distinctive enough that finding it in the derived DSN cannot be an
@@ -196,12 +204,27 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 			// produces a watch event here, and the field indexes and the
 			// Gateway API / cert-manager RESTMapper probes come with the same
 			// call. The fake CRDs on the management environment latch both
-			// probes true. SkipNameValidation keeps the
-			// one-real-controller-name-per-test-binary constraint at the top of
-			// this file intact.
+			// probes true; the flip below then takes the gateway latch back
+			// down, so only the cert-manager one stays true. SkipNameValidation
+			// keeps the one-real-controller-name-per-test-binary constraint at
+			// the top of this file intact.
 			opts := bootstrap.TypedControllerOptions[mcreconcile.Request](1)
 			opts.SkipNameValidation = ptr.To(true)
-			return r.setupWithOptions(mcMgr, opts)
+			if err := r.setupWithOptions(mcMgr, opts); err != nil {
+				return err
+			}
+
+			// A management cluster without Gateway API, simulated. The flip
+			// happens after setup and before the manager starts, so nothing
+			// reads the field while it changes. Setup probed the real mapper
+			// first, which leaves the local Owns(HTTPRoute) leg registered; the
+			// leg is inert here because no CR that keeps its children local sets
+			// spec.gateway in this test. The flip is what makes the gateway
+			// subtest at the end of this function discriminating: with the
+			// management latch false, an HTTPRoute on the target cluster can
+			// only come from the per-cluster probe overriding it.
+			r.gatewayAPIAvailable = false
+			return nil
 		},
 	})
 
@@ -871,6 +894,96 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 			ig.Expect(dsn).NotTo(ContainSubstring(":secret@"))
 		}, eventuallyTimeout, pollInterval).Should(Succeed(),
 			"the rotated password should reach the derived db-connection Secret with no write to the CR")
+	})
+
+	t.Run("targeted CR gets its HTTPRoute although the management latch is false", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// The inversion this subtest exists for. The management cluster's
+		// setup-time latch reports no Gateway API (RegisterController forced it
+		// false above), and this CR still gets its HTTPRoute: its children live
+		// on the target cluster, and that cluster's RESTMapper is what the route
+		// flow probes for a CR that names one. Every other CR in this file
+		// leaves spec.gateway unset, so this is the only place the latch and the
+		// probe can disagree.
+		multiclusterEnsureNamespace(t, ctx, mgmtClient, gatewayNamespace)
+		multiclusterEnsureNamespace(t, ctx, targetClient, gatewayNamespace)
+		createPrerequisites(t, ctx, targetClient, gatewayNamespace)
+
+		mariadbKey := client.ObjectKey{Namespace: gatewayNamespace, Name: "mariadb"}
+		g.Expect(targetClient.Create(ctx, &mariadbv1alpha1.MariaDB{
+			ObjectMeta: metav1.ObjectMeta{Name: mariadbKey.Name, Namespace: mariadbKey.Namespace},
+		})).To(Succeed(), "create the MariaDB cluster CR on the target cluster")
+		g.Expect(simulators.SimulateMariaDBReady(ctx, targetClient, mariadbKey, 1)).
+			To(Succeed(), "simulate the MariaDB cluster ready")
+
+		ks := integrationManagedKeystone(gatewayKeystone, gatewayNamespace)
+		ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetClusterName}
+		// spec.bootstrap.publicEndpoint stays unset: the webhook this manager
+		// serves cross-checks it against spec.gateway.hostname whenever both are
+		// given, and the hostname alone is everything the route needs.
+		ks.Spec.Gateway = &keystonev1alpha1.GatewaySpec{
+			ParentRef: keystonev1alpha1.GatewayParentRefSpec{Name: "public-gateway"},
+			Hostname:  "keystone.example.com",
+		}
+		g.Expect(mgmtClient.Create(ctx, ks)).To(Succeed())
+
+		crKey := types.NamespacedName{Name: gatewayKeystone, Namespace: gatewayNamespace}
+		childKey := client.ObjectKey{Namespace: gatewayNamespace, Name: gatewayKeystone}
+
+		// The simulator sequence of the targeted subtests above, unchanged: each
+		// MariaDB CR gated on the previous one reporting ready, then the two
+		// Jobs the database phase waits out.
+		waitForCondition(t, ctx, mgmtClient, crKey, "SecretsReady", metav1.ConditionTrue, eventuallyTimeout)
+		waitForCondition(t, ctx, mgmtClient, crKey, "FernetKeysReady", metav1.ConditionTrue, eventuallyTimeout)
+
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &mariadbv1alpha1.Database{}, "MariaDB Database", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateDatabaseReady(ctx, targetClient, childKey)).To(Succeed())
+
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &mariadbv1alpha1.User{}, "MariaDB User", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateUserReady(ctx, targetClient, childKey)).To(Succeed())
+
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &mariadbv1alpha1.Grant{}, "MariaDB Grant", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateGrantReady(ctx, targetClient, childKey)).To(Succeed())
+
+		dbSyncKey := client.ObjectKey{Namespace: gatewayNamespace, Name: fmt.Sprintf("%s-db-sync", gatewayKeystone)}
+		multiclusterEventuallyExists(t, ctx, targetClient, dbSyncKey, &batchv1.Job{}, "db-sync Job", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateJobComplete(ctx, targetClient, dbSyncKey)).To(Succeed())
+
+		schemaCheckKey := client.ObjectKey{Namespace: gatewayNamespace, Name: fmt.Sprintf("%s-schema-check", gatewayKeystone)}
+		multiclusterEventuallyExists(t, ctx, targetClient, schemaCheckKey, &batchv1.Job{}, "schema-check Job", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateJobComplete(ctx, targetClient, schemaCheckKey)).To(Succeed())
+
+		waitForCondition(t, ctx, mgmtClient, crKey, "DatabaseReady", metav1.ConditionTrue, eventuallyLongTimeout)
+
+		// The route sub-reconciler runs in the parallel group behind the
+		// Deployment step, and that step short-circuits the pipeline with a
+		// requeue while the Deployment reports no ready replicas. No kubelet
+		// runs on this envtest environment, so the readiness has to be simulated
+		// before the route flow is reached at all.
+		deployment := &appsv1.Deployment{}
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, deployment, "Deployment", eventuallyLongTimeout)
+		g.Expect(simulators.SimulateDeploymentReady(ctx, targetClient, childKey, ptr.Deref(deployment.Spec.Replicas, 1))).
+			To(Succeed(), "simulate the Deployment ready on the target cluster")
+		waitForCondition(t, ctx, mgmtClient, crKey, "DeploymentReady", metav1.ConditionTrue, eventuallyTimeout)
+
+		// The route lands on the target cluster, under the bare CR name, and
+		// nowhere else.
+		multiclusterEventuallyExists(t, ctx, targetClient, childKey, &gatewayv1.HTTPRoute{}, "HTTPRoute", eventuallyLongTimeout)
+		multiclusterExpectAbsent(t, ctx, mgmtClient, childKey, &gatewayv1.HTTPRoute{}, "HTTPRoute")
+
+		// And the condition names the acceptance that never comes rather than a
+		// missing CRD: envtest serves the HTTPRoute kind on the target cluster
+		// but runs no Gateway controller to accept the route.
+		waitForCondition(t, ctx, mgmtClient, crKey, conditionTypeHTTPRouteReady, metav1.ConditionFalse, eventuallyTimeout)
+		ksAfter := &keystonev1alpha1.Keystone{}
+		g.Expect(mgmtClient.Get(ctx, crKey, ksAfter)).To(Succeed())
+		cond := meta.FindStatusCondition(ksAfter.Status.Conditions, conditionTypeHTTPRouteReady)
+		g.Expect(cond).NotTo(BeNil(), "%s should be set on a CR that requests external exposure", conditionTypeHTTPRouteReady)
+		g.Expect(cond.Reason).To(Equal(conditionReasonHTTPRouteNotAccepted),
+			"the management latch was forced false and the target cluster's probe answered instead, "+
+				"so the route was applied and the condition must report the missing acceptance, not %s",
+			conditionReasonGatewayAPINotInstalled)
 	})
 }
 
