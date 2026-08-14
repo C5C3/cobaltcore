@@ -65,16 +65,16 @@ func (r *HorizonReconciler) reconcileHTTPRoute(ctx context.Context, children cli
 		desired = buildHorizonHTTPRoute(horizon)
 	}
 	return gateway.ReconcileHTTPRoute(ctx, children, r.Scheme, horizon, gateway.RouteFlowParams{
-		GatewayAPIAvailable: r.gatewayAPIAvailable,
-		GatewayConfigured:   horizon.Spec.Gateway != nil,
-		Desired:             desired,
-		RouteName:           subResourceName(horizon),
-		RouteNamespace:      horizon.Namespace,
-		ExposureNoun:        "dashboard",
-		Conditions:          &horizon.Status.Conditions,
-		Generation:          horizon.Generation,
-		ConditionType:       conditionTypeHTTPRouteReady,
-		RequeueAccepted:     requeueHTTPRouteAccepted,
+		LocalGatewayAPIAvailable: r.gatewayAPIAvailable,
+		GatewayConfigured:        horizon.Spec.Gateway != nil,
+		Desired:                  desired,
+		RouteName:                subResourceName(horizon),
+		RouteNamespace:           horizon.Namespace,
+		ExposureNoun:             "dashboard",
+		Conditions:               &horizon.Status.Conditions,
+		Generation:               horizon.Generation,
+		ConditionType:            conditionTypeHTTPRouteReady,
+		RequeueAccepted:          requeueHTTPRouteAccepted,
 	})
 }
 

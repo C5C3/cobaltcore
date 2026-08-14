@@ -18,12 +18,6 @@ import (
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
-var httpRouteGVK = schema.GroupVersionKind{
-	Group:   gatewayv1.GroupVersion.Group,
-	Version: gatewayv1.GroupVersion.Version,
-	Kind:    "HTTPRoute",
-}
-
 func TestIsGVKAvailable(t *testing.T) {
 	g := gomega.NewWithT(t)
 

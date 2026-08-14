@@ -63,16 +63,16 @@ func (r *PlacementReconciler) reconcileHTTPRoute(ctx context.Context, children c
 		desired = buildPlacementHTTPRoute(placement)
 	}
 	return gateway.ReconcileHTTPRoute(ctx, children, r.Scheme, placement, gateway.RouteFlowParams{
-		GatewayAPIAvailable: r.gatewayAPIAvailable,
-		GatewayConfigured:   placement.Spec.Gateway != nil,
-		Desired:             desired,
-		RouteName:           subResourceName(placement),
-		RouteNamespace:      placement.Namespace,
-		ExposureNoun:        "Placement API",
-		Conditions:          &placement.Status.Conditions,
-		Generation:          placement.Generation,
-		ConditionType:       conditionTypeHTTPRouteReady,
-		RequeueAccepted:     requeueHTTPRouteAccepted,
+		LocalGatewayAPIAvailable: r.gatewayAPIAvailable,
+		GatewayConfigured:        placement.Spec.Gateway != nil,
+		Desired:                  desired,
+		RouteName:                subResourceName(placement),
+		RouteNamespace:           placement.Namespace,
+		ExposureNoun:             "Placement API",
+		Conditions:               &placement.Status.Conditions,
+		Generation:               placement.Generation,
+		ConditionType:            conditionTypeHTTPRouteReady,
+		RequeueAccepted:          requeueHTTPRouteAccepted,
 	})
 }
 
