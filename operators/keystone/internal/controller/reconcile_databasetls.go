@@ -39,6 +39,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/database"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commontls "github.com/c5c3/forge/internal/common/tls"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
@@ -133,12 +134,20 @@ func (r *KeystoneReconciler) reconcileDatabaseTLS(ctx context.Context, children 
 	}
 
 	// Managed: issue the client Certificate from the shared OpenStack DB CA
-	// issuer.
+	// issuer. The apply carries its own answer to the per-cluster capability
+	// question the delete paths have to probe for — a children's cluster
+	// without cert-manager rejects it with "no matches for kind Certificate" —
+	// so the failure is surfaced rather than pre-empted. It has to reach the
+	// condition either way: the pipeline aborts here, and an aggregate Ready
+	// re-computed from the still-True sub-conditions would otherwise report the
+	// CR as converged at a generation whose TLS material was never issued
+	// (issue #467).
 	cert := dbClientCertificate(keystone)
 	ready, err := commontls.EnsureCertificate(ctx, children, r.Scheme, keystone, cert)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("ensuring database client Certificate %s/%s: %w",
-			cert.Namespace, cert.Name, err)
+		err = fmt.Errorf("ensuring database client Certificate %s/%s: %w", cert.Namespace, cert.Name, err)
+		keystoneSkeleton.MarkFailed(keystone, conditionTypeDatabaseTLSReady, reasonCertificateError, err)
+		return ctrl.Result{}, err
 	}
 
 	if !ready {
@@ -178,12 +187,30 @@ func dbClientCertificateName(keystone *keystonev1alpha1.Keystone) string {
 
 // deleteManagedDBClientCertificate deletes the operator-issued
 // <name>-db-client Certificate when DB TLS is disabled or switched to
-// brownfield mode. It is a no-op when cert-manager is not installed: no
-// Certificate can exist in that case, and an unconditional Delete would fail
-// with "no matches for kind Certificate" — the same CRD-availability gate
-// reconcileHTTPRoute applies before deleting an HTTPRoute (issue #475).
+// brownfield mode. The delete is skipped when the cluster the children are
+// written to does not serve the Certificate kind: for local children that is
+// the setup-time cert-manager latch, for remote children a probe of the target
+// cluster's RESTMapper on every pass. No Certificate can exist on a cluster
+// without the CRD, and an unconditional Delete there would fail with "no
+// matches for kind Certificate". reconcileHTTPRoute gates its HTTPRoute delete
+// on the same per-cluster probe (issue #475).
+//
+// A probe that fails instead of answering flips DatabaseTLSReady to False under
+// CapabilityProbeFailed before the wrapped error is returned, the same surface
+// reconcileHTTPRoute gives the identical failure. The condition is what keeps
+// the aborted pass honest: every caller returns straight into updateStatus,
+// whose Ready aggregation runs regardless of the reconcile error and stamps
+// status.observedGeneration, so a still-True DatabaseTLSReady would report the
+// CR as converged at a spec that was never applied past this step (issue #467).
 func (r *KeystoneReconciler) deleteManagedDBClientCertificate(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) error {
-	if !r.certManagerAvailable {
+	serves, err := commonmulticluster.ChildrenServeKind(children, r.certManagerAvailable, certificateGVK)
+	if err != nil {
+		err = fmt.Errorf("probing the target cluster for the Certificate kind: %w", err)
+		keystoneSkeleton.MarkFailed(keystone, conditionTypeDatabaseTLSReady,
+			commonmulticluster.CapabilityProbeFailed, err)
+		return err
+	}
+	if !serves {
 		return nil
 	}
 	return deleteDBClientCertificate(ctx, children, keystone.Namespace, dbClientCertificateName(keystone))

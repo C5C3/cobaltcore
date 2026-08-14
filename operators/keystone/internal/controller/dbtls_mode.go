@@ -35,6 +35,7 @@ const (
 
 	reasonCertificateIssued  = "CertificateIssued"
 	reasonCertificatePending = "CertificatePending"
+	reasonCertificateError   = "CertificateError"
 	reasonNotRequired        = "NotRequired"
 	reasonExternallyManaged  = "ExternallyManaged"
 	reasonMissingCertRefs    = "MissingCertificateRefs"
