@@ -18,6 +18,7 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/multicluster"
 )
 
 func flowScheme(t *testing.T) *runtime.Scheme {
@@ -66,6 +67,31 @@ func TestReconcileHTTPRoute_APIAbsentGatewaySet(t *testing.T) {
 	g.Expect(cond.Status).To(gomega.Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(gomega.Equal(ReasonGatewayAPINotInstalled))
 	g.Expect(cond.Message).To(gomega.ContainSubstring("enable external API exposure"))
+	// Local children are answered by the setup-time latch, so the message names
+	// this cluster and the restart that refreshes it.
+	g.Expect(cond.Message).To(gomega.ContainSubstring("not installed in this cluster"))
+	g.Expect(cond.Message).To(gomega.ContainSubstring("restart the operator"))
+}
+
+func TestReconcileHTTPRoute_APIAbsentGatewaySetRemote(t *testing.T) {
+	g := gomega.NewWithT(t)
+	s := flowScheme(t)
+	c := multicluster.Remote(fake.NewClientBuilder().WithScheme(s).Build())
+	var conds []metav1.Condition
+	p := baseRouteParams(&conds)
+	p.GatewayAPIAvailable = false
+	p.GatewayConfigured = true
+
+	res, err := ReconcileHTTPRoute(context.Background(), c, s, flowOwner(), p)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(res.IsZero()).To(gomega.BeTrue())
+	cond := conditions.GetCondition(conds, p.ConditionType)
+	g.Expect(cond.Status).To(gomega.Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(gomega.Equal(ReasonGatewayAPINotInstalled))
+	g.Expect(cond.Message).To(gomega.ContainSubstring("target cluster does not serve"))
+	g.Expect(cond.Message).To(gomega.ContainSubstring("rotate the cluster's kubeconfig Secret"))
+	// The remote answer is re-probed every pass, so a restart fixes nothing.
+	g.Expect(cond.Message).NotTo(gomega.ContainSubstring("restart"))
 }
 
 func TestReconcileHTTPRoute_APIAbsentGatewayNil(t *testing.T) {
