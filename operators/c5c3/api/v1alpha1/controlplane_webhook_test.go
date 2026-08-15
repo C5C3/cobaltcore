@@ -7218,3 +7218,720 @@ func TestValidateUpdate_FreezesBarbicanSecretStoreAddressing(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 	})
 }
+
+// --- per-service target-cluster placement (issue #840) ---
+
+// placedGateway is the minimal gateway block a placed service publishes itself
+// through, the alternative the publicEndpoint requirement accepts.
+func placedGateway(hostname string) *commonv1.GatewaySpec {
+	return &commonv1.GatewaySpec{
+		ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+		Hostname:  hostname,
+	}
+}
+
+// publishKeystone gives a ControlPlane the Keystone publicEndpoint every service
+// placed away from Keystone requires — that service validates its tokens against
+// Keystone over the public URL. The placement fixtures below set it for every
+// service but Keystone itself, so each subtest fails on the rule it is about
+// rather than on this one.
+func publishKeystone(cp *ControlPlane) {
+	cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+}
+
+// placedService drives the placement tests over all five services at once. place
+// returns a ControlPlane that declares the service on the "edge" cluster in a
+// namespace of its own and advertises NOTHING of its own (Keystone excepted, see
+// publishKeystone), so each test varies exactly the field its rule reads:
+// dropNamespace takes the namespace away, publish adds a publicEndpoint, route
+// adds a gateway.
+type placedService struct {
+	name string
+	// catalog marks the services the ControlPlane advertises in the Keystone
+	// service catalog, the ones that carry the publicEndpoint-or-gateway
+	// requirement. Horizon is the exemption.
+	catalog       bool
+	place         func() *ControlPlane
+	dropNamespace func(cp *ControlPlane)
+	publish       func(cp *ControlPlane)
+	route         func(cp *ControlPlane)
+}
+
+func placedServices() []placedService {
+	return []placedService{
+		{
+			name: "keystone", catalog: true,
+			place: func() *ControlPlane {
+				cp := validControlPlane()
+				cp.Name = "cp"
+				cp.Namespace = "openstack"
+				cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+					Name: "identity", Lifecycle: ServiceNamespaceLifecycleManaged,
+				}
+				cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+				return cp
+			},
+			dropNamespace: func(cp *ControlPlane) { cp.Spec.Services.Keystone.Namespace = nil },
+			publish: func(cp *ControlPlane) {
+				cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+			},
+			route: func(cp *ControlPlane) {
+				cp.Spec.Services.Keystone.Gateway = placedGateway("keystone.example.com")
+			},
+		},
+		{
+			name: "horizon", catalog: false,
+			place: func() *ControlPlane {
+				cp := validControlPlane()
+				cp.Name = "cp"
+				cp.Namespace = "openstack"
+				cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+					Namespace: &ServiceNamespaceSpec{
+						Name: "dashboard", Lifecycle: ServiceNamespaceLifecycleManaged,
+					},
+					TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge"},
+				}
+				publishKeystone(cp)
+				return cp
+			},
+			dropNamespace: func(cp *ControlPlane) { cp.Spec.Services.Horizon.Namespace = nil },
+			publish: func(cp *ControlPlane) {
+				cp.Spec.Services.Horizon.PublicEndpoint = "https://horizon.example.com"
+			},
+			route: func(cp *ControlPlane) {
+				cp.Spec.Services.Horizon.Gateway = placedGateway("horizon.example.com")
+			},
+		},
+		{
+			name: "glance", catalog: true,
+			place: func() *ControlPlane {
+				cp := glanceControlPlane()
+				cp.Namespace = "openstack"
+				cp.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{
+					Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged,
+				}
+				cp.Spec.Services.Glance.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+				findServiceAccount(cp, GlanceServiceAccountName).TargetNamespace = "images"
+				publishKeystone(cp)
+				return cp
+			},
+			// The service account is delivered through the namespace's tenant store,
+			// so it follows the namespace back to the ControlPlane's own.
+			dropNamespace: func(cp *ControlPlane) {
+				cp.Spec.Services.Glance.Namespace = nil
+				findServiceAccount(cp, GlanceServiceAccountName).TargetNamespace = ""
+			},
+			publish: func(cp *ControlPlane) {
+				cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
+			},
+			route: func(cp *ControlPlane) {
+				cp.Spec.Services.Glance.Gateway = placedGateway("glance.example.com")
+			},
+		},
+		{
+			name: "placement", catalog: true,
+			place: func() *ControlPlane {
+				cp := placementControlPlane()
+				cp.Namespace = "openstack"
+				cp.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
+					Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
+				}
+				cp.Spec.Services.Placement.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+				findServiceAccount(cp, PlacementServiceAccountName).TargetNamespace = "placement"
+				publishKeystone(cp)
+				return cp
+			},
+			dropNamespace: func(cp *ControlPlane) {
+				cp.Spec.Services.Placement.Namespace = nil
+				findServiceAccount(cp, PlacementServiceAccountName).TargetNamespace = ""
+			},
+			publish: func(cp *ControlPlane) {
+				cp.Spec.Services.Placement.PublicEndpoint = "https://placement.example.com"
+			},
+			route: func(cp *ControlPlane) {
+				cp.Spec.Services.Placement.Gateway = placedGateway("placement.example.com")
+			},
+		},
+		{
+			name: "barbican", catalog: true,
+			place: func() *ControlPlane {
+				cp := barbicanControlPlane()
+				cp.Namespace = "openstack"
+				cp.Spec.Services.Barbican.Namespace = &ServiceNamespaceSpec{
+					Name: "keymanager", Lifecycle: ServiceNamespaceLifecycleManaged,
+				}
+				cp.Spec.Services.Barbican.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+				findServiceAccount(cp, BarbicanServiceAccountName).TargetNamespace = "keymanager"
+				publishKeystone(cp)
+				return cp
+			},
+			dropNamespace: func(cp *ControlPlane) {
+				cp.Spec.Services.Barbican.Namespace = nil
+				findServiceAccount(cp, BarbicanServiceAccountName).TargetNamespace = ""
+			},
+			publish: func(cp *ControlPlane) {
+				cp.Spec.Services.Barbican.PublicEndpoint = "https://barbican.example.com"
+			},
+			route: func(cp *ControlPlane) {
+				cp.Spec.Services.Barbican.Gateway = placedGateway("barbican.example.com")
+			},
+		},
+	}
+}
+
+// TestValidateCreate_RejectsEmptyTargetClusterName pins the webhook layer of the
+// name-only shape. The MinLength marker on the CRD catches this in a real
+// cluster; the shared validator is what a caller bypassing schema admission
+// meets, and without it an empty name would resolve to no cluster at all.
+func TestValidateCreate_RejectsEmptyTargetClusterName(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Name = "cp"
+	cp.Namespace = "openstack"
+	cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+		Name: "identity", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+	cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.targetClusterRef.name"))
+	g.Expect(err.Error()).To(ContainSubstring("target cluster name must be set"))
+}
+
+// TestValidateCreate_RequiresANamespaceForAPlacedService pins the dedicated-namespace
+// rule for every service: a namespace maps to exactly one cluster, and the
+// ControlPlane's own stays on the local one, so a service placed elsewhere
+// without a namespace of its own would have its database, its tenant store, and
+// its credential material provisioned on a cluster its workload does not run on.
+func TestValidateCreate_RequiresANamespaceForAPlacedService(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	for _, tc := range placedServices() {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := tc.place()
+			tc.publish(cp)
+			tc.dropNamespace(cp)
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.services." + tc.name + ".namespace"))
+			g.Expect(err.Error()).To(ContainSubstring("a placed service needs a namespace of its own"))
+		})
+	}
+}
+
+// TestValidateCreate_RequiresAPublicAddressForAPlacedCatalogService pins the
+// reachability rule and its one exemption. What the ControlPlane registers in
+// the catalog for an unpublished service is its in-cluster Service DNS name,
+// which resolves nowhere outside the cluster the service runs on; horizon is not
+// in the catalog, so it is placed without publishing anything.
+func TestValidateCreate_RequiresAPublicAddressForAPlacedCatalogService(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	for _, tc := range placedServices() {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("neither publicEndpoint nor gateway", func(t *testing.T) {
+				g := NewGomegaWithT(t)
+				_, err := w.ValidateCreate(context.Background(), tc.place())
+				if !tc.catalog {
+					g.Expect(err).NotTo(HaveOccurred(),
+						"the dashboard is not in the service catalog, so nothing looks it up there")
+					return
+				}
+				g.Expect(err).To(HaveOccurred())
+				g.Expect(err.Error()).To(ContainSubstring("spec.services." + tc.name + ".publicEndpoint"))
+				g.Expect(err.Error()).To(ContainSubstring("resolves nowhere from another cluster"))
+			})
+
+			t.Run("a publicEndpoint satisfies it", func(t *testing.T) {
+				g := NewGomegaWithT(t)
+				cp := tc.place()
+				tc.publish(cp)
+
+				_, err := w.ValidateCreate(context.Background(), cp)
+				g.Expect(err).NotTo(HaveOccurred())
+			})
+
+			t.Run("a gateway satisfies it", func(t *testing.T) {
+				g := NewGomegaWithT(t)
+				cp := tc.place()
+				tc.route(cp)
+
+				_, err := w.ValidateCreate(context.Background(), cp)
+				g.Expect(err).NotTo(HaveOccurred())
+			})
+		})
+	}
+}
+
+// TestValidateCreate_RejectsDisagreeingTargetClustersInOneNamespace pins the
+// co-location rule one level out from the lifecycle agreement: a namespace
+// exists on exactly one cluster, together with the backing services and the
+// tenant store scoped to it, so the services sharing it cannot disagree on which
+// cluster that is. "One placed, one not" is a disagreement too.
+func TestValidateCreate_RejectsDisagreeingTargetClustersInOneNamespace(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	// Keystone and the dashboard co-located in one namespace, each placed as the
+	// case under test says.
+	colocated := func(keystone, horizon *commonv1.TargetClusterRefSpec) *ControlPlane {
+		cp := validControlPlane()
+		cp.Name = "cp"
+		cp.Namespace = "openstack"
+		cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+			Name: "shared", Lifecycle: ServiceNamespaceLifecycleManaged,
+		}
+		cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+		cp.Spec.Services.Keystone.TargetClusterRef = keystone
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+			Namespace: &ServiceNamespaceSpec{
+				Name: "shared", Lifecycle: ServiceNamespaceLifecycleManaged,
+			},
+			TargetClusterRef: horizon,
+		}
+		return cp
+	}
+
+	t.Run("two clusters", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := colocated(
+			&commonv1.TargetClusterRefSpec{Name: "edge"},
+			&commonv1.TargetClusterRefSpec{Name: "core"},
+		)
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.targetClusterRef"))
+		g.Expect(err.Error()).To(ContainSubstring(
+			`services co-located in namespace "shared" must be placed on the same target cluster`))
+	})
+
+	t.Run("placed next to unplaced", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := colocated(&commonv1.TargetClusterRefSpec{Name: "edge"}, nil)
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("must be placed on the same target cluster"))
+	})
+
+	t.Run("one cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := colocated(
+			&commonv1.TargetClusterRefSpec{Name: "edge"},
+			&commonv1.TargetClusterRefSpec{Name: "edge"},
+		)
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateCreate_RequiresAPublishedKeystoneWhenAServiceIsPlacedAwayFromIt
+// closes the gap the per-service catalog rule leaves: it demands publication of a
+// service carrying a ref of its OWN, so an UNPLACED Keystone was never asked for
+// one. A service on another cluster still validates its tokens against Keystone,
+// cannot resolve its in-cluster Service DNS name, and would be projected with an
+// EMPTY spec.keystoneEndpoint — which the child's CRD refuses (MinLength=1,
+// ^https?://) on every pass, with nothing on the ControlPlane naming the field.
+func TestValidateCreate_RequiresAPublishedKeystoneWhenAServiceIsPlacedAwayFromIt(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	// Glance placed on "edge", Keystone left at home. place() publishes Keystone,
+	// so each case takes that back out and puts its own answer in.
+	glancePlaced := func() *ControlPlane {
+		for _, tc := range placedServices() {
+			if tc.name == "glance" {
+				cp := tc.place()
+				cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
+				cp.Spec.Services.Keystone.PublicEndpoint = ""
+				return cp
+			}
+		}
+		t.Fatal("no glance case in placedServices()")
+		return nil
+	}
+
+	t.Run("an unpublished local Keystone is rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		_, err := w.ValidateCreate(context.Background(), glancePlaced())
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.publicEndpoint"))
+		g.Expect(err.Error()).To(ContainSubstring("cannot resolve Keystone's in-cluster Service DNS name"))
+	})
+
+	t.Run("a publicEndpoint satisfies it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glancePlaced()
+		cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("a gateway satisfies it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glancePlaced()
+		cp.Spec.Services.Keystone.Gateway = placedGateway("keystone.example.com")
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	// The dashboard is exempt from the CATALOG rule, not from this one: Horizon
+	// validates tokens against Keystone like every other service.
+	t.Run("the dashboard triggers it too", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Name = "cp"
+		cp.Namespace = "openstack"
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+			Namespace: &ServiceNamespaceSpec{
+				Name: "dashboard", Lifecycle: ServiceNamespaceLifecycleManaged,
+			},
+			TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.publicEndpoint"))
+	})
+
+	// Nothing crosses a cluster boundary when everything stays at home, so an
+	// unpublished Keystone remains the perfectly ordinary default.
+	t.Run("an all-local ControlPlane is unaffected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := validControlPlane()
+		cp.Name = "cp"
+		cp.Namespace = "openstack"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateCreate_RejectsAPlaintextPlacedKeystoneEndpoint pins the scheme rule
+// placement adds to services.keystone.publicEndpoint. Co-located, that URL only
+// feeds the bootstrap and the catalog's public identity row; the moment a cluster
+// boundary separates Keystone from anything, it becomes the auth_url every
+// clouds.yaml renders the admin password and each service-account password NEXT
+// TO, and it is dialled across that boundary on every mint, re-mint and delivery.
+// http:// there hands an on-path observer a credential with the admin role on the
+// whole control plane.
+//
+// The boundary is crossed from EITHER side, so the rule cannot key on Keystone's
+// own ref: a service placed away from an unplaced Keystone reaches the very same
+// URL, and reads it back out of its projected spec.keystoneEndpoint into
+// [keystone_authtoken] on every token validation.
+func TestValidateCreate_RejectsAPlaintextPlacedKeystoneEndpoint(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	placedKeystone := func(endpoint string) *ControlPlane {
+		cp := validControlPlane()
+		cp.Name = "cp"
+		cp.Namespace = "openstack"
+		cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+			Name: "identity", Lifecycle: ServiceNamespaceLifecycleManaged,
+		}
+		cp.Spec.Services.Keystone.PublicEndpoint = endpoint
+		cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+		return cp
+	}
+	// The mirror image: Keystone stays on the local cluster and Glance moves to
+	// "edge". Everything a placed service needs is present, so the caller varies
+	// nothing but Keystone's endpoint.
+	glancePlacedAwayFromKeystone := func() *ControlPlane {
+		cp := glanceControlPlane()
+		cp.Namespace = "openstack"
+		cp.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{
+			Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged,
+		}
+		cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
+		cp.Spec.Services.Glance.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+		findServiceAccount(cp, GlanceServiceAccountName).TargetNamespace = "images"
+		return cp
+	}
+
+	t.Run("http is rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		_, err := w.ValidateCreate(context.Background(), placedKeystone("http://keystone.example.com:5000/v3"))
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.publicEndpoint"))
+		g.Expect(err.Error()).To(ContainSubstring("must use scheme https when any service is placed away from Keystone"))
+	})
+
+	t.Run("https is admitted", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		_, err := w.ValidateCreate(context.Background(), placedKeystone("https://keystone.example.com/v3"))
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	// The symmetric case, and the one a rule keyed on Keystone's own ref admits:
+	// Keystone stays at home while Glance moves to "edge". The operator hands
+	// Glance exactly this URL as its spec.keystoneEndpoint and delivers its
+	// service-account password beside it, so the same credentials cross the same
+	// boundary — the direction of the placement changes nothing.
+	t.Run("a service placed away from an http Keystone is rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glancePlacedAwayFromKeystone()
+		cp.Spec.Services.Keystone.PublicEndpoint = "http://keystone.example.com:5000/v3"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.publicEndpoint"))
+		g.Expect(err.Error()).To(ContainSubstring("must use scheme https when any service is placed away from Keystone"))
+	})
+
+	t.Run("https satisfies it from that side too", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := glancePlacedAwayFromKeystone()
+		cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	// The rule is placement's, not the endpoint's: with nothing placed at all, the
+	// publicEndpoint feeds the catalog and the bootstrap, never a credential
+	// document, so http:// there stays admissible exactly as before.
+	t.Run("an all-local ControlPlane keeps its http endpoint", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placedKeystone("http://keystone.example.com:5000/v3")
+		cp.Spec.Services.Keystone.TargetClusterRef = nil
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestKeystoneCABundleSecretRef covers the trust anchor a PLACED Keystone needs:
+// K-ORC dials its https publicEndpoint from the management cluster with nothing
+// but the container's system trust store, so without this field a target
+// published with a private CA — the default posture of this stack — could never
+// be verified and the only working configuration would be the plaintext one.
+func TestKeystoneCABundleSecretRef(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	placed := func() *ControlPlane {
+		cp := validControlPlane()
+		cp.Name = "cp"
+		cp.Namespace = "openstack"
+		cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+			Name: "identity", Lifecycle: ServiceNamespaceLifecycleManaged,
+		}
+		cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+		cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+		cp.Spec.Services.Keystone.CABundleSecretRef = &commonv1.SecretRefSpec{Name: "edge-keystone-ca"}
+		return cp
+	}
+
+	t.Run("accepted on a placed Keystone", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		_, err := w.ValidateCreate(context.Background(), placed())
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	t.Run("the key defaults to ca.crt", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placed()
+
+		g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+		g.Expect(cp.Spec.Services.Keystone.CABundleSecretRef.Key).To(Equal(DefaultCABundleSecretKey))
+	})
+
+	t.Run("a nameless ref is rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placed()
+		cp.Spec.Services.Keystone.CABundleSecretRef = &commonv1.SecretRefSpec{}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.caBundleSecretRef.name"))
+	})
+
+	// A co-located Keystone is dialled over its in-cluster Service URL, which
+	// performs no handshake: accepting a bundle there would report trust nothing
+	// verifies, the hazard the External-mode plaintext rule rejects.
+	t.Run("forbidden without a targetClusterRef", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placed()
+		cp.Spec.Services.Keystone.TargetClusterRef = nil
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.caBundleSecretRef"))
+		g.Expect(err.Error()).To(ContainSubstring("forbidden without services.keystone.targetClusterRef"))
+	})
+
+	t.Run("forbidden in External mode", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := externalControlPlane()
+		cp.Spec.Services.Keystone.CABundleSecretRef = &commonv1.SecretRefSpec{Name: "edge-keystone-ca"}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.caBundleSecretRef"))
+		g.Expect(err.Error()).To(ContainSubstring("use services.keystone.external.caBundleSecretRef"))
+	})
+
+	// The bundle reaches K-ORC and nothing else. A service that does not share
+	// Keystone's cluster gets the same https URL as its projected
+	// spec.keystoneEndpoint and renders it into [keystone_authtoken], which has no
+	// cafile option — so it would fail every token validation with no field on any
+	// CR in the tree to supply the anchor with, while the ControlPlane reports
+	// KORCReady=True. Admission refuses the combination instead.
+	t.Run("forbidden while a service does not share Keystone's cluster", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			ref  *commonv1.TargetClusterRefSpec
+		}{
+			{"the dashboard stays at home", nil},
+			{"the dashboard is on a third cluster", &commonv1.TargetClusterRefSpec{Name: "core"}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				g := NewGomegaWithT(t)
+				cp := placed()
+				cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+					Namespace: &ServiceNamespaceSpec{
+						Name: "dashboard", Lifecycle: ServiceNamespaceLifecycleManaged,
+					},
+					TargetClusterRef: tc.ref,
+				}
+
+				_, err := w.ValidateCreate(context.Background(), cp)
+				g.Expect(err).To(HaveOccurred())
+				g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.caBundleSecretRef"))
+				g.Expect(err.Error()).To(ContainSubstring(
+					"forbidden while a service does not share Keystone's target cluster"))
+			})
+		}
+	})
+
+	// Co-located on the target, every service reaches Keystone over its in-cluster
+	// Service URL, which performs no handshake at all: only K-ORC, back on the
+	// management cluster, dials the https endpoint, and the bundle reaches it.
+	t.Run("accepted when every service shares Keystone's cluster", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := placed()
+		cp.Spec.Services.Horizon = &ServiceHorizonSpec{
+			Namespace: &ServiceNamespaceSpec{
+				Name: "dashboard", Lifecycle: ServiceNamespaceLifecycleManaged,
+			},
+			TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge"},
+		}
+
+		_, err := w.ValidateCreate(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
+
+// TestValidateCreate_RejectsTargetClusterRefInExternalMode verifies the webhook
+// mirror of the External-mode CEL forbid rule: no Keystone workload is deployed,
+// so there is nothing to place.
+func TestValidateCreate_RejectsTargetClusterRefInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("services.keystone.targetClusterRef"))
+	g.Expect(err.Error()).To(ContainSubstring("there is nothing to place"))
+	// The placement prerequisites stay out of the External matrix: demanding the
+	// namespace and the publicEndpoint that the same response forbids would leave
+	// the operator no shape to write.
+	g.Expect(err.Error()).NotTo(ContainSubstring("a placed service needs a namespace of its own"))
+	g.Expect(err.Error()).NotTo(ContainSubstring("resolves nowhere from another cluster"))
+}
+
+// TestValidateUpdate_FreezesServiceTargetClusterRefs pins the create-only freeze:
+// adding, removing, and renaming the ref are all rejected, because re-pointing a
+// live service strands its workload, its database, and the material in its
+// tenant store on the cluster it came from.
+func TestValidateUpdate_FreezesServiceTargetClusterRefs(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+	// A live ControlPlane whose Keystone is placed on "edge".
+	placed := func() *ControlPlane {
+		cp := validControlPlane()
+		cp.Name = "cp"
+		cp.Namespace = "openstack"
+		cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+			Name: "identity", Lifecycle: ServiceNamespaceLifecycleManaged,
+		}
+		cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+		cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+		return cp
+	}
+
+	t.Run("placing a live service", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		newCP := placed()
+		oldCP := newCP.DeepCopy()
+		oldCP.Spec.Services.Keystone.TargetClusterRef = nil
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.targetClusterRef"))
+		g.Expect(err.Error()).To(ContainSubstring("targetClusterRef is immutable"))
+	})
+
+	t.Run("unplacing a live service", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := placed()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Keystone.TargetClusterRef = nil
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("targetClusterRef is immutable"))
+	})
+
+	t.Run("re-pointing a live service", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := placed()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Keystone.TargetClusterRef.Name = "core"
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.targetClusterRef.name"))
+		g.Expect(err.Error()).To(ContainSubstring("targetClusterRef is immutable"))
+	})
+
+	t.Run("an unchanged ref is not rejected", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := placed()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.OpenStackRelease = "2026.1"
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	// The serviceDeclaredBefore carve-out: a service the old revision carries
+	// neither in spec nor in status is being CREATED by this update, so it names
+	// its cluster freely: there is no workload anywhere to strand.
+	t.Run("a newly declared service is placed freely", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		oldCP := validControlPlane()
+		oldCP.Name = "cp"
+		oldCP.Namespace = "openstack"
+		gl := glanceControlPlane()
+		newCP := oldCP.DeepCopy()
+		newCP.Spec.Services.Glance = gl.Spec.Services.Glance
+		newCP.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{
+			Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged,
+		}
+		newCP.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
+		newCP.Spec.Services.Glance.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+		newCP.Spec.KORC.ServiceAccounts = gl.Spec.KORC.ServiceAccounts
+		findServiceAccount(newCP, GlanceServiceAccountName).TargetNamespace = "images"
+		publishKeystone(newCP)
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}
