@@ -34,6 +34,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -447,7 +449,13 @@ func (r *ControlPlaneReconciler) ownedCatalogEntryChildren(
 //     them: they are the only teardown outcome an operator has to repair by hand.
 func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer) {
-		return ctrl.Result{}, nil
+		// The remote-children finalizer outlives the ORC one on the stall path: the
+		// escape below releases the ORC finalizer without ever reaching the namespace
+		// sweep, so the placed namespaces are still standing. Finish that sweep here
+		// — nothing else can — and release the remaining finalizer once it is done.
+		// A ControlPlane that placed nothing carries no remote-children finalizer, so
+		// this is the same no-op it always was.
+		return r.reconcileDeleteRemoteChildren(ctx, cp)
 	}
 
 	remaining, hasLiveWork, err := r.deleteORCResources(ctx, cp)
@@ -485,7 +493,7 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		// reference. Tear them down HERE, while the finalizer still holds the
 		// ControlPlane — releasing first would strand every one of them, in a
 		// namespace nothing points back from.
-		done, err := r.teardownDedicatedNamespaces(ctx, cp)
+		done, err := r.sweepNamespacesBeforeRelease(ctx, cp)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -493,18 +501,14 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 			return ctrl.Result{RequeueAfter: namespaceRequeueAfter}, nil
 		}
 
-		// The auth-delegator binding is cluster-scoped, so the sweep above reaches it
-		// only when Barbican runs in a namespace of its own. Co-located — the default
-		// — there is no dedicated namespace at all, teardownDedicatedNamespaces
-		// returns at once, and nothing else can collect it.
-		if err := r.deleteBarbicanAuthDelegatorBinding(ctx, cp); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		// Release the finalizer so GC tears down Keystone/MariaDB and the rest.
+		// Release the finalizers so GC tears down Keystone/MariaDB and the rest. The
+		// remote-children one goes with it: the sweep above visited every placed
+		// namespace, on the cluster it lives on or, past the abandon window, not at
+		// all — either way nothing is left for it to hold the CR open for.
 		r.Recorder.Event(cp, "Normal", "ORCTeardownComplete",
 			"No remaining K-ORC CRs; releasing the ControlPlane finalizer")
 		controllerutil.RemoveFinalizer(cp, controlPlaneORCFinalizer)
+		controllerutil.RemoveFinalizer(cp, commonmulticluster.RemoteChildrenFinalizer)
 		if err := r.Update(ctx, cp); err != nil {
 			return ctrl.Result{}, fmt.Errorf("removing finalizer: %w", err)
 		}
@@ -615,12 +619,15 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 	// data — like the orphaned managed CRs, they are repair-by-hand outcomes.
 	if len(pushRemaining) > 0 {
 		stuckKeys := make([]string, 0, len(pushRemaining))
-		for _, ps := range pushRemaining {
+		for _, pending := range pushRemaining {
+			ps := pending.pushSecret
 			for _, d := range ps.Spec.Data {
 				stuckKeys = append(stuckKeys, d.Match.RemoteRef.RemoteKey)
 			}
 			ps.Finalizers = nil
-			if err := r.Update(ctx, ps); err != nil && !apierrors.IsNotFound(err) {
+			// Through the client of the cluster the PushSecret was found on: one in a
+			// placed namespace exists on the target alone.
+			if err := pending.cluster.Update(ctx, ps); err != nil && !apierrors.IsNotFound(err) {
 				return ctrl.Result{}, fmt.Errorf("force-removing finalizers from PushSecret %q: %w", ps.Name, err)
 			}
 		}
@@ -631,11 +638,68 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		))
 	}
 
+	// Only the ORC finalizer. The escape gave up on K-ORC, not on the children
+	// this ControlPlane placed on a target cluster: the namespace sweep never ran
+	// on this path, so the remote-children finalizer stays on and
+	// reconcileDeleteRemoteChildren finishes the sweep from the next pass.
 	controllerutil.RemoveFinalizer(cp, controlPlaneORCFinalizer)
 	if err := r.Update(ctx, cp); err != nil {
 		return ctrl.Result{}, fmt.Errorf("removing finalizer after force-remove: %w", err)
 	}
 	return ctrl.Result{}, nil
+}
+
+// reconcileDeleteRemoteChildren finishes the teardown of a ControlPlane that has
+// already released its ORC finalizer but still carries the remote-children one.
+// Only the ORC stall escape leaves a CR in that state: it gives up on K-ORC
+// without reaching the namespace sweep, so the children on the placed clusters
+// are still standing and no cascade will ever collect them.
+//
+// It is a no-op for a CR without the finalizer, which is every ControlPlane that
+// places no service on a target cluster.
+func (r *ControlPlaneReconciler) reconcileDeleteRemoteChildren(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) (ctrl.Result, error) {
+	if !controllerutil.ContainsFinalizer(cp, commonmulticluster.RemoteChildrenFinalizer) {
+		return ctrl.Result{}, nil
+	}
+
+	done, err := r.sweepNamespacesBeforeRelease(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !done {
+		return ctrl.Result{RequeueAfter: namespaceRequeueAfter}, nil
+	}
+
+	controllerutil.RemoveFinalizer(cp, commonmulticluster.RemoteChildrenFinalizer)
+	if err := r.Update(ctx, cp); err != nil {
+		return ctrl.Result{}, fmt.Errorf("removing the remote-children finalizer: %w", err)
+	}
+	return ctrl.Result{}, nil
+}
+
+// sweepNamespacesBeforeRelease is the cross-namespace teardown both release paths
+// gate on: every namespace the ControlPlane placed a service in is swept, on the
+// cluster it lives on, and the cluster-scoped auth-delegator binding no namespace
+// sweep can reach is deleted afterwards. It reports whether the ControlPlane may
+// be released.
+//
+// The auth-delegator binding is cluster-scoped, so the sweep reaches it only when
+// Barbican runs in a namespace of its own. Co-located — the default — there is no
+// dedicated namespace at all, teardownDedicatedNamespaces returns at once, and
+// nothing else can collect it.
+func (r *ControlPlaneReconciler) sweepNamespacesBeforeRelease(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) (bool, error) {
+	done, err := r.teardownDedicatedNamespaces(ctx, cp)
+	if err != nil || !done {
+		return false, err
+	}
+	if err := r.deleteBarbicanAuthDelegatorBinding(ctx, cp); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // teardownDedicatedNamespaces deletes the children the ControlPlane placed in a
@@ -652,16 +716,32 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 //     the Keystone child's fernet/credential-key PushSecrets purge their OpenBao
 //     paths — and that cleanup authenticates through the tenant store in the same
 //     namespace. Removing the store first would leave the key material in OpenBao
-//     with no Kubernetes object naming it.
-//  2. Then the NAMESPACE, per lifecycle:
-//     - Managed: delete the namespace, which cascades everything left in it. It is
-//     deleted ONLY when it carries our ownership labels — reconcileNamespaces
-//     never adopts a namespace it did not create, and neither does this. An
-//     unlabelled one is left standing with a Warning, rather than destroying a
-//     namespace (and every workload in it) the operator never owned.
-//     - External: the namespace stays. Its residue is swept by name instead — the
-//     backing services, the credential material, and the tenant-store trio LAST,
-//     for the reason above.
+//     with no Kubernetes object naming it. The service CRs live on the MANAGEMENT
+//     cluster whatever cluster their service was placed on, so waiting for them
+//     here is also what waits out their own operators' remote sweeps.
+//  2. Then what the ControlPlane put in that namespace, in the order its
+//     lifecycle decides. One half of it is the LABEL-SELECTED sweep of the cluster
+//     the namespace was placed on (commonmulticluster.DeleteRemoteChildren over
+//     controlPlaneRemoteChildKinds), which is what reaches the children no cascade
+//     and no owner reference can, both being confined to one cluster. It is a
+//     no-op for a namespace nothing was placed on.
+//     - Managed: the sweep, then the namespace itself, deleted on BOTH clusters
+//     because reconcileNamespaces created it on both. It is deleted ONLY when it
+//     carries our ownership labels — reconcileNamespaces never adopts a namespace
+//     it did not create, and neither does this. An unlabelled one is left standing
+//     with a Warning, rather than destroying a namespace (and every workload in
+//     it) the operator never owned.
+//     - External: the namespace stays, so its residue is named and deleted
+//     instead — the backing services, the credential material, and the
+//     tenant-store trio LAST, for the reason above — and the sweep follows it,
+//     reaching whatever the names did not enumerate. That way round because the
+//     named sweep is the only one of the two with an order to give.
+//
+// A placed namespace whose cluster does not resolve is not swept: the pass
+// reports NOT done, so the ControlPlane keeps its finalizers and tries again.
+// Past commonmulticluster.AbandonAfter the cluster is given up on instead — a
+// Warning records that its children were left running, and the sweep continues
+// without it, because holding the CR in Terminating forever helps nobody.
 //
 // Past orcTeardownStallTimeout the sweep stops waiting: it emits a Warning naming
 // what is stuck and reports done, so a wedged child can never make a namespace
@@ -678,7 +758,7 @@ func (r *ControlPlaneReconciler) teardownDedicatedNamespaces(
 
 	stalled := time.Since(cp.DeletionTimestamp.Time) > orcTeardownStallTimeout
 
-	var stuck []string
+	var stuck, unresolved []string
 	for _, assignment := range assignments {
 		remaining, err := r.deleteServiceChildrenIn(ctx, cp, assignment.Name)
 		if err != nil {
@@ -689,13 +769,75 @@ func (r *ControlPlaneReconciler) teardownDedicatedNamespaces(
 			continue
 		}
 
-		if assignment.Lifecycle == c5c3v1alpha1.ServiceNamespaceLifecycleExternal {
-			r.sweepExternalNamespaceResidue(ctx, cp, assignment.Name)
+		// The cluster this namespace lives on, resolved through the DELETION
+		// resolver: a target that was deregistered under a terminating CR must not
+		// fail the pass, or the finalizers could never be released.
+		ref := targetClusterRefForNamespace(cp, assignment.Name)
+		children, wait := commonmulticluster.ResolveChildrenClientForDeletion(
+			ctx, r.Resolver, r.Client, ref, *cp.DeletionTimestamp)
+		switch {
+		case wait:
+			unresolved = append(unresolved, ref.Name)
+			continue
+		case children == nil:
+			// Past the abandon window. The children on that cluster are unreachable
+			// either way, so they are left where they are and the teardown carries on.
+			r.Recorder.Event(cp, "Warning", "RemoteChildrenAbandoned", fmt.Sprintf(
+				"Target cluster %q is no longer registered; releasing the remote-children finalizer without "+
+					"deleting the objects it holds in namespace %q labelled as owned by this ControlPlane",
+				ref.Name, assignment.Name))
+			// Abandoning the target's copy of the namespace does not license leaking
+			// the management cluster's, which is reachable and ours: nothing comes
+			// back for it once both finalizers are released (see clustersFor).
+			if assignment.Lifecycle != c5c3v1alpha1.ServiceNamespaceLifecycleExternal {
+				if err := r.deleteManagedNamespace(ctx, r.Client, cp, assignment.Name); err != nil {
+					return false, err
+				}
+			}
 			continue
 		}
-		if err := r.deleteManagedNamespace(ctx, cp, assignment.Name); err != nil {
+
+		// The External residue is swept by name, and BEFORE the label-selected sweep
+		// below, because it is the only one of the two with an order to give: the
+		// tenant-store trio goes last, after everything that authenticated through it.
+		external := assignment.Lifecycle == c5c3v1alpha1.ServiceNamespaceLifecycleExternal
+		if external {
+			r.sweepExternalNamespaceResidue(ctx, children, cp, assignment.Name)
+		}
+
+		// Then everything else the ControlPlane left in this namespace on a target
+		// cluster: what the named sweep does not enumerate, and what a namespace
+		// deletion cannot cascade across a cluster boundary.
+		if err := r.deleteRemoteNamespaceChildren(ctx, children, cp, ref, assignment.Name); err != nil {
 			return false, err
 		}
+		if external {
+			continue
+		}
+
+		// A placed namespace exists on the management cluster as well, because
+		// reconcileNamespaces ensures it on both; deleting it on one alone would
+		// leave the other standing with nothing left to reclaim it (see clustersFor).
+		for _, c := range r.clustersFor(children) {
+			if err := r.deleteManagedNamespace(ctx, c, cp, assignment.Name); err != nil {
+				return false, err
+			}
+		}
+	}
+
+	// A cluster that may still be engaging holds the release whatever else the
+	// pass found: its children are neither swept nor abandoned yet, and giving up
+	// on them here would strand them on a cluster that is about to come back.
+	if len(unresolved) > 0 {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeNamespacesReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             commonmulticluster.TargetClusterUnavailable,
+			Message: fmt.Sprintf("target cluster(s) %v do not resolve; waiting at least %s for them before "+
+				"abandoning the children the ControlPlane placed on them", unresolved, commonmulticluster.AbandonAfter),
+		})
+		return false, nil
 	}
 
 	if len(stuck) == 0 {
@@ -725,6 +867,39 @@ func (r *ControlPlaneReconciler) teardownDedicatedNamespaces(
 	logger.Info("cross-namespace teardown stalled; releasing the ControlPlane anyway",
 		"stuck", stuck, "stallTimeout", orcTeardownStallTimeout)
 	return true, nil
+}
+
+// deleteRemoteNamespaceChildren deletes everything of controlPlaneRemoteChildKinds
+// the ControlPlane owns in namespace on the cluster children writes to. It is a
+// no-op for an unplaced namespace, whose children the local cascade collects, so
+// the caller runs it without branching on where the namespace lives.
+//
+// The list goes through the target cluster's UNCACHED reader rather than through
+// the children client's cache: this sweep is what licenses the finalizer release,
+// and a child the cache has not caught up on would be missed, leaving no CR behind
+// to delete it.
+func (r *ControlPlaneReconciler) deleteRemoteNamespaceChildren(
+	ctx context.Context, children client.Client, cp *c5c3v1alpha1.ControlPlane,
+	ref *commonv1.TargetClusterRefSpec, namespace string,
+) error {
+	reader, err := commonmulticluster.ResolveChildrenAPIReader(ctx, r.Resolver, children, ref)
+	if err != nil {
+		return err
+	}
+	return commonmulticluster.DeleteRemoteChildren(ctx, reader, children, r.Scheme, cp,
+		namespace, controlPlaneRemoteChildKinds)
+}
+
+// teardownReader returns the reader the teardown decides ownership from on the
+// cluster c writes to: that cluster's own uncached reader for a resolved target
+// client, and the management cluster's for the local one. Both are uncached,
+// because a teardown read is one-shot and several of the kinds it names are ones
+// the operator never watches (see ControlPlaneReconciler.APIReader).
+func (r *ControlPlaneReconciler) teardownReader(c client.Client) client.Reader {
+	if commonmulticluster.IsRemote(c) {
+		return commonmulticluster.LiveReader(c)
+	}
+	return r.apiReader()
 }
 
 // crossNamespaceServiceChildren returns the service children the ControlPlane
@@ -942,15 +1117,27 @@ func (r *ControlPlaneReconciler) deleteBarbicanEnsembleIn(
 //
 // Only a binding carrying this ControlPlane's ownership labels is deleted. The name
 // is cluster-wide, so a collision is not confined to one namespace.
+//
+// It is deleted on the cluster Barbican was placed on, where the ensemble wrote it,
+// and on the management cluster for a Barbican that names none. A cluster that does
+// not resolve leaves the binding where it is: teardownDedicatedNamespaces has
+// already decided whether that cluster is being waited for or was abandoned, and
+// this is the same unreachable cluster.
 func (r *ControlPlaneReconciler) deleteBarbicanAuthDelegatorBinding(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
 ) error {
+	children, _ := commonmulticluster.ResolveChildrenClientForDeletion(ctx, r.Resolver, r.Client,
+		targetClusterRefForNamespace(cp, cp.BarbicanNamespace()), *cp.DeletionTimestamp)
+	if children == nil {
+		return nil
+	}
+
 	name := barbicanOpenBaoAuthDelegatorName(barbicanOpenBaoName(cp), cp.BarbicanNamespace())
 	binding := &rbacv1.ClusterRoleBinding{}
 	// Uncached (see ControlPlaneReconciler.APIReader): this runs on EVERY
 	// ControlPlane teardown, Barbican or not, and a cached read would install a
 	// cluster-wide ClusterRoleBinding informer for one object.
-	switch err := r.apiReader().Get(ctx, types.NamespacedName{Name: name}, binding); {
+	switch err := r.teardownReader(children).Get(ctx, types.NamespacedName{Name: name}, binding); {
 	case apierrors.IsNotFound(err):
 		return nil
 	case err != nil:
@@ -959,7 +1146,7 @@ func (r *ControlPlaneReconciler) deleteBarbicanAuthDelegatorBinding(
 	if !isControlPlaneChild(binding, cp) {
 		return nil
 	}
-	if err := client.IgnoreNotFound(r.Delete(ctx, binding)); err != nil {
+	if err := client.IgnoreNotFound(children.Delete(ctx, binding)); err != nil {
 		return fmt.Errorf("deleting ClusterRoleBinding %q: %w", name, err)
 	}
 	return nil
@@ -976,11 +1163,22 @@ func (r *ControlPlaneReconciler) deleteBarbicanAuthDelegatorBinding(
 // reaping every object in it) can take a while, and holding the ControlPlane
 // finalizer for it would gain nothing — the children the ControlPlane is
 // responsible for are already gone by the time this runs.
+//
+// c selects the cluster: a placed namespace was created on the management cluster
+// and on the target, so it is deleted once per cluster, each read and each
+// ownership check answered by the cluster it is about to delete on.
+//
+// The read goes through that cluster's UNCACHED reader (teardownReader), as the
+// adoption verdict on the same object does (ensureServiceNamespace). It is the
+// read that decides whether a whole namespace — with the service's database, its
+// PVC, and its tenant store in it — is deleted or leaked, and the marks it decides
+// from are written on the target cluster by this very operator: a cache one resync
+// behind would answer with a namespace that had not been stamped yet.
 func (r *ControlPlaneReconciler) deleteManagedNamespace(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, name string,
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, name string,
 ) error {
 	ns := &corev1.Namespace{}
-	switch err := r.Get(ctx, types.NamespacedName{Name: name}, ns); {
+	switch err := r.teardownReader(c).Get(ctx, types.NamespacedName{Name: name}, ns); {
 	case apierrors.IsNotFound(err):
 		return nil
 	case err != nil:
@@ -989,14 +1187,20 @@ func (r *ControlPlaneReconciler) deleteManagedNamespace(
 	if !ns.DeletionTimestamp.IsZero() {
 		return nil
 	}
-	if !isControlPlaneChild(ns, cp) {
+	// On a target cluster the ownership labels are not proof enough: they name a
+	// ControlPlane by name and namespace, and a cluster registered by two
+	// management clusters can carry two of those. reapableManagedNamespace refuses
+	// one whose UID mark names the other ControlPlane there — and, unlike the
+	// adoption verdict, still reaps one whose mark was stripped, because this is the
+	// last pass anything makes over it.
+	if !reapableManagedNamespace(c, ns, cp) {
 		r.Recorder.Event(cp, "Warning", "NamespaceNotOwned", fmt.Sprintf(
-			"namespace %q does not carry this ControlPlane's ownership labels, so it was NOT deleted even though "+
+			"namespace %q does not carry this ControlPlane's ownership marks, so it was NOT deleted even though "+
 				"its lifecycle is Managed; the operator never destroys a namespace it did not create", name,
 		))
 		return nil
 	}
-	if err := client.IgnoreNotFound(r.Delete(ctx, ns)); err != nil {
+	if err := client.IgnoreNotFound(c.Delete(ctx, ns)); err != nil {
 		return fmt.Errorf("deleting managed service namespace %q: %w", name, err)
 	}
 	log.FromContext(ctx).Info("deleted managed service namespace", "namespace", name)
@@ -1020,8 +1224,13 @@ func (r *ControlPlaneReconciler) deleteManagedNamespace(
 // logged rather than propagated: this is the last step before the ControlPlane is
 // released, and a residual object is a repairable leak, whereas an error here
 // would wedge the namespace on a finalizer that can never clear.
+//
+// c is the client of the cluster the namespace lives on, so a placed namespace's
+// residue is read and deleted there. It runs before the label-selected sweep of
+// the same namespace, which reaches everything this one does not enumerate but
+// has no order to give.
 func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, namespace string,
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, namespace string,
 ) {
 	logger := log.FromContext(ctx)
 
@@ -1168,12 +1377,13 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 		}},
 	)
 
+	reader := r.teardownReader(c)
 	for _, obj := range objs {
 		key := client.ObjectKeyFromObject(obj)
 		// Uncached: the Barbican arm above adds the ensemble's three RBAC kinds
 		// to this list (see ControlPlaneReconciler.APIReader), and a one-shot
 		// teardown read has nothing to gain from an informer anyway.
-		switch err := r.apiReader().Get(ctx, key, obj); {
+		switch err := reader.Get(ctx, key, obj); {
 		case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
 			continue
 		case err != nil:
@@ -1184,7 +1394,7 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 		if !isControlPlaneChild(obj, cp) {
 			continue
 		}
-		if err := client.IgnoreNotFound(r.Delete(ctx, obj)); err != nil {
+		if err := client.IgnoreNotFound(c.Delete(ctx, obj)); err != nil {
 			logger.V(1).Info("best-effort residue sweep could not delete an object",
 				"object", key, "error", err.Error())
 		}
@@ -1207,40 +1417,77 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 // purge must run while that namespace's tenant store is still alive — which the
 // existing ordering guarantees, since this runs before teardownDedicatedNamespaces
 // (and its per-namespace tenant-store sweep).
+//
+// A placed namespace is swept on its target cluster as well as at home: the
+// PushSecrets are written there, and so is the tenant store their purge
+// authenticates through, so the ordering has to hold on that cluster too. The
+// cluster is resolved through the DELETION resolver, which never fails the pass —
+// one that does not resolve is left to teardownDedicatedNamespaces, which is where
+// waiting for it and abandoning it are decided.
 func (r *ControlPlaneReconciler) deleteOwnedPushSecrets(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
-) ([]*esov1alpha1.PushSecret, error) {
-	var remaining []*esov1alpha1.PushSecret
+) ([]pendingPushSecret, error) {
+	var remaining []pendingPushSecret
 	for _, namespace := range controlPlaneNamespaces(cp) {
-		var list esov1alpha1.PushSecretList
-		switch err := r.List(ctx, &list, client.InNamespace(namespace)); {
-		case err == nil:
-		case meta.IsNoMatchError(err):
-			return nil, nil
-		default:
-			return nil, fmt.Errorf("listing owned PushSecrets in namespace %q for teardown: %w", namespace, err)
+		children, _ := commonmulticluster.ResolveChildrenClientForDeletion(ctx, r.Resolver, r.Client,
+			targetClusterRefForNamespace(cp, namespace), *cp.DeletionTimestamp)
+		for _, c := range r.clustersFor(children) {
+			left, err := r.deleteOwnedPushSecretsIn(ctx, c, cp, namespace)
+			if err != nil {
+				return nil, err
+			}
+			remaining = append(remaining, left...)
 		}
+	}
+	return remaining, nil
+}
 
-		for i := range list.Items {
-			ps := &list.Items[i]
-			if !isControlPlaneChild(ps, cp) {
-				continue
+// pendingPushSecret is one PushSecret still present after the teardown sweep,
+// paired with the client of the cluster it lives on. The stall escape strips its
+// finalizers through that client: a PushSecret in a placed namespace exists on
+// the target cluster alone, so an Update issued at home would reach no object.
+type pendingPushSecret struct {
+	pushSecret *esov1alpha1.PushSecret
+	cluster    client.Client
+}
+
+// deleteOwnedPushSecretsIn is deleteOwnedPushSecrets for one namespace on the
+// cluster c reads and writes, and returns the PushSecrets still present there
+// afterwards. An absent PushSecret CRD (meta.IsNoMatchError) reads as nothing to
+// clean on THAT cluster: a target that does not serve ESO can hold no PushSecret,
+// and the management cluster's sweep is unaffected either way.
+func (r *ControlPlaneReconciler) deleteOwnedPushSecretsIn(
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, namespace string,
+) ([]pendingPushSecret, error) {
+	var list esov1alpha1.PushSecretList
+	switch err := c.List(ctx, &list, client.InNamespace(namespace)); {
+	case err == nil:
+	case meta.IsNoMatchError(err):
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("listing owned PushSecrets in namespace %q for teardown: %w", namespace, err)
+	}
+
+	var remaining []pendingPushSecret
+	for i := range list.Items {
+		ps := &list.Items[i]
+		if !isControlPlaneChild(ps, cp) {
+			continue
+		}
+		if ps.DeletionTimestamp.IsZero() {
+			if err := client.IgnoreNotFound(c.Delete(ctx, ps)); err != nil {
+				return nil, fmt.Errorf("deleting PushSecret %q: %w", ps.Name, err)
 			}
-			if ps.DeletionTimestamp.IsZero() {
-				if err := client.IgnoreNotFound(r.Delete(ctx, ps)); err != nil {
-					return nil, fmt.Errorf("deleting PushSecret %q: %w", ps.Name, err)
-				}
-			}
-			// Re-Get: a finalizer-less PushSecret is gone with the Delete, while one
-			// held by ESO stays present until the remote delete is confirmed.
-			current := &esov1alpha1.PushSecret{}
-			switch err := r.Get(ctx, client.ObjectKeyFromObject(ps), current); {
-			case err == nil:
-				remaining = append(remaining, current)
-			case apierrors.IsNotFound(err):
-			default:
-				return nil, fmt.Errorf("re-checking PushSecret %q: %w", ps.Name, err)
-			}
+		}
+		// Re-Get: a finalizer-less PushSecret is gone with the Delete, while one
+		// held by ESO stays present until the remote delete is confirmed.
+		current := &esov1alpha1.PushSecret{}
+		switch err := c.Get(ctx, client.ObjectKeyFromObject(ps), current); {
+		case err == nil:
+			remaining = append(remaining, pendingPushSecret{pushSecret: current, cluster: c})
+		case apierrors.IsNotFound(err):
+		default:
+			return nil, fmt.Errorf("re-checking PushSecret %q: %w", ps.Name, err)
 		}
 	}
 	return remaining, nil

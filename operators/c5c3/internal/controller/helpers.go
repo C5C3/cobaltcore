@@ -194,6 +194,37 @@ func (r *ControlPlaneReconciler) childrenClientFor(
 		targetClusterRefForNamespace(cp, namespace))
 }
 
+// anyTargetClusterResolves reports whether the ControlPlane places a service on a
+// target cluster and AT LEAST ONE cluster it names resolves right now. It is the
+// gate on installing the remote-children finalizer, so the finalizer only ever
+// goes on a CR that can actually have children on a cluster to sweep.
+//
+// ANY, not ALL, because reconcileNamespaces resolves and writes PER NAMESPACE,
+// inside its loop: a ControlPlane spanning two clusters, one of them
+// unresolvable, still has the namespaces of the resolvable one created before the
+// pass aborts. Demanding all of them would leave that written half without a
+// finalizer, and the ORC stall escape — which releases the ORC finalizer on the
+// explicit assumption that this one is still holding the CR open — would then let
+// the CR leave etcd with those namespaces standing and nothing left to reclaim
+// them.
+//
+// A nil Resolver resolves nothing: the operator runs without a multicluster
+// manager, so every child stays on the management cluster whatever the spec names
+// — which is what keeps a single-cluster deployment's deletion path byte-identical
+// to what it was.
+func (r *ControlPlaneReconciler) anyTargetClusterResolves(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) bool {
+	if r.Resolver == nil {
+		return false
+	}
+	for _, name := range cp.TargetClusterNames() {
+		if _, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client,
+			&commonv1.TargetClusterRefSpec{Name: name}); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // childrenClientsFor resolves the children client of every namespace given,
 // once per DISTINCT name, keyed by namespace. A sub-reconciler whose ensemble
 // spans several namespaces resolves all of them BEFORE its first write, so a

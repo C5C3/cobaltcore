@@ -74,7 +74,9 @@ const (
 	// database away with it. The UID is generated per CR by the API server, so it
 	// is the one mark that tells them apart — and the one part of the claim that
 	// cannot be read off the target cluster, let alone forged there. It is stamped
-	// at creation and required before a namespace on a TARGET cluster is adopted.
+	// at creation and required before a namespace on a TARGET cluster is adopted
+	// (ownsManagedNamespace); teardown asks for slightly less
+	// (reapableManagedNamespace).
 	controlPlaneUIDAnnotation = "c5c3.io/controlplane-uid"
 )
 
@@ -304,7 +306,8 @@ func isControlPlaneChild(obj client.Object, cp *c5c3v1alpha1.ControlPlane) bool 
 // project into — and to cascade away, with every workload, PVC and Secret in it,
 // at teardown. So a namespace whose mark is missing is refused here exactly as one
 // naming somebody else is, and the operator restores the mark or picks a free
-// name.
+// name. Teardown draws the line one notch lower, for a reason of its own: see
+// reapableManagedNamespace.
 func ownsManagedNamespace(c client.Client, ns *corev1.Namespace, cp *c5c3v1alpha1.ControlPlane) bool {
 	if !isControlPlaneChild(ns, cp) {
 		return false
@@ -313,6 +316,31 @@ func ownsManagedNamespace(c client.Client, ns *corev1.Namespace, cp *c5c3v1alpha
 		return true
 	}
 	return ns.Annotations[controlPlaneUIDAnnotation] == string(cp.UID)
+}
+
+// reapableManagedNamespace reports whether cp may DELETE the Managed namespace ns
+// at teardown. It is ownsManagedNamespace with one relaxation: a namespace
+// carrying cp's ownership labels whose mark is GONE is reaped all the same.
+//
+// The asymmetry is the point. The annotation is an ordinary, mutable annotation on
+// an object in a cluster this operator does not own, so a mutating admission
+// policy, a GitOps annotation pruner, or anyone with patch access can strip it —
+// and the two sides pay differently for reading that as "not ours". Adoption pays
+// a loud, reversible refusal, with a live ControlPlane reporting it and an operator
+// able to put the mark back; teardown is the LAST pass anything makes over that
+// namespace, so refusing there leaks it, and the database, PVC and tenant store in
+// it, permanently. A mark naming somebody ELSE is refused on both sides, because
+// that one is positive evidence the namespace belongs to a same-named ControlPlane
+// on another management cluster.
+func reapableManagedNamespace(c client.Client, ns *corev1.Namespace, cp *c5c3v1alpha1.ControlPlane) bool {
+	if !isControlPlaneChild(ns, cp) {
+		return false
+	}
+	if !commonmulticluster.IsRemote(c) {
+		return true
+	}
+	recorded := ns.Annotations[controlPlaneUIDAnnotation]
+	return recorded == "" || recorded == string(cp.UID)
 }
 
 // unownedNamespaceMessage explains an ownsManagedNamespace refusal in the terms

@@ -10,6 +10,7 @@ package controller
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,9 +37,13 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -89,6 +94,142 @@ func TestReconcile_AddsORCFinalizerOnFirstReconcile(t *testing.T) {
 	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}, got)).To(Succeed())
 	g.Expect(controllerutil.ContainsFinalizer(got, controlPlaneORCFinalizer)).To(BeTrue(),
 		"the ORC-teardown finalizer must be installed")
+}
+
+// placingControlPlane returns a fresh (not deleting) ControlPlane that places its
+// Keystone in a namespace of its own on the named target cluster, which is what
+// makes it a candidate for the remote-children finalizer.
+func placingControlPlane(targetCluster string) *c5c3v1alpha1.ControlPlane {
+	cp := korcControlPlane()
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name: placedTeardownNamespace, Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+		},
+		TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: targetCluster},
+	}
+	return cp
+}
+
+// TestReconcile_RemoteChildrenFinalizerInstall pins the gate on the finalizer that
+// holds a ControlPlane in etcd until the namespaces it placed on a target cluster
+// are swept: it goes on a ControlPlane that places a service on a cluster that
+// resolves, and on no other. A cluster that does not resolve is not an error here
+// — nothing has been written to it that the finalizer would have to reclaim, and
+// reconcileNamespaces reports the failure — so the install is retried on a later
+// pass instead.
+func TestReconcile_RemoteChildrenFinalizerInstall(t *testing.T) {
+	// reconcileTwice runs the passes that install the ORC finalizer and, when the
+	// gate admits it, the remote-children one, and returns the persisted CR.
+	reconcileTwice := func(g *WithT, r *ControlPlaneReconciler, c client.Client, cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.ControlPlane {
+		key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+		for range 2 {
+			_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+			g.Expect(err).NotTo(HaveOccurred(), "installing a finalizer must not fail the pass")
+		}
+		got := &c5c3v1alpha1.ControlPlane{}
+		g.Expect(c.Get(context.Background(), key, got)).To(Succeed())
+		return got
+	}
+
+	t.Run("installs it for a placed ControlPlane whose cluster resolves", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := controllerTestScheme(t)
+		cp := placingControlPlane(placedTeardownCluster)
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).Build()
+		r := &ControlPlaneReconciler{
+			Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10),
+			Resolver: &childrenResolver{children: fake.NewClientBuilder().WithScheme(s).Build()},
+		}
+
+		got := reconcileTwice(g, r, c, cp)
+		g.Expect(controllerutil.ContainsFinalizer(got, commonmulticluster.RemoteChildrenFinalizer)).To(BeTrue(),
+			"a ControlPlane that places a service on a resolvable cluster must carry the remote-children finalizer")
+	})
+
+	t.Run("never installs it for a ControlPlane that places nothing", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := controllerTestScheme(t)
+		cp := korcControlPlane()
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).Build()
+		r := &ControlPlaneReconciler{
+			Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10),
+			Resolver: &childrenResolver{children: fake.NewClientBuilder().WithScheme(s).Build()},
+		}
+
+		got := reconcileTwice(g, r, c, cp)
+		g.Expect(controllerutil.ContainsFinalizer(got, commonmulticluster.RemoteChildrenFinalizer)).To(BeFalse(),
+			"a ControlPlane whose children all stay at home has nothing for the finalizer to hold")
+	})
+
+	t.Run("skips the install while the cluster does not resolve", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := controllerTestScheme(t)
+		cp := placingControlPlane(placedTeardownCluster)
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).Build()
+		r := &ControlPlaneReconciler{
+			Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10),
+			Resolver: &childrenResolver{err: mcruntime.ErrClusterNotFound},
+		}
+
+		got := reconcileTwice(g, r, c, cp)
+		g.Expect(controllerutil.ContainsFinalizer(got, commonmulticluster.RemoteChildrenFinalizer)).To(BeFalse(),
+			"an unwritten cluster leaves nothing to reclaim, so the install waits")
+		cond := conditions.GetCondition(got.Status.Conditions, conditionTypeNamespacesReady)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable),
+			"the unresolvable cluster is reported by the namespace step, not by the finalizer install")
+	})
+
+	// ANY, not ALL. reconcileNamespaces resolves and writes per namespace inside
+	// its loop, so the resolvable cluster's namespaces are created on this very
+	// pass whatever the sibling ref does. Demanding every cluster would leave that
+	// written half without a finalizer, and the ORC stall escape — which releases
+	// the ORC finalizer expecting this one to hold the CR open — would then let the
+	// CR leave etcd with those namespaces standing.
+	t.Run("installs it when only one of two clusters resolves", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := controllerTestScheme(t)
+		cp := placingControlPlane(placedTeardownCluster)
+		cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name: "dashboard", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			},
+			TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "deregistered"},
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).Build()
+		r := &ControlPlaneReconciler{
+			Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10),
+			Resolver: &childrenResolver{
+				children: fake.NewClientBuilder().WithScheme(s).Build(),
+				errNames: map[string]error{"deregistered": mcruntime.ErrClusterNotFound},
+			},
+		}
+
+		got := reconcileTwice(g, r, c, cp)
+		g.Expect(controllerutil.ContainsFinalizer(got, commonmulticluster.RemoteChildrenFinalizer)).To(BeTrue(),
+			"the namespaces written to the resolvable cluster need the finalizer that reclaims them")
+	})
+
+	t.Run("keeps it once installed, even when the cluster stops resolving", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := controllerTestScheme(t)
+		cp := placingControlPlane(placedTeardownCluster)
+		cp.Finalizers = []string{controlPlaneORCFinalizer, commonmulticluster.RemoteChildrenFinalizer}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).Build()
+		r := &ControlPlaneReconciler{
+			Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10),
+			Resolver: &childrenResolver{err: mcruntime.ErrClusterNotFound},
+		}
+
+		got := reconcileTwice(g, r, c, cp)
+		g.Expect(controllerutil.ContainsFinalizer(got, commonmulticluster.RemoteChildrenFinalizer)).To(BeTrue(),
+			"children already on a cluster that dropped out still have to be swept or abandoned")
+	})
 }
 
 // TestReconcileDelete_NoFinalizer_NoOp asserts reconcileDelete is a no-op when
@@ -429,8 +570,8 @@ func TestDeleteOwnedPushSecrets_SweepsLabelOwnedInDedicatedNamespace(t *testing.
 	g.Expect(gotDelivered.DeletionTimestamp.IsZero()).To(BeFalse(),
 		"the label-owned delivery PushSecret must be deleted, not left to a GC cascade that never reaches it")
 	names := make([]string, 0, len(remaining))
-	for _, ps := range remaining {
-		names = append(names, ps.Namespace+"/"+ps.Name)
+	for _, pending := range remaining {
+		names = append(names, pending.pushSecret.Namespace+"/"+pending.pushSecret.Name)
 	}
 	g.Expect(names).To(ContainElement("identity/cp-service-account-nova-backup"))
 
@@ -1891,7 +2032,7 @@ func TestBarbicanTeardown_LeavesForeignEnsembleObjectsAlone(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	expectPresent(t, c, foreignTenant, foreignBinding)
 
-	r.sweepExternalNamespaceResidue(ctx, cp, ns)
+	r.sweepExternalNamespaceResidue(ctx, c, cp, ns)
 	expectPresent(t, c, foreignTenant, foreignBinding)
 }
 
@@ -2004,6 +2145,543 @@ func TestSweepExternalNamespaceResidue_RemovesTheBarbicanResidue(t *testing.T) {
 		WithObjects(append([]client.Object{cp}, residue...)...).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
 
-	r.sweepExternalNamespaceResidue(ctx, cp, ns)
+	r.sweepExternalNamespaceResidue(ctx, c, cp, ns)
 	expectSwept(t, c, residue...)
+}
+
+// --- placed-namespace teardown ---
+
+const (
+	// placedTeardownNamespace is the namespace the fixtures below place Keystone
+	// in, and placedTeardownCluster the target cluster that namespace lives on.
+	placedTeardownNamespace = "identity"
+	placedTeardownCluster   = "remote-a"
+)
+
+// deletingPlacedControlPlane returns a deleting ControlPlane that places its
+// Keystone — and with it the namespace, the backing services, and the credential
+// material scoped to that namespace — on a target cluster, under the given
+// lifecycle.
+func deletingPlacedControlPlane(
+	deletionAge time.Duration, lifecycle c5c3v1alpha1.ServiceNamespaceLifecycle,
+) *c5c3v1alpha1.ControlPlane {
+	cp := deletingControlPlane(deletionAge)
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name: placedTeardownNamespace, Lifecycle: lifecycle,
+		},
+		TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: placedTeardownCluster},
+	}
+	cp.Finalizers = []string{controlPlaneORCFinalizer, commonmulticluster.RemoteChildrenFinalizer}
+	return cp
+}
+
+// onTarget stamps obj with the labels a child written to a TARGET cluster carries
+// — the owner triple the shared sweep selects on plus this operator's
+// cross-namespace pair — the way claimChildOwnership leaves it. A remote child has
+// no owner reference, so its labels are the whole of its identity.
+func onTarget(cp *c5c3v1alpha1.ControlPlane, obj client.Object) client.Object {
+	obj.SetLabels(remoteChildLabels(cp))
+	return obj
+}
+
+// abandonImmediately compresses the abandon window to nothing for the duration of
+// one test, so an unresolvable cluster is given up on in the first pass instead of
+// after five minutes of wall clock. It is the package-level knob
+// internal/common/multicluster documents for exactly this.
+func abandonImmediately(t *testing.T) {
+	t.Helper()
+	previous := commonmulticluster.AbandonAfter
+	commonmulticluster.AbandonAfter = 0
+	t.Cleanup(func() { commonmulticluster.AbandonAfter = previous })
+}
+
+// placedNamespaceOnTarget builds the namespace reconcileNamespaces creates on a
+// TARGET cluster: the ownership labels every remote child carries, plus the UID
+// annotation that is the only mark distinguishing this ControlPlane from a
+// same-named one owned by another management cluster.
+func placedNamespaceOnTarget(cp *c5c3v1alpha1.ControlPlane, name string) *corev1.Namespace {
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:        name,
+		Labels:      remoteChildLabels(cp),
+		Annotations: map[string]string{controlPlaneUIDAnnotation: string(cp.UID)},
+	}}
+}
+
+// TestTeardownDedicatedNamespaces_SweepsThePlacedNamespaceOnItsTarget is the
+// central guard on the placed teardown: nothing on a target cluster collects what
+// the ControlPlane wrote there — no owner reference and no garbage collection
+// cascade crosses a cluster boundary — so every kind of
+// controlPlaneRemoteChildKinds the ControlPlane owns in that namespace is deleted
+// by name, on that cluster, and the Managed namespace goes with it on BOTH
+// clusters, because reconcileNamespaces created it on both. An object in the same
+// namespace that carries none of our labels is nobody's child and survives.
+func TestTeardownDedicatedNamespaces_SweepsThePlacedNamespaceOnItsTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingPlacedControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	ns := placedTeardownNamespace
+
+	ours := []client.Object{
+		onTarget(cp, &mariadbv1alpha1.MariaDB{ObjectMeta: metav1.ObjectMeta{Name: "keystone-db", Namespace: ns}}),
+		onTarget(cp, &esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: ns}}),
+		onTarget(cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+			Name: adminPasswordSecretName(cp), Namespace: ns,
+		}}),
+		onTarget(cp, &esgenv1alpha1.VaultDynamicSecret{ObjectMeta: metav1.ObjectMeta{
+			Name: dbCredentialSecretName(cp), Namespace: ns,
+		}}),
+		onTarget(cp, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+			Name: esoTenantServiceAccountName, Namespace: ns,
+		}}),
+		onTarget(cp, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "keystone-admin", Namespace: ns}}),
+	}
+	foreign := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "someone-elses", Namespace: ns}}
+	remoteNS := placedNamespaceOnTarget(cp, ns)
+	// The same namespace at home, where it carries the two cross-namespace labels a
+	// local child is stamped with.
+	localNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns, Labels: controlPlaneChildLabels(cp)}}
+
+	target := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(append(append([]client.Object{}, ours...), foreign, remoteNS)...).Build()
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, localNS).Build()
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: record.NewFakeRecorder(10),
+		Resolver: &childrenResolver{children: target},
+	}
+
+	done, err := r.teardownDedicatedNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue(), "a resolvable cluster is swept in one pass")
+
+	expectSwept(t, target, ours...)
+	expectPresent(t, target, foreign)
+	expectSwept(t, target, remoteNS)
+	expectSwept(t, local, localNS)
+}
+
+// TestTeardownDedicatedNamespaces_PlacedExternalNamespaceKeepsTheTrioLast covers
+// the other lifecycle: an External namespace survives the ControlPlane on both
+// clusters, so its residue is named and deleted on the cluster it lives on — and
+// the ORDER is what the named sweep is for, with the tenant store trio going after
+// everything that authenticated through it.
+func TestTeardownDedicatedNamespaces_PlacedExternalNamespaceKeepsTheTrioLast(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingPlacedControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleExternal)
+	ns := placedTeardownNamespace
+
+	var deletes []string
+	residue := []client.Object{
+		onTarget(cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+			Name: adminPasswordSecretName(cp), Namespace: ns,
+		}}),
+		onTarget(cp, &esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: ns}}),
+		onTarget(cp, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+			Name: esoTenantServiceAccountName, Namespace: ns,
+		}}),
+	}
+	remoteNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ns}}
+	target := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(append(append([]client.Object{}, residue...), remoteNS)...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				deletes = append(deletes, obj.GetName())
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: record.NewFakeRecorder(10),
+		Resolver: &childrenResolver{children: target},
+	}
+
+	done, err := r.teardownDedicatedNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+
+	expectSwept(t, target, residue...)
+	expectPresent(t, target, remoteNS)
+	g.Expect(deletes).To(ContainElements(adminPasswordSecretName(cp), esoTenantStoreName))
+	g.Expect(slices.Index(deletes, adminPasswordSecretName(cp))).
+		To(BeNumerically("<", slices.Index(deletes, esoTenantStoreName)),
+			"the credential material must be deleted before the store it authenticates through")
+}
+
+// TestReconcileDelete_SweepsPlacedPushSecretsBeforeThatClustersStore is the
+// per-cluster half of the OpenBao-orphan guard: a PushSecret carries
+// DeletionPolicy=Delete, and ESO can only purge its OpenBao path while the tenant
+// store IN ITS OWN NAMESPACE — on its own cluster — is alive. The teardown
+// therefore deletes the placed cluster's PushSecrets and holds the ControlPlane
+// until they are gone, so the store is still standing while ESO works.
+func TestReconcileDelete_SweepsPlacedPushSecretsBeforeThatClustersStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingPlacedControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	ns := placedTeardownNamespace
+
+	// Held by ESO's finalizer, so the Delete leaves it Terminating rather than gone.
+	push := onTarget(cp, &esov1alpha1.PushSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: "cp-service-account-nova-backup", Namespace: ns,
+		Finalizers: []string{"pushsecret.externalsecrets.io/finalizer"},
+	}})
+	store := onTarget(cp, &esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{
+		Name: esoTenantStoreName, Namespace: ns,
+	}})
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(push, store).Build()
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: record.NewFakeRecorder(10),
+		Resolver: &childrenResolver{children: target},
+	}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(local.Get(ctx, key, cp)).To(Succeed())
+	res, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter),
+		"the teardown must wait for ESO to finish the OpenBao cleanup on the target")
+
+	live := &esov1alpha1.PushSecret{}
+	g.Expect(target.Get(ctx, client.ObjectKeyFromObject(push), live)).To(Succeed())
+	g.Expect(live.DeletionTimestamp.IsZero()).To(BeFalse(),
+		"the placed PushSecret must be deleted by the teardown, not left to a cascade that never reaches it")
+	expectPresent(t, target, store)
+
+	// ESO finishes and releases the PushSecret; the store may go now.
+	live.Finalizers = nil
+	g.Expect(target.Update(ctx, live)).To(Succeed())
+	g.Expect(local.Get(ctx, key, cp)).To(Succeed())
+	res, err = r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	expectSwept(t, target, store)
+	g.Expect(apierrors.IsNotFound(local.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}))).To(BeTrue(),
+		"both finalizers must be released once the placed namespace is swept")
+}
+
+// TestDeleteBarbicanAuthDelegatorBinding_DeletesItOnTheServicesCluster pins the
+// one child that lives outside every namespace. It is cluster-scoped, so neither
+// the label-selected sweep (which lists one namespace) nor a namespace deletion
+// reclaims it — and it was written on the cluster Barbican was placed on, so that
+// is where it has to be deleted. A binding of the same name on the management
+// cluster is a different object and must survive, even carrying our labels.
+func TestDeleteBarbicanAuthDelegatorBinding_DeletesItOnTheServicesCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingBarbicanControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	cp.Spec.Services.Barbican.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: placedTeardownCluster}
+	name := barbicanOpenBaoAuthDelegatorName(barbicanOpenBaoName(cp), cp.BarbicanNamespace())
+
+	placed := onTarget(cp, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name}})
+	atHome := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{
+		Name: name, Labels: controlPlaneChildLabels(cp),
+	}}
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(placed).Build()
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, atHome).Build()
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: record.NewFakeRecorder(10),
+		Resolver: &childrenResolver{children: target},
+	}
+
+	g.Expect(r.deleteBarbicanAuthDelegatorBinding(ctx, cp)).To(Succeed())
+	expectSwept(t, target, placed)
+	expectPresent(t, local, atHome)
+}
+
+// TestReconcileDelete_HoldsBothFinalizersUntilThePlacedNamespaceIsSwept pins the
+// release order: while a service child of the placed namespace is still
+// Terminating behind its own operator's cleanup, neither finalizer may go — the
+// service operator's own remote sweep is what that wait is for — and once it is
+// gone both are released in the same pass.
+func TestReconcileDelete_HoldsBothFinalizersUntilThePlacedNamespaceIsSwept(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingPlacedControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	ns := placedTeardownNamespace
+
+	// The Keystone CR lives on the MANAGEMENT cluster whatever cluster it places
+	// its own children on, held by its cleanup finalizer.
+	keystone := &keystonev1alpha1.Keystone{ObjectMeta: metav1.ObjectMeta{
+		Name: keystoneName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+		Finalizers: []string{"keystone.openstack.c5c3.io/cleanup"},
+	}}
+	placedChild := onTarget(cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: adminPasswordSecretName(cp), Namespace: ns,
+	}})
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(placedChild).Build()
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, keystone).Build()
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: record.NewFakeRecorder(10),
+		Resolver: &childrenResolver{children: target},
+	}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(local.Get(ctx, key, cp)).To(Succeed())
+	res, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(namespaceRequeueAfter))
+	expectPresent(t, target, placedChild)
+
+	held := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(local.Get(ctx, key, held)).To(Succeed())
+	g.Expect(held.Finalizers).To(ConsistOf(controlPlaneORCFinalizer, commonmulticluster.RemoteChildrenFinalizer))
+
+	// The keystone-operator finishes its own teardown, remote sweep included.
+	live := &keystonev1alpha1.Keystone{}
+	g.Expect(local.Get(ctx, client.ObjectKeyFromObject(keystone), live)).To(Succeed())
+	live.Finalizers = nil
+	g.Expect(local.Update(ctx, live)).To(Succeed())
+
+	g.Expect(local.Get(ctx, key, cp)).To(Succeed())
+	res, err = r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	expectSwept(t, target, placedChild)
+	g.Expect(apierrors.IsNotFound(local.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}))).To(BeTrue())
+}
+
+// TestTeardownDedicatedNamespaces_WaitsForAnUnresolvedTargetCluster covers the
+// first of the two answers an unresolvable cluster gets. Engagement is
+// asynchronous, so right after an operator restart a registered cluster looks
+// exactly like a deregistered one: within the abandon window the teardown waits,
+// keeping the finalizers, rather than releasing a ControlPlane whose children are
+// running on a cluster that is about to answer.
+func TestTeardownDedicatedNamespaces_WaitsForAnUnresolvedTargetCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingPlacedControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: rec,
+		Resolver: &childrenResolver{err: mcruntime.ErrClusterNotFound},
+	}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(local.Get(ctx, key, cp)).To(Succeed())
+	res, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred(), "an unresolvable cluster must never fail the deletion pass")
+	g.Expect(res.RequeueAfter).To(Equal(namespaceRequeueAfter))
+
+	held := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(local.Get(ctx, key, held)).To(Succeed())
+	g.Expect(held.Finalizers).To(ConsistOf(controlPlaneORCFinalizer, commonmulticluster.RemoteChildrenFinalizer))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeNamespacesReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(drainEvents(rec)).NotTo(ContainElement(ContainSubstring("RemoteChildrenAbandoned")),
+		"a cluster that may still be engaging must not be given up on")
+}
+
+// TestTeardownDedicatedNamespaces_AbandonsAnUnresolvedTargetClusterPastTheWindow
+// covers the other answer. A cluster that has not resolved for the whole abandon
+// window is deregistered as far as this operator can tell: its children are
+// unreachable either way, so they are left running, a Warning records that they
+// were, and the finalizers are released — holding the ControlPlane in Terminating
+// forever would help nobody.
+func TestTeardownDedicatedNamespaces_AbandonsAnUnresolvedTargetClusterPastTheWindow(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+	abandonImmediately(t)
+
+	cp := deletingPlacedControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: rec,
+		Resolver: &childrenResolver{err: mcruntime.ErrClusterNotFound},
+	}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(local.Get(ctx, key, cp)).To(Succeed())
+	res, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+
+	g.Expect(apierrors.IsNotFound(local.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}))).To(BeTrue(),
+		"an abandoned cluster must not strand the ControlPlane in Terminating")
+	events := strings.Join(drainEvents(rec), "\n")
+	g.Expect(events).To(ContainSubstring("RemoteChildrenAbandoned"))
+	g.Expect(events).To(ContainSubstring(placedTeardownCluster))
+	g.Expect(events).To(ContainSubstring(placedTeardownNamespace))
+}
+
+// TestTeardownDedicatedNamespaces_AbandonStillReapsTheNamespaceAtHome pins the
+// half of the abandon path that IS reachable. A placed Managed namespace exists
+// on both clusters, and the target's copy is unreclaimable once its cluster is
+// given up on — but the management cluster's is reachable, ours, and nothing
+// comes back for it after both finalizers are released.
+func TestTeardownDedicatedNamespaces_AbandonStillReapsTheNamespaceAtHome(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+	abandonImmediately(t)
+
+	cp := deletingPlacedControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	localNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name: placedTeardownNamespace, Labels: controlPlaneChildLabels(cp),
+	}}
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, localNS).Build()
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: record.NewFakeRecorder(10),
+		Resolver: &childrenResolver{err: mcruntime.ErrClusterNotFound},
+	}
+
+	done, err := r.teardownDedicatedNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue(), "an abandoned cluster must not hold the release")
+	expectSwept(t, local, localNS)
+}
+
+// TestDeleteManagedNamespace_RefusesAForeignManagementClustersNamespace is the
+// guard on the one delete this operator makes on a cluster it does not own. The
+// ownership labels name a ControlPlane by name and namespace only, and a target
+// cluster may be registered by any number of management clusters — each able to
+// run a ControlPlane called "openstack" in namespace "openstack", the quickstart
+// defaults, and to place a service in a namespace called "identity". The UID
+// stamped at creation is the one mark that tells them apart, and what it stops is
+// one teardown cascading the other's database, PVC and tenant store away.
+func TestDeleteManagedNamespace_RefusesAForeignManagementClustersNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingPlacedControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	// Same name, same namespace, same labels — a different management cluster's CR.
+	theirs := placedNamespaceOnTarget(cp, placedTeardownNamespace)
+	theirs.Annotations[controlPlaneUIDAnnotation] = "another-management-clusters-cp-uid"
+
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(theirs).Build()
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: rec,
+		Resolver: &childrenResolver{children: target},
+	}
+
+	done, err := r.teardownDedicatedNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue(), "refusing the namespace must not wedge the release")
+	expectPresent(t, target, theirs)
+	g.Expect(strings.Join(drainEvents(rec), "\n")).To(ContainSubstring("NamespaceNotOwned"))
+}
+
+// TestDeleteManagedNamespace_StillReapsANamespaceWhoseMarkWasStripped is the
+// counterpart of that guard. What proves the namespace is somebody else's is a
+// mark naming somebody else — the annotation is an ordinary, mutable annotation
+// on a cluster this operator does not own, so a mutating policy or an annotation
+// pruner can take it off. Reading that as "not ours" would leak the namespace,
+// and everything in it, permanently: nothing else ever comes back for it once the
+// finalizers are released.
+func TestDeleteManagedNamespace_StillReapsANamespaceWhoseMarkWasStripped(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingPlacedControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	stripped := placedNamespaceOnTarget(cp, placedTeardownNamespace)
+	stripped.Annotations = nil
+
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(stripped).Build()
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: record.NewFakeRecorder(10),
+		Resolver: &childrenResolver{children: target},
+	}
+
+	done, err := r.teardownDedicatedNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+	expectSwept(t, target, stripped)
+}
+
+// TestDeleteManagedNamespace_DecidesFromTheUncachedReader pins which of the target
+// cluster's two readers answers the ownership question. The verdict authorises
+// deleting a whole namespace — the service's database, its PVC, its tenant store
+// — so it may not be read from an informer that trails the API server: here the
+// cache still holds the pre-adoption, unlabelled copy while the live cluster has
+// the one the operator created and owns.
+func TestDeleteManagedNamespace_DecidesFromTheUncachedReader(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingPlacedControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	stale := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: placedTeardownNamespace}}
+	live := placedNamespaceOnTarget(cp, placedTeardownNamespace)
+
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(stale).Build()
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: record.NewFakeRecorder(10),
+		Resolver: &childrenResolver{
+			children: target,
+			reader:   fake.NewClientBuilder().WithScheme(s).WithObjects(live).Build(),
+		},
+	}
+
+	done, err := r.teardownDedicatedNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+	expectSwept(t, target, stale)
+}
+
+// TestReconcileDelete_StallEscapeKeepsTheRemoteChildrenFinalizer guards the one
+// release the escape may not make. It gives up on K-ORC without ever reaching the
+// namespace sweep, so the children on the placed cluster are still standing: the
+// remote-children finalizer stays on, and the next pass finishes the sweep and
+// releases it.
+func TestReconcileDelete_StallEscapeKeepsTheRemoteChildrenFinalizer(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingPlacedControlPlane(orcTeardownStallTimeout+time.Minute,
+		c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	// A managed K-ORC CR wedged behind a finalizer K-ORC can no longer run.
+	wedged := &orcv1alpha1.ApplicationCredential{ObjectMeta: terminatingImportMeta(
+		adminAppCredentialName(cp), childNamespace(cp), "openstack.k-orc.cloud/applicationcredential")}
+	placedChild := onTarget(cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Name: adminPasswordSecretName(cp), Namespace: placedTeardownNamespace,
+	}})
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(placedChild).Build()
+	local := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, wedged).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{
+		Client: local, Scheme: s, Recorder: rec,
+		Resolver: &childrenResolver{children: target},
+	}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(local.Get(ctx, key, cp)).To(Succeed())
+	_, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(strings.Join(drainEvents(rec), "\n")).To(ContainSubstring("ORCTeardownStalled"))
+
+	escaped := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(local.Get(ctx, key, escaped)).To(Succeed())
+	g.Expect(escaped.Finalizers).To(ConsistOf(commonmulticluster.RemoteChildrenFinalizer),
+		"the escape gave up on K-ORC, not on the children the ControlPlane placed")
+	expectPresent(t, target, placedChild)
+
+	// The next pass runs the sweep the escape never reached.
+	res, err := r.reconcileDelete(ctx, escaped)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+	expectSwept(t, target, placedChild)
+	g.Expect(apierrors.IsNotFound(local.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}))).To(BeTrue())
 }
