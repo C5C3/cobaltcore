@@ -106,6 +106,17 @@ func LocalRequests(fn handler.MapFunc) mchandler.TypedEventHandlerFunc[client.Ob
 // write to that cluster, and that is precisely the claim being checked.
 type TargetClusterFunc func(ctx context.Context, key types.NamespacedName) (string, error)
 
+// TargetClustersFunc reports the set of target cluster names the CR at key
+// projects onto, read from the management cluster where that CR lives. It is
+// the set-valued sibling of TargetClusterFunc, for a CR that places several
+// services on target clusters of their own. A CR naming no target cluster
+// answers with an empty list, which no engaged provider cluster is in.
+//
+// It answers from the CR for the same reason the single-valued one does:
+// everything a target cluster carries is writable by whoever can write to that
+// cluster, and that is precisely the claim being checked.
+type TargetClustersFunc func(ctx context.Context, key types.NamespacedName) ([]string, error)
+
 // TargetClusterOf builds the TargetClusterFunc of one CR type from the
 // management cluster's reader and the CR's own target-cluster ref. Every
 // converted operator needs the same lookup over a different CR type, and the
@@ -149,15 +160,46 @@ func TargetClusterOf[T any, PT interface {
 // a child outliving the CR that projected it, an event naming a CR that never
 // existed — and is silent. Anything else is logged, because a CR that exists
 // and cannot be read is a leg that has quietly stopped correcting drift.
+//
+// The gate itself is RemoteRequestsAmong's, over the one name the CR's ref
+// carries. A rule this size has to hold in one place, or the two spellings of it
+// drift apart on the next fix.
 func RemoteRequests(
 	fn handler.MapFunc,
 	targets TargetClusterFunc,
+) mchandler.TypedEventHandlerFunc[client.Object, mcreconcile.Request] {
+	return RemoteRequestsAmong(fn, func(ctx context.Context, key types.NamespacedName) ([]string, error) {
+		target, err := targets(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+		return []string{target}, nil
+	})
+}
+
+// RemoteRequestsAmong is RemoteRequests for a CR projecting onto more than one
+// target cluster: it pins every request to the local cluster the same way, and
+// keeps only the ones whose CR names the cluster the event came from among its
+// targets. A CR naming none keeps nothing.
+//
+// The gate is the same gate and exists for the same reason (see RemoteRequests):
+// a leg is engaged on every provider cluster rather than on the ones a CR names,
+// and what it maps by is writable by anyone able to create an object on any of
+// them. A set of names widens which clusters may wake a given CR, not who may
+// claim it: a cluster outside the set is refused exactly as a single mismatching
+// target is.
+//
+// A CR that cannot be read is not reconciled, NotFound silently and anything
+// else with a log line, on the same terms as RemoteRequests.
+func RemoteRequestsAmong(
+	fn handler.MapFunc,
+	targets TargetClustersFunc,
 ) mchandler.TypedEventHandlerFunc[client.Object, mcreconcile.Request] {
 	return func(name mcruntime.ClusterName, cl cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 		return LocalRequests(func(ctx context.Context, obj client.Object) []reconcile.Request {
 			var requests []reconcile.Request
 			for _, req := range fn(ctx, obj) {
-				target, err := targets(ctx, req.NamespacedName)
+				names, err := targets(ctx, req.NamespacedName)
 				if err != nil {
 					if !apierrors.IsNotFound(err) {
 						log.FromContext(ctx).Error(err, "reading the CR an event on a target cluster names; "+
@@ -166,7 +208,7 @@ func RemoteRequests(
 					}
 					continue
 				}
-				if target == string(name) {
+				if slices.Contains(names, string(name)) {
 					requests = append(requests, req)
 				}
 			}

@@ -7,6 +7,7 @@ package multicluster
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -124,6 +126,39 @@ func watchOwnerCR(cluster string) *corev1.ConfigMap {
 	}}
 	if cluster != "" {
 		cr.Data = map[string]string{"targetCluster": cluster}
+	}
+	return cr
+}
+
+// watchTargetSetsFor is watchTargetsFor for the set-valued gate, over CR
+// stand-ins whose targetClusters key lists the names as one comma-separated
+// value. A CR without the key names none.
+func watchTargetSetsFor(t *testing.T, crs ...client.Object) TargetClustersFunc {
+	t.Helper()
+
+	c := fake.NewClientBuilder().WithScheme(ownershipScheme(t)).WithObjects(crs...).Build()
+	return func(ctx context.Context, key types.NamespacedName) ([]string, error) {
+		cr := &corev1.ConfigMap{}
+		if err := c.Get(ctx, key, cr); err != nil {
+			return nil, err
+		}
+		list, named := cr.Data["targetClusters"]
+		if !named {
+			return nil, nil
+		}
+		return strings.Split(list, ","), nil
+	}
+}
+
+// watchOwnerCRAmong is watchOwnerCR for a CR placing services on several target
+// clusters at once. No clusters is a CR that names none.
+func watchOwnerCRAmong(clusters ...string) *corev1.ConfigMap {
+	cr := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Name:      ownerRequest.Name,
+		Namespace: ownerRequest.Namespace,
+	}}
+	if len(clusters) > 0 {
+		cr.Data = map[string]string{"targetClusters": strings.Join(clusters, ",")}
 	}
 	return cr
 }
@@ -373,6 +408,100 @@ func TestRemoteRequestsGatesEveryRequestOfAFanOutMapperOnItsOwnCR(t *testing.T) 
 	got, _ := queue.Get()
 	g.Expect(got.Request).To(gomega.Equal(ownerRequest),
 		"only the CR projecting onto the cluster the event came from may be enqueued")
+}
+
+// A CR placing several services on target clusters of their own is claimed by
+// each of those clusters and by no other, so the gate is a membership test. The
+// two ways of not being a member are the same answer: a cluster the CR never
+// names, and a CR that names no cluster at all.
+func TestRemoteRequestsAmongDropsEventsFromAClusterOutsideTheCRsTargets(t *testing.T) {
+	child := watchChild(watchChildLabels())
+
+	for name, tc := range map[string]struct {
+		cr      *corev1.ConfigMap
+		enqueue bool
+	}{
+		"the CR names this cluster among its targets": {cr: watchOwnerCRAmong("remote-a", "remote-b"), enqueue: true},
+		"the CR names only other clusters":            {cr: watchOwnerCRAmong("remote-b", "remote-c")},
+		"the CR names no target cluster at all":       {cr: watchOwnerCRAmong()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			queue := newMCQueue()
+			defer queue.ShutDown()
+
+			RemoteRequestsAmong(ChildToOwner(watchOwnerKind), watchTargetSetsFor(t, tc.cr))("remote-a", nil).
+				Create(context.Background(), event.TypedCreateEvent[client.Object]{Object: child}, queue)
+
+			if !tc.enqueue {
+				g.Expect(queue.Len()).To(gomega.BeZero(),
+					"an event from a cluster outside the CR's targets must not reconcile it")
+				return
+			}
+
+			g.Expect(queue.Len()).To(gomega.Equal(1))
+			got, _ := queue.Get()
+			g.Expect(got.Request).To(gomega.Equal(ownerRequest))
+			g.Expect(got.ClusterName).To(gomega.BeEmpty())
+		})
+	}
+}
+
+// The leg is engaged once per cluster, so one CR spread over two of them is
+// gated separately on each and has to pass both times. A gate keeping only the
+// first name would leave every service but one without drift correction, which
+// is the whole reason the set-valued sibling exists.
+func TestRemoteRequestsAmongEnqueuesForEveryClusterTheCRNames(t *testing.T) {
+	targets := watchTargetSetsFor(t, watchOwnerCRAmong("cluster-a", "cluster-b"))
+	child := watchChild(watchChildLabels())
+
+	for _, engaged := range []mcruntime.ClusterName{"cluster-a", "cluster-b"} {
+		t.Run(string(engaged), func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			queue := newMCQueue()
+			defer queue.ShutDown()
+
+			RemoteRequestsAmong(ChildToOwner(watchOwnerKind), targets)(engaged, nil).
+				Create(context.Background(), event.TypedCreateEvent[client.Object]{Object: child}, queue)
+
+			g.Expect(queue.Len()).To(gomega.Equal(1))
+			got, _ := queue.Get()
+			g.Expect(got.Request).To(gomega.Equal(ownerRequest))
+			g.Expect(got.ClusterName).To(gomega.BeEmpty())
+		})
+	}
+}
+
+// The labels are the forgeable half of the pair and the CR is the trusted one,
+// so an event whose CR cannot be read is dropped rather than admitted. NotFound
+// is the ordinary case, a child outliving the CR that projected it, and stays
+// silent; any other error is dropped just as hard, because an unreadable CR
+// names no clusters that anyone may act on.
+func TestRemoteRequestsAmongDropsEventsWhoseCRCannotBeRead(t *testing.T) {
+	unreadable := func(context.Context, types.NamespacedName) ([]string, error) {
+		return nil, errors.New("etcdserver: request timed out")
+	}
+
+	for name, targets := range map[string]TargetClustersFunc{
+		"the CR does not exist":   watchTargetSetsFor(t),
+		"the lookup itself fails": unreadable,
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+
+			queue := newMCQueue()
+			defer queue.ShutDown()
+
+			RemoteRequestsAmong(ChildToOwner(watchOwnerKind), targets)("remote-a", nil).
+				Create(context.Background(), event.TypedCreateEvent[client.Object]{
+					Object: watchChild(watchChildLabels()),
+				}, queue)
+
+			g.Expect(queue.Len()).To(gomega.BeZero())
+		})
+	}
 }
 
 // The lookup every remote leg gates on reads the ref off the CR itself, which
