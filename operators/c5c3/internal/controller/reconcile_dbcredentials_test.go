@@ -23,9 +23,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
@@ -51,6 +54,23 @@ func dbCredManagedControlPlane() *c5c3v1alpha1.ControlPlane {
 			},
 		},
 	}
+}
+
+// placedKeystoneControlPlane places Keystone — and with it every store, credential
+// and backing service that follows the service — in a namespace of its own on a
+// target cluster, while the ControlPlane CR itself stays at home. It is the
+// fixture the per-namespace ensembles of this package's sub-reconcilers are
+// exercised against.
+func placedKeystoneControlPlane(targetCluster string) *c5c3v1alpha1.ControlPlane {
+	cp := dbCredManagedControlPlane()
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name:      "identity",
+			Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+		},
+		TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: targetCluster},
+	}
+	return cp
 }
 
 // dbCredBrownfieldControlPlane builds a brownfield-mode ControlPlane: the user
@@ -837,4 +857,262 @@ func TestReconcileDBCredentials_ProjectsIntoTheKeystoneNamespace(t *testing.T) {
 		Namespace: "openstack", Name: dbCredentialSecretName(cp),
 	}, &esov1.ExternalSecret{})).NotTo(Succeed(),
 		"nothing may be left in the ControlPlane's namespace")
+}
+
+// --- per-service target clusters: the credential material follows the service ---
+
+// TestReconcileDBCredentials_PlacedQuartetLandsOnTheTarget verifies the dynamic
+// quartet of a placed Keystone is projected onto ITS cluster — that is where the
+// ESO that runs the generator and the cert-manager that issues its client
+// certificate are — and that the store gate in front of it is answered from the
+// same cluster, since the tenant store lives beside the material it delivers.
+func TestReconcileDBCredentials_PlacedQuartetLandsOnTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp := placedKeystoneControlPlane("remote-a")
+	target := keystoneDBCredentialTarget(cp)
+
+	// The tenant store is Ready on the TARGET only: a gate still reading at home
+	// would never pass here.
+	remote := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(readyTenantSecretStore(esoTenantStoreName, "identity", "", "")).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote},
+	}
+
+	res, err := r.reconcileDBCredentials(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(dbCredentialsRequeueAfter), "the ExternalSecret has not synced yet")
+
+	sa := &corev1.ServiceAccount{}
+	g.Expect(remote.Get(ctx, types.NamespacedName{Namespace: "identity", Name: target.saName}, sa)).To(Succeed())
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certificateGVK)
+	g.Expect(remote.Get(ctx, types.NamespacedName{Namespace: "identity", Name: target.certName}, cert)).To(Succeed())
+	vds := &esgenv1alpha1.VaultDynamicSecret{}
+	g.Expect(remote.Get(ctx, types.NamespacedName{Namespace: "identity", Name: target.secretName}, vds)).To(Succeed())
+	es := &esov1.ExternalSecret{}
+	g.Expect(remote.Get(ctx, types.NamespacedName{Namespace: "identity", Name: target.secretName}, es)).To(Succeed())
+
+	for _, obj := range []client.Object{sa, cert, vds, es} {
+		g.Expect(obj.GetLabels()).To(Equal(remoteChildLabels(cp)), "%T must carry the full remote claim", obj)
+		g.Expect(obj.GetOwnerReferences()).To(BeEmpty(),
+			"%T must carry no owner reference on the target cluster", obj)
+	}
+
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Namespace: "identity", Name: target.secretName},
+		&esov1.ExternalSecret{})).NotTo(Succeed(), "placed credential material must not be projected at home as well")
+}
+
+// TestReconcileDBCredentials_ReadyReadsTheExternalSecretFromTheTarget verifies the
+// wait behind the projection reads the ExternalSecret from the cluster it was
+// applied to. The ExternalSecret exists only there, so a wait still reading at
+// home would park DBCredentialsReady on WaitingForDBCredentialSecret forever.
+func TestReconcileDBCredentials_ReadyReadsTheExternalSecretFromTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp := placedKeystoneControlPlane("remote-a")
+
+	// A synced ExternalSecret the operator wrote there on an earlier pass, so it
+	// carries the remote claim and is not refused as a foreign object.
+	synced := readyDBCredES(cp)
+	synced.Labels = remoteChildLabels(cp)
+	remote := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(readyTenantSecretStore(esoTenantStoreName, "identity", "", ""), synced).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote},
+	}
+
+	res, err := r.reconcileDBCredentials(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeDBCredentialsReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("DBCredentialsReady"))
+}
+
+// TestReconcileDBCredentials_UnresolvableTargetProjectsNothing covers the cluster
+// that does not resolve: the pass parks on the shared reason before the store gate
+// runs, and nothing is written on either cluster.
+func TestReconcileDBCredentials_UnresolvableTargetProjectsNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp := placedKeystoneControlPlane("remote-a")
+
+	remote := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote, err: mcruntime.ErrClusterNotFound},
+	}
+
+	res, err := r.reconcileDBCredentials(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred(), "an unregistered cluster is a state to wait out, not a reconcile failure")
+	g.Expect(res.RequeueAfter).To(Equal(dbCredentialsRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeDBCredentialsReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+
+	for name, c := range map[string]client.Client{"management": r.Client, "target": remote} {
+		var generators esgenv1alpha1.VaultDynamicSecretList
+		g.Expect(c.List(ctx, &generators)).To(Succeed())
+		g.Expect(generators.Items).To(BeEmpty(), "no generator may be projected on the %s cluster", name)
+
+		var externalSecrets esov1.ExternalSecretList
+		g.Expect(c.List(ctx, &externalSecrets)).To(Succeed())
+		g.Expect(externalSecrets.Items).To(BeEmpty(), "no ExternalSecret may be projected on the %s cluster", name)
+	}
+}
+
+// placedServiceControlPlane places one keystone-independent service in a namespace
+// of its own on a target cluster, and returns the ControlPlane together with that
+// service's DB-credential target.
+func placedServiceControlPlane(service, namespace, targetCluster string) (
+	*c5c3v1alpha1.ControlPlane, dbCredentialTarget,
+) {
+	cp := dbCredManagedControlPlane()
+	ns := &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      namespace,
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	ref := &commonv1.TargetClusterRefSpec{Name: targetCluster}
+	switch service {
+	case "Glance":
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{Namespace: ns, TargetClusterRef: ref}
+		return cp, glanceDBCredentialTarget(cp)
+	case "Placement":
+		cp.Spec.Services.Placement = &c5c3v1alpha1.ServicePlacementSpec{Namespace: ns, TargetClusterRef: ref}
+		return cp, placementDBCredentialTarget(cp)
+	default:
+		cp.Spec.Services.Barbican = &c5c3v1alpha1.ServiceBarbicanSpec{Namespace: ns, TargetClusterRef: ref}
+		return cp, barbicanDBCredentialTarget(cp)
+	}
+}
+
+// TestEnsureServiceDBCredential_UnresolvableTargetHaltsOnTheServiceCondition
+// verifies the shared helper reports a resolution failure on the CALLER's
+// condition — the one an operator reads that service's state from — rather than on
+// a condition shared with Keystone's own credential concern, and that it halts
+// before writing anything.
+func TestEnsureServiceDBCredential_UnresolvableTargetHaltsOnTheServiceCondition(t *testing.T) {
+	tests := []struct {
+		service       string
+		namespace     string
+		conditionType string
+	}{
+		{service: "Glance", namespace: "images", conditionType: conditionTypeGlanceReady},
+		{service: "Placement", namespace: "placement", conditionType: conditionTypePlacementReady},
+		{service: "Barbican", namespace: "key-manager", conditionType: conditionTypeBarbicanReady},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.service, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			s := korcTestScheme(t)
+			cp, target := placedServiceControlPlane(tc.service, tc.namespace, "remote-a")
+
+			remote := fake.NewClientBuilder().WithScheme(s).Build()
+			r := &ControlPlaneReconciler{
+				Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+				Scheme:   s,
+				Resolver: &childrenResolver{children: remote, err: mcruntime.ErrClusterNotFound},
+			}
+
+			res, halt, err := r.ensureServiceDBCredential(ctx, cp, target, true, tc.service, tc.conditionType)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(halt).To(BeTrue(), "the caller must stop rather than project a child without its credential")
+			g.Expect(res.RequeueAfter).To(Equal(dbCredentialsRequeueAfter))
+
+			cond := conditions.GetCondition(cp.Status.Conditions, tc.conditionType)
+			g.Expect(cond).NotTo(BeNil(), "the failure must be reported on the caller's own condition")
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+			g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+			g.Expect(conditions.GetCondition(cp.Status.Conditions, conditionTypeDBCredentialsReady)).To(BeNil(),
+				"Keystone's own credential condition must be left alone")
+
+			for name, c := range map[string]client.Client{"management": r.Client, "target": remote} {
+				var generators esgenv1alpha1.VaultDynamicSecretList
+				g.Expect(c.List(ctx, &generators)).To(Succeed())
+				g.Expect(generators.Items).To(BeEmpty(), "no generator may be projected on the %s cluster", name)
+			}
+		})
+	}
+}
+
+// TestEnsureServiceDBCredential_PlacedCredentialRoundTripsOnTheTarget walks the
+// whole Dynamic gate for a placed service: the quartet is projected on the target,
+// and both gates behind it — the ExternalSecret's Ready and the engine-issued
+// username in the materialised Secret — are answered from that cluster. The
+// waiting reason while the Secret is absent is the one it always was.
+func TestEnsureServiceDBCredential_PlacedCredentialRoundTripsOnTheTarget(t *testing.T) {
+	ctx := context.Background()
+	cp, target := placedServiceControlPlane("Glance", "images", "remote-a")
+
+	// A synced ExternalSecret the operator wrote to the target on an earlier pass.
+	syncedES := func() *esov1.ExternalSecret {
+		es := dbCredentialGeneratorExternalSecret(target)
+		es.Labels = remoteChildLabels(cp)
+		es.Status = esov1.ExternalSecretStatus{
+			Conditions: []esov1.ExternalSecretStatusCondition{
+				{Type: esov1.ExternalSecretReady, Status: corev1.ConditionTrue},
+			},
+		}
+		return es
+	}
+
+	t.Run("no materialised Secret yet", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := korcTestScheme(t)
+		remote := fake.NewClientBuilder().WithScheme(s).WithObjects(syncedES()).Build()
+		r := &ControlPlaneReconciler{
+			Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp.DeepCopy()).Build(),
+			Scheme:   s,
+			Resolver: &childrenResolver{children: remote},
+		}
+
+		res, halt, err := r.ensureServiceDBCredential(ctx, cp, target, true, "Glance", conditionTypeGlanceReady)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(halt).To(BeTrue())
+		g.Expect(res.RequeueAfter).To(Equal(dbCredentialsRequeueAfter))
+		g.Expect(conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady).Reason).
+			To(Equal("WaitingForGlanceDBCredential"), "an absent credential keeps the reason it always had")
+
+		// The quartet is on the target, claimed in full.
+		vds := &esgenv1alpha1.VaultDynamicSecret{}
+		g.Expect(remote.Get(ctx, types.NamespacedName{Namespace: "images", Name: target.secretName}, vds)).To(Succeed())
+		g.Expect(vds.Labels).To(Equal(remoteChildLabels(cp)))
+		g.Expect(vds.OwnerReferences).To(BeEmpty())
+	})
+
+	t.Run("engine-issued username on the target", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := korcTestScheme(t)
+		materialised := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "images", Name: target.secretName},
+			Data:       map[string][]byte{"username": []byte("v-glance-images-abc-1700000000")},
+		}
+		remote := fake.NewClientBuilder().WithScheme(s).WithObjects(syncedES(), materialised).Build()
+		r := &ControlPlaneReconciler{
+			Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp.DeepCopy()).Build(),
+			Scheme:   s,
+			Resolver: &childrenResolver{children: remote},
+		}
+
+		res, halt, err := r.ensureServiceDBCredential(ctx, cp, target, true, "Glance", conditionTypeGlanceReady)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(halt).To(BeFalse(), "an engine-issued credential on the target must release the projection")
+		g.Expect(res.IsZero()).To(BeTrue())
+	})
 }

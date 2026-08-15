@@ -683,7 +683,7 @@ creates nothing on either side.
 | File | `reconcile_infrastructure.go` |
 | Condition | `InfrastructureReady` |
 | Gate | none |
-| Projects / Owns | Managed-mode `MariaDB` (`k8s.mariadb.com`) and `Memcached` (unstructured `memcached.c5c3.io/v1beta1`) children, each named after its `clusterRef` and created in **the namespace of the service that resolves to it** (`cp.KeystoneNamespace()` / `cp.HorizonNamespace()`, the ControlPlane's own unless a `namespace` assignment places the service elsewhere) |
+| Projects / Owns | Managed-mode `MariaDB` (`k8s.mariadb.com`) and `Memcached` (unstructured `memcached.c5c3.io/v1beta1`) children, each named after its `clusterRef` and created in **the namespace of the service that resolves to it** (`cp.KeystoneNamespace()` / `cp.HorizonNamespace()`, the ControlPlane's own unless a `namespace` assignment places the service elsewhere), **on the cluster that namespace lives on** |
 | Requeue | `infraRequeueAfter` = **15s** while a managed child is not yet Ready |
 
 **Backing services follow the service.** `managedInfraInstances` adds each
@@ -697,6 +697,13 @@ it is stamped with the ownership labels and cleaned up by the finalizer instead;
 a same-namespace child keeps its controller owner reference. The dashboard's cache
 is enumerated only when the dashboard is **declared**, so a ControlPlane that
 places Keystone apart never provisions a phantom cache for an absent Horizon.
+
+A service that names a [`targetClusterRef`](../target-clusters.md) takes its
+backing services with it: the instance is created on that cluster, where the
+mariadb-operator that acts on the CR runs and where the service's own pods
+connect to it. The cluster of every enumerated instance is resolved before the
+first one is written, so an unresolvable name leaves the whole set unprovisioned
+rather than the database on one cluster and the cache nowhere.
 
 `reconcileInfrastructure` provisions the backing services the ControlPlane owns.
 That set is the instances its services actually **resolve to**, not the set of
@@ -751,6 +758,7 @@ pointer.
 | MariaDB not yet Ready | False | `WaitingForDatabase` | requeue 15s |
 | Memcached not yet Ready | False | `WaitingForCache` | requeue 15s |
 | `spec.infrastructure` unset, not External | False | `InfrastructureNotConfigured` | requeue 15s; unreachable on the admission path — fails closed for a webhook-bypassed CR |
+| A service placed an instance on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 15s; the resolver's own message, `cluster not found` for a name that was never registered. Nothing is provisioned, on either cluster |
 | All managed children Ready (or pure brownfield) | True | `InfrastructureReady` | — |
 
 > The managed MariaDB child is provisioned with a minimal-but-valid spec —
@@ -774,7 +782,7 @@ pointer.
 | File | `reconcile_esotenant.go` |
 | Condition | `ESOTenantStoreReady` |
 | Gate | none — runs after Infrastructure and before every store-consuming sub-reconciler so the per-tenant store exists before they gate on it |
-| Projects / Owns | when `spec.secretStoreRef` is omitted: an owner-referenced `ServiceAccount` (`eso-tenant-auth`), a cert-manager mTLS `Certificate` (`eso-tenant-client-tls`), and a namespaced `SecretStore` (`openbao-tenant-store`), all in `childNamespace(cp)`; when `spec.secretStoreRef` is set the sub-reconciler provisions nothing |
+| Projects / Owns | when `spec.secretStoreRef` is omitted: a `ServiceAccount` (`eso-tenant-auth`), a cert-manager mTLS `Certificate` (`eso-tenant-client-tls`), and a namespaced `SecretStore` (`openbao-tenant-store`), one trio per namespace the ControlPlane occupies, each on the cluster that namespace lives on; when `spec.secretStoreRef` is set the sub-reconciler provisions nothing |
 | Requeue | `esoTenantStoreRequeueAfter` = **10s** while the `SecretStore` is not yet Ready |
 
 `reconcileESOTenantStore` provisions the in-cluster half of the ControlPlane's
@@ -789,11 +797,18 @@ sub-reconciler provisions nothing and reports `ESOTenantStoreReady=True` with
 reason `StoreRefOverridden`, and the store-consuming sub-reconcilers gate on the
 selected store's own readiness.
 
+An ESO store and the Secrets it materialises are namespace-local and
+cluster-local, so each namespace the ControlPlane occupies gets its own trio,
+written to the cluster that namespace lives on and read back from there for the
+readiness gate. The condition is True only once every store is Ready, and it
+names the namespace of the first one that is not.
+
 | Scenario | Status | Reason |
 | --- | --- | --- |
 | `spec.secretStoreRef` set (override) | True | `StoreRefOverridden` |
-| per-tenant `SecretStore` Ready | True | `ESOTenantStoreReady` |
-| per-tenant `SecretStore` not yet Ready | False | `SecretStoreNotReady` |
+| every per-tenant `SecretStore` Ready | True | `ESOTenantStoreReady` |
+| a per-tenant `SecretStore` not yet Ready | False | `SecretStoreNotReady` |
+| a namespace's target cluster does not resolve | False | `TargetClusterUnavailable` |
 | provisioning the objects failed | False | `ProvisioningError` |
 
 ### reconcileDBCredentials
@@ -803,7 +818,7 @@ selected store's own readiness.
 | File | `reconcile_dbcredentials.go` |
 | Condition | `DBCredentialsReady` |
 | Gate | none — runs unconditionally, positioned after Infrastructure and before Keystone so the Keystone CR is never projected before the DB-credential Secret exists |
-| Projects / Owns | Managed-mode (`spec.infrastructure.database.clusterRef != nil`), effective **Dynamic** unless `credentialsMode: Static`: an owner-referenced `VaultDynamicSecret` generator, `ServiceAccount` (`keystone-db-creds`), mTLS client `Certificate`, and an `ExternalSecret` named `{controlplane.Name}-keystone-db-credentials` (`dbCredentialSecretName`) drawing from the generator, all in `childNamespace(cp)`; brownfield projects nothing |
+| Projects / Owns | Managed-mode (`spec.infrastructure.database.clusterRef != nil`), effective **Dynamic** unless `credentialsMode: Static`: a `VaultDynamicSecret` generator, `ServiceAccount` (`keystone-db-creds`), mTLS client `Certificate`, and an `ExternalSecret` named `{controlplane.Name}-keystone-db-credentials` (`dbCredentialSecretName`) drawing from the generator, all in `cp.KeystoneNamespace()` and on the cluster that namespace lives on; brownfield projects nothing |
 | Requeue | `dbCredentialsRequeueAfter` = **10s** while the ExternalSecret is not yet Ready |
 
 `reconcileDBCredentials` projects the per-ControlPlane service database
@@ -870,6 +885,16 @@ The database is **managed** when the effective `clusterRef` is set and
 `spec.database.credentialsMode`, so the Keystone operator consumes the matching
 credential shape.
 
+The credential material follows the Keystone service onto its
+[target cluster](../target-clusters.md), because the ESO that runs the generator
+and the cert-manager that issues its client certificate are the ones on that
+cluster, and the Secret they produce has to be mountable by the Keystone pods.
+The gates in front of it (the store's readiness and the ExternalSecret's) are
+read from the same cluster. `ensureServiceDBCredential`, the shared helper behind
+the Glance, Placement, and Barbican credentials, does the same for their
+namespaces and reports an unresolvable cluster on the calling service's own
+condition rather than on `DBCredentialsReady`.
+
 In **External** keystone mode the ControlPlane manages no database at all —
 neither a managed one to issue credentials for, nor a brownfield connection to
 reference — so neither OpenBao nor any secret store is consulted.
@@ -878,6 +903,7 @@ reference — so neither OpenBao nor any secret store is consulted.
 | --- | --- | --- | --- |
 | External keystone mode | True | `ExternallyManaged` | no database is managed; nothing is projected and no secret store is read |
 | Brownfield (`clusterRef == nil`) | True | `BrownfieldUserSuppliedCredential` | no ExternalSecret projected; user supplies the DB credential Secret out-of-band |
+| Keystone placed on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 10s; resolved before the store gate, so nothing is projected and no store is read. The resolver's own message |
 | Selected secret store not Ready | False | `SecretStoreNotReady` | requeue 10s; managed mode only, checked before projection so an OpenBao/ESO outage surfaces promptly. The message names the store's kind and name |
 | Dynamic generator/SA/Certificate/ExternalSecret create/update fails | False | `GeneratorError` | returns the error |
 | Static ExternalSecret create/update fails | False | `ExternalSecretError` | returns the error |
@@ -892,7 +918,7 @@ reference — so neither OpenBao nor any secret store is consulted.
 | File | `reconcile_adminpassword.go` |
 | Condition | `AdminPasswordReady` |
 | Gate | none — runs unconditionally, positioned after DBCredentials and before Keystone so the Keystone CR is never projected before the admin-password Secret exists |
-| Projects / Owns | Managed-mode (`spec.infrastructure.database.clusterRef != nil`) one owner-referenced `external-secrets.io/v1` `ExternalSecret` named `{controlplane.Name}-keystone-admin-credentials` (`adminPasswordSecretName`) in `childNamespace(cp)`; brownfield projects nothing |
+| Projects / Owns | Managed-mode (`spec.infrastructure.database.clusterRef != nil`) one `external-secrets.io/v1` `ExternalSecret` named `{controlplane.Name}-keystone-admin-credentials` (`adminPasswordSecretName`) in `cp.KeystoneNamespace()`, on the cluster that namespace lives on; brownfield projects nothing |
 | Requeue | `adminPasswordRequeueAfter` = **10s** while the ExternalSecret is not yet Ready |
 
 `reconcileAdminPassword` projects the per-ControlPlane Keystone admin password
@@ -925,6 +951,12 @@ mirrors `reconcileDBCredentials`'s wait/condition handling. The database is
   `adminPasswordExternalSecret(cp)` sets **no** owner reference; the reconciler
   applies the ExternalSecret via Server-Side Apply under the shared field manager
   (`forge-operator`), which stamps the ControlPlane controller reference for GC.
+  In a dedicated Keystone namespace, and on a
+  [target cluster](../target-clusters.md), no owner reference is possible: the
+  ExternalSecret carries the ControlPlane's ownership labels instead and the
+  finalizer-driven teardown deletes it. A placed Keystone takes the ExternalSecret
+  with it, since only the ESO on that cluster can sync it into a Secret the
+  Keystone pods can mount.
 
 The managed-mode effective admin-password ref (`effectiveAdminPasswordSecretRef`)
 points the projected Keystone child's `spec.bootstrap.adminPasswordSecretRef` at
@@ -948,6 +980,7 @@ user's Secret wakes the ControlPlane immediately.
 | --- | --- | --- | --- |
 | External keystone mode | True | `ExternallyManaged` | the admin password is read from the user-supplied `passwordSecretRef` Secret; no ExternalSecret is projected and no OpenBao bootstrap path is seeded |
 | Brownfield (`clusterRef == nil`) | True | `BrownfieldUserSuppliedCredential` | no ExternalSecret projected; user supplies the admin-password Secret out-of-band |
+| Keystone placed on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 10s; resolved before the store gate, so no ExternalSecret is projected and no store is read. The resolver's own message |
 | Selected secret store not Ready | False | `SecretStoreNotReady` | requeue 10s; managed mode only, checked before the ExternalSecret is projected. The message names the store's kind and name |
 | ExternalSecret create/update or read fails | False | `ExternalSecretError` | returns the error |
 | ExternalSecret not yet synced | False | `WaitingForAdminPasswordSecret` | requeue 10s |
@@ -1242,6 +1275,7 @@ unowned, and the finalizer sweeps it by those labels.
 | `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Glance CR is projected while Keystone is unready |
 | no `glance` service account declared | False | `ServiceAccountNotDeclared` | admission was bypassed (the defaulting webhook injects it); fails loud rather than projecting a Glance with no Keystone user |
 | `glance` service account not yet Ready | False | `WaitingForServiceAccount` | requeue 10s; deferred until its Keystone user and password are provisioned |
+| Glance placed on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 10s; the DB credential resolves its namespace's cluster before it writes anything (`ensureServiceDBCredential`). The resolver's own message |
 | DB-credential ensure fails (Dynamic generator objects or Static ExternalSecret) | False | `GlanceDBCredentialError` | returns the error (managed database only) |
 | Dynamic DB credential not yet materialised | False | `WaitingForGlanceDBCredential` | requeue 10s; no Glance CR is projected and an existing child keeps its current mode until the generator-backed ExternalSecret reports Ready **and** the Secret it targets carries an engine-issued username. The message names the `database/mariadb/creds/glance-<namespace>` path, which only exists after `setup-database-tenant.sh` has onboarded the tenant, or — on a Static→Dynamic migration, where the in-place ExternalSecret update leaves the previous Static sync's `Ready` in place over a stale Secret — the non-engine-issued username it found |
 | projected `GlanceBackend` rejected (HTTP 422 Invalid) | False | `GlanceBackendProjectionRejected` | returns the error; reconcile the `services.glance.backends` entries to a valid projection to recover |
@@ -1355,6 +1389,7 @@ labels.
 | `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Placement CR is projected while Keystone is unready |
 | no `placement` service account declared | False | `ServiceAccountNotDeclared` | admission was bypassed (the defaulting webhook injects it); fails loud rather than projecting a Placement with no Keystone user |
 | `placement` service account not yet Ready | False | `WaitingForServiceAccount` | requeue 10s; deferred until its Keystone user and password are provisioned |
+| Placement placed on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 10s; the DB credential resolves its namespace's cluster before it writes anything (`ensureServiceDBCredential`). The resolver's own message |
 | DB-credential ensure fails (Dynamic generator objects or Static ExternalSecret) | False | `PlacementDBCredentialError` | returns the error (managed database only) |
 | Dynamic DB credential not yet materialised | False | `WaitingForPlacementDBCredential` | requeue 10s; the message names the `database/mariadb/creds/placement-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant, or the non-engine-issued username it found in the target Secret |
 | Placement child not yet Ready | False | `WaitingForPlacement` | requeue 15s |
@@ -1539,6 +1574,7 @@ finalizer sweeps it by those labels.
 | `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Barbican CR is projected while Keystone is unready |
 | no `barbican` service account declared | False | `ServiceAccountNotDeclared` | no requeue; admission was bypassed (the defaulting webhook injects it), so it fails loud rather than projecting a Barbican with no Keystone user |
 | `barbican` service account not yet Ready | False | `WaitingForServiceAccount` | requeue 10s; deferred until its Keystone user and password are provisioned |
+| Barbican placed on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 10s; the DB credential resolves its namespace's cluster before it writes anything (`ensureServiceDBCredential`). The resolver's own message |
 | DB-credential ensure or read fails (Dynamic generator objects or Static ExternalSecret) | False | `BarbicanDBCredentialError` | returns the error (managed database only) |
 | Dynamic DB credential not yet materialised | False | `WaitingForBarbicanDBCredential` | requeue 10s; the message names the `database/mariadb/creds/barbican-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant, or the non-engine-issued username it found in the target Secret |
 | provisioning the dedicated OpenBao ensemble fails | False | `BarbicanOpenBaoError` | returns the error |
@@ -2037,7 +2073,7 @@ is owned by the imports.
 | --- | --- |
 | File | `reconcile_serviceaccounts.go` |
 | Condition | `ServiceAccountsReady` |
-| Gate | `AdminCredentialReady == True` **and** the store selected via `spec.secretStoreRef` (default the operator-provisioned per-tenant store) is Ready in **every distinct delivery namespace** across the declared accounts — always including the child namespace, plus each account's `targetNamespace` — with the not-ready namespace named in the condition message (`secrets.IsStoreRefReady`, per namespace) |
+| Gate | `AdminCredentialReady == True` **and** the store selected via `spec.secretStoreRef` (default the operator-provisioned per-tenant store) is Ready in **every distinct delivery namespace** across the declared accounts — always including the child namespace, plus each account's `targetNamespace` — read on the cluster each namespace lives on, with the not-ready namespace named in the condition message (`secrets.IsStoreRefReady`, per namespace). A delivery namespace whose target cluster does not resolve parks the condition on `TargetClusterUnavailable` before the first gate read, so nothing is written |
 | Requeue | `korcRequeueAfter` = **10s** while a gate is closed or an account is converging |
 
 `reconcileServiceAccounts` projects each `spec.korc.serviceAccounts` entry onto a
@@ -2097,7 +2133,12 @@ Per declared entry it, in order:
    service namespace, these carry the ControlPlane's **ownership labels** rather
    than a controller owner reference — Kubernetes forbids a cross-namespace one — so
    they route through `ensureUnownedOrOwned` (and a `CreateOrUpdate` that refuses to
-   adopt a same-named foreign object) instead of an owner-referenced apply. The
+   adopt a same-named foreign object) instead of an owner-referenced apply. When
+   that namespace is placed on a [target cluster](../target-clusters.md) the whole
+   delivery leg is written there, and the three gates behind it (the tenant store's
+   readiness, the PushSecret's, and the materialized password) are read from the
+   same cluster; the K-ORC-facing password Secret stays at home beside the `User`
+   CR that references it. The
    remote-key **namespace segment follows the delivery namespace** so the path stays
    inside that namespace's templated eso-tenant policy — the same scoping the admin
    password rides on the Keystone namespace. Both the PushSecret and the

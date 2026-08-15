@@ -16,9 +16,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -164,9 +166,24 @@ func (r *ControlPlaneReconciler) reconcileInfrastructure(ctx context.Context, cp
 	// on the consuming service) as the shared cluster is.
 	instances := r.managedInfraInstances(cp)
 
+	// A backing service is provisioned on the cluster of the service it belongs
+	// to, so each instance is written with its own namespace's children client.
+	// They are all resolved BEFORE the first ensure — the pass writes nothing at
+	// all when one of them does not resolve, rather than leaving a control plane
+	// with its database on one cluster and its cache nowhere.
+	namespaces := make([]string, 0, len(instances))
+	for _, inst := range instances {
+		namespaces = append(namespaces, inst.namespace)
+	}
+	children, cerr := r.childrenClientsFor(ctx, cp, namespaces...)
+	if cerr != nil {
+		conditionFailer(cp, conditionTypeInfrastructureReady)(commonmulticluster.TargetClusterUnavailable, cerr.Error())
+		return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
+	}
+
 	var notReady *infraInstance
 	for _, inst := range instances {
-		ready, err := inst.ensure(ctx)
+		ready, err := inst.ensure(ctx, children[inst.namespace])
 		if err != nil {
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 				Type:               conditionTypeInfrastructureReady,
@@ -231,7 +248,13 @@ type infraInstance struct {
 	// reason vocabulary is unchanged by the dedicated opt-in.
 	errorReason string
 	waitReason  string
-	ensure      func(context.Context) (bool, error)
+	// ensure provisions the instance with the client its namespace's children are
+	// written with, which reconcileInfrastructure resolves once per namespace. The
+	// enumeration below stays a pure derivation of the spec: it names the namespace
+	// each instance belongs to and leaves resolving that namespace's cluster — the
+	// one step that can fail, and that must fail before anything is written — to
+	// the caller.
+	ensure func(context.Context, client.Client) (bool, error)
 }
 
 // managedInfraInstances enumerates the managed backing-service instances of cp.
@@ -297,7 +320,9 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 			declaredAt:  declaredAt,
 			errorReason: "MariaDBError",
 			waitReason:  "WaitingForDatabase",
-			ensure:      func(ctx context.Context) (bool, error) { return r.ensureMariaDB(ctx, cp, db, namespace) },
+			ensure: func(ctx context.Context, c client.Client) (bool, error) {
+				return r.ensureMariaDB(ctx, c, cp, db, namespace)
+			},
 		})
 	}
 	addCache := func(cache *commonv1.CacheSpec, namespace, declaredAt string) {
@@ -314,7 +339,9 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 			declaredAt:  declaredAt,
 			errorReason: "MemcachedError",
 			waitReason:  "WaitingForCache",
-			ensure:      func(ctx context.Context) (bool, error) { return r.ensureMemcached(ctx, cp, cache, namespace) },
+			ensure: func(ctx context.Context, c client.Client) (bool, error) {
+				return r.ensureMemcached(ctx, c, cp, cache, namespace)
+			},
 		})
 	}
 
@@ -442,10 +469,15 @@ func barbicanCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 // set of its own.
 //
 // namespace is the namespace of the SERVICE that resolves to this instance, so a
-// service placed apart gets its backing services beside it. In the ControlPlane's
-// own namespace the child takes a controller owner reference and the GC cascade
-// reaps it; in a service namespace no owner reference is possible (Kubernetes
-// forbids a cross-namespace one), so the child is stamped with the ownership
+// service placed apart gets its backing services beside it, and c is the client
+// that namespace's children are written with — the local one, or the target
+// cluster's when the service was placed on one. The instance has to land there
+// and not at home: it is the mariadb-operator on the target cluster that has to
+// see the CR, and the service's own pods that have to reach the database it
+// brings up. In the ControlPlane's own namespace the child takes a controller
+// owner reference and the GC cascade reaps it; anywhere else no owner reference
+// is possible (Kubernetes forbids a cross-namespace one, and a target cluster
+// cannot resolve the owner's UID), so the child is stamped with the ownership
 // labels and the finalizer-driven teardown deletes it explicitly.
 //
 // It stays read-modify-write (not Server-Side Apply): the write is gated on the
@@ -453,7 +485,7 @@ func barbicanCacheDeclaredAt(cp *c5c3v1alpha1.ControlPlane) string {
 // externally-provisioned CR sharing the name is adopted read-only and never has
 // ownership claimed. That adoption-vs-projection decision reads live state, so it
 // cannot be expressed as a pure projection of cp.Spec.
-func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, db *commonv1.DatabaseSpec, namespace string) (bool, error) {
+func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, db *commonv1.DatabaseSpec, namespace string) (bool, error) {
 	key := types.NamespacedName{
 		Name:      db.ClusterRef.Name,
 		Namespace: namespace,
@@ -480,7 +512,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 	}
 
 	mariadb := &mariadbv1alpha1.MariaDB{}
-	err := r.Get(ctx, key, mariadb)
+	err := c.Get(ctx, key, mariadb)
 	switch {
 	case apierrors.IsNotFound(err):
 		// Create fresh with the projected, spec-derived topology.
@@ -493,10 +525,10 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 		mariadb.Spec.Replicas = replicas
 		mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: galeraEnabled}
 		mariadb.Spec.Storage = mariadbv1alpha1.Storage{Size: &size}
-		if serr := claimChildOwnership(r.Client, cp, mariadb, r.Scheme); serr != nil {
+		if serr := claimChildOwnership(c, cp, mariadb, r.Scheme); serr != nil {
 			return false, fmt.Errorf("claiming ownership of MariaDB %q: %w", key.Name, serr)
 		}
-		if cerr := r.Create(ctx, mariadb); cerr != nil {
+		if cerr := c.Create(ctx, mariadb); cerr != nil {
 			return false, fmt.Errorf("creating MariaDB %q: %w", key.Name, cerr)
 		}
 	case err != nil:
@@ -529,7 +561,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 			if mariadb.Spec.Replicas != replicas || currentGalera != galeraEnabled {
 				mariadb.Spec.Replicas = replicas
 				mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: galeraEnabled}
-				if uerr := r.Update(ctx, mariadb); uerr != nil {
+				if uerr := c.Update(ctx, mariadb); uerr != nil {
 					return false, fmt.Errorf("updating owned MariaDB %q topology: %w", key.Name, uerr)
 				}
 			}
@@ -550,14 +582,14 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 // owner references to project only onto an owned CR and adopt an externally
 // provisioned one read-only (never claiming GC ownership), and it is
 // unstructured, which apply.EnsureObject's typed-struct path does not cover.
-func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, cache *commonv1.CacheSpec, namespace string) (bool, error) {
+func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, cache *commonv1.CacheSpec, namespace string) (bool, error) {
 	key := types.NamespacedName{
 		Name:      cache.ClusterRef.Name,
 		Namespace: namespace,
 	}
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(memcachedGVK)
-	err := r.Get(ctx, key, u)
+	err := c.Get(ctx, key, u)
 	switch {
 	case apierrors.IsNotFound(err):
 		u.SetName(key.Name)
@@ -566,10 +598,10 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1
 		if serr := unstructured.SetNestedField(u.Object, int64(cache.Replicas), "spec", "replicas"); serr != nil {
 			return false, fmt.Errorf("setting spec.replicas: %w", serr)
 		}
-		if serr := claimChildOwnership(r.Client, cp, u, r.Scheme); serr != nil {
+		if serr := claimChildOwnership(c, cp, u, r.Scheme); serr != nil {
 			return false, fmt.Errorf("claiming ownership of Memcached %q: %w", key.Name, serr)
 		}
-		if cerr := r.Create(ctx, u); cerr != nil {
+		if cerr := c.Create(ctx, u); cerr != nil {
 			return false, fmt.Errorf("creating Memcached %q: %w", key.Name, cerr)
 		}
 	case err != nil:
@@ -592,7 +624,7 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1
 				if serr := unstructured.SetNestedField(u.Object, desired, "spec", "replicas"); serr != nil {
 					return false, fmt.Errorf("setting Memcached %q spec.replicas: %w", key.Name, serr)
 				}
-				if uerr := r.Update(ctx, u); uerr != nil {
+				if uerr := c.Update(ctx, u); uerr != nil {
 					return false, fmt.Errorf("updating owned Memcached %q replicas: %w", key.Name, uerr)
 				}
 			}

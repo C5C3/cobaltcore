@@ -139,6 +139,22 @@ func (f fakeTargetCluster) GetAPIReader() client.Reader {
 	return f.c
 }
 
+// remoteChildLabels is the label set every child written to a TARGET cluster has
+// to end up with: the owner triple the shared teardown selects on, plus the two
+// cross-namespace labels this operator's watch legs map an event back to its
+// ControlPlane by. A remote child carries no owner reference, so its labels are
+// the whole of its identity — which is why the write sites assert against the
+// full set rather than a key or two of it.
+func remoteChildLabels(cp *c5c3v1alpha1.ControlPlane) map[string]string {
+	return map[string]string{
+		commonmulticluster.OwnerKindLabel:      "ControlPlane",
+		commonmulticluster.OwnerNameLabel:      cp.Name,
+		commonmulticluster.OwnerNamespaceLabel: cp.Namespace,
+		controlPlaneNameLabel:                  cp.Name,
+		controlPlaneNamespaceLabel:             cp.Namespace,
+	}
+}
+
 // localWriter is a client on the management cluster, for the claim and adoption
 // helpers a test calls outside a reconciler. They read nothing off it beyond
 // whether it is a resolved target-cluster client, which a bare fake is not.
@@ -900,6 +916,49 @@ func TestRefuseForeignAdoption_UnresolvableKindStillRefuses(t *testing.T) {
 
 	g.Expect(err).To(HaveOccurred(), "an unresolvable kind must not turn a refusal into an adoption")
 	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt pre-existing"))
+}
+
+// TestEnsureUnownedOrOwned_ClaimsARemoteChildWithTheOwnerLabels pins the claim on
+// the far side of an SSA projection. A cross-namespace child is stamped with the
+// two ControlPlane labels at home, which is all the local teardown needs — but on
+// a target cluster the shared teardown selects on the owner-* triple, and a child
+// carrying only this operator's own pair would be invisible to it and outlive
+// every ControlPlane that could delete it. Both label sets have to survive.
+func TestEnsureUnownedOrOwned_ClaimsARemoteChildWithTheOwnerLabels(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	if err := esov1.AddToScheme(s); err != nil {
+		t.Fatalf("adding external-secrets scheme: %v", err)
+	}
+	cp := placedControlPlane("remote-a")
+
+	target := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: target},
+	}
+	children, err := r.childrenClientFor(ctx, cp, "identity")
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(r.ensureUnownedOrOwned(ctx, children, cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "identity", Name: "cp-admin-password",
+	}})).To(Succeed())
+
+	remote := &esov1.ExternalSecret{}
+	g.Expect(target.Get(ctx, types.NamespacedName{Namespace: "identity", Name: "cp-admin-password"}, remote)).To(Succeed())
+	g.Expect(remote.Labels).To(Equal(remoteChildLabels(cp)))
+	g.Expect(remote.OwnerReferences).To(BeEmpty(),
+		"an owner reference on the target cluster names a UID that cluster cannot resolve")
+
+	// The local cross-namespace claim is unchanged: the two labels and nothing more.
+	g.Expect(r.ensureUnownedOrOwned(ctx, r.Client, cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+		Namespace: "identity", Name: "cp-db-credentials",
+	}})).To(Succeed())
+	local := &esov1.ExternalSecret{}
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Namespace: "identity", Name: "cp-db-credentials"}, local)).To(Succeed())
+	g.Expect(local.Labels).To(Equal(controlPlaneChildLabels(cp)))
 }
 
 // countingReader is an uncached reader that records how many Gets were routed

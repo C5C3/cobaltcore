@@ -26,8 +26,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -1096,4 +1099,127 @@ func TestReconcileServiceAccounts_PrunesDeliveryObjectsInTargetNamespace(t *test
 		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
 			"undeclared delivery object %T in the target namespace must be pruned", obj)
 	}
+}
+
+// --- per-service target clusters: the delivery leg follows the consumer ---
+
+// saPlacedControlPlane returns saTargetControlPlane's CP with the delivery
+// namespace placed on a target cluster, so the account's credentials are
+// delivered on the cluster the consuming service runs on.
+func saPlacedControlPlane(targetCluster string) (*c5c3v1alpha1.ControlPlane, string) {
+	cp, targetNS := saTargetControlPlane()
+	cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetCluster}
+	return cp, targetNS
+}
+
+// TestReconcileServiceAccounts_PlacedDeliveryLandsOnTheTarget drives a converged
+// account whose delivery namespace is placed on a target cluster. The publish leg
+// lands there in full — and so do the three gates behind it: the tenant store, the
+// PushSecret's Ready status, and the materialized Secret the password is compared
+// against are all read from that cluster, so the account cannot report Ready
+// unless every one of them was answered there. The K-ORC-facing password Secret
+// stays at home, where the User CR that references it lives.
+func TestReconcileServiceAccounts_PlacedDeliveryLandsOnTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp, targetNS := saPlacedControlPlane("remote-a")
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+
+	// The already-synced PushSecret and the materialized consumer Secret exist on
+	// the TARGET, beside the tenant store that delivers them.
+	push := serviceAccountPushSecret(cp, sa)
+	push.Labels = remoteChildLabels(cp)
+	push.Status.Conditions = []esov1alpha1.PushSecretStatusCondition{
+		{Type: esov1alpha1.PushSecretReady, Status: corev1.ConditionTrue},
+	}
+	push.Status.SyncedResourceVersion = testPushSyncedRV
+	materialized := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: targetNS},
+		Data:       map[string][]byte{serviceAccountPasswordKey: []byte("current-pw")},
+	}
+	remote := fake.NewClientBuilder().WithScheme(s).WithObjects(
+		readyTenantSecretStore(esoTenantStoreName, targetNS, "", ""), push, materialized).Build()
+
+	home := append(saUserProjectAppliedV1(cp, sa), cp, readyClusterSecretStore(), readyTenantStoreFor(cp))
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(home...).Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(20),
+		Resolver: &childrenResolver{children: remote},
+	}
+
+	_, err := r.reconcileServiceAccounts(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeServiceAccountsReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountsProvisioned))
+
+	// The whole delivery leg is on the target, claimed by its labels alone.
+	src := &corev1.Secret{}
+	g.Expect(remote.Get(ctx, types.NamespacedName{
+		Name: serviceAccountSourceSecretName(cp, sa), Namespace: targetNS,
+	}, src)).To(Succeed())
+	gotPush := &esov1alpha1.PushSecret{}
+	g.Expect(remote.Get(ctx, types.NamespacedName{
+		Name: serviceAccountPushSecretName(cp, sa), Namespace: targetNS,
+	}, gotPush)).To(Succeed())
+	es := &esov1.ExternalSecret{}
+	g.Expect(remote.Get(ctx, types.NamespacedName{
+		Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: targetNS,
+	}, es)).To(Succeed())
+	for _, obj := range []client.Object{src, gotPush, es} {
+		g.Expect(obj.GetLabels()).To(Equal(remoteChildLabels(cp)), "%T must carry the full remote claim", obj)
+		g.Expect(obj.GetOwnerReferences()).To(BeEmpty(),
+			"%T must carry no owner reference on the target cluster", obj)
+	}
+
+	// The K-ORC-facing password Secret stays at home, owner-referenced.
+	pw := &corev1.Secret{}
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+		Name: serviceAccountPasswordSecretName(cp, sa, 1), Namespace: childNamespace(cp),
+	}, pw)).To(Succeed(), "the password the managed User references must stay beside that User")
+	g.Expect(remote.Get(ctx, types.NamespacedName{
+		Name: serviceAccountPasswordSecretName(cp, sa, 1), Namespace: childNamespace(cp),
+	}, &corev1.Secret{})).NotTo(Succeed(), "the K-ORC-facing password must not be copied to the target cluster")
+
+	// And no delivery object is left behind at home.
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+		Name: serviceAccountSourceSecretName(cp, sa), Namespace: targetNS,
+	}, &corev1.Secret{})).NotTo(Succeed())
+}
+
+// TestReconcileServiceAccounts_UnresolvableTargetPublishesNothing covers the
+// cluster that does not resolve. The pass stops before the store gate, so neither
+// the delivery leg on the target nor the K-ORC children at home are written.
+func TestReconcileServiceAccounts_UnresolvableTargetPublishesNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp, targetNS := saPlacedControlPlane("remote-a")
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+
+	remote := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).
+			WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(20),
+		Resolver: &childrenResolver{children: remote, err: mcruntime.ErrClusterNotFound},
+	}
+
+	res, err := r.reconcileServiceAccounts(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred(), "an unregistered cluster is a state to wait out, not a reconcile failure")
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeServiceAccountsReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+
+	_, found := getUserByName(t, r.Client, serviceAccountUserRef(cp, sa), childNamespace(cp))
+	g.Expect(found).To(BeFalse(), "the pass must stop before it projects any K-ORC child")
+	g.Expect(remote.Get(ctx, types.NamespacedName{
+		Name: serviceAccountSourceSecretName(cp, sa), Namespace: targetNS,
+	}, &corev1.Secret{})).NotTo(Succeed())
 }

@@ -21,9 +21,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -451,4 +454,122 @@ func TestEffectiveAdminPasswordSecretNamespace(t *testing.T) {
 		},
 	}
 	g.Expect(effectiveAdminPasswordSecretNamespace(external)).To(Equal("openstack"))
+}
+
+// --- per-service target clusters: the admin password follows Keystone ---
+
+// placedAdminPwControlPlane places Keystone — and with it the admin-password
+// ExternalSecret materialised beside it — in a namespace of its own on a target
+// cluster.
+func placedAdminPwControlPlane(targetCluster string) *c5c3v1alpha1.ControlPlane {
+	cp := adminPwManagedControlPlane()
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "identity",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			},
+			TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: targetCluster},
+		},
+	}
+	return cp
+}
+
+// TestReconcileAdminPassword_PlacedExternalSecretLandsOnTheTarget verifies the
+// ExternalSecret is applied to the cluster the Keystone child was placed on: only
+// the ESO there can sync it, and only a Secret on that cluster can be mounted by
+// the Keystone pods. The store gate in front of it is answered from the same
+// cluster, where that namespace's tenant store lives.
+func TestReconcileAdminPassword_PlacedExternalSecretLandsOnTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp := placedAdminPwControlPlane("remote-a")
+
+	remote := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(readyTenantSecretStore(esoTenantStoreName, "identity", "", "")).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote},
+	}
+
+	res, err := r.reconcileAdminPassword(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(adminPasswordRequeueAfter), "ESO has not synced the credential yet")
+
+	es := &esov1.ExternalSecret{}
+	g.Expect(remote.Get(ctx, types.NamespacedName{
+		Namespace: "identity", Name: adminPasswordSecretName(cp),
+	}, es)).To(Succeed(), "the admin password must be materialised on the Keystone child's cluster")
+	g.Expect(es.Labels).To(Equal(remoteChildLabels(cp)))
+	g.Expect(es.OwnerReferences).To(BeEmpty(),
+		"an owner reference on the target cluster names a UID that cluster cannot resolve")
+
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+		Namespace: "identity", Name: adminPasswordSecretName(cp),
+	}, &esov1.ExternalSecret{})).NotTo(Succeed(), "nothing may be left behind at home")
+}
+
+// TestReconcileAdminPassword_ReadyReadsTheExternalSecretFromTheTarget verifies the
+// wait reads the ExternalSecret from the cluster it was applied to: it exists only
+// there, so a wait still reading at home would park the condition on
+// WaitingForAdminPasswordSecret forever.
+func TestReconcileAdminPassword_ReadyReadsTheExternalSecretFromTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp := placedAdminPwControlPlane("remote-a")
+
+	// A synced ExternalSecret the operator wrote there on an earlier pass, so it
+	// carries the remote claim and is not refused as a foreign object.
+	synced := readyAdminPwES(cp)
+	synced.Labels = remoteChildLabels(cp)
+	remote := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(readyTenantSecretStore(esoTenantStoreName, "identity", "", ""), synced).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote},
+	}
+
+	res, err := r.reconcileAdminPassword(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminPasswordReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("AdminPasswordReady"))
+}
+
+// TestReconcileAdminPassword_UnresolvableTargetProjectsNothing covers the cluster
+// that does not resolve: the pass parks on the shared reason before the store gate
+// runs, and no ExternalSecret is written on either cluster.
+func TestReconcileAdminPassword_UnresolvableTargetProjectsNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp := placedAdminPwControlPlane("remote-a")
+
+	remote := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote, err: mcruntime.ErrClusterNotFound},
+	}
+
+	res, err := r.reconcileAdminPassword(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred(), "an unregistered cluster is a state to wait out, not a reconcile failure")
+	g.Expect(res.RequeueAfter).To(Equal(adminPasswordRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeAdminPasswordReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+
+	for name, c := range map[string]client.Client{"management": r.Client, "target": remote} {
+		var externalSecrets esov1.ExternalSecretList
+		g.Expect(c.List(ctx, &externalSecrets)).To(Succeed())
+		g.Expect(externalSecrets.Items).To(BeEmpty(), "no ExternalSecret may be projected on the %s cluster", name)
+	}
 }

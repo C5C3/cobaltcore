@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
@@ -482,6 +483,17 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 		return ctrl.Result{}, nil
 	}
 
+	// Every object below is written into the KEYSTONE service namespace and every
+	// gate is read from it, so they all ride that namespace's cluster: the ESO and
+	// cert-manager that act on them run beside the Keystone child, wherever it was
+	// placed. Resolving before the store gate keeps a cluster that does not resolve
+	// from writing anything.
+	children, err := r.childrenClientFor(ctx, cp, cp.KeystoneNamespace())
+	if err != nil {
+		conditionFailer(cp, conditionTypeDBCredentialsReady)(commonmulticluster.TargetClusterUnavailable, err.Error())
+		return ctrl.Result{RequeueAfter: dbCredentialsRequeueAfter}, nil
+	}
+
 	// Check the selected secret store first so an ESO/OpenBao outage surfaces as
 	// DBCredentialsReady=False even while a per-ExternalSecret cache still reports
 	// Ready=True from its last successful sync (mirrors reconcile_secrets.go in
@@ -490,7 +502,7 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 	// namespaced store is resolved in the KEYSTONE service namespace, where the
 	// credential Secret is materialised and that namespace's own tenant store lives.
 	storeRef := effectiveControlPlaneStoreRef(cp)
-	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, cp.KeystoneNamespace())
+	storeReady, err := secrets.IsStoreRefReady(ctx, children, storeRef, cp.KeystoneNamespace())
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -509,7 +521,7 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 
 	target := keystoneDBCredentialTarget(cp)
 	if dbCredentialsDynamicEnabled(cp) {
-		if err := r.ensureDynamicDBCredentialObjects(ctx, cp, target); err != nil {
+		if err := r.ensureDynamicDBCredentialObjects(ctx, children, cp, target); err != nil {
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 				Type:               conditionTypeDBCredentialsReady,
 				Status:             metav1.ConditionFalse,
@@ -526,7 +538,7 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 		// once that path has been seeded out-of-band — dbCredentialNotReadyMessage
 		// says so in the condition while it has not.
 		r.deleteDynamicDBCredentialObjects(ctx, cp, target)
-		if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, dbCredentialStaticExternalSecret(target)); err != nil {
+		if err := r.ensureUnownedOrOwned(ctx, children, cp, dbCredentialStaticExternalSecret(target)); err != nil {
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 				Type:               conditionTypeDBCredentialsReady,
 				Status:             metav1.ConditionFalse,
@@ -538,7 +550,7 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 		}
 	}
 
-	return r.waitDBCredentialExternalSecret(ctx, cp)
+	return r.waitDBCredentialExternalSecret(ctx, children, cp)
 }
 
 // ensureServiceDBCredential projects the DB-credential objects of one
@@ -577,16 +589,29 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 // Keystone reaches the same outcome through reconcileDBCredentials, whose wait
 // halts the whole pipeline before these sub-reconcilers can run; they have no
 // equivalent upstream gate because their credentials are keystone-independent.
+//
+// The objects and the gates behind them ride the cluster of the target's own
+// namespace, which is the service's: a service placed on a target cluster needs
+// its credential material there, beside the child that consumes it. A cluster
+// that does not resolve halts the caller on ITS condition — conditionType, the
+// one an operator reads that service's state from — rather than on a condition
+// shared with Keystone's own credential concern.
 func (r *ControlPlaneReconciler) ensureServiceDBCredential(ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
 	t dbCredentialTarget, dynamic bool, service, conditionType string,
 ) (result ctrl.Result, halt bool, err error) {
 	logger := log.FromContext(ctx)
 
+	children, err := r.childrenClientFor(ctx, cp, t.namespace)
+	if err != nil {
+		conditionFailer(cp, conditionType)(commonmulticluster.TargetClusterUnavailable, err.Error())
+		return ctrl.Result{RequeueAfter: dbCredentialsRequeueAfter}, true, nil
+	}
+
 	if dynamic {
-		err = r.ensureDynamicDBCredentialObjects(ctx, cp, t)
+		err = r.ensureDynamicDBCredentialObjects(ctx, children, cp, t)
 	} else {
 		r.deleteDynamicDBCredentialObjects(ctx, cp, t)
-		err = r.ensureUnownedOrOwned(ctx, r.Client, cp, dbCredentialStaticExternalSecret(t))
+		err = r.ensureUnownedOrOwned(ctx, children, cp, dbCredentialStaticExternalSecret(t))
 	}
 	if err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
@@ -602,7 +627,7 @@ func (r *ControlPlaneReconciler) ensureServiceDBCredential(ctx context.Context, 
 		return ctrl.Result{}, false, nil
 	}
 
-	exists, ready, err := secrets.WaitForExternalSecret(ctx, r.Client,
+	exists, ready, err := secrets.WaitForExternalSecret(ctx, children,
 		types.NamespacedName{Namespace: t.namespace, Name: t.secretName})
 	if err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
@@ -644,7 +669,7 @@ func (r *ControlPlaneReconciler) ensureServiceDBCredential(ctx context.Context, 
 	// engine-issued username makes the operator hold the flip until the generator's
 	// first sync actually lands, so that guide step is a shortcut rather than the
 	// only thing standing between a migration and an outage.
-	username, engineIssued, err := r.dbCredentialEngineIssuedUsername(ctx, t)
+	username, engineIssued, err := r.dbCredentialEngineIssuedUsername(ctx, children, t)
 	if err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionType,
@@ -683,10 +708,16 @@ func (r *ControlPlaneReconciler) ensureServiceDBCredential(ctx context.Context, 
 // makes the auth identity and TLS material exist before the generator that
 // references them. In the ControlPlane's own namespace they are owner-referenced;
 // in a service namespace they carry the ownership labels instead.
-func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, t dbCredentialTarget) error {
+//
+// c is the client that namespace's children are written with, so the quartet
+// lands on the cluster whose ESO has to run the generator and whose cert-manager
+// has to issue its client certificate. The OpenBao connection behind them is
+// still read at home: it describes one OpenBao every tenant store copies, and
+// the shared cluster store that carries it is a management-cluster object.
+func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, t dbCredentialTarget) error {
 	server, mountPath := r.openBaoConnection(ctx, cp, t.storeRef)
 
-	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, dbCredentialServiceAccount(t)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, c, cp, dbCredentialServiceAccount(t)); err != nil {
 		return fmt.Errorf("ensuring %sDB credential ServiceAccount: %w", t.prefix(), err)
 	}
 
@@ -698,21 +729,21 @@ func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Co
 	live.SetGroupVersionKind(certificateGVK)
 	live.SetName(t.certName)
 	live.SetNamespace(t.namespace)
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
-		if err := refuseForeignAdoption(r.Client, cp, live, r.Scheme); err != nil {
+	if _, err := controllerutil.CreateOrUpdate(ctx, c, live, func() error {
+		if err := refuseForeignAdoption(c, cp, live, r.Scheme); err != nil {
 			return err
 		}
 		applyDBCredentialCertificateSpec(live, t.certName, t.namespace)
-		return claimChildOwnership(r.Client, cp, live, r.Scheme)
+		return claimChildOwnership(c, cp, live, r.Scheme)
 	}); err != nil {
 		return fmt.Errorf("ensuring %sDB credential Certificate: %w", t.prefix(), err)
 	}
 
-	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, dbCredentialVaultDynamicSecret(t, server, mountPath)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, c, cp, dbCredentialVaultDynamicSecret(t, server, mountPath)); err != nil {
 		return fmt.Errorf("ensuring %sVaultDynamicSecret generator: %w", t.prefix(), err)
 	}
 
-	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, dbCredentialGeneratorExternalSecret(t)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, c, cp, dbCredentialGeneratorExternalSecret(t)); err != nil {
 		return fmt.Errorf("ensuring %sDB credential ExternalSecret: %w", t.prefix(), err)
 	}
 	return nil
@@ -732,8 +763,22 @@ func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Co
 // best-effort: an unreadable or undeletable object is logged rather than blocking
 // the Static reconcile of a superseded object, and an absent CRD
 // (meta.IsNoMatchError) reads as nothing-to-clean.
+//
+// It resolves the target namespace's cluster itself rather than taking a client,
+// because it is called on paths that have no condition to park: the orphan sweep
+// of an undeclared service tears the generator down whatever else is wrong. A
+// cluster that does not resolve is logged like an unreadable object and the
+// sweep is left for a later pass — the objects it would delete are unreachable
+// either way.
 func (r *ControlPlaneReconciler) deleteDynamicDBCredentialObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, t dbCredentialTarget) {
 	logger := log.FromContext(ctx)
+
+	c, err := r.childrenClientFor(ctx, cp, t.namespace)
+	if err != nil {
+		logger.V(1).Info(fmt.Sprintf("best-effort delete of the dynamic %sDB credential objects could not resolve "+
+			"their cluster", t.prefix()), "namespace", t.namespace, "error", err.Error())
+		return
+	}
 
 	cert := &unstructured.Unstructured{}
 	cert.SetGroupVersionKind(certificateGVK)
@@ -747,7 +792,7 @@ func (r *ControlPlaneReconciler) deleteDynamicDBCredentialObjects(ctx context.Co
 	}
 	for _, obj := range objs {
 		key := client.ObjectKeyFromObject(obj)
-		switch err := r.Get(ctx, key, obj); {
+		switch err := c.Get(ctx, key, obj); {
 		case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
 			continue
 		case err != nil:
@@ -758,7 +803,7 @@ func (r *ControlPlaneReconciler) deleteDynamicDBCredentialObjects(ctx context.Co
 		if !isControlPlaneChild(obj, cp) {
 			continue
 		}
-		if err := client.IgnoreNotFound(r.Delete(ctx, obj)); err != nil {
+		if err := client.IgnoreNotFound(c.Delete(ctx, obj)); err != nil {
 			logger.V(1).Info(fmt.Sprintf("best-effort delete of dynamic %sDB credential object failed", t.prefix()),
 				"object", key, "error", err.Error())
 		}
@@ -779,10 +824,12 @@ func (r *ControlPlaneReconciler) deleteDynamicDBCredentialObjects(ctx context.Co
 //
 // A missing Secret reads as "not engine-issued yet", not as an error: it is the
 // expected state between deleting the stale Secret and ESO re-materialising it
-// from the generator. Only an unexpected client failure returns an error.
-func (r *ControlPlaneReconciler) dbCredentialEngineIssuedUsername(ctx context.Context, t dbCredentialTarget) (string, bool, error) {
+// from the generator. Only an unexpected client failure returns an error. The
+// Secret is read through c, the client its namespace's children are written
+// with, because that is the cluster ESO materialised it on.
+func (r *ControlPlaneReconciler) dbCredentialEngineIssuedUsername(ctx context.Context, c client.Client, t dbCredentialTarget) (string, bool, error) {
 	secret := &corev1.Secret{}
-	if err := r.Get(ctx, types.NamespacedName{Namespace: t.namespace, Name: t.secretName}, secret); err != nil {
+	if err := c.Get(ctx, types.NamespacedName{Namespace: t.namespace, Name: t.secretName}, secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return "", false, nil
 		}
@@ -836,11 +883,13 @@ func (r *ControlPlaneReconciler) openBaoConnection(ctx context.Context, cp *c5c3
 
 // waitDBCredentialExternalSecret mirrors the per-CP DB-credential ExternalSecret's
 // Ready status into DBCredentialsReady, requeuing while ESO has not yet synced.
-// Shared by the Dynamic and Static projection branches.
-func (r *ControlPlaneReconciler) waitDBCredentialExternalSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
+// Shared by the Dynamic and Static projection branches. c is the client the
+// Keystone namespace's children are written with, so the wait reads the
+// ExternalSecret from the cluster it was just applied to.
+func (r *ControlPlaneReconciler) waitDBCredentialExternalSecret(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	exists, ready, err := secrets.WaitForExternalSecret(ctx, r.Client,
+	exists, ready, err := secrets.WaitForExternalSecret(ctx, c,
 		types.NamespacedName{Namespace: cp.KeystoneNamespace(), Name: dbCredentialSecretName(cp)})
 	if err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
