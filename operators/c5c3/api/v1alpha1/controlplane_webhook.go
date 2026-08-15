@@ -1617,6 +1617,14 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 			}
 		}
 	} else {
+		// The placed Keystone's own CA bundle takes the same key default as the
+		// External-mode one above, for the same reason: the shared SecretRefSpec
+		// carries no c5c3-specific marker, so the default is webhook-only.
+		if ks := obj.Spec.Services.Keystone; ks != nil &&
+			ks.CABundleSecretRef != nil && ks.CABundleSecretRef.Key == "" {
+			ks.CABundleSecretRef.Key = DefaultCABundleSecretKey
+		}
+
 		// Managed mode (or unset keystone): well-known infrastructure defaults so a
 		// minimal managed-mode CR can omit spec.infrastructure entirely. The
 		// mode-neutral leaves (database name, secretRef.name, cache backend) are
@@ -2110,6 +2118,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validateDedicatedBackingServices(cp)...)
 	allErrs = append(allErrs, validateServiceCredentialsModeOverrides(cp)...)
 	allErrs = append(allErrs, validateServiceNamespaces(cp)...)
+	allErrs = append(allErrs, validateServiceTargetClusters(cp)...)
 
 	return allErrs
 }
@@ -2203,6 +2212,261 @@ func validateServiceNamespaces(cp *ControlPlane) field.ErrorList {
 			)))
 		}
 		lifecycles[a.ns.Name] = a.ns.Lifecycle
+	}
+
+	return allErrs
+}
+
+// serviceTargetClusterAssignment pairs one service's declared block with the
+// field path it lives at and the facts the placement rules read off that block:
+// the target cluster it names, the namespace it declares, and whether it names
+// an address reachable from outside the cluster it runs on. It mirrors
+// serviceNamespaceAssignment, so the validator walks every service uniformly and
+// a new service extends the walk rather than reshaping it.
+type serviceTargetClusterAssignment struct {
+	path *field.Path
+	ref  *commonv1.TargetClusterRefSpec
+	ns   *ServiceNamespaceSpec
+	// catalog marks the services the ControlPlane advertises in the Keystone
+	// service catalog. Horizon is the one declared service outside it: the
+	// dashboard is reached by a browser, not looked up by an OpenStack client.
+	catalog bool
+	// published reports whether the block names an externally routable address,
+	// either a publicEndpoint or the gateway a public endpoint is derived from.
+	published bool
+}
+
+// sameTargetClusterName reports whether a and b resolve to the same cluster, with
+// nil — no ref, so the local cluster — equal to nil. A ref carries nothing but a
+// name, so the comparison is on the name alone.
+func sameTargetClusterName(a, b *commonv1.TargetClusterRefSpec) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Name == b.Name
+}
+
+// declaredServiceTargetClusters returns one assignment per DECLARED service
+// block, in a stable order. Unlike declaredServiceNamespaces it also returns the
+// blocks that carry no ref: the co-location rule compares the services of one
+// namespace against each other, and one placed next to one unplaced is exactly
+// the disagreement it rejects.
+func declaredServiceTargetClusters(cp *ControlPlane) []serviceTargetClusterAssignment {
+	svcPath := field.NewPath("spec", "services")
+	var out []serviceTargetClusterAssignment
+	if ks := cp.Spec.Services.Keystone; ks != nil {
+		out = append(out, serviceTargetClusterAssignment{
+			path: svcPath.Child("keystone"), ref: ks.TargetClusterRef, ns: ks.Namespace,
+			catalog: true, published: ks.PublicEndpoint != "" || ks.Gateway != nil,
+		})
+	}
+	if hz := cp.Spec.Services.Horizon; hz != nil {
+		out = append(out, serviceTargetClusterAssignment{
+			path: svcPath.Child("horizon"), ref: hz.TargetClusterRef, ns: hz.Namespace,
+			catalog: false, published: hz.PublicEndpoint != "" || hz.Gateway != nil,
+		})
+	}
+	if gl := cp.Spec.Services.Glance; gl != nil {
+		out = append(out, serviceTargetClusterAssignment{
+			path: svcPath.Child("glance"), ref: gl.TargetClusterRef, ns: gl.Namespace,
+			catalog: true, published: gl.PublicEndpoint != "" || gl.Gateway != nil,
+		})
+	}
+	if pl := cp.Spec.Services.Placement; pl != nil {
+		out = append(out, serviceTargetClusterAssignment{
+			path: svcPath.Child("placement"), ref: pl.TargetClusterRef, ns: pl.Namespace,
+			catalog: true, published: pl.PublicEndpoint != "" || pl.Gateway != nil,
+		})
+	}
+	if bn := cp.Spec.Services.Barbican; bn != nil {
+		out = append(out, serviceTargetClusterAssignment{
+			path: svcPath.Child("barbican"), ref: bn.TargetClusterRef, ns: bn.Namespace,
+			catalog: true, published: bn.PublicEndpoint != "" || bn.Gateway != nil,
+		})
+	}
+	return out
+}
+
+// validateServiceTargetClusters enforces the rules on the per-service
+// target-cluster assignments. It mirrors the name-only shape of the ref as
+// defense-in-depth for callers that bypass CRD schema admission
+// (validation.TargetClusterRef) and adds the six rules the CRD schema cannot
+// express:
+//
+//   - A placed service must declare a namespace of its OWN. Every namespace maps
+//     to exactly one cluster, and the ControlPlane's own namespace stays on the
+//     local cluster the operator runs on, so a service placed elsewhere without a
+//     namespace block would have its database, its tenant store, and its
+//     credential material provisioned in a namespace that lives on another
+//     cluster than the ref names.
+//   - A placed CATALOG service must advertise a publicEndpoint or a gateway. What
+//     the ControlPlane registers for an unpublished service is its in-cluster
+//     Service DNS name, which resolves nowhere outside the cluster the service
+//     runs on, so every client that reads the catalog from anywhere else gets an
+//     address it cannot connect to. Horizon is exempt: it is not in the catalog.
+//   - Two services declaring the SAME namespace must name the SAME cluster, and a
+//     placed service must not share its namespace with an unplaced one. This is
+//     the co-location rule of validateServiceNamespaces one level out: a namespace
+//     exists on exactly one cluster, so the services in it cannot disagree on which.
+//   - Keystone must advertise a publicEndpoint or a gateway as soon as ANY other
+//     service is placed away from it, whether or not Keystone itself carries a
+//     ref. Every dependent service validates its tokens against Keystone, and the
+//     rule above only reaches the ones carrying a ref of their own.
+//   - Keystone's publicEndpoint must use https as soon as ANY service is placed
+//     away from it, Keystone itself included. That is the condition under which
+//     the URL becomes the auth_url the operator renders the admin password and
+//     every service-account password next to, and under which those credentials
+//     cross a cluster boundary to reach it — whichever of the two ends moved.
+//   - Keystone's caBundleSecretRef is forbidden as soon as a service does NOT
+//     share Keystone's cluster. The bundle reaches K-ORC alone: it is projected
+//     into the two K-ORC credentials Secrets, and no other consumer of that same
+//     https URL has anywhere to put a trust anchor — a service's projected
+//     spec.keystoneEndpoint renders into [keystone_authtoken], which carries no
+//     cafile option. Admitting the pair would report trust the data plane cannot
+//     enforce, and leave the service failing every token validation with no field
+//     on any CR in the tree to fix it with.
+//
+// Whether the named cluster is REGISTERED is deliberately not checked. A cluster
+// registration is a runtime fact that can appear and disappear long after the
+// edit, so an unresolvable ref surfaces per CR as a condition rather than
+// rejecting a ControlPlane the operator can still converge on later.
+//
+// The cross-field rule that a ref is forbidden in External mode lives in
+// validateKeystoneMode with the rest of the External-mode matrix.
+func validateServiceTargetClusters(cp *ControlPlane) field.ErrorList {
+	// External mode deploys nothing to place: validateKeystoneMode forbids the ref
+	// there, along with the namespace and the publicEndpoint this validator would
+	// otherwise demand, and every other service block outright. Running the
+	// prerequisites on top of that matrix would answer a forbidden publicEndpoint
+	// with a requirement for one.
+	if cp.IsExternalKeystone() {
+		return nil
+	}
+
+	var allErrs field.ErrorList
+
+	ksPath := field.NewPath("spec", "services", "keystone")
+	ksRef := cp.KeystoneTargetClusterRef()
+	// placedAwayFromKeystone: a service carries a ref while Keystone does not, so
+	// Keystone's publication is what the placed service has to reach it by.
+	// unsharedWithKeystone: the same question one step wider — a service resolves
+	// to a DIFFERENT cluster than Keystone, whichever of the two carries the ref.
+	// The first drives the publication requirement, which a Keystone carrying a ref
+	// of its own already gets from the catalog rule in the loop; the second drives
+	// the two rules that only care that a cluster boundary is crossed at all.
+	placedAwayFromKeystone, unsharedWithKeystone := false, false
+
+	placements := map[string]*commonv1.TargetClusterRefSpec{}
+	for _, a := range declaredServiceTargetClusters(cp) {
+		refPath := a.path.Child("targetClusterRef")
+		allErrs = append(allErrs, validation.TargetClusterRef(refPath, a.ref)...)
+		keystone := a.path.String() == ksPath.String()
+		if !keystone && !sameTargetClusterName(a.ref, ksRef) {
+			unsharedWithKeystone = true
+		}
+
+		if a.ref != nil {
+			if a.ns == nil {
+				allErrs = append(allErrs, field.Required(a.path.Child("namespace"),
+					"is required when targetClusterRef is set: every namespace maps to exactly one cluster, and the "+
+						"ControlPlane's own namespace stays on the local one, so a placed service needs a namespace "+
+						"of its own"))
+			}
+			if a.catalog && !a.published {
+				allErrs = append(allErrs, field.Required(a.path.Child("publicEndpoint"),
+					"one of publicEndpoint or gateway is required when targetClusterRef is set: the service's "+
+						"in-cluster Service DNS name resolves nowhere from another cluster, so the catalog entry "+
+						"must advertise an externally routable address"))
+			}
+			if !keystone && ksRef == nil {
+				placedAwayFromKeystone = true
+			}
+		}
+
+		if a.ns == nil || a.ns.Name == "" {
+			continue
+		}
+		seen, dup := placements[a.ns.Name]
+		sameCluster := (seen == nil) == (a.ref == nil) &&
+			(seen == nil || seen.Name == a.ref.Name)
+		if dup && !sameCluster {
+			allErrs = append(allErrs, field.Invalid(refPath, a.ref, fmt.Sprintf(
+				"services co-located in namespace %q must be placed on the same target cluster; the namespace "+
+					"exists on exactly one cluster, together with the backing services, the tenant store, and the "+
+					"credential material scoped to it",
+				a.ns.Name,
+			)))
+		}
+		placements[a.ns.Name] = a.ref
+	}
+
+	// A service that does not share Keystone's cluster validates its tokens against
+	// Keystone over the public URL, because Keystone's in-cluster Service DNS name
+	// resolves only on the cluster Keystone runs on. The catalog rule above demands
+	// that publication of a service carrying a ref of its OWN, which leaves the
+	// case an unplaced Keystone falls into: the operator would project an empty
+	// spec.keystoneEndpoint into the placed child, and the child's CRD refuses it
+	// (MinLength=1, ^https?://) on every pass with nothing on the ControlPlane
+	// naming the field to fix.
+	if placedAwayFromKeystone {
+		ks := cp.Spec.Services.Keystone
+		if ks == nil || (ks.PublicEndpoint == "" && ks.Gateway == nil) {
+			allErrs = append(allErrs, field.Required(ksPath.Child("publicEndpoint"),
+				"one of publicEndpoint or gateway is required when another service is placed on a target cluster: "+
+					"that service validates its tokens against Keystone and cannot resolve Keystone's in-cluster "+
+					"Service DNS name from another cluster"))
+		}
+	}
+
+	// The scheme of the URL every credential document carries the passwords next
+	// to. It is the auth_url as soon as ONE end of the pair moves: K-ORC stays on
+	// the management cluster and dials it whenever Keystone is placed, and a
+	// service placed away from an unplaced Keystone dials it from the other side.
+	// Either way the admin password, every service-account password, and the tokens
+	// minted with them cross a cluster boundary to reach it. The ^https?:// pattern
+	// on the field admits http:// for the case where neither end moved, where the
+	// URL feeds only the bootstrap and the catalog.
+	if ks := cp.Spec.Services.Keystone; ks != nil && (ksRef != nil || placedAwayFromKeystone) &&
+		externalAuthURLIsPlaintext(ks.PublicEndpoint) {
+		allErrs = append(allErrs, field.Invalid(ksPath.Child("publicEndpoint"), ks.PublicEndpoint,
+			"must use scheme https when any service is placed away from Keystone: that URL becomes the auth_url "+
+				"the operator renders the admin password and every service-account password next to, and those "+
+				"credentials cross a cluster boundary to reach it"))
+	}
+
+	// The private-CA bundle verifying a placed Keystone's endpoint. It is only ever
+	// consulted during a TLS handshake, and a co-located Keystone is dialled over
+	// its in-cluster Service URL, which performs none — accepting the pair would
+	// hand the operator positive confirmation that trust is enforced while nothing
+	// verifies anything, the same hazard the External-mode plaintext rule rejects.
+	//
+	// The second rule is the same hazard from the other side. The bundle reaches
+	// K-ORC and nothing else: it is projected as the inline cacert key into the two
+	// K-ORC credentials Secrets, while a service that does not share Keystone's
+	// cluster gets that same https URL as its projected spec.keystoneEndpoint and
+	// renders it into [keystone_authtoken], which has no cafile option to put an
+	// anchor in. Such a service would fail every token validation with
+	// "certificate signed by unknown authority" and no field on any CR in the tree
+	// to repair it with, so the combination is refused rather than admitted as
+	// TLS-configured. Placing Keystone away from a service therefore requires a
+	// publicly trusted certificate on its endpoint.
+	if ks := cp.Spec.Services.Keystone; ks != nil && ks.CABundleSecretRef != nil {
+		ref, caPath := ks.CABundleSecretRef, ksPath.Child("caBundleSecretRef")
+		if ksRef == nil {
+			allErrs = append(allErrs, field.Forbidden(caPath,
+				"forbidden without services.keystone.targetClusterRef: a co-located Keystone is reached over its "+
+					"in-cluster Service URL, which performs no TLS handshake the bundle could verify"))
+		} else if unsharedWithKeystone {
+			allErrs = append(allErrs, field.Forbidden(caPath,
+				"forbidden while a service does not share Keystone's target cluster: the bundle is projected into "+
+					"the K-ORC credentials Secrets and nowhere else, and a service reaching that same endpoint "+
+					"renders it into [keystone_authtoken], which carries no option for a trust anchor — publish the "+
+					"placed Keystone with a publicly trusted certificate, or co-locate every service with it"))
+		}
+		if ref.Name == "" {
+			allErrs = append(allErrs, field.Required(caPath.Child("name"),
+				"must be set when caBundleSecretRef is configured"))
+		}
 	}
 
 	return allErrs
@@ -2575,7 +2839,7 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 				// A CA bundle is only ever consulted during a TLS handshake, and a
 				// plaintext endpoint never performs one. Accepting the pair would hand
 				// the operator full positive confirmation that trust is enforced —
-				// readExternalCABundle blocks the mint on WaitingForCABundle until the
+				// readKeystoneCABundle blocks the mint on WaitingForCABundle until the
 				// Secret exists, setCACertKey projects `cacert` into both credentials
 				// Secrets — while buildPasswordCloudsYAML renders the admin password
 				// next to an http:// auth_url and K-ORC POSTs it in the clear on every
@@ -2632,6 +2896,15 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 		if ks.Namespace != nil {
 			allErrs = append(allErrs, field.Forbidden(ksPath.Child("namespace"),
 				"forbidden when services.keystone.mode is External (no Keystone workload is deployed, so there is nothing to place)"))
+		}
+		if ks.TargetClusterRef != nil {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("targetClusterRef"),
+				"forbidden when services.keystone.mode is External (no Keystone workload is deployed, so there is nothing to place)"))
+		}
+		if ks.CABundleSecretRef != nil {
+			allErrs = append(allErrs, field.Forbidden(ksPath.Child("caBundleSecretRef"),
+				"forbidden when services.keystone.mode is External (use services.keystone.external.caBundleSecretRef, "+
+					"the bundle that verifies the external endpoint)"))
 		}
 		if ks.DatabaseCredentialsMode != "" {
 			allErrs = append(allErrs, field.Forbidden(ksPath.Child("databaseCredentialsMode"),
@@ -2805,6 +3078,7 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 
 	allErrs = append(allErrs, validateDedicatedBackingServicesImmutable(oldObj, newObj)...)
 	allErrs = append(allErrs, validateServiceNamespacesImmutable(oldObj, newObj)...)
+	allErrs = append(allErrs, validateServiceTargetClustersImmutable(oldObj, newObj)...)
 	allErrs = append(allErrs, validateBarbicanSecretStoreImmutable(oldObj, newObj)...)
 
 	oldSecretName := oldObj.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName
@@ -3248,6 +3522,58 @@ func validateServiceNamespacesImmutable(oldObj, newObj *ControlPlane) field.Erro
 	freeze(svcPath.Child("barbican", "namespace"),
 		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Barbican != nil, "barbican"),
 		barbicanNamespaceBlock(oldObj), barbicanNamespaceBlock(newObj))
+
+	return allErrs
+}
+
+// validateServiceTargetClustersImmutable freezes the per-service target-cluster
+// assignment on UPDATE. Adding a ref, removing it, or renaming it is rejected
+// through the shared validator the workload CRDs enforce on their own
+// spec.targetClusterRef (validation.TargetClusterRefImmutable), so a client
+// reads the same wording whichever layer rejects the edit.
+//
+// It is the namespace freeze one level out. Re-pointing a live service at
+// another cluster strands everything the previous one holds: the workload, the
+// database, the tenant store, and the credential material in it, none of which
+// the reconcile that follows the edit moves or reaps. The child's own
+// spec.targetClusterRef carries a CEL transition rule, so the re-projection
+// would be rejected and wedge the reconcile behind a ProjectionRejected
+// condition anyway.
+//
+// The freeze is deliberately webhook-only, with NO CEL transition rule: moving a
+// service between clusters (with the data migration that implies) is a reserved
+// future feature, and an immutable CEL marker could never be relaxed to a gated
+// transition later. This mirrors the namespace freeze above.
+//
+// serviceDeclaredBefore gates it exactly as it gates that freeze: placing a
+// service the ControlPlane did not carry on the old revision is that service's
+// CREATE, not a move, so there is no running workload anywhere to strand.
+func validateServiceTargetClustersImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
+	var allErrs field.ErrorList
+	svcPath := field.NewPath("spec", "services")
+
+	freeze := func(path *field.Path, declaredBefore bool, oldRef, newRef *commonv1.TargetClusterRefSpec) {
+		if !declaredBefore {
+			return
+		}
+		allErrs = append(allErrs, validation.TargetClusterRefImmutable(path, oldRef, newRef)...)
+	}
+
+	freeze(svcPath.Child("keystone", "targetClusterRef"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Keystone != nil, "keystone"),
+		oldObj.KeystoneTargetClusterRef(), newObj.KeystoneTargetClusterRef())
+	freeze(svcPath.Child("horizon", "targetClusterRef"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Horizon != nil, "horizon"),
+		oldObj.HorizonTargetClusterRef(), newObj.HorizonTargetClusterRef())
+	freeze(svcPath.Child("glance", "targetClusterRef"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Glance != nil, "glance"),
+		oldObj.GlanceTargetClusterRef(), newObj.GlanceTargetClusterRef())
+	freeze(svcPath.Child("placement", "targetClusterRef"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Placement != nil, "placement"),
+		oldObj.PlacementTargetClusterRef(), newObj.PlacementTargetClusterRef())
+	freeze(svcPath.Child("barbican", "targetClusterRef"),
+		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Barbican != nil, "barbican"),
+		oldObj.BarbicanTargetClusterRef(), newObj.BarbicanTargetClusterRef())
 
 	return allErrs
 }
