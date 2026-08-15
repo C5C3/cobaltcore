@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -54,6 +55,14 @@ import (
 // finalizer-driven teardown can find it: a cross-namespace child takes no owner
 // reference (Kubernetes forbids one), and the cluster-scoped ClusterRoleBinding is
 // collected by no namespace deletion at all.
+//
+// The whole ensemble is written to the cluster the Barbican service was placed
+// on, because everything that acts on it runs there: the openbao-operator that
+// reconciles the instance, the cert-manager that issues its transport
+// certificates, the TokenReview its Kubernetes-auth logins are validated with, and
+// the Barbican pods that read their tenant key material from it. The one owner
+// reference in it is target-local and therefore stays: the unseal Secret takes the
+// instance's, and both live in the same namespace on the same cluster.
 
 // defaultOpenBaoVersion is the OpenBao image tag the projected instance runs. The
 // image resolves to docker.io/openbao/openbao:<version>; the static seal needs
@@ -149,6 +158,11 @@ func barbicanOpenBaoName(cp *c5c3v1alpha1.ControlPlane) string {
 // needs to serve a managed Barbican secret store, and reports whether the instance
 // is Available. It sets no ControlPlane condition: the caller owns status.
 //
+// c is the client the Barbican namespace's children are written with, so the whole
+// ensemble — the cluster-scoped auth-delegator binding included — lands on the
+// cluster the service was placed on, and the Available gate is answered from
+// there. The caller resolves it before anything is written.
+//
 // The order is a dependency order. The unseal key exists before the CR, or the
 // operator blind-creates an immutable Secret of its own and the generated key is
 // lost. The TLS Secrets and the provisioner account exist before the CR, because
@@ -157,39 +171,41 @@ func barbicanOpenBaoName(cp *c5c3v1alpha1.ControlPlane) string {
 // TokenRequest grant are what turn a login that would fail 403 into one that
 // succeeds. The instance's ownerReference is stamped onto the unseal Secret last,
 // once there is an instance to reference.
-func (r *ControlPlaneReconciler) ensureBarbicanOpenBao(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (bool, error) {
+func (r *ControlPlaneReconciler) ensureBarbicanOpenBao(
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) (bool, error) {
 	namespace := cp.BarbicanNamespace()
 	name := barbicanOpenBaoName(cp)
 
-	if err := r.ensureBarbicanOpenBaoTenant(ctx, cp); err != nil {
+	if err := r.ensureBarbicanOpenBaoTenant(ctx, c, cp); err != nil {
 		return false, err
 	}
-	if err := r.ensureBarbicanUnsealKey(ctx, cp, nil); err != nil {
+	if err := r.ensureBarbicanUnsealKey(ctx, c, cp, nil); err != nil {
 		return false, err
 	}
-	if err := r.ensureBarbicanOpenBaoCertificates(ctx, cp); err != nil {
+	if err := r.ensureBarbicanOpenBaoCertificates(ctx, c, cp); err != nil {
 		return false, err
 	}
-	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, barbicanOpenBaoProvisionerServiceAccount(name, namespace)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, c, cp, barbicanOpenBaoProvisionerServiceAccount(name, namespace)); err != nil {
 		return false, fmt.Errorf("ensuring Barbican OpenBao provisioner ServiceAccount: %w", err)
 	}
-	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, barbicanOpenBaoAuthDelegatorBinding(name, namespace)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, c, cp, barbicanOpenBaoAuthDelegatorBinding(name, namespace)); err != nil {
 		return false, fmt.Errorf("ensuring Barbican OpenBao auth-delegator ClusterRoleBinding: %w", err)
 	}
-	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, barbicanOpenBaoTokenRole(name, namespace)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, c, cp, barbicanOpenBaoTokenRole(name, namespace)); err != nil {
 		return false, fmt.Errorf("ensuring Barbican OpenBao TokenRequest Role: %w", err)
 	}
 	binding := barbicanOpenBaoTokenRoleBinding(name, namespace,
 		r.barbicanOperatorServiceAccount(), r.barbicanOperatorNamespace())
-	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, binding); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, c, cp, binding); err != nil {
 		return false, fmt.Errorf("ensuring Barbican OpenBao TokenRequest RoleBinding: %w", err)
 	}
 
-	instance, err := r.ensureBarbicanOpenBaoCluster(ctx, cp)
+	instance, err := r.ensureBarbicanOpenBaoCluster(ctx, c, cp)
 	if err != nil {
 		return false, err
 	}
-	if err := r.ensureBarbicanUnsealKey(ctx, cp, instance); err != nil {
+	if err := r.ensureBarbicanUnsealKey(ctx, c, cp, instance); err != nil {
 		return false, err
 	}
 	return openBaoClusterAvailable(instance), nil
@@ -212,12 +228,16 @@ func openBaoClusterAvailable(instance *openbaov1alpha1.OpenBaoCluster) bool {
 // holds a finalizer over it. In the kind stack the proving instance's tenant
 // already targets the openstack namespace, so a second, ControlPlane-owned tenant
 // would leave teardown waiting behind a finalizer this operator does not own. A
-// pre-existing tenant is left exactly as it is.
-func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoTenant(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
+// pre-existing tenant is left exactly as it is. The list runs on the cluster the
+// tenant would be created on, which is the only cluster whose openbao-operator the
+// admission would apply to.
+func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoTenant(
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) error {
 	namespace := cp.BarbicanNamespace()
 
 	tenants := &openbaov1alpha1.OpenBaoTenantList{}
-	if err := r.List(ctx, tenants); err != nil {
+	if err := c.List(ctx, tenants); err != nil {
 		return fmt.Errorf("listing OpenBaoTenants before admitting namespace %q: %w", namespace, err)
 	}
 	for i := range tenants.Items {
@@ -235,10 +255,10 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoTenant(ctx context.Context
 		},
 		Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: namespace},
 	}
-	if err := claimChildOwnership(r.Client, cp, tenant, r.Scheme); err != nil {
+	if err := claimChildOwnership(c, cp, tenant, r.Scheme); err != nil {
 		return fmt.Errorf("claiming ownership of OpenBaoTenant %q: %w", tenant.Name, err)
 	}
-	if err := r.Create(ctx, tenant); err != nil && !apierrors.IsAlreadyExists(err) {
+	if err := c.Create(ctx, tenant); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("creating OpenBaoTenant %q: %w", tenant.Name, err)
 	}
 	return nil
@@ -251,22 +271,34 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoTenant(ctx context.Context
 //
 // owner is the instance the key belongs to, and is nil on the call that runs
 // before the CR exists. Once it is non-nil the Secret takes the instance's
-// controller ownerReference — legal because both live in the service namespace —
-// so deleting the instance reaps its seal key with it, and the openbao-operator
-// reads that reference as the ownership proof it adopts a pre-existing unseal
-// Secret against.
+// controller ownerReference — legal because both live in the service namespace on
+// the same cluster, wherever that is — so deleting the instance reaps its seal key
+// with it, and the openbao-operator reads that reference as the ownership proof it
+// adopts a pre-existing unseal Secret against.
+//
+// That reference is why the ControlPlane's own claim stays label-only here rather
+// than routing through claimChildOwnership: an object carries one controller
+// reference, and this one belongs to the instance. On a target cluster the claim
+// still has to add the owner triple the shared teardown selects on, which
+// ClaimWithLabels' remote path does without setting a reference of its own.
 func (r *ControlPlaneReconciler) ensureBarbicanUnsealKey(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, owner *openbaov1alpha1.OpenBaoCluster,
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, owner *openbaov1alpha1.OpenBaoCluster,
 ) error {
 	name := barbicanOpenBaoName(cp) + barbicanOpenBaoUnsealSecretSuffix
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.BarbicanNamespace()},
 	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		if aerr := refuseForeignAdoption(r.Client, cp, secret, r.Scheme); aerr != nil {
+	if _, err := controllerutil.CreateOrUpdate(ctx, c, secret, func() error {
+		if aerr := refuseForeignAdoption(c, cp, secret, r.Scheme); aerr != nil {
 			return aerr
 		}
-		stampControlPlaneChildLabels(secret, cp)
+		if commonmulticluster.IsRemote(c) {
+			if cerr := claimChildOwnership(c, cp, secret, r.Scheme); cerr != nil {
+				return cerr
+			}
+		} else {
+			stampControlPlaneChildLabels(secret, cp)
+		}
 		if len(secret.Data[barbicanOpenBaoUnsealSecretKey]) == 0 {
 			key, gerr := generateBarbicanUnsealKey()
 			if gerr != nil {
@@ -306,15 +338,17 @@ func generateBarbicanUnsealKey() (string, error) {
 //
 // They stay read-modify-write: no Go module ships the cert-manager types, and
 // apply.EnsureObject converts typed structs rather than unstructured input.
-func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCertificates(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
+func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCertificates(
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) error {
 	name, namespace := barbicanOpenBaoName(cp), cp.BarbicanNamespace()
 
-	if err := r.ensureBarbicanOpenBaoCertificate(ctx, cp, name+barbicanOpenBaoServerCertSuffix,
+	if err := r.ensureBarbicanOpenBaoCertificate(ctx, c, cp, name+barbicanOpenBaoServerCertSuffix,
 		func(u *unstructured.Unstructured) { applyOpenBaoServerCertificateSpec(u, name, namespace) },
 	); err != nil {
 		return err
 	}
-	return r.ensureBarbicanOpenBaoCertificate(ctx, cp, name+barbicanOpenBaoCACertSuffix,
+	return r.ensureBarbicanOpenBaoCertificate(ctx, c, cp, name+barbicanOpenBaoCACertSuffix,
 		func(u *unstructured.Unstructured) { applyOpenBaoCACertificateSpec(u, name+barbicanOpenBaoCACertSuffix) },
 	)
 }
@@ -322,18 +356,19 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCertificates(ctx context.C
 // ensureBarbicanOpenBaoCertificate projects one of the ensemble's Certificates
 // under certName, with apply writing the desired spec onto the live object.
 func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCertificate(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, certName string, apply func(*unstructured.Unstructured),
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+	certName string, apply func(*unstructured.Unstructured),
 ) error {
 	live := &unstructured.Unstructured{}
 	live.SetGroupVersionKind(certificateGVK)
 	live.SetName(certName)
 	live.SetNamespace(cp.BarbicanNamespace())
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
-		if aerr := refuseForeignAdoption(r.Client, cp, live, r.Scheme); aerr != nil {
+	if _, err := controllerutil.CreateOrUpdate(ctx, c, live, func() error {
+		if aerr := refuseForeignAdoption(c, cp, live, r.Scheme); aerr != nil {
 			return aerr
 		}
 		apply(live)
-		return claimChildOwnership(r.Client, cp, live, r.Scheme)
+		return claimChildOwnership(c, cp, live, r.Scheme)
 	}); err != nil {
 		return fmt.Errorf("ensuring Barbican OpenBao Certificate %q: %w", certName, err)
 	}
@@ -515,43 +550,43 @@ func barbicanOpenBaoTokenRoleBinding(name, namespace, operatorSA, operatorNamesp
 // never re-projected — the openbao-operator rejects a change to it on an existing
 // CR — so it is carried over from the live object.
 func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane,
 ) (*openbaov1alpha1.OpenBaoCluster, error) {
 	key := types.NamespacedName{Name: barbicanOpenBaoName(cp), Namespace: cp.BarbicanNamespace()}
 
 	// Resolved before the read, so a cluster whose API-server endpoints cannot be
 	// determined writes no instance at all. See resolveAPIServerEndpointIPs for why
 	// this fails closed rather than projecting without the egress allowance.
-	apiServerIPs, err := r.resolveAPIServerEndpointIPs(ctx)
+	apiServerIPs, err := r.resolveAPIServerEndpointIPs(ctx, cp)
 	if err != nil {
 		return nil, err
 	}
 
 	instance := &openbaov1alpha1.OpenBaoCluster{}
-	err = r.Get(ctx, key, instance)
+	err = c.Get(ctx, key, instance)
 	switch {
 	case apierrors.IsNotFound(err):
 		instance.Name = key.Name
 		instance.Namespace = key.Namespace
 		instance.Spec = r.barbicanOpenBaoClusterSpec(cp, apiServerIPs)
 		instance.Spec.Storage = openbaov1alpha1.StorageConfig{Size: barbicanOpenBaoStorageSize}
-		if oerr := claimChildOwnership(r.Client, cp, instance, r.Scheme); oerr != nil {
+		if oerr := claimChildOwnership(c, cp, instance, r.Scheme); oerr != nil {
 			return nil, fmt.Errorf("claiming ownership of OpenBaoCluster %q: %w", key.Name, oerr)
 		}
-		if cerr := r.Create(ctx, instance); cerr != nil {
+		if cerr := c.Create(ctx, instance); cerr != nil {
 			return nil, fmt.Errorf("creating OpenBaoCluster %q: %w", key.Name, cerr)
 		}
 	case err != nil:
 		return nil, fmt.Errorf("getting OpenBaoCluster %q: %w", key.Name, err)
 	default:
-		if aerr := refuseForeignAdoption(r.Client, cp, instance, r.Scheme); aerr != nil {
+		if aerr := refuseForeignAdoption(c, cp, instance, r.Scheme); aerr != nil {
 			return nil, aerr
 		}
 		desired := r.barbicanOpenBaoClusterSpec(cp, apiServerIPs)
 		desired.Storage = instance.Spec.Storage
 		if !equality.Semantic.DeepEqual(instance.Spec, desired) {
 			instance.Spec = desired
-			if uerr := r.Update(ctx, instance); uerr != nil {
+			if uerr := c.Update(ctx, instance); uerr != nil {
 				return nil, fmt.Errorf("updating owned OpenBaoCluster %q: %w", key.Name, uerr)
 			}
 		}
@@ -628,23 +663,37 @@ const (
 // auto-detect the addresses, because doing so needs cluster permissions outside
 // its trust model, so they are resolved here instead.
 //
-// The read goes through the uncached reader. A cached Get would have
-// controller-runtime start a cluster-wide EndpointSlice informer to track a single
-// well-known object.
+// The addresses are the ones of the cluster the INSTANCE runs on, which for a
+// placed Barbican is its target cluster and not the management one. The policy is
+// enforced by the CNI there, over pods that reach their own API server, so the
+// management cluster's addresses would allow the instance nothing it needs.
 //
-// Both failure paths return an error rather than a partial answer, and the caller
-// then writes no instance at all. An instance that comes up without these rules
-// does not merely stay unavailable: its raft auto-join times out, self-init never
-// completes, and the partial raft state wedges every later initialisation attempt,
-// recoverable only by deleting the instance together with its PVC.
-func (r *ControlPlaneReconciler) resolveAPIServerEndpointIPs(ctx context.Context) ([]string, error) {
+// The read goes through the uncached reader of that cluster. A cached Get would
+// have controller-runtime start a cluster-wide EndpointSlice informer to track a
+// single well-known object.
+//
+// All three failure paths — an unresolvable cluster, an unreadable slice, an empty
+// one — return an error rather than a partial answer, and the caller then writes no
+// instance at all. An instance that comes up without these rules does not merely
+// stay unavailable: its raft auto-join times out, self-init never completes, and
+// the partial raft state wedges every later initialisation attempt, recoverable
+// only by deleting the instance together with its PVC.
+func (r *ControlPlaneReconciler) resolveAPIServerEndpointIPs(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) ([]string, error) {
 	key := types.NamespacedName{
 		Name:      apiServerEndpointSliceName,
 		Namespace: apiServerEndpointSliceNamespace,
 	}
 
+	reader, err := commonmulticluster.ResolveChildrenAPIReader(ctx, r.Resolver, r.apiReader(),
+		targetClusterRefForNamespace(cp, cp.BarbicanNamespace()))
+	if err != nil {
+		return nil, err
+	}
+
 	slice := &discoveryv1.EndpointSlice{}
-	if err := r.apiReader().Get(ctx, key, slice); err != nil {
+	if err := reader.Get(ctx, key, slice); err != nil {
 		return nil, fmt.Errorf("getting EndpointSlice %s/%s: %w",
 			apiServerEndpointSliceNamespace, apiServerEndpointSliceName, err)
 	}

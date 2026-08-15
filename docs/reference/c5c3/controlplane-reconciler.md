@@ -1405,7 +1405,7 @@ labels.
 | Condition | `BarbicanReady` |
 | Gate | `KeystoneReady == True` (Barbican validates every token against the Keystone child) **and** the injected `barbican` service account being Ready |
 | Projects / Owns | a trio in `cp.BarbicanNamespace()`: one `Barbican` child `{controlplane.Name}-barbican` (`barbicanNameSuffix`), one `BarbicanSecretStore` `{controlplane.Name}-barbican-store` (`barbicanSecretStoreNameSuffix`), and — on a dedicated secret store only — one `OpenBaoCluster` `{controlplane.Name}-barbican-bao` (`barbicanOpenBaoNameSuffix`) with the ensemble below. Plus, on a managed database only, the per-ControlPlane DB-credential objects in the same namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `barbican-db-creds`, an mTLS client Certificate `{controlplane.Name}-barbican-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/barbican-{barbican-namespace}` (auth role `barbican-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-barbican-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/barbican/{barbican-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.barbican` is set |
-| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `barbican` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed; `infraRequeueAfter` = **15s** while the OpenBao instance is not Available, while the secret store is being recreated, and while the child is not Ready |
+| Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `barbican` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed; `infraRequeueAfter` = **15s** while the dedicated ensemble's target cluster does not resolve, while the OpenBao instance is not Available, while the secret store is being recreated, and while the child is not Ready |
 
 `reconcileBarbican` runs last in the tail group, after `reconcileServiceAccounts`
 (and after `reconcileGlance` and `reconcilePlacement`), because it gates on the
@@ -1514,18 +1514,35 @@ identity, the Kubernetes auth method, and the two policies scoping them) run onc
 against freshly initialised storage, so changing them requires recreating the
 instance and its PVC.
 
+The whole ensemble is written to the cluster the Barbican service was placed on
+(its [`targetClusterRef`](../target-clusters.md)), because everything that acts on
+it runs there: the openbao-operator that reconciles the instance, the cert-manager
+that issues its transport certificates, the TokenReview its Kubernetes-auth logins
+are validated with, and the Barbican pods that read their key material from it.
+The cluster-scoped `ClusterRoleBinding` is created on the target for the same
+reason — the account it names is a target-cluster account. On the target every
+object is claimed by the ownership labels alone. The one owner reference in the
+ensemble is target-local and stays: the unseal Secret takes the instance's, and
+the two live in the same namespace on the same cluster. The cluster is resolved
+before the first object is written, so an unresolvable name parks
+`BarbicanReady=False/TargetClusterUnavailable` and leaves the ensemble unwritten
+on both clusters.
+
 The instance's `spec.network` carries two allowlists. `trustedIngressPeers` names
 the barbican operator's pods and the Barbican API pods, the only sources admitted
 to the API port. `apiServerEndpointIPs` is the egress half, and
 `resolveAPIServerEndpointIPs` resolves it per pass from the EndpointSlice
-`kubernetes` in `default`, deduplicated and sorted. Without it the operator-rendered
+`kubernetes` in `default` **on the cluster the instance runs on**, deduplicated
+and sorted. The policy is enforced by the CNI there, over pods that reach their
+own API server, so for a placed Barbican the management cluster's addresses would
+allow the instance nothing it needs. Without it the operator-rendered
 NetworkPolicy allows the API server only at the in-cluster service VIP on port 443,
 which a CNI enforcing egress against the post-DNAT destination never matches, and
 the instance loses the API server: raft auto-join times out, self-init cannot
 complete, and the partial raft state wedges every later initialization attempt.
 Sorting keeps the desired-versus-live comparison from reading endpoint reordering as
-drift, and the read goes through the uncached reader so no cluster-wide EndpointSlice
-informer starts for one well-known object.
+drift, and the read goes through that cluster's uncached reader so no cluster-wide
+EndpointSlice informer starts for one well-known object.
 
 That resolution fails closed. An instance created without the egress rules is
 recoverable only by deleting it together with its PVC, so a pass that cannot resolve
@@ -1537,7 +1554,11 @@ path.
 The store, and with it the child, waits until the instance is `Available`
 (`BarbicanReady=False/WaitingForOpenBaoInstance`): a store attached to an
 instance that is still initialising reports `ProvisioningDenied` and would have to
-be re-driven from a failure state.
+be re-driven from a failure state. That gate is read from the cluster the instance
+was provisioned on. The `BarbicanSecretStore` and the `Barbican` child themselves
+do not move: they are the CRs the barbican operator reconciles from the management
+cluster, and it is that operator which then projects its own children onto the
+target.
 
 #### Projecting the secret store
 
@@ -1574,7 +1595,7 @@ finalizer sweeps it by those labels.
 | `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Barbican CR is projected while Keystone is unready |
 | no `barbican` service account declared | False | `ServiceAccountNotDeclared` | no requeue; admission was bypassed (the defaulting webhook injects it), so it fails loud rather than projecting a Barbican with no Keystone user |
 | `barbican` service account not yet Ready | False | `WaitingForServiceAccount` | requeue 10s; deferred until its Keystone user and password are provisioned |
-| Barbican placed on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 10s; the DB credential resolves its namespace's cluster before it writes anything (`ensureServiceDBCredential`). The resolver's own message |
+| Barbican placed on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 10s from the DB credential, which resolves its namespace's cluster before it writes anything (`ensureServiceDBCredential`); requeue 15s from the dedicated OpenBao ensemble, which is where a brownfield database reaches the resolver first. Nothing is written, on either cluster. The resolver's own message |
 | DB-credential ensure or read fails (Dynamic generator objects or Static ExternalSecret) | False | `BarbicanDBCredentialError` | returns the error (managed database only) |
 | Dynamic DB credential not yet materialised | False | `WaitingForBarbicanDBCredential` | requeue 10s; the message names the `database/mariadb/creds/barbican-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant, or the non-engine-issued username it found in the target Secret |
 | provisioning the dedicated OpenBao ensemble fails | False | `BarbicanOpenBaoError` | returns the error |
