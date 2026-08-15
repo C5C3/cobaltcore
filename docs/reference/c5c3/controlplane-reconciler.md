@@ -56,13 +56,15 @@ const leaderElectionID = "c5c3.openstack.c5c3.io"
 bootstrap.Run(bootstrap.ManagerConfig{
     Scheme:           scheme,
     LeaderElectionID: leaderElectionID,
+    TargetClusters:   true,
     SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool) error {
         mgr := mcMgr.GetLocalManager()
         if err := (&controller.ControlPlaneReconciler{
             Client:   mgr.GetClient(),
             Scheme:   mgr.GetScheme(),
             Recorder: mgr.GetEventRecorderFor("controlplane-controller"),
-        }).SetupWithManager(mgr); err != nil {
+            Resolver: mcMgr,
+        }).SetupWithManager(mcMgr); err != nil {
             return err
         }
         if err := (&controller.CredentialRotationReconciler{
@@ -84,8 +86,9 @@ bootstrap.Run(bootstrap.ManagerConfig{
 | Element | Value |
 | --- | --- |
 | `LeaderElectionID` | `c5c3.openstack.c5c3.io` (a package-level constant in `main.go`; referenced by the deploy-stack RBAC and asserted by `main_test.go` so a rename cannot silently break leader election) |
-| Primary reconciler | `ControlPlaneReconciler` (event recorder `controlplane-controller`) |
-| Secondary reconciler | `CredentialRotationReconciler` (event recorder `credentialrotation-controller`) |
+| Primary reconciler | `ControlPlaneReconciler` (event recorder `controlplane-controller`), completed through the **multicluster** builder: it takes `mcMgr`, and its `Resolver` turns a service's [`targetClusterRef`](../target-clusters.md) into the client that service's children are written with |
+| Secondary reconciler | `CredentialRotationReconciler` (event recorder `credentialrotation-controller`), on the local manager: it only ever touches the management cluster |
+| `TargetClusters` | `true`: the binary engages the clusters registered in `--clusters-namespace`. The provider engages nothing while that namespace holds no registration Secret, which is the single-cluster default every existing install keeps |
 | Webhook | `ControlPlaneWebhook`, registered **only** when `bootstrap.Run` passes `webhooks == true` to `SetupFunc` (the bool is resolved once by the bootstrap layer from the manager environment) |
 
 ### Scheme Registration
@@ -164,6 +167,40 @@ backend becomes unreachable instead of waiting up to a full ESO refresh interval
 (default 1h) for the next per-secret re-sync. The `ExternalSecret`/`PushSecret`
 children are owned (controller reference), so `Owns()` wires them directly.
 
+#### Target-cluster watch legs
+
+Every leg above is pinned to the management cluster, with
+`EngageLocalCluster` and `EngageNoProviderClusters` on each one. The
+`ControlPlane` CR, the K-ORC CRs, and the service CRs live there whatever a
+service names, so a provider-cluster leg would only watch objects this operator
+never wrote.
+
+The kinds the ControlPlane writes into the namespace of a service placed on a
+[target cluster](../target-clusters.md) take the opposite pinning: no local
+engagement, provider clusters only, and a per-cluster filter
+(`ClusterServesKind`) that skips the leg on a cluster not serving the kind.
+Eleven kinds are watched that way: `MariaDB`, `Memcached`, `Certificate`,
+`ExternalSecret`, `PushSecret`, `VaultDynamicSecret`, `SecretStore`, `Secret`,
+`OpenBaoCluster`, `OpenBaoTenant`, and `Namespace`. `Memcached` and
+`Certificate` are watched as `*unstructured.Unstructured` under the same
+`memcachedGVK` / `certificateGVK` values the local legs use, neither kind having
+a Go module the operator can type against. `Secret` and `SecretStore` carry two
+legs each: one maps a child back through its ownership labels, the other maps an
+input through the same mapper the management-side watch uses. The workqueue
+deduplicates what the two produce.
+
+What keeps a registered cluster from reaching a ControlPlane that never named it
+is `RemoteRequestsAmong`. For every request a mapper produces it reads that
+ControlPlane on the management cluster and compares the cluster the event arrived
+from against `TargetClusterNames()`, the deduplicated set of the five per-service
+refs; a cluster outside the set drops the event. The set comes from the CR, never
+from the object that raised the event, so an object planted in a shared namespace
+on any registered cluster cannot name a ControlPlane it does not belong to. A CR
+already deleted answers `NotFound` and the event is dropped in silence; any other
+read error is logged and the event dropped too. Surviving requests carry no
+cluster name, so the reconcile they trigger runs against the management cluster,
+where the CR is.
+
 #### Secret Field Indexer
 
 The controller registers a controller-runtime field indexer on the
@@ -176,8 +213,8 @@ namespace-scoped List, mirroring the keystone operator's
 | --- | --- |
 | Index key | `ControlPlaneSecretNameIndexKey = "spec.korc.adminCredential.passwordSecretRef.name"` (exported package-level constant in `operators/c5c3/internal/controller/controlplane_controller.go`) |
 | Indexed fields | `spec.korc.adminCredential.passwordSecretRef.name` — currently the only Secret a ControlPlane references. The extractor (`controlPlaneSecretNameExtractor`) returns an empty slice when the name is unset so an unset field does not pollute the index, and returns `nil` if invoked with the wrong type rather than panicking. |
-| Registration site | `SetupWithManager` → `registerControlPlaneSecretNameIndex(ctx, mgr.GetFieldIndexer())`, invoked **before** the `Watches(Secret, …)` chain. Any error from `IndexField` is wrapped with the index key and propagated, so manager startup aborts loudly if registration fails. |
-| Lookup site | `secretToControlPlaneMapper(mgr.GetClient())` — performs a namespace-scoped `client.List` with `client.MatchingFields{ControlPlaneSecretNameIndexKey: secret.Name}`. On List error the error is logged via `log.FromContext` and the mapper returns `nil` per the `handler.MapFunc` contract (it must not return errors). |
+| Registration site | `SetupWithManager` → `registerControlPlaneSecretNameIndex(ctx, local.GetFieldIndexer())`, invoked **before** the `Watches(Secret, …)` chain. It goes on the **local** field indexer rather than the multicluster manager's: with a provider configured, that one registers its indexes against the target clusters, which hold no `ControlPlane` CR, and applying it while engaging a cluster would fail that engagement. Every request the legs emit is pinned to the management cluster, so a remote event still resolves its CR through this index. Any error from `IndexField` is wrapped with the index key and propagated, so manager startup aborts loudly if registration fails. |
+| Lookup site | `secretToControlPlaneMapper(local.GetClient())` — performs a namespace-scoped `client.List` with `client.MatchingFields{ControlPlaneSecretNameIndexKey: secret.Name}`. On List error the error is logged via `log.FromContext` and the mapper returns `nil` per the `handler.MapFunc` contract (it must not return errors). |
 | Result | Each matching ControlPlane in the Secret's namespace is enqueued as a `reconcile.Request`; an event matching no ControlPlane returns `nil`. |
 
 > **Why no owner-ref fallback?** Unlike the keystone operator, the c5c3 Secret
@@ -566,6 +603,26 @@ and is caught by the no-inline-literals drift guard.
 Every condition is stamped with `ObservedGeneration = cp.Generation` on every
 path.
 
+**Which cluster a sub-reconciler writes to.** A sub-reconciler that projects into
+a service namespace does not reach for the reconciler's own client. It resolves
+one per namespace through `childrenClientFor`, which maps the namespace to the
+[target cluster](../target-clusters.md) of the service placed there and hands
+back that cluster's client. The ControlPlane's own namespace answers with the
+local client, and so does any namespace no placed service declares. Co-located
+services cannot disagree about the answer, because admission rejects a shared
+namespace whose services name different clusters, so the namespace alone decides.
+An ensemble that spans several namespaces resolves all of them through
+`childrenClientsFor` before its first write: a cluster that does not resolve then
+leaves the whole ensemble unwritten rather than half of it, under
+`TargetClusterUnavailable` on the sub-reconciler's own condition, carrying the
+resolver's message verbatim (`cluster not found` for a name that was never
+registered).
+
+A nil `Resolver` resolves nothing. The reconciler is then running without a
+multicluster manager, which is how the unit tests and the single-cluster envtest
+fixtures construct it, and every namespace answers with the local client whatever
+the spec names.
+
 ### External keystone mode and the chain
 
 When `spec.services.keystone.mode` is `External`, the ControlPlane manages
@@ -645,19 +702,29 @@ management cluster), the public URL as soon as they do not.
   `http://{controlplane.Name}-keystone.<keystone-namespace>.svc:5000/v3`; one on
   another cluster gets `keystonePublicEndpoint` — `services.keystone.publicEndpoint`
   when set, else the gateway-derived `https://{gateway.hostname}/v3`.
-- **K-ORC.** `korcAuthURL` renders the public URL into both `clouds.yaml`
-  documents once Keystone names a cluster. K-ORC always runs on the management
-  cluster, wherever the ControlPlane places its services, so a placed Keystone's
-  Service DNS name is an address it cannot dial. External mode is untouched, and
-  a co-located Keystone renders the in-cluster URL byte for byte as before.
+- **K-ORC and the service accounts.** `korcAuthURL` takes the cluster the
+  document is CONSUMED on and answers by the same rule. The two admin documents
+  are read by K-ORC, which always runs on the management cluster wherever the
+  ControlPlane places its services, so they render the public URL as soon as
+  Keystone names a cluster — a placed Keystone's Service DNS name is an address
+  K-ORC cannot dial. A service account's `clouds.yaml` is read on the cluster its
+  delivery namespace lives on, so that namespace's ref is what it resolves
+  against. External mode is untouched, and a co-located Keystone renders the
+  in-cluster URL byte for byte as before.
 - **The catalog.** A placed service registers its public URL on its `internal`
   interface as well as its `public` one (`internalCatalogURL`), because that
   entry is what K-ORC and every consumer outside the service's cluster resolve.
   The identity row is unaffected: it registers a public interface only.
 
-Admission is what keeps those public URLs from being empty: a placed catalog
+Admission is what keeps those public URLs from being empty. A placed catalog
 service (keystone, glance, placement, barbican) must declare a `publicEndpoint`
-or a `gateway`. Making the URL actually routable between clusters is #841.
+or a `gateway`, and Keystone must declare one as soon as ANY other service is
+placed away from it — the per-service rule only reaches a service carrying a ref
+of its own, so an unplaced Keystone would otherwise leave every dependent child
+with an empty `spec.keystoneEndpoint` its own CRD refuses. A placed Keystone's
+endpoint must additionally use `https`, because placement promotes it to the
+`auth_url` the credential documents render passwords next to. Making the URL
+actually routable between clusters is #841.
 
 ### reconcileNamespaces
 
@@ -680,10 +747,24 @@ the step costs nothing on the common path.
 
 The two lifecycles are asymmetric. Under **`Managed`** the operator creates the
 namespace and stamps it with the ownership labels plus
-`app.kubernetes.io/managed-by`; a namespace that already exists without those
+`app.kubernetes.io/managed-by`, and on a target cluster the annotation
+`c5c3.io/controlplane-uid` as well; a namespace that already exists without the
 labels is **never adopted** — the condition fails loud rather than taking over a
-namespace it did not create. Under **`External`** the operator only verifies the
-namespace exists; a missing one parks the condition and requeues.
+namespace it did not create. On a target cluster the mark is required on top of
+them, because the labels alone are forgeable there: both are derived from the CR's
+name and namespace, so anyone holding `patch` on a namespace of that cluster can
+write them, while the UID is minted by the management cluster's API server. A mark
+naming a **different** ControlPlane disowns the namespace — and the condition
+message names the recorded UID, since such a namespace *was* created by a
+ControlPlane of this name, on a cluster several management clusters can register.
+A **missing** mark refuses adoption too, since nothing on the object separates a
+stripped mark from labels somebody else wrote; that message names both remedies,
+restoring the annotation or picking a free name. The read behind the verdict goes
+through the target cluster's live reader, as the
+[teardown](#owner-ref--gc-model) side does — which draws the missing-mark line one
+notch lower, because it is the last pass anything makes over that namespace. Under
+**`External`** the operator only verifies the namespace exists; a missing one parks
+the condition and requeues.
 
 A namespace whose services carry a [`targetClusterRef`](../target-clusters.md)
 is ensured on that cluster as well as on the management cluster, under whichever
@@ -700,7 +781,7 @@ creates nothing on either side.
 | `True` | `NoDedicatedNamespaces` | No service declares a namespace of its own. |
 | `True` | `NamespacesReady` | Every declared service namespace is present (and, for `Managed`, owned). |
 | `False` | `NamespaceNotFound` | An `External` namespace does not exist; requeue. |
-| `False` | `NamespaceNotOwned` | A `Managed` namespace exists but lacks the operator's ownership labels — never adopted. |
+| `False` | `NamespaceNotOwned` | A `Managed` namespace exists but does not carry the operator's ownership labels, or — on a target cluster — its `c5c3.io/controlplane-uid` annotation is missing or names a different ControlPlane, so it is never adopted. The message distinguishes the three, because the remedies differ. |
 | `False` | `NamespaceTerminating` | The namespace is being deleted; wait and requeue. |
 | `False` | `TargetClusterUnavailable` | A service placed the namespace on a target cluster that does not resolve; the resolver's own message, `cluster not found` for a name that was never registered. On deletion the same reason marks a placed namespace whose cluster has not answered yet: the teardown waits for it, and gives up on its children only past the abandon window (see [Owner-ref / GC model](#owner-ref--gc-model)). |
 | `False` | `FinalizingNamespaces` | On deletion, waiting for cross-namespace children to be torn down (see [Owner-ref / GC model](#owner-ref--gc-model)). |
@@ -1692,9 +1773,9 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
   requeueing.
 - **Mode-aware `clouds.yaml` (`korc_cloudsyaml.go`).** Both builders render
   `auth_url`, `endpoint_type` and `region_name` through three resolvers.
-  `korcAuthURL` returns the in-cluster Keystone Service DNS in managed mode —
-  `keystonePublicEndpoint` when Keystone is placed on a target cluster, since
-  K-ORC runs on the management one (see
+  `korcAuthURL` takes the cluster the document is consumed on and returns the
+  in-cluster Keystone Service DNS in managed mode — `keystonePublicEndpoint`
+  whenever that cluster is not Keystone's (see
   [Reaching a placed service](#reaching-a-placed-service)) — and
   `spec.services.keystone.external.authURL` in External mode; `korcEndpointType`
   returns `internal` in managed mode (K-ORC runs in-cluster, so `public` would
@@ -1783,7 +1864,7 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 | Keystone placed on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 10s; the resolver's own message. Nothing is minted, seeded or written, on either cluster |
 | Admin password Secret/key missing | False | `WaitingForAdminPassword` | requeue 10s (via `secrets.IsMissingSecretOrKey`) |
 | Admin password read fails otherwise | False | `AdminPasswordError` | returns the error |
-| External CA bundle Secret/key missing or empty | False | `WaitingForCABundle` | requeue 10s; no credentials Secret is written before the endpoint can be verified |
+| Keystone CA bundle Secret/key missing or empty | False | `WaitingForCABundle` | requeue 10s; no credentials Secret is written before the endpoint can be verified. The message names the field the bundle was read off — `external.caBundleSecretRef` in External mode, `caBundleSecretRef` on a placed Keystone |
 | External CA bundle read fails otherwise | False | `CABundleError` | returns the error |
 | Password-cloud ensure fails | False | `PasswordCloudError` | returns the error |
 | Hash mismatch → AC deleted for re-mint | False | `ReMinting` | requeue 10s; AC deleted + `value` regenerated, recreated next pass |
@@ -2549,10 +2630,15 @@ projected. On deletion it:
    what waits out the service operators' own remote sweeps. A **`Managed`**
    namespace is
    deleted, which cascades everything left in it — but only when it carries the
-   ownership labels; an unlabelled one is left standing with a **Warning**
-   `NamespaceNotOwned`, because the operator never destroys a namespace it did
-   not create. A placed one is deleted on both clusters, since
-   `reconcileNamespaces` created it on both. An **`External`** namespace survives,
+   ownership marks, read through that cluster's **uncached** reader because the
+   verdict authorises a whole-namespace cascade; one that does not is left
+   standing with a **Warning** `NamespaceNotOwned`, because the operator never
+   destroys a namespace it did not create. On a target cluster the
+   `c5c3.io/controlplane-uid` annotation is read with them, so a namespace whose
+   mark names another management cluster's ControlPlane is refused rather than
+   cascaded away — while one whose mark was stripped is still reaped, unlike at
+   adoption, since nothing else ever comes back for it. A placed one is
+   deleted on both clusters, since `reconcileNamespaces` created it on both. An **`External`** namespace survives,
    so its residue (backing
    services, credential material, tenant-store trio last) is swept by name, each
    object ownership-checked so a same-named object belonging to somebody else in
@@ -2625,10 +2711,14 @@ The `{name}-admin-app-credential-backup` PushSecret is the one child kept on
 
 A ControlPlane that places a service on a [target
 cluster](../target-clusters.md) carries a second finalizer, the shared
-`openstack.c5c3.io/remote-children`. It goes on once every cluster the spec names
-resolves. Before that, nothing has been written to any of them for it to reclaim,
-and `reconcileNamespaces` is what reports the unresolvable name. Once installed
-it stays for the CR's life: a cluster that stops resolving later still holds
+`openstack.c5c3.io/remote-children`. It goes on once ANY cluster the spec names
+resolves, because `reconcileNamespaces` resolves and writes per namespace inside
+its loop, so that cluster's namespaces are created on the very same pass whatever
+a sibling ref does. Demanding every cluster would leave the written half
+unreclaimable when the ORC stall escape releases the other finalizer. While no
+cluster resolves, nothing has been written to any of them for it to reclaim, and
+`reconcileNamespaces` is what reports the unresolvable name. Once installed it
+stays for the CR's life: a cluster that stops resolving later still holds
 children.
 
 What it holds the ControlPlane open for is the label-selected sweep in step 3.
@@ -2656,7 +2746,9 @@ an operator restart is indistinguishable from a deregistration. After
 `AbandonAfter` (5 minutes, measured from both the first failed resolve in this
 process and the deletion timestamp) the cluster is abandoned: a **Warning**
 `RemoteChildrenAbandoned` names the cluster and the namespace whose objects stay
-behind, and the teardown continues without it. The ORC stall escape (step 7)
+behind, and the teardown continues without it — the `Managed` namespace's copy on
+the management cluster is still deleted, since abandoning the unreachable half
+does not license leaking the reachable one. The ORC stall escape (step 7)
 releases `c5c3.io/orc-teardown` alone. It never reaches this sweep, so the
 remote-children finalizer stays on and a later pass runs the sweep and releases
 it.
