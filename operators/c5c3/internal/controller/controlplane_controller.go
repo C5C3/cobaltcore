@@ -579,9 +579,10 @@ func setServicesStatus(cp *c5c3v1alpha1.ControlPlane) {
 //     Secret in managed mode, the user-supplied
 //     spec.korc.adminCredential.passwordSecretRef.name in brownfield and External
 //     mode;
-//   - in External mode, the private-CA bundle Secret
-//     spec.services.keystone.external.caBundleSecretRef.name, so rotating the CA
-//     wakes the ControlPlane immediately instead of waiting for the cache resync.
+//   - the private-CA bundle Secret of whichever Keystone endpoint K-ORC dials
+//     (keystoneCABundleRef: the External-mode installation's, or a placed
+//     Keystone's), so rotating the CA wakes the ControlPlane immediately instead
+//     of waiting for the cache resync.
 //
 // The two may name the same Secret, so the result is deduplicated: a duplicate
 // index entry would enqueue the same ControlPlane twice per Secret event.
@@ -596,7 +597,7 @@ func controlPlaneSecretNameExtractor(obj client.Object) []string {
 	if name := effectiveAdminPasswordSecretRef(cp).Name; name != "" {
 		names = append(names, name)
 	}
-	if ref := externalCABundleRef(cp); ref != nil && ref.Name != "" && !slices.Contains(names, ref.Name) {
+	if ref := keystoneCABundleRef(cp); ref != nil && ref.Name != "" && !slices.Contains(names, ref.Name) {
 		names = append(names, ref.Name)
 	}
 	return names

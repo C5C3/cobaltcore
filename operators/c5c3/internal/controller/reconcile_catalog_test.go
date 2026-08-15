@@ -435,3 +435,100 @@ func TestManagedServiceURL(t *testing.T) {
 	g.Expect(managedServiceURL("glance-api", "openstack", 9292, "")).
 		To(Equal("http://glance-api.openstack.svc:9292"), "an empty path adds no trailing slash")
 }
+
+// --- per-service target clusters ---
+
+// TestManagedCatalogRows_PlacedServicesAdvertiseThePublicURLInternally covers the
+// one catalog change placement forces: a placed service's in-cluster Service DNS
+// name resolves only on its own cluster, so the INTERNAL entry — the one K-ORC
+// itself resolves, and the one every consumer on another cluster reads — has to
+// carry the public URL as well. The identity row needs no such switch: it
+// registers a public interface only, and keystoneCatalogURL already prefers the
+// public URL.
+func TestManagedCatalogRows_PlacedServicesAdvertiseThePublicURLInternally(t *testing.T) {
+	ref := &commonv1.TargetClusterRefSpec{Name: "remote-a"}
+	ns := &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      "workloads",
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	for _, tc := range []struct {
+		name        string
+		place       func(cp *c5c3v1alpha1.ControlPlane)
+		serviceType string
+		wantPublic  string
+	}{
+		{
+			name: "image",
+			place: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{
+					Namespace: ns, TargetClusterRef: ref, PublicEndpoint: "https://glance.example.com",
+				}
+			},
+			serviceType: "image",
+			wantPublic:  "https://glance.example.com",
+		},
+		{
+			name: "placement",
+			place: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Placement = &c5c3v1alpha1.ServicePlacementSpec{
+					Namespace: ns, TargetClusterRef: ref, PublicEndpoint: "https://placement.example.com",
+				}
+			},
+			serviceType: "placement",
+			wantPublic:  "https://placement.example.com",
+		},
+		{
+			name: "key-manager",
+			place: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Services.Barbican = &c5c3v1alpha1.ServiceBarbicanSpec{
+					Namespace: ns, TargetClusterRef: ref, PublicEndpoint: "https://barbican.example.com",
+				}
+			},
+			serviceType: "key-manager",
+			wantPublic:  "https://barbican.example.com",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := korcControlPlane()
+			tc.place(cp)
+
+			rows := managedCatalogRows(cp)
+			g.Expect(rows).To(HaveLen(2))
+			g.Expect(rows[1].serviceType).To(Equal(tc.serviceType))
+			internal, public := rows[1].endpoints[0], rows[1].endpoints[1]
+			g.Expect(internal.iface).To(Equal("internal"))
+			g.Expect(internal.url).To(Equal(tc.wantPublic),
+				"a placed service's internal entry must advertise an address that leaves its cluster")
+			g.Expect(public.url).To(Equal(tc.wantPublic))
+		})
+	}
+
+	t.Run("the identity row is untouched", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.Services.Keystone.Namespace = ns
+		cp.Spec.Services.Keystone.TargetClusterRef = ref
+		cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+
+		rows := managedCatalogRows(cp)
+		g.Expect(rows).To(HaveLen(1))
+		g.Expect(rows[0].endpoints).To(HaveLen(1))
+		g.Expect(rows[0].endpoints[0].iface).To(Equal("public"))
+		g.Expect(rows[0].endpoints[0].url).To(Equal("https://keystone.example.com/v3"))
+	})
+
+	t.Run("an unplaced service keeps its in-cluster internal entry", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{
+			PublicEndpoint: "https://glance.example.com",
+		}
+
+		rows := managedCatalogRows(cp)
+		g.Expect(rows).To(HaveLen(2))
+		g.Expect(rows[1].endpoints[0].url).To(Equal("http://cp-glance.default.svc:9292"),
+			"a co-located service is still reached over the cheap in-cluster path")
+		g.Expect(rows[1].endpoints[1].url).To(Equal("https://glance.example.com"))
+	})
+}

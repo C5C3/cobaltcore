@@ -151,24 +151,52 @@ func externalKeystoneAuthURL(cp *c5c3v1alpha1.ControlPlane) string {
 	return ks.External.AuthURL
 }
 
-// externalCABundleRef returns the private-CA bundle Secret reference of an
-// External-mode ControlPlane, or nil when the ControlPlane is managed, the
-// external block is absent, or no bundle is configured (a publicly trusted
-// endpoint). It is nil-safe on every level so callers can branch on the result
-// alone.
+// keystoneCABundleRef returns the private-CA bundle Secret reference the
+// operator verifies the Keystone endpoint K-ORC dials against, or nil when no
+// bundle is configured (a publicly trusted endpoint, or an endpoint no handshake
+// happens on at all). It is nil-safe on every level so callers can branch on the
+// result alone.
 //
-// A managed ControlPlane never carries a CA bundle: it dials the in-cluster
-// Keystone Service over plain HTTP, so the ref is ignored even if a mode flip
-// left the external block behind.
-func externalCABundleRef(cp *c5c3v1alpha1.ControlPlane) *commonv1.SecretRefSpec {
-	if !cp.IsExternalKeystone() {
-		return nil
-	}
+// Two endpoints leave the operator's own cluster and therefore have a handshake
+// to verify, and each carries the bundle on its own field:
+//
+//   - EXTERNAL mode — spec.services.keystone.external.caBundleSecretRef, the
+//     pre-existing installation's anchor.
+//   - MANAGED mode with Keystone PLACED on a target cluster —
+//     spec.services.keystone.caBundleSecretRef. K-ORC stays on the management
+//     cluster and dials the placed Keystone's publicEndpoint, which admission
+//     requires to be https.
+//
+// A co-located managed Keystone carries neither: it is dialled over its
+// in-cluster Service URL in plain HTTP, so the ref is ignored even if a mode flip
+// left the external block behind — and admission forbids the managed field
+// without a targetClusterRef for the same reason.
+func keystoneCABundleRef(cp *c5c3v1alpha1.ControlPlane) *commonv1.SecretRefSpec {
 	ks := cp.Spec.Services.Keystone
-	if ks == nil || ks.External == nil {
+	if ks == nil {
 		return nil
 	}
-	return ks.External.CABundleSecretRef
+	if cp.IsExternalKeystone() {
+		if ks.External == nil {
+			return nil
+		}
+		return ks.External.CABundleSecretRef
+	}
+	if ks.TargetClusterRef == nil {
+		return nil
+	}
+	return ks.CABundleSecretRef
+}
+
+// keystoneCABundleField names the spec field keystoneCABundleRef read the bundle
+// off, for the WaitingForCABundle condition message. Which of the two it is
+// depends on the mode, and an operator repairing that condition needs the field
+// to go and edit, not the one the other mode uses.
+func keystoneCABundleField(cp *c5c3v1alpha1.ControlPlane) string {
+	if cp.IsExternalKeystone() {
+		return "spec.services.keystone.external.caBundleSecretRef"
+	}
+	return "spec.services.keystone.caBundleSecretRef"
 }
 
 // classifyKORCMessage maps a K-ORC condition message onto an External-mode

@@ -873,3 +873,99 @@ func TestPlacementEndpointURL(t *testing.T) {
 	cp := placementControlPlane()
 	g.Expect(placementEndpointURL(cp)).To(Equal("http://cp-placement.default.svc:8778"))
 }
+
+// --- per-service target clusters ---
+
+// placedPlacementControlPlane places the placement service in a namespace of its
+// own on a target cluster. Its database is brownfield, so the DB-credential leg —
+// whose own placement is covered in reconcile_dbcredentials_test.go — projects
+// nothing and the pass reaches the child projection over the local client alone.
+func placedPlacementControlPlane(targetCluster string) *c5c3v1alpha1.ControlPlane {
+	cp := placementControlPlane()
+	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+		Host:      "db.example.com",
+		Database:  "keystone",
+		SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"},
+	}
+	cp.Spec.Services.Placement.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      "placement",
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.Services.Placement.PublicEndpoint = "https://placement.example.com"
+	cp.Spec.Services.Placement.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetCluster}
+	return cp
+}
+
+// TestReconcilePlacement_ProjectsTheTargetClusterRef verifies the placement
+// reaches the child verbatim — the placement-operator owns everything on the
+// target, so the ref is the whole hand-over — and that an unplaced service
+// projects no ref.
+func TestReconcilePlacement_ProjectsTheTargetClusterRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedPlacementControlPlane("remote-a")
+	r := newPlacementTestReconciler(t, cp)
+
+	_, err := r.reconcilePlacement(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(getProjectedPlacement(t, r.Client, cp).Spec.TargetClusterRef).
+		To(Equal(&commonv1.TargetClusterRefSpec{Name: "remote-a"}))
+
+	unplaced := placementControlPlane()
+	r2 := newPlacementTestReconciler(t, unplaced)
+	_, err = r2.reconcilePlacement(context.Background(), unplaced)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedPlacement(t, r2.Client, unplaced).Spec.TargetClusterRef).To(BeNil(),
+		"a service that names no cluster must project no ref at all")
+}
+
+// TestPlacementKeystoneEndpoint_FollowsThePlacement pins the endpoint policy:
+// Placement validates tokens against Keystone itself, so it gets the in-cluster
+// Service DNS name exactly while the two services share a cluster, and the public
+// URL as soon as they do not — that name resolves nowhere else.
+func TestPlacementKeystoneEndpoint_FollowsThePlacement(t *testing.T) {
+	const (
+		inCluster = "http://cp-keystone.identity.svc:5000/v3"
+		public    = "https://keystone.example.com/v3"
+	)
+	for _, tc := range []struct {
+		name                string
+		placement, keystone *commonv1.TargetClusterRefSpec
+		want                string
+	}{
+		{name: "both co-located", want: inCluster},
+		{
+			name:      "both on the same cluster",
+			placement: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			keystone:  &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			want:      inCluster,
+		},
+		{
+			name:      "Placement placed, Keystone at home",
+			placement: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			want:      public,
+		},
+		{
+			name:     "Keystone placed, Placement at home",
+			keystone: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			want:     public,
+		},
+		{
+			name:      "different clusters",
+			placement: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			keystone:  &commonv1.TargetClusterRefSpec{Name: "remote-b"},
+			want:      public,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := placementControlPlane()
+			cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"}
+			cp.Spec.Services.Keystone.PublicEndpoint = public
+			cp.Spec.Services.Keystone.TargetClusterRef = tc.keystone
+			cp.Spec.Services.Placement.TargetClusterRef = tc.placement
+
+			g.Expect(placementKeystoneEndpoint(cp)).To(Equal(tc.want))
+		})
+	}
+}

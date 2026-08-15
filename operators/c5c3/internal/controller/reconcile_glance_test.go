@@ -1459,3 +1459,98 @@ func TestReconcileGlance_CrossNamespaceChildrenAreLabelledNotOwned(t *testing.T)
 	// It still attaches to the Glance child by name across the namespace boundary.
 	g.Expect(b.Spec.GlanceRef.Name).To(Equal("cp-glance"))
 }
+
+// --- per-service target clusters ---
+
+// placedGlanceControlPlane places the image service in a namespace of its own on
+// a target cluster. Its database is brownfield, so the DB-credential leg — whose
+// own placement is covered in reconcile_dbcredentials_test.go — projects nothing
+// and the pass reaches the child projection over the local client alone.
+func placedGlanceControlPlane(targetCluster string) *c5c3v1alpha1.ControlPlane {
+	cp := glanceControlPlane()
+	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+		Host:      "db.example.com",
+		Database:  "keystone",
+		SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"},
+	}
+	cp.Spec.Services.Glance.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      "images",
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
+	cp.Spec.Services.Glance.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetCluster}
+	return cp
+}
+
+// TestReconcileGlance_ProjectsTheTargetClusterRef verifies the placement reaches
+// the child verbatim — the glance-operator owns everything on the target, so the
+// ref is the whole hand-over — and that an unplaced service projects no ref.
+func TestReconcileGlance_ProjectsTheTargetClusterRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedGlanceControlPlane("remote-a")
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.TargetClusterRef).
+		To(Equal(&commonv1.TargetClusterRefSpec{Name: "remote-a"}))
+
+	unplaced := glanceControlPlane()
+	r2 := newGlanceTestReconciler(t, unplaced)
+	_, err = r2.reconcileGlance(context.Background(), unplaced)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedGlance(t, r2.Client, unplaced).Spec.TargetClusterRef).To(BeNil(),
+		"a service that names no cluster must project no ref at all")
+}
+
+// TestGlanceKeystoneEndpoint_FollowsThePlacement pins the endpoint policy: Glance
+// validates tokens against Keystone itself, so it gets the in-cluster Service DNS
+// name exactly while the two services share a cluster, and the public URL as soon
+// as they do not — that name resolves nowhere else.
+func TestGlanceKeystoneEndpoint_FollowsThePlacement(t *testing.T) {
+	const (
+		inCluster = "http://cp-keystone.identity.svc:5000/v3"
+		public    = "https://keystone.example.com/v3"
+	)
+	for _, tc := range []struct {
+		name             string
+		glance, keystone *commonv1.TargetClusterRefSpec
+		want             string
+	}{
+		{name: "both co-located", want: inCluster},
+		{
+			name:     "both on the same cluster",
+			glance:   &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			keystone: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			want:     inCluster,
+		},
+		{
+			name:   "Glance placed, Keystone at home",
+			glance: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			want:   public,
+		},
+		{
+			name:     "Keystone placed, Glance at home",
+			keystone: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			want:     public,
+		},
+		{
+			name:     "different clusters",
+			glance:   &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			keystone: &commonv1.TargetClusterRefSpec{Name: "remote-b"},
+			want:     public,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+			cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"}
+			cp.Spec.Services.Keystone.PublicEndpoint = public
+			cp.Spec.Services.Keystone.TargetClusterRef = tc.keystone
+			cp.Spec.Services.Glance.TargetClusterRef = tc.glance
+
+			g.Expect(glanceKeystoneEndpoint(cp)).To(Equal(tc.want))
+		})
+	}
+}

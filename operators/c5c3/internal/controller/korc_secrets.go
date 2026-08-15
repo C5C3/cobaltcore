@@ -98,11 +98,11 @@ func (r *ControlPlaneReconciler) ensureOwnedSecret(
 	return err
 }
 
-// setCACertKey projects the external private-CA bundle into an operator-owned
-// K-ORC credentials Secret under the inline "cacert" key K-ORC reads natively —
-// or deletes the key when no bundle is configured, so REMOVING
-// spec.services.keystone.external.caBundleSecretRef converges the Secret instead
-// of leaving a stale trust anchor behind.
+// setCACertKey projects the private-CA bundle into an operator-owned K-ORC
+// credentials Secret under the inline "cacert" key K-ORC reads natively — or
+// deletes the key when no bundle is configured, so REMOVING the bundle reference
+// (see keystoneCABundleRef) converges the Secret instead of leaving a stale trust
+// anchor behind.
 //
 // DOCUMENTED CONSTRAINT (K-ORC provider-client cache aliasing): K-ORC keys its
 // provider-client cache on the PARSED CLOUD STRUCT only — "cacert" is NOT part of
@@ -132,11 +132,14 @@ func caCertPushTrigger(caBundle string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// readExternalCABundle reads the private-CA bundle an External-mode ControlPlane
-// references, from the ControlPlane's own namespace (mirroring readAdminPassword).
-// It returns "" — with no error and no API read — when no bundle is configured,
-// which is both the managed-mode and the publicly-trusted-endpoint case. The data
-// key defaults to DefaultCABundleSecretKey ("ca.crt") for a webhook-bypassed CR.
+// readKeystoneCABundle reads the private-CA bundle the ControlPlane references
+// for the Keystone endpoint K-ORC dials (keystoneCABundleRef: the External-mode
+// installation's, or a PLACED managed Keystone's), from the ControlPlane's own
+// namespace on the management cluster — where K-ORC and the credentials Secrets
+// live — mirroring readAdminPassword. It returns "" — with no error and no API
+// read — when no bundle is configured, which is the co-located managed case and
+// the publicly-trusted-endpoint case alike. The data key defaults to
+// DefaultCABundleSecretKey ("ca.crt") for a webhook-bypassed CR.
 //
 // A missing Secret/key surfaces as a secrets.IsMissingSecretOrKey error so the
 // caller can defer (KORCReady=False/WaitingForCABundle) rather than mint against
@@ -146,8 +149,8 @@ func caCertPushTrigger(caBundle string) string {
 // ("", nil) read, indistinguishable from "no bundle configured". Mapping it onto
 // ErrKeyNotFound keeps the returned bundle non-empty whenever a ref is set, so
 // setCACertKey and ensureKORCCloudsYAMLExternalSecret can share one predicate.
-func readExternalCABundle(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) (string, error) {
-	ref := externalCABundleRef(cp)
+func readKeystoneCABundle(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) (string, error) {
+	ref := keystoneCABundleRef(cp)
 	if ref == nil {
 		return "", nil
 	}
@@ -317,6 +320,11 @@ func computeAdminPasswordHash(ctx context.Context, c client.Client, cp *c5c3v1al
 // effectiveAdminPasswordSecretNamespace: the KEYSTONE service namespace in managed
 // mode (where the operator materialises it, beside the child that consumes it) and
 // the ControlPlane's own namespace when the Secret is the user's.
+//
+// That namespace decides which CLUSTER the Secret lives on, so the caller passes
+// the client resolved for it — a Keystone placed on a target cluster takes the
+// materialised admin password with it, and the local client would not see it.
+//
 // reconcileKORC needs the cleartext — not just
 // its hash — to render the password-based clouds.yaml the admin
 // ApplicationCredential mints with, so the read is factored out here and the

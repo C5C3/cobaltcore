@@ -16,6 +16,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -222,7 +223,12 @@ func managedCatalogRows(cp *c5c3v1alpha1.ControlPlane) []managedCatalogServiceRo
 			serviceName: "glance",
 			crName:      glanceCatalogServiceName(cp),
 			endpoints: []managedCatalogEndpointRow{
-				{iface: "internal", crName: glanceCatalogEndpointName(cp, "internal"), url: glanceEndpointURL(cp)},
+				{
+					iface:  "internal",
+					crName: glanceCatalogEndpointName(cp, "internal"),
+					url: internalCatalogURL(cp.GlanceTargetClusterRef(),
+						glanceEndpointURL(cp), glanceCatalogURL(cp)),
+				},
 				{iface: "public", crName: glanceCatalogEndpointName(cp, "public"), url: glanceCatalogURL(cp)},
 			},
 		})
@@ -233,7 +239,12 @@ func managedCatalogRows(cp *c5c3v1alpha1.ControlPlane) []managedCatalogServiceRo
 			serviceName: "placement",
 			crName:      placementCatalogServiceName(cp),
 			endpoints: []managedCatalogEndpointRow{
-				{iface: "internal", crName: placementCatalogEndpointName(cp, "internal"), url: placementEndpointURL(cp)},
+				{
+					iface:  "internal",
+					crName: placementCatalogEndpointName(cp, "internal"),
+					url: internalCatalogURL(cp.PlacementTargetClusterRef(),
+						placementEndpointURL(cp), placementCatalogURL(cp)),
+				},
 				{iface: "public", crName: placementCatalogEndpointName(cp, "public"), url: placementCatalogURL(cp)},
 			},
 		})
@@ -244,12 +255,37 @@ func managedCatalogRows(cp *c5c3v1alpha1.ControlPlane) []managedCatalogServiceRo
 			serviceName: "barbican",
 			crName:      barbicanCatalogServiceName(cp),
 			endpoints: []managedCatalogEndpointRow{
-				{iface: "internal", crName: barbicanCatalogEndpointName(cp, "internal"), url: barbicanEndpointURL(cp)},
+				{
+					iface:  "internal",
+					crName: barbicanCatalogEndpointName(cp, "internal"),
+					url: internalCatalogURL(cp.BarbicanTargetClusterRef(),
+						barbicanEndpointURL(cp), barbicanCatalogURL(cp)),
+				},
 				{iface: "public", crName: barbicanCatalogEndpointName(cp, "public"), url: barbicanCatalogURL(cp)},
 			},
 		})
 	}
 	return rows
+}
+
+// internalCatalogURL picks the URL a catalog row advertises on its INTERNAL
+// interface: inCluster for a co-located service, public for one placed on a
+// target cluster.
+//
+// A co-located service is reached by every consumer over its in-cluster Service
+// DNS name, the cheap path that never leaves the cluster. That name resolves
+// nowhere else, so once the service is placed the same entry would hand every
+// consumer outside its cluster — K-ORC on the management cluster among them — an
+// address it cannot connect to. Admission requires a placed catalog service to
+// carry a publicEndpoint or a gateway, so the public URL is never empty here.
+//
+// The identity row needs no such choice: it registers a public interface only,
+// and keystoneCatalogURL already prefers the public URL over the in-cluster one.
+func internalCatalogURL(ref *commonv1.TargetClusterRefSpec, inCluster, public string) string {
+	if ref != nil {
+		return public
+	}
+	return inCluster
 }
 
 // managedCatalogService builds the MANAGED K-ORC Service CR for one catalog row.
@@ -349,8 +385,9 @@ func keystoneEndpointName(cp *c5c3v1alpha1.ControlPlane) string {
 // reconcileCatalog). It must NOT hard-code "keystone": the keystone-operator
 // names the Service after the projected Keystone CR, so a fixed name would not
 // resolve. This is the URL K-ORC authenticates against (the seeded clouds.yaml
-// auth_url): K-ORC runs in-cluster, so it must always use the Service DNS, never
-// the external endpoint.
+// auth_url) as long as Keystone shares its cluster: a consumer inside the cluster
+// uses the Service DNS, never the external endpoint. A Keystone placed on a
+// target cluster is the exception the name cannot serve — see korcAuthURL.
 //
 // The namespace-qualified Service DNS is the WHOLE cross-namespace
 // service-discovery mechanism: a Keystone placed in a namespace of its own is
@@ -400,8 +437,9 @@ func glanceCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) stri
 
 // glanceCatalogURL returns the URL registered for the K-ORC image catalog PUBLIC
 // Endpoint. Per D6 the image service registers both a public and an internal
-// endpoint from the start; the internal endpoint always advertises the in-cluster
-// Service URL (glanceEndpointURL), while the public one prefers an explicit
+// endpoint from the start; the internal endpoint advertises the in-cluster
+// Service URL (glanceEndpointURL) as long as the service is co-located (see
+// internalCatalogURL), while the public one prefers an explicit
 // services.glance.publicEndpoint (the only way to advertise a non-443 external
 // port), then the externally routable gateway hostname ("https://{gateway.hostname}"),
 // and falls back to that same in-cluster URL when Glance is not exposed via a
@@ -432,9 +470,10 @@ func placementCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) s
 
 // placementCatalogURL returns the URL registered for the K-ORC placement catalog
 // PUBLIC Endpoint. Like the image row, the placement service registers both a
-// public and an internal endpoint from the start; the internal endpoint always
-// advertises the in-cluster Service URL (placementEndpointURL), while the public
-// one prefers an explicit services.placement.publicEndpoint (the only way to
+// public and an internal endpoint from the start; the internal endpoint
+// advertises the in-cluster Service URL (placementEndpointURL) as long as the
+// service is co-located (see internalCatalogURL), while the public one prefers an
+// explicit services.placement.publicEndpoint (the only way to
 // advertise a non-443 external port), then the externally routable gateway
 // hostname ("https://{gateway.hostname}"), and falls back to that same in-cluster
 // URL when Placement is not exposed via a Gateway. Unlike keystoneCatalogURL there
@@ -465,8 +504,9 @@ func barbicanCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) st
 // barbicanCatalogURL returns the URL registered for the K-ORC key-manager catalog
 // PUBLIC Endpoint. Like the image and placement rows, the key-manager service
 // registers both a public and an internal endpoint from the start; the internal
-// endpoint always advertises the in-cluster Service URL (barbicanEndpointURL),
-// while the public one prefers an explicit services.barbican.publicEndpoint (the
+// endpoint advertises the in-cluster Service URL (barbicanEndpointURL) as long as
+// the service is co-located (see internalCatalogURL), while the public one
+// prefers an explicit services.barbican.publicEndpoint (the
 // only way to advertise a non-443 external port), then the externally routable
 // gateway hostname ("https://{gateway.hostname}"), and falls back to that same
 // in-cluster URL when Barbican is not exposed via a Gateway. Unlike

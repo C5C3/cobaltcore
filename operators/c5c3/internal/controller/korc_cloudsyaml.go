@@ -8,6 +8,7 @@ import (
 	"cmp"
 	"fmt"
 
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -31,22 +32,31 @@ const managedEndpointType = "internal"
 // unset. It mirrors the OpenStack default a fresh Keystone bootstraps with.
 const defaultRegion = "RegionOne"
 
-// korcAuthURL resolves the auth_url both clouds.yaml builders render, switching
-// on the Keystone mode:
+// korcAuthURL resolves the auth_url a clouds.yaml document CONSUMED FROM the
+// cluster ref names has to carry, switching on the Keystone mode:
 //
-//   - MANAGED: the in-cluster Keystone Service DNS (keystoneEndpointURL). K-ORC
-//     runs in-cluster, so it must never dial the externally routable endpoint.
+//   - MANAGED, consumer and Keystone on the same cluster: the in-cluster Keystone
+//     Service DNS (keystoneEndpointURL). A consumer inside the cluster must never
+//     dial the externally routable endpoint.
+//   - MANAGED, consumer and Keystone on different clusters: the public URL
+//     (keystonePublicEndpoint), because Keystone's Service DNS name resolves only
+//     on the cluster Keystone runs on. Admission requires the publication
+//     whenever the two can differ, so the URL is never empty here.
 //   - EXTERNAL: spec.services.keystone.external.authURL verbatim — the
 //     pre-existing installation is, by definition, not in this cluster.
+//
+// ref is nil for a document consumed on the MANAGEMENT cluster, which is where
+// K-ORC always runs whatever the ControlPlane places elsewhere, and names the
+// target cluster for one delivered beside a placed service.
 //
 // It returns "" for an External-mode CR with no external block; admission forbids
 // that shape, and rendering an empty auth_url fails loud at K-ORC rather than
 // silently pointing somewhere else.
-func korcAuthURL(cp *c5c3v1alpha1.ControlPlane) string {
+func korcAuthURL(cp *c5c3v1alpha1.ControlPlane, ref *commonv1.TargetClusterRefSpec) string {
 	if cp.IsExternalKeystone() {
 		return externalKeystoneAuthURL(cp)
 	}
-	return keystoneEndpointURL(cp)
+	return keystoneEndpointFor(cp, ref)
 }
 
 // korcEndpointType resolves the clouds.yaml endpoint_type both builders render.
@@ -144,7 +154,7 @@ func buildAppCredCloudsYAML(cp *c5c3v1alpha1.ControlPlane, acID, secret string) 
     region_name: %q
     endpoint_type: %s
     identity_api_version: 3
-`, korcCloudName(cp), korcAuthURL(cp), acID, secret, korcRegion(cp), korcEndpointType(cp))
+`, korcCloudName(cp), korcAuthURL(cp, nil), acID, secret, korcRegion(cp), korcEndpointType(cp))
 }
 
 // buildPasswordCloudsYAML assembles the password-based clouds.yaml the admin
@@ -166,8 +176,12 @@ func buildAppCredCloudsYAML(cp *c5c3v1alpha1.ControlPlane, acID, secret string) 
 // user. Both derive from adminUserName; see its doc comment.
 //
 // The cloud key is quoted for the reason korcCloudName documents.
+//
+// It is read by K-ORC, which runs on the management cluster, so the document is
+// built for a consumer there (a nil ref).
 func buildPasswordCloudsYAML(cp *c5c3v1alpha1.ControlPlane, password string) string {
-	return buildServiceAccountCloudsYAML(cp, adminUserName(cp), adminProjectName(cp), adminDomainName(cp), password)
+	return buildServiceAccountCloudsYAML(cp, adminUserName(cp), adminProjectName(cp), adminDomainName(cp),
+		password, nil)
 }
 
 // buildServiceAccountCloudsYAML assembles a ready-to-use password-based
@@ -179,7 +193,23 @@ func buildPasswordCloudsYAML(cp *c5c3v1alpha1.ControlPlane, password string) str
 // mode-aware resolvers so the account authenticates against the same Keystone the
 // control plane does. The cloud key is quoted for the reason korcCloudName
 // documents.
-func buildServiceAccountCloudsYAML(cp *c5c3v1alpha1.ControlPlane, userName, projectName, domainName, password string) string {
+//
+// ref names the cluster the document is DELIVERED to, which decides the auth_url
+// (korcAuthURL): an account delivered into a namespace on a target cluster is
+// read by a consumer there, and the in-cluster Keystone Service DNS name of the
+// management cluster resolves nowhere for it.
+//
+// The document carries no cacert, unlike the K-ORC ones setCACertKey stamps: a
+// consumer on another cluster than Keystone verifies that endpoint against its
+// own system trust store, and so does the [keystone_authtoken] middleware of the
+// service beside it, which has no option for an anchor at all. Admission keeps
+// the two consistent by forbidding services.keystone.caBundleSecretRef as soon as
+// a service does not share Keystone's cluster, so a private CA can never be the
+// answer for an endpoint reached from over there.
+func buildServiceAccountCloudsYAML(
+	cp *c5c3v1alpha1.ControlPlane, userName, projectName, domainName, password string,
+	ref *commonv1.TargetClusterRefSpec,
+) string {
 	return fmt.Sprintf(`clouds:
   %q:
     auth:
@@ -192,7 +222,7 @@ func buildServiceAccountCloudsYAML(cp *c5c3v1alpha1.ControlPlane, userName, proj
     region_name: %q
     endpoint_type: %s
     identity_api_version: 3
-`, korcCloudName(cp), korcAuthURL(cp), userName, password,
+`, korcCloudName(cp), korcAuthURL(cp, ref), userName, password,
 		projectName, domainName, domainName,
 		korcRegion(cp), korcEndpointType(cp))
 }

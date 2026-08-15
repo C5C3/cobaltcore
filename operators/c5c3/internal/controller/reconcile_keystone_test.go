@@ -1139,6 +1139,51 @@ func TestDeleteOrphanedKeystone_CrossNamespace(t *testing.T) {
 	}, &keystonev1alpha1.Keystone{})).To(Succeed(), "a Keystone we do not own must never be deleted")
 }
 
+// --- per-service target clusters ---
+
+// TestReconcileKeystone_ProjectsTheTargetClusterRef verifies the placement is
+// handed to the child VERBATIM. The Keystone CR itself stays on the management
+// cluster, so that one field is the whole hand-over: everything on the target is
+// the keystone-operator's to create. An unplaced service must leave the field
+// nil rather than projecting an empty ref, and the child must not alias the
+// ControlPlane spec.
+func TestReconcileKeystone_ProjectsTheTargetClusterRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := keystoneTestScheme(t)
+
+	cp := keystoneControlPlane()
+	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      "identity",
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+	cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "remote-a"}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &keystonev1alpha1.Keystone{}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileKeystone(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	placed := &keystonev1alpha1.Keystone{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: "cp-keystone", Namespace: "identity",
+	}, placed)).To(Succeed())
+	g.Expect(placed.Spec.TargetClusterRef).To(Equal(&commonv1.TargetClusterRefSpec{Name: "remote-a"}))
+	g.Expect(placed.Spec.TargetClusterRef).NotTo(BeIdenticalTo(cp.Spec.Services.Keystone.TargetClusterRef),
+		"the child must carry its own copy, never a pointer into cp.Spec")
+
+	unplaced := keystoneControlPlane()
+	c2 := fake.NewClientBuilder().WithScheme(s).WithObjects(unplaced).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &keystonev1alpha1.Keystone{}).Build()
+	r2 := &ControlPlaneReconciler{Client: c2, Scheme: s}
+
+	_, err = r2.reconcileKeystone(context.Background(), unplaced)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedKeystone(t, c2, unplaced).Spec.TargetClusterRef).To(BeNil(),
+		"a service that names no cluster must project no ref at all")
+}
+
 // TestKeystoneEndpointURL_FollowsTheServiceNamespace pins the cross-namespace
 // service-discovery mechanism: the namespace-qualified Service DNS is what lets a
 // service in one namespace still reach the identity service in another.

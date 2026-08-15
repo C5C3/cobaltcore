@@ -629,6 +629,36 @@ itself: everything stays K-ORC-mediated.
   the trust store only after cache expiry. Nothing in this operator can shorten
   that window; an upstream fix would have to fold `cacert` into the cache key.
 
+### Reaching a placed service
+
+An in-cluster Service DNS name resolves only inside the cluster the Service runs
+on. Every URL the ControlPlane composes therefore depends on where the two ends
+sit, and the rule is the same everywhere: the in-cluster URL while both resolve
+to the same cluster (`sameTargetCluster` compares the two
+[`targetClusterRef`](../target-clusters.md)s, with "no ref" meaning the
+management cluster), the public URL as soon as they do not.
+
+- **The four dependents of Keystone.** `horizonKeystoneEndpoint`,
+  `glanceKeystoneEndpoint`, `placementKeystoneEndpoint` and
+  `barbicanKeystoneEndpoint` compare their own service's ref against Keystone's.
+  A service that shares Keystone's cluster keeps the conventional
+  `http://{controlplane.Name}-keystone.<keystone-namespace>.svc:5000/v3`; one on
+  another cluster gets `keystonePublicEndpoint` — `services.keystone.publicEndpoint`
+  when set, else the gateway-derived `https://{gateway.hostname}/v3`.
+- **K-ORC.** `korcAuthURL` renders the public URL into both `clouds.yaml`
+  documents once Keystone names a cluster. K-ORC always runs on the management
+  cluster, wherever the ControlPlane places its services, so a placed Keystone's
+  Service DNS name is an address it cannot dial. External mode is untouched, and
+  a co-located Keystone renders the in-cluster URL byte for byte as before.
+- **The catalog.** A placed service registers its public URL on its `internal`
+  interface as well as its `public` one (`internalCatalogURL`), because that
+  entry is what K-ORC and every consumer outside the service's cluster resolve.
+  The identity row is unaffected: it registers a public interface only.
+
+Admission is what keeps those public URLs from being empty: a placed catalog
+service (keystone, glance, placement, barbican) must declare a `publicEndpoint`
+or a `gateway`. Making the URL actually routable between clusters is #841.
+
 ### reconcileNamespaces
 
 | Aspect | Value |
@@ -1067,6 +1097,15 @@ the ControlPlane provisioned:
   `Fernet.RotationSchedule` and `CredentialKeys.RotationSchedule`. Only `168h`
   (weekly, `0 0 * * 0`) and positive whole-day multiples (daily, `0 0 * * *`)
   are supported.
+- **Target cluster:** `spec.targetClusterRef` is a DeepCopy of
+  `services.keystone.targetClusterRef`, and a nil source projects no field at
+  all. The Keystone CR itself is applied through the **local** client whichever
+  cluster it names, so that one field is the whole hand-over: the
+  keystone-operator reads the CR on the management cluster and owns everything
+  it creates on the target. The same holds for the Horizon, Glance, Placement,
+  and Barbican children. The value is frozen on both sides — the ControlPlane
+  webhook rejects an edit, and each child CRD carries its own CEL transition
+  rule — so re-projecting it never trips the child's freeze.
 
 In **External** keystone mode no child is projected — and none is deleted. A
 `Managed -> External` flip is rejected at admission (adopting an existing
@@ -1122,10 +1161,14 @@ services:
 - **Keystone endpoint:** derived top-down via `horizonKeystoneEndpoint(cp)` from
   the Keystone child's naming convention, not read from the Keystone child's
   status (no machine consumer reads status endpoints, per the settled
-  convention). Always the cluster-local Service URL (the same URL K-ORC
-  authenticates against) — never the external `publicEndpoint` or gateway
-  hostname, which the dashboard pods may not be able to reach: the dashboard's
-  Django backend connects to this URL server-side, the browser never does.
+  convention). The cluster-local Service URL (the same URL K-ORC authenticates
+  against) as long as the dashboard and Keystone resolve to the **same** cluster
+  — never the external `publicEndpoint` or gateway hostname, which the dashboard
+  pods may not be able to reach: the dashboard's Django backend connects to this
+  URL server-side, the browser never does. A dashboard on another cluster than
+  Keystone cannot resolve that Service DNS name at all and gets
+  `keystonePublicEndpoint` instead (see
+  [Reaching a placed service](#reaching-a-placed-service)).
 - **SecretKeyRef:** defaults to the kind shim Secret `horizon-secret-key` (key
   `secret-key`), which is pinned to the **default** ControlPlane identity;
   `spec.services.horizon.secretKeyRef` overrides it, and a second ControlPlane
@@ -1236,10 +1279,13 @@ reusing the ControlPlane's own specs so Glance points at the same backing servic
   A brownfield database keeps the user-supplied `secretRef` and `credentialsMode`.
 - **Cache:** a DeepCopy of the **effective** cache (`effectiveGlanceCache`).
 - **Keystone endpoint:** `keystoneEndpoint` is derived top-down via
-  `glanceKeystoneEndpoint(cp)` — **always** the cluster-local `{controlplane.Name}-keystone`
-  Service URL (the same URL K-ORC authenticates against), never the external
+  `glanceKeystoneEndpoint(cp)` — the cluster-local `{controlplane.Name}-keystone`
+  Service URL (the same URL K-ORC authenticates against) while Glance and Keystone
+  resolve to the same cluster, never the external
   `publicEndpoint` or gateway hostname, because Glance validates tokens
-  server-side and the pods must reach it in-cluster. `keystonePublicEndpoint` is a
+  server-side and the pods must reach it in-cluster. Placed apart, Glance gets the
+  public URL, the only one that leaves Keystone's cluster (see
+  [Reaching a placed service](#reaching-a-placed-service)). `keystonePublicEndpoint` is a
   pass-through of the Keystone service's own public endpoint (empty when Keystone is
   not externally exposed, in which case the child falls back to the internal URL).
 - **Service user:** derived from the auto-injected `glance` service account — its
@@ -1341,11 +1387,14 @@ points at the same backing services:
   `credentialsMode`.
 - **Cache:** a DeepCopy of the **effective** cache (`effectivePlacementCache`).
 - **Keystone endpoint:** `keystoneEndpoint` is derived top-down via
-  `placementKeystoneEndpoint(cp)`, **always** the cluster-local
+  `placementKeystoneEndpoint(cp)`, the cluster-local
   `{controlplane.Name}-keystone` Service URL (the same URL K-ORC authenticates
-  against) and never the external `publicEndpoint` or gateway hostname, because
+  against) while Placement and Keystone resolve to the same cluster, and never
+  the external `publicEndpoint` or gateway hostname, because
   Placement validates tokens server-side and the pods have to reach it
-  in-cluster. `keystonePublicEndpoint` is a pass-through of the Keystone
+  in-cluster. Placed apart, Placement gets the public URL (see
+  [Reaching a placed service](#reaching-a-placed-service)).
+  `keystonePublicEndpoint` is a pass-through of the Keystone
   service's own public endpoint (empty when Keystone is not externally exposed,
   in which case the child falls back to the internal URL).
 - **Service user:** derived from the auto-injected `placement` service account,
@@ -1455,11 +1504,14 @@ Horizon, Glance, and Placement siblings:
   `credentialsMode`.
 - **Cache:** a DeepCopy of the **effective** cache (`effectiveBarbicanCache`).
 - **Keystone endpoint:** `keystoneEndpoint` is derived top-down via
-  `barbicanKeystoneEndpoint(cp)`, always the cluster-local
+  `barbicanKeystoneEndpoint(cp)`, the cluster-local
   `{controlplane.Name}-keystone` Service URL (the same URL K-ORC authenticates
-  against) and never the external `publicEndpoint` or gateway hostname, because
+  against) while Barbican and Keystone resolve to the same cluster, and never the
+  external `publicEndpoint` or gateway hostname, because
   Barbican validates tokens server-side and the pods have to reach it
-  in-cluster. `keystonePublicEndpoint` is a pass-through of the Keystone
+  in-cluster. Placed apart, Barbican gets the public URL (see
+  [Reaching a placed service](#reaching-a-placed-service)).
+  `keystonePublicEndpoint` is a pass-through of the Keystone
   service's own public endpoint, the URL Barbican advertises on a 401 (empty when
   Keystone is not externally exposed, in which case the child falls back to the
   internal endpoint).
@@ -1640,7 +1692,10 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
   requeueing.
 - **Mode-aware `clouds.yaml` (`korc_cloudsyaml.go`).** Both builders render
   `auth_url`, `endpoint_type` and `region_name` through three resolvers.
-  `korcAuthURL` returns the in-cluster Keystone Service DNS in managed mode and
+  `korcAuthURL` returns the in-cluster Keystone Service DNS in managed mode —
+  `keystonePublicEndpoint` when Keystone is placed on a target cluster, since
+  K-ORC runs on the management one (see
+  [Reaching a placed service](#reaching-a-placed-service)) — and
   `spec.services.keystone.external.authURL` in External mode; `korcEndpointType`
   returns `internal` in managed mode (K-ORC runs in-cluster, so `public` would
   resolve to an unreachable Gateway host) and the configured `endpointType`
@@ -1713,9 +1768,19 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 - **Missing-CRD safety.** If the K-ORC CRD is absent the apiserver/RESTMapper
   returns a no-match error, detected via `meta.IsNoMatchError` and surfaced as a
   clean condition **without** crash-looping the operator.
+- **The admin password is read where it lives.** In managed mode the operator
+  materialises it beside the Keystone child
+  ([reconcileAdminPassword](#reconcileadminpassword)), so a placed Keystone takes
+  it to its target cluster and the read goes through that cluster's client. The
+  client is resolved for `effectiveAdminPasswordSecretNamespace(cp)`, which is the
+  ControlPlane's own namespace in External and brownfield mode — the Secret is the
+  user's there, and that namespace never leaves the management cluster. It is the
+  only cross-cluster read in this sub-reconciler: everything it writes stays local,
+  because K-ORC runs on the management cluster.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
+| Keystone placed on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 10s; the resolver's own message. Nothing is minted, seeded or written, on either cluster |
 | Admin password Secret/key missing | False | `WaitingForAdminPassword` | requeue 10s (via `secrets.IsMissingSecretOrKey`) |
 | Admin password read fails otherwise | False | `AdminPasswordError` | returns the error |
 | External CA bundle Secret/key missing or empty | False | `WaitingForCABundle` | requeue 10s; no credentials Secret is written before the endpoint can be verified |
@@ -1945,7 +2010,7 @@ a table row rather than a copied literal. The first row is always the identity
 identity Service. When `spec.services.glance` is set a second row registers the
 `image` (Glance) service — a `Service` named `glance` with **two** Endpoints (D6,
 both interfaces from the start so no later catalog migration is needed): the
-`internal` one always advertises the in-cluster Glance API Service URL
+`internal` one advertises the in-cluster Glance API Service URL
 `http://{controlplane.Name}-glance.<glance-namespace>.svc:9292` (`glanceEndpointURL`),
 while the `public` one prefers an explicit `services.glance.publicEndpoint`
 (advertised verbatim), then the externally routable gateway hostname
@@ -1980,6 +2045,16 @@ served at the root, so there is no `/v3` path suffix here either. The CR names
 take the OpenStack service type: `{controlplane.Name}-key-manager-service` and
 `{controlplane.Name}-key-manager-endpoint-{interface}`, while the catalog row
 they register is named `barbican`.
+
+A row whose service carries a [`targetClusterRef`](../target-clusters.md)
+advertises its public URL on the `internal` interface too (`internalCatalogURL`):
+the in-cluster Service URL above resolves only on the cluster that service runs
+on, so K-ORC — and every other consumer that reads the catalog from elsewhere —
+would get an address it cannot connect to. The identity row needs no such switch,
+having a public interface only. The `Service`/`Endpoint` CRs themselves stay in
+`childNamespace(cp)` on the management cluster whatever the rows advertise: they
+are K-ORC's to reconcile, and K-ORC runs there. See
+[Reaching a placed service](#reaching-a-placed-service).
 
 No managed row carries a region: `managedCatalogService` and
 `managedCatalogEndpoint` set the management policy, the credentials ref, and the

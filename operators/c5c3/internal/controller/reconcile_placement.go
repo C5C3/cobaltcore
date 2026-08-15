@@ -75,16 +75,12 @@ func placementDeletionAllowed(cp *c5c3v1alpha1.ControlPlane) bool {
 }
 
 // placementKeystoneEndpoint returns the Keystone endpoint URL projected into the
-// Placement child's spec.keystoneEndpoint. It is ALWAYS the cluster-local
-// convention URL of the projected Keystone child (keystoneEndpointURL, the same
-// URL K-ORC authenticates against) — never the external publicEndpoint or gateway
-// hostname. Placement validates every token server-side against this URL, so it
-// must be reachable from the Placement pods: an externally routable URL that
-// resolves to a host-only address (a kind port-mapping, an external LB) is
-// unreachable from inside the cluster. Derived top-down from the naming
-// convention, never read from the child's status.
+// Placement child's spec.keystoneEndpoint. Placement validates every token
+// server-side against this URL, so what the Placement pods can reach decides it —
+// which is the cluster Placement is placed on against the one Keystone runs on,
+// the rule keystoneEndpointFor holds for every service.
 func placementKeystoneEndpoint(cp *c5c3v1alpha1.ControlPlane) string {
-	return keystoneEndpointURL(cp)
+	return keystoneEndpointFor(cp, cp.PlacementTargetClusterRef())
 }
 
 // placementEndpointURL renders the in-cluster URL of the projected Placement API
@@ -277,6 +273,10 @@ func (r *ControlPlaneReconciler) reconcilePlacement(ctx context.Context, cp *c5c
 
 	pl.Spec.OpenStackRelease = cp.Spec.OpenStackRelease
 	pl.Spec.Image = image
+
+	// Thread the service's target cluster onto the child verbatim; a nil source
+	// yields nil and leaves the child unplaced (see the Keystone projection).
+	pl.Spec.TargetClusterRef = cp.Spec.Services.Placement.TargetClusterRef.DeepCopy()
 
 	// Project the merged extraConfig (globalExtraConfig unioned with the
 	// per-service block, per-service winning key by key). Assigned

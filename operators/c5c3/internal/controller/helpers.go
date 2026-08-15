@@ -226,6 +226,26 @@ func sameTargetCluster(a, b *commonv1.TargetClusterRefSpec) bool {
 	return a.Name == b.Name
 }
 
+// keystoneEndpointFor returns the Keystone URL a service placed behind ref
+// validates its tokens against. Every service's spec.keystoneEndpoint resolves
+// through it, because which Keystone URL a server-side token validator can reach
+// is one rule, and a refinement of it has to land once rather than per service.
+//
+// On the cluster Keystone itself runs on that is the cluster-local convention URL
+// of the projected Keystone child (keystoneEndpointURL, the same URL K-ORC
+// authenticates against): an externally routable URL that resolves to a host-only
+// address (a kind port-mapping, an external LB) is unreachable from inside the
+// cluster. A service on ANOTHER cluster cannot resolve that Service DNS name at
+// all, so it gets the public URL (keystonePublicEndpoint) — the only address that
+// leaves Keystone's cluster. Derived top-down from the naming convention, never
+// read from the child's status.
+func keystoneEndpointFor(cp *c5c3v1alpha1.ControlPlane, ref *commonv1.TargetClusterRefSpec) string {
+	if sameTargetCluster(ref, cp.KeystoneTargetClusterRef()) {
+		return keystoneEndpointURL(cp)
+	}
+	return keystonePublicEndpoint(cp.Spec.Services.Keystone)
+}
+
 // intervalToCron converts a rotation interval into a cron expression suitable
 // for a Kubernetes CronJob schedule.
 //
