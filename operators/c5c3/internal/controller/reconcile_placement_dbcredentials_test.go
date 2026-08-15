@@ -180,7 +180,7 @@ func TestReconcilePlacement_StaticOptOutProjectsKVAndTearsDownDynamic(t *testing
 				placementLeftoverClientCert(cp),
 			}
 			for _, obj := range leftovers {
-				g.Expect(claimChildOwnership(cp, obj, s)).To(Succeed())
+				g.Expect(claimChildOwnership(localWriter(), cp, obj, s)).To(Succeed())
 			}
 			r := newPlacementTestReconciler(t, append([]client.Object{cp}, leftovers...)...)
 			ctx := context.Background()

@@ -493,7 +493,7 @@ func (r *ControlPlaneReconciler) ensureMariaDB(ctx context.Context, cp *c5c3v1al
 		mariadb.Spec.Replicas = replicas
 		mariadb.Spec.Galera = &mariadbv1alpha1.Galera{Enabled: galeraEnabled}
 		mariadb.Spec.Storage = mariadbv1alpha1.Storage{Size: &size}
-		if serr := claimChildOwnership(cp, mariadb, r.Scheme); serr != nil {
+		if serr := claimChildOwnership(r.Client, cp, mariadb, r.Scheme); serr != nil {
 			return false, fmt.Errorf("claiming ownership of MariaDB %q: %w", key.Name, serr)
 		}
 		if cerr := r.Create(ctx, mariadb); cerr != nil {
@@ -566,7 +566,7 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, cp *c5c3v1
 		if serr := unstructured.SetNestedField(u.Object, int64(cache.Replicas), "spec", "replicas"); serr != nil {
 			return false, fmt.Errorf("setting spec.replicas: %w", serr)
 		}
-		if serr := claimChildOwnership(cp, u, r.Scheme); serr != nil {
+		if serr := claimChildOwnership(r.Client, cp, u, r.Scheme); serr != nil {
 			return false, fmt.Errorf("claiming ownership of Memcached %q: %w", key.Name, serr)
 		}
 		if cerr := r.Create(ctx, u); cerr != nil {

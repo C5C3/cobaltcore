@@ -140,6 +140,53 @@ func effectiveBarbicanCache(cp *c5c3v1alpha1.ControlPlane) *commonv1.CacheSpec {
 	return nil
 }
 
+// targetClusterRefForNamespace resolves the target cluster the namespace named
+// namespace lives on: nil — the local cluster the operator runs on — for the
+// ControlPlane's own namespace, and otherwise the ref of a service that declares
+// namespace as its dedicated one.
+//
+// Which of several co-located services answers does not matter. The webhook
+// rejects a ControlPlane whose services share a namespace and disagree on the
+// ref, so every service in one namespace names one cluster, and a namespace maps
+// to exactly one. A namespace no service declares resolves to nil as well, which
+// keeps a caller that walks namespaces from somewhere other than
+// DedicatedServiceNamespaces on the local cluster.
+//
+// The ControlPlane's own namespace is answered before the services are walked,
+// so a webhook-bypassed CR that names a target cluster without a namespace block
+// of its own — the one case where a service resolves to that namespace — still
+// stays local. It holds the ControlPlane CR itself, which never moves.
+func targetClusterRefForNamespace(cp *c5c3v1alpha1.ControlPlane, namespace string) *commonv1.TargetClusterRefSpec {
+	if namespace == cp.Namespace {
+		return nil
+	}
+	for _, svc := range []struct {
+		namespace string
+		ref       *commonv1.TargetClusterRefSpec
+	}{
+		{cp.KeystoneNamespace(), cp.KeystoneTargetClusterRef()},
+		{cp.HorizonNamespace(), cp.HorizonTargetClusterRef()},
+		{cp.GlanceNamespace(), cp.GlanceTargetClusterRef()},
+		{cp.PlacementNamespace(), cp.PlacementTargetClusterRef()},
+		{cp.BarbicanNamespace(), cp.BarbicanTargetClusterRef()},
+	} {
+		if svc.namespace == namespace {
+			return svc.ref
+		}
+	}
+	return nil
+}
+
+// sameTargetCluster reports whether a and b name the same target cluster, with
+// nil — no ref, so the local cluster — equal to nil. A ref carries nothing but a
+// name, so the comparison is on the name alone.
+func sameTargetCluster(a, b *commonv1.TargetClusterRefSpec) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Name == b.Name
+}
+
 // intervalToCron converts a rotation interval into a cron expression suitable
 // for a Kubernetes CronJob schedule.
 //

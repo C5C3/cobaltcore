@@ -10,10 +10,93 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
+
+// TestTargetClusterRefForNamespace pins the namespace-to-cluster resolution every
+// placed sub-reconciler routes its writes through: the ControlPlane's own
+// namespace stays local, a dedicated namespace answers with the ref of the
+// service that declared it, and a namespace nobody declared is local too.
+func TestTargetClusterRefForNamespace(t *testing.T) {
+	placed := func() *c5c3v1alpha1.ControlPlane {
+		return &c5c3v1alpha1.ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+			Spec: c5c3v1alpha1.ControlPlaneSpec{
+				Services: c5c3v1alpha1.ServicesSpec{
+					Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{
+						Namespace:        &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"},
+						TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-a"},
+					},
+					Horizon: &c5c3v1alpha1.ServiceHorizonSpec{
+						Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{Name: "dashboard"},
+					},
+				},
+			},
+		}
+	}
+
+	// A webhook-bypassed CR: the ref is set, the namespace block that must
+	// accompany it is not, so the service resolves to the ControlPlane's own
+	// namespace — which never moves.
+	bypassed := placed()
+	bypassed.Spec.Services.Keystone.Namespace = nil
+
+	tests := []struct {
+		name      string
+		cp        *c5c3v1alpha1.ControlPlane
+		namespace string
+		want      string // "" = expect nil
+	}{
+		{name: "the ControlPlane's own namespace is never placed", cp: placed(), namespace: "openstack"},
+		{name: "a placed service's namespace answers with its ref", cp: placed(), namespace: "identity", want: "edge-a"},
+		{name: "an unplaced service's namespace is local", cp: placed(), namespace: "dashboard"},
+		{name: "a namespace no service declares is local", cp: placed(), namespace: "unknown"},
+		{name: "a ref without a namespace block leaves the own namespace local", cp: bypassed, namespace: "openstack"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			if ref := targetClusterRefForNamespace(tc.cp, tc.namespace); ref != nil {
+				got = ref.Name
+			}
+			if got != tc.want {
+				t.Errorf("targetClusterRefForNamespace(%q) = %q, want %q", tc.namespace, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSameTargetCluster covers the four combinations of the placement
+// comparison, nil (the local cluster) included: it is compared against a ref as
+// often as two refs are compared against each other.
+func TestSameTargetCluster(t *testing.T) {
+	edgeA := &commonv1.TargetClusterRefSpec{Name: "edge-a"}
+	edgeB := &commonv1.TargetClusterRefSpec{Name: "edge-b"}
+
+	tests := []struct {
+		name string
+		a, b *commonv1.TargetClusterRefSpec
+		want bool
+	}{
+		{name: "both local", want: true},
+		{name: "local against a placed ref", b: edgeA},
+		{name: "a placed ref against local", a: edgeA},
+		{name: "the same cluster", a: edgeA, b: &commonv1.TargetClusterRefSpec{Name: "edge-a"}, want: true},
+		{name: "different clusters", a: edgeA, b: edgeB},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameTargetCluster(tc.a, tc.b); got != tc.want {
+				t.Errorf("sameTargetCluster(%v, %v) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestIntervalToCron(t *testing.T) {
 	tests := []struct {

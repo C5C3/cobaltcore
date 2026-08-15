@@ -636,7 +636,7 @@ itself: everything stays K-ORC-mediated.
 | File | `reconcile_namespaces.go` |
 | Condition | `NamespacesReady` |
 | Gate | none (runs first) |
-| Projects / Owns | `Namespace` objects for every service placed in a namespace of its own under the `Managed` lifecycle |
+| Projects / Owns | `Namespace` objects for every service placed in a namespace of its own under the `Managed` lifecycle, on the management cluster and on the target cluster of a service that names one |
 | Requeue | `namespaceRequeueAfter` = **15s** while a namespace is unusable |
 
 `reconcileNamespaces` ensures the namespaces the ControlPlane's services are
@@ -655,6 +655,16 @@ labels is **never adopted** — the condition fails loud rather than taking over
 namespace it did not create. Under **`External`** the operator only verifies the
 namespace exists; a missing one parks the condition and requeues.
 
+A namespace whose services carry a [`targetClusterRef`](../target-clusters.md)
+is ensured on that cluster as well as on the management cluster, under whichever
+lifecycle it declares. Both copies are needed: the workload CR stays at home, in
+the namespace the service is assigned to, and the service operator that picks it
+up writes its own children into the namespace of the same name on the target.
+One reason vocabulary covers both sides, so a namespace missing on the target
+reports `NamespaceNotFound` as one missing at home does. The cluster is resolved
+per namespace before anything is written, and a name that does not resolve
+creates nothing on either side.
+
 | Status | Reason | When |
 | --- | --- | --- |
 | `True` | `NoDedicatedNamespaces` | No service declares a namespace of its own. |
@@ -662,6 +672,7 @@ namespace exists; a missing one parks the condition and requeues.
 | `False` | `NamespaceNotFound` | An `External` namespace does not exist; requeue. |
 | `False` | `NamespaceNotOwned` | A `Managed` namespace exists but lacks the operator's ownership labels — never adopted. |
 | `False` | `NamespaceTerminating` | The namespace is being deleted; wait and requeue. |
+| `False` | `TargetClusterUnavailable` | A service placed the namespace on a target cluster that does not resolve; the resolver's own message, `cluster not found` for a name that was never registered. |
 | `False` | `FinalizingNamespaces` | On deletion, waiting for cross-namespace children to be torn down (see [Owner-ref / GC model](#owner-ref--gc-model)). |
 | `False` | `NamespaceError` | A create/get against the namespace failed. |
 

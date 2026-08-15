@@ -274,7 +274,7 @@ func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(ctx context.Context
 	server, mountPath := r.openBaoConnection(ctx, cp, secrets.EffectiveStoreRef(nil))
 
 	for _, ns := range controlPlaneNamespaces(cp) {
-		if err := r.ensureUnownedOrOwned(ctx, cp, esoTenantServiceAccount(ns)); err != nil {
+		if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, esoTenantServiceAccount(ns)); err != nil {
 			return fmt.Errorf("ensuring per-tenant ServiceAccount in namespace %q: %w", ns, err)
 		}
 
@@ -287,16 +287,16 @@ func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(ctx context.Context
 		live.SetName(esoTenantClientCertName)
 		live.SetNamespace(ns)
 		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
-			if err := refuseForeignAdoption(cp, live, r.Scheme); err != nil {
+			if err := refuseForeignAdoption(r.Client, cp, live, r.Scheme); err != nil {
 				return err
 			}
 			applyESOTenantCertificateSpec(live, ns)
-			return claimChildOwnership(cp, live, r.Scheme)
+			return claimChildOwnership(r.Client, cp, live, r.Scheme)
 		}); err != nil {
 			return fmt.Errorf("ensuring per-tenant client Certificate in namespace %q: %w", ns, err)
 		}
 
-		if err := r.ensureUnownedOrOwned(ctx, cp, esoTenantSecretStore(ns, server, mountPath)); err != nil {
+		if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, esoTenantSecretStore(ns, server, mountPath)); err != nil {
 			return fmt.Errorf("ensuring per-tenant SecretStore in namespace %q: %w", ns, err)
 		}
 	}

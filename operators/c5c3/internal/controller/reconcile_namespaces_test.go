@@ -25,11 +25,15 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -73,6 +77,73 @@ func namespacedControlPlane() *c5c3v1alpha1.ControlPlane {
 			},
 		},
 	}
+}
+
+// placedControlPlane builds namespacedControlPlane with Keystone's Managed
+// namespace placed on a target cluster, and the dashboard dropped so the
+// assignment under test is the only one.
+func placedControlPlane(targetCluster string) *c5c3v1alpha1.ControlPlane {
+	cp := namespacedControlPlane()
+	cp.Spec.Services.Horizon = nil
+	cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetCluster}
+	return cp
+}
+
+// childrenResolver stands in for the multicluster manager: it registers one
+// target cluster under every name, records the names it was asked for so a test
+// can prove a namespace resolved (or that an unplaced one cost no lookup), and
+// fails every lookup when err is set.
+//
+// errNames fails the NAMED clusters alone, leaving every other name resolvable.
+// It is what a ControlPlane spanning two clusters, one of them deregistered,
+// looks like to the resolver — the shape err (all of them) cannot express.
+//
+// reader, when set, answers the cluster's uncached API reader while children
+// stays its cached client, so a test can pin which of the two a read went
+// through by seeding them differently.
+type childrenResolver struct {
+	children client.Client
+	reader   client.Reader
+	err      error
+	errNames map[string]error
+	names    []mcruntime.ClusterName
+}
+
+func (r *childrenResolver) GetCluster(_ context.Context, name mcruntime.ClusterName) (cluster.Cluster, error) {
+	r.names = append(r.names, name)
+	if r.err != nil {
+		return nil, r.err
+	}
+	if err := r.errNames[string(name)]; err != nil {
+		return nil, err
+	}
+	return fakeTargetCluster{c: r.children, reader: r.reader}, nil
+}
+
+// fakeTargetCluster implements the two accessors ResolveChildrenClient reads.
+// Embedding the interface leaves every other method nil, which panics if
+// anything reaches for one. A fake client is read-your-writes, so it stands in
+// for both the cached client and the uncached API reader unless a test hands in
+// a reader of its own.
+type fakeTargetCluster struct {
+	cluster.Cluster
+	c      client.Client
+	reader client.Reader
+}
+
+func (f fakeTargetCluster) GetClient() client.Client { return f.c }
+func (f fakeTargetCluster) GetAPIReader() client.Reader {
+	if f.reader != nil {
+		return f.reader
+	}
+	return f.c
+}
+
+// localWriter is a client on the management cluster, for the claim and adoption
+// helpers a test calls outside a reconciler. They read nothing off it beyond
+// whether it is a resolved target-cluster client, which a bare fake is not.
+func localWriter() client.Client {
+	return fake.NewClientBuilder().Build()
 }
 
 func namespacesCondition(cp *c5c3v1alpha1.ControlPlane) *metav1.Condition {
@@ -263,6 +334,347 @@ func TestReconcileNamespaces_TerminatingWaits(t *testing.T) {
 	})
 }
 
+// TestReconcileNamespaces_PlacedManagedIsCreatedOnBothClusters pins the split a
+// placed namespace lives in: the ControlPlane keeps projecting into it at home,
+// and the service operator that picks the workload CR up projects into the
+// namespace of the same name on the target cluster, so it is created on both.
+//
+// The remote copy's FULL label set is asserted, not a few keys of it. The claim
+// there goes through ClaimWithLabels, which REBUILDS the label set from what it
+// is handed, so a caller passing less than the whole set silently drops labels —
+// managed-by among them — and nothing but this assertion would notice.
+func TestReconcileNamespaces_PlacedManagedIsCreatedOnBothClusters(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	cp := placedControlPlane("remote-a")
+
+	target := fake.NewClientBuilder().WithScheme(s).Build()
+	resolver := &childrenResolver{children: target}
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: resolver,
+	}
+
+	res, err := r.reconcileNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(namespacesCondition(cp).Reason).To(Equal("NamespacesReady"))
+	g.Expect(resolver.names).To(Equal([]mcruntime.ClusterName{"remote-a"}),
+		"the namespace resolves the cluster the service placed in it names")
+
+	// At home the namespace is claimed exactly as an unplaced one is: the two
+	// cross-namespace labels plus managed-by, and no owner-* label.
+	local := &corev1.Namespace{}
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: "identity"}, local)).To(Succeed())
+	g.Expect(local.Labels).To(Equal(map[string]string{
+		controlPlaneNameLabel:      "cp",
+		controlPlaneNamespaceLabel: "openstack",
+		managedByLabel:             managedByValue,
+	}))
+
+	remote := &corev1.Namespace{}
+	g.Expect(target.Get(ctx, types.NamespacedName{Name: "identity"}, remote)).To(Succeed())
+	g.Expect(remote.Labels).To(Equal(map[string]string{
+		commonmulticluster.OwnerKindLabel:      "ControlPlane",
+		commonmulticluster.OwnerNameLabel:      "cp",
+		commonmulticluster.OwnerNamespaceLabel: "openstack",
+		controlPlaneNameLabel:                  "cp",
+		controlPlaneNamespaceLabel:             "openstack",
+		managedByLabel:                         managedByValue,
+	}), "a remote child is recognized by its labels alone, so the whole set has to survive the claim")
+	g.Expect(remote.OwnerReferences).To(BeEmpty(),
+		"an owner reference on the target cluster names a UID that cluster cannot resolve")
+	g.Expect(remote.Annotations).To(HaveKeyWithValue(controlPlaneUIDAnnotation, "cp-uid"),
+		"the labels name a ControlPlane by name and namespace, which two management clusters can share; "+
+			"the UID is what an adoption and a namespace delete on the target are decided by")
+}
+
+// TestReconcileNamespaces_PlacedManagedRefusesAnotherManagementClustersNamespace
+// is the never-adopt guard against a collision the labels cannot see. A target
+// cluster is registerable from any number of management clusters, each able to
+// run a ControlPlane called "cp" in namespace "openstack" and to place a service
+// in "identity" — so the label pair matches and the namespace is somebody else's
+// all the same. Adopting it would have two operators write into one namespace and
+// either teardown cascade the other's database away.
+func TestReconcileNamespaces_PlacedManagedRefusesAnotherManagementClustersNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	cp := placedControlPlane("remote-a")
+
+	theirs := existingNamespace("identity", map[string]string{
+		controlPlaneNameLabel:      cp.Name,
+		controlPlaneNamespaceLabel: cp.Namespace,
+		managedByLabel:             managedByValue,
+	})
+	theirs.Annotations = map[string]string{controlPlaneUIDAnnotation: "another-management-clusters-cp-uid"}
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(theirs).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: target},
+	}
+
+	res, err := r.reconcileNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(namespaceRequeueAfter))
+
+	cond := namespacesCondition(cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("NamespaceNotOwned"))
+	// The message has to name the cause an operator can act on. This namespace WAS
+	// created by a ControlPlane of this name in a namespace of this name, so the
+	// generic "was not created by this ControlPlane" would send them looking for
+	// the wrong thing.
+	g.Expect(cond.Message).To(ContainSubstring("another-management-clusters-cp-uid"))
+	g.Expect(cond.Message).To(ContainSubstring("records another ControlPlane's UID"))
+
+	live := &corev1.Namespace{}
+	g.Expect(target.Get(ctx, types.NamespacedName{Name: "identity"}, live)).To(Succeed())
+	g.Expect(live.Annotations).To(HaveKeyWithValue(controlPlaneUIDAnnotation,
+		"another-management-clusters-cp-uid"), "the other ControlPlane's mark must be left where it is")
+}
+
+// TestReconcileNamespaces_PlacedManagedRefusesAnUnmarkedNamespace covers the
+// other half of that verdict, and the reason adoption asks for the mark itself
+// rather than for the labels around it. Both labels are derived from the CR's name
+// and namespace, values the CR publishes, so on a target cluster anyone holding
+// patch on a namespace can write them onto one this ControlPlane never created —
+// here a namespace full of somebody else's workloads. Only the UID says otherwise,
+// and it is minted on the management cluster and unreadable from here.
+//
+// Adopting on the labels alone would take the namespace over on the strength of
+// that one patch: the pass would stamp OUR mark into it, and the Managed teardown
+// would then cascade it — every workload, PVC and Secret in it — away. So it is
+// refused, nothing is written to it, and the message names both remedies.
+func TestReconcileNamespaces_PlacedManagedRefusesAnUnmarkedNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	cp := placedControlPlane("remote-a")
+
+	unmarked := existingNamespace("identity", map[string]string{
+		commonmulticluster.OwnerKindLabel:      "ControlPlane",
+		commonmulticluster.OwnerNameLabel:      cp.Name,
+		commonmulticluster.OwnerNamespaceLabel: cp.Namespace,
+		controlPlaneNameLabel:                  cp.Name,
+		controlPlaneNamespaceLabel:             cp.Namespace,
+		managedByLabel:                         managedByValue,
+	})
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(unmarked).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: target},
+	}
+
+	res, err := r.reconcileNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(namespaceRequeueAfter))
+
+	cond := namespacesCondition(cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("NamespaceNotOwned"))
+	// The two causes are indistinguishable from the object, so the message has to
+	// carry both — and the UID to restore, for the half that is a stripped mark.
+	g.Expect(cond.Message).To(ContainSubstring(controlPlaneUIDAnnotation))
+	g.Expect(cond.Message).To(ContainSubstring(string(cp.UID)))
+
+	live := &corev1.Namespace{}
+	g.Expect(target.Get(ctx, types.NamespacedName{Name: "identity"}, live)).To(Succeed())
+	g.Expect(live.Annotations).NotTo(HaveKey(controlPlaneUIDAnnotation),
+		"a refused namespace must not be stamped with this ControlPlane's mark: that stamp is what would license "+
+			"the teardown cascade the refusal exists to prevent")
+}
+
+// TestReconcileNamespaces_PlacedManagedDecidesFromLiveState pins which of the
+// target cluster's two readers the adoption verdict is taken from. It is an
+// ownership decision about marks this very operator writes on that cluster, and
+// the same verdict on the teardown side already reads live: a cache one resync
+// behind reports a namespace that exists as absent, and the pass would create —
+// and eventually own — something on the strength of a view that had not caught
+// up.
+func TestReconcileNamespaces_PlacedManagedDecidesFromLiveState(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	cp := placedControlPlane("remote-a")
+
+	// Somebody else's namespace, already on the target cluster and not yet in the
+	// cache the cached client answers from.
+	foreign := existingNamespace("identity", map[string]string{"team": "platform"})
+	cached := fake.NewClientBuilder().WithScheme(s).Build()
+	livecluster := fake.NewClientBuilder().WithScheme(s).WithObjects(foreign).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: cached, reader: livecluster},
+	}
+
+	res, err := r.reconcileNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(namespaceRequeueAfter))
+
+	cond := namespacesCondition(cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("NamespaceNotOwned"),
+		"the namespace the target cluster actually holds is the one the verdict is about")
+
+	g.Expect(cached.Get(ctx, types.NamespacedName{Name: "identity"}, &corev1.Namespace{})).NotTo(Succeed(),
+		"nothing may be created on the strength of a cache that has not caught up")
+}
+
+// TestReconcileNamespaces_PlacedManagedRefusesAForeignNamespaceOnTheTarget is the
+// never-adopt guard on the far side. The target cluster is somebody else's
+// cluster: a name free at home may well be taken there, and a Managed lifecycle
+// DELETES its namespace at teardown.
+func TestReconcileNamespaces_PlacedManagedRefusesAForeignNamespaceOnTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	cp := placedControlPlane("remote-a")
+
+	foreign := existingNamespace("identity", map[string]string{"team": "platform"})
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(foreign).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: target},
+	}
+
+	res, err := r.reconcileNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(namespaceRequeueAfter))
+
+	cond := namespacesCondition(cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("NamespaceNotOwned"))
+
+	live := &corev1.Namespace{}
+	g.Expect(target.Get(ctx, types.NamespacedName{Name: "identity"}, live)).To(Succeed())
+	g.Expect(live.Labels).To(Equal(map[string]string{"team": "platform"}),
+		"a namespace the ControlPlane did not create must not be labelled, and so must not become deletable")
+}
+
+// TestReconcileNamespaces_PlacedExternalIsVerifiedOnBothClusters covers the
+// lifecycle that creates nothing: the namespace has to be provisioned on both
+// clusters out-of-band, and a missing one on either side parks the condition on
+// the reason it always had.
+func TestReconcileNamespaces_PlacedExternalIsVerifiedOnBothClusters(t *testing.T) {
+	placedExternal := func() *c5c3v1alpha1.ControlPlane {
+		cp := namespacedControlPlane()
+		cp.Spec.Services.Keystone.Namespace = nil // the dashboard's External namespace only
+		cp.Spec.Services.Horizon.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "remote-a"}
+		return cp
+	}
+
+	t.Run("present on both", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := namespacesTestScheme(t)
+		cp := placedExternal()
+
+		target := fake.NewClientBuilder().WithScheme(s).WithObjects(existingNamespace("dashboard", nil)).Build()
+		r := &ControlPlaneReconciler{
+			Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp, existingNamespace("dashboard", nil)).Build(),
+			Scheme:   s,
+			Resolver: &childrenResolver{children: target},
+		}
+
+		res, err := r.reconcileNamespaces(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res.IsZero()).To(BeTrue())
+		g.Expect(namespacesCondition(cp).Status).To(Equal(metav1.ConditionTrue))
+	})
+
+	t.Run("missing on the target", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		s := namespacesTestScheme(t)
+		cp := placedExternal()
+
+		// Present at home, so only the target's verification can fail the pass.
+		target := fake.NewClientBuilder().WithScheme(s).Build()
+		r := &ControlPlaneReconciler{
+			Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp, existingNamespace("dashboard", nil)).Build(),
+			Scheme:   s,
+			Resolver: &childrenResolver{children: target},
+		}
+
+		res, err := r.reconcileNamespaces(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res.RequeueAfter).To(Equal(namespaceRequeueAfter))
+		g.Expect(namespacesCondition(cp).Reason).To(Equal("NamespaceNotFound"))
+
+		g.Expect(target.Get(ctx, types.NamespacedName{Name: "dashboard"}, &corev1.Namespace{})).NotTo(Succeed(),
+			"an External namespace must never be created by the operator, on either cluster")
+	})
+}
+
+// TestReconcileNamespaces_UnresolvableTargetCreatesNothing covers the cluster
+// that does not resolve — never registered, or deregistered under a running
+// ControlPlane. The pass ends before anything is written, on either cluster, and
+// reports the resolver's own message so an operator reads why rather than a
+// prefix this repo invented.
+func TestReconcileNamespaces_UnresolvableTargetCreatesNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	cp := placedControlPlane("remote-a")
+
+	target := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: target, err: mcruntime.ErrClusterNotFound},
+	}
+
+	res, err := r.reconcileNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred(), "an unregistered cluster is a state to wait out, not a reconcile failure")
+	g.Expect(res.RequeueAfter).To(Equal(namespaceRequeueAfter))
+
+	cond := namespacesCondition(cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: "identity"}, &corev1.Namespace{})).NotTo(Succeed(),
+		"a namespace whose cluster does not resolve must not be created at home either")
+	g.Expect(target.Get(ctx, types.NamespacedName{Name: "identity"}, &corev1.Namespace{})).NotTo(Succeed())
+}
+
+// TestReconcileNamespaces_UnplacedNamespaceStaysLocal is the regression guard for
+// the ControlPlanes that place nothing, which is every one of them today: a
+// registered target cluster must cost neither a lookup nor a namespace, and the
+// namespace must be ensured exactly once.
+func TestReconcileNamespaces_UnplacedNamespaceStaysLocal(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespacesTestScheme(t)
+	cp := namespacedControlPlane()
+	cp.Spec.Services.Horizon = nil
+
+	target := fake.NewClientBuilder().WithScheme(s).Build()
+	resolver := &childrenResolver{children: target}
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: resolver,
+	}
+
+	res, err := r.reconcileNamespaces(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(resolver.names).To(BeEmpty(), "a namespace no service placed must not cost a cluster lookup")
+
+	local := &corev1.Namespace{}
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: "identity"}, local)).To(Succeed())
+	g.Expect(local.Labels).NotTo(HaveKey(commonmulticluster.OwnerKindLabel),
+		"a local child is claimed by the cross-namespace labels alone")
+	g.Expect(target.Get(ctx, types.NamespacedName{Name: "identity"}, &corev1.Namespace{})).NotTo(Succeed())
+}
+
 // TestIsControlPlaneChild covers both ownership tests: the owner reference (the
 // same-namespace case) and the labels (the cross-namespace case, where no owner
 // reference is possible), plus the collision an object carrying neither must not
@@ -417,7 +829,7 @@ func TestRefuseForeignAdoption_NamesTheKind(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
 
-			err := refuseForeignAdoption(cp, tc.live, namespacesTestScheme(t))
+			err := refuseForeignAdoption(localWriter(), cp, tc.live, namespacesTestScheme(t))
 
 			g.Expect(err).To(HaveOccurred(), "a foreign object in an unowned namespace must be refused")
 			g.Expect(err.Error()).To(ContainSubstring("refusing to adopt pre-existing "+tc.kind+" "),
@@ -463,7 +875,7 @@ func TestRefuseForeignAdoption_AllowsOwnAndAbsent(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			g := NewGomegaWithT(t)
-			g.Expect(refuseForeignAdoption(cp, tc.live, namespacesTestScheme(t))).To(Succeed())
+			g.Expect(refuseForeignAdoption(localWriter(), cp, tc.live, namespacesTestScheme(t))).To(Succeed())
 		})
 	}
 }
@@ -484,7 +896,7 @@ func TestRefuseForeignAdoption_UnresolvableKindStillRefuses(t *testing.T) {
 	// An EMPTY scheme resolves no kind at all, so the guard falls back to the
 	// object's own (here: blank) GVK rather than erroring out and letting the
 	// adoption through.
-	err := refuseForeignAdoption(cp, foreign, runtime.NewScheme())
+	err := refuseForeignAdoption(localWriter(), cp, foreign, runtime.NewScheme())
 
 	g.Expect(err).To(HaveOccurred(), "an unresolvable kind must not turn a refusal into an adoption")
 	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt pre-existing"))
@@ -534,14 +946,14 @@ func TestEnsureUnownedOrOwned_ReadsWatchedKindsThroughTheCache(t *testing.T) {
 		APIReader: direct,
 	}
 
-	err := r.ensureUnownedOrOwned(ctx, cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+	err := r.ensureUnownedOrOwned(ctx, r.Client, cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
 		Namespace: "identity", Name: "cp-admin-password",
 	}})
 	g.Expect(err).To(HaveOccurred(), "the informer already holds the foreign object the pre-check must refuse")
 	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt pre-existing"))
 	g.Expect(direct.gets).To(Equal(0), "a watched kind must not spend a direct API GET on this pre-check")
 
-	g.Expect(r.ensureUnownedOrOwned(ctx, cp, &rbacv1.ClusterRoleBinding{
+	g.Expect(r.ensureUnownedOrOwned(ctx, r.Client, cp, &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "cp-barbican-bao-auth-delegator"},
 	})).To(Succeed())
 	g.Expect(direct.gets).To(Equal(1), "an unwatched kind has no informer to read from")
@@ -578,7 +990,7 @@ func TestEnsureUnownedOrOwned_ConfirmsACacheMissAgainstTheAPIServer(t *testing.T
 		APIReader: fake.NewClientBuilder().WithScheme(s).WithObjects(foreign).Build(),
 	}
 
-	err := r.ensureUnownedOrOwned(ctx, cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+	err := r.ensureUnownedOrOwned(ctx, r.Client, cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
 		Namespace: "identity", Name: "cp-admin-password",
 	}})
 	g.Expect(err).To(HaveOccurred(), "a lagging informer must not turn a foreign object into an adoption")
@@ -586,7 +998,7 @@ func TestEnsureUnownedOrOwned_ConfirmsACacheMissAgainstTheAPIServer(t *testing.T
 
 	// The confirmation refuses only what is actually there: a name free on BOTH
 	// readers is still created.
-	g.Expect(r.ensureUnownedOrOwned(ctx, cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
+	g.Expect(r.ensureUnownedOrOwned(ctx, r.Client, cp, &esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
 		Namespace: "identity", Name: "cp-db-credentials",
 	}})).To(Succeed())
 }
