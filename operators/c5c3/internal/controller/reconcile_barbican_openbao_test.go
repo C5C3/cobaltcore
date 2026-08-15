@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -170,7 +171,7 @@ func TestEnsureBarbicanOpenBao_UnsealKeyGeneratedOnceAndOwnedByInstance(t *testi
 	cp := barbicanOpenBaoControlPlane()
 	r := barbicanOpenBaoReconciler(t, cp)
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	key := types.NamespacedName{
@@ -191,7 +192,7 @@ func TestEnsureBarbicanOpenBao_UnsealKeyGeneratedOnceAndOwnedByInstance(t *testi
 	g.Expect(isControlPlaneChild(first, cp)).To(BeTrue(),
 		"the Secret must also carry the ownership labels the teardown finds it by")
 
-	_, err = r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err = r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	second := &corev1.Secret{}
@@ -213,7 +214,7 @@ func TestEnsureBarbicanOpenBao_UnsealKeyRandomnessFailure(t *testing.T) {
 	t.Cleanup(func() { barbicanUnsealKeyRandRead = original })
 	barbicanUnsealKeyRandRead = func([]byte) (int, error) { return 0, errors.New("entropy pool drained") }
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("generating barbican unseal key"))
 	g.Expect(err.Error()).To(ContainSubstring("entropy pool drained"))
@@ -234,7 +235,7 @@ func TestEnsureBarbicanOpenBao_ProjectsInstanceSpec(t *testing.T) {
 	cp := barbicanOpenBaoControlPlane()
 	r := barbicanOpenBaoReconciler(t, cp)
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	instance := getBarbicanOpenBaoCluster(t, r, cp)
@@ -261,7 +262,7 @@ func TestEnsureBarbicanOpenBao_PinsIngressPeers(t *testing.T) {
 	cp := barbicanOpenBaoControlPlane()
 	r := barbicanOpenBaoReconciler(t, cp)
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	instance := getBarbicanOpenBaoCluster(t, r, cp)
@@ -310,7 +311,7 @@ func TestEnsureBarbicanOpenBao_ProjectsAPIServerEndpointIPs(t *testing.T) {
 		},
 	})
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	instance := getBarbicanOpenBaoCluster(t, r, cp)
@@ -330,7 +331,7 @@ func TestEnsureBarbicanOpenBao_TracksAPIServerEndpointDrift(t *testing.T) {
 	cp := barbicanOpenBaoControlPlane()
 	r := barbicanOpenBaoReconciler(t, cp, defaultKubernetesEndpointSlice("172.18.0.2"))
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getBarbicanOpenBaoCluster(t, r, cp).Spec.Network.APIServerEndpointIPs).
 		To(Equal([]string{"172.18.0.2"}))
@@ -344,7 +345,7 @@ func TestEnsureBarbicanOpenBao_TracksAPIServerEndpointDrift(t *testing.T) {
 	slice.Endpoints = []discoveryv1.Endpoint{{Addresses: []string{"10.0.0.7"}}}
 	g.Expect(r.Update(context.Background(), slice)).To(Succeed())
 
-	_, err = r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err = r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(getBarbicanOpenBaoCluster(t, r, cp).Spec.Network.APIServerEndpointIPs).
 		To(Equal([]string{"10.0.0.7"}))
@@ -364,7 +365,7 @@ func TestEnsureBarbicanOpenBao_RefusesWithoutAPIServerEndpointSlice(t *testing.T
 	cp := barbicanOpenBaoControlPlane()
 	r := barbicanOpenBaoReconcilerWithExactSeeds(t, cp)
 
-	available, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	available, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("getting EndpointSlice default/kubernetes"))
 	g.Expect(available).To(BeFalse())
@@ -394,7 +395,7 @@ func TestEnsureBarbicanOpenBao_RefusesEmptyAPIServerEndpointSlice(t *testing.T) 
 		Endpoints:   []discoveryv1.Endpoint{},
 	})
 
-	available, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	available, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring(
 		"EndpointSlice default/kubernetes carries no API server address"))
@@ -418,7 +419,7 @@ func TestEnsureBarbicanOpenBao_ProjectsSelfInitRequests(t *testing.T) {
 	cp := barbicanOpenBaoControlPlane()
 	r := barbicanOpenBaoReconciler(t, cp)
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	instance := getBarbicanOpenBaoCluster(t, r, cp)
@@ -460,7 +461,7 @@ func TestEnsureBarbicanOpenBao_ProjectsCertificates(t *testing.T) {
 	cp := barbicanOpenBaoControlPlane()
 	r := barbicanOpenBaoReconciler(t, cp)
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	server := getBarbicanOpenBaoCertificate(t, r, barbicanOpenBaoTestNamespace, "cp-barbican-bao-tls-server")
@@ -505,7 +506,7 @@ func TestEnsureBarbicanOpenBao_ProjectsAccessObjects(t *testing.T) {
 	cp := barbicanOpenBaoControlPlane()
 	r := barbicanOpenBaoReconciler(t, cp)
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	ctx := context.Background()
 
@@ -567,7 +568,7 @@ func TestEnsureBarbicanOpenBao_HonoursOperatorIdentityOverride(t *testing.T) {
 	r.BarbicanOperatorNamespace = "openstack-operators"
 	r.BarbicanOperatorServiceAccount = "barbican-controller-manager"
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	binding := &rbacv1.RoleBinding{}
@@ -590,7 +591,7 @@ func TestEnsureBarbicanOpenBao_CreatesTenantForUnadmittedNamespace(t *testing.T)
 	cp := barbicanOpenBaoControlPlane()
 	r := barbicanOpenBaoReconciler(t, cp)
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	tenant := &openbaov1alpha1.OpenBaoTenant{}
@@ -619,7 +620,7 @@ func TestEnsureBarbicanOpenBao_SkipsTenantWhenNamespaceAlreadyAdmitted(t *testin
 	}
 	r := barbicanOpenBaoReconciler(t, cp, existing)
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	ours := &openbaov1alpha1.OpenBaoTenant{}
@@ -658,7 +659,7 @@ func TestEnsureBarbicanOpenBao_RefusesForeignInstance(t *testing.T) {
 	}
 	r := barbicanOpenBaoReconciler(t, cp, foreign)
 
-	available, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	available, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("refusing to adopt"))
 	g.Expect(available).To(BeFalse())
@@ -677,7 +678,7 @@ func TestEnsureBarbicanOpenBao_ReportsAvailability(t *testing.T) {
 	cp := barbicanOpenBaoControlPlane()
 	r := barbicanOpenBaoReconciler(t, cp)
 
-	available, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	available, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(available).To(BeFalse(), "a freshly created instance reports no conditions yet")
 
@@ -692,7 +693,7 @@ func TestEnsureBarbicanOpenBao_ReportsAvailability(t *testing.T) {
 	}}
 	g.Expect(r.Status().Update(context.Background(), instance)).To(Succeed())
 
-	available, err = r.ensureBarbicanOpenBao(context.Background(), cp)
+	available, err = r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(available).To(BeTrue())
 }
@@ -753,9 +754,9 @@ func TestEnsureBarbicanOpenBao_AuthDelegatorNameIsNamespaceQualified(t *testing.
 		"the fixture only proves anything while both derive the SAME instance name")
 
 	r := barbicanOpenBaoReconciler(t, first, second)
-	_, err := r.ensureBarbicanOpenBao(ctx, first)
+	_, err := r.ensureBarbicanOpenBao(ctx, r.Client, first)
 	g.Expect(err).NotTo(HaveOccurred())
-	_, err = r.ensureBarbicanOpenBao(ctx, second)
+	_, err = r.ensureBarbicanOpenBao(ctx, r.Client, second)
 	g.Expect(err).NotTo(HaveOccurred(),
 		"the second ControlPlane must not collide with the first one's cluster-scoped binding")
 
@@ -810,6 +811,199 @@ func TestBarbicanOpenBaoAuthDelegatorName_DisambiguatesTheNamespaceBoundary(t *t
 		"truncating the hash further puts the binding name within reach of a brute-force search")
 }
 
+// --- per-service target clusters: the ensemble follows the service ---
+
+// placedBarbicanOpenBaoControlPlane places the Barbican service, and with it the
+// whole dedicated ensemble, on a target cluster.
+func placedBarbicanOpenBaoControlPlane(targetCluster string) *c5c3v1alpha1.ControlPlane {
+	cp := barbicanOpenBaoControlPlane()
+	cp.Spec.Services.Barbican.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetCluster}
+	return cp
+}
+
+// splitBarbicanOpenBaoReconciler builds a reconciler over two fake clusters: the
+// management one holding cp plus home, and a target cluster — registered under
+// every name — holding target.
+//
+// Neither is seeded with an API-server EndpointSlice, so each test says which
+// cluster publishes one. That is the whole point of a placed ensemble: the
+// NetworkPolicy is enforced over pods on the target, so only the target's
+// addresses are the right ones, and a test that seeded both could not tell which
+// cluster was read.
+func splitBarbicanOpenBaoReconciler(
+	t *testing.T, cp *c5c3v1alpha1.ControlPlane, home, target []client.Object,
+) (*ControlPlaneReconciler, client.Client) {
+	t.Helper()
+	s := barbicanOpenBaoTestScheme(t)
+	remote := fake.NewClientBuilder().WithScheme(s).WithObjects(target...).
+		WithStatusSubresource(&openbaov1alpha1.OpenBaoCluster{}).Build()
+	return &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(append([]client.Object{cp}, home...)...).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote},
+	}, remote
+}
+
+// barbicanOpenBaoChildrenClient resolves the client a placed ensemble is written
+// with, the same way the sub-reconciler does before it calls into the ensemble.
+func barbicanOpenBaoChildrenClient(
+	t *testing.T, r *ControlPlaneReconciler, cp *c5c3v1alpha1.ControlPlane,
+) client.Client {
+	t.Helper()
+	c, err := r.childrenClientFor(context.Background(), cp, cp.BarbicanNamespace())
+	if err != nil {
+		t.Fatalf("resolving the children client of namespace %q: %v", cp.BarbicanNamespace(), err)
+	}
+	return c
+}
+
+// TestEnsureBarbicanOpenBao_PlacedEnsembleLandsOnTheTarget verifies every object
+// of a placed ensemble is written to the service's own cluster, claimed by the
+// labels alone: the openbao-operator that reconciles the instance, the
+// cert-manager that issues its certificates, and the TokenReview its logins are
+// validated with all run there, and none of them can act on an object left at
+// home. The cluster-scoped ClusterRoleBinding is created on the target for the
+// same reason — the account it names is a target-cluster account.
+//
+// The unseal Secret is the deliberate exception. It keeps the OpenBaoCluster's
+// controller reference, which stays legal because the two live in the same
+// namespace on the same cluster, and it is the ownership proof the
+// openbao-operator adopts a pre-existing unseal Secret against.
+func TestEnsureBarbicanOpenBao_PlacedEnsembleLandsOnTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := placedBarbicanOpenBaoControlPlane("remote-a")
+	r, remote := splitBarbicanOpenBaoReconciler(t, cp, nil,
+		[]client.Object{defaultKubernetesEndpointSlice()})
+
+	_, err := r.ensureBarbicanOpenBao(ctx, barbicanOpenBaoChildrenClient(t, r, cp), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ns := barbicanOpenBaoTestNamespace
+	instanceName := barbicanOpenBaoName(cp)
+	serverCert, caCert := &unstructured.Unstructured{}, &unstructured.Unstructured{}
+	serverCert.SetGroupVersionKind(certificateGVK)
+	caCert.SetGroupVersionKind(certificateGVK)
+
+	ensemble := []struct {
+		obj client.Object
+		key types.NamespacedName
+	}{
+		{&openbaov1alpha1.OpenBaoTenant{}, types.NamespacedName{Namespace: ns, Name: instanceName + "-tenant"}},
+		{serverCert, types.NamespacedName{Namespace: ns, Name: instanceName + "-tls-server"}},
+		{caCert, types.NamespacedName{Namespace: ns, Name: instanceName + "-tls-ca"}},
+		{&corev1.ServiceAccount{}, types.NamespacedName{Namespace: ns, Name: instanceName + "-provisioner"}},
+		{&rbacv1.Role{}, types.NamespacedName{Namespace: ns, Name: instanceName + "-provisioner-token"}},
+		{&rbacv1.RoleBinding{}, types.NamespacedName{Namespace: ns, Name: instanceName + "-provisioner-token"}},
+		{&rbacv1.ClusterRoleBinding{}, types.NamespacedName{Name: barbicanOpenBaoAuthDelegatorName(instanceName, ns)}},
+		{&openbaov1alpha1.OpenBaoCluster{}, types.NamespacedName{Namespace: ns, Name: instanceName}},
+	}
+	for _, member := range ensemble {
+		g.Expect(remote.Get(ctx, member.key, member.obj)).To(Succeed(),
+			"%T %s must be written to the target cluster", member.obj, member.key)
+		g.Expect(member.obj.GetLabels()).To(Equal(remoteChildLabels(cp)),
+			"%T must carry the full remote claim", member.obj)
+		g.Expect(member.obj.GetOwnerReferences()).To(BeEmpty(),
+			"%T must carry no owner reference on the target cluster", member.obj)
+	}
+
+	// The unseal Secret: same claim, but the instance's controller reference on top
+	// of it.
+	secret := &corev1.Secret{}
+	g.Expect(remote.Get(ctx, types.NamespacedName{
+		Namespace: ns, Name: instanceName + barbicanOpenBaoUnsealSecretSuffix,
+	}, secret)).To(Succeed())
+	g.Expect(secret.Labels).To(Equal(remoteChildLabels(cp)))
+	owner := metav1.GetControllerOf(secret)
+	g.Expect(owner).NotTo(BeNil(), "the seal key must still be owned by the instance it seals")
+	g.Expect(owner.Kind).To(Equal("OpenBaoCluster"))
+	g.Expect(owner.Name).To(Equal(instanceName))
+
+	// Nothing of the ensemble at home, the cluster-scoped binding included.
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Namespace: ns, Name: instanceName},
+		&openbaov1alpha1.OpenBaoCluster{})).NotTo(Succeed(),
+		"a placed instance must not be provisioned on the management cluster as well")
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Name: barbicanOpenBaoAuthDelegatorName(instanceName, ns)},
+		&rbacv1.ClusterRoleBinding{})).NotTo(Succeed(),
+		"the TokenReview grant belongs to the cluster the instance pods run on")
+}
+
+// TestEnsureBarbicanOpenBao_ResolvesTheTargetAPIServerEndpoints verifies the
+// egress allowlist is built from the TARGET cluster's API-server addresses. The
+// NetworkPolicy the openbao-operator renders is enforced by the CNI on that
+// cluster, over pods that reach their own API server, so the management cluster's
+// addresses would allow the instance nothing it needs — and the instance would
+// wedge exactly as it does with no allowance at all.
+func TestEnsureBarbicanOpenBao_ResolvesTheTargetAPIServerEndpoints(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := placedBarbicanOpenBaoControlPlane("remote-a")
+	r, remote := splitBarbicanOpenBaoReconciler(t, cp,
+		[]client.Object{defaultKubernetesEndpointSlice("10.0.0.1")},
+		[]client.Object{defaultKubernetesEndpointSlice("172.18.0.5", "172.18.0.4")})
+
+	_, err := r.ensureBarbicanOpenBao(ctx, barbicanOpenBaoChildrenClient(t, r, cp), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	instance := &openbaov1alpha1.OpenBaoCluster{}
+	g.Expect(remote.Get(ctx, types.NamespacedName{
+		Namespace: cp.BarbicanNamespace(), Name: barbicanOpenBaoName(cp),
+	}, instance)).To(Succeed())
+	g.Expect(instance.Spec.Network).NotTo(BeNil())
+	g.Expect(instance.Spec.Network.APIServerEndpointIPs).To(Equal([]string{"172.18.0.4", "172.18.0.5"}),
+		"the addresses must be the target's, deduplicated and sorted")
+}
+
+// TestEnsureBarbicanOpenBao_RefusesUnusableTargetEndpointSlice keeps the
+// fail-closed posture on the target cluster: an absent slice and a present-but-
+// empty one each abort with the error naming the object, and no instance is
+// written on either cluster. The management cluster publishes a perfectly good
+// slice in both cases, which is what makes the refusal a statement about the
+// target rather than about the read failing everywhere.
+func TestEnsureBarbicanOpenBao_RefusesUnusableTargetEndpointSlice(t *testing.T) {
+	emptySlice := defaultKubernetesEndpointSlice()
+	emptySlice.Endpoints = nil
+
+	tests := []struct {
+		name   string
+		target []client.Object
+		errmsg string
+	}{
+		{
+			name:   "no slice on the target",
+			errmsg: "getting EndpointSlice default/kubernetes",
+		},
+		{
+			name:   "empty slice on the target",
+			target: []client.Object{emptySlice},
+			errmsg: "EndpointSlice default/kubernetes carries no API server address",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			cp := placedBarbicanOpenBaoControlPlane("remote-a")
+			r, remote := splitBarbicanOpenBaoReconciler(t, cp,
+				[]client.Object{defaultKubernetesEndpointSlice("10.0.0.1")}, tc.target)
+
+			available, err := r.ensureBarbicanOpenBao(ctx, barbicanOpenBaoChildrenClient(t, r, cp), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.errmsg))
+			g.Expect(available).To(BeFalse())
+
+			for name, c := range map[string]client.Client{"management": r.Client, "target": remote} {
+				var instances openbaov1alpha1.OpenBaoClusterList
+				g.Expect(c.List(ctx, &instances)).To(Succeed())
+				g.Expect(instances.Items).To(BeEmpty(),
+					"no OpenBaoCluster may be written on the %s cluster", name)
+			}
+		})
+	}
+}
+
 // TestEnsureBarbicanOpenBao_CarriesOverLiveStorage pins the one field the
 // projection must NOT re-project onto a live instance: the openbao-operator
 // rejects a change to spec.storage on an existing CR, so an instance whose volume
@@ -829,7 +1023,7 @@ func TestEnsureBarbicanOpenBao_CarriesOverLiveStorage(t *testing.T) {
 	}
 	r := barbicanOpenBaoReconciler(t, cp, live)
 
-	_, err := r.ensureBarbicanOpenBao(context.Background(), cp)
+	_, err := r.ensureBarbicanOpenBao(context.Background(), r.Client, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	instance := getBarbicanOpenBaoCluster(t, r, cp)

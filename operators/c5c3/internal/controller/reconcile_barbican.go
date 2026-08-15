@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
@@ -342,7 +343,18 @@ func (r *ControlPlaneReconciler) reconcileBarbican(ctx context.Context, cp *c5c3
 	// to be re-driven from a failure state. An external store addresses a server run
 	// outside this control plane, so nothing is provisioned for it.
 	if barbicanSecretStoreDedicated(cp) {
-		available, err := r.ensureBarbicanOpenBao(ctx, cp)
+		// The ensemble rides the Barbican service's own cluster, so its cluster is
+		// resolved before the first object is written. An external store resolves
+		// nothing: it names a server this ControlPlane does not provision, and an
+		// unresolvable target cluster must not park a Barbican that has no ensemble
+		// on it.
+		children, err := r.childrenClientFor(ctx, cp, barbicanNS)
+		if err != nil {
+			conditionFailer(cp, conditionTypeBarbicanReady)(commonmulticluster.TargetClusterUnavailable, err.Error())
+			return ctrl.Result{RequeueAfter: infraRequeueAfter}, nil
+		}
+
+		available, err := r.ensureBarbicanOpenBao(ctx, children, cp)
 		if err != nil {
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 				Type:               conditionTypeBarbicanReady,

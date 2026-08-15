@@ -28,8 +28,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
@@ -1591,4 +1593,120 @@ func TestReconcileBarbican_UnsetDeletionPreservesTheStoreDataWithoutTheSecondOpt
 	g.Expect(cond.Reason).To(Equal("BarbicanNotManaged"))
 	g.Expect(cond.Message).To(ContainSubstring(barbicanStoreDataDeletionAllowedAnnotation),
 		"the condition must name the annotation that would destroy the stored secrets")
+}
+
+// --- per-service target clusters: the ensemble follows the service ---
+
+// placedBarbicanControlPlane places the Barbican service, and with it the
+// dedicated OpenBao ensemble, in a namespace of its own on a target cluster. Its
+// database is brownfield, so the DB-credential leg — whose own placement is
+// covered in reconcile_dbcredentials_test.go — projects nothing and the ensemble
+// is the first thing in the pass to resolve the cluster.
+func placedBarbicanControlPlane(targetCluster string) *c5c3v1alpha1.ControlPlane {
+	cp := barbicanControlPlane()
+	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+		Host:      "db.example.com",
+		Database:  "keystone",
+		SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"},
+	}
+	cp.Spec.Services.Barbican.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      "key-manager",
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.Services.Barbican.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetCluster}
+	return cp
+}
+
+// splitBarbicanReconciler builds a reconciler over two fake clusters: the
+// management one holding cp, where every projected CR stays, and a target cluster
+// — registered under every name — holding target, the OpenBao ensemble the
+// service takes with it.
+func splitBarbicanReconciler(
+	t *testing.T, cp *c5c3v1alpha1.ControlPlane, target ...client.Object,
+) (*ControlPlaneReconciler, client.Client) {
+	t.Helper()
+	s := barbicanTestScheme(t)
+	remote := fake.NewClientBuilder().WithScheme(s).WithObjects(target...).
+		WithStatusSubresource(&openbaov1alpha1.OpenBaoCluster{}).Build()
+	return &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{}).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote},
+	}, remote
+}
+
+// TestReconcileBarbican_PlacedOpenBaoGateIsAnsweredFromTheTarget verifies the
+// Available gate reads the instance from the cluster it was provisioned on. The
+// instance exists only there, so a gate still reading at home would park on
+// WaitingForOpenBaoInstance for good and the store would never be attached.
+//
+// It also pins what does NOT move: the BarbicanSecretStore and the Barbican child
+// are the CRs the barbican-operator reconciles from the management cluster, so
+// they stay there whichever cluster the ensemble behind them runs on.
+func TestReconcileBarbican_PlacedOpenBaoGateIsAnsweredFromTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := placedBarbicanControlPlane("remote-a")
+
+	instance := availableBarbicanOpenBaoCluster(cp)
+	instance.Labels = remoteChildLabels(cp)
+	r, remote := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice())
+
+	res, err := r.reconcileBarbican(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(infraRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForBarbican"),
+		"an Available instance on the target must carry the pass through to the child")
+
+	g.Expect(getProjectedBarbicanStore(t, r.Client, cp)).NotTo(BeNil())
+	g.Expect(getProjectedBarbican(t, r.Client, cp)).NotTo(BeNil())
+	var placedChildren barbicanv1alpha1.BarbicanList
+	g.Expect(remote.List(ctx, &placedChildren)).To(Succeed())
+	g.Expect(placedChildren.Items).To(BeEmpty(), "the child CR is reconciled from the management cluster")
+}
+
+// TestReconcileBarbican_UnresolvableTargetParksTheEnsemble covers the cluster that
+// does not resolve: the pass parks on the reason every operator reports that
+// failure under, keeps the sub-reconciler's own requeue cadence, and writes
+// nothing on either cluster — not the ensemble, not the store, not the child.
+func TestReconcileBarbican_UnresolvableTargetParksTheEnsemble(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := barbicanTestScheme(t)
+	cp := placedBarbicanControlPlane("remote-a")
+
+	remote := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{}).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote, err: mcruntime.ErrClusterNotFound},
+	}
+
+	res, err := r.reconcileBarbican(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred(), "an unregistered cluster is a state to wait out, not a reconcile failure")
+	g.Expect(res.RequeueAfter).To(Equal(infraRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+
+	for name, c := range map[string]client.Client{"management": r.Client, "target": remote} {
+		var instances openbaov1alpha1.OpenBaoClusterList
+		g.Expect(c.List(ctx, &instances)).To(Succeed())
+		g.Expect(instances.Items).To(BeEmpty(), "no instance may be provisioned on the %s cluster", name)
+
+		var stores barbicanv1alpha1.BarbicanSecretStoreList
+		g.Expect(c.List(ctx, &stores)).To(Succeed())
+		g.Expect(stores.Items).To(BeEmpty(), "no store may be attached on the %s cluster", name)
+
+		var children barbicanv1alpha1.BarbicanList
+		g.Expect(c.List(ctx, &children)).To(Succeed())
+		g.Expect(children.Items).To(BeEmpty(), "no child may be projected on the %s cluster", name)
+	}
 }
