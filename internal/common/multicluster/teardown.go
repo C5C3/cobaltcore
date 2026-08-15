@@ -87,7 +87,7 @@ func SweepRemoteChildren(
 		if err != nil {
 			return err
 		}
-		if err := DeleteRemoteChildren(ctx, reader, children, scheme, owner, kinds); err != nil {
+		if err := DeleteRemoteChildren(ctx, reader, children, scheme, owner, owner.GetNamespace(), kinds); err != nil {
 			return err
 		}
 	}
@@ -99,12 +99,17 @@ func SweepRemoteChildren(
 	return nil
 }
 
-// DeleteRemoteChildren deletes every object of the given kinds that owner owns,
-// in owner's own namespace — every projection in this repo is namespace-scoped
-// into the CR's namespace. It is the cleanup half of the ownership contract: no
-// garbage collection cascade crosses a cluster boundary, so a CR that projected
-// children onto a target cluster deletes them itself, and
-// RemoteChildrenFinalizer is what keeps the CR in etcd long enough to do it.
+// DeleteRemoteChildren deletes every object of the given kinds that owner owns
+// in namespace. It is the cleanup half of the ownership contract: no garbage
+// collection cascade crosses a cluster boundary, so a CR that projected children
+// onto a target cluster deletes them itself, and RemoteChildrenFinalizer is what
+// keeps the CR in etcd long enough to do it.
+//
+// namespace is the one namespace the sweep lists in, and naming it is the
+// caller's job because a projection is namespace-scoped but not always into the
+// owner's own namespace. An owner whose children all live beside it passes
+// owner.GetNamespace(); an owner that projects into a namespace it does not
+// itself live in passes that namespace instead.
 //
 // Ownership is decided by Controls, object by object, rather than by a
 // server-side label selector, so the sweep reclaims exactly the set every other
@@ -160,6 +165,7 @@ func DeleteRemoteChildren(
 	writer client.Client,
 	scheme *runtime.Scheme,
 	owner client.Object,
+	namespace string,
 	kinds []schema.GroupVersionKind,
 ) error {
 	if !IsRemote(writer) {
@@ -178,7 +184,7 @@ func DeleteRemoteChildren(
 			page := &metav1.PartialObjectMetadataList{}
 			page.SetGroupVersionKind(listGVK)
 
-			err := reader.List(ctx, page, client.InNamespace(owner.GetNamespace()),
+			err := reader.List(ctx, page, client.InNamespace(namespace),
 				client.Limit(teardownPageSize), client.Continue(continueToken))
 			if meta.IsNoMatchError(err) {
 				break

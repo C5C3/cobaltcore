@@ -93,7 +93,7 @@ func TestDeleteRemoteChildrenLocalClientDeletesNothing(t *testing.T) {
 	wouldMatch := ownedBy(t, scheme, owner, teardownConfigMap("keystone-config", "openstack"))
 	local := fake.NewClientBuilder().WithScheme(scheme).WithObjects(wouldMatch).Build()
 
-	err := DeleteRemoteChildren(context.Background(), local, local, scheme, owner,
+	err := DeleteRemoteChildren(context.Background(), local, local, scheme, owner, owner.Namespace,
 		[]schema.GroupVersionKind{configMapGVK})
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -112,7 +112,7 @@ func TestDeleteRemoteChildrenDeletesEveryLabelledChildOfEveryKind(t *testing.T) 
 	target := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(configMap, secret, deployment).Build()
 
-	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner,
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, owner.Namespace,
 		[]schema.GroupVersionKind{configMapGVK, secretGVK, deploymentGVK})
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -143,7 +143,7 @@ func TestDeleteRemoteChildrenSweepsAChildOwnedByAReferenceAlone(t *testing.T) {
 	}}
 	target := fake.NewClientBuilder().WithScheme(scheme).WithObjects(legacy).Build()
 
-	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner,
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, owner.Namespace,
 		[]schema.GroupVersionKind{secretGVK})
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -172,7 +172,7 @@ func TestDeleteRemoteChildrenSparesEverythingItDoesNotOwn(t *testing.T) {
 	target := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(ours, unlabelled, otherName, otherKind, otherNamespace).Build()
 
-	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner,
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, owner.Namespace,
 		[]schema.GroupVersionKind{configMapGVK})
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -182,6 +182,63 @@ func TestDeleteRemoteChildrenSparesEverythingItDoesNotOwn(t *testing.T) {
 	g.Expect(gone(t, target, otherKind)).To(gomega.BeFalse(),
 		"a same-named CR of another kind owns this one")
 	g.Expect(gone(t, target, otherNamespace)).To(gomega.BeFalse(), "outside the swept namespace")
+}
+
+// The swept namespace is the caller's to name because it is not always the
+// owner's own: an owner that projects a service into a namespace dedicated to it
+// sweeps that namespace, while its own holds nothing to reclaim. Ownership is
+// decided there exactly as it is anywhere else, and the namespace the caller
+// named stays the only one the sweep may touch.
+func TestDeleteRemoteChildrenSweepsANamespaceThatIsNotTheOwners(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	scheme := teardownScheme(t)
+	owner := testOwner()
+	const placed = "openstack-keystone"
+	ours := ownedBy(t, scheme, owner, teardownConfigMap("keystone-config", placed))
+	// The Delete for this one is answered with a NotFound: the child the list saw
+	// a moment before something else removed it is already where the sweep wanted
+	// it.
+	raced := ownedBy(t, scheme, owner, teardownSecret("keystone-credentials", placed))
+	unlabelled := teardownConfigMap("cluster-ca", placed)
+	otherName := ownedBy(t, scheme,
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "openstack"}},
+		teardownConfigMap("other-config", placed))
+	beside := ownedBy(t, scheme, owner, teardownConfigMap("keystone-config", owner.Namespace))
+	target := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(ours, raced, unlabelled, otherName, beside).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList,
+				opts ...client.ListOption,
+			) error {
+				if list.GetObjectKind().GroupVersionKind().Kind == "CertificateList" {
+					return &meta.NoKindMatchError{
+						GroupKind:        schema.GroupKind{Group: "cert-manager.io", Kind: "Certificate"},
+						SearchedVersions: []string{"v1"},
+					}
+				}
+				return c.List(ctx, list, opts...)
+			},
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object,
+				opts ...client.DeleteOption,
+			) error {
+				if obj.GetObjectKind().GroupVersionKind().Kind == "Secret" {
+					return apierrors.NewNotFound(corev1.Resource("secrets"), obj.GetName())
+				}
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, placed,
+		[]schema.GroupVersionKind{certificateGVK, configMapGVK, secretGVK})
+
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(gone(t, target, ours)).To(gomega.BeTrue(),
+		"a child of this owner is one wherever the owner put it")
+	g.Expect(gone(t, target, unlabelled)).To(gomega.BeFalse(), "an object nobody claimed is nobody's child")
+	g.Expect(gone(t, target, otherName)).To(gomega.BeFalse(), "another CR's child")
+	g.Expect(gone(t, target, beside)).To(gomega.BeFalse(),
+		"the sweep lists the namespace it was given, not the owner's")
 }
 
 // Every operator sweeps the same kind list, and a target cluster is free to
@@ -209,7 +266,7 @@ func TestDeleteRemoteChildrenSkipsAKindTheTargetDoesNotServe(t *testing.T) {
 			},
 		}).Build()
 
-	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner,
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, owner.Namespace,
 		[]schema.GroupVersionKind{certificateGVK, configMapGVK})
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -232,7 +289,7 @@ func TestDeleteRemoteChildrenToleratesAChildDeletedUnderIt(t *testing.T) {
 			},
 		}).Build()
 
-	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner,
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, owner.Namespace,
 		[]schema.GroupVersionKind{configMapGVK})
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -299,7 +356,7 @@ func TestDeleteRemoteChildrenPagesThroughAKind(t *testing.T) {
 			},
 		}).Build()
 
-	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner,
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, owner.Namespace,
 		[]schema.GroupVersionKind{configMapGVK})
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -336,7 +393,7 @@ func TestDeleteRemoteChildrenListsMetadataOnly(t *testing.T) {
 			},
 		}).Build()
 
-	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner,
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, owner.Namespace,
 		[]schema.GroupVersionKind{secretGVK})
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -390,7 +447,7 @@ func TestDeleteRemoteChildrenRescansAKindWhoseContinueTokenExpired(t *testing.T)
 			},
 		}).Build()
 
-	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner,
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, owner.Namespace,
 		[]schema.GroupVersionKind{configMapGVK})
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -420,7 +477,7 @@ func TestDeleteRemoteChildrenFailsAKindThatKeepsExpiring(t *testing.T) {
 			},
 		}).Build()
 
-	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner,
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, owner.Namespace,
 		[]schema.GroupVersionKind{configMapGVK})
 
 	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("listing remote ConfigMap children for teardown")))
@@ -449,13 +506,38 @@ func TestDeleteRemoteChildrenPropagatesAListError(t *testing.T) {
 			},
 		}).Build()
 
-	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner,
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, owner.Namespace,
 		[]schema.GroupVersionKind{secretGVK})
 
 	// The kind is in the message because the sweep spans kinds and the operator
 	// reading the CR's condition has to know which one it lost.
 	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("listing remote Secret children for teardown")))
 	g.Expect(gone(t, target, secret)).To(gomega.BeFalse())
+}
+
+// A delete the target cluster refuses for anything but a NotFound leaves a child
+// running, so the pass fails and the caller keeps its finalizer. The message
+// names the object in full because neither its kind nor its namespace follows
+// from the CR the operator is reporting the failure on.
+func TestDeleteRemoteChildrenPropagatesADeleteError(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	scheme := teardownScheme(t)
+	owner := testOwner()
+	configMap := ownedBy(t, scheme, owner, teardownConfigMap("keystone-config", "openstack-keystone"))
+	target := fake.NewClientBuilder().WithScheme(scheme).WithObjects(configMap).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(context.Context, client.WithWatch, client.Object, ...client.DeleteOption) error {
+				return apierrors.NewForbidden(corev1.Resource("configmaps"), "keystone-config", nil)
+			},
+		}).Build()
+
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, "openstack-keystone",
+		[]schema.GroupVersionKind{configMapGVK})
+
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring(
+		"deleting remote ConfigMap openstack-keystone/keystone-config")))
+	g.Expect(gone(t, target, configMap)).To(gomega.BeFalse())
 }
 
 // An owner whose kind the scheme does not know cannot be labelled, so its
@@ -469,8 +551,8 @@ func TestDeleteRemoteChildrenUnregisteredOwnerKindFailsWithoutDeleting(t *testin
 	configMap := ownedBy(t, scheme, owner, teardownConfigMap("keystone-config", "openstack"))
 	target := fake.NewClientBuilder().WithScheme(scheme).WithObjects(configMap).Build()
 
-	err := DeleteRemoteChildren(context.Background(), target, Remote(target), runtime.NewScheme(), owner,
-		[]schema.GroupVersionKind{configMapGVK})
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), runtime.NewScheme(),
+		owner, owner.Namespace, []schema.GroupVersionKind{configMapGVK})
 
 	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("resolving GVK for owner openstack/example")))
 	g.Expect(gone(t, target, configMap)).To(gomega.BeFalse())
@@ -499,7 +581,7 @@ func TestDeleteRemoteChildrenDeletesWithBackgroundPropagation(t *testing.T) {
 			},
 		}).Build()
 
-	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner,
+	err := DeleteRemoteChildren(context.Background(), target, Remote(target), scheme, owner, owner.Namespace,
 		[]schema.GroupVersionKind{deploymentGVK})
 
 	g.Expect(err).NotTo(gomega.HaveOccurred())
