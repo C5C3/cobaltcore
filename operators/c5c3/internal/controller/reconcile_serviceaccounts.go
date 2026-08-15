@@ -1138,7 +1138,7 @@ func (r *ControlPlaneReconciler) publishServiceAccount(
 	// rather than secrets.EnsurePushSecret (whose controller reference is illegal
 	// cross-namespace).
 	ps := serviceAccountPushSecret(cp, sa)
-	if err := r.ensureUnownedOrOwned(ctx, cp, ps); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, ps); err != nil {
 		return false, fmt.Errorf("ensuring service-account PushSecret: %w", err)
 	}
 	if err := r.forceRepushPushSecret(ctx, cp, deliveryNS, ps.Name, serviceAccountPushContentHashAnnotation, contentHash); err != nil {
@@ -1221,7 +1221,7 @@ func (r *ControlPlaneReconciler) ensureServiceAccountExternalSecret(
 			},
 		},
 	}
-	if err := r.ensureUnownedOrOwned(ctx, cp, es); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, es); err != nil {
 		return fmt.Errorf("ensuring service-account ExternalSecret %q: %w", name, err)
 	}
 	return nil

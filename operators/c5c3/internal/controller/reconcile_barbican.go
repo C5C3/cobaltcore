@@ -647,7 +647,7 @@ func (r *ControlPlaneReconciler) reconcileBarbicanSecretStore(
 		return true, nil
 	}
 
-	if err := r.ensureUnownedOrOwned(ctx, cp, desired); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, desired); err != nil {
 		return false, fmt.Errorf("projecting BarbicanSecretStore %q: %w", desired.Name, err)
 	}
 

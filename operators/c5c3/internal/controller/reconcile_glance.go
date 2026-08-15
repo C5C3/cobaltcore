@@ -580,7 +580,7 @@ func (r *ControlPlaneReconciler) reconcileGlanceBackends(ctx context.Context, cp
 	declared := make(map[string]struct{}, len(cp.Spec.Services.Glance.Backends))
 	for i := range cp.Spec.Services.Glance.Backends {
 		backend := glanceBackendForEntry(cp, cp.Spec.Services.Glance.Backends[i], glanceNS)
-		if err := r.ensureUnownedOrOwned(ctx, cp, backend); err != nil {
+		if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, backend); err != nil {
 			return fmt.Errorf("projecting GlanceBackend %q: %w", backend.Name, err)
 		}
 		declared[backend.Name] = struct{}{}

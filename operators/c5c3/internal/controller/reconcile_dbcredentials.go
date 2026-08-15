@@ -526,7 +526,7 @@ func (r *ControlPlaneReconciler) reconcileDBCredentials(ctx context.Context, cp 
 		// once that path has been seeded out-of-band — dbCredentialNotReadyMessage
 		// says so in the condition while it has not.
 		r.deleteDynamicDBCredentialObjects(ctx, cp, target)
-		if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialStaticExternalSecret(target)); err != nil {
+		if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, dbCredentialStaticExternalSecret(target)); err != nil {
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 				Type:               conditionTypeDBCredentialsReady,
 				Status:             metav1.ConditionFalse,
@@ -586,7 +586,7 @@ func (r *ControlPlaneReconciler) ensureServiceDBCredential(ctx context.Context, 
 		err = r.ensureDynamicDBCredentialObjects(ctx, cp, t)
 	} else {
 		r.deleteDynamicDBCredentialObjects(ctx, cp, t)
-		err = r.ensureUnownedOrOwned(ctx, cp, dbCredentialStaticExternalSecret(t))
+		err = r.ensureUnownedOrOwned(ctx, r.Client, cp, dbCredentialStaticExternalSecret(t))
 	}
 	if err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
@@ -686,7 +686,7 @@ func (r *ControlPlaneReconciler) ensureServiceDBCredential(ctx context.Context, 
 func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, t dbCredentialTarget) error {
 	server, mountPath := r.openBaoConnection(ctx, cp, t.storeRef)
 
-	if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialServiceAccount(t)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, dbCredentialServiceAccount(t)); err != nil {
 		return fmt.Errorf("ensuring %sDB credential ServiceAccount: %w", t.prefix(), err)
 	}
 
@@ -699,20 +699,20 @@ func (r *ControlPlaneReconciler) ensureDynamicDBCredentialObjects(ctx context.Co
 	live.SetName(t.certName)
 	live.SetNamespace(t.namespace)
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
-		if err := refuseForeignAdoption(cp, live, r.Scheme); err != nil {
+		if err := refuseForeignAdoption(r.Client, cp, live, r.Scheme); err != nil {
 			return err
 		}
 		applyDBCredentialCertificateSpec(live, t.certName, t.namespace)
-		return claimChildOwnership(cp, live, r.Scheme)
+		return claimChildOwnership(r.Client, cp, live, r.Scheme)
 	}); err != nil {
 		return fmt.Errorf("ensuring %sDB credential Certificate: %w", t.prefix(), err)
 	}
 
-	if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialVaultDynamicSecret(t, server, mountPath)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, dbCredentialVaultDynamicSecret(t, server, mountPath)); err != nil {
 		return fmt.Errorf("ensuring %sVaultDynamicSecret generator: %w", t.prefix(), err)
 	}
 
-	if err := r.ensureUnownedOrOwned(ctx, cp, dbCredentialGeneratorExternalSecret(t)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, dbCredentialGeneratorExternalSecret(t)); err != nil {
 		return fmt.Errorf("ensuring %sDB credential ExternalSecret: %w", t.prefix(), err)
 	}
 	return nil

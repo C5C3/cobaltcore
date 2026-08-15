@@ -224,7 +224,7 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 	// namespace it is owner-referenced and garbage-collected with the CR; in a
 	// Keystone service namespace it carries the ownership labels instead and the
 	// teardown deletes it. The desired spec is a pure projection of cp.Spec.
-	if err := r.ensureUnownedOrOwned(ctx, cp, adminPasswordExternalSecret(cp)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, adminPasswordExternalSecret(cp)); err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeAdminPasswordReady,
 			Status:             metav1.ConditionFalse,

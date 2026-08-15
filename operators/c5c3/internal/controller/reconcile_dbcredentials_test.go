@@ -290,7 +290,7 @@ func TestReconcileDBCredentials_StaticAfterDynamic_TearsDownGenerator(t *testing
 	// Pre-seed a leftover VaultDynamicSecret from a prior Dynamic deployment,
 	// carrying the ownership a live projection stamps — the teardown gates on it.
 	leftover := dbCredentialVaultDynamicSecret(keystoneDBCredentialTarget(cp), openBaoDefaultServer, openBaoDefaultKubernetesMount)
-	g.Expect(claimChildOwnership(cp, leftover, s)).To(Succeed())
+	g.Expect(claimChildOwnership(localWriter(), cp, leftover, s)).To(Succeed())
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), leftover).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
@@ -656,7 +656,7 @@ func TestReconcileDBCredentials_KeystoneOverrideStatic_TearsDownGenerator(t *tes
 	// Pre-seed a leftover generator from a prior Dynamic deployment, carrying the
 	// ownership a live projection stamps — the teardown gates on it.
 	leftover := dbCredentialVaultDynamicSecret(keystoneDBCredentialTarget(cp), openBaoDefaultServer, openBaoDefaultKubernetesMount)
-	g.Expect(claimChildOwnership(cp, leftover, s)).To(Succeed())
+	g.Expect(claimChildOwnership(localWriter(), cp, leftover, s)).To(Succeed())
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp), leftover).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}

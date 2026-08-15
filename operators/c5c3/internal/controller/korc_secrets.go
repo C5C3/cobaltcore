@@ -80,7 +80,7 @@ func (r *ControlPlaneReconciler) ensureOwnedSecret(
 		},
 	}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		if err := refuseForeignAdoption(cp, secret, r.Scheme); err != nil {
+		if err := refuseForeignAdoption(r.Client, cp, secret, r.Scheme); err != nil {
 			return err
 		}
 		if secret.Data == nil {
@@ -89,7 +89,7 @@ func (r *ControlPlaneReconciler) ensureOwnedSecret(
 		if err := mutate(secret); err != nil {
 			return err
 		}
-		return claimChildOwnership(cp, secret, r.Scheme)
+		return claimChildOwnership(r.Client, cp, secret, r.Scheme)
 	})
 	return err
 }

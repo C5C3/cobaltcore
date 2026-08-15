@@ -170,18 +170,18 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBao(ctx context.Context, cp *
 	if err := r.ensureBarbicanOpenBaoCertificates(ctx, cp); err != nil {
 		return false, err
 	}
-	if err := r.ensureUnownedOrOwned(ctx, cp, barbicanOpenBaoProvisionerServiceAccount(name, namespace)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, barbicanOpenBaoProvisionerServiceAccount(name, namespace)); err != nil {
 		return false, fmt.Errorf("ensuring Barbican OpenBao provisioner ServiceAccount: %w", err)
 	}
-	if err := r.ensureUnownedOrOwned(ctx, cp, barbicanOpenBaoAuthDelegatorBinding(name, namespace)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, barbicanOpenBaoAuthDelegatorBinding(name, namespace)); err != nil {
 		return false, fmt.Errorf("ensuring Barbican OpenBao auth-delegator ClusterRoleBinding: %w", err)
 	}
-	if err := r.ensureUnownedOrOwned(ctx, cp, barbicanOpenBaoTokenRole(name, namespace)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, barbicanOpenBaoTokenRole(name, namespace)); err != nil {
 		return false, fmt.Errorf("ensuring Barbican OpenBao TokenRequest Role: %w", err)
 	}
 	binding := barbicanOpenBaoTokenRoleBinding(name, namespace,
 		r.barbicanOperatorServiceAccount(), r.barbicanOperatorNamespace())
-	if err := r.ensureUnownedOrOwned(ctx, cp, binding); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, binding); err != nil {
 		return false, fmt.Errorf("ensuring Barbican OpenBao TokenRequest RoleBinding: %w", err)
 	}
 
@@ -235,7 +235,7 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoTenant(ctx context.Context
 		},
 		Spec: openbaov1alpha1.OpenBaoTenantSpec{TargetNamespace: namespace},
 	}
-	if err := claimChildOwnership(cp, tenant, r.Scheme); err != nil {
+	if err := claimChildOwnership(r.Client, cp, tenant, r.Scheme); err != nil {
 		return fmt.Errorf("claiming ownership of OpenBaoTenant %q: %w", tenant.Name, err)
 	}
 	if err := r.Create(ctx, tenant); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -263,7 +263,7 @@ func (r *ControlPlaneReconciler) ensureBarbicanUnsealKey(
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cp.BarbicanNamespace()},
 	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
-		if aerr := refuseForeignAdoption(cp, secret, r.Scheme); aerr != nil {
+		if aerr := refuseForeignAdoption(r.Client, cp, secret, r.Scheme); aerr != nil {
 			return aerr
 		}
 		stampControlPlaneChildLabels(secret, cp)
@@ -329,11 +329,11 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCertificate(
 	live.SetName(certName)
 	live.SetNamespace(cp.BarbicanNamespace())
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
-		if aerr := refuseForeignAdoption(cp, live, r.Scheme); aerr != nil {
+		if aerr := refuseForeignAdoption(r.Client, cp, live, r.Scheme); aerr != nil {
 			return aerr
 		}
 		apply(live)
-		return claimChildOwnership(cp, live, r.Scheme)
+		return claimChildOwnership(r.Client, cp, live, r.Scheme)
 	}); err != nil {
 		return fmt.Errorf("ensuring Barbican OpenBao Certificate %q: %w", certName, err)
 	}
@@ -535,7 +535,7 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 		instance.Namespace = key.Namespace
 		instance.Spec = r.barbicanOpenBaoClusterSpec(cp, apiServerIPs)
 		instance.Spec.Storage = openbaov1alpha1.StorageConfig{Size: barbicanOpenBaoStorageSize}
-		if oerr := claimChildOwnership(cp, instance, r.Scheme); oerr != nil {
+		if oerr := claimChildOwnership(r.Client, cp, instance, r.Scheme); oerr != nil {
 			return nil, fmt.Errorf("claiming ownership of OpenBaoCluster %q: %w", key.Name, oerr)
 		}
 		if cerr := r.Create(ctx, instance); cerr != nil {
@@ -544,7 +544,7 @@ func (r *ControlPlaneReconciler) ensureBarbicanOpenBaoCluster(
 	case err != nil:
 		return nil, fmt.Errorf("getting OpenBaoCluster %q: %w", key.Name, err)
 	default:
-		if aerr := refuseForeignAdoption(cp, instance, r.Scheme); aerr != nil {
+		if aerr := refuseForeignAdoption(r.Client, cp, instance, r.Scheme); aerr != nil {
 			return nil, aerr
 		}
 		desired := r.barbicanOpenBaoClusterSpec(cp, apiServerIPs)

@@ -270,7 +270,7 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 		horizon.Spec.WebSSO = projectWebSSO(ctx, cp, backends, horizon.Spec.WebSSO)
 		horizon.Spec.MultiDomain = projectMultiDomain(ctx, backends, horizon.Spec.MultiDomain)
 
-		return claimChildOwnership(cp, horizon, r.Scheme)
+		return claimChildOwnership(r.Client, cp, horizon, r.Scheme)
 	}); err != nil {
 		reason := "HorizonError"
 		message := fmt.Sprintf("create-or-update Horizon: %v", err)
