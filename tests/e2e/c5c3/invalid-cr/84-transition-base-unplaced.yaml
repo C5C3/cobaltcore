@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Accepted base for the target-cluster freeze test: a Managed ControlPlane whose
+# Keystone service carries everything a placement needs (a namespace of its own,
+# a public endpoint) but names no target cluster, so it stays on the local one.
+# The External lifecycle is deliberate, as on the namespace-freeze base: the
+# operator never creates that namespace, so the CR parks on
+# NamespacesReady=False/NamespaceNotFound and provisions nothing, leaving no side
+# effects for the rejection step to clean up. The namespace name differs from the
+# namespace-freeze base's because a namespace belongs to at most one ControlPlane
+# and both bases persist for the length of the run.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-transition-f
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      namespace:
+        name: invalid-cr-preexisting-placed
+        lifecycle: External
+      publicEndpoint: https://keystone.example.com/v3
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

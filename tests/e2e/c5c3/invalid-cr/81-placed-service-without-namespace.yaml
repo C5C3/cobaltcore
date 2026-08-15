@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A placed service must declare a namespace of its own (webhook-only): every
+# namespace maps to exactly one cluster and the ControlPlane's own stays on the
+# local one, so a Keystone placed elsewhere without a namespace block would have
+# its database, its tenant store, and its credential material provisioned in a
+# namespace that lives on another cluster than the ref names. The publicEndpoint
+# is set, so the reachability rule of the same validator stays silent and the
+# missing namespace is the only violation.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-placed-without-namespace
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      publicEndpoint: https://keystone.example.com/v3
+      targetClusterRef:
+        name: edge
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
