@@ -891,7 +891,7 @@ func TestBuildServiceAccountCloudsYAML_UsesAccountIdentity(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := korcControlPlane()
 
-	out := buildServiceAccountCloudsYAML(cp, "nova", "service", "Default", "s3cret")
+	out := buildServiceAccountCloudsYAML(cp, "nova", "service", "Default", "s3cret", nil)
 	g.Expect(out).To(ContainSubstring("username: \"nova\""))
 	g.Expect(out).To(ContainSubstring("password: \"s3cret\""))
 	g.Expect(out).To(ContainSubstring("project_name: \"service\""))
@@ -1222,4 +1222,64 @@ func TestReconcileServiceAccounts_UnresolvableTargetPublishesNothing(t *testing.
 	g.Expect(remote.Get(ctx, types.NamespacedName{
 		Name: serviceAccountSourceSecretName(cp, sa), Namespace: targetNS,
 	}, &corev1.Secret{})).NotTo(Succeed())
+}
+
+// TestReconcileServiceAccounts_PlacedDeliveryCarriesAReachableAuthURL pins the
+// auth_url of a credentials document delivered ACROSS a cluster boundary. The
+// consuming pod runs on the target, and the management cluster's in-cluster
+// Keystone Service DNS name resolves nowhere there — so a document rendered with
+// it fails on the first token request, while the ControlPlane keeps reporting
+// ServiceAccountsReady=True (readiness only byte-compares the materialized
+// password). Keystone stays at home here and the dashboard's namespace is what is
+// placed, which is exactly the split the account's delivery leg has to notice.
+func TestReconcileServiceAccounts_PlacedDeliveryCarriesAReachableAuthURL(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	const deliveryNS = "dashboard"
+
+	cp := saControlPlane()
+	cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+	cp.Spec.Services.Horizon = &c5c3v1alpha1.ServiceHorizonSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name: deliveryNS, Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+		},
+		TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+	}
+	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = deliveryNS
+	sa := cp.Spec.KORC.ServiceAccounts[0]
+
+	push := serviceAccountPushSecret(cp, sa)
+	push.Labels = remoteChildLabels(cp)
+	push.Status.Conditions = []esov1alpha1.PushSecretStatusCondition{
+		{Type: esov1alpha1.PushSecretReady, Status: corev1.ConditionTrue},
+	}
+	push.Status.SyncedResourceVersion = testPushSyncedRV
+	materialized := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: deliveryNS},
+		Data:       map[string][]byte{serviceAccountPasswordKey: []byte("current-pw")},
+	}
+	remote := fake.NewClientBuilder().WithScheme(s).WithObjects(
+		readyTenantSecretStore(esoTenantStoreName, deliveryNS, "", ""), push, materialized).Build()
+
+	home := append(saUserProjectAppliedV1(cp, sa), cp, readyClusterSecretStore(), readyTenantStoreFor(cp))
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(home...).Build(),
+		Scheme:   s,
+		Recorder: record.NewFakeRecorder(20),
+		Resolver: &childrenResolver{children: remote},
+	}
+
+	_, err := r.reconcileServiceAccounts(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	src := &corev1.Secret{}
+	g.Expect(remote.Get(ctx, types.NamespacedName{
+		Name: serviceAccountSourceSecretName(cp, sa), Namespace: deliveryNS,
+	}, src)).To(Succeed())
+	g.Expect(string(src.Data["auth_url"])).To(Equal("https://keystone.example.com/v3"),
+		"a consumer on the target cluster cannot resolve the management cluster's Keystone Service DNS name")
+	g.Expect(string(src.Data[appCredCloudsYAMLKey])).To(
+		ContainSubstring(`auth_url: "https://keystone.example.com/v3"`),
+		"the rendered clouds.yaml has to agree with the auth_url key beside it")
 }

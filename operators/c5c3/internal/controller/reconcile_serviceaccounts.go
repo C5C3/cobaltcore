@@ -1139,7 +1139,11 @@ func (r *ControlPlaneReconciler) publishServiceAccount(
 		return false, nil
 	}
 
-	cloudsYAML := []byte(buildServiceAccountCloudsYAML(cp, userName, projectName, domain, string(password)))
+	// The document is read on the cluster it is delivered to, so its auth_url is
+	// resolved for that cluster: a consumer beside a placed service cannot reach
+	// the management cluster's in-cluster Keystone Service DNS name.
+	deliveryRef := targetClusterRefForNamespace(cp, deliveryNS)
+	cloudsYAML := []byte(buildServiceAccountCloudsYAML(cp, userName, projectName, domain, string(password), deliveryRef))
 	sourceName := serviceAccountSourceSecretName(cp, sa)
 	if err := r.ensureOwnedSecret(ctx, delivery, cp, sourceName, deliveryNS, func(secret *corev1.Secret) error {
 		secret.Data[serviceAccountPasswordKey] = password
@@ -1147,7 +1151,7 @@ func (r *ControlPlaneReconciler) publishServiceAccount(
 		secret.Data["project_name"] = []byte(projectName)
 		secret.Data["user_domain_name"] = []byte(domain)
 		secret.Data["project_domain_name"] = []byte(domain)
-		secret.Data["auth_url"] = []byte(korcAuthURL(cp))
+		secret.Data["auth_url"] = []byte(korcAuthURL(cp, deliveryRef))
 		secret.Data["region_name"] = []byte(korcRegion(cp))
 		secret.Data[appCredCloudsYAMLKey] = cloudsYAML
 		return nil

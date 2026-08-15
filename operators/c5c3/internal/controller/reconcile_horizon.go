@@ -199,6 +199,13 @@ func (r *ControlPlaneReconciler) reconcileHorizon(ctx context.Context, cp *c5c3v
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, horizon, func() error {
 		horizon.Spec.Image = image
 
+		// Thread the service's target cluster onto the child verbatim (see the
+		// Keystone projection). Assigning it inside the read-modify-write closure is
+		// safe for the same reason it is safe under Server-Side Apply: both sides
+		// freeze the value, so the update never carries a changed ref into the
+		// child's CEL transition rule.
+		horizon.Spec.TargetClusterRef = cp.Spec.Services.Horizon.TargetClusterRef.DeepCopy()
+
 		// Point the dashboard at the SAME Memcached the ControlPlane provisioned for
 		// it — its dedicated instance when it opted into one, the shared one
 		// otherwise. DeepCopy (over a plain struct copy) is required because
@@ -475,17 +482,14 @@ func horizonMultiDomain(backends []keystonev1alpha1.KeystoneIdentityBackend) *ho
 }
 
 // horizonKeystoneEndpoint returns the Keystone endpoint URL projected into
-// the Horizon child's spec.keystoneEndpoint. It is ALWAYS the cluster-local
-// convention URL of the projected Keystone child (keystoneEndpointURL, the
-// same URL K-ORC authenticates against) — never the external publicEndpoint
-// or gateway hostname. OPENSTACK_KEYSTONE_URL is consumed server-side by the
-// dashboard's Django backend, not by the browser: an externally routable URL
-// that resolves to a host-only address (a kind port-mapping, an external LB)
-// is unreachable from the dashboard pods and breaks every login with
-// "Unable to establish connection to keystone endpoint". Derived top-down
-// from the naming convention, never read from the child's status.
+// the Horizon child's spec.keystoneEndpoint. OPENSTACK_KEYSTONE_URL is consumed
+// server-side by the dashboard's Django backend, not by the browser, so what
+// the dashboard pods can reach decides it — which is the cluster the dashboard
+// is placed on against the one Keystone runs on, the rule keystoneEndpointFor
+// holds for every service. Getting it wrong here breaks every login with
+// "Unable to establish connection to keystone endpoint".
 func horizonKeystoneEndpoint(cp *c5c3v1alpha1.ControlPlane) string {
-	return keystoneEndpointURL(cp)
+	return keystoneEndpointFor(cp, cp.HorizonTargetClusterRef())
 }
 
 // deepCopyHorizonExtraConfig returns an independent copy of the dashboard's

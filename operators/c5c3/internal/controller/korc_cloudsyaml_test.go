@@ -12,6 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/yaml"
 
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -286,6 +287,62 @@ func TestCloudsYAMLBuilders_CloudNameCannotEscapeItsMappingKey(t *testing.T) {
 	}
 }
 
+// --- per-service target clusters ---
+
+// TestKORCAuthURL_PlacedKeystoneIsReachedPublicly pins the one address K-ORC can
+// use for a Keystone that is not on its cluster. K-ORC always runs on the
+// management cluster, so once Keystone is placed its in-cluster Service DNS name
+// resolves nowhere K-ORC can dial and only the public URL is left; an explicit
+// publicEndpoint wins, a gateway alone is derived, and an unplaced Keystone keeps
+// the in-cluster URL byte for byte.
+func TestKORCAuthURL_PlacedKeystoneIsReachedPublicly(t *testing.T) {
+	placed := func() *c5c3v1alpha1.ControlPlane {
+		cp := korcControlPlane()
+		cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name:      "identity",
+			Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+		}
+		cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "remote-a"}
+		return cp
+	}
+
+	t.Run("explicit publicEndpoint", func(t *testing.T) {
+		g := NewWithT(t)
+		cp := placed()
+		cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.127-0-0-1.nip.io:8443/v3"
+
+		g.Expect(korcAuthURL(cp, nil)).To(Equal("https://keystone.127-0-0-1.nip.io:8443/v3"))
+	})
+
+	t.Run("gateway alone", func(t *testing.T) {
+		g := NewWithT(t)
+		cp := placed()
+		cp.Spec.Services.Keystone.Gateway = &commonv1.GatewaySpec{
+			ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
+			Hostname:  "keystone.example.com",
+		}
+
+		g.Expect(korcAuthURL(cp, nil)).To(Equal("https://keystone.example.com/v3"),
+			"a placed Keystone without a publicEndpoint is reached over its gateway hostname")
+	})
+
+	t.Run("unplaced keystone keeps the in-cluster URL", func(t *testing.T) {
+		g := NewWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+
+		g.Expect(korcAuthURL(cp, nil)).To(Equal("http://cp-keystone.default.svc:5000/v3"),
+			"a co-located K-ORC must never dial the externally routable endpoint")
+	})
+
+	t.Run("external mode is unaffected", func(t *testing.T) {
+		g := NewWithT(t)
+		cp := korcExternalControlPlane()
+
+		g.Expect(korcAuthURL(cp, nil)).To(Equal("https://keystone.example.com/v3"))
+	})
+}
+
 // --- webhook-bypass fallbacks ---
 //
 // The defaulting webhook normally materializes endpointType, cloudName and the
@@ -312,7 +369,7 @@ func TestKORCResolvers_WebhookBypassFallbacks(t *testing.T) {
 		}
 
 		g.Expect(korcEndpointType(cp)).To(Equal("public"))
-		g.Expect(korcAuthURL(cp)).To(BeEmpty(),
+		g.Expect(korcAuthURL(cp, nil)).To(BeEmpty(),
 			"an External CR with no external block has no auth_url to render")
 	})
 
@@ -322,7 +379,7 @@ func TestKORCResolvers_WebhookBypassFallbacks(t *testing.T) {
 		cp.Spec.Services.Keystone = nil
 
 		g.Expect(korcEndpointType(cp)).To(Equal("internal"))
-		g.Expect(korcAuthURL(cp)).To(Equal("http://cp-keystone.default.svc:5000/v3"))
+		g.Expect(korcAuthURL(cp, nil)).To(Equal("http://cp-keystone.default.svc:5000/v3"))
 	})
 
 	t.Run("empty region defaults to RegionOne", func(t *testing.T) {

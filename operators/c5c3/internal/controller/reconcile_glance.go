@@ -84,16 +84,12 @@ func glanceDeletionAllowed(cp *c5c3v1alpha1.ControlPlane) bool {
 }
 
 // glanceKeystoneEndpoint returns the Keystone endpoint URL projected into the
-// Glance child's spec.keystoneEndpoint. It is ALWAYS the cluster-local
-// convention URL of the projected Keystone child (keystoneEndpointURL, the same
-// URL K-ORC authenticates against) — never the external publicEndpoint or
-// gateway hostname. Glance validates every token server-side against this URL, so
-// it must be reachable from the Glance pods: an externally routable URL that
-// resolves to a host-only address (a kind port-mapping, an external LB) is
-// unreachable from inside the cluster. Derived top-down from the naming
-// convention, never read from the child's status.
+// Glance child's spec.keystoneEndpoint. Glance validates every token
+// server-side against this URL, so what the Glance pods can reach decides it —
+// which is the cluster Glance is placed on against the one Keystone runs on,
+// the rule keystoneEndpointFor holds for every service.
 func glanceKeystoneEndpoint(cp *c5c3v1alpha1.ControlPlane) string {
-	return keystoneEndpointURL(cp)
+	return keystoneEndpointFor(cp, cp.GlanceTargetClusterRef())
 }
 
 // glanceEndpointURL renders the in-cluster URL of the projected Glance API
@@ -294,6 +290,10 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 
 	glance.Spec.OpenStackRelease = cp.Spec.OpenStackRelease
 	glance.Spec.Image = image
+
+	// Thread the service's target cluster onto the child verbatim; a nil source
+	// yields nil and leaves the child unplaced (see the Keystone projection).
+	glance.Spec.TargetClusterRef = cp.Spec.Services.Glance.TargetClusterRef.DeepCopy()
 
 	// Project the merged extraConfig (globalExtraConfig unioned with the
 	// per-service block, per-service winning key by key). Assigned

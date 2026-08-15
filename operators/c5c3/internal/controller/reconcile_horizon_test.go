@@ -1051,3 +1051,94 @@ func TestDeleteOrphanedHorizon_CrossNamespace(t *testing.T) {
 		Name: "cp-horizon", Namespace: "dashboard",
 	}, &horizonv1alpha1.Horizon{})).NotTo(Succeed())
 }
+
+// --- per-service target clusters ---
+
+// placedHorizonControlPlane places the dashboard in a namespace of its own on a
+// target cluster. Keystone stays where the caller leaves it, so one fixture
+// serves both the ref-threading and the endpoint-policy cases.
+func placedHorizonControlPlane(targetCluster string) *c5c3v1alpha1.ControlPlane {
+	cp := horizonControlPlane()
+	cp.Spec.Services.Horizon.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      "dashboard",
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.Services.Horizon.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetCluster}
+	return cp
+}
+
+// TestReconcileHorizon_ProjectsTheTargetClusterRef verifies the placement reaches
+// the child verbatim — the horizon-operator owns everything on the target, so the
+// ref is the whole hand-over — and that an unplaced dashboard projects no ref.
+func TestReconcileHorizon_ProjectsTheTargetClusterRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedHorizonControlPlane("remote-a")
+	r := newHorizonTestReconciler(t, cp)
+
+	_, err := r.reconcileHorizon(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var placed horizonv1alpha1.Horizon
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: "cp-horizon", Namespace: "dashboard",
+	}, &placed)).To(Succeed())
+	g.Expect(placed.Spec.TargetClusterRef).To(Equal(&commonv1.TargetClusterRefSpec{Name: "remote-a"}))
+
+	unplaced := horizonControlPlane()
+	r2 := newHorizonTestReconciler(t, unplaced)
+	_, err = r2.reconcileHorizon(context.Background(), unplaced)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedHorizon(t, r2.Client, unplaced).Spec.TargetClusterRef).To(BeNil(),
+		"a dashboard that names no cluster must project no ref at all")
+}
+
+// TestHorizonKeystoneEndpoint_FollowsThePlacement pins the endpoint policy: the
+// dashboard's Django backend talks to Keystone itself, so it gets the in-cluster
+// Service DNS name exactly while the two services share a cluster, and the public
+// URL as soon as they do not — that name resolves nowhere else.
+func TestHorizonKeystoneEndpoint_FollowsThePlacement(t *testing.T) {
+	const (
+		inCluster = "http://cp-keystone.identity.svc:5000/v3"
+		public    = "https://keystone.example.com/v3"
+	)
+	for _, tc := range []struct {
+		name              string
+		horizon, keystone *commonv1.TargetClusterRefSpec
+		want              string
+	}{
+		{name: "both co-located", want: inCluster},
+		{
+			name:     "both on the same cluster",
+			horizon:  &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			keystone: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			want:     inCluster,
+		},
+		{
+			name:    "dashboard placed, Keystone at home",
+			horizon: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			want:    public,
+		},
+		{
+			name:     "Keystone placed, dashboard at home",
+			keystone: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			want:     public,
+		},
+		{
+			name:     "different clusters",
+			horizon:  &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			keystone: &commonv1.TargetClusterRefSpec{Name: "remote-b"},
+			want:     public,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := horizonControlPlane()
+			cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"}
+			cp.Spec.Services.Keystone.PublicEndpoint = public
+			cp.Spec.Services.Keystone.TargetClusterRef = tc.keystone
+			cp.Spec.Services.Horizon.TargetClusterRef = tc.horizon
+
+			g.Expect(horizonKeystoneEndpoint(cp)).To(Equal(tc.want))
+		})
+	}
+}

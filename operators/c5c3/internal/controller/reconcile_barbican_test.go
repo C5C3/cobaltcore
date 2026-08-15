@@ -1710,3 +1710,80 @@ func TestReconcileBarbican_UnresolvableTargetParksTheEnsemble(t *testing.T) {
 		g.Expect(children.Items).To(BeEmpty(), "no child may be projected on the %s cluster", name)
 	}
 }
+
+// TestReconcileBarbican_ProjectsTheTargetClusterRef verifies the placement
+// reaches the child verbatim — the barbican-operator owns everything on the
+// target, so the ref is the whole hand-over — and that an unplaced service
+// projects no ref.
+func TestReconcileBarbican_ProjectsTheTargetClusterRef(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedBarbicanControlPlane("remote-a")
+
+	instance := availableBarbicanOpenBaoCluster(cp)
+	instance.Labels = remoteChildLabels(cp)
+	r, _ := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice())
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(getProjectedBarbican(t, r.Client, cp).Spec.TargetClusterRef).
+		To(Equal(&commonv1.TargetClusterRefSpec{Name: "remote-a"}))
+
+	unplaced := barbicanControlPlane()
+	r2 := newBarbicanTestReconciler(t, unplaced)
+	_, err = r2.reconcileBarbican(context.Background(), unplaced)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(getProjectedBarbican(t, r2.Client, unplaced).Spec.TargetClusterRef).To(BeNil(),
+		"a service that names no cluster must project no ref at all")
+}
+
+// TestBarbicanKeystoneEndpoint_FollowsThePlacement pins the endpoint policy:
+// Barbican validates tokens against Keystone itself, so it gets the in-cluster
+// Service DNS name exactly while the two services share a cluster, and the public
+// URL as soon as they do not — that name resolves nowhere else.
+func TestBarbicanKeystoneEndpoint_FollowsThePlacement(t *testing.T) {
+	const (
+		inCluster = "http://cp-keystone.identity.svc:5000/v3"
+		public    = "https://keystone.example.com/v3"
+	)
+	for _, tc := range []struct {
+		name               string
+		barbican, keystone *commonv1.TargetClusterRefSpec
+		want               string
+	}{
+		{name: "both co-located", want: inCluster},
+		{
+			name:     "both on the same cluster",
+			barbican: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			keystone: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			want:     inCluster,
+		},
+		{
+			name:     "Barbican placed, Keystone at home",
+			barbican: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			want:     public,
+		},
+		{
+			name:     "Keystone placed, Barbican at home",
+			keystone: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			want:     public,
+		},
+		{
+			name:     "different clusters",
+			barbican: &commonv1.TargetClusterRefSpec{Name: "remote-a"},
+			keystone: &commonv1.TargetClusterRefSpec{Name: "remote-b"},
+			want:     public,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := barbicanControlPlane()
+			cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{Name: "identity"}
+			cp.Spec.Services.Keystone.PublicEndpoint = public
+			cp.Spec.Services.Keystone.TargetClusterRef = tc.keystone
+			cp.Spec.Services.Barbican.TargetClusterRef = tc.barbican
+
+			g.Expect(barbicanKeystoneEndpoint(cp)).To(Equal(tc.want))
+		})
+	}
+}

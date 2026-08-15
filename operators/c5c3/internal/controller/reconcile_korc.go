@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/secrets"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -131,12 +132,25 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 
 	adminCred := cp.Spec.KORC.AdminCredential
 
+	// The admin-password Secret is the ONE thing this pass reads off another
+	// cluster: in managed mode the operator materialises it beside the Keystone
+	// child, so it follows that child's placement. Resolving the client for the
+	// namespace it lives in covers every mode at once — an External or brownfield
+	// ControlPlane keeps the user's Secret in its own namespace, which always
+	// resolves to the local cluster. Everything this sub-reconciler WRITES stays
+	// local: K-ORC runs on the management cluster.
+	adminPasswordClient, err := r.childrenClientFor(ctx, cp, effectiveAdminPasswordSecretNamespace(cp))
+	if err != nil {
+		fail(commonmulticluster.TargetClusterUnavailable, err.Error())
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	}
+
 	// Read the admin password used to (re-)mint the AC. The cleartext is
 	// needed both to derive the rotation hash AND to render the password-based
 	// clouds.yaml the AC mints with. A read failure (missing Secret/key) is
 	// surfaced as KORCReady False with a requeue rather than a hard error so a
 	// not-yet-seeded admin password simply defers minting.
-	password, err := readAdminPassword(ctx, r.Client, cp)
+	password, err := readAdminPassword(ctx, adminPasswordClient, cp)
 	if err != nil {
 		if secrets.IsMissingSecretOrKey(err) {
 			logger.Info("admin password not yet available, deferring K-ORC mint")
@@ -148,23 +162,24 @@ func (r *ControlPlaneReconciler) reconcileKORC(ctx context.Context, cp *c5c3v1al
 	}
 	pwHash := secrets.AdminPasswordDigest(password)
 
-	// Read the private-CA bundle an External-mode ControlPlane may reference. It is
+	// Read the private-CA bundle verifying whichever Keystone endpoint K-ORC dials
+	// (keystoneCABundleRef: External mode's, or a PLACED Keystone's). It is
 	// projected verbatim into BOTH operator-owned credentials Secrets as the inline
-	// "cacert" key K-ORC reads natively. Managed mode has no bundle (empty string),
-	// so the Secrets stay byte-identical to today. A not-yet-created — or created but
-	// not-yet-populated — CA Secret defers exactly like a not-yet-created admin
-	// password: minting against an endpoint whose certificate we cannot verify would
-	// only fail at K-ORC.
-	caBundle, err := readExternalCABundle(ctx, r.Client, cp)
+	// "cacert" key K-ORC reads natively. A co-located managed Keystone has no bundle
+	// (empty string), so the Secrets stay byte-identical to today. A not-yet-created
+	// — or created but not-yet-populated — CA Secret defers exactly like a
+	// not-yet-created admin password: minting against an endpoint whose certificate
+	// we cannot verify would only fail at K-ORC.
+	caBundle, err := readKeystoneCABundle(ctx, r.Client, cp)
 	if err != nil {
 		if secrets.IsMissingSecretOrKey(err) {
-			logger.Info("external CA bundle not yet available, deferring K-ORC mint")
-			fail("WaitingForCABundle",
-				"the CA bundle Secret referenced by spec.services.keystone.external.caBundleSecretRef "+
-					"is not yet available; deferring application-credential mint")
+			logger.Info("Keystone CA bundle not yet available, deferring K-ORC mint")
+			fail("WaitingForCABundle", fmt.Sprintf(
+				"the CA bundle Secret referenced by %s is not yet available; deferring "+
+					"application-credential mint", keystoneCABundleField(cp)))
 			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 		}
-		fail("CABundleError", fmt.Sprintf("reading external CA bundle: %v", err))
+		fail("CABundleError", fmt.Sprintf("reading the Keystone CA bundle: %v", err))
 		return ctrl.Result{}, err
 	}
 

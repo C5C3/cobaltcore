@@ -141,16 +141,12 @@ func barbicanStoreDataDeletionAllowed(cp *c5c3v1alpha1.ControlPlane) bool {
 }
 
 // barbicanKeystoneEndpoint returns the Keystone endpoint URL projected into the
-// Barbican child's spec.keystoneEndpoint. It is ALWAYS the cluster-local
-// convention URL of the projected Keystone child (keystoneEndpointURL, the same
-// URL K-ORC authenticates against), never the external publicEndpoint or gateway
-// hostname. Barbican validates every token server-side against this URL, so it
-// must be reachable from the Barbican pods: an externally routable URL that
-// resolves to a host-only address (a kind port-mapping, an external LB) is
-// unreachable from inside the cluster. Derived top-down from the naming
-// convention, never read from the child's status.
+// Barbican child's spec.keystoneEndpoint. Barbican validates every token
+// server-side against this URL, so what the Barbican pods can reach decides it —
+// which is the cluster Barbican is placed on against the one Keystone runs on,
+// the rule keystoneEndpointFor holds for every service.
 func barbicanKeystoneEndpoint(cp *c5c3v1alpha1.ControlPlane) string {
-	return keystoneEndpointURL(cp)
+	return keystoneEndpointFor(cp, cp.BarbicanTargetClusterRef())
 }
 
 // barbicanEndpointURL renders the in-cluster URL of the projected Barbican API
@@ -438,6 +434,10 @@ func (r *ControlPlaneReconciler) reconcileBarbican(ctx context.Context, cp *c5c3
 
 	barbican.Spec.OpenStackRelease = cp.Spec.OpenStackRelease
 	barbican.Spec.Image = image
+
+	// Thread the service's target cluster onto the child verbatim; a nil source
+	// yields nil and leaves the child unplaced (see the Keystone projection).
+	barbican.Spec.TargetClusterRef = cp.Spec.Services.Barbican.TargetClusterRef.DeepCopy()
 
 	// Project the merged extraConfig (globalExtraConfig unioned with the per-service
 	// block, per-service winning key by key). Assigned unconditionally, following

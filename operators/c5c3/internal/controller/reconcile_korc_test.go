@@ -38,9 +38,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	"sigs.k8s.io/yaml"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -3302,13 +3304,52 @@ func TestReadExternalCABundle_NoRefReadsNothing(t *testing.T) {
 	s := korcTestScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).Build()
 
-	bundle, err := readExternalCABundle(context.Background(), c, korcControlPlane())
+	bundle, err := readKeystoneCABundle(context.Background(), c, korcControlPlane())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(bundle).To(BeEmpty())
 
-	bundle, err = readExternalCABundle(context.Background(), c, korcExternalControlPlane())
+	bundle, err = readKeystoneCABundle(context.Background(), c, korcExternalControlPlane())
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(bundle).To(BeEmpty())
+}
+
+// TestReadKeystoneCABundle_PlacedManagedKeystone covers the trust anchor the
+// MANAGED path needs. K-ORC stays on the management cluster and dials a placed
+// Keystone's https publicEndpoint from there, with nothing but the container's
+// system trust store — so a target fronted by a cert-manager-issued private CA
+// would fail verification on every mint, and K-ORC swallows the resulting list
+// failures into an import that hangs on "created externally" rather than failing
+// loud. The bundle is read from the ControlPlane's OWN namespace, where the
+// credentials Secrets it lands in live, and a co-located Keystone keeps reading
+// nothing at all: its in-cluster URL performs no handshake.
+func TestReadKeystoneCABundle_PlacedManagedKeystone(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+
+	placed := func() *c5c3v1alpha1.ControlPlane {
+		cp := korcControlPlane()
+		cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name: "identity", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+		}
+		cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+		cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
+		cp.Spec.Services.Keystone.CABundleSecretRef = &commonv1.SecretRefSpec{Name: "keystone-ca", Key: "ca.crt"}
+		return cp
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(externalCASecret()).Build()
+
+	bundle, err := readKeystoneCABundle(context.Background(), c, placed())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(bundle).To(Equal(testCABundle),
+		"a placed Keystone's bundle must reach the K-ORC credentials Secrets")
+
+	colocated := placed()
+	colocated.Spec.Services.Keystone.TargetClusterRef = nil
+	bundle, err = readKeystoneCABundle(context.Background(), c, colocated)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(bundle).To(BeEmpty(),
+		"an in-cluster Keystone performs no TLS handshake, so the bundle stays out of the Secret")
 }
 
 // TestReadExternalCABundle_KeyDefaultsToCACrt covers the webhook-bypass shape: a CR
@@ -3321,7 +3362,7 @@ func TestReadExternalCABundle_KeyDefaultsToCACrt(t *testing.T) {
 	cp.Spec.Services.Keystone.External.CABundleSecretRef.Key = ""
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(externalCASecret()).Build()
 
-	bundle, err := readExternalCABundle(context.Background(), c, cp)
+	bundle, err := readKeystoneCABundle(context.Background(), c, cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(bundle).To(Equal(testCABundle))
 }
@@ -3613,4 +3654,145 @@ func TestAdminAppCredentialPushSecret_DeletionPolicyIsDelete(t *testing.T) {
 
 	g.Expect(ps.Spec.DeletionPolicy).To(Equal(esov1alpha1.PushSecretDeletionPolicyDelete),
 		"the credential must not outlive the ControlPlane that minted it")
+}
+
+// --- per-service target clusters: the admin password follows Keystone ---
+
+// korcPlacedControlPlane builds a MANAGED-mode ControlPlane whose Keystone — and
+// with it the materialised admin-password Secret the mint reads — sits in a
+// namespace of its own on a target cluster.
+func korcPlacedControlPlane(targetCluster string) *c5c3v1alpha1.ControlPlane {
+	cp := korcControlPlane()
+	cp.Spec.Infrastructure = &c5c3v1alpha1.InfrastructureSpec{
+		Database: commonv1.DatabaseSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "openstack-db"},
+			Database:   "keystone",
+		},
+	}
+	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name:      "identity",
+		Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
+	cp.Spec.Services.Keystone.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetCluster}
+	return cp
+}
+
+// placedAdminPasswordSecret is the Secret ESO materialises from the admin-password
+// ExternalSecret beside the Keystone child — on the child's cluster, under the
+// operator-owned per-ControlPlane name.
+func placedAdminPasswordSecret(cp *c5c3v1alpha1.ControlPlane) *corev1.Secret {
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      adminPasswordSecretName(cp),
+			Namespace: cp.KeystoneNamespace(),
+		},
+		Data: map[string][]byte{"password": []byte(testAdminPassword)},
+	}
+}
+
+// TestReconcileKORC_ReadsThePlacedAdminPassword verifies the mint is fed from the
+// cluster the Keystone child was placed on: the admin password exists only there,
+// so a read still at home would park the ControlPlane on WaitingForAdminPassword
+// for good. What the pass WRITES stays local — K-ORC runs on the management
+// cluster whatever the ControlPlane places elsewhere.
+func TestReconcileKORC_ReadsThePlacedAdminPassword(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp := korcPlacedControlPlane("remote-a")
+
+	remote := fake.NewClientBuilder().WithScheme(s).WithObjects(placedAdminPasswordSecret(cp)).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote},
+	}
+
+	res, err := r.reconcileKORC(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond.Reason).To(Equal("WaitingForApplicationCredential"),
+		"the pass must reach the mint rather than stop at the password gate")
+
+	// The password-cloud the AC mints with is written at home and carries the
+	// cleartext that was only ever available on the target cluster.
+	cloud := &corev1.Secret{}
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: adminPasswordCloudSecretName(cp), Namespace: childNamespace(cp),
+	}, cloud)).To(Succeed())
+	g.Expect(string(cloud.Data[appCredCloudsYAMLKey])).To(ContainSubstring(testAdminPassword))
+
+	g.Expect(r.Get(ctx, types.NamespacedName{
+		Name: adminAppCredentialName(cp), Namespace: childNamespace(cp),
+	}, &orcv1alpha1.ApplicationCredential{})).To(Succeed())
+	var placedACs orcv1alpha1.ApplicationCredentialList
+	g.Expect(remote.List(ctx, &placedACs)).To(Succeed())
+	g.Expect(placedACs.Items).To(BeEmpty(), "K-ORC's resources stay on the management cluster")
+}
+
+// TestReconcileKORC_PlacedAdminPasswordMissingStillWaits pins that reaching for
+// the Secret on another cluster does not change what a not-yet-synced one means:
+// the pass defers on the same reason it always did.
+func TestReconcileKORC_PlacedAdminPasswordMissingStillWaits(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := korcTestScheme(t)
+	cp := korcPlacedControlPlane("remote-a")
+
+	// The target cluster resolves; ESO has just not materialised the Secret yet.
+	remote := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote},
+	}
+
+	res, err := r.reconcileKORC(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("WaitingForAdminPassword"))
+}
+
+// TestReconcileKORC_UnresolvableTargetMintsNothing covers the cluster that does
+// not resolve: the pass parks on the reason every operator reports that failure
+// under, keeps its own requeue cadence, and writes nothing on either cluster —
+// not the password-cloud, not the ApplicationCredential.
+func TestReconcileKORC_UnresolvableTargetMintsNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp := korcPlacedControlPlane("remote-a")
+
+	remote := fake.NewClientBuilder().WithScheme(s).WithObjects(placedAdminPasswordSecret(cp)).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote, err: mcruntime.ErrClusterNotFound},
+	}
+
+	res, err := r.reconcileKORC(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred(), "an unregistered cluster is a state to wait out, not a reconcile failure")
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+
+	for name, c := range map[string]client.Client{"management": r.Client, "target": remote} {
+		var secrets corev1.SecretList
+		g.Expect(c.List(ctx, &secrets)).To(Succeed())
+		for _, secret := range secrets.Items {
+			g.Expect(secret.Name).NotTo(Equal(adminPasswordCloudSecretName(cp)),
+				"no password-cloud may be written on the %s cluster", name)
+		}
+		var acs orcv1alpha1.ApplicationCredentialList
+		g.Expect(c.List(ctx, &acs)).To(Succeed())
+		g.Expect(acs.Items).To(BeEmpty(), "no application credential may be minted on the %s cluster", name)
+	}
 }

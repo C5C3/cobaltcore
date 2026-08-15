@@ -242,6 +242,15 @@ func (r *ControlPlaneReconciler) reconcileKeystone(ctx context.Context, cp *c5c3
 	// the shared child projector under Server-Side Apply.
 	keystone.Spec.Image = image
 
+	// Thread the service's target cluster onto the child VERBATIM. The Keystone CR
+	// itself keeps being projected through the local client — the keystone-operator
+	// reads it here and owns everything it creates on the target cluster — so this
+	// field is the whole hand-over. DeepCopy keeps the projected ref an independent
+	// object; a nil source yields nil, which leaves the child unplaced exactly as
+	// before. Both sides freeze the value (the ControlPlane webhook and the child's
+	// own CEL transition rule), so re-projecting it can never trip that freeze.
+	keystone.Spec.TargetClusterRef = cp.Spec.Services.Keystone.TargetClusterRef.DeepCopy()
+
 	// Project the federation proxy (mod_auth_openidc sidecar) image so
 	// attaching an OIDC KeystoneIdentityBackend works out of the box on the
 	// managed path, and the WebSSO origin of the ControlPlane's own dashboard so
