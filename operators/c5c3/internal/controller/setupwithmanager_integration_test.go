@@ -22,9 +22,9 @@
 // (setupControlPlaneEnvTest) sets SkipNameValidation precisely so it does not
 // contend with this test. TestBuildControlPlaneController_StartsWithoutServiceCRDs
 // below likewise does not contend: it wires the controller through
-// buildControlPlaneController on a builder configured with
-// controller.Options{SkipNameValidation: ptr.To(true)} — the same escape the
-// inline harness uses — instead of calling SetupWithManager.
+// buildControlPlaneController on a builder configured with SkipNameValidation —
+// the same escape the inline harness uses — instead of calling
+// SetupWithManager.
 package controller
 
 import (
@@ -35,7 +35,11 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	"github.com/c5c3/forge/operators/c5c3/internal/testutil"
 )
@@ -67,12 +71,21 @@ func TestSetupWithManager_BothControllersStart(t *testing.T) {
 		},
 		func(mgr ctrl.Manager) error {
 			// Mirror operators/c5c3/main.go: both controllers are registered on the
-			// same manager.
+			// same manager, the ControlPlane one through the multicluster wrapper.
+			// A nil provider engages no target cluster, so the remote legs add
+			// nothing and every local informer must still sync. That is the
+			// single-cluster default path: an operator started with an empty
+			// --clusters-namespace clears the provider the same way.
+			mcMgr, err := mcmanager.WithMultiCluster(mgr, nil)
+			if err != nil {
+				return err
+			}
 			if err := (&ControlPlaneReconciler{
 				Client:   mgr.GetClient(),
 				Scheme:   mgr.GetScheme(),
 				Recorder: mgr.GetEventRecorderFor("controlplane-controller"),
-			}).SetupWithManager(mgr); err != nil {
+				Resolver: mcMgr,
+			}).SetupWithManager(mcMgr); err != nil {
 				return err
 			}
 			if err := (&CredentialRotationReconciler{
@@ -115,8 +128,8 @@ func TestBuildControlPlaneController_StartsWithoutServiceCRDs(t *testing.T) {
 	// the error via t.Errorf — so the crash-loop regression fails this test either
 	// way. The controller is wired through buildControlPlaneController (the same
 	// builder the production SetupWithManager drives) on a builder carrying
-	// controller.Options{SkipNameValidation: ptr.To(true)}, so it does not contend
-	// with TestSetupWithManager_BothControllersStart for the global controller name.
+	// SkipNameValidation, so it does not contend with
+	// TestSetupWithManager_BothControllersStart for the global controller name.
 	c, ctx, _ := testutil.SetupC5c3EnvTestWithControllerAndCRDs(
 		t,
 		testutil.BaselineCRDDirectoryPaths(),
@@ -132,12 +145,19 @@ func TestBuildControlPlaneController_StartsWithoutServiceCRDs(t *testing.T) {
 				Scheme:   mgr.GetScheme(),
 				Recorder: mgr.GetEventRecorderFor("controlplane-controller"),
 			}
-			b, err := r.buildControlPlaneController(mgr, ctrl.NewControllerManagedBy(mgr).
-				WithOptions(controller.Options{SkipNameValidation: ptr.To(true)}))
+			// A nil provider engages no target cluster, so the remote legs add
+			// nothing here and only the local ones have to sync — which is what
+			// this test is about.
+			mcMgr, err := mcmanager.WithMultiCluster(mgr, nil)
 			if err != nil {
 				return err
 			}
-			return b.Complete(r)
+			b, err := r.buildControlPlaneController(mcMgr, mcbuilder.ControllerManagedBy(mcMgr).
+				WithOptions(controller.TypedOptions[mcreconcile.Request]{SkipNameValidation: ptr.To(true)}))
+			if err != nil {
+				return err
+			}
+			return b.WithClusterNotFoundWrapper(false).Complete(commonmulticluster.LocalReconciler(r))
 		},
 	)
 

@@ -126,11 +126,11 @@ func setupControlPlaneEnvTest(t testing.TB) (client.Client, context.Context, con
 				// Owns() legs above never fire for it: without these, a status
 				// transition on such a child would only be picked up on the next
 				// periodic requeue, and the harness would not reflect production.
-				Watches(&keystonev1alpha1.Keystone{}, crossNamespaceChildHandler()).
-				Watches(&mariadbv1alpha1.MariaDB{}, crossNamespaceChildHandler()).
-				Watches(memcached, crossNamespaceChildHandler()).
-				Watches(&esov1.ExternalSecret{}, crossNamespaceChildHandler()).
-				Watches(&corev1.Namespace{}, crossNamespaceChildHandler()).
+				Watches(&keystonev1alpha1.Keystone{}, handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)).
+				Watches(&mariadbv1alpha1.MariaDB{}, handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)).
+				Watches(memcached, handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)).
+				Watches(&esov1.ExternalSecret{}, handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)).
+				Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)).
 				WithOptions(controller.Options{SkipNameValidation: ptr.To(true)}).
 				Complete(r)
 		},

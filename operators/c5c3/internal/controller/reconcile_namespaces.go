@@ -19,13 +19,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -225,10 +227,13 @@ func crossNamespaceChildMapper(_ context.Context, obj client.Object) []reconcile
 	}}
 }
 
-// crossNamespaceChildHandler is crossNamespaceChildMapper as an event handler,
-// so SetupWithManager's watch legs read as one call per kind.
-func crossNamespaceChildHandler() handler.EventHandler {
-	return handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)
+// crossNamespaceChildHandler is crossNamespaceChildMapper as the event-handler
+// factory a multicluster watch leg takes, so SetupWithManager's legs read as one
+// call per kind. Every request it produces is pinned to the management cluster,
+// where the ControlPlane CRs live, whatever cluster delivered the event (see
+// commonmulticluster.LocalRequests).
+func crossNamespaceChildHandler() mchandler.TypedEventHandlerFunc[client.Object, mcreconcile.Request] {
+	return commonmulticluster.LocalRequests(crossNamespaceChildMapper)
 }
 
 // crossNamespaceChildPredicate admits only objects carrying both ControlPlane
