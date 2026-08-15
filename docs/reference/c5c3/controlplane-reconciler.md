@@ -702,7 +702,7 @@ creates nothing on either side.
 | `False` | `NamespaceNotFound` | An `External` namespace does not exist; requeue. |
 | `False` | `NamespaceNotOwned` | A `Managed` namespace exists but lacks the operator's ownership labels — never adopted. |
 | `False` | `NamespaceTerminating` | The namespace is being deleted; wait and requeue. |
-| `False` | `TargetClusterUnavailable` | A service placed the namespace on a target cluster that does not resolve; the resolver's own message, `cluster not found` for a name that was never registered. |
+| `False` | `TargetClusterUnavailable` | A service placed the namespace on a target cluster that does not resolve; the resolver's own message, `cluster not found` for a name that was never registered. On deletion the same reason marks a placed namespace whose cluster has not answered yet: the teardown waits for it, and gives up on its children only past the abandon window (see [Owner-ref / GC model](#owner-ref--gc-model)). |
 | `False` | `FinalizingNamespaces` | On deletion, waiting for cross-namespace children to be torn down (see [Owner-ref / GC model](#owner-ref--gc-model)). |
 | `False` | `NamespaceError` | A create/get against the namespace failed. |
 
@@ -2489,6 +2489,17 @@ label-mapped `Watches()` leg resolves an event on it back to a reconcile request
 Because nothing garbage-collects such a child, the finalizer tears it down
 explicitly (see below).
 
+A child written to a **target cluster** carries no owner reference either, for a
+stronger reason: that cluster's garbage collector cannot resolve an owner living
+on the management cluster at all. Such a child takes the two labels above plus
+the three [shared ownership
+labels](../target-clusters.md#ownership-and-teardown-on-the-target)
+(`openstack.c5c3.io/owner-kind`, `-owner-name`, `-owner-namespace`), which name
+the owning CR across operators, so a Keystone and a ControlPlane projecting into
+one target namespace each select only their own. Nothing on that cluster collects
+them, and no cascade crosses the boundary, so a second finalizer holds the
+ControlPlane in etcd until they are swept.
+
 ### Deletion ordering — the `c5c3.io/orc-teardown` finalizer
 
 Owner-reference GC alone is **unordered**: deleting the ControlPlane would
@@ -2517,7 +2528,10 @@ projected. On deletion it:
    keeps the revoked credential from outliving the ControlPlane in OpenBao. A
    PushSecret still stuck past the stall window has its finalizers
    force-removed, and a **Warning** `OpenBaoCleanupStalled` names the OpenBao
-   paths that may retain data.
+   paths that may retain data. A placed namespace is swept on its target cluster
+   as well as at home, because both the PushSecrets and the store their purge
+   authenticates through live there; the force-remove goes to the cluster the
+   PushSecret was found on.
 3. **Tears down the cross-namespace children before releasing.** A service
    placed in a namespace of its own — and the backing services, tenant store,
    and credential material that follow it — carries no owner reference, so no GC
@@ -2530,14 +2544,22 @@ projected. On deletion it:
    OpenBao instance belongs in that wait set because its own finalizer runs under
    the tenant RBAC living in the same namespace: deleting the namespace first
    reaps that RBAC out from under it and leaves the instance unfinalizable, with
-   the namespace stuck `Terminating`. A **`Managed`** namespace is
+   the namespace stuck `Terminating`. The service CRs live on the management
+   cluster wherever their service is placed, so waiting for them here is also
+   what waits out the service operators' own remote sweeps. A **`Managed`**
+   namespace is
    deleted, which cascades everything left in it — but only when it carries the
    ownership labels; an unlabelled one is left standing with a **Warning**
    `NamespaceNotOwned`, because the operator never destroys a namespace it did
-   not create. An **`External`** namespace survives, so its residue (backing
+   not create. A placed one is deleted on both clusters, since
+   `reconcileNamespaces` created it on both. An **`External`** namespace survives,
+   so its residue (backing
    services, credential material, tenant-store trio last) is swept by name, each
    object ownership-checked so a same-named object belonging to somebody else in
-   that shared namespace is left alone. While children remain the condition
+   that shared namespace is left alone. On a placed namespace both of those run
+   against that cluster's client, and the
+   [label-selected sweep](#the-placed-namespaces--openstackc5c3ioremote-children)
+   follows them. While children remain the condition
    reports `NamespacesReady=False/FinalizingNamespaces`; past the
    `orcTeardownStallTimeout` the sweep stops waiting, emits a **Warning**
    `NamespaceTeardownStalled` naming what is stuck, and releases anyway — a wedged
@@ -2550,10 +2572,13 @@ projected. On deletion it:
    therefore runs on every ControlPlane teardown, Barbican or not, reading through
    the uncached API reader (a cached read would install a cluster-wide
    `ClusterRoleBinding` informer for one object) and deleting only a binding
-   carrying this ControlPlane's ownership labels.
-5. **Releases the finalizer once the ORC CRs, PushSecrets, and cross-namespace
+   carrying this ControlPlane's ownership labels. It reads and deletes on the
+   cluster Barbican was placed on, where the ensemble wrote the binding.
+5. **Releases the finalizers once the ORC CRs, PushSecrets, and cross-namespace
    children are gone**, letting GC cascade-delete the same-namespace Keystone,
-   the infrastructure, and the remaining children.
+   the infrastructure, and the remaining children. The remote-children finalizer
+   goes in the same update, because by then every placed namespace has been swept
+   or its cluster abandoned.
 6. **Releases an unmanaged-only remainder immediately.** K-ORC re-fetches the
    imported resource through an *authenticated* actuator before releasing any
    finalizer, and the unmanaged imports authenticate with the admin application
@@ -2595,6 +2620,46 @@ then OpenBao cleanup); see
 [Keystone reconciler — finalizer](../keystone/keystone-reconciler.md#finalizer).
 The `{name}-admin-app-credential-backup` PushSecret is the one child kept on
 `DeletionPolicy: None` so its OpenBao path is not purged on teardown.
+
+#### The placed namespaces — `openstack.c5c3.io/remote-children`
+
+A ControlPlane that places a service on a [target
+cluster](../target-clusters.md) carries a second finalizer, the shared
+`openstack.c5c3.io/remote-children`. It goes on once every cluster the spec names
+resolves. Before that, nothing has been written to any of them for it to reclaim,
+and `reconcileNamespaces` is what reports the unresolvable name. Once installed
+it stays for the CR's life: a cluster that stops resolving later still holds
+children.
+
+What it holds the ControlPlane open for is the label-selected sweep in step 3.
+Per placed namespace, `controlPlaneRemoteChildKinds` names the thirteen kinds the
+ControlPlane writes there: `MariaDB`, `Memcached`, `SecretStore`, `Certificate`,
+`ServiceAccount`, `Role`, `RoleBinding`, `Secret`, `ExternalSecret`,
+`PushSecret`, `VaultDynamicSecret`, `OpenBaoTenant`, `OpenBaoCluster`. Every
+object of them the ControlPlane owns is deleted through that cluster's client,
+listed through its uncached reader and paged so a shared namespace cannot arrive
+in one response. The list holds namespaced kinds only. The auth-delegator
+`ClusterRoleBinding` and the namespace itself are cluster-scoped and deleted by
+name (steps 3 and 4), while the service CRs and the K-ORC CRs never leave the
+management cluster.
+
+The sweep runs through the credentials of the registered cluster's kubeconfig,
+never through the management `ClusterRole`. That is why `Role` and `RoleBinding`
+are swept although the markers grant them no `list` verb at home, and it means
+the [blast radius](#blast-radius-and-namespace-scoping) of a placed ControlPlane
+is whatever that kubeconfig grants on its cluster.
+
+A cluster that does not resolve while the ControlPlane is terminating is waited
+for: the pass requeues with both finalizers on and reports
+`NamespacesReady=False/TargetClusterUnavailable`. Engagement is asynchronous, so
+an operator restart is indistinguishable from a deregistration. After
+`AbandonAfter` (5 minutes, measured from both the first failed resolve in this
+process and the deletion timestamp) the cluster is abandoned: a **Warning**
+`RemoteChildrenAbandoned` names the cluster and the namespace whose objects stay
+behind, and the teardown continues without it. The ORC stall escape (step 7)
+releases `c5c3.io/orc-teardown` alone. It never reaches this sweep, so the
+remote-children finalizer stays on and a later pass runs the sweep and releases
+it.
 
 > **ControlPlane-scoped children live in the owner's namespace; service children
 > follow their service.** The K-ORC CRs, the `clouds.yaml` Secret, the

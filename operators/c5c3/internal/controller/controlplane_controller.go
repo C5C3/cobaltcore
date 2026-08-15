@@ -22,10 +22,12 @@ import (
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/tools/record"
@@ -33,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -171,6 +174,56 @@ func (r *ControlPlaneReconciler) apiReader() client.Reader {
 	return r.Client
 }
 
+// controlPlaneRemoteChildKinds are the kinds the ControlPlane projects into a
+// service namespace on a target cluster, and the kinds teardownDedicatedNamespaces
+// sweeps by ownership label when the CR is deleted. Neither an owner reference nor
+// a garbage collection cascade crosses a cluster boundary, so a kind missing from
+// this list is a kind that keeps running on the target after the ControlPlane is
+// gone.
+//
+// The list is cross-checked against the create verbs of the kubebuilder RBAC
+// markers below: the operator can only leave behind what it is allowed to create.
+// Three groups of marker are deliberately not in it:
+//
+//   - The service CRs (Keystone, Horizon, Glance, GlanceBackend, Placement,
+//     Barbican, BarbicanSecretStore) and the K-ORC kinds. Both stay on the
+//     management cluster whatever a service names — a placed service's CR carries
+//     the ref and its own operator projects onto the target, and the K-ORC CRs live
+//     in the ControlPlane's own namespace — so deleteServiceChildrenIn and
+//     deleteORCResources delete them there, by name.
+//   - The cluster-scoped auth-delegator ClusterRoleBinding behind a dedicated
+//     OpenBao instance. The sweep lists namespaced objects in one namespace, so it
+//     can never see a cluster-scoped one; deleteBarbicanAuthDelegatorBinding
+//     deletes it by name, through that same cluster's client.
+//   - Namespace, cluster-scoped as well and deleted by name under the Managed
+//     lifecycle alone (deleteManagedNamespace).
+//
+// Role and RoleBinding are in the list although the markers below grant them no
+// list verb, and that is not an oversight: the sweep runs exclusively through the
+// credentials of the registered target cluster's kubeconfig, never through the
+// management cluster's ClusterRole. The markers describe what this operator may do
+// at home, where those two kinds are read and written by exact name only.
+//
+// The order carries no ESO sequencing. A PushSecret purges its OpenBao path
+// through the tenant SecretStore in its own namespace, but every owned PushSecret
+// is deleted — and waited for — by deleteOwnedPushSecrets before this sweep runs,
+// so no PushSecret is left for the SecretStore entry to outrun.
+var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
+	mariadbv1alpha1.GroupVersion.WithKind("MariaDB"),
+	memcachedGVK,
+	esov1.SchemeGroupVersion.WithKind("SecretStore"),
+	certificateGVK,
+	corev1.SchemeGroupVersion.WithKind("ServiceAccount"),
+	rbacv1.SchemeGroupVersion.WithKind("Role"),
+	rbacv1.SchemeGroupVersion.WithKind("RoleBinding"),
+	corev1.SchemeGroupVersion.WithKind("Secret"),
+	esov1.SchemeGroupVersion.WithKind("ExternalSecret"),
+	esov1alpha1.SchemeGroupVersion.WithKind("PushSecret"),
+	esgenv1alpha1.SchemeGroupVersion.WithKind("VaultDynamicSecret"),
+	openbaov1alpha1.GroupVersion.WithKind("OpenBaoTenant"),
+	openbaov1alpha1.GroupVersion.WithKind("OpenBaoCluster"),
+}
+
 // +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=controlplanes/finalizers,verbs=update
@@ -266,6 +319,31 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, err
 	} else if added {
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	// The remote-children finalizer goes on only when the ControlPlane places a
+	// service on a target cluster, and only once at least one cluster it names
+	// resolves: what it holds the CR open for is the sweep of the namespaces on
+	// those clusters, and a ControlPlane that keeps every child at home has nothing
+	// for it to hold. ANY resolving cluster is enough, because reconcileNamespaces
+	// writes per namespace and will create the namespaces of that cluster on this
+	// very pass, whatever a sibling ref does; a CR with no resolvable cluster at all
+	// skips the install WITHOUT failing the pass — reconcileNamespaces is the first
+	// blocking step below and reports that failure under the shared
+	// TargetClusterUnavailable reason, while nothing has been written anywhere that
+	// a finalizer would have to reclaim.
+	//
+	// Once installed the finalizer stays. A cluster that stops resolving later
+	// still holds children this CR is responsible for, and the deletion path is
+	// what decides between waiting for it and abandoning them.
+	if !controllerutil.ContainsFinalizer(&cp, commonmulticluster.RemoteChildrenFinalizer) &&
+		r.anyTargetClusterResolves(ctx, &cp) {
+		if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &cp,
+			commonmulticluster.RemoteChildrenFinalizer); err != nil {
+			return ctrl.Result{}, err
+		} else if added {
+			return ctrl.Result{Requeue: true}, nil
+		}
 	}
 
 	// Run the sub-reconcilers in two phases via the shared table-driven chain.
