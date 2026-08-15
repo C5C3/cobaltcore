@@ -26,18 +26,23 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
+	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	"github.com/c5c3/forge/internal/common/watch"
@@ -128,6 +133,13 @@ type ControlPlaneReconciler struct {
 	// programmatically constructed reconciler (unit tests, envtest fixtures)
 	// keeps working unchanged.
 	APIReader client.Reader
+
+	// Resolver resolves the target cluster a ControlPlane names in a service's
+	// targetClusterRef into the client that service's children are read and
+	// written with. Nil means always-local: every service keeps its children on
+	// the management cluster, which is what single-cluster tests and deployments
+	// want.
+	Resolver commonmulticluster.ClusterResolver
 
 	// MaxConcurrentReconciles bounds how many ControlPlane CRs reconcile
 	// concurrently. It is threaded from the --max-concurrent-reconciles flag
@@ -724,6 +736,31 @@ func storeToControlPlaneMapper(c client.Reader, watchedKind commonv1.SecretStore
 		})
 }
 
+// controlPlaneTargetClusters reports the clusters the ControlPlane at key places
+// services on, read from the management cluster where the CR lives. It is the
+// gate every target-cluster watch leg carries (see
+// commonmulticluster.RemoteRequestsAmong): a leg is engaged on every registered
+// cluster rather than on the ones a CR names, so an event only reaches a
+// ControlPlane that named the cluster it arrived from.
+//
+// It is the set-valued counterpart of commonmulticluster.TargetClusterOf, which
+// the service operators bind instead. A ControlPlane places each service
+// separately, so one CR can name several clusters at once; the error is returned
+// as it comes back, and RemoteRequestsAmong is what decides that a NotFound is
+// the ordinary answer and anything else is worth a log line.
+//
+// The read costs no API call and no second informer: the controller's own For
+// leg already holds every ControlPlane in the local cache this reads through.
+func controlPlaneTargetClusters(c client.Reader) commonmulticluster.TargetClustersFunc {
+	return func(ctx context.Context, key types.NamespacedName) ([]string, error) {
+		cp := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, key, cp); err != nil {
+			return nil, err
+		}
+		return cp.TargetClusterNames(), nil
+	}
+}
+
 // SetupWithManager registers the ControlPlaneReconciler with the controller
 // manager. It Owns every child CR the sub-reconcilers project (MariaDB,
 // Keystone, Horizon, Glance/GlanceBackend, the eight K-ORC resources, the
@@ -749,25 +786,37 @@ func storeToControlPlaneMapper(c client.Reader, watchedKind commonv1.SecretStore
 // mount one on a running manager (see crd_presence.go). The wiring lives in
 // buildControlPlaneController so the production path and the integration test
 // drive identical leg registration.
-func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Shared controller options: MaxConcurrentReconciles lets independent
-	// CRs reconcile in parallel instead of serialising at the
-	// controller-runtime default of 1, and the tuned RateLimiter caps
-	// per-item failure backoff at 30s rather than the default 1000s (see
-	// bootstrap.ControllerOptions).
-	b := ctrl.NewControllerManagedBy(mgr).
-		WithOptions(bootstrap.ControllerOptions(r.MaxConcurrentReconciles))
+//
+// Every leg is pinned to a cluster. The ones described above watch the
+// management cluster, where the ControlPlane CRs and the children of a service
+// that names no target cluster live. A second set watches the clusters a service
+// can be placed on, where an owner reference cannot reach and the ownership
+// labels are what maps a child back to the CR that placed it.
+//
+// The shared controller options it applies let independent CRs reconcile in
+// parallel instead of serialising at the controller-runtime default of 1, and
+// the tuned RateLimiter caps per-item failure backoff at 30s rather than the
+// default 1000s (see bootstrap.TypedControllerOptions).
+func (r *ControlPlaneReconciler) SetupWithManager(mgr mcmanager.Manager) error {
+	return r.setupWithOptions(mgr, bootstrap.TypedControllerOptions[mcreconcile.Request](r.MaxConcurrentReconciles))
+}
 
-	// The uncached reader for the never-watched RBAC kinds (see APIReader).
-	if r.APIReader == nil {
-		r.APIReader = mgr.GetAPIReader()
-	}
-
-	b, err := r.buildControlPlaneController(mgr, b)
+// setupWithOptions carries the production wiring SetupWithManager applies. The
+// controller options are a parameter so the integration suite can register this
+// exact chain with SkipNameValidation set, rather than a hand-built copy of it
+// that drifts the moment a leg is added.
+func (r *ControlPlaneReconciler) setupWithOptions(mgr mcmanager.Manager, opts crcontroller.TypedOptions[mcreconcile.Request]) error {
+	b, err := r.buildControlPlaneController(mgr, mcbuilder.ControllerManagedBy(mgr).WithOptions(opts))
 	if err != nil {
 		return err
 	}
-	return b.Complete(r)
+	// The default wrapper turns an error matching multicluster.ErrClusterNotFound
+	// into a successful reconcile. This operator instead surfaces an unresolvable
+	// cluster as a condition and requeues, so the wrapper stays off and the error
+	// semantics remain byte-identical to the classic builder's.
+	return b.
+		WithClusterNotFoundWrapper(false).
+		Complete(commonmulticluster.LocalReconciler(r))
 }
 
 // buildControlPlaneController applies every watch leg to b and returns it ready
@@ -791,14 +840,29 @@ func (r *ControlPlaneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // the goal of reflecting ESO sync/outage transitions in the credential
 // conditions promptly; a relevance predicate could be added later if the
 // reconcile volume becomes a concern.
-func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b *builder.Builder) (*builder.Builder, error) {
+func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manager, b *mcbuilder.Builder) (*mcbuilder.Builder, error) {
+	// The management cluster: where the ControlPlane CRs live, and the only
+	// cluster the discovery guard below probes. A target cluster's own kinds are
+	// probed per cluster, when it is engaged (commonmulticluster.ClusterServesKind).
+	local := mgr.GetLocalManager()
+
+	// The uncached reader for the never-watched RBAC kinds (see APIReader).
+	if r.APIReader == nil {
+		r.APIReader = local.GetAPIReader()
+	}
+
 	// Register the field indexer before Watches so secretToControlPlaneMapper
-	// can rely on it for its MatchingFields lookup.
-	if err := registerControlPlaneSecretNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
+	// can rely on it for its MatchingFields lookup. It goes on the LOCAL field
+	// indexer, not mgr's: with a provider configured, the multicluster manager's
+	// indexer registers against the target clusters, which hold no ControlPlane
+	// CR, and applying it while engaging one would fail that engagement. Every
+	// request the legs below emit is pinned to the management cluster, so a
+	// remote event resolves its CR through this index all the same.
+	if err := registerControlPlaneSecretNameIndex(context.Background(), local.GetFieldIndexer()); err != nil {
 		return nil, err
 	}
 
-	disco, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	disco, err := discovery.NewDiscoveryClientForConfig(local.GetConfig())
 	if err != nil {
 		return nil, fmt.Errorf("building discovery client for optional CRD probe: %w", err)
 	}
@@ -833,6 +897,18 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b
 	certificate := &unstructured.Unstructured{}
 	certificate.SetGroupVersionKind(certificateGVK)
 
+	// Every leg watching the management cluster carries both engage options
+	// below; see their definition for why an unpinned leg would quietly stop
+	// watching it once a provider is configured.
+	engageLocal := commonmulticluster.EngageLocalCluster
+	engageNoProviders := commonmulticluster.EngageNoProviderClusters
+
+	// Every leg watching a target cluster is engaged on all of them, not on the
+	// ones some ControlPlane places a service on, so it has to drop the events
+	// belonging to a CR that places its services elsewhere (see
+	// commonmulticluster.RemoteRequestsAmong).
+	targets := controlPlaneTargetClusters(local.GetClient())
+
 	// Unconditional legs: the ControlPlane itself, the infrastructure children
 	// the c5c3 operator ships or hard-depends on, and the secret-store watches.
 	b = b.
@@ -840,8 +916,8 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b
 		// re-wake the controller (see watch.CRUpdatePredicate). Together with
 		// the no-op status-write skip in updateStatus this closes the
 		// self-wake loop the bare For() previously allowed.
-		For(&c5c3v1alpha1.ControlPlane{}, builder.WithPredicates(watch.CRUpdatePredicate())).
-		Owns(&mariadbv1alpha1.MariaDB{}).
+		For(&c5c3v1alpha1.ControlPlane{}, mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders).
+		Owns(&mariadbv1alpha1.MariaDB{}, engageLocal, engageNoProviders).
 		// The eight K-ORC kinds are a HARD dependency of every reconcile pass:
 		// reconcileKORC unconditionally mints the admin ApplicationCredential and
 		// projects the catalog/identity resources (and reconcileServiceAccounts the
@@ -851,33 +927,33 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b
 		// and the ESO kinds — these Owns legs stay unconditional rather than sitting
 		// behind the discovery guard below. The manager must fail fast at start if
 		// K-ORC is absent.
-		Owns(&orcv1alpha1.ApplicationCredential{}).
-		Owns(&orcv1alpha1.Service{}).
-		Owns(&orcv1alpha1.Endpoint{}).
-		Owns(&orcv1alpha1.User{}).
-		Owns(&orcv1alpha1.Domain{}).
-		Owns(&orcv1alpha1.Project{}).
-		Owns(&orcv1alpha1.Role{}).
-		Owns(&orcv1alpha1.RoleAssignment{}).
-		Owns(memcached).
-		Owns(certificate).
-		Owns(&esov1.ExternalSecret{}).
-		Owns(&esov1alpha1.PushSecret{}).
-		Owns(&esgenv1alpha1.VaultDynamicSecret{}).
-		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
-			secretToControlPlaneMapper(mgr.GetClient()),
-		)).
+		Owns(&orcv1alpha1.ApplicationCredential{}, engageLocal, engageNoProviders).
+		Owns(&orcv1alpha1.Service{}, engageLocal, engageNoProviders).
+		Owns(&orcv1alpha1.Endpoint{}, engageLocal, engageNoProviders).
+		Owns(&orcv1alpha1.User{}, engageLocal, engageNoProviders).
+		Owns(&orcv1alpha1.Domain{}, engageLocal, engageNoProviders).
+		Owns(&orcv1alpha1.Project{}, engageLocal, engageNoProviders).
+		Owns(&orcv1alpha1.Role{}, engageLocal, engageNoProviders).
+		Owns(&orcv1alpha1.RoleAssignment{}, engageLocal, engageNoProviders).
+		Owns(memcached, engageLocal, engageNoProviders).
+		Owns(certificate, engageLocal, engageNoProviders).
+		Owns(&esov1.ExternalSecret{}, engageLocal, engageNoProviders).
+		Owns(&esov1alpha1.PushSecret{}, engageLocal, engageNoProviders).
+		Owns(&esgenv1alpha1.VaultDynamicSecret{}, engageLocal, engageNoProviders).
+		Watches(&corev1.Secret{}, commonmulticluster.LocalRequests(
+			secretToControlPlaneMapper(local.GetClient()),
+		), engageLocal, engageNoProviders).
 		// Watch both the cluster-scoped ClusterSecretStore and the namespaced
 		// SecretStore a ControlPlane can select via spec.secretStoreRef, so an
 		// ESO/OpenBao outage reflects in the credential conditions as soon as ESO
 		// flips the selected store's Ready condition. Each mapper enqueues only
 		// the ControlPlanes whose effective store ref matches the changed store.
-		Watches(&esov1.ClusterSecretStore{}, handler.EnqueueRequestsFromMapFunc(
-			storeToControlPlaneMapper(mgr.GetClient(), commonv1.SecretStoreKindCluster),
-		)).
-		Watches(&esov1.SecretStore{}, handler.EnqueueRequestsFromMapFunc(
-			namespacedStoreToControlPlaneMapper(mgr.GetClient()),
-		)).
+		Watches(&esov1.ClusterSecretStore{}, commonmulticluster.LocalRequests(
+			storeToControlPlaneMapper(local.GetClient(), commonv1.SecretStoreKindCluster),
+		), engageLocal, engageNoProviders).
+		Watches(&esov1.SecretStore{}, commonmulticluster.LocalRequests(
+			namespacedStoreToControlPlaneMapper(local.GetClient()),
+		), engageLocal, engageNoProviders).
 		// Cross-namespace children carry no owner reference (Kubernetes forbids one
 		// across namespaces), so Owns() never fires for a service placed in a
 		// namespace of its own. Watch the same kinds a second time through the
@@ -893,13 +969,66 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b
 		// OpenBaoCluster and OpenBaoTenant cross-namespace legs belong to this group
 		// too but are registered under the discovery guard below, co-located with
 		// their Owns.)
-		Watches(&mariadbv1alpha1.MariaDB{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
-		Watches(memcached, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
-		Watches(&esov1.ExternalSecret{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate())).
+		Watches(&mariadbv1alpha1.MariaDB{}, crossNamespaceChildHandler(),
+			mcbuilder.WithPredicates(crossNamespaceChildPredicate()), engageLocal, engageNoProviders).
+		Watches(memcached, crossNamespaceChildHandler(),
+			mcbuilder.WithPredicates(crossNamespaceChildPredicate()), engageLocal, engageNoProviders).
+		Watches(&esov1.ExternalSecret{}, crossNamespaceChildHandler(),
+			mcbuilder.WithPredicates(crossNamespaceChildPredicate()), engageLocal, engageNoProviders).
 		// The namespace itself: a Managed one being deleted out from under a live
 		// ControlPlane must re-drive NamespacesReady rather than wait for the next
 		// periodic resync.
-		Watches(&corev1.Namespace{}, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate()))
+		Watches(&corev1.Namespace{}, crossNamespaceChildHandler(),
+			mcbuilder.WithPredicates(crossNamespaceChildPredicate()), engageLocal, engageNoProviders)
+
+	// The same children, once more, on the clusters a ControlPlane can place a
+	// service on. Neither the Owns legs nor the cross-namespace ones above reach
+	// them: an owner reference does not cross a cluster boundary and neither does
+	// a local informer, so the ownership labels are all that maps a child on a
+	// target cluster back to the CR that placed it.
+	//
+	// The two input legs at the end are not that watch over again. An input is
+	// written by something other than this operator — ESO writes the
+	// admin-password Secret, the tenant SecretStore — so it carries no ownership
+	// labels and crossNamespaceChildMapper maps it to nothing. Only a leg of its
+	// own makes a rotation or a store outage on the target reach the CR at watch
+	// latency rather than at the next periodic resync, exactly as it does
+	// management-side. A kind may carry several legs; the requests they produce
+	// are deduplicated by the workqueue.
+	//
+	// Every mapper here reads through the LOCAL client whatever cluster delivered
+	// the event: the ControlPlane CRs live on the management cluster alone.
+	remoteLegs := []struct {
+		obj client.Object
+		fn  handler.MapFunc
+	}{
+		{&mariadbv1alpha1.MariaDB{}, crossNamespaceChildMapper},
+		{memcached, crossNamespaceChildMapper},
+		{certificate, crossNamespaceChildMapper},
+		{&esov1.ExternalSecret{}, crossNamespaceChildMapper},
+		{&esov1alpha1.PushSecret{}, crossNamespaceChildMapper},
+		{&esgenv1alpha1.VaultDynamicSecret{}, crossNamespaceChildMapper},
+		{&esov1.SecretStore{}, crossNamespaceChildMapper},
+		{&corev1.Secret{}, crossNamespaceChildMapper},
+		{&openbaov1alpha1.OpenBaoCluster{}, crossNamespaceChildMapper},
+		{&openbaov1alpha1.OpenBaoTenant{}, crossNamespaceChildMapper},
+		{&corev1.Namespace{}, crossNamespaceChildMapper},
+		{&corev1.Secret{}, secretToControlPlaneMapper(local.GetClient())},
+		{&esov1.SecretStore{}, namespacedStoreToControlPlaneMapper(local.GetClient())},
+	}
+	for _, leg := range remoteLegs {
+		// The kind the leg filters clusters by is resolved from the object
+		// itself, so the filter and the informer cannot describe different kinds:
+		// a filter naming a kind the target serves while the leg watches one it
+		// does not would engage the leg anyway, which is the whole-cluster
+		// engagement failure ClusterServesKind exists to prevent.
+		gvk, err := apiutil.GVKForObject(leg.obj, r.Scheme)
+		if err != nil {
+			return nil, fmt.Errorf("resolving the kind of a target-cluster watch leg: %w", err)
+		}
+		b = b.Watches(leg.obj, commonmulticluster.RemoteRequestsAmong(leg.fn, targets),
+			commonmulticluster.RemoteWatchOptions(gvk)...)
+	}
 
 	// Guarded legs: kinds owned by a sibling operator whose CRD may be absent.
 	// For each such kind both its Owns leg and its cross-namespace Watches leg (see
@@ -920,8 +1049,9 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b
 		&openbaov1alpha1.OpenBaoTenant{},
 	} {
 		if isServed(obj) {
-			b = b.Owns(obj).
-				Watches(obj, crossNamespaceChildHandler(), builder.WithPredicates(crossNamespaceChildPredicate()))
+			b = b.Owns(obj, engageLocal, engageNoProviders).
+				Watches(obj, crossNamespaceChildHandler(),
+					mcbuilder.WithPredicates(crossNamespaceChildPredicate()), engageLocal, engageNoProviders)
 		}
 	}
 	// KeystoneIdentityBackend CRs are authored by the operator, not projected
@@ -930,9 +1060,9 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b
 	// backend reaching Ready) re-projects the Horizon websso choices and the
 	// Keystone trusted_dashboard without waiting for a periodic resync.
 	if isServed(&keystonev1alpha1.KeystoneIdentityBackend{}) {
-		b = b.Watches(&keystonev1alpha1.KeystoneIdentityBackend{}, handler.EnqueueRequestsFromMapFunc(
+		b = b.Watches(&keystonev1alpha1.KeystoneIdentityBackend{}, commonmulticluster.LocalRequests(
 			r.identityBackendToControlPlaneMapper,
-		))
+		), engageLocal, engageNoProviders)
 	}
 
 	if len(missing) > 0 {
@@ -944,7 +1074,10 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr ctrl.Manager, b
 			"skipping watches for optional CRDs not served by the API server; a leader-gated re-check will restart the operator when one appears",
 			"missingKinds", msgs,
 		)
-		if err := mgr.Add(&crdWatchGate{disco: disco, missing: missing, interval: crdRecheckInterval}); err != nil {
+		// The gate rides the LOCAL manager: it is a plain leader-gated runnable
+		// over the management cluster's discovery client, not a cluster-aware one
+		// the multicluster manager could engage per target.
+		if err := local.Add(&crdWatchGate{disco: disco, missing: missing, interval: crdRecheckInterval}); err != nil {
 			return nil, fmt.Errorf("registering crdWatchGate for missing optional CRDs: %w", err)
 		}
 	}

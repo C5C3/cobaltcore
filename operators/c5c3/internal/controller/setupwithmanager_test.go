@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Tests for the ControlPlane SetupWithManager wiring: the secret-name field
-// indexer extractor and the Secret -> ControlPlane watch mapper.
+// indexer extractor, the Secret -> ControlPlane watch mapper, and the
+// target-cluster gate every remote watch leg carries.
 package controller
 
 import (
@@ -13,6 +14,7 @@ import (
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -409,4 +411,51 @@ func TestNamespacedStoreToControlPlaneMapper_MatchesServiceNamespaces(t *testing
 	}
 	g.Expect(mapper(context.Background(), unrelated)).To(BeEmpty(),
 		"an identically-named store in a namespace the ControlPlane does not occupy must wake nobody")
+}
+
+// --- controlPlaneTargetClusters ---
+
+// TestControlPlaneTargetClusters_ReadsThePlacementFromTheCR pins where the gate
+// on every target-cluster watch leg gets its answer: the ControlPlane on the
+// management cluster, not the object the event carried. A CR placing two
+// services names both clusters; one placing none names nothing, so no engaged
+// cluster matches it.
+func TestControlPlaneTargetClusters_ReadsThePlacementFromTheCR(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	placed := mapperControlPlane("placed", "openstack", "admin-secret")
+	placed.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-a"},
+	}
+	placed.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{
+		TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: "edge-b"},
+	}
+	localOnly := mapperControlPlane("local-only", "openstack", "admin-secret")
+
+	targets := controlPlaneTargetClusters(newControlPlaneMapperClient(t, placed, localOnly))
+
+	names, err := targets(context.Background(), types.NamespacedName{Namespace: "openstack", Name: "placed"})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(names).To(Equal([]string{"edge-a", "edge-b"}))
+
+	names, err = targets(context.Background(), types.NamespacedName{Namespace: "openstack", Name: "local-only"})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(names).To(BeEmpty(),
+		"a ControlPlane that places nothing must match no engaged cluster")
+}
+
+// TestControlPlaneTargetClusters_PropagatesTheReadError covers the event whose CR
+// is already gone — a child outliving the ControlPlane that placed it. The error
+// travels to commonmulticluster.RemoteRequestsAmong, which drops the event rather
+// than reconciling on the strength of the object alone. Swallowing it here would
+// make a deleted CR indistinguishable from a live local-only one.
+func TestControlPlaneTargetClusters_PropagatesTheReadError(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	targets := controlPlaneTargetClusters(newControlPlaneMapperClient(t))
+
+	names, err := targets(context.Background(), types.NamespacedName{Namespace: "openstack", Name: "gone"})
+	g.Expect(names).To(BeEmpty())
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"a missing ControlPlane must surface as NotFound, the answer the handler silences")
 }

@@ -66,11 +66,11 @@ type ManagerConfig struct {
 
 	// TargetClusters enables the kubeconfig cluster provider: the operator
 	// watches --clusters-namespace for registration Secrets and engages the
-	// clusters they describe. Only operators whose reconcilers resolve
-	// spec.targetClusterRef set it; one that only ever touches the management
-	// cluster (the c5c3 ControlPlane operator) leaves it false and then holds
-	// no per-cluster caches, no target-cluster credentials, and needs no Secret
-	// read outside its own namespace.
+	// clusters they describe. Only operators whose reconcilers resolve a
+	// target-cluster ref set it; one that only ever touches the management
+	// cluster leaves it false and then holds no per-cluster caches, no
+	// target-cluster credentials, and needs no Secret read outside its own
+	// namespace.
 	TargetClusters bool
 }
 

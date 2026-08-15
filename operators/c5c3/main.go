@@ -97,10 +97,17 @@ func main() {
 	if err := bootstrap.Run(bootstrap.ManagerConfig{
 		Scheme:           scheme,
 		LeaderElectionID: leaderElectionID,
+		// The ControlPlane reconciler resolves the per-service targetClusterRef,
+		// so the binary engages the clusters registered in --clusters-namespace.
+		// The provider watches that namespace for registration Secrets and
+		// engages nothing while it holds none, which is the single-cluster
+		// default every existing install keeps.
+		TargetClusters: true,
 		SetupFunc: func(mcMgr mcmanager.Manager, webhooks bool, maxConcurrentReconciles int) error {
-			// The ControlPlane reconciler projects service CRs on the management
-			// cluster and never creates children of its own, so it stays on the
-			// local manager.
+			// The ControlPlane reconciler completes through the multicluster
+			// builder, so it takes mcMgr. The local manager is what the
+			// CredentialRotation reconciler and the webhook run on: both only
+			// ever touch the management cluster.
 			mgr := mcMgr.GetLocalManager()
 			// Register the operator's Prometheus collectors on the
 			// controller-runtime registry before wiring controllers, so a
@@ -117,7 +124,8 @@ func main() {
 				MaxConcurrentReconciles:        maxConcurrentReconciles,
 				BarbicanOperatorNamespace:      strings.TrimSpace(os.Getenv(barbicanOperatorNamespaceEnv)),
 				BarbicanOperatorServiceAccount: strings.TrimSpace(os.Getenv(barbicanOperatorServiceAccountEnv)),
-			}).SetupWithManager(mgr); err != nil {
+				Resolver:                       mcMgr,
+			}).SetupWithManager(mcMgr); err != nil {
 				return err
 			}
 			if err := (&controller.CredentialRotationReconciler{
