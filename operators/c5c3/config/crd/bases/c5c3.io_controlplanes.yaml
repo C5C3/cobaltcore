@@ -1331,6 +1331,27 @@ spec:
                         x-kubernetes-validations:
                         - message: exactly one of dedicated or external must be set
                           rule: has(self.dedicated) != has(self.external)
+                      targetClusterRef:
+                        description: |-
+                          TargetClusterRef names the registered target cluster the Barbican service is
+                          placed on. The projected Barbican CR and the per-namespace objects that
+                          support it (its database, its cache, its credential material) are created
+                          there instead of on the local cluster; omitting it (the default) keeps
+                          everything on the local (management) cluster. A placed service needs a
+                          namespace of its own (webhook enforced), and the ref is frozen after creation
+                          by the validating webhook. See ServiceKeystoneSpec.TargetClusterRef.
+                        properties:
+                          name:
+                            description: |-
+                              Name is the registered target cluster's name. It must be a non-empty
+                              DNS-1123 subdomain (the Kubernetes object-name grammar), matching
+                              SecretStoreRefSpec.Name.
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
                     required:
                     - secretStore
                     type: object
@@ -2257,6 +2278,27 @@ spec:
                         - message: 'unbounded and sizeLimit are mutually exclusive:
                             an unbounded staging area has no size limit to configure'
                           rule: '!(has(self.unbounded) && self.unbounded && has(self.sizeLimit))'
+                      targetClusterRef:
+                        description: |-
+                          TargetClusterRef names the registered target cluster the Glance service is
+                          placed on. The projected Glance CR and the per-namespace objects that support
+                          it (its database, its cache, its credential material) are created there
+                          instead of on the local cluster; omitting it (the default) keeps everything on
+                          the local (management) cluster. A placed service needs a namespace of its own
+                          (webhook enforced), and the ref is frozen after creation by the validating
+                          webhook. See ServiceKeystoneSpec.TargetClusterRef.
+                        properties:
+                          name:
+                            description: |-
+                              Name is the registered target cluster's name. It must be a non-empty
+                              DNS-1123 subdomain (the Kubernetes object-name grammar), matching
+                              SecretStoreRefSpec.Name.
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
                     required:
                     - backends
                     type: object
@@ -2537,6 +2579,27 @@ spec:
                         required:
                         - name
                         type: object
+                      targetClusterRef:
+                        description: |-
+                          TargetClusterRef names the registered target cluster the dashboard is placed
+                          on. The projected Horizon CR and the per-namespace objects that support it
+                          (its cache, its secret material) are created there instead of on the local
+                          cluster; omitting it (the default) keeps everything on the local (management)
+                          cluster. A placed dashboard needs a namespace of its own (webhook enforced),
+                          and the ref is frozen after creation by the validating webhook. See
+                          ServiceKeystoneSpec.TargetClusterRef.
+                        properties:
+                          name:
+                            description: |-
+                              Name is the registered target cluster's name. It must be a non-empty
+                              DNS-1123 subdomain (the Kubernetes object-name grammar), matching
+                              SecretStoreRefSpec.Name.
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
                     type: object
                   keystone:
                     description: |-
@@ -2546,6 +2609,45 @@ spec:
                       reconciler reports KeystoneReady as not-managed. Flipping this from set to
                       nil deletes the previously-projected Keystone child.
                     properties:
+                      caBundleSecretRef:
+                        description: |-
+                          CABundleSecretRef optionally references a Secret carrying the private CA
+                          bundle the operator trusts when verifying a PLACED Keystone's publicEndpoint.
+                          K-ORC runs on the management cluster and dials that endpoint over https on
+                          every mint and re-mint, and the operator's container ships nothing but the
+                          system trust store — so a target published with a cert-manager-issued private
+                          CA, the default posture of this stack, would fail verification with no way to
+                          supply the anchor. The bundle is projected verbatim as the inline `cacert`
+                          key into BOTH generated K-ORC credentials Secrets, exactly as the External
+                          mode's external.caBundleSecretRef is. Key defaults to "ca.crt"
+                          (webhook-only, the same discipline as that field).
+
+                          The Secret is read in the ControlPlane's OWN namespace on the management
+                          cluster, because that is where the credentials Secrets and K-ORC live —
+                          not in the placed service's namespace on the target.
+
+                          Required only by the deployment's trust posture, never by admission: a
+                          publicly trusted certificate needs no bundle. It is forbidden without
+                          targetClusterRef (a co-located Keystone is dialled over its in-cluster
+                          Service URL, which performs no TLS handshake for a bundle to verify) and
+                          forbidden in External mode (external.caBundleSecretRef is that mode's
+                          field). Both are webhook enforced.
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            description: |-
+                              Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                              subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                              fixes every consumer at once — a service operator adminPasswordSecretRef /
+                              database.secretRef / messaging / TLS cert refs and the c5c3
+                              passwordSecretRef — so an empty name no longer slips through "required".
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
                       databaseCredentialsMode:
                         description: |-
                           DatabaseCredentialsMode overrides spec.infrastructure.database.credentialsMode
@@ -3316,6 +3418,42 @@ spec:
                           reconciler derives for the projected Keystone CR. When nil the reconciler
                           derives a default schedule.
                         type: string
+                      targetClusterRef:
+                        description: |-
+                          TargetClusterRef names the registered target cluster the Keystone service is
+                          placed on. The projected Keystone CR and the per-namespace objects that
+                          support it (its database, its cache, its credential material) are created
+                          there instead of on the local cluster. Omitting it (the default) keeps
+                          everything on the local cluster, meaning the management cluster the operator
+                          itself runs on, so a ControlPlane without a ref resolves exactly as it did
+                          before the field existed.
+
+                          A placed service needs a namespace of its own: the namespace block above is
+                          required whenever this ref is set (webhook enforced), since the namespace is
+                          the tenant key the placed database, secret store, and credential material are
+                          scoped by.
+
+                          The assignment is create-only: the validating webhook freezes the ref after
+                          creation, because re-pointing a live service at another cluster would strand
+                          its workload, its database, and its credential material on the cluster it came
+                          from. The freeze is deliberately webhook-only, with NO CEL transition rule, so
+                          it can be relaxed to a gated migration later — the same rationale as the
+                          namespace freeze.
+
+                          Forbidden when services.keystone.mode is External: no Keystone workload is
+                          deployed, so there is nothing to place.
+                        properties:
+                          name:
+                            description: |-
+                              Name is the registered target cluster's name. It must be a non-empty
+                              DNS-1123 subdomain (the Kubernetes object-name grammar), matching
+                              SecretStoreRefSpec.Name.
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
                     type: object
                     x-kubernetes-validations:
                     - message: services.keystone.external is required when services.keystone.mode
@@ -3357,6 +3495,12 @@ spec:
                     - message: services.keystone.extraConfig is forbidden when services.keystone.mode
                         is External
                       rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.extraConfig)'
+                    - message: services.keystone.targetClusterRef is forbidden when
+                        services.keystone.mode is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.targetClusterRef)'
+                    - message: services.keystone.caBundleSecretRef is forbidden when
+                        services.keystone.mode is External
+                      rule: '!(has(self.mode) && self.mode == ''External'') || !has(self.caBundleSecretRef)'
                   placement:
                     description: |-
                       Placement configures the Placement service projected by the reconciler.
@@ -3814,6 +3958,27 @@ spec:
                         format: int32
                         minimum: 1
                         type: integer
+                      targetClusterRef:
+                        description: |-
+                          TargetClusterRef names the registered target cluster the Placement service is
+                          placed on. The projected Placement CR and the per-namespace objects that
+                          support it (its database, its cache, its credential material) are created
+                          there instead of on the local cluster; omitting it (the default) keeps
+                          everything on the local (management) cluster. A placed service needs a
+                          namespace of its own (webhook enforced), and the ref is frozen after creation
+                          by the validating webhook. See ServiceKeystoneSpec.TargetClusterRef.
+                        properties:
+                          name:
+                            description: |-
+                              Name is the registered target cluster's name. It must be a non-empty
+                              DNS-1123 subdomain (the Kubernetes object-name grammar), matching
+                              SecretStoreRefSpec.Name.
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
                     type: object
                 type: object
             required:

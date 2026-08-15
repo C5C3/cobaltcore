@@ -264,6 +264,8 @@ type ServicesSpec struct {
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.namespace)",message="services.keystone.namespace is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.databaseCredentialsMode)",message="services.keystone.databaseCredentialsMode is forbidden when services.keystone.mode is External"
 // +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.extraConfig)",message="services.keystone.extraConfig is forbidden when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.targetClusterRef)",message="services.keystone.targetClusterRef is forbidden when services.keystone.mode is External"
+// +kubebuilder:validation:XValidation:rule="!(has(self.mode) && self.mode == 'External') || !has(self.caBundleSecretRef)",message="services.keystone.caBundleSecretRef is forbidden when services.keystone.mode is External"
 type ServiceKeystoneSpec struct {
 	// Mode selects whether the Keystone service is Managed (the reconciler
 	// deploys and owns a full Keystone workload, today's behavior) or External
@@ -401,6 +403,55 @@ type ServiceKeystoneSpec struct {
 	// deployed, so there is nothing to place.
 	// +optional
 	Namespace *ServiceNamespaceSpec `json:"namespace,omitempty"`
+
+	// TargetClusterRef names the registered target cluster the Keystone service is
+	// placed on. The projected Keystone CR and the per-namespace objects that
+	// support it (its database, its cache, its credential material) are created
+	// there instead of on the local cluster. Omitting it (the default) keeps
+	// everything on the local cluster, meaning the management cluster the operator
+	// itself runs on, so a ControlPlane without a ref resolves exactly as it did
+	// before the field existed.
+	//
+	// A placed service needs a namespace of its own: the namespace block above is
+	// required whenever this ref is set (webhook enforced), since the namespace is
+	// the tenant key the placed database, secret store, and credential material are
+	// scoped by.
+	//
+	// The assignment is create-only: the validating webhook freezes the ref after
+	// creation, because re-pointing a live service at another cluster would strand
+	// its workload, its database, and its credential material on the cluster it came
+	// from. The freeze is deliberately webhook-only, with NO CEL transition rule, so
+	// it can be relaxed to a gated migration later — the same rationale as the
+	// namespace freeze.
+	//
+	// Forbidden when services.keystone.mode is External: no Keystone workload is
+	// deployed, so there is nothing to place.
+	// +optional
+	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
+
+	// CABundleSecretRef optionally references a Secret carrying the private CA
+	// bundle the operator trusts when verifying a PLACED Keystone's publicEndpoint.
+	// K-ORC runs on the management cluster and dials that endpoint over https on
+	// every mint and re-mint, and the operator's container ships nothing but the
+	// system trust store — so a target published with a cert-manager-issued private
+	// CA, the default posture of this stack, would fail verification with no way to
+	// supply the anchor. The bundle is projected verbatim as the inline `cacert`
+	// key into BOTH generated K-ORC credentials Secrets, exactly as the External
+	// mode's external.caBundleSecretRef is. Key defaults to "ca.crt"
+	// (webhook-only, the same discipline as that field).
+	//
+	// The Secret is read in the ControlPlane's OWN namespace on the management
+	// cluster, because that is where the credentials Secrets and K-ORC live —
+	// not in the placed service's namespace on the target.
+	//
+	// Required only by the deployment's trust posture, never by admission: a
+	// publicly trusted certificate needs no bundle. It is forbidden without
+	// targetClusterRef (a co-located Keystone is dialled over its in-cluster
+	// Service URL, which performs no TLS handshake for a bundle to verify) and
+	// forbidden in External mode (external.caBundleSecretRef is that mode's
+	// field). Both are webhook enforced.
+	// +optional
+	CABundleSecretRef *commonv1.SecretRefSpec `json:"caBundleSecretRef,omitempty"`
 }
 
 // ServiceNamespaceLifecycle selects who owns the lifecycle of a service's
@@ -810,6 +861,16 @@ type ServiceHorizonSpec struct {
 	// secretKeyRef if it is named differently).
 	// +optional
 	Namespace *ServiceNamespaceSpec `json:"namespace,omitempty"`
+
+	// TargetClusterRef names the registered target cluster the dashboard is placed
+	// on. The projected Horizon CR and the per-namespace objects that support it
+	// (its cache, its secret material) are created there instead of on the local
+	// cluster; omitting it (the default) keeps everything on the local (management)
+	// cluster. A placed dashboard needs a namespace of its own (webhook enforced),
+	// and the ref is frozen after creation by the validating webhook. See
+	// ServiceKeystoneSpec.TargetClusterRef.
+	// +optional
+	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
 }
 
 // ServiceGlanceSpec is a CURATED LOCAL subset of the knobs the ControlPlane
@@ -1017,6 +1078,16 @@ type ServiceGlanceSpec struct {
 	// no migration path.
 	// +optional
 	Namespace *ServiceNamespaceSpec `json:"namespace,omitempty"`
+
+	// TargetClusterRef names the registered target cluster the Glance service is
+	// placed on. The projected Glance CR and the per-namespace objects that support
+	// it (its database, its cache, its credential material) are created there
+	// instead of on the local cluster; omitting it (the default) keeps everything on
+	// the local (management) cluster. A placed service needs a namespace of its own
+	// (webhook enforced), and the ref is frozen after creation by the validating
+	// webhook. See ServiceKeystoneSpec.TargetClusterRef.
+	// +optional
+	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
 }
 
 // GlanceBackendEntry declares one curated image store of the Glance service. The
@@ -1233,6 +1304,16 @@ type ServicePlacementSpec struct {
 	// credential material, and its tenant store with no migration path.
 	// +optional
 	Namespace *ServiceNamespaceSpec `json:"namespace,omitempty"`
+
+	// TargetClusterRef names the registered target cluster the Placement service is
+	// placed on. The projected Placement CR and the per-namespace objects that
+	// support it (its database, its cache, its credential material) are created
+	// there instead of on the local cluster; omitting it (the default) keeps
+	// everything on the local (management) cluster. A placed service needs a
+	// namespace of its own (webhook enforced), and the ref is frozen after creation
+	// by the validating webhook. See ServiceKeystoneSpec.TargetClusterRef.
+	// +optional
+	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
 }
 
 // PlacementDedicatedBackingServicesSpec declares the backing-service instances
@@ -1370,6 +1451,16 @@ type ServiceBarbicanSpec struct {
 	// credential material, and its tenant store with no migration path.
 	// +optional
 	Namespace *ServiceNamespaceSpec `json:"namespace,omitempty"`
+
+	// TargetClusterRef names the registered target cluster the Barbican service is
+	// placed on. The projected Barbican CR and the per-namespace objects that
+	// support it (its database, its cache, its credential material) are created
+	// there instead of on the local cluster; omitting it (the default) keeps
+	// everything on the local (management) cluster. A placed service needs a
+	// namespace of its own (webhook enforced), and the ref is frozen after creation
+	// by the validating webhook. See ServiceKeystoneSpec.TargetClusterRef.
+	// +optional
+	TargetClusterRef *commonv1.TargetClusterRefSpec `json:"targetClusterRef,omitempty"`
 }
 
 // ServiceBarbicanSecretStoreSpec selects the secret-store backend of the
@@ -2281,6 +2372,86 @@ func (cp *ControlPlane) DedicatedServiceNamespaces() []ServiceNamespaceSpec {
 		}
 		seen[ns.Name] = struct{}{}
 		out = append(out, *ns)
+	}
+	return out
+}
+
+// KeystoneTargetClusterRef resolves the target cluster the Keystone service —
+// and everything that follows it: its database, its cache, its credential
+// material — is placed on. It is nil when the service block carries no ref (and
+// when there is no service block at all), which is the default: the service
+// stays on the local cluster, the management cluster the operator runs on.
+func (cp *ControlPlane) KeystoneTargetClusterRef() *commonv1.TargetClusterRefSpec {
+	if ks := cp.Spec.Services.Keystone; ks != nil {
+		return ks.TargetClusterRef
+	}
+	return nil
+}
+
+// HorizonTargetClusterRef resolves the target cluster the Horizon dashboard —
+// and the cache and secret material that follow it — is placed on. See
+// KeystoneTargetClusterRef.
+func (cp *ControlPlane) HorizonTargetClusterRef() *commonv1.TargetClusterRefSpec {
+	if hz := cp.Spec.Services.Horizon; hz != nil {
+		return hz.TargetClusterRef
+	}
+	return nil
+}
+
+// GlanceTargetClusterRef resolves the target cluster the Glance service — and
+// the database, cache, and credential material that follow it — is placed on.
+// See KeystoneTargetClusterRef.
+func (cp *ControlPlane) GlanceTargetClusterRef() *commonv1.TargetClusterRefSpec {
+	if gl := cp.Spec.Services.Glance; gl != nil {
+		return gl.TargetClusterRef
+	}
+	return nil
+}
+
+// PlacementTargetClusterRef resolves the target cluster the Placement service —
+// and the database, cache, and credential material that follow it — is placed
+// on. See KeystoneTargetClusterRef.
+func (cp *ControlPlane) PlacementTargetClusterRef() *commonv1.TargetClusterRefSpec {
+	if pl := cp.Spec.Services.Placement; pl != nil {
+		return pl.TargetClusterRef
+	}
+	return nil
+}
+
+// BarbicanTargetClusterRef resolves the target cluster the Barbican service —
+// and the database, cache, and credential material that follow it — is placed
+// on. See KeystoneTargetClusterRef.
+func (cp *ControlPlane) BarbicanTargetClusterRef() *commonv1.TargetClusterRefSpec {
+	if bn := cp.Spec.Services.Barbican; bn != nil {
+		return bn.TargetClusterRef
+	}
+	return nil
+}
+
+// TargetClusterNames returns the names of the target clusters the ControlPlane
+// places services on, deduplicated and in a stable order (keystone, horizon,
+// glance, placement, barbican — first occurrence wins), mirroring
+// DedicatedServiceNamespaces one level up.
+//
+// Two services placed on one cluster yield ONE entry: the enumeration answers
+// "which clusters does this ControlPlane reach", not "where does each service
+// go" (the per-service accessors above answer that). A ControlPlane that places
+// nothing returns an empty result, the default local-only shape.
+func (cp *ControlPlane) TargetClusterNames() []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, ref := range []*commonv1.TargetClusterRefSpec{
+		cp.KeystoneTargetClusterRef(), cp.HorizonTargetClusterRef(), cp.GlanceTargetClusterRef(),
+		cp.PlacementTargetClusterRef(), cp.BarbicanTargetClusterRef(),
+	} {
+		if ref == nil || ref.Name == "" {
+			continue
+		}
+		if _, dup := seen[ref.Name]; dup {
+			continue
+		}
+		seen[ref.Name] = struct{}{}
+		out = append(out, ref.Name)
 	}
 	return out
 }
