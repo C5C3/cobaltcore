@@ -25,8 +25,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -429,4 +431,129 @@ func TestReconcileESOTenantStore_RefusesForeignCertInExternalNamespace(t *testin
 	g.Expect(issuer).To(Equal("not-ours-issuer"), "foreign Certificate spec must not be overwritten")
 	g.Expect(after.GetLabels()).NotTo(HaveKey(controlPlaneNameLabel))
 	g.Expect(isControlPlaneChild(after, cp)).To(BeFalse())
+}
+
+// --- per-service target clusters: the tenant store follows the service ---
+
+// TestReconcileESOTenantStore_PlacedTrioLandsOnTheTarget verifies the trio of a
+// placed namespace is provisioned on THAT namespace's cluster: an ESO store is
+// only usable by the ESO that reads it, and its client certificate is only issued
+// by the cert-manager on the same cluster. The ControlPlane's own namespace keeps
+// its owner-referenced trio at home.
+func TestReconcileESOTenantStore_PlacedTrioLandsOnTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp := placedKeystoneControlPlane("remote-a")
+
+	target := fake.NewClientBuilder().WithScheme(s).Build()
+	resolver := &childrenResolver{children: target}
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: resolver,
+	}
+
+	res, err := r.reconcileESOTenantStore(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(esoTenantStoreRequeueAfter), "no store is Ready yet")
+	g.Expect(resolver.names).To(Equal([]mcruntime.ClusterName{"remote-a"}),
+		"only the placed namespace costs a cluster lookup")
+
+	// Every object of the placed namespace's trio is on the target, carrying the
+	// whole label set and no owner reference.
+	remoteSA := &corev1.ServiceAccount{}
+	g.Expect(target.Get(ctx, types.NamespacedName{Namespace: "identity", Name: esoTenantServiceAccountName},
+		remoteSA)).To(Succeed())
+	remoteCert := &unstructured.Unstructured{}
+	remoteCert.SetGroupVersionKind(certificateGVK)
+	g.Expect(target.Get(ctx, types.NamespacedName{Namespace: "identity", Name: esoTenantClientCertName},
+		remoteCert)).To(Succeed())
+	remoteStore := &esov1.SecretStore{}
+	g.Expect(target.Get(ctx, types.NamespacedName{Namespace: "identity", Name: esoTenantStoreName},
+		remoteStore)).To(Succeed())
+	for _, obj := range []client.Object{remoteSA, remoteCert, remoteStore} {
+		g.Expect(obj.GetLabels()).To(Equal(remoteChildLabels(cp)), "%T must carry the full remote claim", obj)
+		g.Expect(obj.GetOwnerReferences()).To(BeEmpty(),
+			"%T must carry no owner reference on the target cluster", obj)
+	}
+
+	// Nothing of it at home, and the ControlPlane's own trio is unchanged.
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Namespace: "identity", Name: esoTenantStoreName},
+		&esov1.SecretStore{})).NotTo(Succeed(), "a placed store must not be provisioned at home as well")
+	home := &esov1.SecretStore{}
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{Namespace: "openstack", Name: esoTenantStoreName},
+		home)).To(Succeed())
+	g.Expect(metav1.GetControllerOf(home)).NotTo(BeNil())
+	g.Expect(home.Labels).NotTo(HaveKey(commonmulticluster.OwnerKindLabel),
+		"a local child is claimed by its owner reference, not by the remote labels")
+}
+
+// TestReconcileESOTenantStore_ReadyReadsThePlacedStoreFromTheTarget verifies the
+// readiness gate reads each store from the cluster it was written to: the placed
+// namespace's store exists only on the target, so a gate still reading at home
+// would never see it and the condition could never go True.
+func TestReconcileESOTenantStore_ReadyReadsThePlacedStoreFromTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp := placedKeystoneControlPlane("remote-a")
+
+	// The placed store is one the operator already wrote there on an earlier pass,
+	// so it carries the remote claim: a store it did not create is refused, not
+	// adopted, whichever cluster it sits on.
+	placedStore := readyTenantSecretStore(esoTenantStoreName, "identity", "", "")
+	placedStore.Labels = remoteChildLabels(cp)
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(placedStore).Build()
+	r := &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).
+			WithObjects(cp, readyTenantSecretStore(esoTenantStoreName, "openstack", "", "")).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: target},
+	}
+
+	res, err := r.reconcileESOTenantStore(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue(), "both stores are Ready, so the pass must not requeue")
+
+	cond := esoTenantCondition(cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("ESOTenantStoreReady"))
+}
+
+// TestReconcileESOTenantStore_UnresolvableTargetProvisionsNothing covers the
+// cluster that does not resolve. The ControlPlane's own namespace is first in the
+// occupied set, so finding its trio absent is what shows the clusters are all
+// resolved before the first write.
+func TestReconcileESOTenantStore_UnresolvableTargetProvisionsNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := korcTestScheme(t)
+	cp := placedKeystoneControlPlane("remote-a")
+
+	target := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: target, err: mcruntime.ErrClusterNotFound},
+	}
+
+	res, err := r.reconcileESOTenantStore(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred(), "an unregistered cluster is a state to wait out, not a reconcile failure")
+	g.Expect(res.RequeueAfter).To(Equal(esoTenantStoreRequeueAfter))
+
+	cond := esoTenantCondition(cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+
+	for name, c := range map[string]client.Client{"management": r.Client, "target": target} {
+		var stores esov1.SecretStoreList
+		g.Expect(c.List(ctx, &stores)).To(Succeed())
+		g.Expect(stores.Items).To(BeEmpty(), "no tenant store may be provisioned on the %s cluster", name)
+
+		var accounts corev1.ServiceAccountList
+		g.Expect(c.List(ctx, &accounts)).To(Succeed())
+		g.Expect(accounts.Items).To(BeEmpty(), "no tenant ServiceAccount may be provisioned on the %s cluster", name)
+	}
 }

@@ -15,10 +15,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
@@ -199,7 +201,19 @@ func (r *ControlPlaneReconciler) reconcileESOTenantStore(ctx context.Context, cp
 		return ctrl.Result{}, nil
 	}
 
-	if err := r.ensureESOTenantStoreObjects(ctx, cp); err != nil {
+	// Each namespace's trio is written to the cluster that namespace lives on: the
+	// tenant store has to authenticate from the cluster whose ESO materialises the
+	// Secrets, and its client certificate has to be issued by the cert-manager
+	// there. Every cluster is resolved before the first write, so one that does not
+	// resolve leaves the whole ensemble unwritten.
+	namespaces := controlPlaneNamespaces(cp)
+	children, err := r.childrenClientsFor(ctx, cp, namespaces...)
+	if err != nil {
+		conditionFailer(cp, conditionTypeESOTenantStoreReady)(commonmulticluster.TargetClusterUnavailable, err.Error())
+		return ctrl.Result{RequeueAfter: esoTenantStoreRequeueAfter}, nil
+	}
+
+	if err := r.ensureESOTenantStoreObjects(ctx, cp, children); err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeESOTenantStoreReady,
 			Status:             metav1.ConditionFalse,
@@ -213,11 +227,11 @@ func (r *ControlPlaneReconciler) reconcileESOTenantStore(ctx context.Context, cp
 	// EVERY store must be Ready, not just the one in the ControlPlane's namespace:
 	// a service placed in a namespace of its own materialises its secret material
 	// through THAT namespace's store, so a store still issuing its client cert
-	// there is as load-bearing as the one at home. The first unready store is named
-	// with its namespace so the condition says which one to look at.
-	namespaces := controlPlaneNamespaces(cp)
+	// there is as load-bearing as the one at home. Each store is read from the
+	// cluster it was written to. The first unready store is named with its
+	// namespace so the condition says which one to look at.
 	for _, ns := range namespaces {
-		ready, err := secrets.IsSecretStoreReady(ctx, r.Client, esoTenantStoreName, ns)
+		ready, err := secrets.IsSecretStoreReady(ctx, children[ns], esoTenantStoreName, ns)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -264,7 +278,12 @@ func (r *ControlPlaneReconciler) reconcileESOTenantStore(ctx context.Context, cp
 // In the ControlPlane's own namespace the objects are owner-referenced and the GC
 // cascade reaps them; elsewhere they carry the ownership labels and the teardown
 // deletes them explicitly.
-func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
+//
+// children holds the client each namespace's trio is written with, resolved by
+// the caller before anything is written (see reconcileESOTenantStore).
+func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, children map[string]client.Client,
+) error {
 	// server/mountPath come from the SHARED cluster store, not the tenant stores
 	// this method is building — a tenant store cannot describe its own OpenBao
 	// connection. openBaoConnection falls back to the documented defaults when the
@@ -274,7 +293,8 @@ func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(ctx context.Context
 	server, mountPath := r.openBaoConnection(ctx, cp, secrets.EffectiveStoreRef(nil))
 
 	for _, ns := range controlPlaneNamespaces(cp) {
-		if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, esoTenantServiceAccount(ns)); err != nil {
+		c := children[ns]
+		if err := r.ensureUnownedOrOwned(ctx, c, cp, esoTenantServiceAccount(ns)); err != nil {
 			return fmt.Errorf("ensuring per-tenant ServiceAccount in namespace %q: %w", ns, err)
 		}
 
@@ -286,17 +306,17 @@ func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(ctx context.Context
 		live.SetGroupVersionKind(certificateGVK)
 		live.SetName(esoTenantClientCertName)
 		live.SetNamespace(ns)
-		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, live, func() error {
-			if err := refuseForeignAdoption(r.Client, cp, live, r.Scheme); err != nil {
+		if _, err := controllerutil.CreateOrUpdate(ctx, c, live, func() error {
+			if err := refuseForeignAdoption(c, cp, live, r.Scheme); err != nil {
 				return err
 			}
 			applyESOTenantCertificateSpec(live, ns)
-			return claimChildOwnership(r.Client, cp, live, r.Scheme)
+			return claimChildOwnership(c, cp, live, r.Scheme)
 		}); err != nil {
 			return fmt.Errorf("ensuring per-tenant client Certificate in namespace %q: %w", ns, err)
 		}
 
-		if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, esoTenantSecretStore(ns, server, mountPath)); err != nil {
+		if err := r.ensureUnownedOrOwned(ctx, c, cp, esoTenantSecretStore(ns, server, mountPath)); err != nil {
 			return fmt.Errorf("ensuring per-tenant SecretStore in namespace %q: %w", ns, err)
 		}
 	}

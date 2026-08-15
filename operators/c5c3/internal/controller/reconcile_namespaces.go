@@ -142,6 +142,13 @@ func claimChildOwnership(c client.Client, cp *c5c3v1alpha1.ControlPlane, obj cli
 // we stamp make the teardown residue sweep DELETE it. So a pre-existing object we
 // did not create is refused here, mirroring reconcileNamespaces' NamespaceNotOwned
 // refusal for the namespace itself.
+//
+// The claim goes through claimChildOwnership rather than stamping the two
+// cross-namespace labels here, so an object applied to a TARGET cluster carries
+// the owner triple the shared teardown selects on as well. Stamping only what
+// this operator's own watch legs read would leave a remote child unreachable for
+// commonmulticluster.DeleteRemoteChildren, which selects on the owner labels
+// alone.
 func (r *ControlPlaneReconciler) ensureUnownedOrOwned(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, obj client.Object) error {
 	if obj.GetNamespace() == cp.Namespace {
 		return apply.EnsureObject(ctx, c, r.Scheme, cp, obj, apply.FieldManager)
@@ -173,7 +180,9 @@ func (r *ControlPlaneReconciler) ensureUnownedOrOwned(ctx context.Context, c cli
 				obj, client.ObjectKeyFromObject(obj), obj.GetNamespace())
 		}
 	}
-	stampControlPlaneChildLabels(obj, cp)
+	if err := claimChildOwnership(c, cp, obj, r.Scheme); err != nil {
+		return err
+	}
 	return apply.EnsureUnownedObject(ctx, c, r.Scheme, obj, apply.FieldManager)
 }
 

@@ -22,8 +22,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -263,7 +265,7 @@ func TestEnsureMariaDB_OwnedReconcilesReplicas(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMariaDB).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
+	_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var mariadb mariadbv1alpha1.MariaDB
@@ -308,7 +310,7 @@ func TestEnsureMariaDB_OwnedReconcilesGaleraState(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMariaDB).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
+	_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var mariadb mariadbv1alpha1.MariaDB
@@ -350,7 +352,7 @@ func TestEnsureMariaDB_ReplicasFromSpec(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
+			_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
 			g.Expect(err).NotTo(HaveOccurred())
 
 			var mariadb mariadbv1alpha1.MariaDB
@@ -393,7 +395,7 @@ func TestEnsureMariaDB_StorageSizeFromSpec(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
 			r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-			_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
+			_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, cp.KeystoneNamespace())
 			g.Expect(err).NotTo(HaveOccurred())
 
 			var mariadb mariadbv1alpha1.MariaDB
@@ -428,7 +430,7 @@ func TestEnsureMemcached_OwnedReconcilesReplicas(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ownedMemcached).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMemcached(context.Background(), cp, &cp.Spec.Infrastructure.Cache, cp.KeystoneNamespace())
+	_, err := r.ensureMemcached(context.Background(), c, cp, &cp.Spec.Infrastructure.Cache, cp.KeystoneNamespace())
 	g.Expect(err).NotTo(HaveOccurred())
 
 	u := &unstructured.Unstructured{}
@@ -1054,7 +1056,7 @@ func TestEnsureMariaDB_RefusesToReshapeAForeignInstance(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
-	_, err := r.ensureMariaDB(context.Background(), cp, &cp.Spec.Infrastructure.Database, "identity")
+	_, err := r.ensureMariaDB(context.Background(), c, cp, &cp.Spec.Infrastructure.Database, "identity")
 	g.Expect(err).NotTo(HaveOccurred())
 
 	var live mariadbv1alpha1.MariaDB
@@ -1396,4 +1398,118 @@ func TestBarbicanDeclaredAt_FallsBackToTheSharedBlock(t *testing.T) {
 
 	g.Expect(barbicanDatabaseDeclaredAt(cp)).To(Equal("spec.infrastructure.database"))
 	g.Expect(barbicanCacheDeclaredAt(cp)).To(Equal("spec.infrastructure.cache"))
+}
+
+// --- per-service target clusters: the backing services follow the service ---
+
+// placedInfraControlPlane places Horizon — and with it the cache it resolves to —
+// on a target cluster, leaving Keystone and its own database and cache at home.
+// The asymmetry is deliberate: the two local instances are enumerated FIRST, so a
+// pass that resolved clusters lazily would already have written them by the time
+// it reached the placed one.
+func placedInfraControlPlane(targetCluster string) *c5c3v1alpha1.ControlPlane {
+	cp := managedInfraControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Keystone: &c5c3v1alpha1.ServiceKeystoneSpec{},
+		Horizon: &c5c3v1alpha1.ServiceHorizonSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      "dashboard",
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			},
+			TargetClusterRef: &commonv1.TargetClusterRefSpec{Name: targetCluster},
+		},
+	}
+	return cp
+}
+
+// TestReconcileInfrastructure_PlacedBackingServicesLandOnTheTarget verifies a
+// placed service's cache is provisioned on ITS cluster: that is where the
+// mariadb-operator (here, the memcached operator) that has to act on the CR runs,
+// and where the service's own pods have to reach it. The unplaced pair is
+// untouched, so a ControlPlane that places one service keeps the rest at home.
+func TestReconcileInfrastructure_PlacedBackingServicesLandOnTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := infraTestScheme(t)
+	cp := placedInfraControlPlane("remote-a")
+
+	target := fake.NewClientBuilder().WithScheme(s).Build()
+	resolver := &childrenResolver{children: target}
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: resolver,
+	}
+
+	_, err := r.reconcileInfrastructure(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(resolver.names).To(Equal([]mcruntime.ClusterName{"remote-a"}),
+		"one lookup per placed namespace, whatever that namespace hosts")
+
+	// The dashboard's cache is on the target, recognizable by its labels alone.
+	remote := &unstructured.Unstructured{}
+	remote.SetGroupVersionKind(memcachedGVK)
+	g.Expect(target.Get(ctx, types.NamespacedName{
+		Name: "openstack-memcached", Namespace: "dashboard",
+	}, remote)).To(Succeed(), "the placed service's cache must be provisioned on its own cluster")
+	g.Expect(remote.GetLabels()).To(Equal(remoteChildLabels(cp)))
+	g.Expect(remote.GetOwnerReferences()).To(BeEmpty(),
+		"an owner reference on the target cluster names a UID that cluster cannot resolve")
+
+	athome := &unstructured.Unstructured{}
+	athome.SetGroupVersionKind(memcachedGVK)
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+		Name: "openstack-memcached", Namespace: "dashboard",
+	}, athome)).NotTo(Succeed(), "a placed instance must not be provisioned at home as well")
+
+	// Keystone stayed home, so its database did too — owner-referenced, as ever.
+	var mariadb mariadbv1alpha1.MariaDB
+	g.Expect(r.Client.Get(ctx, types.NamespacedName{
+		Name: "openstack-db", Namespace: "openstack",
+	}, &mariadb)).To(Succeed())
+	g.Expect(metav1.GetControllerOf(&mariadb)).NotTo(BeNil())
+	g.Expect(target.Get(ctx, types.NamespacedName{
+		Name: "openstack-db", Namespace: "openstack",
+	}, &mariadbv1alpha1.MariaDB{})).NotTo(Succeed(),
+		"an unplaced service's database must not reach the target cluster")
+}
+
+// TestReconcileInfrastructure_UnresolvableTargetProvisionsNothing covers the
+// cluster that does not resolve. The proof is what did NOT happen at home: the
+// ControlPlane's own database and cache are enumerated before the placed cache, so
+// finding them absent is what shows every cluster is resolved before the first
+// write rather than one instance at a time.
+func TestReconcileInfrastructure_UnresolvableTargetProvisionsNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := infraTestScheme(t)
+	cp := placedInfraControlPlane("remote-a")
+
+	target := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &ControlPlaneReconciler{
+		Client:   fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: target, err: mcruntime.ErrClusterNotFound},
+	}
+
+	res, err := r.reconcileInfrastructure(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred(), "an unregistered cluster is a state to wait out, not a reconcile failure")
+	g.Expect(res.RequeueAfter).To(Equal(infraRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeInfrastructureReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+
+	for name, c := range map[string]client.Client{"management": r.Client, "target": target} {
+		var databases mariadbv1alpha1.MariaDBList
+		g.Expect(c.List(ctx, &databases)).To(Succeed())
+		g.Expect(databases.Items).To(BeEmpty(), "no database may be provisioned on the %s cluster", name)
+
+		caches := &unstructured.UnstructuredList{}
+		caches.SetGroupVersionKind(memcachedGVK)
+		g.Expect(c.List(ctx, caches)).To(Succeed())
+		g.Expect(caches.Items).To(BeEmpty(), "no cache may be provisioned on the %s cluster", name)
+	}
 }

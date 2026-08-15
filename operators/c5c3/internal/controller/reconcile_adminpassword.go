@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
@@ -193,6 +194,17 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 		return ctrl.Result{}, nil
 	}
 
+	// The ExternalSecret is materialised beside the Keystone child, so it, the
+	// store it draws from, and the wait on the Secret it produces all ride the
+	// KEYSTONE namespace's cluster: the ESO that has to sync it runs there.
+	// Resolving before the store gate keeps a cluster that does not resolve from
+	// writing anything.
+	children, err := r.childrenClientFor(ctx, cp, cp.KeystoneNamespace())
+	if err != nil {
+		conditionFailer(cp, conditionTypeAdminPasswordReady)(commonmulticluster.TargetClusterUnavailable, err.Error())
+		return ctrl.Result{RequeueAfter: adminPasswordRequeueAfter}, nil
+	}
+
 	// Check the selected secret store first so an ESO/OpenBao outage surfaces as
 	// AdminPasswordReady=False even while the per-ExternalSecret cache still
 	// reports Ready=True from its last successful sync (#476). The store is the
@@ -202,7 +214,7 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 	// materialised and where that namespace's own tenant store lives.
 	// Mirrors reconcileDBCredentials and the keystone operator's reconcile_secrets.go.
 	storeRef := effectiveControlPlaneStoreRef(cp)
-	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, cp.KeystoneNamespace())
+	storeReady, err := secrets.IsStoreRefReady(ctx, children, storeRef, cp.KeystoneNamespace())
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -224,7 +236,7 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 	// namespace it is owner-referenced and garbage-collected with the CR; in a
 	// Keystone service namespace it carries the ownership labels instead and the
 	// teardown deletes it. The desired spec is a pure projection of cp.Spec.
-	if err := r.ensureUnownedOrOwned(ctx, r.Client, cp, adminPasswordExternalSecret(cp)); err != nil {
+	if err := r.ensureUnownedOrOwned(ctx, children, cp, adminPasswordExternalSecret(cp)); err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeAdminPasswordReady,
 			Status:             metav1.ConditionFalse,
@@ -235,7 +247,7 @@ func (r *ControlPlaneReconciler) reconcileAdminPassword(ctx context.Context, cp 
 		return ctrl.Result{}, err
 	}
 
-	exists, ready, err := secrets.WaitForExternalSecret(ctx, r.Client,
+	exists, ready, err := secrets.WaitForExternalSecret(ctx, children,
 		types.NamespacedName{Namespace: cp.KeystoneNamespace(), Name: adminPasswordSecretName(cp)})
 	if err != nil {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{

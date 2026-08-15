@@ -5,9 +5,13 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"time"
 
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
@@ -175,6 +179,41 @@ func targetClusterRefForNamespace(cp *c5c3v1alpha1.ControlPlane, namespace strin
 		}
 	}
 	return nil
+}
+
+// childrenClientFor resolves the client the children the ControlPlane places in
+// namespace are read and written with. A namespace no service placed on a target
+// cluster — the ControlPlane's own among them — resolves to the local client, and
+// a placed one to that cluster's client. Every sub-reconciler that projects into
+// a service namespace resolves through it, so the step from a namespace to the
+// cluster it lives on is taken in one place.
+func (r *ControlPlaneReconciler) childrenClientFor(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, namespace string,
+) (client.Client, error) {
+	return commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client,
+		targetClusterRefForNamespace(cp, namespace))
+}
+
+// childrenClientsFor resolves the children client of every namespace given,
+// once per DISTINCT name, keyed by namespace. A sub-reconciler whose ensemble
+// spans several namespaces resolves all of them BEFORE its first write, so a
+// cluster that does not resolve leaves the whole ensemble unwritten rather than
+// half of it — and a namespace that hosts several children costs one lookup.
+func (r *ControlPlaneReconciler) childrenClientsFor(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, namespaces ...string,
+) (map[string]client.Client, error) {
+	clients := make(map[string]client.Client, len(namespaces))
+	for _, namespace := range namespaces {
+		if _, resolved := clients[namespace]; resolved {
+			continue
+		}
+		c, err := r.childrenClientFor(ctx, cp, namespace)
+		if err != nil {
+			return nil, err
+		}
+		clients[namespace] = c
+	}
+	return clients, nil
 }
 
 // sameTargetCluster reports whether a and b name the same target cluster, with

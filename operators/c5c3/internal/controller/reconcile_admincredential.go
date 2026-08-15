@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
@@ -223,7 +224,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// content-hash annotation changes the PushSecret's metadata hash and forces the
 	// re-push now; it is idempotent (skipped when the hash already matches), so a
 	// converged credential never churns the push.
-	if err := r.forceRepushPushSecret(ctx, cp, childNamespace(cp), ps.Name, adminAppCredentialPushContentHashAnnotation, contentHash); err != nil {
+	if err := r.forceRepushPushSecret(ctx, r.Client, cp, childNamespace(cp), ps.Name, adminAppCredentialPushContentHashAnnotation, contentHash); err != nil {
 		fail("PushSecretError", fmt.Sprintf("forcing admin app-credential PushSecret re-push: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -271,7 +272,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// more as soon as the re-push lands; both inputs are stable once converged, so
 	// a steady-state pass still leaves the ExternalSecret untouched.
 	syncTrigger := contentHash + "/" + pushed.Status.SyncedResourceVersion
-	if err := r.forceSyncExternalSecret(ctx, cp, childNamespace(cp), cloudsYamlName, syncTrigger); err != nil {
+	if err := r.forceSyncExternalSecret(ctx, r.Client, cp, childNamespace(cp), cloudsYamlName, syncTrigger); err != nil {
 		fail("CloudsYamlError", fmt.Sprintf("forcing k-orc clouds.yaml ExternalSecret re-sync: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -404,14 +405,16 @@ func parseAppCredIdentity(cloudsYAML []byte) (appCredIdentity, bool) {
 //
 // namespace is childNamespace(cp) for the admin credential and the account's
 // delivery namespace (serviceAccountDeliveryNamespace) for a service account,
-// whose consumer ExternalSecret may live in a dedicated service namespace.
+// whose consumer ExternalSecret may live in a dedicated service namespace; c is
+// the client that namespace's children are written with, so the nudge reaches
+// the ExternalSecret on the cluster ESO reconciles it from.
 //
 // A missing ExternalSecret is treated as a no-op nil — the sub-reconciler that
 // owns the ExternalSecret's creation, and the byte-compare gate at the call site
 // (not this nudge), is what guarantees the materialized value is fresh before the
 // owning condition flips True. Shared by the admin-credential and service-account
 // sub-reconcilers.
-func (r *ControlPlaneReconciler) forceSyncExternalSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, namespace, name, trigger string) error {
+func (r *ControlPlaneReconciler) forceSyncExternalSecret(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, namespace, name, trigger string) error {
 	key := types.NamespacedName{Namespace: namespace, Name: name}
 	// Read-modify-write the force-sync annotation under RetryOnConflict: ESO mutates
 	// this ExternalSecret's status and its own annotations on every refresh (and on
@@ -422,7 +425,7 @@ func (r *ControlPlaneReconciler) forceSyncExternalSecret(ctx context.Context, cp
 	// very next attempt.
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		es := &esov1.ExternalSecret{}
-		if err := r.Get(ctx, key, es); err != nil {
+		if err := c.Get(ctx, key, es); err != nil {
 			if apierrors.IsNotFound(err) {
 				return nil
 			}
@@ -435,7 +438,7 @@ func (r *ControlPlaneReconciler) forceSyncExternalSecret(ctx context.Context, cp
 			es.Annotations = map[string]string{}
 		}
 		es.Annotations[esov1.AnnotationForceSync] = trigger
-		return r.Update(ctx, es)
+		return c.Update(ctx, es)
 	}); err != nil {
 		return fmt.Errorf("forcing ExternalSecret %q re-sync: %w", name, err)
 	}
@@ -472,9 +475,11 @@ const adminAppCredentialCACertHashAnnotation = "c5c3.io/push-cacert-hash" //noli
 //
 // namespace is childNamespace(cp) for the admin credential and the account's
 // delivery namespace (serviceAccountDeliveryNamespace) for a service account,
-// whose backing PushSecret may live in a dedicated service namespace. Shared by
-// the admin-credential and service-account sub-reconcilers.
-func (r *ControlPlaneReconciler) forceRepushPushSecret(ctx context.Context, cp *c5c3v1alpha1.ControlPlane, namespace, name, annotation, hash string) error {
+// whose backing PushSecret may live in a dedicated service namespace; c is the
+// client that namespace's children are written with, so the stamp reaches the
+// PushSecret on the cluster ESO reconciles it from. Shared by the
+// admin-credential and service-account sub-reconcilers.
+func (r *ControlPlaneReconciler) forceRepushPushSecret(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, namespace, name, annotation, hash string) error {
 	key := types.NamespacedName{Namespace: namespace, Name: name}
 	// Read-modify-write under RetryOnConflict: ESO mutates the PushSecret's status
 	// (and re-pushes on the metadata change this triggers), so a 409 Conflict
@@ -482,7 +487,7 @@ func (r *ControlPlaneReconciler) forceRepushPushSecret(ctx context.Context, cp *
 	// keeps a transient conflict from surfacing as a PushSecretError.
 	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		ps := &esov1alpha1.PushSecret{}
-		if err := r.Get(ctx, key, ps); err != nil {
+		if err := c.Get(ctx, key, ps); err != nil {
 			if apierrors.IsNotFound(err) {
 				return nil
 			}
@@ -495,7 +500,7 @@ func (r *ControlPlaneReconciler) forceRepushPushSecret(ctx context.Context, cp *
 			ps.Annotations = map[string]string{}
 		}
 		ps.Annotations[annotation] = hash
-		return r.Update(ctx, ps)
+		return c.Update(ctx, ps)
 	}); err != nil {
 		return fmt.Errorf("forcing PushSecret %q re-push: %w", name, err)
 	}
