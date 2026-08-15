@@ -1477,6 +1477,223 @@ FIXTURES: tuple[Fixture, ...] = (
             "            name: barbican-approle\n"
         ),
     ),
+    # --- per-service target clusters (issue #840, create-rejection matrix) ---
+    Fixture(
+        filename="79-target-cluster-in-external-mode.yaml",
+        comment=(
+            "services.keystone.targetClusterRef in External mode violates the CEL rule: no\n"
+            "Keystone workload is deployed, so there is nothing to place on another cluster.\n"
+            "The rest of the CR is the minimal External sketch, so the ref is the only\n"
+            "violation."
+        ),
+        name="cp-external-target-cluster",
+        keystone=(
+            "      mode: External\n"
+            "      external:\n"
+            "        authURL: https://keystone.example.com/v3\n"
+            "      targetClusterRef:\n"
+            "        name: edge\n"
+        ),
+    ),
+    Fixture(
+        filename="80-target-cluster-empty-name.yaml",
+        comment=(
+            "services.keystone.targetClusterRef.name is empty. The shared\n"
+            "TargetClusterRefSpec.Name carries MinLength=1, so a ref naming no cluster is\n"
+            "rejected at the CRD schema layer before the webhook mirror in\n"
+            "validation.TargetClusterRef runs. Everything else a placed service needs is\n"
+            "present (a namespace of its own, a public endpoint), so the empty name is the\n"
+            "only violation."
+        ),
+        name="cp-target-cluster-empty-name",
+        keystone=(
+            "      mode: Managed\n"
+            "      namespace:\n"
+            "        name: identity\n"
+            "      publicEndpoint: https://keystone.example.com/v3\n"
+            "      targetClusterRef:\n"
+            '        name: ""\n'
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
+    Fixture(
+        filename="81-placed-service-without-namespace.yaml",
+        comment=(
+            "A placed service must declare a namespace of its own (webhook-only): every\n"
+            "namespace maps to exactly one cluster and the ControlPlane's own stays on the\n"
+            "local one, so a Keystone placed elsewhere without a namespace block would have\n"
+            "its database, its tenant store, and its credential material provisioned in a\n"
+            "namespace that lives on another cluster than the ref names. The publicEndpoint\n"
+            "is set, so the reachability rule of the same validator stays silent and the\n"
+            "missing namespace is the only violation."
+        ),
+        name="cp-placed-without-namespace",
+        keystone=(
+            "      mode: Managed\n"
+            "      publicEndpoint: https://keystone.example.com/v3\n"
+            "      targetClusterRef:\n"
+            "        name: edge\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
+    Fixture(
+        filename="82-placed-glance-unpublished.yaml",
+        comment=(
+            "A placed CATALOG service must advertise a publicEndpoint or a gateway\n"
+            "(webhook-only): what the ControlPlane registers for an unpublished Glance is its\n"
+            "in-cluster Service DNS name, which resolves nowhere outside the cluster Glance\n"
+            "runs on, so every client that reads the catalog from anywhere else gets an\n"
+            "address it cannot connect to. The namespace block is present, so the co-requisite\n"
+            "rule of the same validator stays silent and the unreachable catalog entry is the\n"
+            "only violation. Keystone stays unplaced in the ControlPlane's own namespace,\n"
+            "which the co-location rule does not compare against Glance's; it is published\n"
+            "all the same, because a service placed away from Keystone reaches it over the\n"
+            "public URL."
+        ),
+        name="cp-placed-glance-unpublished",
+        keystone=(
+            "      mode: Managed\n"
+            "      publicEndpoint: https://keystone.example.com/v3\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            VALID_GLANCE
+            + "      namespace:\n"
+            + "        name: images\n"
+            + "      targetClusterRef:\n"
+            + "        name: edge\n"
+        ),
+    ),
+    Fixture(
+        filename="83-target-cluster-disagreement.yaml",
+        comment=(
+            "Two services co-located in ONE namespace must name the SAME target cluster. That\n"
+            "namespace exists on exactly one cluster, together with the backing services, the\n"
+            "tenant store, and the credential material scoped to it, so the services in it\n"
+            "cannot disagree on which one it is. Both blocks are otherwise complete (the\n"
+            "shared namespace with one lifecycle, a public endpoint each), so the\n"
+            "disagreement is the only violation."
+        ),
+        name="cp-target-cluster-disagreement",
+        keystone=(
+            "      mode: Managed\n"
+            "      namespace:\n"
+            "        name: shared-services\n"
+            "        lifecycle: External\n"
+            "      publicEndpoint: https://keystone.example.com/v3\n"
+            "      targetClusterRef:\n"
+            "        name: edge\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            VALID_GLANCE
+            + "      namespace:\n"
+            + "        name: shared-services\n"
+            + "        lifecycle: External\n"
+            + "      publicEndpoint: https://glance.example.com\n"
+            + "      targetClusterRef:\n"
+            + "        name: core\n"
+        ),
+    ),
+    Fixture(
+        filename="86-placed-service-unpublished-keystone.yaml",
+        comment=(
+            "Keystone must advertise a publicEndpoint or a gateway as soon as ANOTHER\n"
+            "service is placed on a target cluster (webhook-only). That service validates\n"
+            "its tokens against Keystone and cannot resolve Keystone's in-cluster Service\n"
+            "DNS name from another cluster, so the operator would project an EMPTY\n"
+            "spec.keystoneEndpoint into the placed child — which the child's own CRD refuses\n"
+            "(MinLength=1 plus ^https?://) on every pass, with nothing on the ControlPlane\n"
+            "naming the field to fix. The per-service rule above only reaches a service\n"
+            "carrying a ref of its OWN, so an unplaced Keystone falls outside it. Glance\n"
+            "carries its namespace and its public endpoint, so the unpublished Keystone is\n"
+            "the only violation."
+        ),
+        name="cp-glance-unpublished-keystone",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=(
+            VALID_GLANCE
+            + "      namespace:\n"
+            + "        name: images\n"
+            + "      publicEndpoint: https://glance.example.com\n"
+            + "      targetClusterRef:\n"
+            + "        name: edge\n"
+        ),
+    ),
+    Fixture(
+        filename="87-placed-keystone-plaintext-endpoint.yaml",
+        comment=(
+            "Keystone's publicEndpoint must use https as soon as a cluster boundary\n"
+            "separates Keystone from any service, here by placing Keystone itself\n"
+            "(webhook-only). With nothing placed, that URL only feeds the Keystone bootstrap\n"
+            "and the catalog's public identity row; across a boundary it becomes the auth_url\n"
+            "the operator renders the admin password and every service-account password NEXT\n"
+            "TO, and those credentials cross that boundary on every mint, re-mint and\n"
+            "delivery. The ^https?:// pattern on the field admits http:// on purpose for the\n"
+            "all-local case, so the scheme is checked here instead. Everything else a placed\n"
+            "service needs is present, so the plaintext endpoint is the only violation."
+        ),
+        name="cp-placed-keystone-plaintext",
+        keystone=(
+            "      mode: Managed\n"
+            "      namespace:\n"
+            "        name: identity\n"
+            "      publicEndpoint: http://keystone.example.com:5000/v3\n"
+            "      targetClusterRef:\n"
+            "        name: edge\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
+    # --- transition wave F: target-cluster assignment freeze
+    #     (Test: c5c3-invalid-cr-target-cluster-freeze) ---
+    Fixture(
+        filename="84-transition-base-unplaced.yaml",
+        comment=(
+            "Accepted base for the target-cluster freeze test: a Managed ControlPlane whose\n"
+            "Keystone service carries everything a placement needs (a namespace of its own,\n"
+            "a public endpoint) but names no target cluster, so it stays on the local one.\n"
+            "The External lifecycle is deliberate, as on the namespace-freeze base: the\n"
+            "operator never creates that namespace, so the CR parks on\n"
+            "NamespacesReady=False/NamespaceNotFound and provisions nothing, leaving no side\n"
+            "effects for the rejection step to clean up. The namespace name differs from the\n"
+            "namespace-freeze base's because a namespace belongs to at most one ControlPlane\n"
+            "and both bases persist for the length of the run."
+        ),
+        name="cp-transition-f",
+        keystone=(
+            "      mode: Managed\n"
+            "      namespace:\n"
+            "        name: invalid-cr-preexisting-placed\n"
+            "        lifecycle: External\n"
+            "      publicEndpoint: https://keystone.example.com/v3\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
+    Fixture(
+        filename="85-transition-add-target-cluster.yaml",
+        comment=(
+            "UPDATE placing the accepted base's Keystone service on a target cluster is\n"
+            "rejected: the assignment is create-only. Re-pointing a live service at another\n"
+            "cluster strands everything the previous one holds (its workload, its database,\n"
+            "its tenant store, and the credential material in it), none of which the\n"
+            "reconcile that follows the edit moves or reaps. The freeze is webhook-only, with\n"
+            "no CEL transition rule, so moving a service between clusters can be relaxed to a\n"
+            "gated migration later. Everything a placed service needs is already on the base,\n"
+            "so the added ref is the only change."
+        ),
+        name="cp-transition-f",
+        keystone=(
+            "      mode: Managed\n"
+            "      namespace:\n"
+            "        name: invalid-cr-preexisting-placed\n"
+            "        lifecycle: External\n"
+            "      publicEndpoint: https://keystone.example.com/v3\n"
+            "      targetClusterRef:\n"
+            "        name: edge\n"
+        ),
+        infrastructure=MANAGED_INFRA,
+    ),
 )
 
 

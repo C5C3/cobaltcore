@@ -685,6 +685,79 @@ spec:
             ($error != null): true
             (contains($error, 'services.barbican.databaseCredentialsMode')): true
             (contains($error, 'Dynamic is not supported as an override on a service with a dedicated database')): true
+    # A target cluster on an External-mode keystone is rejected by the CEL rule,
+    # like every other managed-only field: no Keystone workload is deployed, so
+    # there is nothing to place.
+    - apply:
+        file: 79-target-cluster-in-external-mode.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.targetClusterRef is forbidden when services.keystone.mode is External')): true
+    # An empty targetClusterRef.name is rejected by the shared TargetClusterRefSpec
+    # MinLength marker, which answers before the webhook mirror in
+    # validation.TargetClusterRef does: a ref that names no cluster resolves nowhere.
+    - apply:
+        file: 80-target-cluster-empty-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.targetClusterRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
+    # A placed service must declare a namespace of its own (webhook-only): every
+    # namespace maps to exactly one cluster and the ControlPlane's own stays on the
+    # local one, so the database, tenant store, and credential material of a placed
+    # service without a block would live on another cluster than its workload.
+    - apply:
+        file: 81-placed-service-without-namespace.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.namespace')): true
+            (contains($error, 'is required when targetClusterRef is set')): true
+    # A placed CATALOG service must advertise a publicEndpoint or a gateway
+    # (webhook-only): what the ControlPlane would otherwise register is an
+    # in-cluster Service DNS name that resolves nowhere from another cluster.
+    - apply:
+        file: 82-placed-glance-unpublished.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.glance.publicEndpoint')): true
+            (contains($error, 'one of publicEndpoint or gateway is required when targetClusterRef is set')): true
+    # Two services co-located in one namespace must name the same target cluster:
+    # the namespace exists on exactly one cluster, together with the backing
+    # services, the tenant store, and the credential material scoped to it.
+    - apply:
+        file: 83-target-cluster-disagreement.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.glance.targetClusterRef')): true
+            (contains($error, 'must be placed on the same target cluster')): true
+    # Keystone itself must be published as soon as another service is placed away
+    # from it: that service validates its tokens against Keystone over the public
+    # URL, and an empty spec.keystoneEndpoint on the projected child is refused by
+    # the child's own CRD on every pass.
+    - apply:
+        file: 86-placed-service-unpublished-keystone.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.publicEndpoint')): true
+            (contains($error, 'is required when another service is placed on a target cluster')): true
+    # Once a cluster boundary separates Keystone from any service — here Keystone
+    # itself is the one placed — its publicEndpoint becomes the auth_url the
+    # operator renders the admin password and every service-account password next
+    # to, and those credentials cross that boundary to reach it, so http:// is
+    # refused.
+    - apply:
+        file: 87-placed-keystone-plaintext-endpoint.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'services.keystone.publicEndpoint')): true
+            (contains($error, 'must use scheme https when any service is placed away from Keystone')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -799,3 +872,29 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'secret-store mode (dedicated vs external) is immutable')): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  # Own ephemeral namespace so the accepted base persists (see the sibling
+  # transition waves).
+  name: c5c3-invalid-cr-target-cluster-freeze
+spec:
+  steps:
+  - try:
+    # Base CR (Managed, Keystone in a pre-existing namespace it does not own and
+    # published, but on no target cluster) must be admitted. The External
+    # lifecycle means the operator never creates that namespace, so the CR parks
+    # on NamespaceNotFound and provisions nothing — no side effects for the
+    # rejection step to clean up.
+    - apply:
+        file: 84-transition-base-unplaced.yaml
+    # Placing the live service on a target cluster is rejected: the assignment is
+    # create-only, because re-pointing a live service strands its workload, its
+    # database, and the material in its tenant store on the cluster it came from.
+    - apply:
+        file: 85-transition-add-target-cluster.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'targetClusterRef is immutable')): true

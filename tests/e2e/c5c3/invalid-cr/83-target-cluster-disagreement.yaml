@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Two services co-located in ONE namespace must name the SAME target cluster. That
+# namespace exists on exactly one cluster, together with the backing services, the
+# tenant store, and the credential material scoped to it, so the services in it
+# cannot disagree on which one it is. Both blocks are otherwise complete (the
+# shared namespace with one lifecycle, a public endpoint each), so the
+# disagreement is the only violation.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-target-cluster-disagreement
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      namespace:
+        name: shared-services
+        lifecycle: External
+      publicEndpoint: https://keystone.example.com/v3
+      targetClusterRef:
+        name: edge
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+      namespace:
+        name: shared-services
+        lifecycle: External
+      publicEndpoint: https://glance.example.com
+      targetClusterRef:
+        name: core
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

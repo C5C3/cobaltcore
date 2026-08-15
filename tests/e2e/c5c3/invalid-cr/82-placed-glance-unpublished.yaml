@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A placed CATALOG service must advertise a publicEndpoint or a gateway
+# (webhook-only): what the ControlPlane registers for an unpublished Glance is its
+# in-cluster Service DNS name, which resolves nowhere outside the cluster Glance
+# runs on, so every client that reads the catalog from anywhere else gets an
+# address it cannot connect to. The namespace block is present, so the co-requisite
+# rule of the same validator stays silent and the unreachable catalog entry is the
+# only violation. Keystone stays unplaced in the ControlPlane's own namespace,
+# which the co-location rule does not compare against Glance's; it is published
+# all the same, because a service placed away from Keystone reaches it over the
+# public URL.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-placed-glance-unpublished
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      publicEndpoint: https://keystone.example.com/v3
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+      namespace:
+        name: images
+      targetClusterRef:
+        name: edge
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

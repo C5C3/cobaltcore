@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone must advertise a publicEndpoint or a gateway as soon as ANOTHER
+# service is placed on a target cluster (webhook-only). That service validates
+# its tokens against Keystone and cannot resolve Keystone's in-cluster Service
+# DNS name from another cluster, so the operator would project an EMPTY
+# spec.keystoneEndpoint into the placed child — which the child's own CRD refuses
+# (MinLength=1 plus ^https?://) on every pass, with nothing on the ControlPlane
+# naming the field to fix. The per-service rule above only reaches a service
+# carrying a ref of its OWN, so an unplaced Keystone falls outside it. Glance
+# carries its namespace and its public endpoint, so the unpublished Keystone is
+# the only violation.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-glance-unpublished-keystone
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+    glance:
+      backends:
+      - name: primary
+        type: S3
+        isDefault: true
+        s3:
+          endpoint: https://s3.example.com
+          bucket: images
+          credentialsSecretRef:
+            name: glance-s3-creds
+      namespace:
+        name: images
+      publicEndpoint: https://glance.example.com
+      targetClusterRef:
+        name: edge
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

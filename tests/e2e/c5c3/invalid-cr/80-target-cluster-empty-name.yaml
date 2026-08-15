@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# services.keystone.targetClusterRef.name is empty. The shared
+# TargetClusterRefSpec.Name carries MinLength=1, so a ref naming no cluster is
+# rejected at the CRD schema layer before the webhook mirror in
+# validation.TargetClusterRef runs. Everything else a placed service needs is
+# present (a namespace of its own, a public endpoint), so the empty name is the
+# only violation.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-target-cluster-empty-name
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      namespace:
+        name: identity
+      publicEndpoint: https://keystone.example.com/v3
+      targetClusterRef:
+        name: ""
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

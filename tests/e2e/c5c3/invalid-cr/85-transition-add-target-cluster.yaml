@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE placing the accepted base's Keystone service on a target cluster is
+# rejected: the assignment is create-only. Re-pointing a live service at another
+# cluster strands everything the previous one holds (its workload, its database,
+# its tenant store, and the credential material in it), none of which the
+# reconcile that follows the edit moves or reaps. The freeze is webhook-only, with
+# no CEL transition rule, so moving a service between clusters can be relaxed to a
+# gated migration later. Everything a placed service needs is already on the base,
+# so the added ref is the only change.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-transition-f
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+      namespace:
+        name: invalid-cr-preexisting-placed
+        lifecycle: External
+      publicEndpoint: https://keystone.example.com/v3
+      targetClusterRef:
+        name: edge
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
