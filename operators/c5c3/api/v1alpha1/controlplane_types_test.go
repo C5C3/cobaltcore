@@ -959,3 +959,172 @@ func TestServiceBarbicanSpecDeepCopy(t *testing.T) {
 			spec.SecretStore.External.CABundleSecretRef.Name)
 	}
 }
+
+// TestServiceTargetClusterRefAccessors exercises the nil-safe target-cluster
+// accessors across the states each can be in: no service block at all and a
+// service block without a ref (both mean the service stays on the local cluster)
+// and a block naming a cluster.
+func TestServiceTargetClusterRefAccessors(t *testing.T) {
+	ref := func(name string) *commonv1.TargetClusterRefSpec {
+		return &commonv1.TargetClusterRefSpec{Name: name}
+	}
+	cpIn := func(services ServicesSpec) *ControlPlane {
+		return &ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+			Spec:       ControlPlaneSpec{Services: services},
+		}
+	}
+
+	tests := []struct {
+		name string
+		cp   *ControlPlane
+		// want maps the accessor name to the cluster it must resolve to; an
+		// empty string demands a nil ref.
+		want map[string]string
+	}{
+		{
+			name: "no service blocks resolve to no placement",
+			cp:   cpIn(ServicesSpec{}),
+			want: map[string]string{},
+		},
+		{
+			name: "service blocks without a ref resolve to no placement",
+			cp: cpIn(ServicesSpec{
+				Keystone:  &ServiceKeystoneSpec{},
+				Horizon:   &ServiceHorizonSpec{},
+				Glance:    &ServiceGlanceSpec{},
+				Placement: &ServicePlacementSpec{},
+				Barbican:  &ServiceBarbicanSpec{},
+			}),
+			want: map[string]string{},
+		},
+		{
+			name: "each service takes a cluster of its own",
+			cp: cpIn(ServicesSpec{
+				Keystone:  &ServiceKeystoneSpec{TargetClusterRef: ref("edge-identity")},
+				Horizon:   &ServiceHorizonSpec{TargetClusterRef: ref("edge-dashboard")},
+				Glance:    &ServiceGlanceSpec{TargetClusterRef: ref("edge-images")},
+				Placement: &ServicePlacementSpec{TargetClusterRef: ref("edge-placement")},
+				Barbican:  &ServiceBarbicanSpec{TargetClusterRef: ref("edge-secrets")},
+			}),
+			want: map[string]string{
+				"KeystoneTargetClusterRef":  "edge-identity",
+				"HorizonTargetClusterRef":   "edge-dashboard",
+				"GlanceTargetClusterRef":    "edge-images",
+				"PlacementTargetClusterRef": "edge-placement",
+				"BarbicanTargetClusterRef":  "edge-secrets",
+			},
+		},
+		{
+			// One service placed, the rest local: the accessors must stay
+			// independent of each other.
+			name: "an unplaced service resolves to nil beside a placed one",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{TargetClusterRef: ref("edge-identity")},
+				Horizon:  &ServiceHorizonSpec{},
+			}),
+			want: map[string]string{"KeystoneTargetClusterRef": "edge-identity"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := map[string]*commonv1.TargetClusterRefSpec{
+				"KeystoneTargetClusterRef":  tc.cp.KeystoneTargetClusterRef(),
+				"HorizonTargetClusterRef":   tc.cp.HorizonTargetClusterRef(),
+				"GlanceTargetClusterRef":    tc.cp.GlanceTargetClusterRef(),
+				"PlacementTargetClusterRef": tc.cp.PlacementTargetClusterRef(),
+				"BarbicanTargetClusterRef":  tc.cp.BarbicanTargetClusterRef(),
+			}
+			for accessor, gotRef := range got {
+				want := tc.want[accessor]
+				if want == "" {
+					if gotRef != nil {
+						t.Errorf("%s() = %q, want nil", accessor, gotRef.Name)
+					}
+					continue
+				}
+				if gotRef == nil {
+					t.Errorf("%s() = nil, want %q", accessor, want)
+					continue
+				}
+				if gotRef.Name != want {
+					t.Errorf("%s() = %q, want %q", accessor, gotRef.Name, want)
+				}
+			}
+		})
+	}
+}
+
+// TestTargetClusterNames pins the enumeration of the clusters a ControlPlane
+// places services on: deduplicated, in the stable keystone→horizon→glance→
+// placement→barbican order, and empty for a local-only ControlPlane.
+func TestTargetClusterNames(t *testing.T) {
+	ref := func(name string) *commonv1.TargetClusterRefSpec {
+		return &commonv1.TargetClusterRefSpec{Name: name}
+	}
+	cpIn := func(services ServicesSpec) *ControlPlane {
+		return &ControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "openstack"},
+			Spec:       ControlPlaneSpec{Services: services},
+		}
+	}
+
+	tests := []struct {
+		name string
+		cp   *ControlPlane
+		want []string
+	}{
+		{
+			name: "a local-only ControlPlane places nothing",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{},
+				Horizon:  &ServiceHorizonSpec{},
+			}),
+		},
+		{
+			// The refs are named against the reverse of the enumeration order,
+			// so an accidental sort would show up here.
+			name: "placed services are enumerated in service order, not by name",
+			cp: cpIn(ServicesSpec{
+				Keystone:  &ServiceKeystoneSpec{TargetClusterRef: ref("edge-e")},
+				Horizon:   &ServiceHorizonSpec{TargetClusterRef: ref("edge-d")},
+				Glance:    &ServiceGlanceSpec{TargetClusterRef: ref("edge-c")},
+				Placement: &ServicePlacementSpec{TargetClusterRef: ref("edge-b")},
+				Barbican:  &ServiceBarbicanSpec{TargetClusterRef: ref("edge-a")},
+			}),
+			want: []string{"edge-e", "edge-d", "edge-c", "edge-b", "edge-a"},
+		},
+		{
+			name: "services sharing a cluster yield one entry, first occurrence winning",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{TargetClusterRef: ref("edge-one")},
+				Glance:   &ServiceGlanceSpec{TargetClusterRef: ref("edge-one")},
+				Barbican: &ServiceBarbicanSpec{TargetClusterRef: ref("edge-two")},
+			}),
+			want: []string{"edge-one", "edge-two"},
+		},
+		{
+			// Webhook-bypass shape: an empty name is not a placement, and must
+			// never reach a registry lookup as the empty cluster name.
+			name: "an empty ref name is not a placement",
+			cp: cpIn(ServicesSpec{
+				Keystone: &ServiceKeystoneSpec{TargetClusterRef: &commonv1.TargetClusterRefSpec{}},
+				Horizon:  &ServiceHorizonSpec{TargetClusterRef: ref("edge-dashboard")},
+			}),
+			want: []string{"edge-dashboard"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.cp.TargetClusterNames()
+			if len(got) != len(tc.want) {
+				t.Fatalf("TargetClusterNames() = %v, want %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("TargetClusterNames()[%d] = %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
