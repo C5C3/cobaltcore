@@ -18,6 +18,13 @@ Omitting the field selects the local cluster, the one the operator runs on. The
 children are created there and the deployment behaves like a single-cluster one,
 so an existing CR keeps its behavior without an edit.
 
+The [ControlPlane](./c5c3/controlplane-crd.md) carries the ref per service
+instead of once per CR: `services.keystone`, `services.horizon`,
+`services.glance`, `services.placement`, and `services.barbican` each take one,
+so one control plane can run its identity service on one cluster and its
+dashboard on another. Everything on this page applies to it, and what is specific
+to it is collected under [ControlPlane placement](#controlplane-placement).
+
 ## The field
 
 `name` is the only key. It must be a non-empty DNS-1123 subdomain
@@ -78,10 +85,10 @@ reports `TargetClusterUnavailable` briefly and heals on the next requeue.
 ::: warning Registering a cluster hands it to every CR the operator watches
 `spec.targetClusterRef` is validated for shape and immutability, and for nothing
 else. Nothing binds a CR, its namespace, or its author to the set of clusters it
-may name, so once `edge-1` is registered, anyone who can create one of the five
-CRs in a watched namespace can direct the operator's stored credentials for
+may name, so once `edge-1` is registered, anyone who can create one of these CRs
+in a watched namespace can direct the operator's stored credentials for
 `edge-1` at that cluster — with an image and a configuration of their choosing.
-Treat write access to the clusters namespace, and create access to the five CRDs
+Treat write access to the clusters namespace, and create access to these CRDs
 on the management cluster, as equally privileged until an authorization model
 lands.
 :::
@@ -91,7 +98,7 @@ Two grants therefore need locking down on the management cluster:
 | Grant | Why |
 | --- | --- |
 | `create`/`update` on Secrets in `c5c3-clusters` | A labelled Secret here registers a cluster. Whoever can write one decides which clusters the operator holds credentials for |
-| `create` on `keystones`, `barbicans`, `glances`, `horizons`, `placements` | A CR author picks the cluster its children land on, from every name registered |
+| `create` on `keystones`, `barbicans`, `glances`, `horizons`, `placements`, `controlplanes` | A CR author picks the cluster its children land on, from every name registered. A ControlPlane picks one per service |
 
 An install that needs no target clusters carries neither exposure: a
 namespace-scoped install clears `--clusters-namespace` (see below), the operator
@@ -121,11 +128,15 @@ it, surfaces on the CR's first gate condition:
 | --- | --- | --- | --- | --- |
 | Keystone, Barbican, Horizon, Glance, Placement | `SecretsReady` | `False` | `TargetClusterUnavailable` | The resolver's error, `cluster not found` for a name that was never registered |
 | BarbicanSecretStore, GlanceBackend | `CredentialsReady` | `False` | `TargetClusterUnavailable` | Same |
+| ControlPlane | `NamespacesReady` usually, since it runs first; otherwise whichever sub-reconciler reaches the cluster first, out of `InfrastructureReady`, `ESOTenantStoreReady`, `DBCredentialsReady`, `AdminPasswordReady`, `GlanceReady`, `PlacementReady`, `BarbicanReady`, `ServiceAccountsReady`, and `KORCReady` | `False` | `TargetClusterUnavailable` | Same |
 
 The pass ends there. The CR requeues after 15 seconds, on a flat poll rather than
 a backoff, and nothing is created on any cluster. Resolution runs before any
 finalizer is installed, so a CR naming an unresolvable cluster carries none:
-nothing was created for it, and a finalizer would only block its deletion.
+nothing was created for it, and a finalizer would only block its deletion. A
+ControlPlane ends the pass in the sub-reconciler that reached the cluster and
+requeues on that one's own interval, 15 seconds on the namespace and
+backing-service legs and 10 on the credential ones.
 
 A cluster that is deregistered under a running CR flips the same condition, and
 the children already written to it stay where they are. The reconciler never
@@ -166,8 +177,11 @@ cluster.
 
 ## Prerequisites on the target cluster
 
-The CR's namespace must already exist on the target. The operator does not
-create it, and a child write into a missing namespace fails.
+For the five workload CRDs, the CR's namespace must already exist on the target.
+Their operators do not create it, and a child write into a missing namespace
+fails. A ControlPlane is the exception: it ensures the namespaces it places
+services in, on both clusters (see
+[ControlPlane placement](#controlplane-placement)).
 
 The Barbican secret store mints a token through the target's TokenRequest API,
 so the operator's credentials there need the corresponding RBAC. Packaging the
@@ -254,9 +268,9 @@ is recorded in three labels the operator stamps on every remote child:
 
 | Label | Value |
 | --- | --- |
-| `openstack.c5c3.io/owner-kind` | The owning CR's kind: `Keystone`, `Barbican`, `Horizon`, `Glance`, or `Placement` |
+| `openstack.c5c3.io/owner-kind` | The owning CR's kind: `Keystone`, `Barbican`, `Horizon`, `Glance`, `Placement`, or `ControlPlane` |
 | `openstack.c5c3.io/owner-name` | The owning CR's name |
-| `openstack.c5c3.io/owner-namespace` | The owning CR's namespace, which is the namespace the child lands in |
+| `openstack.c5c3.io/owner-namespace` | The owning CR's namespace. For the five workload CRDs that is also the namespace the child lands in. A ControlPlane's remote children land in the namespace of the service it placed, so for them the label names the ControlPlane's namespace and the child sits elsewhere |
 
 The kind is part of the key because a Keystone and a Barbican of the same name
 in the same namespace project into one target namespace, and each has to select
@@ -328,6 +342,197 @@ that cluster's garbage collector resolves it to a missing object and collects th
 child as an orphan. Delete such a CR and create it anew before the CRDs go onto
 its target cluster; everything it writes afterwards carries the labels alone.
 :::
+
+## ControlPlane placement
+
+A ControlPlane names a cluster per service. Each of the five service blocks takes
+its own ref, and a block without one keeps its service on the management cluster:
+
+```yaml
+spec:
+  services:
+    keystone:
+      namespace:
+        name: identity
+      publicEndpoint: https://keystone.example.com/v3
+      targetClusterRef:
+        name: edge-1
+```
+
+Five rules apply at admission on top of the name-only shape. A placed service
+needs a `namespace` block of its own, because a namespace exists on exactly one
+cluster and the ControlPlane's own namespace stays where the ControlPlane is. A
+placed catalog service (keystone, glance, placement, barbican) needs a
+`publicEndpoint` or a `gateway`, since its catalog entry would otherwise
+advertise an in-cluster Service DNS name that resolves nowhere else; the
+dashboard is exempt, being reached by a browser rather than looked up in the
+catalog. And services sharing a namespace must name the same cluster, an unplaced
+one counting as naming the local one. An External-mode keystone may carry no ref
+at all: no workload is deployed there, so there is nothing to place.
+
+The remaining two are Keystone's, because every other service validates its
+tokens against it. Keystone has to be published as soon as any other service is
+placed away from it, whether or not Keystone itself carries a ref: that service
+reaches Keystone over the public URL, and the rule above only demands publication
+of a service carrying a ref of its own. And Keystone's `publicEndpoint` must use
+`https` as soon as a cluster boundary separates it from anything — Keystone
+placed, or a service placed away from an unplaced Keystone. Either way that URL
+is the `auth_url` the operator renders the admin password and every
+service-account password next to, and those credentials cross the boundary to
+reach it on every mint, re-mint and delivery. Which of the two ends moved changes
+nothing about that.
+
+::: warning A placed Keystone behind a private CA needs its anchor, which reaches K-ORC alone
+K-ORC stays on the management cluster and dials the placed Keystone's `https`
+endpoint from there with nothing but the container's system trust store. A
+target published with a cert-manager-issued private CA — the default posture of
+this stack — therefore fails verification on every mint, and K-ORC swallows the
+resulting list failures into imports that hang on "Waiting for OpenStack resource
+to be created externally" rather than failing loud. Supply the anchor through
+`services.keystone.caBundleSecretRef`, a Secret in the ControlPlane's **own**
+namespace; the mint waits on `KORCReady=False/WaitingForCABundle` until it
+exists.
+
+That bundle reaches K-ORC and nothing else: it is projected as the inline
+`cacert` key into the two K-ORC credentials Secrets, while a service that does
+not share Keystone's cluster gets the same `https` URL as its
+`spec.keystoneEndpoint` and renders it into `[keystone_authtoken]`, which carries
+no option for a trust anchor. So admission forbids the bundle while any service
+sits on another cluster than Keystone. Placing Keystone away from a service
+requires a publicly trusted certificate on its endpoint; a Keystone every service
+is co-located with may use a private CA, because only K-ORC then dials the
+`https` URL at all.
+:::
+
+The ref is frozen once the service exists. Adding it, removing it, or renaming it
+is rejected with `targetClusterRef is immutable`, here by the validating webhook
+alone: no CEL transition rule backs it, which leaves room to turn a move between
+clusters into a gated migration later. A service the previous revision did not
+declare may appear placed, that being the service's creation rather than a move.
+What the freeze prevents is a re-point leaving the workload, the database, the
+tenant store, and the credential material behind on a cluster nothing points at
+any more.
+
+Whether the named cluster is registered is not checked at admission. An unknown
+name surfaces per CR as a condition instead, with reason
+`TargetClusterUnavailable` and the resolver's `cluster not found`.
+
+What a placed service takes with it, and what stays behind:
+
+| Object | Created on |
+| --- | --- |
+| The five projected service CRs, each carrying `spec.targetClusterRef` verbatim | The management cluster |
+| The `BarbicanSecretStore` and `GlanceBackend` CRs, which carry no ref and follow their parent's | The management cluster |
+| Every K-ORC CR: the admin `ApplicationCredential`, the catalog `Service` and `Endpoint` rows, and the service accounts' `User`, `Project`, `Domain`, `Role`, and `RoleAssignment` | The management cluster |
+| The admin-credential chain: the minted application-credential Secret, its backup `PushSecret`, and the `clouds.yaml` `ExternalSecret` | The management cluster |
+| The per-generation service-account password Secrets the K-ORC `User` CRs reference | The management cluster |
+| The tenant-store trio of the ControlPlane's own namespace | The management cluster |
+| `MariaDB` and `Memcached` | The service's cluster |
+| The ESO tenant-store trio: `ServiceAccount`, `Certificate`, `SecretStore` | The service's cluster |
+| The database-credential quartet: `ServiceAccount`, `Certificate`, `VaultDynamicSecret`, `ExternalSecret` | The service's cluster |
+| The admin-password `ExternalSecret` | The service's cluster |
+| Barbican's dedicated OpenBao ensemble, including the auth-delegator `ClusterRoleBinding` | The service's cluster |
+| The service-account delivery objects: source Secret, `PushSecret`, `ExternalSecret`, and the Secret ESO materializes from it | The service's cluster |
+| The namespace a service is placed in | Both |
+
+The namespace is on both because both sides need it: the projected CR lives in it
+on the management cluster, and the objects that follow the service land in it on
+the target. It is created under whichever lifecycle the block declares, and a
+`Managed` one is labelled and owned on both.
+
+Every remote child carries the three ownership labels above, with `owner-kind:
+ControlPlane`, plus the `c5c3.io/controlplane-name` and
+`c5c3.io/controlplane-namespace` pair the operator's own watches map a child back
+by, and no owner reference. A namespace created on a target cluster carries one
+mark more: the annotation `c5c3.io/controlplane-uid`, holding the owning CR's
+UID. The labels name a ControlPlane by name and namespace, and a target cluster
+is registerable from any number of management clusters — each able to run an
+`openstack` ControlPlane in an `openstack` namespace, the quickstart defaults.
+The UID is what tells those apart, and it is also the only part of the claim a
+target cluster cannot produce on its own: both labels are derived from the CR's
+name and namespace, so anyone holding `patch` on a namespace there can write
+them, while the UID is minted by the management cluster's API server. A namespace
+on a target whose mark names a **different** ControlPlane is neither adopted nor
+deleted, whatever its labels say.
+
+A namespace whose mark is **missing** is not adopted either. Nothing left on the
+object says whether something stripped the mark off a namespace the operator
+created — the annotation is an ordinary, mutable one on a cluster the operator
+does not own, so a mutating admission policy or an annotation pruner can take it
+off — or whether the labels were written onto a namespace it never created.
+Adopting on the labels alone would let that single `patch` hand the operator a
+foreign namespace to project into and, at teardown, to cascade away. So the
+condition parks on `NamespaceNotOwned` and names both remedies: restore the
+annotation to this ControlPlane's UID, or pick a free name.
+
+Teardown draws that one line lower. A namespace carrying the labels whose mark is
+**missing** is still deleted, because teardown is the last pass anything makes
+over it and refusing there would leak the namespace — with the service's database,
+PVC and tenant store in it — permanently. A mark naming a **different**
+ControlPlane still refuses on both sides.
+
+The dedicated OpenBao instance's unseal Secret is the one exception: it keeps
+the `OpenBaoCluster`'s controller reference, and both objects sit in the same
+namespace on the same cluster, so that reference resolves.
+
+Where a URL points depends on where its two ends sit. `korcAuthURL` answers for
+the cluster a credentials document is read on. K-ORC runs on the management
+cluster, so the admin documents carry the Keystone public endpoint
+(`services.keystone.publicEndpoint`, else `https://{gateway.hostname}/v3` derived
+from the gateway) as soon as Keystone is placed; a service account's
+`clouds.yaml` is read on the cluster its delivery namespace lives on, so that
+namespace's placement is what its `auth_url` follows. Each dependent service gets
+the in-cluster Keystone URL exactly when it and Keystone resolve to the same
+cluster, and the public one otherwise. A placed catalog service registers its public URL
+on every interface it has, so the `internal` rows of the image, placement, and
+key-manager entries carry the public form too. Composing those URLs is all this
+does. Whether they are reachable from the other cluster is a routing question the
+deployment answers.
+
+Deleting a ControlPlane that placed a service runs the same
+`openstack.c5c3.io/remote-children` finalizer the workload CRDs carry. It goes on
+once at least one service is placed and at least one cluster the spec names
+resolves — the namespaces on a resolvable cluster are created on that very pass,
+whatever a sibling ref does.
+The teardown that releases it keeps a fixed order. The K-ORC CRs go first, then
+the owned PushSecrets, on each placed cluster as well as at home, while the
+tenant store their OpenBao purge authenticates through is still alive. Then, per
+placed namespace: the service CRs, deleted on the management cluster and waited
+for, which is also what waits out each service operator's own remote sweep; then
+thirteen kinds selected by ownership label and deleted through the target's own
+credentials (`MariaDB`, `Memcached`, `SecretStore`, `Certificate`,
+`ServiceAccount`, `Role`, `RoleBinding`, `Secret`, `ExternalSecret`,
+`PushSecret`, `VaultDynamicSecret`, `OpenBaoTenant`, `OpenBaoCluster`); then,
+under the `Managed` lifecycle, the namespace itself, on the target as well as at
+home. An `External` namespace survives on both, its residue deleted by name ahead
+of the label sweep so that its tenant-store trio goes last. The Barbican
+auth-delegator `ClusterRoleBinding` is deleted through Barbican's cluster, and
+both finalizers are released in one update. Because the sweep runs on the
+registered kubeconfig's credentials rather than on the management ClusterRole,
+`Role` and `RoleBinding` are swept although the operator holds no `list` verb on
+them at home.
+
+A cluster that stops resolving while the ControlPlane is terminating holds the
+deletion open for the abandon window described above. Past it the operator emits
+the `RemoteChildrenAbandoned` warning naming the cluster and the namespace whose
+objects stay behind, and releases anyway. Only that cluster's copy stays: the
+`Managed` namespace on the management cluster is reachable and owned, so it is
+deleted as it always is — abandoning the unreachable half does not license
+leaking the other.
+
+The operators that act on the kinds a placed service takes with it have to run on
+that service's cluster: mariadb-operator, memcached-operator, external-secrets,
+cert-manager, and, for a dedicated Barbican secret store, openbao-operator. The
+service operators are not among them. The `Keystone`, `Horizon`, `Glance`,
+`Placement`, and `Barbican` CRs stay on the management cluster, and their
+operators project onto the target from there.
+
+The Secrets a placed service reads but does not create have to exist in its
+namespace on its own cluster: the dashboard's `SECRET_KEY` Secret, every Glance
+backend's S3 credentials Secret, and, on a brownfield database, the database
+credential Secret and the admin-password Secret the Keystone bootstrap reads. The
+admin-password one is needed on both clusters, because the ControlPlane reads it
+in its own namespace at home to mint the K-ORC application credential.
 
 ## Per-cluster capabilities
 
