@@ -65,7 +65,7 @@ func SetupC5c3EnvTestWithController(
 
 	return SetupC5c3EnvTestWithControllerAndCRDs(
 		t,
-		crdDirectoryPaths(),
+		CRDDirectoryPaths(),
 		addToScheme,
 		registerWebhooks,
 		registerController,
@@ -75,7 +75,7 @@ func SetupC5c3EnvTestWithController(
 // SetupC5c3EnvTestWithControllerAndCRDs is the caller-supplied-dirs variant of
 // SetupC5c3EnvTestWithController: it is identical except the CRD directories
 // envtest loads come from crdDirs rather than the full built-in set.
-// SetupC5c3EnvTestWithController delegates here with crdDirectoryPaths() (the
+// SetupC5c3EnvTestWithController delegates here with CRDDirectoryPaths() (the
 // full CRD set). Integration tests pass BaselineCRDDirectoryPaths() to model a
 // cluster missing the sibling service-operator CRDs (Keystone, Horizon, Glance,
 // Placement), proving the ControlPlane controller starts when those kinds are
@@ -91,15 +91,15 @@ func SetupC5c3EnvTestWithControllerAndCRDs(
 
 	return commonenvtest.StartManagedEnvTest(t, commonenvtest.ManagedEnvTestConfig{
 		Name:               "c5c3",
-		Scheme:             buildControllerScheme(addToScheme),
+		Scheme:             BuildControllerScheme(addToScheme),
 		CRDDirectoryPaths:  crdDirs,
-		WebhookDir:         c5c3WebhookDir(),
+		WebhookDir:         C5c3WebhookDir(),
 		RegisterWebhooks:   registerWebhooks,
 		RegisterController: registerController,
 	})
 }
 
-// crdDirectoryPaths returns the absolute CRD directories envtest loads for a
+// CRDDirectoryPaths returns the absolute CRD directories envtest loads for a
 // ControlPlane integration test, resolved relative to this
 // source file via runtime.Caller(0):
 //   - the sibling service-operator CRDs (Keystone, Horizon, Glance, Placement,
@@ -109,7 +109,7 @@ func SetupC5c3EnvTestWithControllerAndCRDs(
 //     (mariadb-operator, memcached-operator, external-secrets, cert-manager,
 //     k-orc, openbao-operator, ...) so the external operator kinds the reconciler
 //     create-or-updates resolve in the apiserver RESTMapper.
-func crdDirectoryPaths() []string {
+func CRDDirectoryPaths() []string {
 	base := callerDir()
 	keystoneCRDDir := filepath.Join(base, "..", "..", "..", "keystone", "config", "crd", "bases")
 	horizonCRDDir := filepath.Join(base, "..", "..", "..", "horizon", "config", "crd", "bases")
@@ -147,9 +147,9 @@ func BaselineCRDDirectoryPaths() []string {
 	return append(dirs, commonenvtest.CommonFakeCRDDirs()...)
 }
 
-// c5c3WebhookDir returns the absolute path to the c5c3 webhook configuration
+// C5c3WebhookDir returns the absolute path to the c5c3 webhook configuration
 // directory, resolved relative to this source file via runtime.Caller(0).
-func c5c3WebhookDir() string {
+func C5c3WebhookDir() string {
 	return filepath.Join(callerDir(), "..", "..", "config", "webhook")
 }
 
@@ -164,11 +164,17 @@ func callerDir() string {
 	return filepath.Dir(thisFile)
 }
 
-// buildControllerScheme creates a runtime.Scheme that includes all types needed
+// BuildControllerScheme creates a runtime.Scheme that includes all types needed
 // by the ControlPlaneReconciler: the c5c3 API types, core K8s types,
 // apiextensions, and the external operator types the reconciler uses as TYPED
 // client objects — MariaDB, Keystone, external-secrets (v1 + v1alpha1), and
 // K-ORC. It is built fresh per test.
+//
+// It is exported for the dual-envtest multicluster test, which needs the scheme
+// before StartManagedEnvTest runs: the manager, the target cluster's own client,
+// and the kubeconfig provider's per-cluster clients all have to agree on it, and
+// a client built on a scheme that does not know a CRD kind fails its first write
+// with "no kind is registered".
 //
 // DECISION Memcached (memcached.c5c3.io) is deliberately NOT
 // registered — it ships no Go module, so the reconciler handles it as an
@@ -182,7 +188,7 @@ func callerDir() string {
 // reconciler), so adding certmanagerv1 to the scheme would promote an otherwise
 // indirect dependency for no benefit. Its fake CRD remains loaded for parity with
 // the shared fake_crds tree but needs no scheme entry.
-func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
+func BuildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
 	return commonenvtest.BuildScheme(
 		// External operator types the reconciler manipulates as typed objects.
 		mariadbv1alpha1.AddToScheme,
