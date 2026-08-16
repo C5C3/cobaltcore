@@ -124,10 +124,8 @@ func parseServiceURL(u *url.URL) (serviceTarget, error) {
 			"cannot proxy %q: only http and https URLs go through the target API server", u)
 	}
 
-	labels := strings.Split(u.Hostname(), ".")
-	clusterLocal := len(labels) == 5 && labels[2] == "svc" && labels[3] == "cluster" && labels[4] == "local"
-	short := len(labels) == 3 && labels[2] == "svc"
-	if !clusterLocal && !short {
+	name, namespace, ok := splitServiceHost(u.Hostname())
+	if !ok {
 		return serviceTarget{}, fmt.Errorf(
 			"cannot proxy %q: only cluster-local Service URLs "+
 				"(<name>.<namespace>.svc or <name>.<namespace>.svc.cluster.local) "+
@@ -142,7 +140,26 @@ func parseServiceURL(u *url.URL) (serviceTarget, error) {
 		}
 	}
 
-	return serviceTarget{namespace: labels[1], name: labels[0], scheme: u.Scheme, port: port}, nil
+	return serviceTarget{namespace: namespace, name: name, scheme: u.Scheme, port: port}, nil
+}
+
+// splitServiceHost reads the Service a DNS name addresses, reporting whether the
+// name is a cluster-local Service at all. Both in-cluster forms are accepted —
+// <name>.<namespace>.svc and the fully qualified <name>.<namespace>.svc.cluster.local
+// — and no other host shape is, because reaching a Service on another cluster
+// needs its name AND its namespace, and only these two carry the pair.
+//
+// It is shared by the two ways this package crosses a cluster boundary, the
+// service proxy and the port-forward tunnel, so the shapes they accept cannot
+// drift apart.
+func splitServiceHost(host string) (name, namespace string, ok bool) {
+	labels := strings.Split(host, ".")
+	clusterLocal := len(labels) == 5 && labels[2] == "svc" && labels[3] == "cluster" && labels[4] == "local"
+	short := len(labels) == 3 && labels[2] == "svc"
+	if !clusterLocal && !short {
+		return "", "", false
+	}
+	return labels[0], labels[1], true
 }
 
 // ResolveHTTPDoer returns the doer an operator runs a CR's HTTP calls through.
