@@ -258,6 +258,22 @@ CONTROLPLANE_DB_REPLICAS="${CONTROLPLANE_DB_REPLICAS:-1}"
 CONTROLPLANE_CACHE_REPLICAS="${CONTROLPLANE_CACHE_REPLICAS:-1}"
 CONTROLPLANE_DB_STORAGE="${CONTROLPLANE_DB_STORAGE:-512Mi}"
 
+# Marks this cluster as one that runs third-party infrastructure only: MariaDB,
+# Memcached, OpenBao, ESO, cert-manager and the rest of the stack, but no forge
+# operator pod. That is the target-cluster half of the two-cluster devstack — the
+# operators live on the management cluster (hack/deploy-mgmt-cluster.sh) and
+# project their children onto this one through a registered kubeconfig.
+#
+# The c5c3-operator HelmRelease is suspended and its Deployment scaled to zero on
+# EVERY branch of the ControlPlane block below, including the WITH_CONTROLPLANE
+# ones that would otherwise deploy it. The scale is what the suspend cannot do on
+# a re-used cluster: a HelmRelease suspended after the chart installed leaves the
+# Deployment running, and a second operator reconciling the CRs this cluster
+# receives is exactly what the split exists to prevent. The service-operator
+# HelmReleases are already suspended by the kind base overlay on the default
+# path. Defaults to false so a single-cluster deploy is unchanged.
+INFRA_ONLY="${INFRA_ONLY:-false}"
+
 # Gateway API CRD release installed before the keystone-operator HelmRelease so
 # the operator's HTTPRoute watch has a registered kind at startup.
 # Keep aligned with sigs.k8s.io/gateway-api in the operator go.mod files (they
@@ -1971,6 +1987,7 @@ main() {
   log "dizzy stack         : ${WITH_DIZZY} (VictoriaMetrics + Grafana for dizzy load/chaos runs; set WITH_DIZZY=true to install)"
   log "Registry cache      : ${WITH_REGISTRY_CACHE} (set WITH_REGISTRY_CACHE=true for a local pull-through cache; local-dev only)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
+  log "Infrastructure only : ${INFRA_ONLY} (set INFRA_ONLY=true for a target cluster that runs no forge operator)"
   if [[ "${WITH_CONTROLPLANE}" == "true" ]]; then
     log "ControlPlane operators : ${CONTROLPLANE_OPERATORS} (flux = published chart + K-ORC Flux source; external = operators deployed out of band)"
     log "ControlPlane backing   : MariaDB replicas=${CONTROLPLANE_DB_REPLICAS} (>1 = Galera) storage=${CONTROLPLANE_DB_STORAGE}, Memcached replicas=${CONTROLPLANE_CACHE_REPLICAS} (override via CONTROLPLANE_DB_REPLICAS / CONTROLPLANE_DB_STORAGE / CONTROLPLANE_CACHE_REPLICAS)"
@@ -2217,6 +2234,26 @@ main() {
       --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
     kubectl patch gitrepository k-orc -n flux-system \
       --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+  fi
+
+  # INFRA_ONLY overrides whichever branch above ran: this cluster receives placed
+  # children from a management cluster and must run no forge operator of its own.
+  #
+  # Every operator, not just c5c3: the WITH_CONTROLPLANE=true / flux branch above
+  # un-suspends the five service operators the kind base overlay suspends, so
+  # covering c5c3 alone would leave that combination with two controller sets
+  # server-side-applying the same Deployments, ConfigMaps and credential Secrets.
+  # Both commands tolerate absence — the HelmRelease may not be applied yet on a
+  # fresh cluster, and the Deployment exists only where the chart already
+  # installed once.
+  if [[ "${INFRA_ONLY}" == "true" ]]; then
+    log "INFRA_ONLY=true: suspending every forge operator HelmRelease and scaling its Deployment to zero."
+    for operator in c5c3:c5c3-system keystone:keystone-system horizon:horizon-system \
+                    glance:glance-system placement:placement-system barbican:barbican-system; do
+      kubectl patch helmrelease "${operator%%:*}-operator" -n "${operator##*:}" \
+        --type merge -p '{"spec":{"suspend":true}}' 2>/dev/null || true
+      kubectl scale deployment -n "${operator##*:}" "${operator%%:*}-operator" --replicas=0 2>/dev/null || true
+    done
   fi
 
   # Force-reconcile the Flux chart sources (HelmRepository and OCIRepository)

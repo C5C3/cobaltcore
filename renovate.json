@@ -50,7 +50,8 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/hack/deploy-infra\\.sh$/"
+        "/hack/deploy-infra\\.sh$/",
+        "/hack/deploy-mgmt-cluster\\.sh$/"
       ],
       "matchStrings": [
         "FLUX_OPERATOR_VERSION=\"(?<currentValue>v\\d+\\.\\d+\\.\\d+)\""
@@ -420,14 +421,14 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["hack/deploy-infra.sh", "deploy/kind/base/flux-web.yaml"],
+      "matchFileNames": ["hack/deploy-infra.sh", "hack/deploy-mgmt-cluster.sh", "deploy/kind/base/flux-web.yaml"],
       "matchPackageNames": ["controlplaneio-fluxcd/flux-operator"],
       "matchUpdateTypes": ["major"],
       "enabled": false
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["hack/deploy-infra.sh", "deploy/kind/base/flux-web.yaml"],
+      "matchFileNames": ["hack/deploy-infra.sh", "hack/deploy-mgmt-cluster.sh", "deploy/kind/base/flux-web.yaml"],
       "matchPackageNames": ["controlplaneio-fluxcd/flux-operator"],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true,
