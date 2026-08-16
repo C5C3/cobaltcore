@@ -27,6 +27,11 @@
 # operator stack out of band (CONTROLPLANE_OPERATORS=external). Unset by every
 # other caller, so deploy-infra.sh's defaults keep the ControlPlane stack out of
 # the install.
+#
+# INFRA_ONLY and CLUSTER_NAME are threaded for the e2e-multicluster job, whose
+# target cluster runs the infrastructure and no forge operator and is not named
+# `forge`. Unset by every other caller, so deploy-infra.sh keeps its defaults
+# (INFRA_ONLY=false, CLUSTER_NAME=forge).
 
 name: Setup E2E infrastructure
 description: >
@@ -66,4 +71,8 @@ runs:
         CONTROLPLANE_OPERATORS: ${{ env.CONTROLPLANE_OPERATORS }}
         CONTROLPLANE_NAME: ${{ env.CONTROLPLANE_NAME }}
         WITH_CONTROLPLANE_CR: ${{ env.WITH_CONTROLPLANE_CR }}
+        # Target-cluster flags — empty when the caller does not set them;
+        # deploy-infra.sh's defaults then deploy the ordinary single cluster.
+        INFRA_ONLY: ${{ env.INFRA_ONLY }}
+        CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
       run: make deploy-infra

@@ -62,6 +62,7 @@ jobs:
       e2e-chaos: ${{ steps.result.outputs.e2e-chaos }}
       e2e-prometheus: ${{ steps.result.outputs.e2e-prometheus }}
       e2e-controlplane: ${{ steps.result.outputs.e2e-controlplane }}
+      e2e-multicluster: ${{ steps.result.outputs.e2e-multicluster }}
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
       tempest-releases: ${{ steps.tempest-matrix.outputs.tempest-releases }}
@@ -199,6 +200,18 @@ jobs:
               # sidecar to the locally built :dev tag, so a sidecar change must
               # trigger the ControlPlane e2e jobs that exercise it.
               - 'images/keystone-federation-proxy/**'
+            # Two-cluster placed-services E2E job — separate filter so the job
+            # that brings up two kind clusters runs only when the suite, the
+            # target-cluster access chart whose credentials it runs on, the
+            # deploy stack, the hack scripts (deploy-infra, deploy-mgmt-cluster,
+            # ci-deploy-operator), or the composite actions it uses change.
+            e2e_multicluster:
+              - 'tests/e2e-multicluster/**'
+              - 'deploy/target-cluster/**'
+              - 'deploy/**'
+              - 'hack/**'
+              - '.github/actions/**'
+              - '.github/workflows/ci.yaml'
             # follow-up: Any E2E test-definition change forces all E2E
             # jobs to run. Kept separate from go_common so pure test edits do
             # not also trigger lint/unit/format/vuln jobs.
@@ -225,6 +238,7 @@ jobs:
           FILTER_e2e_chaos: ${{ steps.filter.outputs.e2e_chaos }}
           FILTER_e2e_prometheus: ${{ steps.filter.outputs.e2e_prometheus }}
           FILTER_e2e_controlplane: ${{ steps.filter.outputs.e2e_controlplane }}
+          FILTER_e2e_multicluster: ${{ steps.filter.outputs.e2e_multicluster }}
           FILTER_tests_e2e_operator: ${{ steps.filter.outputs.tests_e2e_operator }}
           FILTER_tests_tempest: ${{ steps.filter.outputs.tests_tempest }}
           FILTER_go_common: ${{ steps.filter.outputs.go_common }}
@@ -1912,6 +1926,185 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-external-keystone-junit-report
+          path: _output/reports/
+          retention-days: 14
+
+  # Two-cluster placed-services E2E on kind. Brings up a target cluster running
+  # the infrastructure and no operator (INFRA_ONLY=true), a management cluster
+  # running keystone-operator and barbican-operator and no infrastructure, and
+  # runs tests/e2e-multicluster/ across both.
+  #
+  # The management cluster reaches the target EXCLUSIVELY through a kubeconfig
+  # minted from the target-cluster-access chart's ServiceAccount token. Running
+  # the suite on those credentials is what proves the chart's grant set: a
+  # missing verb surfaces as a CR that never reaches Ready, where an admin
+  # kubeconfig would paper over it.
+  #
+  # BARBICAN_SECRET_STORE_GRANTS is deliberately unset, as on e2e-controlplane.
+  # It renders the operator's LOCAL TokenRequest Role, and a placed store mints
+  # its provisioner token on the target cluster instead, through the chart's
+  # grant there.
+  e2e-multicluster:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork != true &&
+      needs.changes.outputs.e2e-multicluster == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: self-hosted
+    timeout-minutes: 90
+    continue-on-error: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      # The registration name the suite's fixtures reference, and the kind
+      # cluster it belongs to.
+      TARGET_CLUSTER: forge-target
+      MGMT_CLUSTER: forge-mgmt
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The target cluster takes the workload config (host ports, containerd
+      # tuning); the management cluster is created by
+      # hack/deploy-mgmt-cluster.sh with no config at all, so the two never
+      # contend for a host port.
+      - name: Create target kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: ${{ env.KIND_VERSION }}
+          config: hack/kind-config.yaml
+          cluster_name: ${{ env.TARGET_CLUSTER }}
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          images: |
+            ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
+            ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
+            ${{ env.IMAGE_PREFIX }}/keystone:2025.2
+            ${{ env.IMAGE_PREFIX }}/barbican:2025.2
+      # The service images run on the target; the operator images run on the
+      # management cluster, which does not exist yet.
+      - name: Load service images into the target cluster
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name "$TARGET_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:2025.2 --name "$TARGET_CLUSTER"
+      - name: Setup target-cluster infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          INFRA_ONLY: "true"
+          CLUSTER_NAME: ${{ env.TARGET_CLUSTER }}
+      - name: Create the management cluster
+        run: hack/deploy-mgmt-cluster.sh
+        env:
+          CLUSTER_NAME: ${{ env.MGMT_CLUSTER }}
+      - name: Load operator images into the management cluster
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name "$MGMT_CLUSTER"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name "$MGMT_CLUSTER"
+      # hack/deploy-mgmt-cluster.sh left the kubectl context on the management
+      # cluster, which is where both operators are installed.
+      - name: Deploy keystone-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: keystone
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/keystone-operator
+          NAMESPACE: keystone-system
+      - name: Deploy barbican-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: barbican
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator
+          NAMESPACE: barbican-system
+      # createNamespaces=false: the openstack namespace already exists on the
+      # target from the infrastructure deploy.
+      - name: Install the target-cluster-access chart on the target
+        run: |
+          helm install --kube-context "kind-$TARGET_CLUSTER" \
+            target-cluster-access deploy/target-cluster/target-cluster-access \
+            -n c5c3-access --create-namespace \
+            --set 'namespaces={openstack}' \
+            --set createNamespaces=false
+      # Register the target on the management cluster. The admin kubeconfig kind
+      # holds for the target is NEVER used here: the kubeconfig assembled below
+      # carries the chart's ServiceAccount token and nothing else, so every
+      # request the operators make is authorized by the chart's Role and
+      # ClusterRole. The server URL is the --internal one, because the address
+      # that has to resolve is the one a pod on the management cluster dials
+      # across the shared docker network.
+      - name: Register the target cluster
+        run: |
+          set -euo pipefail
+          secret=target-cluster-access-token
+          token=""
+          for _ in $(seq 1 30); do
+            token=$(kubectl --context "kind-$TARGET_CLUSTER" -n c5c3-access get secret "$secret" \
+              -o jsonpath='{.data.token}' 2>/dev/null || true)
+            [ -n "$token" ] && break
+            sleep 2
+          done
+          if [ -z "$token" ]; then
+            echo "::error::the token controller did not populate $secret on $TARGET_CLUSTER"
+            exit 1
+          fi
+          workdir=$(mktemp -d)
+          kubectl --context "kind-$TARGET_CLUSTER" -n c5c3-access get secret "$secret" \
+            -o jsonpath='{.data.ca\.crt}' | base64 -d > "$workdir/ca.crt"
+          kind get kubeconfig --internal --name "$TARGET_CLUSTER" > "$workdir/internal.kubeconfig"
+          server=$(kubectl --kubeconfig "$workdir/internal.kubeconfig" config view \
+            -o jsonpath='{.clusters[0].cluster.server}')
+          export KUBECONFIG="$workdir/registration.kubeconfig"
+          kubectl config set-cluster "$TARGET_CLUSTER" \
+            --server="$server" --certificate-authority="$workdir/ca.crt" --embed-certs=true
+          kubectl config set-credentials target-cluster-access --token="$(echo "$token" | base64 -d)"
+          kubectl config set-context "$TARGET_CLUSTER" \
+            --cluster="$TARGET_CLUSTER" --user=target-cluster-access
+          kubectl config use-context "$TARGET_CLUSTER"
+          unset KUBECONFIG
+          kubectl --context "kind-$MGMT_CLUSTER" create namespace c5c3-clusters
+          # The namespaces key scopes the operators' caches on this cluster to
+          # the one namespace the chart granted them.
+          kubectl --context "kind-$MGMT_CLUSTER" -n c5c3-clusters create secret generic "$TARGET_CLUSTER" \
+            --from-file=kubeconfig="$workdir/registration.kubeconfig" \
+            --from-literal=namespaces=openstack
+          kubectl --context "kind-$MGMT_CLUSTER" -n c5c3-clusters label secret "$TARGET_CLUSTER" \
+            sigs.k8s.io/multicluster-runtime-kubeconfig=true
+      # Chainsaw's own credentials for asserting on the target. This is the
+      # admin kubeconfig, and it reaches nothing the operators use: they read
+      # the registration Secret written above.
+      - name: Write the chainsaw kubeconfig for the target cluster
+        run: |
+          mkdir -p _output
+          kind get kubeconfig --name "$TARGET_CLUSTER" > _output/forge-target.kubeconfig
+      - name: Run the two-cluster E2E suite
+        run: |
+          mkdir -p _output/reports
+          kubectl config use-context "kind-$MGMT_CLUSTER"
+          make e2e-multicluster
+      - name: Dump diagnostic info (management cluster)
+        if: always()
+        run: |
+          kubectl config use-context "kind-$MGMT_CLUSTER"
+          hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: keystone
+      # No OPERATOR on the target: it runs the infrastructure and nothing else,
+      # so the script's infrastructure section is the whole dump.
+      - name: Dump diagnostic info (target cluster)
+        if: always()
+        run: |
+          kubectl config use-context "kind-$TARGET_CLUSTER"
+          hack/ci-dump-diagnostics.sh
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-multicluster-junit-report
           path: _output/reports/
           retention-days: 14
 
