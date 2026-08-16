@@ -25,6 +25,7 @@ import (
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/secrets"
 	"github.com/c5c3/forge/internal/common/watch"
@@ -107,18 +108,29 @@ type KeystoneIdentityBackendReconciler struct {
 	// HTTPDoer seam on KeystoneReconciler.
 	IdentityClientFactory func(endpoint string, creds identity.Credentials) identity.Client
 
+	// Resolver resolves the target cluster the referenced Keystone names in
+	// spec.targetClusterRef. Only the federation-objects teardown consults it:
+	// a placed Keystone keeps both its admin-password Secret and its API on
+	// that cluster, so both have to be reached there before the finalizer is
+	// released. Nil means always-local, which is what single-cluster tests and
+	// deployments want.
+	Resolver commonmulticluster.ClusterResolver
+
 	// MaxConcurrentReconciles bounds how many backend CRs reconcile
 	// concurrently; see KeystoneReconciler.MaxConcurrentReconciles.
 	MaxConcurrentReconciles int
 }
 
 // identityClient builds the identity client for the given endpoint and
-// credentials, honoring the injectable factory.
-func (r *KeystoneIdentityBackendReconciler) identityClient(endpoint string, creds identity.Credentials) identity.Client {
+// credentials, honoring the injectable factory. doer is the transport the
+// production client runs on — the target cluster's service proxy for a placed
+// Keystone; nil dials the endpoint directly, which is what an unplaced one
+// wants.
+func (r *KeystoneIdentityBackendReconciler) identityClient(endpoint string, creds identity.Credentials, doer identity.HTTPDoer) identity.Client {
 	if r.IdentityClientFactory != nil {
 		return r.IdentityClientFactory(endpoint, creds)
 	}
-	return identity.NewHTTPClient(endpoint, creds, nil)
+	return identity.NewHTTPClient(endpoint, creds, doer)
 }
 
 // Reconcile drives one KeystoneIdentityBackend CR: finalizer installation,
@@ -159,7 +171,7 @@ func (r *KeystoneIdentityBackendReconciler) reconcileNormal(ctx context.Context,
 		return result, nil
 	}
 
-	creds, err := r.adminCredentials(ctx, keystone)
+	creds, err := r.adminCredentials(ctx, r.Client, keystone)
 	if err != nil {
 		if secrets.IsMissingSecretOrKey(err) {
 			r.setDomainReady(backend, metav1.ConditionFalse, conditionReasonAdminSecretUnavailable,
@@ -170,7 +182,7 @@ func (r *KeystoneIdentityBackendReconciler) reconcileNormal(ctx context.Context,
 		return ctrl.Result{}, err
 	}
 
-	idc := r.identityClient(internalAPIURL(keystone), creds)
+	idc := r.identityClient(internalAPIURL(keystone), creds, nil)
 	if result, err := r.ensureDomain(ctx, backend, idc); !result.IsZero() || err != nil {
 		return result, err
 	}
@@ -222,12 +234,14 @@ func (r *KeystoneIdentityBackendReconciler) resolveKeystone(ctx context.Context,
 	return &keystone, true, ctrl.Result{}
 }
 
-// adminCredentials reads the bootstrap admin password and assembles the
-// identity-client credentials (bootstrap admin user, admin project, Default
-// user domain — BootstrapSpec has no domain knob).
-func (r *KeystoneIdentityBackendReconciler) adminCredentials(ctx context.Context, keystone *keystonev1alpha1.Keystone) (identity.Credentials, error) {
+// adminCredentials reads the bootstrap admin password through c and assembles
+// the identity-client credentials (bootstrap admin user, admin project, Default
+// user domain — BootstrapSpec has no domain knob). c is the management client
+// for a Keystone deployed here and the target cluster's client for a placed
+// one, whose admin-password Secret lives there.
+func (r *KeystoneIdentityBackendReconciler) adminCredentials(ctx context.Context, c client.Client, keystone *keystonev1alpha1.Keystone) (identity.Credentials, error) {
 	key := client.ObjectKey{Namespace: keystone.Namespace, Name: keystone.Spec.Bootstrap.AdminPasswordSecretRef.Name}
-	password, err := secrets.GetSecretValue(ctx, r.Client, key, "password")
+	password, err := secrets.GetSecretValue(ctx, c, key, "password")
 	if err != nil {
 		return identity.Credentials{}, err
 	}
@@ -485,7 +499,7 @@ func (r *KeystoneIdentityBackendReconciler) applyDomainDeletionPolicy(ctx contex
 		return ctrl.Result{}, nil
 	}
 
-	creds, err := r.adminCredentials(ctx, keystone)
+	creds, err := r.adminCredentials(ctx, r.Client, keystone)
 	if err != nil {
 		if secrets.IsMissingSecretOrKey(err) {
 			// The admin credential is gone (stack teardown in progress):
@@ -497,7 +511,7 @@ func (r *KeystoneIdentityBackendReconciler) applyDomainDeletionPolicy(ctx contex
 		}
 		return ctrl.Result{}, err
 	}
-	idc := r.identityClient(internalAPIURL(keystone), creds)
+	idc := r.identityClient(internalAPIURL(keystone), creds, nil)
 
 	// Disable first — keystone forbids deleting an enabled domain — then
 	// delete (the disable-before-delete contract). A domain already gone

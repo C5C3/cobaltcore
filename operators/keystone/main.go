@@ -97,6 +97,7 @@ func main() {
 				Scheme:                  mgr.GetScheme(),
 				Recorder:                mgr.GetEventRecorderFor("keystoneidentitybackend-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
 				MaxConcurrentReconciles: maxConcurrentReconciles,
+				Resolver:                mcMgr,
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}

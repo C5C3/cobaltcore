@@ -187,6 +187,13 @@ The Barbican secret store mints a token through the target's TokenRequest API,
 so the operator's credentials there need the corresponding RBAC. Packaging the
 access a target cluster has to grant is #841.
 
+A placed CR's API health probe does not resolve over Service DNS from the
+management cluster, so it runs through the target's API server instead. The same
+credentials therefore need `get` on `services/proxy` in every namespace a
+service is placed in; without it the probe holds the CR's API-ready condition at
+`APIUnhealthy` with the API server's forbidden message. A Keystone identity
+backend's federation teardown takes the same route on deletion.
+
 Registering a cluster is a commitment to let every service operator cache it in
 full. Each one watches, on every registered cluster, the kinds it projects there
 and the inputs it reads (both enumerated in the next section), so its
