@@ -1,0 +1,6 @@
+apiVersion: v2
+name: target-cluster-access
+description: The RBAC grant set a target cluster applies before it is registered with a management cluster
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

@@ -1,0 +1,88 @@
+{{/*
+The grants that have no namespace to be scoped to. Everything else the operators
+reach on this cluster is in role.yaml, one namespace at a time.
+
+The read-only ones are always rendered. What the auth-delegator binding is
+WRITTEN with is not: those are the only grants in this chart that a namespace
+cannot bound, so they are rendered only where the install says they are needed.
+*/}}
+{{- include "target-cluster-access.requireNamespaces" . }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "target-cluster-access.fullname" . }}
+  labels:
+    {{- include "target-cluster-access.labels" . | nindent 4 }}
+rules:
+  # core - namespaces (read-only)
+  # The ControlPlane verifies that the namespace it places a service in exists
+  # before it writes anything into it. It never creates one here: the namespaces
+  # this chart declares are the namespaces it may use.
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    verbs:
+      - get
+      - list
+      - watch
+  # external-secrets.io - clustersecretstores (read-only)
+  # A watched input of the five service operators: a CR that reaches its secret
+  # backend through the shared cluster-scoped store has its secrets condition
+  # gated on that store's Ready condition.
+  - apiGroups:
+      - external-secrets.io
+    resources:
+      - clustersecretstores
+    verbs:
+      - get
+      - list
+      - watch
+  # rbac.authorization.k8s.io - clusterrolebindings
+  # get is unconditional. EVERY ControlPlane teardown reads the auth-delegator
+  # binding by exact name before it releases its finalizer, dedicated OpenBao or
+  # not, because that binding is the one child no namespace sweep and no owner
+  # reference can reach. Without the grant the read comes back forbidden instead
+  # of not-found, and the teardown retries an error rather than releasing, so
+  # every placed ControlPlane on this cluster would sit in Terminating forever.
+  #
+  # create, patch and delete are the opt-in half (authDelegatorBinding). They
+  # write the binding that lets a dedicated OpenBao instance run the TokenReview
+  # every Kubernetes-auth login is validated with. It is cluster-scoped because
+  # the ClusterRole it binds is, and its name carries a hash of the instance's
+  # namespace and name, so resourceNames cannot narrow them to it: the chart does
+  # not know the name, and the object the delete has to reach is the very one a
+  # create may not be restricted to. Rendered, they put patch and delete on EVERY
+  # ClusterRoleBinding of this cluster — cluster-admin and the control plane's own
+  # bindings included — in the hands of whoever holds the registration kubeconfig.
+  # Only an install that places a ControlPlane with a dedicated OpenBao here needs
+  # them.
+  #
+  # No list or watch either way: both the projection and the teardown read the
+  # binding by exact name through an uncached reader, so no informer over every
+  # binding on the cluster is ever started. No update, because every write is a
+  # server-side apply.
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - clusterrolebindings
+    verbs:
+      - get
+{{- if .Values.authDelegatorBinding }}
+      - create
+      - patch
+      - delete
+  # rbac.authorization.k8s.io - clusterroles (bind on system:auth-delegator)
+  # Kubernetes refuses a binding to a ClusterRole whose permissions the author
+  # does not hold. bind on that one name is the narrow exception that lets the
+  # binding above be written without this account holding TokenReview itself; no
+  # other ClusterRole is bindable.
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - clusterroles
+    resourceNames:
+      - system:auth-delegator
+    verbs:
+      - bind
+{{- end }}

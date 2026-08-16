@@ -362,6 +362,14 @@ helm-package:
 	helm dependency build --skip-refresh operators/$(OPERATOR)/helm/$(OPERATOR)-operator/
 	helm package operators/$(OPERATOR)/helm/$(OPERATOR)-operator/ $(if $(CHART_VERSION),--version $(CHART_VERSION))
 
+.PHONY: helm-package-target-cluster
+# helm-package-target-cluster packages the target-cluster-access chart, the RBAC
+# grant set a target cluster applies before it is registered.
+# Usage: make helm-package-target-cluster [CHART_VERSION=1.2.3]
+# No dependency build: the chart has no subchart.
+helm-package-target-cluster:
+	helm package deploy/target-cluster/target-cluster-access/ $(if $(CHART_VERSION),--version $(CHART_VERSION))
+
 # ============================================================================
 # Testing and Infrastructure Targets
 # ============================================================================

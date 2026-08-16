@@ -57,6 +57,7 @@ jobs:
       go: ${{ steps.result.outputs.go }}
       docs: ${{ steps.result.outputs.docs }}
       helm: ${{ steps.result.outputs.helm }}
+      target-cluster-chart: ${{ steps.result.outputs.target-cluster-chart }}
       e2e-infra: ${{ steps.result.outputs.e2e-infra }}
       e2e-chaos: ${{ steps.result.outputs.e2e-chaos }}
       e2e-prometheus: ${{ steps.result.outputs.e2e-prometheus }}
@@ -132,8 +133,15 @@ jobs:
               - 'operators/placement/helm/**'
               - 'operators/barbican/helm/**'
               - 'operators/shared/helm/**'
+              - 'deploy/target-cluster/**'
               - 'hack/gen-helm-values-schema.py'
               - 'Makefile'
+            # The target-cluster-access chart is published on its own, outside
+            # the per-operator helm-push matrix, so it needs a filter of its own
+            # to gate that job. helm-validate runs off the wider helm filter
+            # above.
+            target_cluster_chart:
+              - 'deploy/target-cluster/**'
             e2e_infra:
               - 'tests/e2e/infrastructure/**'
               - 'hack/**'
@@ -212,6 +220,7 @@ jobs:
           FILTER_barbican: ${{ steps.filter.outputs.barbican }}
           FILTER_docs: ${{ steps.filter.outputs.docs }}
           FILTER_helm: ${{ steps.filter.outputs.helm }}
+          FILTER_target_cluster_chart: ${{ steps.filter.outputs.target_cluster_chart }}
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
           FILTER_e2e_chaos: ${{ steps.filter.outputs.e2e_chaos }}
           FILTER_e2e_prometheus: ${{ steps.filter.outputs.e2e_prometheus }}
@@ -603,6 +612,23 @@ jobs:
             echo "--- unittest $chart ---"
             helm unittest "$chart"
           done
+      # The target-cluster-access chart is validated on its own: it has no
+      # subchart, no values.schema.json, and none of the operator scenarios the
+      # loops above render (webhook, RBAC scope, image resources). Its own
+      # scenarios turn on the namespace list, which is a required value.
+      - name: Validate target-cluster-access chart
+        run: |
+          chart=deploy/target-cluster/target-cluster-access
+          echo "--- lint $chart ---"
+          helm lint "$chart" --set 'namespaces={openstack}'
+          echo "--- Scenario 1: one namespace ---"
+          helm template test "$chart" --set 'namespaces={openstack}'
+          echo "--- Scenario 2: several namespaces ---"
+          helm template test "$chart" --set 'namespaces={openstack,glance}'
+          echo "--- Scenario 3: namespaces created elsewhere ---"
+          helm template test "$chart" --set 'namespaces={openstack}' --set createNamespaces=false
+          echo "--- unittest $chart ---"
+          helm unittest "$chart"
 
   # End-to-end infrastructure deployment and Chainsaw test.
   # Deploys the full infrastructure stack to a kind cluster and validates health
@@ -2309,6 +2335,35 @@ jobs:
             make helm-package OPERATOR="${OPERATOR}"
           fi
           helm push "${OPERATOR}"-operator-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
+
+  # Package and push the target-cluster-access chart to the GHCR OCI registry.
+  # It is a job of its own rather than a step in helm-push because that job is a
+  # per-operator matrix: an in-matrix step would package and push this single
+  # chart once per leg, and the legs would race on the same registry tag.
+  helm-push-target-cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Publish-only-on-merge: see build-and-push.
+    needs: [changes]
+    if: github.event_name == 'push' && needs.changes.outputs.target-cluster-chart == 'true'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ${{ env.REGISTRY }} --username ${{ github.actor }} --password-stdin
+      - name: Package and push Helm chart
+        run: |
+          # Remove stale chart tarballs to prevent glob ambiguity.
+          rm -f target-cluster-access-*.tgz
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            make helm-package-target-cluster CHART_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            make helm-package-target-cluster
+          fi
+          helm push target-cluster-access-*.tgz oci://${{ env.REGISTRY }}/c5c3/charts
 
   # Create GitHub release with auto-generated release notes
   # on v* tag pushes, after images and charts are published.

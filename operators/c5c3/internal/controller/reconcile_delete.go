@@ -1122,7 +1122,10 @@ func (r *ControlPlaneReconciler) deleteBarbicanEnsembleIn(
 // and on the management cluster for a Barbican that names none. A cluster that does
 // not resolve leaves the binding where it is: teardownDedicatedNamespaces has
 // already decided whether that cluster is being waited for or was abandoned, and
-// this is the same unreachable cluster.
+// this is the same unreachable cluster. A cluster that denies the delete leaves it
+// too, reported as an event — the write grants are opt-in on the target's access
+// chart, and no retry turns a withdrawn grant into a delete this ControlPlane may
+// wait for.
 func (r *ControlPlaneReconciler) deleteBarbicanAuthDelegatorBinding(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
 ) error {
@@ -1147,6 +1150,30 @@ func (r *ControlPlaneReconciler) deleteBarbicanAuthDelegatorBinding(
 		return nil
 	}
 	if err := client.IgnoreNotFound(children.Delete(ctx, binding)); err != nil {
+		// Forbidden is the read's failure one step further along, and the target
+		// cluster's access chart makes it reachable: it grants get on
+		// ClusterRoleBindings unconditionally, but create, patch and delete only
+		// behind authDelegatorBinding. A cluster that had the flag on when this
+		// binding was written and has it off now — a GitOps overlay, a decommission,
+		// an upgrade that drops the override — answers the read with the binding and
+		// the delete with a 403, on this pass and on every pass after it. Nothing
+		// breaks that loop: the NamespaceTeardownStalled escape hatch lives inside
+		// teardownDedicatedNamespaces, which has already returned done by the time
+		// this runs. Wedging the ControlPlane in Terminating over a grant the target
+		// cluster withdrew is the worse outcome, so it is released and what stays
+		// behind is named — like the orphaned K-ORC resources, a repair-by-hand
+		// outcome, and one that matters because a same-named ControlPlane would
+		// otherwise adopt the binding left standing.
+		if apierrors.IsForbidden(err) {
+			r.Recorder.Event(cp, "Warning", "AuthDelegatorBindingNotReclaimed", fmt.Sprintf(
+				"no permission to delete ClusterRoleBinding %q on the cluster Barbican was placed on; "+
+					"releasing the ControlPlane anyway. It is cluster-scoped, so nothing will "+
+					"garbage-collect it — remove it by hand, or set authDelegatorBinding=true on that "+
+					"cluster's target-cluster-access release: %v", name, err))
+			log.FromContext(ctx).Info("auth-delegator binding could not be reclaimed; releasing the "+
+				"ControlPlane anyway", "clusterRoleBinding", name, "error", err.Error())
+			return nil
+		}
 		return fmt.Errorf("deleting ClusterRoleBinding %q: %w", name, err)
 	}
 	return nil

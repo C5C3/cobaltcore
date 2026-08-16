@@ -1,0 +1,313 @@
+{{/*
+One Role per declared namespace, holding the union of what the six operators
+project into a namespace they place a service in, plus the subresources a placed
+CR is reached over. The grants stay namespaced: an operator that places into
+three namespaces reaches those three and nothing else on this cluster.
+
+The rules are repeated per namespace rather than hoisted into a ClusterRole
+because a ClusterRole bound namespace by namespace would still be one object to
+mis-bind, and the read verbs on secrets are the ones that would then cover the
+whole cluster. clusterrole.yaml carries only what genuinely has no namespace.
+*/}}
+{{- include "target-cluster-access.requireNamespaces" . }}
+{{- range $namespace := .Values.namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "target-cluster-access.fullname" $ }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "target-cluster-access.labels" $ | nindent 4 }}
+rules:
+  # core - services, configmaps, secrets, serviceaccounts
+  # The projected children of every service: the API Service, the rendered
+  # configuration, the credential Secrets ESO syncs into, and the accounts the
+  # workloads run as.
+  - apiGroups:
+      - ""
+    resources:
+      - services
+      - configmaps
+      - secrets
+      - serviceaccounts
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # core - pods (read-only)
+  # Read to attribute a failed Job: the operator lists the Job's pods and reads
+  # the error out of the terminated container state.
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+  # core - pods/portforward
+  # The TCP tunnel a placed BarbicanSecretStore dials its OpenBao instance over.
+  # The service proxy cannot carry it: the operator verifies the instance's own
+  # certificate against the instance's CA bundle, and through the proxy the
+  # handshake would terminate at the API server instead.
+  - apiGroups:
+      - ""
+    resources:
+      - pods/portforward
+    verbs:
+      - create
+  # core - serviceaccounts/token
+  # The bound token the barbican-operator mints for a dedicated OpenBao
+  # instance's provisioner account and presents to its Kubernetes auth method.
+  - apiGroups:
+      - ""
+    resources:
+      - serviceaccounts/token
+    verbs:
+      - create
+  # core - services/proxy
+  # A placed CR's Service DNS name resolves on this cluster and nowhere else, so
+  # every HTTP call into a placed service runs through this API server instead of
+  # dialling the name directly.
+  #
+  # The verb is the request's method, so the three that route through here are
+  # three grants: get carries the API health probes, create the keystone token
+  # request the federation-objects teardown authenticates with, and delete the
+  # identity provider, mapping and protocol that teardown removes. Without the
+  # latter two, deleting a KeystoneIdentityBackend attached to a placed Keystone
+  # is refused on its first call and the CR never leaves Terminating.
+  - apiGroups:
+      - ""
+    resources:
+      - services/proxy
+    verbs:
+      - get
+      - create
+      - delete
+  # apps - deployments
+  - apiGroups:
+      - apps
+    resources:
+      - deployments
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # batch - jobs, cronjobs
+  # jobs covers the db-sync and bootstrap Jobs, cronjobs the recurring database
+  # clean-up.
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+      - cronjobs
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # k8s.mariadb.com - databases, users, grants, mariadbs
+  # The service operators project the per-service database, user and grant; the
+  # ControlPlane projects the MariaDB instance they point at.
+  - apiGroups:
+      - k8s.mariadb.com
+    resources:
+      - databases
+      - users
+      - grants
+      - mariadbs
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # memcached.c5c3.io - memcacheds
+  # Projected by the ControlPlane's infrastructure step.
+  - apiGroups:
+      - memcached.c5c3.io
+    resources:
+      - memcacheds
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # cert-manager.io - certificates
+  # The database client certificate, the mTLS certificate the dynamic-credential
+  # generator presents, and the server and CA certificates of a dedicated OpenBao
+  # instance.
+  - apiGroups:
+      - cert-manager.io
+    resources:
+      - certificates
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # external-secrets.io - externalsecrets, pushsecrets, secretstores
+  # The ExternalSecrets that sync credentials in, the PushSecrets that back
+  # rotated key material up, and the per-tenant SecretStore the ControlPlane
+  # provisions for both.
+  - apiGroups:
+      - external-secrets.io
+    resources:
+      - externalsecrets
+      - pushsecrets
+      - secretstores
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # generators.external-secrets.io - vaultdynamicsecrets
+  # The generator that issues short-lived database credentials in Dynamic mode.
+  - apiGroups:
+      - generators.external-secrets.io
+    resources:
+      - vaultdynamicsecrets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # openbao.org - openbaoclusters, openbaotenants
+  # The dedicated OpenBao instance a managed Barbican secret store runs against,
+  # and the tenant that admits the Barbican namespace to it.
+  - apiGroups:
+      - openbao.org
+    resources:
+      - openbaoclusters
+      - openbaotenants
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # rbac.authorization.k8s.io - roles, rolebindings
+  # The ControlPlane projects the TokenRequest Role and RoleBinding that belong
+  # to a dedicated OpenBao instance.
+  #
+  # Deliberately without escalate and bind. Kubernetes lets an author write a
+  # Role whose permissions the author already holds, and bind a Role it holds in
+  # full; the projected Role carries create on serviceaccounts/token restricted
+  # to one account, which the unrestricted grant above covers, so both writes
+  # pass the escalation check on this account's own permissions. escalate would
+  # suspend that check altogether and let whoever holds the registration
+  # kubeconfig author a Role granting everything in this namespace and bind it to
+  # itself, which is the one thing the namespaced grants exist to prevent.
+  - apiGroups:
+      - rbac.authorization.k8s.io
+    resources:
+      - roles
+      - rolebindings
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # policy - poddisruptionbudgets
+  - apiGroups:
+      - policy
+    resources:
+      - poddisruptionbudgets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # autoscaling - horizontalpodautoscalers
+  - apiGroups:
+      - autoscaling
+    resources:
+      - horizontalpodautoscalers
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # networking.k8s.io - networkpolicies
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - networkpolicies
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # gateway.networking.k8s.io - httproutes
+  # The route that exposes a placed service's API.
+  - apiGroups:
+      - gateway.networking.k8s.io
+    resources:
+      - httproutes
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # gateway.networking.k8s.io - httproutes/status (read-only)
+  # The Accepted condition the Gateway controller writes, which the operator
+  # reflects in the CR's route condition.
+  - apiGroups:
+      - gateway.networking.k8s.io
+    resources:
+      - httproutes/status
+    verbs:
+      - get
+  # discovery.k8s.io - endpointslices (read-only)
+  # The pod behind a Service, which the port-forward tunnel needs before it can
+  # open the stream.
+  - apiGroups:
+      - discovery.k8s.io
+    resources:
+      - endpointslices
+    verbs:
+      - get
+      - list
+{{- end }}
