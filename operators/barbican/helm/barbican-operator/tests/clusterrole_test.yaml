@@ -60,9 +60,11 @@ tests:
             verbs:
               - update
 
-  # Store CRs are user-authored: both controllers only read them, so the rule
-  # must stay read-only. A widened verb list here would exceed the markers.
-  - it: should grant read-only on barbicansecretstores
+  # Store CRs are user-authored: the operator never creates or deletes one.
+  # update is required for the placed-store teardown marks — the children-cluster
+  # annotation and the remote-children finalizer are plain Updates on the CR.
+  # Anything beyond get/list/watch/update would exceed the markers.
+  - it: should grant read plus update on barbicansecretstores
     asserts:
       - contains:
           path: rules
@@ -75,8 +77,9 @@ tests:
               - get
               - list
               - watch
+              - update
 
-  - it: should not grant write verbs on barbicansecretstores
+  - it: should not grant create/patch/delete on barbicansecretstores
     asserts:
       - notContains:
           path: rules

@@ -290,7 +290,7 @@ type BarbicanSecretStoreReconciler struct {
 	Resolver commonmulticluster.ClusterResolver
 }
 
-// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores,verbs=get;list;watch
+// +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicansecretstores/finalizers,verbs=update
 // +kubebuilder:rbac:groups=barbican.openstack.c5c3.io,resources=barbicans,verbs=get;list;watch

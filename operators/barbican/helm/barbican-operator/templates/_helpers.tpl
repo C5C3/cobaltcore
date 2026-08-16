@@ -44,10 +44,14 @@ required by the manager's leader election.
     - barbicans/finalizers
   verbs:
     - update
-# barbican.openstack.c5c3.io - barbicansecretstores (read-only)
+# barbican.openstack.c5c3.io - barbicansecretstores
 # Users create store CRs; the operator lists and watches them to assemble the
 # aggregate Barbican secret-store configuration and never creates or deletes
-# one itself.
+# one itself. update covers the placed-store teardown marks: before minting
+# credentials onto a target cluster, the store controller records the
+# children-cluster annotation and the remote-children finalizer on the CR,
+# and releases that finalizer again on delete — all plain Updates of the
+# main resource.
 - apiGroups:
     - barbican.openstack.c5c3.io
   resources:
@@ -56,6 +60,7 @@ required by the manager's leader election.
     - get
     - list
     - watch
+    - update
 # barbican.openstack.c5c3.io - barbicansecretstores/status
 - apiGroups:
     - barbican.openstack.c5c3.io

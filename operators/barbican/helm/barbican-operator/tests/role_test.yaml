@@ -111,7 +111,7 @@ tests:
             verbs:
               - update
 
-  - it: should grant read-only on barbicansecretstores
+  - it: should grant read plus update on barbicansecretstores
     set:
       rbac:
         namespaceScoped: true
@@ -129,6 +129,7 @@ tests:
               - get
               - list
               - watch
+              - update
 
   - it: should grant get/update/patch on barbicansecretstores/status
     set:
