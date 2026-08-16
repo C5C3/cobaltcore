@@ -6,15 +6,21 @@ package controller
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
+	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	identityfake "github.com/c5c3/forge/operators/keystone/internal/identity/fake"
@@ -287,6 +293,148 @@ func TestOIDCBackendDelete_ToleratesObjectsAlreadyGone(t *testing.T) {
 	var gone keystonev1alpha1.KeystoneIdentityBackend
 	err = r.Get(context.Background(), backendRequest(backend).NamespacedName, &gone)
 	g.Expect(err).To(HaveOccurred(), "the finalizer must be released and the CR removed")
+}
+
+// --- A placed Keystone tears its federation objects down through the proxy ---
+
+// targetAPIServer stands in for the target cluster's API server. It records the
+// path of every request the service proxy rewrote and forwards it to the fake
+// identity server with the services/proxy prefix stripped, which is what the
+// API server does for a services/proxy call.
+func targetAPIServer(t *testing.T, srv *identityfake.Server) (*httptest.Server, *[]string) {
+	t.Helper()
+
+	base := strings.TrimSuffix(srv.Endpoint(), "/v3")
+	var paths []string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+
+		_, tail, isProxy := strings.Cut(r.URL.Path, "/proxy")
+		if !isProxy {
+			http.Error(w, "not a services/proxy request: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+
+		//nolint:gosec // G704 false positive: the forwarding target is the test's own identity fake.
+		forwarded, err := http.NewRequestWithContext(r.Context(), r.Method, base+tail, r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		forwarded.Header = r.Header.Clone()
+		forwarded.URL.RawQuery = r.URL.RawQuery
+
+		resp, err := http.DefaultClient.Do(forwarded) //nolint:gosec // G704 false positive: same fake, see above.
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		for key, values := range resp.Header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	t.Cleanup(api.Close)
+
+	return api, &paths
+}
+
+// TestOIDCBackendDelete_PlacedKeystoneTearsDownThroughTheServiceProxy pins the
+// teardown of a backend whose Keystone runs on a target cluster. Both halves
+// live there: the admin-password Secret the spec references is seeded on the
+// target only, and the identity API answers only through that cluster's API
+// server. Reading either from the management cluster fails open and retains the
+// federation objects, which is the regression this covers.
+func TestOIDCBackendDelete_PlacedKeystoneTearsDownThroughTheServiceProxy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+	srv.SeedRole("member")
+	api, proxied := targetAPIServer(t, srv)
+
+	ks := testKeystoneWithReadyAPI()
+	ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "remote-a"}
+	backend := testOIDCBackend("corp-oidc", "corp")
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+
+	_, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(srv.IdentityProvider("corp-oidc")).NotTo(BeNil())
+
+	// From here the Keystone is placed for real: its admin-password Secret only
+	// exists on the target, and the identity client is the production one, so
+	// the teardown has to reach both through the resolved cluster.
+	g.Expect(r.Delete(context.Background(), testAdminSecret())).To(Succeed())
+	target := fake.NewClientBuilder().WithScheme(testScheme()).WithRuntimeObjects(testAdminSecret()).Build()
+	r.IdentityClientFactory = nil
+	r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{
+		Client: target,
+		Config: &rest.Config{Host: api.URL},
+	})
+
+	updated := getBackend(t, r.Client, "corp-oidc")
+	g.Expect(r.Delete(context.Background(), updated)).To(Succeed())
+
+	result, err := r.Reconcile(context.Background(), backendRequest(backend))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result.IsZero()).To(BeTrue())
+
+	g.Expect(*proxied).NotTo(BeEmpty(), "the teardown must have gone through the target API server")
+	for _, path := range *proxied {
+		g.Expect(path).To(HavePrefix("/api/v1/namespaces/default/services/http:test-keystone:5000/proxy/v3"),
+			"every identity call of a placed Keystone is a services/proxy call")
+	}
+
+	g.Expect(srv.IdentityProvider("corp-oidc")).To(BeNil())
+	g.Expect(srv.Mapping("corp-oidc-mapping")).To(BeNil())
+	g.Expect(srv.Protocol("corp-oidc", "openid")).To(BeNil())
+	expectBackendEventContaining(g, r, "Normal FederationObjectsDeleted")
+
+	var gone keystonev1alpha1.KeystoneIdentityBackend
+	err = r.Get(context.Background(), backendRequest(backend).NamespacedName, &gone)
+	g.Expect(err).To(HaveOccurred(), "the finalizer must be released once the teardown succeeded")
+}
+
+// TestOIDCBackendDelete_UnresolvableTargetRetainsObjectsAndReleases covers the
+// deregistered target cluster: the federation objects are unreachable, so the
+// teardown warns and releases the finalizer rather than holding the backend
+// hostage to a cluster that is gone.
+func TestOIDCBackendDelete_UnresolvableTargetRetainsObjectsAndReleases(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv := identityfake.NewServer(testAdminPassword)
+	t.Cleanup(srv.Close)
+	srv.SeedRole("member")
+
+	ks := testKeystoneWithReadyAPI()
+	ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "nowhere"}
+	backend := testOIDCBackend("corp-oidc", "corp")
+	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
+
+	_, err := reconcileBackendTwice(t, r, backend)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(srv.IdentityProvider("corp-oidc")).NotTo(BeNil())
+
+	r.Resolver = unresolvableResolver{}
+
+	updated := getBackend(t, r.Client, "corp-oidc")
+	g.Expect(r.Delete(context.Background(), updated)).To(Succeed())
+
+	result, err := r.Reconcile(context.Background(), backendRequest(backend))
+	g.Expect(err).NotTo(HaveOccurred(), "an unreachable target must not fail the pass")
+	g.Expect(result.IsZero()).To(BeTrue())
+
+	expectBackendEventContaining(g, r, "Warning FederationTeardownFailed")
+	g.Expect(srv.IdentityProvider("corp-oidc")).NotTo(BeNil(),
+		"objects on an unreachable cluster are retained, not silently reported as deleted")
+
+	var gone keystonev1alpha1.KeystoneIdentityBackend
+	err = r.Get(context.Background(), backendRequest(backend).NamespacedName, &gone)
+	g.Expect(err).To(HaveOccurred(), "the finalizer must be released even though the objects stay")
 }
 
 // testSAMLBackend returns a SAML backend attached to testKeystone() with one

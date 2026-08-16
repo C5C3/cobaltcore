@@ -14,7 +14,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	"github.com/c5c3/forge/internal/common/secrets"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 	"github.com/c5c3/forge/operators/keystone/internal/identity"
@@ -369,7 +371,34 @@ func (r *KeystoneIdentityBackendReconciler) ensureProtocol(ctx context.Context, 
 // domain (keystone cascades domain contents). Failures warn and retry on a
 // bounded poll; a missing admin credential fails open like the domain path.
 func (r *KeystoneIdentityBackendReconciler) teardownFederationObjects(ctx context.Context, keystone *keystonev1alpha1.Keystone, backend *keystonev1alpha1.KeystoneIdentityBackend) (ctrl.Result, error) {
-	creds, err := r.adminCredentials(ctx, keystone)
+	// A placed Keystone keeps both halves of this teardown on the target
+	// cluster: the admin-password Secret the spec references is created there,
+	// and the API is reachable only through that cluster's API server. Resolve
+	// it once and use it for both. A cluster that does not resolve fails open
+	// like a missing credential below — the federation objects are unreachable
+	// either way, and a finalizer must not hold the backend hostage to a
+	// cluster that is gone.
+	admin := r.Client
+	var proxy identity.HTTPDoer
+	if keystone.Spec.TargetClusterRef != nil && r.Resolver != nil {
+		target := keystone.Spec.TargetClusterRef.Name
+		cl, err := r.Resolver.GetCluster(ctx, mcruntime.ClusterName(target))
+		if err != nil {
+			r.Recorder.Eventf(backend, corev1.EventTypeWarning, "FederationTeardownFailed",
+				"Retaining federation objects of %q: target cluster %q does not resolve (%v)",
+				backend.EffectiveIdentityProviderName(), target, err)
+			return ctrl.Result{}, nil
+		}
+		if proxy, err = commonmulticluster.NewServiceProxyDoer(cl.GetConfig()); err != nil {
+			r.Recorder.Eventf(backend, corev1.EventTypeWarning, "FederationTeardownFailed",
+				"Retaining federation objects of %q: no transport to target cluster %q (%v)",
+				backend.EffectiveIdentityProviderName(), target, err)
+			return ctrl.Result{}, nil
+		}
+		admin = cl.GetClient()
+	}
+
+	creds, err := r.adminCredentials(ctx, admin, keystone)
 	if err != nil {
 		if secrets.IsMissingSecretOrKey(err) {
 			r.Recorder.Eventf(backend, corev1.EventTypeWarning, "FederationTeardownFailed",
@@ -379,7 +408,13 @@ func (r *KeystoneIdentityBackendReconciler) teardownFederationObjects(ctx contex
 		}
 		return ctrl.Result{}, err
 	}
-	idc := r.identityClient(internalAPIURL(keystone), creds)
+
+	// A placed Keystone is dialled through the target API server's service
+	// proxy; an unplaced one passes a nil doer and keeps dialling the Service
+	// directly. The factory seam still wins wherever it is set, so a test
+	// binding it to the fake identity server drives this teardown as it always
+	// did.
+	idc := r.identityClient(internalAPIURL(keystone), creds, proxy)
 
 	idpName := backend.EffectiveIdentityProviderName()
 	protocolID := backend.EffectiveProtocolID()
