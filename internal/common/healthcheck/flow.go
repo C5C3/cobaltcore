@@ -7,7 +7,9 @@ package healthcheck
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -169,12 +171,42 @@ func ReconcileProbe(ctx context.Context, p ProbeFlowParams) (ctrl.Result, error)
 	// A non-2xx response is a failed probe: evict so recovery is detected on the
 	// next reconcile instead of masked by a stale cached success.
 	p.Cache.Evict(p.Key)
+	message := fmt.Sprintf("%s returned HTTP %d", p.Subject, resp.StatusCode)
+	// A probe that runs through a target cluster's API-server proxy carries the
+	// cause in the body ("no endpoints available for service ...", the forbidden
+	// message of a kubeconfig without services/proxy). Without the excerpt the
+	// condition names the status code alone, which for a proxied 503 says
+	// nothing about which of the two clusters is unhealthy. An empty body keeps
+	// the message the service itself produces.
+	if excerpt := bodyExcerpt(resp.Body); excerpt != "" {
+		message += ": " + excerpt
+	}
 	conditions.SetCondition(p.Conditions, metav1.Condition{
 		Type:               p.ConditionType,
 		Status:             metav1.ConditionFalse,
 		ObservedGeneration: p.Generation,
 		Reason:             p.UnhealthyReason,
-		Message:            fmt.Sprintf("%s returned HTTP %d", p.Subject, resp.StatusCode),
+		Message:            message,
 	})
 	return ctrl.Result{RequeueAfter: p.RequeueAfter}, nil
+}
+
+// bodyExcerptLimit bounds how much of a failed probe's body reaches the
+// condition. Long enough for the API server's proxy errors and a service's own
+// short error line, short enough that a full HTML error page cannot flood the
+// CR's status.
+const bodyExcerptLimit = 256
+
+// newlinesToSpaces collapses the line breaks of a multi-line body so the
+// excerpt stays one line, which is what a condition message has to be.
+var newlinesToSpaces = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
+
+// bodyExcerpt returns the bounded single-line excerpt of a failed probe's body,
+// empty when the body is empty or unreadable.
+func bodyExcerpt(body io.Reader) string {
+	raw, err := io.ReadAll(io.LimitReader(body, bodyExcerptLimit))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(newlinesToSpaces.Replace(string(raw)))
 }

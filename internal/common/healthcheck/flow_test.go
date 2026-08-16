@@ -20,9 +20,11 @@ import (
 	"github.com/c5c3/forge/internal/common/conditions"
 )
 
-// mockDoer returns a fixed response or error and counts invocations.
+// mockDoer returns a fixed response or error and counts invocations. The zero
+// body is the empty one every probe stub used before the excerpt existed.
 type mockDoer struct {
 	status int
+	body   string
 	err    error
 	calls  int
 }
@@ -32,7 +34,7 @@ func (m *mockDoer) Do(*http.Request) (*http.Response, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return &http.Response{StatusCode: m.status, Body: io.NopCloser(strings.NewReader(""))}, nil
+	return &http.Response{StatusCode: m.status, Body: io.NopCloser(strings.NewReader(m.body))}, nil
 }
 
 func baseParams(conds *[]metav1.Condition, doer HTTPDoer, cache *ProbeCache) ProbeFlowParams {
@@ -105,6 +107,68 @@ func TestReconcileProbe_NonSuccessEvicts(t *testing.T) {
 	g.Expect(cond.Message).To(gomega.Equal("Test API returned HTTP 503"))
 	// A failed probe evicts so recovery is detected next reconcile.
 	g.Expect(cache.Has(p.Key)).To(gomega.BeFalse())
+}
+
+func TestReconcileProbe_NonSuccessBodyReachesTheMessage(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		body        string
+		wantMessage string
+	}{
+		{
+			name:        "an empty body keeps the status-code message",
+			status:      503,
+			wantMessage: "Test API returned HTTP 503",
+		},
+		{
+			name:        "a whitespace-only body keeps the status-code message",
+			status:      503,
+			body:        "\n  \n",
+			wantMessage: "Test API returned HTTP 503",
+		},
+		{
+			name:        "the API-server proxy names the missing endpoints",
+			status:      503,
+			body:        `no endpoints available for service "keystone"`,
+			wantMessage: `Test API returned HTTP 503: no endpoints available for service "keystone"`,
+		},
+		{
+			name:        "a forbidden proxy call names the subresource",
+			status:      403,
+			body:        `services/proxy is forbidden: User "system:serviceaccount:forge:keystone" cannot get resource "services/proxy"`,
+			wantMessage: `Test API returned HTTP 403: services/proxy is forbidden: User "system:serviceaccount:forge:keystone" cannot get resource "services/proxy"`,
+		},
+		{
+			name:        "a multi-line body collapses onto one line",
+			status:      500,
+			body:        "Internal Server Error\nsee the logs\n",
+			wantMessage: "Test API returned HTTP 500: Internal Server Error see the logs",
+		},
+		{
+			name:        "an oversized body is truncated",
+			status:      500,
+			body:        strings.Repeat("x", 400),
+			wantMessage: "Test API returned HTTP 500: " + strings.Repeat("x", 256),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			var conds []metav1.Condition
+			p := baseParams(&conds, &mockDoer{status: tc.status, body: tc.body}, &ProbeCache{})
+
+			res, err := ReconcileProbe(context.Background(), p)
+			g.Expect(err).NotTo(gomega.HaveOccurred())
+			g.Expect(res.RequeueAfter).To(gomega.Equal(p.RequeueAfter))
+
+			cond := conditions.GetCondition(conds, p.ConditionType)
+			g.Expect(cond.Status).To(gomega.Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(gomega.Equal("APIUnhealthy"))
+			g.Expect(cond.Message).To(gomega.Equal(tc.wantMessage))
+		})
+	}
 }
 
 func TestReconcileProbe_ErrorClassifiedAndEvicts(t *testing.T) {

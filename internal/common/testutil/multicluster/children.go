@@ -22,6 +22,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -51,12 +52,39 @@ func RemoteChildren(t *testing.T, local, target client.Client) client.Client {
 	t.Helper()
 
 	children, err := commonmulticluster.ResolveChildrenClient(context.Background(),
-		&oneClusterResolver{cl: fakeCluster{c: target}}, local,
+		ResolverFor(TargetCluster{Client: target}), local,
 		&commonv1.TargetClusterRefSpec{Name: "remote-a"})
 	if err != nil {
 		t.Fatalf("resolving the children client: %v", err)
 	}
 	return children
+}
+
+// TargetCluster is the cluster a fake resolver hands out. Both fields are
+// optional, so a test sets only what the path under test reaches for: Client is
+// what the children are written with — and what a live read goes through too,
+// which for a fake client is read-your-writes anyway — and Config what a
+// service-proxy transport is built from; point its Host at an httptest server
+// standing in for the target's API server.
+//
+// The embedded interface leaves every other method nil, so a path reaching for
+// one panics instead of quietly working on a zero value.
+type TargetCluster struct {
+	cluster.Cluster
+	Client client.Client
+	Config *rest.Config
+}
+
+func (c TargetCluster) GetClient() client.Client { return c.Client }
+
+func (c TargetCluster) GetAPIReader() client.Reader { return c.Client }
+
+func (c TargetCluster) GetConfig() *rest.Config { return c.Config }
+
+// ResolverFor stands in for the multicluster manager, registering cl under
+// every cluster name a CR may reference.
+func ResolverFor(cl cluster.Cluster) commonmulticluster.ClusterResolver {
+	return &oneClusterResolver{cl: cl}
 }
 
 // UnprobeableChildren is a target cluster that cannot say what it serves: its
@@ -67,21 +95,12 @@ func UnprobeableChildren(inner client.Client) client.Client {
 	return commonmulticluster.Remote(brokenMapperClient{Client: inner})
 }
 
-// oneClusterResolver and fakeCluster stand in for the multicluster manager,
-// registering the one target cluster under every name.
+// oneClusterResolver answers every cluster name with the one target cluster.
 type oneClusterResolver struct{ cl cluster.Cluster }
 
 func (r *oneClusterResolver) GetCluster(context.Context, mcruntime.ClusterName) (cluster.Cluster, error) {
 	return r.cl, nil
 }
-
-type fakeCluster struct {
-	cluster.Cluster
-	c client.Client
-}
-
-func (f fakeCluster) GetClient() client.Client    { return f.c }
-func (f fakeCluster) GetAPIReader() client.Reader { return f.c }
 
 type brokenMapperClient struct {
 	client.Client
