@@ -1324,6 +1324,19 @@ openbao_kube_exec() {
 }
 
 # ---------------------------------------------------------------------------
+# openbao_kube_exec_stdin — Like openbao_kube_exec but with stdin forwarding
+# (-i), so secret material can be piped in instead of passed as an argument.
+# An argument is readable in two places: kubectl encodes every element of the
+# remote command as a repeated `command=` query parameter and the API server
+# records that request URI in its audit log, and inside the container the
+# expanded argument sits in /proc/<pid>/cmdline for as long as the call runs.
+# ---------------------------------------------------------------------------
+openbao_kube_exec_stdin() {
+  kubectl exec -i -n "${OPENBAO_NAMESPACE}" openbao-0 -- \
+    env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" VAULT_CLIENT_CERT="${VAULT_CLIENT_CERT}" VAULT_CLIENT_KEY="${VAULT_CLIENT_KEY}" "$@"
+}
+
+# ---------------------------------------------------------------------------
 # openbao_init_unseal — Initialize and unseal openbao-0 (single replica).
 #
 # The production init-unseal.sh hardcodes 3 replicas (HA mode) but the kind
@@ -1401,11 +1414,16 @@ EOF
     -n "${OPENBAO_NAMESPACE}" \
     -o jsonpath='{.data.init-output}' | base64 -d)
 
+  # `bao operator unseal` takes the share only from an argument or an
+  # interactive terminal prompt, so the share goes to sys/unseal instead:
+  # `key=-` tells `bao write` to read the value from stdin, keeping it out of
+  # both argv copies openbao_kube_exec_stdin describes. printf is a bash
+  # builtin, so the share never reaches a local argv either.
   local i
   for i in $(seq 0 $(( KEY_THRESHOLD - 1 ))); do
     local key
     key=$(echo "${init_output}" | jq -r ".unseal_keys_b64[${i}]")
-    openbao_kube_exec bao operator unseal "${key}" > /dev/null
+    printf '%s' "${key}" | openbao_kube_exec_stdin bao write sys/unseal key=- > /dev/null
     log "  Applied unseal key $((i + 1))/${KEY_THRESHOLD} to openbao-0."
   done
 

@@ -33,6 +33,19 @@ kube_exec() {
     env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" VAULT_CLIENT_CERT="${VAULT_CLIENT_CERT}" VAULT_CLIENT_KEY="${VAULT_CLIENT_KEY}" "$@"
 }
 
+# kube_exec_stdin — Like kube_exec but with stdin forwarding (-i), so secret
+# material can be piped in instead of passed as an argument. An argument is
+# readable in two places: kubectl encodes every element of the remote command
+# as a repeated `command=` query parameter and the API server records that
+# request URI in its audit log, and inside the container the expanded argument
+# sits in /proc/<pid>/cmdline for as long as the call runs.
+kube_exec_stdin() {
+  local pod="$1"
+  shift
+  kubectl exec -i -n "${NAMESPACE}" "${pod}" -- \
+    env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" VAULT_CLIENT_CERT="${VAULT_CLIENT_CERT}" VAULT_CLIENT_KEY="${VAULT_CLIENT_KEY}" "$@"
+}
+
 # ---------------------------------------------------------------------------
 # check_initialized
 # Returns 0 if already initialized, 1 otherwise.
@@ -129,12 +142,16 @@ unseal_pod() {
     -n "${NAMESPACE}" \
     -o jsonpath='{.data.init-output}' | base64 -d)
 
-  # Apply the first KEY_THRESHOLD keys.
+  # Apply the first KEY_THRESHOLD keys. `bao operator unseal` takes the share
+  # only from an argument or an interactive terminal prompt, so the share goes
+  # to sys/unseal instead: `key=-` tells `bao write` to read the value from
+  # stdin, keeping the share out of both argv copies kube_exec_stdin describes.
+  # printf is a bash builtin, so it never reaches a local argv either.
   local i
   for i in $(seq 0 $(( KEY_THRESHOLD - 1 ))); do
     local key
     key=$(echo "${init_output}" | jq -r ".unseal_keys_b64[${i}]")
-    kube_exec "${pod}" bao operator unseal "${key}" > /dev/null
+    printf '%s' "${key}" | kube_exec_stdin "${pod}" bao write sys/unseal key=- > /dev/null
     log "  Applied unseal key $((i + 1))/${KEY_THRESHOLD} to ${pod}."
   done
 

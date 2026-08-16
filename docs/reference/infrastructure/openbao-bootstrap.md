@@ -213,10 +213,14 @@ injection:
 
 Defaults are set in `deploy/openbao/bootstrap/common.sh` and forwarded by every
 `bao`-invoking wrapper (`bao_exec`, `bao_exec_stdin` in `common.sh`, the private
-`kube_exec` in `init-unseal.sh`, and `openbao_kube_exec` in
-`hack/deploy-infra.sh`). Operators wishing to run `bao` from outside the pod
-must export both vars to a copy of the client keypair extracted from the
-`openbao-client-tls` Secret.
+`kube_exec` and `kube_exec_stdin` in `init-unseal.sh`, and `openbao_kube_exec`
+and `openbao_kube_exec_stdin` in `hack/deploy-infra.sh`). The `_stdin` variants
+add `kubectl exec -i` so secret material — an unseal share, a policy body — is
+piped in rather than passed as an argument, where it would land both in the API
+server's audit log (as a `command=` query parameter) and in
+`/proc/<pid>/cmdline` inside the container. Operators wishing to run `bao` from
+outside the pod must export both vars to a copy of the client keypair extracted
+from the `openbao-client-tls` Secret.
 
 ### Running the Full Bootstrap
 
