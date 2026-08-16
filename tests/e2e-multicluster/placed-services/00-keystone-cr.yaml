@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Keystone CR fixture for the placed-services E2E test.
+#
+# The shape is tests/e2e/keystone/basic-deployment/00-keystone-cr.yaml with two
+# differences: targetClusterRef names the registered target cluster, and the
+# replica count is 1 because both clusters of this suite share one runner and
+# the suite proves placement rather than availability.
+#
+# Every infrastructure name it references — openstack-db, openstack-memcached,
+# openbao-tenant-store, keystone-db, keystone-admin — is resolved on the TARGET
+# cluster, where `INFRA_ONLY=true hack/deploy-infra.sh` created it. The CR itself
+# lives on the management cluster and never touches that infrastructure from
+# there.
+#
+# No spec.gateway: the target cluster is reached over its API server, not over a
+# published hostname, and an HTTPRoute would only add a Gateway dependency to
+# the split this suite is about.
+# region keystone-cr
+apiVersion: keystone.openstack.c5c3.io/v1alpha1
+kind: Keystone
+metadata:
+  name: keystone-mc
+  namespace: openstack
+spec:
+  targetClusterRef:
+    name: forge-target
+  secretStoreRef:
+    kind: SecretStore
+    name: openbao-tenant-store
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/keystone
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: keystone_mc
+    secretRef:
+      name: keystone-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+    backend: dogpile.cache.pymemcache
+  fernet:
+    rotationSchedule: "0 0 * * 0"
+    maxActiveKeys: 3
+  bootstrap:
+    adminUser: admin
+    adminPasswordSecretRef:
+      name: keystone-admin
+    region: RegionOne
+# endregion keystone-cr

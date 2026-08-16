@@ -579,6 +579,35 @@ e2e-operator-upgrade:
 		CHART_DIR=_output/operator-upgrade/keystone-operator hack/ci-deploy-operator.sh
 	chainsaw test --config tests/e2e-operator-upgrade/chainsaw-config.yaml tests/e2e-operator-upgrade/
 
+.PHONY: e2e-multicluster
+# e2e-multicluster runs the placed-services suite across two kind clusters: the
+# management cluster this target's kubectl context points at (brought up by
+# hack/deploy-mgmt-cluster.sh, running keystone-operator and barbican-operator)
+# and the target cluster registered on it (brought up by
+# `INFRA_ONLY=true CLUSTER_NAME=forge-target hack/deploy-infra.sh`, running the
+# infrastructure). The suite lives OUTSIDE tests/e2e/ because every suite there
+# runs against one cluster and `make e2e` sweeps that tree.
+#
+# The two preflights are kept separate so a kubectl/cluster reachability failure
+# is not conflated with a target cluster that was never registered — see review
+# pattern
+# .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
+# This target satisfies the CI-to-Makefile parity expected by
+# .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
+# developers can reproduce the e2e-multicluster CI job locally.
+#
+# The registration Secret carries the credentials the OPERATORS use, minted from
+# the target-cluster-access chart's ServiceAccount.
+# _output/forge-target.kubeconfig is chainsaw's own credential for asserting on
+# the target and is not what the operators read; write it with
+# `kind get kubeconfig --name forge-target > _output/forge-target.kubeconfig`.
+# See docs/reference/target-clusters.md for the registration Secret's contract.
+e2e-multicluster:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable; point the context at the management cluster (`kubectl config use-context kind-forge-mgmt`, created by hack/deploy-mgmt-cluster.sh)' >&2; exit 1; }
+	@kubectl get secret forge-target -n c5c3-clusters >/dev/null 2>&1 || { echo 'no target cluster is registered; install deploy/target-cluster/target-cluster-access on the target and create the registration Secret `forge-target` in c5c3-clusters (see docs/reference/target-clusters.md)' >&2; exit 1; }
+	@test -f _output/forge-target.kubeconfig || { echo 'chainsaw has no kubeconfig for the target cluster; run `kind get kubeconfig --name forge-target > _output/forge-target.kubeconfig`' >&2; exit 1; }
+	chainsaw test --config tests/e2e-multicluster/chainsaw-config.yaml tests/e2e-multicluster/
+
 .PHONY: tempest-test
 # tempest-test runs Tempest API tests against a deployed OpenStack service.
 # Requires a running kind cluster with the service deployed.
