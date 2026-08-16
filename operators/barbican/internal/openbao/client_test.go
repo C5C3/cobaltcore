@@ -6,9 +6,17 @@ package openbao
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -470,4 +478,128 @@ func TestNewRejectsAnUnparseableURL(t *testing.T) {
 
 	_, err := New(Config{URL: "://openbao", Timeout: time.Second})
 	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("creating the OpenBao client")))
+}
+
+// dialRecorder collects what the client asked for while it connected. Both
+// fields are written from goroutines the test does not run on — the transport's
+// dial and the TLS handshake — so both are taken under the lock.
+type dialRecorder struct {
+	mu    sync.Mutex
+	addrs []string
+	sni   string
+}
+
+func (r *dialRecorder) recordAddr(addr string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.addrs = append(r.addrs, addr)
+}
+
+func (r *dialRecorder) recordSNI(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sni = name
+}
+
+func (r *dialRecorder) result() ([]string, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.addrs...), r.sni
+}
+
+// serviceCertificate issues a server certificate whose only SAN is dnsName,
+// signed by a throwaway CA, and returns the certificate to serve together with
+// the CA bundle a client has to carry in Config.CACertPEM to accept it. A
+// certificate valid for a Service DNS name and nothing else is the point: it
+// only verifies if the client really did keep that name.
+func serviceCertificate(t *testing.T, dnsName string) (tls.Certificate, []byte) {
+	t.Helper()
+	g := gomega.NewWithT(t)
+
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	caTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "openbao-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	caCert, err := x509.ParseCertificate(caDER)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	serverTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: dnsName},
+		DNSNames:     []string{dnsName},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caCert, &serverKey.PublicKey, caKey)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	return tls.Certificate{Certificate: [][]byte{serverDER}, PrivateKey: serverKey},
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+}
+
+// TestDialContextMovesOnlyTheTCPPath pins the contract a store on a target
+// cluster depends on. The Service DNS name in Config.URL does not resolve from
+// the operator, so the dial is routed elsewhere — and everything above the dial
+// has to stay untouched: the request still goes to that URL, the handshake still
+// names it, and the certificate is still verified against Config.CACertPEM.
+//
+// The server certificate is valid for the Service name alone, so the call can
+// only succeed if the redirected dial did not drag the URL or the SNI along with
+// it.
+func TestDialContextMovesOnlyTheTCPPath(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	const serviceName = "openbao.openstack.svc"
+	certificate, caPEM := serviceCertificate(t, serviceName)
+	recorder := &dialRecorder{}
+
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"type":"kv","options":{"version":"2"}}}`)
+	}))
+	server.TLS = &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{certificate},
+		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			recorder.recordSNI(hello.ServerName)
+			return nil, nil
+		},
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	listenerAddr := server.Listener.Addr().String()
+	c, err := New(Config{
+		URL:       "https://" + serviceName + ":8200",
+		CACertPEM: caPEM,
+		Timeout:   5 * time.Second,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			recorder.recordAddr(addr)
+			return (&net.Dialer{}).DialContext(ctx, network, listenerAddr)
+		},
+	})
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+
+	exists, err := c.MountExists(t.Context(), "barbican")
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(exists).To(gomega.BeTrue())
+
+	addrs, sni := recorder.result()
+	g.Expect(addrs).To(gomega.Equal([]string{serviceName + ":8200"}),
+		"the transport asks for the Service address; only where the dial lands changes")
+	g.Expect(sni).To(gomega.Equal(serviceName),
+		"the handshake still names the Service, so the certificate's SAN still matches")
 }

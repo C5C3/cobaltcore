@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -41,6 +42,7 @@ import (
 	commonconditions "github.com/c5c3/forge/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
+	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 	"github.com/c5c3/forge/operators/barbican/internal/metrics"
@@ -1369,9 +1371,16 @@ type fakeTargetCluster struct {
 	cluster.Cluster
 	c      client.Client
 	reader client.Reader
+	config *rest.Config
 }
 
 func (f fakeTargetCluster) GetClient() client.Client { return f.c }
+
+// GetConfig answers with the cluster's REST config, which a remote store reaches
+// for to build the tunnel its OpenBao dials go through. It is never connected to
+// in a unit test — the OpenBao client is faked at the seam above it — so a
+// placeholder host is enough to build a dialer from.
+func (f fakeTargetCluster) GetConfig() *rest.Config { return f.config }
 
 // GetAPIReader answers with the cluster's uncached reader. A test that sets none
 // gets the client itself, which for a fake is read-your-writes anyway.
@@ -1397,9 +1406,16 @@ type childrenResolver struct {
 func (r *childrenResolver) GetCluster(_ context.Context, name mcruntime.ClusterName) (cluster.Cluster, error) {
 	r.names = append(r.names, name)
 	if c, named := r.byName[string(name)]; named {
-		return fakeTargetCluster{c: c}, nil
+		return fakeTargetCluster{c: c, config: targetClusterConfig()}, nil
 	}
-	return fakeTargetCluster{c: r.children, reader: r.reader}, nil
+	return fakeTargetCluster{c: r.children, reader: r.reader, config: targetClusterConfig()}, nil
+}
+
+// targetClusterConfig is the REST config every registered target cluster is
+// handed out with. Nothing dials it: it only has to be complete enough for the
+// port-forward dialer a remote store builds its OpenBao route from.
+func targetClusterConfig() *rest.Config {
+	return &rest.Config{Host: "https://api.target.example:6443"}
 }
 
 // targetedBarbican returns the parent Barbican placing its workload on the named
@@ -1468,6 +1484,126 @@ func TestSecretStoreReconcile_MintsCredentialsOnParentTargetCluster(t *testing.T
 	updated := f.store(t)
 	g.Expect(condition(updated, conditionTypeProvisioningReady).Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(condition(updated, conditionTypeCredentialsReady).Status).To(Equal(metav1.ConditionTrue))
+}
+
+// TestSecretStoreReconcile_RemoteManagedStoreTunnelsTheOpenBaoDial pins how a
+// placed store reaches the OpenBao it provisions against. The instance runs on
+// the target cluster, so its Service DNS name does not resolve from the
+// operator — and the URL must not be rewritten to compensate: it is the SAN the
+// instance's server certificate carries, and the operator verifies that
+// certificate against the instance's own trust bundle. Only the dial moves.
+//
+// The seeded credential is inside its TTL, so the pass also runs the AppRole
+// login probe, whose client copies the managed config: both clients have to come
+// out tunnelled, or the probe would report an unreachable server on every pass
+// of a perfectly healthy placed store.
+func TestSecretStoreReconcile_RemoteManagedStoreTunnelsTheOpenBaoDial(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	store := testManagedStore()
+	store.Annotations = map[string]string{childrenClusterAnnotation: "edge-1"}
+	store.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer}
+
+	live := claimedByStore(t, store, testMintedSecret(testClock, "3600", testSecretID))
+	live.UID = types.UID("live-credentials-uid")
+
+	f := newStoreFixture(newProvisionedFakeClient(), store, targetedBarbican("edge-1"))
+	f.reconciler.Resolver = &childrenResolver{children: childrenFake(t, testInstance(true), testCASecret(), live)}
+
+	_, err := f.reconcile(t, store)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(f.bao.configs).To(HaveLen(2),
+		"the provisioner and the credential probe each build a client")
+	for i, cfg := range f.bao.configs {
+		g.Expect(cfg.DialContext).NotTo(BeNil(), "client %d must dial through the target cluster", i)
+		g.Expect(cfg.URL).To(Equal(fmt.Sprintf("https://%s.%s.svc:8200", testInstanceName, testNamespace)),
+			"client %d keeps the Service URL, which is the certificate's SAN", i)
+		g.Expect(cfg.CACertPEM).To(Equal([]byte(testCAPEM)),
+			"client %d still verifies against the instance's own trust bundle", i)
+	}
+	g.Expect(condition(f.store(t), conditionTypeCredentialsReady).Status).To(Equal(metav1.ConditionTrue))
+}
+
+// TestSecretStoreReconcile_RemoteBrownfieldStoreTunnelsTheOpenBaoDial covers the
+// validating half. A brownfield server may or may not be a Service of the target
+// cluster — this fixture's is not — so the dial is handed over either way and
+// the dialer decides: a cluster-local name is tunnelled, anything else falls
+// through to an ordinary dial.
+func TestSecretStoreReconcile_RemoteBrownfieldStoreTunnelsTheOpenBaoDial(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	store := testBrownfieldStore()
+	store.Annotations = map[string]string{childrenClusterAnnotation: "edge-1"}
+	store.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer}
+
+	bao := newProvisionedFakeClient()
+	bao.capabilities = requiredStoreCapabilities
+	f := newStoreFixture(bao, store, targetedBarbican("edge-1"))
+	credentials := testBrownfieldSecret(map[string][]byte{
+		barbicanv1alpha1.OpenBaoRoleIDKey:   []byte(testRoleID),
+		barbicanv1alpha1.OpenBaoSecretIDKey: []byte(testSecretID),
+	})
+	f.reconciler.Resolver = &childrenResolver{children: childrenFake(t, credentials)}
+
+	_, err := f.reconcile(t, store)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(f.bao.configs).To(HaveLen(1))
+	g.Expect(f.bao.configs[0].DialContext).NotTo(BeNil())
+	g.Expect(f.bao.configs[0].URL).To(Equal("https://bao.example.com:8200"),
+		"the CR's server URL is used as written; the dialer, not the URL, decides the route")
+	g.Expect(condition(f.store(t), conditionTypeCredentialsReady).Status).To(Equal(metav1.ConditionTrue))
+}
+
+// TestSecretStoreReconcile_LocalStoreDialsDirectly is the other half of the
+// contract: a store whose parent keeps its workload local resolves the instance
+// over ordinary Service DNS, so nothing is redirected and the client is built
+// exactly as it was before there were target clusters.
+func TestSecretStoreReconcile_LocalStoreDialsDirectly(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	store := testManagedStore()
+	f := newStoreFixture(newProvisionedFakeClient(), store, testInstance(true), testCASecret())
+	f.reconciler.Resolver = &childrenResolver{children: childrenFake(t)}
+
+	_, err := f.reconcile(t, store)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(f.bao.configs).NotTo(BeEmpty())
+	for i, cfg := range f.bao.configs {
+		g.Expect(cfg.DialContext).To(BeNil(), "client %d must dial the Service directly", i)
+	}
+}
+
+// TestSecretStoreReconcile_UnbuildableTunnelGatesTheStore covers a target
+// cluster that resolves but carries no REST config, which is what a cluster
+// mid-registration looks like. The tunnel cannot be built, and the store has to
+// report that on the condition it gates on rather than dial a name that does not
+// resolve here and time out on it.
+func TestSecretStoreReconcile_UnbuildableTunnelGatesTheStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	store := testManagedStore()
+	store.Annotations = map[string]string{childrenClusterAnnotation: "edge-1"}
+	store.Finalizers = []string{commonmulticluster.RemoteChildrenFinalizer}
+
+	f := newStoreFixture(newProvisionedFakeClient(), store, targetedBarbican("edge-1"))
+	f.reconciler.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{
+		Client: childrenFake(t, testInstance(true), testCASecret()),
+	})
+
+	result, err := f.reconcile(t, store)
+
+	g.Expect(err).NotTo(HaveOccurred(), "an unusable target cluster is a wait, not a reconcile failure")
+	g.Expect(result.RequeueAfter).To(Equal(RequeueSecretStoreRetry))
+	g.Expect(f.bao.configs).To(BeEmpty(), "no client is built against a route that cannot be established")
+
+	cond := condition(f.store(t), conditionTypeProvisioningReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonOpenBaoUnreachable))
+	g.Expect(cond.Message).To(ContainSubstring("the target cluster has no REST config"))
 }
 
 // TestSecretStoreReconcile_TargetClusterUnavailableGatesCredentials pins the

@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -31,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
@@ -372,9 +374,9 @@ func (r *BarbicanSecretStoreReconciler) reconcileNormal(ctx context.Context, sto
 
 	var ready bool
 	if spec.InstanceRef != nil {
-		ready, result, err = r.reconcileManaged(ctx, children, store, spec)
+		ready, result, err = r.reconcileManaged(ctx, children, childrenCluster, store, spec)
 	} else {
-		ready, result, err = r.reconcileBrownfield(ctx, children, store, spec)
+		ready, result, err = r.reconcileBrownfield(ctx, children, childrenCluster, store, spec)
 	}
 	if err != nil || !ready {
 		return result, err
@@ -640,7 +642,7 @@ func (r *BarbicanSecretStoreReconciler) releaseRemoteChildrenFinalizer(
 // the store's AppRole credentials. It returns (true, …) only when the
 // credentials are live.
 func (r *BarbicanSecretStoreReconciler) reconcileManaged(
-	ctx context.Context, children client.Client,
+	ctx context.Context, children client.Client, childrenCluster string,
 	store *barbicanv1alpha1.BarbicanSecretStore, spec *barbicanv1alpha1.OpenBaoStoreSpec,
 ) (bool, ctrl.Result, error) {
 	instanceName := spec.InstanceRef.Name
@@ -699,10 +701,19 @@ func (r *BarbicanSecretStoreReconciler) reconcileManaged(
 		return false, ctrl.Result{}, err
 	}
 
+	// The dial is resolved once and travels with the config: every later client
+	// this pass builds — the credential probe above all — copies it and reaches
+	// the same instance over the same route.
+	dial, err := r.openBaoDialer(ctx, childrenCluster)
+	if err != nil {
+		return r.fail(store, conditionTypeProvisioningReady, conditionReasonOpenBaoUnreachable, err.Error())
+	}
+
 	cfg := openbao.Config{
-		URL:       instanceURL(instanceName, store.Namespace),
-		CACertPEM: []byte(caPEM),
-		Timeout:   openBaoRequestTimeout,
+		URL:         instanceURL(instanceName, store.Namespace),
+		CACertPEM:   []byte(caPEM),
+		Timeout:     openBaoRequestTimeout,
+		DialContext: dial,
 	}
 	provisioner, err := r.newOpenBaoClient(cfg)
 	if err != nil {
@@ -866,7 +877,7 @@ func (r *BarbicanSecretStoreReconciler) credentialsReady(
 // capability read, and nothing is ever written to the server — no mount, no
 // policy, no AppRole, no secret material.
 func (r *BarbicanSecretStoreReconciler) reconcileBrownfield(
-	ctx context.Context, children client.Client,
+	ctx context.Context, children client.Client, childrenCluster string,
 	store *barbicanv1alpha1.BarbicanSecretStore, spec *barbicanv1alpha1.OpenBaoStoreSpec,
 ) (bool, ctrl.Result, error) {
 	// Nothing provisions a brownfield server, so the condition must not linger
@@ -906,11 +917,17 @@ func (r *BarbicanSecretStoreReconciler) reconcileBrownfield(
 	// the same way it scopes the rendered configuration: the AppRole lives in that
 	// namespace, so a root-namespace login would be rejected and the store would
 	// report InvalidCredentials against credentials that are correct.
+	dial, err := r.openBaoDialer(ctx, childrenCluster)
+	if err != nil {
+		return r.fail(store, conditionTypeCredentialsReady, conditionReasonOpenBaoUnreachable, err.Error())
+	}
+
 	baoClient, err := r.newOpenBaoClient(openbao.Config{
-		URL:       server.URL,
-		CACertPEM: []byte(caPEM),
-		Namespace: spec.Namespace,
-		Timeout:   openBaoRequestTimeout,
+		URL:         server.URL,
+		CACertPEM:   []byte(caPEM),
+		Namespace:   spec.Namespace,
+		Timeout:     openBaoRequestTimeout,
+		DialContext: dial,
 	})
 	if err != nil {
 		return r.fail(store, conditionTypeCredentialsReady, conditionReasonOpenBaoUnreachable, err.Error())
@@ -1157,6 +1174,42 @@ func subConditionTypesFor(store *barbicanv1alpha1.BarbicanSecretStore) []string 
 		return managedSubConditionTypes
 	}
 	return brownfieldSubConditionTypes
+}
+
+// openBaoDialer returns the dial the store's OpenBao calls are opened with, or
+// nil for the default one.
+//
+// A parent that keeps its workload local gets nil: the server's Service DNS name
+// resolves from the operator, so nothing needs redirecting and the client is
+// built byte for byte as it always was. A parent on a target cluster gets a
+// tunnel through that cluster's API server, because the name resolves there and
+// nowhere else.
+//
+// Only the TCP path moves. The URL stays the one the caller derived, which for a
+// managed instance is the SAN its server certificate carries, and the handshake
+// still runs against the instance itself — routing the request through the API
+// server's service proxy instead would terminate TLS at the API server and break
+// exactly that.
+//
+// A brownfield store may name a server that is no Service of the target cluster
+// at all; the dialer passes such an address through to a plain dial, so setting
+// it costs a remote brownfield store nothing.
+func (r *BarbicanSecretStoreReconciler) openBaoDialer(
+	ctx context.Context, childrenCluster string,
+) (func(ctx context.Context, network, addr string) (net.Conn, error), error) {
+	if r.Resolver == nil || childrenCluster == "" {
+		return nil, nil
+	}
+
+	cl, err := r.Resolver.GetCluster(ctx, mcruntime.ClusterName(childrenCluster))
+	if err != nil {
+		return nil, err
+	}
+	dialer, err := commonmulticluster.NewPortForwardDialer(cl.GetConfig(), cl.GetAPIReader())
+	if err != nil {
+		return nil, err
+	}
+	return dialer.DialContext, nil
 }
 
 // newOpenBaoClient builds an OpenBao client through the seam, defaulting to the

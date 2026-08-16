@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -42,6 +43,18 @@ type Config struct {
 	// client timeout, so a server that accepts a connection and then stalls
 	// cannot wedge a reconcile.
 	Timeout time.Duration
+
+	// DialContext replaces how the TCP connection to the server is opened, and
+	// nothing else. It exists for a store whose OpenBao runs on another cluster,
+	// where the Service DNS name in URL does not resolve from here: the dial is
+	// routed through that cluster's API server while URL, the verification
+	// against CACertPEM, and the SNI stay exactly what they are for a local
+	// store — which they must, because URL is the SAN the server certificate
+	// carries.
+	//
+	// Nil leaves the transport untouched, so a local store dials as it always
+	// did.
+	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 // Client is the subset of the OpenBao API the Barbican operator calls. A Client
@@ -107,6 +120,17 @@ func New(cfg Config) (Client, error) {
 	apiCfg.HttpClient.Timeout = cfg.Timeout
 	if err := apiCfg.ConfigureTLS(&api.TLSConfig{CACertBytes: cfg.CACertPEM}); err != nil {
 		return nil, fmt.Errorf("configuring the OpenBao TLS trust: %w", err)
+	}
+	// After ConfigureTLS, which is what installs the trust store on this
+	// transport: overriding the dial before it would be discarded.
+	if cfg.DialContext != nil {
+		transport, ok := apiCfg.HttpClient.Transport.(*http.Transport)
+		if !ok {
+			return nil, fmt.Errorf(
+				"routing the OpenBao dial through the target cluster: the client transport is a %T, not an *http.Transport",
+				apiCfg.HttpClient.Transport)
+		}
+		transport.DialContext = cfg.DialContext
 	}
 
 	apiClient, err := api.NewClient(apiCfg)
