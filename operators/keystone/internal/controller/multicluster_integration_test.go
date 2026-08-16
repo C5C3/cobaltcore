@@ -73,8 +73,10 @@ import (
 // registration Secret the provider cannot parse, re-registration of the cluster
 // that was deregistered, the deletion of a targeted CR sweeping every child it
 // projected off the target, a child deleted on the target being put back, a
-// rotated input Secret on the target re-rendering what was derived from it, and
-// a targeted CR whose HTTPRoute the management cluster could not serve.
+// rotated input Secret on the target re-rendering what was derived from it, a
+// targeted CR whose HTTPRoute the management cluster could not serve, the
+// registration being scoped to named namespaces under the running CRs, and a CR
+// in a namespace that scope leaves out.
 func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -115,6 +117,19 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 		// in this namespace is the one it projected.
 		gatewayNamespace = "mc-gateway"
 		gatewayKeystone  = "mc-gateway-keystone"
+
+		// The namespaces the registration Secret declares once the last two
+		// subtests scope it: the two the CRs still standing on the target
+		// project into, plus one nothing has ever written to. Every other
+		// namespace on the target — mc-target and mc-teardown among them — falls
+		// outside the scope from then on.
+		scopedExtraNamespace = "mc-scoped-extra"
+
+		// The CR in a namespace that scope leaves out. Its inputs are seeded on
+		// the target like every other targeted CR's, so what stops it is the
+		// cache and not a missing Secret.
+		unscopedNamespace = "mc-unscoped"
+		unscopedKeystone  = "mc-unscoped-keystone"
 
 		// rotatedPassword replaces the "secret" the input fixture seeds, and is
 		// distinctive enough that finding it in the derived DSN cannot be an
@@ -983,6 +998,109 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 			"the management latch was forced false and the target cluster's probe answered instead, "+
 				"so the route was applied and the condition must report the missing acceptance, not %s",
 			conditionReasonGatewayAPINotInstalled)
+	})
+
+	t.Run("scoping the live registration re-engages the cluster with a narrowed cache", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// The namespaces key is added to the Secret that has been registering
+		// this cluster all along, and the kubeconfig in it is not touched. Only
+		// the new key can therefore have re-engaged the cluster, which is what
+		// makes this the kubeconfig-rotation semantic extended to the scope: a
+		// cache's namespaces are fixed when it is built, so a scope that did not
+		// rebuild the cluster would not be a scope at all.
+		multiclusterEnsureNamespace(t, ctx, targetClient, scopedExtraNamespace)
+
+		driftChild := client.ObjectKey{Namespace: driftNamespace, Name: driftKeystone}
+		gatewayChild := client.ObjectKey{Namespace: gatewayNamespace, Name: gatewayKeystone}
+		before := &appsv1.Deployment{}
+		g.Expect(targetClient.Get(ctx, driftChild, before)).To(Succeed())
+		driftUID := before.UID
+		g.Expect(targetClient.Get(ctx, gatewayChild, before)).To(Succeed())
+		gatewayUID := before.UID
+
+		secret := &corev1.Secret{}
+		secretKey := types.NamespacedName{Name: targetClusterName, Namespace: clustersNamespace}
+		g.Expect(mgmtClient.Get(ctx, secretKey, secret)).To(Succeed())
+		secret.Data["namespaces"] = []byte(strings.Join(
+			[]string{driftNamespace, gatewayNamespace, scopedExtraNamespace}, ","))
+		g.Expect(mgmtClient.Update(ctx, secret)).To(Succeed(),
+			"declare the namespaces on the live registration Secret")
+
+		// Polled as one block, and the cluster is resolved inside it: the
+		// re-engagement replaces the cluster object, so a handle taken before
+		// the update would answer for the cache that is being torn down.
+		g.Eventually(func(ig Gomega) {
+			cl, err := mcMgr.GetCluster(ctx, mcruntime.ClusterName(targetClusterName))
+			ig.Expect(err).NotTo(HaveOccurred())
+
+			// mc-target is outside the declared set. The Deployment there is the
+			// one the very first targeted CR left behind when its cluster was
+			// deregistered, so it exists on this API server and the read can only
+			// fail on the cache.
+			err = cl.GetClient().Get(ctx,
+				client.ObjectKey{Namespace: targetNamespace, Name: targetKeystone}, &appsv1.Deployment{})
+			ig.Expect(err).To(HaveOccurred(),
+				"the scoped cluster must not read a namespace its registration does not declare")
+			ig.Expect(err.Error()).To(ContainSubstring("unknown namespace for the cache"))
+
+			ig.Expect(cl.GetClient().Get(ctx, driftChild, &appsv1.Deployment{})).To(Succeed(),
+				"a declared namespace should keep answering")
+		}, engageTimeout, pollInterval).Should(Succeed())
+
+		// Narrowing what the operator may see does not touch what it already
+		// wrote. The UIDs are what separates an untouched child from one deleted
+		// and recreated during the re-engagement.
+		after := &appsv1.Deployment{}
+		g.Expect(targetClient.Get(ctx, driftChild, after)).To(Succeed(),
+			"the drift CR's Deployment should survive the re-engagement")
+		g.Expect(after.UID).To(Equal(driftUID))
+		g.Expect(targetClient.Get(ctx, gatewayChild, after)).To(Succeed(),
+			"the gateway CR's Deployment should survive the re-engagement")
+		g.Expect(after.UID).To(Equal(gatewayUID))
+	})
+
+	t.Run("CR in a namespace the registration leaves out provisions nothing", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// Everything this CR needs is seeded on the target, exactly as for the
+		// targeted CRs that reached Ready above. The only difference is its
+		// namespace, which the registration does not declare, so the first read
+		// the reconciler makes on the target fails on the cache and the pipeline
+		// never gets past its first step.
+		multiclusterEnsureNamespace(t, ctx, mgmtClient, unscopedNamespace)
+		multiclusterEnsureNamespace(t, ctx, targetClient, unscopedNamespace)
+		createPrerequisites(t, ctx, targetClient, unscopedNamespace)
+
+		ks := integrationBrownfieldKeystone(unscopedKeystone, unscopedNamespace)
+		ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: targetClusterName}
+		g.Expect(mgmtClient.Create(ctx, ks)).To(Succeed())
+
+		crKey := types.NamespacedName{Name: unscopedKeystone, Namespace: unscopedNamespace}
+		waitForCondition(t, ctx, mgmtClient, crKey, "Ready", metav1.ConditionFalse, eventuallyTimeout)
+
+		// A CR whose namespace IS declared has SecretsReady=True within seconds
+		// of its inputs being seeded, so holding this one at False for a
+		// multiple of that window is the discriminating half. Nothing lands on
+		// the target either: the reconciler cannot read the namespace, and it
+		// writes nothing it could not first read.
+		childKey := client.ObjectKey{Namespace: unscopedNamespace, Name: unscopedKeystone}
+		fernetKey := client.ObjectKey{Namespace: unscopedNamespace, Name: fmt.Sprintf("%s-fernet-keys", unscopedKeystone)}
+		g.Consistently(func(ig Gomega) {
+			ksAfter := &keystonev1alpha1.Keystone{}
+			ig.Expect(mgmtClient.Get(ctx, crKey, ksAfter)).To(Succeed())
+			ig.Expect(meta.IsStatusConditionTrue(ksAfter.Status.Conditions, "SecretsReady")).To(BeFalse(),
+				"a CR the target cluster's cache cannot answer for must never report its Secrets ready")
+
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, childKey, &appsv1.Deployment{}))).To(BeTrue(),
+				"no Deployment should be written into an undeclared namespace")
+			ig.Expect(apierrors.IsNotFound(targetClient.Get(ctx, fernetKey, &corev1.Secret{}))).To(BeTrue(),
+				"no fernet-keys Secret should be written into an undeclared namespace")
+		}, eventuallyTimeout, pollInterval).Should(Succeed())
+
+		// The CR is left standing, like the other CRs this suite parks: the
+		// environments are torn down with the test, and nothing after this point
+		// reads its namespace.
 	})
 }
 
