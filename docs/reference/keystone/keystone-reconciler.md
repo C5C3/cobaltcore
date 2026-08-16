@@ -2681,6 +2681,15 @@ the cache, in both managed and brownfield modes, so neither the readiness probe
 nor the scheduled key rotations are blocked. See
 [NetworkPolicySpec](./keystone-crd.md#networkpolicyspec) for the full rule set.
 
+**Target-cluster placement:** A Keystone with `spec.targetClusterRef` serves on
+the target cluster, where its Service DNS name is the only one that resolves.
+The probe keeps that URL and runs it through the target API server's
+`services/proxy` subresource, under the credentials of the kubeconfig the
+cluster is registered with. Conditions are unaffected: the message names the
+Service URL whether the request left from here or from there. The registered
+kubeconfig needs `get` on `services/proxy` in the workload namespace; without it
+the probe reports `APIUnhealthy` carrying the API server's forbidden message.
+
 **HTTPDoer Interface:**
 
 ```go
@@ -2722,8 +2731,14 @@ at a fixed interval (`RequeueHealthCheck = 10s`).
 | `False` | `HealthCheckTimeout` | `"health check timed out"` | 10s |
 | `False` | `ConnectionFailed` | `"connection failed: {error}"` | 10s |
 | `False` | `HealthCheckFailed` | `"health check failed: {error}"` | 10s |
-| `False` | `APIUnhealthy` | `"Keystone API returned HTTP {status}"` | 10s |
+| `False` | `APIUnhealthy` | `"Keystone API returned HTTP {status}"`, with `": {body}"` appended when the response carries a body | 10s |
 | `True` | `APIHealthy` | `"Keystone API is responding at {endpoint}"` | — |
+
+**Non-2xx body:** A failed probe appends a single-line excerpt of the response
+body, capped at 256 bytes, when the body is non-empty. A probe that ran through
+a target cluster's API server states its cause only there (`no endpoints
+available for service ...`, a forbidden `services/proxy` message), and the
+status code alone does not say which of the two clusters is unhealthy.
 
 **Requeue Constants (defined in `internal/common/healthcheck`):**
 

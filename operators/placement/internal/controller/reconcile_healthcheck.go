@@ -6,12 +6,14 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/healthcheck"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
 )
 
@@ -40,8 +42,23 @@ func (r *PlacementReconciler) httpClient() healthcheck.HTTPDoer {
 // Service URL, independent of spec.gateway: it verifies API readiness, not the
 // ingress/DNS/cert/Gateway path status.endpoint may advertise externally.
 func (r *PlacementReconciler) reconcileHealthCheck(ctx context.Context, placement *placementv1alpha1.Placement) (ctrl.Result, error) {
+	// An injected HTTPClient wins whenever it is set. It is the test seam that
+	// drives the probe with a stub transport, placed or not, and no binary sets
+	// it. Otherwise a placed Placement is probed through the target API server's
+	// service proxy, because its Service URL resolves on that cluster and
+	// nowhere else; an unplaced one keeps http.DefaultClient.
+	doer := r.httpClient()
+	if r.HTTPClient == nil {
+		var err error
+		doer, err = commonmulticluster.ResolveHTTPDoer(ctx, r.Resolver, placement.Spec.TargetClusterRef, doer)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("resolving the health-probe transport for target cluster %q: %w",
+				placement.Spec.TargetClusterRef.Name, err)
+		}
+	}
+
 	return healthcheck.ReconcileProbe(ctx, healthcheck.ProbeFlowParams{
-		Doer:               r.httpClient(),
+		Doer:               doer,
 		Cache:              &r.healthProbeCache,
 		Key:                client.ObjectKeyFromObject(placement),
 		UID:                placement.UID,

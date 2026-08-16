@@ -9,15 +9,19 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/healthcheck"
+	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
 // stubDoer implements HTTPDoer, returning a canned response or error and
@@ -132,4 +136,119 @@ func TestReconcileHealthCheck_CacheHitSkipsProbe(t *testing.T) {
 	_, err = r.reconcileHealthCheck(context.Background(), glance)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(stub.lastURL).NotTo(BeEmpty(), "eviction must force a re-probe")
+}
+
+// --- Placed CRs probe through the target API server's service proxy ---
+
+// placedAPIServer stands in for the target cluster's API server. It records the
+// path of every request the service proxy rewrote and answers each with the
+// canned status and body.
+func placedAPIServer(t *testing.T, status int, body string) (*httptest.Server, *[]string) {
+	t.Helper()
+
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	return srv, &paths
+}
+
+func TestReconcileHealthCheck_PlacedCR_ProbesThroughTheServiceProxy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv, paths := placedAPIServer(t, http.StatusOK, "")
+
+	glance := testGlance()
+	glance.Status.Endpoint = "http://test-glance.default.svc.cluster.local:9292/"
+	glance.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "remote-a"}
+	r := newGlanceTestReconciler(glance)
+	r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{Config: &rest.Config{Host: srv.URL}})
+
+	res, err := r.reconcileHealthCheck(context.Background(), glance)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+	g.Expect(*paths).To(ConsistOf("/api/v1/namespaces/default/services/http:test-glance:9292/proxy/healthcheck"),
+		"a placed Glance is probed through the target API server, not over Service DNS")
+
+	cond := conditions.GetCondition(glance.Status.Conditions, conditionTypeGlanceAPIReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonAPIHealthy))
+	g.Expect(cond.Message).To(ContainSubstring(glanceHealthCheckURL(glance)),
+		"the condition keeps naming the Service URL, whoever executed the probe")
+}
+
+// TestReconcileHealthCheck_PlacedCR_UnbuildableTransportNamesTheCluster covers
+// the one failure the probe returns as an error instead of reporting on the CR:
+// the cluster resolves, but carries nothing to build a transport from. The error
+// is what an operator gets to read, so it has to name the cluster — the CR's own
+// condition still shows the last probe and says nothing about it.
+func TestReconcileHealthCheck_PlacedCR_UnbuildableTransportNamesTheCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	glance := testGlance()
+	glance.Status.Endpoint = "http://test-glance.default.svc.cluster.local:9292/"
+	glance.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "remote-a"}
+	r := newGlanceTestReconciler(glance)
+	r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{})
+
+	_, err := r.reconcileHealthCheck(context.Background(), glance)
+
+	g.Expect(err).To(MatchError(ContainSubstring(
+		`resolving the health-probe transport for target cluster "remote-a"`)))
+	g.Expect(err).To(MatchError(ContainSubstring("the target cluster has no REST config")))
+}
+
+// TestReconcileHealthCheck_PlacedCR_ProxyFailureReachesTheCondition covers the
+// two ways the proxy itself answers instead of the service: the Service has no
+// endpoints, and the registered kubeconfig may not use services/proxy. Both
+// carry their cause in the body, which the status code alone does not convey.
+func TestReconcileHealthCheck_PlacedCR_ProxyFailureReachesTheCondition(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{
+			name:   "no endpoints behind the Service",
+			status: http.StatusServiceUnavailable,
+			body:   `no endpoints available for service "test-glance"`,
+		},
+		{
+			name:   "the registered kubeconfig may not proxy",
+			status: http.StatusForbidden,
+			body: `services "test-glance" is forbidden: User "system:serviceaccount:forge:glance-operator" ` +
+				`cannot get resource "services/proxy" in API group "" in the namespace "default"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			srv, paths := placedAPIServer(t, tc.status, tc.body)
+
+			glance := testGlance()
+			glance.Status.Endpoint = "http://test-glance.default.svc.cluster.local:9292/"
+			glance.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "remote-a"}
+			r := newGlanceTestReconciler(glance)
+			r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{Config: &rest.Config{Host: srv.URL}})
+
+			res, err := r.reconcileHealthCheck(context.Background(), glance)
+
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
+			g.Expect(*paths).To(HaveLen(1))
+
+			cond := conditions.GetCondition(glance.Status.Conditions, conditionTypeGlanceAPIReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(conditionReasonAPIUnhealthy))
+			g.Expect(cond.Message).To(ContainSubstring(tc.body),
+				"the proxy's own answer is the only place the cause is stated")
+		})
+	}
 }
