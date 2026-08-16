@@ -13,6 +13,7 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
@@ -34,18 +35,21 @@ func (f *fakeResolver) GetCluster(_ context.Context, name mcruntime.ClusterName)
 	return f.cl, f.err
 }
 
-// fakeCluster implements only GetClient and GetAPIReader. Embedding the
-// interface leaves every other method nil, which panics if the resolver ever
-// reaches for one.
+// fakeCluster implements only GetClient, GetAPIReader, and GetConfig.
+// Embedding the interface leaves every other method nil, which panics if the
+// resolver ever reaches for one.
 type fakeCluster struct {
 	cluster.Cluster
 	c      client.Client
 	reader client.Reader
+	cfg    *rest.Config
 }
 
 func (f fakeCluster) GetClient() client.Client { return f.c }
 
 func (f fakeCluster) GetAPIReader() client.Reader { return f.reader }
+
+func (f fakeCluster) GetConfig() *rest.Config { return f.cfg }
 
 func TestResolveChildrenClientNilResolverReturnsLocal(t *testing.T) {
 	g := gomega.NewWithT(t)
