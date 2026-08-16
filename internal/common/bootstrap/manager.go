@@ -22,7 +22,8 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
-	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
+
+	"github.com/c5c3/forge/internal/common/multicluster"
 )
 
 // ManagerConfig holds per-operator configuration for the shared manager
@@ -124,17 +125,19 @@ func cacheOptions(syncPeriod time.Duration, namespace, clustersNamespace string)
 // client-go global scheme, which carries no CRD kind, and a child write of a
 // CRD-backed kind fails on the target with "no kind is registered".
 //
-// The cache is restricted exactly like the local one. cluster.New otherwise
-// builds an all-namespaces cache, and the first child read would start a
-// cluster-wide LIST+WATCH per kind on the target — every Secret, ConfigMap,
-// Deployment, and Job in every namespace of a cluster the operator only ever
-// touches one namespace of. The clusters namespace is deliberately not passed
-// on: the registration Secrets live on the management cluster, so no target
+// The cache is unrestricted here, and the operator's own --namespace does not
+// reach it. What a target cluster's cache covers is decided per cluster by the
+// namespaces key of that cluster's registration Secret, which the provider
+// reads: the scope belongs to the credential the Secret carries, and two
+// clusters registered with the same operator may well grant it in different
+// namespaces. A registration that names none keeps the all-namespaces cache
+// cluster.New builds. The clusters namespace is deliberately not passed on
+// either: the registration Secrets live on the management cluster, so no target
 // cache has to be widened for them.
-func clusterOptions(scheme *runtime.Scheme, syncPeriod time.Duration, namespace string) []cluster.Option {
+func clusterOptions(scheme *runtime.Scheme, syncPeriod time.Duration) []cluster.Option {
 	return []cluster.Option{func(o *cluster.Options) {
 		o.Scheme = scheme
-		o.Cache = cacheOptions(syncPeriod, namespace, "")
+		o.Cache = cacheOptions(syncPeriod, "", "")
 	}}
 }
 
@@ -265,11 +268,11 @@ func run(cfg ManagerConfig, opts runOptions) error {
 	// mcmanager then reports a named cluster as unresolvable instead of
 	// dereferencing a typed nil.
 	var provider mcruntime.Provider
-	var clusters *kubeconfigprovider.Provider
+	var clusters *multicluster.KubeconfigProvider
 	if clustersNamespace != "" {
-		clusters = kubeconfigprovider.New(kubeconfigprovider.Options{
+		clusters = multicluster.NewKubeconfigProvider(multicluster.KubeconfigProviderOptions{
 			Namespace:      clustersNamespace,
-			ClusterOptions: clusterOptions(cfg.Scheme, opts.syncPeriod, opts.namespace),
+			ClusterOptions: clusterOptions(cfg.Scheme, opts.syncPeriod),
 		})
 		provider = clusters
 	}

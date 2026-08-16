@@ -236,10 +236,10 @@ func TestParseRunOptions_registerFlags(t *testing.T) {
 	}
 }
 
-// applyClusterOptions applies the options for the given scheme and namespace to
-// a fresh cluster.Options and returns the result.
-func applyClusterOptions(scheme *runtime.Scheme, namespace string, into cluster.Options) cluster.Options {
-	for _, opt := range clusterOptions(scheme, 10*time.Minute, namespace) {
+// applyClusterOptions applies the options for the given scheme to a fresh
+// cluster.Options and returns the result.
+func applyClusterOptions(scheme *runtime.Scheme, into cluster.Options) cluster.Options {
+	for _, opt := range clusterOptions(scheme, 10*time.Minute) {
 		opt(&into)
 	}
 	return into
@@ -253,7 +253,7 @@ func applyClusterOptions(scheme *runtime.Scheme, namespace string, into cluster.
 func TestClusterOptions_appliesTheOperatorScheme(t *testing.T) {
 	s := runtime.NewScheme()
 
-	applied := applyClusterOptions(s, "", cluster.Options{})
+	applied := applyClusterOptions(s, cluster.Options{})
 	if applied.Scheme != s {
 		t.Fatalf("cluster Scheme = %v, want the operator scheme", applied.Scheme)
 	}
@@ -267,51 +267,32 @@ func TestClusterOptions_overridesAPresetScheme(t *testing.T) {
 	s := runtime.NewScheme()
 	preset := runtime.NewScheme()
 
-	applied := applyClusterOptions(s, "", cluster.Options{Scheme: preset})
+	applied := applyClusterOptions(s, cluster.Options{Scheme: preset})
 	if applied.Scheme != s {
 		t.Fatal("expected the operator scheme to replace the preset one")
 	}
 }
 
-// TestClusterOptions_restrictsTheTargetCacheToTheWatchedNamespace is the guard
-// against a namespace-scoped operator holding one namespace at home and an
-// entire cluster abroad: cluster.New builds an all-namespaces cache when Cache
-// is left at its zero value, so the first child read would start a cluster-wide
-// LIST+WATCH per kind on the target.
-func TestClusterOptions_restrictsTheTargetCacheToTheWatchedNamespace(t *testing.T) {
-	applied := applyClusterOptions(runtime.NewScheme(), "tenant-a", cluster.Options{})
-
-	if len(applied.Cache.DefaultNamespaces) != 1 {
-		t.Fatalf("expected exactly 1 cached namespace on the target cluster, got: %v",
-			applied.Cache.DefaultNamespaces)
-	}
-	if _, ok := applied.Cache.DefaultNamespaces["tenant-a"]; !ok {
-		t.Fatalf("expected the target cache to cover 'tenant-a', got: %v", applied.Cache.DefaultNamespaces)
-	}
-	if applied.Cache.SyncPeriod == nil || *applied.Cache.SyncPeriod != 10*time.Minute {
-		t.Fatalf("expected the operator's sync period on the target cache, got: %v", applied.Cache.SyncPeriod)
-	}
-	// The registration Secrets are read on the management cluster, so the
-	// clusters-namespace widening must not travel to the target: it would pull
-	// a second namespace of Secrets out of every engaged cluster.
-	nss := secretNamespaces(t, applied.Cache)
-	if len(nss) != 1 {
-		t.Fatalf("expected the target Secret informer to span exactly the watched namespace, got: %v", nss)
-	}
-	if _, ok := nss["tenant-a"]; !ok {
-		t.Fatalf("expected the target Secret informer to cover 'tenant-a', got: %v", nss)
-	}
-}
-
 // TestClusterOptions_clusterWideOperatorKeepsAnUnrestrictedTargetCache pins the
-// other half of the mirror: an operator that watches all namespaces at home
-// watches all namespaces on the target too, because that is the scope it was
-// deliberately started with.
+// default these options hand every engaged cluster: no namespace restriction,
+// and the operator's sync period. Whether a given target cluster is cached
+// cluster-wide or per namespace is decided by the namespaces key of its
+// registration Secret, which the provider reads and this function knows nothing
+// about, so what is left here is the unrestricted default it starts from.
 func TestClusterOptions_clusterWideOperatorKeepsAnUnrestrictedTargetCache(t *testing.T) {
-	applied := applyClusterOptions(runtime.NewScheme(), "", cluster.Options{})
+	applied := applyClusterOptions(runtime.NewScheme(), cluster.Options{})
 
 	if applied.Cache.DefaultNamespaces != nil {
 		t.Fatalf("expected an unrestricted target cache, got: %v", applied.Cache.DefaultNamespaces)
+	}
+	// The registration Secrets are read on the management cluster, so no
+	// per-object widening travels to the target: it would pull a second
+	// namespace of Secrets out of every engaged cluster.
+	if applied.Cache.ByObject != nil {
+		t.Fatalf("expected no per-object cache scoping on the target cluster, got: %v", applied.Cache.ByObject)
+	}
+	if applied.Cache.SyncPeriod == nil || *applied.Cache.SyncPeriod != 10*time.Minute {
+		t.Fatalf("expected the operator's sync period on the target cache, got: %v", applied.Cache.SyncPeriod)
 	}
 }
 

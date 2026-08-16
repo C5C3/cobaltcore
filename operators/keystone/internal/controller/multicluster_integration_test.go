@@ -52,7 +52,6 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
-	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 
 	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/bootstrap"
@@ -142,7 +141,7 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 	// --- Environment A: the management cluster, hosting the manager.
 	mgmtScheme := commonenvtest.BuildScheme(append(commonenvtest.CommonExternalSchemes(), keystonev1alpha1.AddToScheme)...)
 
-	provider := kubeconfigprovider.New(kubeconfigprovider.Options{
+	provider := commonmulticluster.NewKubeconfigProvider(commonmulticluster.KubeconfigProviderOptions{
 		Namespace: clustersNamespace,
 		// Without this the provider builds every target cluster's client on
 		// client-go's global scheme, which knows no CRD kind, and the first
