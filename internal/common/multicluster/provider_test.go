@@ -5,12 +5,16 @@
 package multicluster
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/go-logr/logr"
 	"github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // A kubeconfig is opaque to everything under test here, so the fixtures are two
@@ -83,6 +87,43 @@ func TestParseNamespacesRefusesAnEmptyEntry(t *testing.T) {
 			g.Expect(err).To(gomega.HaveOccurred())
 		})
 	}
+}
+
+func TestIsUnknownNamespaceForCacheMatchesTheCacheError(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	// Both messages controller-runtime's multi-namespace cache produces, copied
+	// verbatim: a Get names the object key, a List the namespace.
+	g.Expect(IsUnknownNamespaceForCache(
+		errors.New("unable to get: tenant-c/seed because of unknown namespace for the cache"))).
+		To(gomega.BeTrue())
+	g.Expect(IsUnknownNamespaceForCache(
+		errors.New("unable to list: tenant-c because of unknown namespace for the cache"))).
+		To(gomega.BeTrue())
+}
+
+// The read sites wrap what the client hands them, so the match has to survive
+// wrapping — which is the whole reason it is a substring test and not an
+// errors.Is against a sentinel controller-runtime does not export.
+func TestIsUnknownNamespaceForCacheMatchesAWrappedError(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	wrapped := fmt.Errorf("getting Secret tenant-c/keystone-db: %w",
+		errors.New("unable to get: tenant-c/keystone-db because of unknown namespace for the cache"))
+
+	g.Expect(IsUnknownNamespaceForCache(wrapped)).To(gomega.BeTrue())
+}
+
+// Everything else is a different failure with a different remedy, and a read
+// site that treated it as a scope mismatch would put a misleading message on
+// the CR.
+func TestIsUnknownNamespaceForCacheRejectsOtherErrors(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	g.Expect(IsUnknownNamespaceForCache(nil)).To(gomega.BeFalse())
+	g.Expect(IsUnknownNamespaceForCache(errors.New("connection refused"))).To(gomega.BeFalse())
+	g.Expect(IsUnknownNamespaceForCache(
+		apierrors.NewNotFound(corev1.Resource("secrets"), "keystone-db"))).To(gomega.BeFalse())
 }
 
 func TestRegistrationHashIsStableForTheSameRegistration(t *testing.T) {

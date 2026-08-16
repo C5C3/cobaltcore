@@ -68,6 +68,11 @@ const (
 	NamespacesDataKey = "namespaces"
 )
 
+// unknownNamespaceForCache is the fragment controller-runtime's
+// multi-namespace cache puts in both its Get and its List message when it is
+// asked for a namespace it does not hold.
+const unknownNamespaceForCache = "unknown namespace for the cache"
+
 // cacheSyncTimeout bounds how long one engagement waits for a target cluster's
 // cache. A target whose credentials cannot answer the LIST an informer issues
 // never syncs — client-go retries that forbidden LIST forever — and the wait
@@ -80,6 +85,23 @@ const (
 // Two minutes is controller-runtime's own cache-sync timeout, and a target that
 // answers at all is engaged in a fraction of it.
 const cacheSyncTimeout = 2 * time.Minute
+
+// IsUnknownNamespaceForCache reports whether err is a target cluster's cache
+// refusing a read outside its scope: the CR's namespace is not among the ones
+// that cluster's registration Secret declares in NamespacesDataKey.
+//
+// It matches on the substring "unknown namespace for the cache".
+// controller-runtime builds that error with fmt.Errorf and exports no sentinel
+// to compare against, so there is nothing else to match on. The substring
+// travels with the message, so a wrapped error is recognized too.
+//
+// The distinction is worth making at a read site because this failure is
+// persistent rather than transient: every pass fails the same way until the
+// registration or the CR moves, so it belongs on the CR's status and not only
+// in the operator's log.
+func IsUnknownNamespaceForCache(err error) bool {
+	return err != nil && strings.Contains(err.Error(), unknownNamespaceForCache)
+}
 
 // namespacesHashSeparator separates the kubeconfig from the raw namespaces
 // value in the engagement hash. Without it a kubeconfig ending in the bytes
