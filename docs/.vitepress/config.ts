@@ -38,6 +38,7 @@ export default defineConfig({
           { text: 'Multi-Tenant Deployment', link: '/guides/multi-tenant-deployment' },
           { text: 'Deploy Services into Dedicated Namespaces', link: '/guides/dedicated-service-namespaces' },
           { text: 'End-to-End SSO', link: '/guides/end-to-end-sso' },
+          { text: 'Deploy to a Target Cluster', link: '/guides/deploy-to-a-target-cluster' },
           {
             text: 'Keystone',
             collapsed: true,

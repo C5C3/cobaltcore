@@ -723,8 +723,9 @@ placed away from it — the per-service rule only reaches a service carrying a r
 of its own, so an unplaced Keystone would otherwise leave every dependent child
 with an empty `spec.keystoneEndpoint` its own CRD refuses. A placed Keystone's
 endpoint must additionally use `https`, because placement promotes it to the
-`auth_url` the credential documents render passwords next to. Making the URL
-actually routable between clusters is #841.
+`auth_url` the credential documents render passwords next to. Composing those
+URLs is where this ends: making them routable between clusters is the
+deployment's job, a gateway or a load balancer per target cluster.
 
 ### reconcileNamespaces
 
@@ -2659,7 +2660,11 @@ projected. On deletion it:
    the uncached API reader (a cached read would install a cluster-wide
    `ClusterRoleBinding` informer for one object) and deleting only a binding
    carrying this ControlPlane's ownership labels. It reads and deletes on the
-   cluster Barbican was placed on, where the ensemble wrote the binding.
+   cluster Barbican was placed on, where the ensemble wrote the binding. A delete
+   that cluster denies — its access chart grants the write verbs only behind
+   `authDelegatorBinding` — leaves the binding standing with a **Warning**
+   `AuthDelegatorBindingNotReclaimed` naming it, rather than holding the
+   ControlPlane in `Terminating` for a grant the target withdrew.
 5. **Releases the finalizers once the ORC CRs, PushSecrets, and cross-namespace
    children are gone**, letting GC cascade-delete the same-namespace Keystone,
    the infrastructure, and the remaining children. The remote-children finalizer

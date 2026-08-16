@@ -61,21 +61,25 @@ metadata:
 type: Opaque
 data:
   kubeconfig: <base64-encoded kubeconfig>
+  namespaces: <base64-encoded comma-separated namespace list>
 ```
 
-Three parts of that Secret are contractual:
+Three parts of that Secret are contractual, and a fourth is optional:
 
 | Part | Value |
 | --- | --- |
 | Namespace | The operator's `--clusters-namespace` flag, default `c5c3-clusters`. The Secret informer is widened to this one namespace, and clearing the flag switches target clusters off entirely: no cluster is engaged and no Secret is read outside the watched namespace |
 | Label | `sigs.k8s.io/multicluster-runtime-kubeconfig`, with the string value `"true"`. The label being present is not enough; any other value leaves the Secret unregistered |
 | Data key | `kubeconfig` |
+| Data key `namespaces` | Optional. A comma-separated list of DNS-1123 namespace names. Present, it restricts the engaged cluster's cache to exactly those namespaces: every LIST and WATCH the operator issues there is namespaced, so namespace-scoped RBAC on the target is enough for every namespaced kind. Absent, the cluster is cached cluster-wide |
 
 Any number of clusters may be registered at the same time, and each CR resolves
 its own by name. Writing a new kubeconfig into the Secret reconnects: the
-provider hashes the kubeconfig, sees the hash change, drops the existing
-connection, and engages a fresh one. Deleting the Secret deregisters the
-cluster.
+provider hashes the kubeconfig together with the `namespaces` value, sees the
+hash change, drops the existing connection, and engages a fresh one. Editing
+either one re-engages the cluster, which is also the only way its cache's
+namespaces change, since they are fixed when the cache is built. Deleting the
+Secret deregisters the cluster.
 
 Engagement is asynchronous. A CR created moments before its cluster engages
 reports `TargetClusterUnavailable` briefly and heals on the next requeue.
@@ -118,6 +122,55 @@ the server has asked for the client to provide credentials
 
 A wrong token therefore shows up on the first CR that uses the cluster, not when
 the Secret is applied.
+
+A kubeconfig whose user carries an `exec` or an `auth-provider` block is refused
+outright, with the cluster left unresolvable. Both are credential *plugins*, and
+honoring one would have client-go run the named binary inside the operator's own
+pod. A target cluster authenticates with a bearer token or a client certificate.
+
+## Rotating and revoking the target token
+
+The token the registration kubeconfig carries is a long-lived ServiceAccount
+token, minted by the chart's `Secret` of type
+`kubernetes.io/service-account-token`. It does not expire, and nothing on the
+management cluster renews it — a bound token would, and no controller there
+issues one. It is therefore at rest in two clusters' etcd, and a copy that leaks
+stays valid until it is invalidated on the target.
+
+Rotate it by discarding the Secret it lives in and re-applying the release, which
+re-creates the Secret for the token controller to fill in. Nothing re-creates it
+on its own:
+
+```bash
+kubectl --context "$TARGET" -n c5c3-access delete secret target-cluster-access-token
+helm upgrade --kube-context "$TARGET" --reuse-values \
+  target-cluster-access deploy/target-cluster/target-cluster-access -n c5c3-access
+```
+
+Then rebuild the registration kubeconfig from the new token, exactly as
+[Deploy to a Target Cluster](../guides/deploy-to-a-target-cluster.md) assembles
+it the first time, and write it back over the registration Secret:
+
+```bash
+kubectl --context "$MGMT" -n c5c3-clusters create secret generic "$CLUSTER" \
+  --from-file=kubeconfig=./registration.kubeconfig \
+  --from-literal=namespaces=openstack \
+  --dry-run=client -o yaml | kubectl --context "$MGMT" apply -f -
+```
+
+The new kubeconfig changes the registration's hash, so the operator disengages
+the cluster and engages it again under the new credential, exactly as a scope
+change does. The old token stops working the moment its Secret is gone, so run
+the two halves back to back: between them, every placed CR reports
+`TargetClusterUnavailable` or a credentials error.
+
+Revoking is not the same operation. Deleting the token Secret alone invalidates
+that token, but a ServiceAccount re-created under the same name mints tokens
+that are valid again, because the binding is to the account's name and the old
+token's UID no longer matches. To revoke the access itself, delete the
+ServiceAccount — `helm uninstall target-cluster-access -n c5c3-access` does,
+along with the Roles and the ClusterRole, and leaves the namespaces and every
+child placed in them where they are.
 
 ## When the name does not resolve
 
@@ -183,16 +236,58 @@ fails. A ControlPlane is the exception: it ensures the namespaces it places
 services in, on both clusters (see
 [ControlPlane placement](#controlplane-placement)).
 
-The Barbican secret store mints a token through the target's TokenRequest API,
-so the operator's credentials there need the corresponding RBAC. Packaging the
-access a target cluster has to grant is #841.
+The access a target cluster grants is packaged as the
+`deploy/target-cluster/target-cluster-access` chart: a ServiceAccount, a
+long-lived token Secret the registration kubeconfig carries, one Role per entry
+in `values.namespaces`, and a ClusterRole for the kinds that have no namespace.
+`values.namespaces` has to equal the registration Secret's `namespaces` key,
+because one grants what the other scopes; a namespace granted but not declared
+is never watched, and one declared but not granted answers every read with
+forbidden. `createNamespaces` decides whether the chart creates those namespaces
+or expects them to exist; they are annotated `helm.sh/resource-policy: keep`, so
+uninstalling the release or dropping an entry from `values.namespaces` takes the
+access away and leaves the placed workloads and their volumes standing. Among
+its grants is `create` on `serviceaccounts/token`, which is what admits the
+token a Barbican secret store mints through the target's TokenRequest API.
+[Deploy to a Target Cluster](../guides/deploy-to-a-target-cluster.md) walks the
+install, the kubeconfig, and the registration on two kind clusters.
+
+One grant is off by default. `authDelegatorBinding` adds `create`, `patch` and
+`delete` on `ClusterRoleBindings`, which is what a ControlPlane needs to bind a
+dedicated OpenBao instance to `system:auth-delegator` — the binding that lets
+that instance run the `TokenReview` every Kubernetes-auth login is validated
+with. The binding's name carries a hash of the instance's namespace and name, so
+`resourceNames` cannot narrow the grants to it and they cover every
+`ClusterRoleBinding` on the cluster, `cluster-admin` included. Turn them on only
+for a cluster a ControlPlane places such a Barbican on; every other placement, a
+secret store pointed at an OpenBao instance that already runs there included,
+works without them. Turning them off again while such a ControlPlane still
+exists leaves its binding behind: the teardown reads the binding, is denied the
+delete, and releases the ControlPlane anyway rather than holding it in
+`Terminating`, recording an `AuthDelegatorBindingNotReclaimed` event that names
+the binding to remove by hand.
+
+Read-only `get` on `ClusterRoleBindings` is granted either way. Every
+ControlPlane teardown reads that binding by name before it releases its
+finalizer, because it is the one child no namespace sweep and no owner-reference
+cascade can reach. Without the grant the API server answers forbidden rather
+than not-found, and the teardown retries the error instead of releasing, so a
+placed ControlPlane would never leave `Terminating`.
 
 A placed CR's API health probe does not resolve over Service DNS from the
 management cluster, so it runs through the target's API server instead. The same
 credentials therefore need `get` on `services/proxy` in every namespace a
 service is placed in; without it the probe holds the CR's API-ready condition at
-`APIUnhealthy` with the API server's forbidden message. A Keystone identity
-backend's federation teardown takes the same route on deletion.
+`APIUnhealthy` with the API server's forbidden message.
+
+The proxy authorizes each request by its HTTP method, so the route needs more
+than `get`. The federation-objects teardown of a `KeystoneIdentityBackend`
+attached to a placed Keystone takes the same route: it authenticates with a
+token request, a `POST` authorized as `create`, and then deletes the identity
+provider, the mapping and the protocol, each a `DELETE` authorized as `delete`.
+The chart grants all three, because without them the teardown is refused on its
+first call and, since it retries an error rather than releasing the finalizer,
+the backend never leaves `Terminating`.
 
 A placed `BarbicanSecretStore` cannot take that route to its OpenBao. The
 operator verifies the instance's server certificate against the instance's own
@@ -204,30 +299,57 @@ as they are for an unplaced store. Those credentials need `create` on
 `pods/portforward` in the namespace the OpenBao instance runs in, plus `get` on
 `services` and `list` on `endpointslices` there to find the pod behind the
 Service. Without them the store holds `ProvisioningReady` at
-`OpenBaoUnreachable`, carrying the API server's forbidden message. A brownfield
-store whose `spec.openBao.server.url` names a server outside the cluster dials it
-directly and needs none of the three.
+`OpenBaoUnreachable`, carrying the API server's forbidden message. The same
+condition and reason carry `no ready endpoints for service <namespace>/<name>`
+when the grants are in place but nothing ready sits behind the Service, for
+instance an OpenBao mid-rollout. A brownfield store whose
+`spec.openBao.server.url` names a server outside the cluster dials it directly
+and needs none of the three.
 
-Registering a cluster is a commitment to let every service operator cache it in
-full. Each one watches, on every registered cluster, the kinds it projects there
-and the inputs it reads (both enumerated in the next section), so its
-credentials there need cluster-wide `list` and `watch` on all of them —
-including `secrets`, `roles` and `rolebindings`. The operator install that
-engages target clusters is cluster-scoped (see the next section), so those
-informers are not restricted to a namespace: each operator process holds every
-object of every watched kind, in every namespace of every registered cluster,
-resident for its lifetime. Two consequences are worth weighing before a cluster
-is registered rather than after:
+Both routes carry the operator's own calls and nothing else. Traffic between
+workloads on different clusters, a service on one cluster reaching Keystone on
+another, takes neither: it rides the public URLs the operator composes, and
+providing a route to them is the deployment's job, a gateway or a load balancer
+per target cluster.
+
+How much of a target cluster an operator caches follows the registration
+Secret's `namespaces` key. Declared, each operator's cache on that cluster covers
+those namespaces and nothing else, since every LIST and WATCH it issues there is
+namespaced. That is what the access chart's per-namespace Roles are enough for,
+`secrets` included. What stays cluster-scoped is what has no namespace to be
+scoped to: `namespaces` themselves, `clustersecretstores`, and the auth-delegator
+`ClusterRoleBinding` a dedicated OpenBao instance is bound through — read-only
+always, writable behind `authDelegatorBinding`. That set is the chart's
+ClusterRole.
+
+Omit the key and the cluster is engaged with a cluster-wide cache, which is what
+every registration written before the key existed still gets. Each operator then
+watches the kinds it projects there and the inputs it reads (both enumerated in
+the next section) across every namespace, so its credentials need cluster-wide
+`list` and `watch` on all of them, `secrets`, `roles` and `rolebindings`
+included, and each operator process holds every object of every watched kind on
+that cluster resident for its lifetime. Two consequences come with that posture,
+and a hardened cluster should not accept them:
 
 - Anyone who obtains the operator's target-cluster credentials can read every
   Secret in every namespace of that cluster, and a heap dump or an exec into one
   operator pod yields the same material.
-- The memory the operator needs scales with the whole fleet, not with the
+- The memory the operator needs scales with the whole cluster, not with the
   namespaces it projects into.
 
-Restricting those caches to the namespaces that actually hold projecting CRs is
-#841. Until it lands, do not register a target cluster you are not willing to
-grant fleet-wide read on and to cache in full.
+A `namespaces` key that is present is also checked. A value that is empty, or
+that carries an entry which is not a DNS-1123 label, refuses the engagement: the
+provider logs the reason and builds no cluster, so every CR naming it reports
+`TargetClusterUnavailable` the way an unregistered name does.
+
+A CR whose namespace is outside a declared set fails differently, on a cluster
+that engaged perfectly well. Its first cached read on the target returns
+controller-runtime's `unknown namespace for the cache`, which the credential
+gate records on the CR's first gate condition, `SecretsReady` for the five
+workload CRDs, carrying that message. Nothing is created on the target: the
+reconciler writes nothing it could not first read. Neither retrying nor waiting
+changes a cache's scope, so the condition holds until the registration or the CR
+moves.
 
 ## Prerequisites on the management cluster
 
@@ -461,6 +583,19 @@ on the management cluster, and the objects that follow the service land in it on
 the target. It is created under whichever lifecycle the block declares, and a
 `Managed` one is labelled and owned on both.
 
+A `Managed` namespace and a scoped registration do not combine. RBAC cannot
+pre-scope writes to a namespace that does not exist yet, and a `Managed`
+namespace is created at reconcile time, after the grant would have had to name
+it; pre-creating it to get ahead of that parks the condition on
+`NamespaceNotOwned`, because the UID mark that would make it this ControlPlane's
+is absent. A service placed onto a cluster whose registration declares
+namespaces therefore takes the `External` lifecycle, against namespaces the
+target's owner created and granted. ControlPlane placement also reaches past the
+access chart in one place: Barbican's dedicated OpenBao ensemble reads the
+`kubernetes` EndpointSlices in the target's `default` namespace to compute the
+API server endpoint IPs the instance is configured with, and `default` is not a
+namespace a service is placed in.
+
 Every remote child carries the three ownership labels above, with `owner-kind:
 ControlPlane`, plus the `c5c3.io/controlplane-name` and
 `c5c3.io/controlplane-namespace` pair the operator's own watches map a child back
@@ -601,4 +736,3 @@ selector.
 ## Interim constraints
 
 - `KeystoneIdentityBackend` carries no `targetClusterRef`, and its reconciler stays management-side. A backend attached to a Keystone that names a target cluster looks for the parent's Deployment and projection Secret locally, where they do not exist, and holds `ConfigProjected=False` with reason `WaitingForProjection`.
-- RBAC and access packaging for a target cluster, together with the two-cluster development flow, are #841.
