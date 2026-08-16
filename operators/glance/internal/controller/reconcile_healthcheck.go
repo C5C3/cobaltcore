@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -14,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/healthcheck"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
 )
 
@@ -57,8 +59,23 @@ func glanceHealthCheckURL(glance *glancev1alpha1.Glance) string {
 // independent of spec.gateway: we are verifying API readiness, not the
 // ingress/DNS/cert/Gateway path status.endpoint may advertise externally.
 func (r *GlanceReconciler) reconcileHealthCheck(ctx context.Context, glance *glancev1alpha1.Glance) (ctrl.Result, error) {
+	// An injected HTTPClient wins whenever it is set. It is the test seam that
+	// drives the probe with a stub transport, placed or not, and no binary sets
+	// it. Otherwise a placed Glance is probed through the target API server's
+	// service proxy, because its Service URL resolves on that cluster and
+	// nowhere else; an unplaced one keeps http.DefaultClient.
+	doer := r.httpClient()
+	if r.HTTPClient == nil {
+		var err error
+		doer, err = commonmulticluster.ResolveHTTPDoer(ctx, r.Resolver, glance.Spec.TargetClusterRef, doer)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("resolving the health-probe transport for target cluster %q: %w",
+				glance.Spec.TargetClusterRef.Name, err)
+		}
+	}
+
 	return healthcheck.ReconcileProbe(ctx, healthcheck.ProbeFlowParams{
-		Doer:               r.httpClient(),
+		Doer:               doer,
 		Cache:              &r.healthProbeCache,
 		Key:                client.ObjectKeyFromObject(glance),
 		UID:                glance.UID,

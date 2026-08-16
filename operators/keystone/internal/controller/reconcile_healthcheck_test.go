@@ -22,6 +22,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -29,6 +30,8 @@ import (
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	"github.com/c5c3/forge/internal/common/healthcheck"
+	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
 )
 
@@ -677,6 +680,151 @@ func TestReconcileHealthCheck_EndpointChange_ReProbes(t *testing.T) {
 	_, err := r.reconcileHealthCheck(context.Background(), ks)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(doer.calls).To(Equal(1), "an endpoint mismatch must force a probe")
+}
+
+// --- Placed CRs probe through the target API server's service proxy ---
+
+// placedAPIServer stands in for the target cluster's API server. It records the
+// path of every request the service proxy rewrote and answers each with the
+// canned status and body.
+func placedAPIServer(t *testing.T, status int, body string) (*httptest.Server, *[]string) {
+	t.Helper()
+
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+
+	return srv, &paths
+}
+
+// placedKeystoneForHealthCheck is the health-check fixture with
+// spec.targetClusterRef set, so the probe resolves the service-proxy transport
+// instead of the operator's own client.
+func placedKeystoneForHealthCheck() *keystonev1alpha1.Keystone {
+	ks := newTestKeystoneForHealthCheck("https://keystone.example.com/v3", 1)
+	ks.Spec.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "remote-a"}
+	return ks
+}
+
+func TestReconcileHealthCheck_PlacedCR_ProbesThroughTheServiceProxy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv, paths := placedAPIServer(t, http.StatusOK, "")
+
+	r := newHealthcheckTestReconciler()
+	r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{Config: &rest.Config{Host: srv.URL}})
+	ks := placedKeystoneForHealthCheck()
+
+	result, err := r.reconcileHealthCheck(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(result).To(Equal(ctrl.Result{}))
+
+	g.Expect(*paths).To(ConsistOf("/api/v1/namespaces/default/services/http:test-keystone:5000/proxy/v3"),
+		"a placed Keystone is probed through the target API server, not over Service DNS")
+
+	cond := conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal(conditionReasonAPIHealthy))
+	g.Expect(cond.Message).To(ContainSubstring(internalAPIURL(ks)),
+		"the condition keeps naming the Service URL, whoever executed the probe")
+}
+
+// TestReconcileHealthCheck_PlacedCR_InjectedClientWinsOverTheProxy pins the
+// seam precedence the dual envtest stands on: that suite places a Keystone on a
+// target envtest API server that serves no Service at all, and drives the probe
+// with a stub transport instead. Resolving the proxy over an injected client
+// would strand KeystoneAPIReady at False there. No binary sets HTTPClient, so
+// production is unaffected.
+func TestReconcileHealthCheck_PlacedCR_InjectedClientWinsOverTheProxy(t *testing.T) {
+	g := NewGomegaWithT(t)
+	srv, paths := placedAPIServer(t, http.StatusServiceUnavailable, "the proxy must not be reached")
+
+	stub := &capturingDoer{inner: &mockHTTPDoer{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("")),
+	}}}
+	r := newHealthcheckTestReconciler()
+	r.HTTPClient = stub
+	r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{Config: &rest.Config{Host: srv.URL}})
+	ks := placedKeystoneForHealthCheck()
+
+	_, err := r.reconcileHealthCheck(context.Background(), ks)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(stub.url).To(Equal(internalAPIURL(ks)), "the injected transport must have served the probe")
+	g.Expect(*paths).To(BeEmpty(), "an injected transport must not be replaced by the service proxy")
+
+	cond := conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+}
+
+// TestReconcileHealthCheck_PlacedCR_UnbuildableTransportNamesTheCluster covers
+// the one failure the probe returns as an error instead of reporting on the CR:
+// the cluster resolves, but carries nothing to build a transport from. The error
+// is what an operator gets to read, so it has to name the cluster — the CR's own
+// condition still shows the last probe and says nothing about it.
+func TestReconcileHealthCheck_PlacedCR_UnbuildableTransportNamesTheCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	r := newHealthcheckTestReconciler()
+	r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{})
+	ks := placedKeystoneForHealthCheck()
+
+	_, err := r.reconcileHealthCheck(context.Background(), ks)
+
+	g.Expect(err).To(MatchError(ContainSubstring(
+		`resolving the health-probe transport for target cluster "remote-a"`)))
+	g.Expect(err).To(MatchError(ContainSubstring("the target cluster has no REST config")))
+}
+
+// TestReconcileHealthCheck_PlacedCR_ProxyFailureReachesTheCondition covers the
+// two ways the proxy itself answers instead of the service: the Service has no
+// endpoints, and the registered kubeconfig may not use services/proxy. Both
+// carry their cause in the body, which the status code alone does not convey.
+func TestReconcileHealthCheck_PlacedCR_ProxyFailureReachesTheCondition(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{
+			name:   "no endpoints behind the Service",
+			status: http.StatusServiceUnavailable,
+			body:   `no endpoints available for service "test-keystone"`,
+		},
+		{
+			name:   "the registered kubeconfig may not proxy",
+			status: http.StatusForbidden,
+			body: `services "test-keystone" is forbidden: User "system:serviceaccount:forge:keystone-operator" ` +
+				`cannot get resource "services/proxy" in API group "" in the namespace "default"`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			srv, paths := placedAPIServer(t, tc.status, tc.body)
+
+			r := newHealthcheckTestReconciler()
+			r.Resolver = mctestutil.ResolverFor(mctestutil.TargetCluster{Config: &rest.Config{Host: srv.URL}})
+			ks := placedKeystoneForHealthCheck()
+
+			result, err := r.reconcileHealthCheck(context.Background(), ks)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(result.RequeueAfter).To(Equal(healthcheck.RequeueHealthCheck))
+			g.Expect(*paths).To(HaveLen(1))
+
+			cond := conditions.GetCondition(ks.Status.Conditions, conditionTypeKeystoneAPIReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(conditionReasonAPIUnhealthy))
+			g.Expect(cond.Message).To(ContainSubstring(tc.body),
+				"the proxy's own answer is the only place the cause is stated")
+		})
+	}
 }
 
 // TestReconcileHealthCheck_UIDChange_ReProbes verifies a cached entry whose UID

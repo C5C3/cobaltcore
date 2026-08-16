@@ -6,12 +6,14 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/healthcheck"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
 )
 
@@ -41,8 +43,23 @@ func (r *BarbicanReconciler) httpClient() healthcheck.HTTPDoer {
 // of spec.gateway: it verifies API readiness, not the ingress/DNS/cert/Gateway
 // path status.endpoint may advertise externally.
 func (r *BarbicanReconciler) reconcileHealthCheck(ctx context.Context, barbican *barbicanv1alpha1.Barbican) (ctrl.Result, error) {
+	// An injected HTTPClient wins whenever it is set. It is the test seam that
+	// drives the probe with a stub transport, placed or not, and no binary sets
+	// it. Otherwise a placed Barbican is probed through the target API server's
+	// service proxy, because its Service URL resolves on that cluster and
+	// nowhere else; an unplaced one keeps http.DefaultClient.
+	doer := r.httpClient()
+	if r.HTTPClient == nil {
+		var err error
+		doer, err = commonmulticluster.ResolveHTTPDoer(ctx, r.Resolver, barbican.Spec.TargetClusterRef, doer)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("resolving the health-probe transport for target cluster %q: %w",
+				barbican.Spec.TargetClusterRef.Name, err)
+		}
+	}
+
 	return healthcheck.ReconcileProbe(ctx, healthcheck.ProbeFlowParams{
-		Doer:               r.httpClient(),
+		Doer:               doer,
 		Cache:              &r.healthProbeCache,
 		Key:                client.ObjectKeyFromObject(barbican),
 		UID:                barbican.UID,
