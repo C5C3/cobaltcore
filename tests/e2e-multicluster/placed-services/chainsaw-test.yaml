@@ -1,0 +1,394 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for placed services across two clusters.
+#
+# The CRs are created on the management cluster, which runs keystone-operator
+# and barbican-operator and no infrastructure. Every child lands on the target
+# cluster, which runs the infrastructure and no operator. What the suite proves:
+#   - A placed Keystone reaches Ready with its Deployment, Service, config
+#     ConfigMap, fernet Secret and MariaDB Database on the TARGET, and none of
+#     them on the management cluster
+#   - The operator corrects drift on the target: a Deployment deleted there is
+#     recreated, over the registered kubeconfig's watch
+#   - A placed Barbican and its secret store reach Ready, which takes the API
+#     probe through the target's service proxy, the provisioner token through
+#     the target's TokenRequest API, and the OpenBao handshake through a
+#     pods/portforward tunnel — all three on the chart's credentials
+#   - Deleting the CRs sweeps their children off the target and leaves the
+#     infrastructure the deploy created there untouched
+#
+# The target cluster is registered with chainsaw under the name `target`, from a
+# kubeconfig the CI job (or `make e2e-multicluster`) writes to
+# _output/forge-target.kubeconfig. Chainsaw joins that path onto the test's own
+# directory, hence the three levels up. It is chainsaw's own credential for
+# reading the target; the operators never see it — they read the registration
+# Secret in c5c3-clusters, which carries the target-cluster-access chart's
+# ServiceAccount token instead.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: placed-services
+spec:
+  namespace: openstack
+  clusters:
+    target:
+      kubeconfig: ../../../_output/forge-target.kubeconfig
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone CR on the management cluster ─────────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+  # ── Step 2: Assert the placed Keystone reaches Ready ────────────────────
+  # The CR, its status and its finalizers stay here; only the children move.
+  - try:
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-mc
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'FernetKeysReady']):
+            - status: "True"
+              reason: FernetKeysAvailable
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'BootstrapReady']):
+            - status: "True"
+              reason: BootstrapComplete
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Keystone CR status (management cluster) ==="
+          kubectl get keystone keystone-mc -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== keystone-operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 2>&1 || true
+          echo "=== Registered clusters ==="
+          kubectl get secrets -n c5c3-clusters 2>&1 || true
+          echo "=== Events (management cluster) ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    - script:
+        cluster: target
+        content: |
+          echo "=== Placed children (target cluster) ==="
+          kubectl get all,database,secret,configmap -n openstack 2>&1 || true
+          echo "=== Pod logs (target cluster) ==="
+          for pod in $(kubectl get pods -n openstack -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n openstack "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n openstack "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events (target cluster) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert the split — children on the target, none at home ─────
+  - try:
+    - assert:
+        cluster: target
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-mc
+            namespace: openstack
+            # The three ownership labels are how a child is matched back to a CR
+            # that lives on another cluster; a remote child carries no owner
+            # reference at all.
+            labels:
+              openstack.c5c3.io/owner-kind: Keystone
+              openstack.c5c3.io/owner-name: keystone-mc
+              openstack.c5c3.io/owner-namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    - assert:
+        cluster: target
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keystone-mc
+            namespace: openstack
+          spec:
+            ports:
+            - port: 5000
+    - assert:
+        cluster: target
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: keystone-mc-fernet-keys
+            namespace: openstack
+    - assert:
+        cluster: target
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-mc
+            namespace: openstack
+          spec:
+            name: keystone_mc
+    # The config ConfigMap carries a content hash in its name, so it is resolved
+    # by prefix rather than asserted by name.
+    - script:
+        cluster: target
+        content: |
+          kubectl get cm -n openstack -o name | grep keystone-mc-config-
+    # The management cluster holds the CR and nothing else. A Deployment here
+    # would mean the ref was ignored and the service was deployed twice.
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-mc
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-mc
+            namespace: openstack
+  # ── Step 4: Drift correction across the boundary ────────────────────────
+  # The Deployment is deleted on the target, not the CR on the management
+  # cluster: what is under test is the watch the operator runs against the
+  # registered cluster, which has to map the event back to a CR it holds
+  # somewhere else.
+  - try:
+    - delete:
+        cluster: target
+        timeout: 2m
+        ref:
+          apiVersion: apps/v1
+          kind: Deployment
+          name: keystone-mc
+          namespace: openstack
+    - assert:
+        cluster: target
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-mc
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    catch:
+    - script:
+        content: |
+          echo "=== keystone-operator logs ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=100 2>&1 || true
+  # ── Step 5: Apply the Barbican CR and its default secret store ──────────
+  - try:
+    - apply:
+        file: 01-barbican-cr.yaml
+    - apply:
+        file: 02-barbican-secretstore.yaml
+  # ── Step 6: Assert the placed Barbican and its store reach Ready ────────
+  # BarbicanAPIReady comes from a probe routed through the target's
+  # services/proxy, and the store's ProvisioningReady from a token minted
+  # against the target's TokenRequest API plus an OpenBao session opened over a
+  # pods/portforward tunnel. All three run on the registration Secret's
+  # credentials, so this step is what proves the chart's grant set is complete.
+  - try:
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          metadata:
+            name: barbican-mc
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretStoresReady']):
+            - status: "True"
+              reason: AllStoresProjected
+            (conditions[?type == 'BarbicanAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: BarbicanSecretStore
+          metadata:
+            name: barbican-mc-store
+            namespace: openstack
+          status:
+            (conditions[?type == 'ProvisioningReady']):
+            - status: "True"
+              reason: Provisioned
+            (conditions[?type == 'CredentialsReady']):
+            - status: "True"
+              reason: CredentialsAvailable
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    # The store's AppRole credentials follow the parent's placement, so they sit
+    # next to the Barbican pods that read them.
+    - assert:
+        cluster: target
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: barbican-mc-store-approle
+            namespace: openstack
+    - assert:
+        cluster: target
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: barbican-mc
+            namespace: openstack
+          status:
+            (availableReplicas > `0`): true
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: barbican-mc
+            namespace: openstack
+    catch:
+    - script:
+        content: |
+          echo "=== Barbican CR status (management cluster) ==="
+          kubectl get barbican barbican-mc -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== BarbicanSecretStore status ==="
+          kubectl get barbicansecretstore barbican-mc-store -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== barbican-operator logs ==="
+          kubectl logs -n barbican-system -l app.kubernetes.io/name=barbican-operator --all-containers --tail=100 2>&1 || true
+    - script:
+        cluster: target
+        content: |
+          echo "=== Barbican pods (target cluster) ==="
+          for pod in $(kubectl get pods -n openstack -l app.kubernetes.io/instance=barbican-mc -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n openstack "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n openstack "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== OpenBao instance (target cluster) ==="
+          kubectl get openbaocluster,pods -n openstack -l app.kubernetes.io/name=openbao 2>&1 || true
+          echo "=== Events (target cluster) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 7: Delete the CRs and assert the sweep ─────────────────────────
+  # The store goes first so its credentials Secret is deleted while its parent
+  # still resolves the cluster. Each delete is bounded: the remote sweep runs
+  # under a finalizer, so a target that cannot be reached shows up as a delete
+  # that does not return rather than as a passing teardown.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: BarbicanSecretStore
+          name: barbican-mc-store
+          namespace: openstack
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: barbican.openstack.c5c3.io/v1alpha1
+          kind: Barbican
+          name: barbican-mc
+          namespace: openstack
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          name: keystone-mc
+          namespace: openstack
+  # ── Step 8: Assert the children are gone and the infrastructure is not ──
+  - try:
+    - error:
+        cluster: target
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: keystone-mc
+            namespace: openstack
+    - error:
+        cluster: target
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: keystone-mc
+            namespace: openstack
+    - error:
+        cluster: target
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: keystone-mc-fernet-keys
+            namespace: openstack
+    - error:
+        cluster: target
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: keystone-mc
+            namespace: openstack
+    - error:
+        cluster: target
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: barbican-mc
+            namespace: openstack
+    - error:
+        cluster: target
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: barbican-mc-store-approle
+            namespace: openstack
+    # The sweep selects by ownership label, so it must not reach the shared
+    # infrastructure the deploy created on this cluster. Both objects outlive
+    # every CR that used them.
+    - assert:
+        cluster: target
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: MariaDB
+          metadata:
+            name: openstack-db
+            namespace: openstack
+    - assert:
+        cluster: target
+        resource:
+          apiVersion: memcached.c5c3.io/v1beta1
+          kind: Memcached
+          metadata:
+            name: openstack-memcached
+            namespace: openstack
+    catch:
+    - script:
+        cluster: target
+        content: |
+          echo "=== Remaining objects in openstack (target cluster) ==="
+          kubectl get all,database,secret,configmap,mariadb,memcached -n openstack 2>&1 || true

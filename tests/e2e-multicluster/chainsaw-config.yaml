@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw configuration for the two-cluster E2E suites.
+#
+# The suites live outside tests/e2e/ because they need two clusters: a
+# management cluster running the operators and a target cluster registered on it
+# that receives every projected child. Every suite under tests/e2e/ runs against
+# a single cluster, and `make e2e` sweeps that whole tree — a two-cluster suite
+# in it would run against a cluster that has no second one to place onto.
+#
+# Key differences from the happy-path config at tests/e2e/chainsaw-config.yaml:
+#   - Assert timeout: 300s (5m) vs 120s — a placed CR's first pass crosses the
+#     cluster boundary for every child write, the database provisioning, and the
+#     API probe through the target's service proxy.
+#   - Cleanup timeout: 120s (2m) vs 60s — deleting a placed CR runs the remote
+#     sweep under a finalizer before the CR leaves etcd.
+#   - Parallelism: 1 vs 4 — the suites share the one `openstack` namespace on
+#     both clusters and the one registered target cluster.
+#
+# apiVersion v1alpha2 Configuration is the correct pairing with v1alpha1 Test
+# manifests, matching the sibling configs.
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: cloud-operator-e2e-multicluster
+spec:
+  # ── Timeouts ────────────────────────────────────────────────────────────
+  timeouts:
+    apply: 30s
+    assert: 300s
+    cleanup: 120s
+    delete: 30s
+    error: 30s
+    exec: 30s
+
+  # ── Cleanup ─────────────────────────────────────────────────────────────
+  cleanup:
+    skipDelete: false
+
+  # ── Execution ───────────────────────────────────────────────────────────
+  execution:
+    failFast: true
+    parallel: 1
+
+  # ── Report ──────────────────────────────────────────────────────────────
+  report:
+    format: JUNIT-TEST
+    name: chainsaw-multicluster-report
+    path: _output/reports

@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Barbican CR fixture for the placed-services E2E test.
+#
+# The shape is tests/e2e/barbican/basic-deployment/00-barbican-cr.yaml with the
+# same two differences as the Keystone fixture: targetClusterRef, and one
+# replica instead of three.
+#
+# keystoneEndpoint names the placed Keystone's Service on the target cluster.
+# Both services sit on the same cluster, so the in-cluster DNS name resolves
+# from the Barbican pods; it does not resolve on the management cluster, and
+# nothing there dials it.
+# region barbican-cr
+apiVersion: barbican.openstack.c5c3.io/v1alpha1
+kind: Barbican
+metadata:
+  name: barbican-mc
+  namespace: openstack
+spec:
+  targetClusterRef:
+    name: forge-target
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  image:
+    repository: ghcr.io/c5c3/barbican
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: barbican_mc
+    secretRef:
+      name: barbican-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  keystoneEndpoint: http://keystone-mc.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+# endregion barbican-cr
