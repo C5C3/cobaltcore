@@ -30,6 +30,7 @@
 #   FILTER_e2e_chaos          — paths-filter output for e2e-chaos paths
 #   FILTER_e2e_prometheus     — paths-filter output for e2e-prometheus paths
 #   FILTER_e2e_controlplane   — paths-filter output for e2e-controlplane paths
+#   FILTER_e2e_multicluster   — paths-filter output for e2e-multicluster paths
 #   FILTER_tests_e2e_operator — paths-filter output for tests/e2e/** (follow-up)
 #   FILTER_tests_tempest      — paths-filter output for tests/tempest/** (follow-up)
 #   FILTER_go_common          — paths-filter output for go_common paths
@@ -139,6 +140,17 @@ if [[ "$go_changed" == "true" || "${FILTER_e2e_controlplane:-false}" == "true" |
   echo "e2e-controlplane=true" >> "$GITHUB_OUTPUT"
 else
   echo "e2e-controlplane=false" >> "$GITHUB_OUTPUT"
+fi
+
+# The two-cluster placed-services E2E job runs on the same composition as
+# e2e-controlplane: its own paths (the suite, the target-cluster chart, the
+# deploy stack, the hack scripts, the composite actions), any Go change (so the
+# placement path re-validates the current operator code), or any other E2E test
+# definition change.
+if [[ "$go_changed" == "true" || "${FILTER_e2e_multicluster:-false}" == "true" || "$any_e2e_tests" == "true" ]]; then
+  echo "e2e-multicluster=true" >> "$GITHUB_OUTPUT"
+else
+  echo "e2e-multicluster=false" >> "$GITHUB_OUTPUT"
 fi
 
 # Emit operator matrix — single codepath for both tag and non-tag.
