@@ -604,7 +604,7 @@ e2e-operator-upgrade:
 # See docs/reference/target-clusters.md for the registration Secret's contract.
 e2e-multicluster:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable; point the context at the management cluster (`kubectl config use-context kind-forge-mgmt`, created by hack/deploy-mgmt-cluster.sh)' >&2; exit 1; }
-	@kubectl get secret forge-target -n c5c3-clusters >/dev/null 2>&1 || { echo 'no target cluster is registered; install deploy/target-cluster/target-cluster-access on the target and create the registration Secret `forge-target` in c5c3-clusters (see docs/reference/target-clusters.md)' >&2; exit 1; }
+	@kubectl get secret forge-target -n c5c3-clusters >/dev/null 2>&1 || { echo 'no target cluster is registered; install deploy/target-cluster/target-cluster-access on the target and create the registration Secret `forge-target` in c5c3-clusters (see docs/guides/deploy-to-a-target-cluster.md)' >&2; exit 1; }
 	@test -f _output/forge-target.kubeconfig || { echo 'chainsaw has no kubeconfig for the target cluster; run `kind get kubeconfig --name forge-target > _output/forge-target.kubeconfig`' >&2; exit 1; }
 	chainsaw test --config tests/e2e-multicluster/chainsaw-config.yaml tests/e2e-multicluster/
 
