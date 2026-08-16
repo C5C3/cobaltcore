@@ -5,6 +5,7 @@ go 1.26.6
 require (
 	github.com/cert-manager/cert-manager v1.20.2
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260803120615-8552ed8d11d1
+	github.com/go-logr/logr v1.4.4
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.24.1
@@ -32,7 +33,6 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
-	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-openapi/jsonpointer v0.23.1 // indirect
 	github.com/go-openapi/jsonreference v0.21.5 // indirect
