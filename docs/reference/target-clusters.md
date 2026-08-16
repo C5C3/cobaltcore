@@ -194,6 +194,20 @@ service is placed in; without it the probe holds the CR's API-ready condition at
 `APIUnhealthy` with the API server's forbidden message. A Keystone identity
 backend's federation teardown takes the same route on deletion.
 
+A placed `BarbicanSecretStore` cannot take that route to its OpenBao. The
+operator verifies the instance's server certificate against the instance's own
+CA bundle, and the URL it dials is the SAN that certificate carries, so the
+handshake has to reach the instance itself. Through the service proxy it would
+terminate at the API server. The connection is tunnelled at the TCP level
+instead, over `pods/portforward`, which leaves the URL and the certificate check
+as they are for an unplaced store. Those credentials need `create` on
+`pods/portforward` in the namespace the OpenBao instance runs in, plus `get` on
+`services` and `list` on `endpointslices` there to find the pod behind the
+Service. Without them the store holds `ProvisioningReady` at
+`OpenBaoUnreachable`, carrying the API server's forbidden message. A brownfield
+store whose `spec.openBao.server.url` names a server outside the cluster dials it
+directly and needs none of the three.
+
 Registering a cluster is a commitment to let every service operator cache it in
 full. Each one watches, on every registered cluster, the kinds it projects there
 and the inputs it reads (both enumerated in the next section), so its
