@@ -6,16 +6,19 @@ package secrets
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func gateTestScheme(t *testing.T) *runtime.Scheme {
@@ -118,4 +121,73 @@ func TestGateSyncedSecret(t *testing.T) {
 			g.Expect(state).To(gomega.Equal(tc.want))
 		})
 	}
+}
+
+// TestGateCredential_recordsACacheScopeErrorOnTheCondition pins the one error
+// class GateCredential does not simply propagate. A CR whose namespace is
+// outside the set its target cluster's registration Secret declares fails this
+// read on every pass, and the caller returns the error bare, so the condition
+// set here is the only place that mismatch reaches the CR.
+func TestGateCredential_recordsACacheScopeErrorOnTheCondition(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	scopeErr := errors.New("unable to get: tenant-c/cred because of unknown namespace for the cache")
+	c := fake.NewClientBuilder().WithScheme(gateTestScheme(t)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				return scopeErr
+			},
+		}).Build()
+
+	var conds []metav1.Condition
+	ready, err := GateCredential(context.Background(), c, CredentialGateSpec{
+		Key:          client.ObjectKey{Namespace: "tenant-c", Name: "cred"},
+		Reason:       "WaitingForDBCredentials",
+		Noun:         "Database credentials",
+		WaitingMsg:   "Waiting for ESO to sync database credentials from OpenBao",
+		ExpectedKeys: []string{"password"},
+	}, &conds, 7, "SecretsReady")
+
+	g.Expect(ready).To(gomega.BeFalse())
+	g.Expect(err).To(gomega.MatchError(scopeErr), "the error is still propagated to the caller")
+
+	cond := meta.FindStatusCondition(conds, "SecretsReady")
+	g.Expect(cond).NotTo(gomega.BeNil(), "the scope error should be recorded on the gate condition")
+	g.Expect(cond.Status).To(gomega.Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(gomega.Equal("WaitingForDBCredentials"))
+	g.Expect(cond.ObservedGeneration).To(gomega.Equal(int64(7)))
+	// The read site wraps the client's error, so the recorded message is that
+	// wrapped text verbatim — which still names the cache scope rather than the
+	// generic waiting text.
+	g.Expect(cond.Message).To(gomega.Equal(err.Error()))
+	g.Expect(cond.Message).To(gomega.ContainSubstring("unknown namespace for the cache"))
+}
+
+// The other half: an ordinary backend failure keeps the behavior it always had.
+// It is transient, the next pass may well succeed, and stamping a condition for
+// it would replace whatever the last good pass recorded with a message that is
+// obsolete by the time anyone reads it.
+func TestGateCredential_leavesTheConditionAloneOnABackendError(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	backendErr := errors.New("etcdserver: request timed out")
+	c := fake.NewClientBuilder().WithScheme(gateTestScheme(t)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				return backendErr
+			},
+		}).Build()
+
+	var conds []metav1.Condition
+	ready, err := GateCredential(context.Background(), c, CredentialGateSpec{
+		Key:          client.ObjectKey{Namespace: "ns", Name: "cred"},
+		Reason:       "WaitingForDBCredentials",
+		Noun:         "Database credentials",
+		WaitingMsg:   "Waiting for ESO to sync database credentials from OpenBao",
+		ExpectedKeys: []string{"password"},
+	}, &conds, 7, "SecretsReady")
+
+	g.Expect(ready).To(gomega.BeFalse())
+	g.Expect(err).To(gomega.MatchError(backendErr))
+	g.Expect(conds).To(gomega.BeEmpty(), "a transient backend error must not stamp a condition")
 }

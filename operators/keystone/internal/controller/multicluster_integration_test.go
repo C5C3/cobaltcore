@@ -1077,7 +1077,15 @@ func TestIntegration_Multicluster_KeystoneTargetCluster(t *testing.T) {
 		g.Expect(mgmtClient.Create(ctx, ks)).To(Succeed())
 
 		crKey := types.NamespacedName{Name: unscopedKeystone, Namespace: unscopedNamespace}
-		waitForCondition(t, ctx, mgmtClient, crKey, "Ready", metav1.ConditionFalse, eventuallyTimeout)
+
+		// The mismatch has to be readable off the CR. It is a standing
+		// misconfiguration — this namespace is not in the registration Secret's
+		// declared set and will not become so on its own — so an operator has to
+		// be able to see the cause without correlating the manager's log, and
+		// the first gate condition is where the credential gate puts it.
+		cond := waitForCondition(t, ctx, mgmtClient, crKey, "SecretsReady", metav1.ConditionFalse, eventuallyTimeout)
+		g.Expect(cond.Message).To(ContainSubstring("unknown namespace for the cache"),
+			"the cache's own message should reach the condition, naming the scope as the cause")
 
 		// A CR whose namespace IS declared has SecretsReady=True within seconds
 		// of its inputs being seeded, so holding this one at False for a

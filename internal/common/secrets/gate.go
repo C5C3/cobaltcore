@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
@@ -124,12 +125,32 @@ type CredentialGateSpec struct {
 // miss it consults the ExternalSecret only to produce a precise condition
 // message — "ExternalSecret not found yet" vs "waiting to sync" vs "missing
 // expected keys" — sets the condition itself with the spec's reason, and
-// returns (false, nil). A backend error is propagated as (false, err).
+// returns (false, nil). A backend error is propagated as (false, err), and a
+// target-cluster cache-scope error is propagated the same way after the
+// condition has recorded it.
 func GateCredential(ctx context.Context, c client.Client, spec CredentialGateSpec,
 	conds *[]metav1.Condition, generation int64, conditionType string,
 ) (bool, error) {
 	state, err := GateSyncedSecret(ctx, c, spec.Key, spec.ExpectedKeys...)
 	if err != nil {
+		// A read the target cluster's cache refuses is not a backend hiccup: the
+		// CR's namespace is outside the set its registration Secret declares, so
+		// every pass fails the same way until the registration or the CR moves.
+		// Recording it is what puts that mismatch on the CR at all. The error is
+		// returned bare from here and no caller turns it into a condition, so
+		// without this the reason would live only in the operator's log while
+		// the CR showed nothing but its aggregate Ready=False. The operators
+		// persist conditions on every exit path, error returns included, so the
+		// message reaches status. Every other error class is untouched.
+		if multicluster.IsUnknownNamespaceForCache(err) {
+			conditions.SetCondition(conds, metav1.Condition{
+				Type:               conditionType,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: generation,
+				Reason:             spec.Reason,
+				Message:            err.Error(),
+			})
+		}
 		return false, err
 	}
 	if state == GateReady {
