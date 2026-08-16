@@ -1,0 +1,269 @@
+# Per-namespace Role unit tests.
+suite: Role
+templates:
+  - templates/role.yaml
+tests:
+  - it: should render exactly one Role for a single namespace
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: Role
+      - equal:
+          path: metadata.namespace
+          value: openstack
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-target-cluster-access
+
+  - it: should render one Role per namespace
+    set:
+      namespaces:
+        - openstack
+        - glance
+        - barbican
+    asserts:
+      - hasDocuments:
+          count: 3
+      - equal:
+          path: metadata.namespace
+          value: openstack
+        documentIndex: 0
+      - equal:
+          path: metadata.namespace
+          value: glance
+        documentIndex: 1
+      - equal:
+          path: metadata.namespace
+          value: barbican
+        documentIndex: 2
+
+  - it: should keep the rule set independent of the namespace count
+    set:
+      namespaces:
+        - openstack
+        - glance
+    asserts:
+      - lengthEqual:
+          path: rules
+          count: 20
+        documentIndex: 0
+      - lengthEqual:
+          path: rules
+          count: 20
+        documentIndex: 1
+
+  - it: should grant full CRUD on the projected core children
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - services
+              - configmaps
+              - secrets
+              - serviceaccounts
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant read-only on pods
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - pods
+            verbs:
+              - get
+              - list
+
+  - it: should grant create on pods/portforward for the OpenBao tunnel
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - pods/portforward
+            verbs:
+              - create
+
+  - it: should grant create on serviceaccounts/token for the Barbican token mint
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - serviceaccounts/token
+            verbs:
+              - create
+
+  # get carries the health probes, create the keystone token request the
+  # federation teardown authenticates with, delete the federation objects it
+  # removes. Missing either of the latter two wedges a KeystoneIdentityBackend
+  # attached to a placed Keystone in Terminating.
+  - it: should grant get, create and delete on services/proxy
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - services/proxy
+            verbs:
+              - get
+              - create
+              - delete
+
+  # escalate suspends RBAC's privilege-escalation check, which would let the
+  # holder of the registration kubeconfig author a Role granting everything in
+  # this namespace and bind it to itself. The projected TokenRequest Role is
+  # covered by the unrestricted serviceaccounts/token grant above, so neither
+  # verb is needed to write it.
+  - it: should grant CRUD on roles and rolebindings without escalate or bind
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - roles
+              - rolebindings
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on the MariaDB kinds the operators project
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - k8s.mariadb.com
+            resources:
+              - databases
+              - users
+              - grants
+              - mariadbs
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on the OpenBao ensemble kinds
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - openbao.org
+            resources:
+              - openbaoclusters
+              - openbaotenants
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant read-only on endpointslices for the tunnel
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - discovery.k8s.io
+            resources:
+              - endpointslices
+            verbs:
+              - get
+              - list
+
+  - it: should grant read-only on httproutes/status
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - gateway.networking.k8s.io
+            resources:
+              - httproutes/status
+            verbs:
+              - get
+
+  - it: should not grant anything on namespaces, which is cluster-scoped
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - namespaces
+            verbs:
+              - get
+              - list
+              - watch

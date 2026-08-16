@@ -1,0 +1,15 @@
+{{- include "target-cluster-access.requireNamespaces" . }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "target-cluster-access.fullname" . }}
+  labels:
+    {{- include "target-cluster-access.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "target-cluster-access.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}

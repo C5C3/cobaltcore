@@ -1,0 +1,177 @@
+# ClusterRole and ClusterRoleBinding unit tests.
+suite: ClusterRole
+templates:
+  - templates/clusterrole.yaml
+  - templates/clusterrolebinding.yaml
+tests:
+  - it: should carry only the three read-only cluster-scoped rules by default
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ClusterRole
+      - lengthEqual:
+          path: rules
+          count: 3
+
+  - it: should grant read-only on namespaces
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - namespaces
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant read-only on clustersecretstores
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - clustersecretstores
+            verbs:
+              - get
+              - list
+              - watch
+
+  # Every ControlPlane teardown reads the auth-delegator ClusterRoleBinding by
+  # name before it releases its finalizer, dedicated OpenBao or not. Without the
+  # read the API server answers forbidden rather than not-found, and the teardown
+  # retries that error instead of releasing, so a default install would leave
+  # every placed ControlPlane on this cluster in Terminating.
+  - it: should grant read-only on clusterrolebindings by default
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - clusterrolebindings
+            verbs:
+              - get
+
+  # The grants no namespace bounds: patch and delete reach every
+  # ClusterRoleBinding on the cluster, cluster-admin included. A default install
+  # must not carry them, so the account a registration kubeconfig authenticates
+  # as cannot take the cluster's own control plane apart.
+  - it: should grant no writes on clusterrolebindings by default
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - clusterrolebindings
+            verbs:
+              - get
+              - create
+              - patch
+              - delete
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - clusterroles
+            resourceNames:
+              - system:auth-delegator
+            verbs:
+              - bind
+
+  - it: should grant clusterrolebindings without list or watch when opted in
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+      authDelegatorBinding: true
+    asserts:
+      - lengthEqual:
+          path: rules
+          count: 4
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - clusterrolebindings
+            verbs:
+              - get
+              - create
+              - patch
+              - delete
+
+  - it: should grant bind on system:auth-delegator and on no other ClusterRole
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+      authDelegatorBinding: true
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rbac.authorization.k8s.io
+            resources:
+              - clusterroles
+            resourceNames:
+              - system:auth-delegator
+            verbs:
+              - bind
+
+  - it: should bind the ClusterRole to the account in the release namespace
+    template: templates/clusterrolebinding.yaml
+    release:
+      namespace: cluster-access
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ClusterRoleBinding
+      - equal:
+          path: roleRef
+          value:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: RELEASE-NAME-target-cluster-access
+      - equal:
+          path: subjects
+          value:
+            - kind: ServiceAccount
+              name: target-cluster-access
+              namespace: cluster-access

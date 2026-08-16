@@ -2397,6 +2397,75 @@ func TestDeleteBarbicanAuthDelegatorBinding_DeletesItOnTheServicesCluster(t *tes
 	expectPresent(t, local, atHome)
 }
 
+// TestDeleteBarbicanAuthDelegatorBinding_ReleasesWhenTheTargetDeniesTheDelete
+// closes the second half of the same wedge the unconditional get closes. The
+// target's access chart grants get on ClusterRoleBindings always but create,
+// patch and delete only behind authDelegatorBinding, so a cluster that had the
+// flag on when the binding was written and has it off now answers the read with
+// the binding and the delete with a 403 — every pass, with no stall breaker left
+// on this path. Returning that error would hold the ControlPlane in Terminating
+// forever, so the binding is left standing and named instead.
+func TestDeleteBarbicanAuthDelegatorBinding_ReleasesWhenTheTargetDeniesTheDelete(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingBarbicanControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	cp.Spec.Services.Barbican.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: placedTeardownCluster}
+	name := barbicanOpenBaoAuthDelegatorName(barbicanOpenBaoName(cp), cp.BarbicanNamespace())
+
+	placed := onTarget(cp, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name}})
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(placed).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.DeleteOption) error {
+				return apierrors.NewForbidden(rbacv1.Resource("clusterrolebindings"), obj.GetName(), nil)
+			},
+		}).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme: s, Recorder: rec, Resolver: &childrenResolver{children: target},
+	}
+
+	g.Expect(r.deleteBarbicanAuthDelegatorBinding(ctx, cp)).To(Succeed(),
+		"a denied delete must release the ControlPlane rather than wedge it in Terminating")
+	expectPresent(t, target, placed)
+
+	events := strings.Join(drainEvents(rec), "\n")
+	g.Expect(events).To(ContainSubstring("AuthDelegatorBindingNotReclaimed"))
+	g.Expect(events).To(ContainSubstring(name), "the event must name the binding left behind")
+	g.Expect(events).To(ContainSubstring("authDelegatorBinding=true"),
+		"and the grant that would have let the teardown reclaim it")
+}
+
+// Any other denial is a real failure the teardown may retry: only the cluster
+// withholding the grant is unrecoverable, and swallowing the rest would release
+// the ControlPlane over a conflict or an outage that the next pass would clear.
+func TestDeleteBarbicanAuthDelegatorBinding_KeepsHoldingOnOtherDeleteErrors(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingBarbicanControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	cp.Spec.Services.Barbican.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: placedTeardownCluster}
+	name := barbicanOpenBaoAuthDelegatorName(barbicanOpenBaoName(cp), cp.BarbicanNamespace())
+
+	placed := onTarget(cp, &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: name}})
+	target := fake.NewClientBuilder().WithScheme(s).WithObjects(placed).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.DeleteOption) error {
+				return apierrors.NewConflict(rbacv1.Resource("clusterrolebindings"), obj.GetName(), nil)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build(),
+		Scheme: s, Recorder: record.NewFakeRecorder(10),
+		Resolver: &childrenResolver{children: target},
+	}
+
+	g.Expect(r.deleteBarbicanAuthDelegatorBinding(ctx, cp)).NotTo(Succeed())
+}
+
 // TestReconcileDelete_HoldsBothFinalizersUntilThePlacedNamespaceIsSwept pins the
 // release order: while a service child of the placed namespace is still
 // Terminating behind its own operator's cleanup, neither finalizer may go — the

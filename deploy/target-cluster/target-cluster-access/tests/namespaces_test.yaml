@@ -1,0 +1,64 @@
+# Namespace creation unit tests.
+suite: Namespaces
+templates:
+  - templates/namespaces.yaml
+tests:
+  - it: should create one Namespace per declared entry by default
+    set:
+      namespaces:
+        - openstack
+        - glance
+    asserts:
+      - hasDocuments:
+          count: 2
+      - isKind:
+          of: Namespace
+      - equal:
+          path: metadata.name
+          value: openstack
+        documentIndex: 0
+      - equal:
+          path: metadata.name
+          value: glance
+        documentIndex: 1
+
+  - it: should create no Namespace when createNamespaces is false
+    set:
+      createNamespaces: false
+      namespaces:
+        - openstack
+        - glance
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  # Without the annotation, `helm uninstall` (the documented way to revoke the
+  # access) and a `helm upgrade` that drops an entry from values.namespaces both
+  # cascade a delete over every child placed here, PersistentVolumeClaims and
+  # all. The release owns the grants; it must not own the data.
+  - it: should keep the namespaces out of the release's delete
+    set:
+      namespaces:
+        - openstack
+        - glance
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+        documentIndex: 0
+      - equal:
+          path: metadata.annotations["helm.sh/resource-policy"]
+          value: keep
+        documentIndex: 1
+
+  - it: should set the standard labels
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - isSubset:
+          path: metadata.labels
+          content:
+            app.kubernetes.io/name: target-cluster-access
+            app.kubernetes.io/instance: RELEASE-NAME
+            app.kubernetes.io/managed-by: Helm

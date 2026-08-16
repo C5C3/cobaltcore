@@ -1,0 +1,45 @@
+# Default values for target-cluster-access.
+
+# The namespaces placed CRs may use on this cluster. REQUIRED: an install
+# without it fails at render time rather than granting an account that reaches
+# nothing.
+#
+# The list must equal the namespaces key of the registration Secret the
+# management cluster holds for this cluster. The operators scope their caches to
+# that key, so a namespace granted here but missing there is never watched, and
+# one listed there but missing here answers every read with forbidden.
+namespaces: []
+
+# Whether to create the namespaces above. Set to false when they already exist
+# or are managed elsewhere; the Roles are rendered either way.
+#
+# The namespaces are annotated helm.sh/resource-policy: keep, so uninstalling
+# this release or dropping an entry from the list above revokes the access and
+# leaves the placed workloads and their volumes where they are.
+createNamespaces: true
+
+# Whether to grant create, patch and delete on ClusterRoleBindings, which is
+# what writing the binding a dedicated OpenBao instance needs takes. Off by
+# default, because these are the only grants in this chart that no namespace
+# bounds: the binding's name carries a hash the chart cannot compute, so
+# `resourceNames` cannot narrow them and they cover every ClusterRoleBinding on
+# this cluster, cluster-admin included.
+#
+# Turn it on only for a cluster a ControlPlane places a Barbican with a dedicated
+# OpenBao instance on. Every other placement — including a Barbican secret store
+# pointed at an OpenBao instance that already runs here — works without it.
+#
+# Turning it back off while such a ControlPlane still exists leaves its binding
+# behind: that teardown reads the binding, is denied the delete, and releases the
+# ControlPlane anyway rather than holding it in Terminating. It records an
+# AuthDelegatorBindingNotReclaimed event naming the binding to remove by hand.
+#
+# Read-only `get` on ClusterRoleBindings is granted either way: every ControlPlane
+# teardown reads that binding by name before releasing its finalizer, and a
+# forbidden read there leaves the ControlPlane in Terminating.
+authDelegatorBinding: false
+
+serviceAccount:
+  # The account the registration kubeconfig authenticates as. It is created in
+  # the release namespace, together with the token Secret the kubeconfig carries.
+  name: target-cluster-access

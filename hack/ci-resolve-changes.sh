@@ -25,6 +25,7 @@
 #   FILTER_barbican           — paths-filter output for barbican paths
 #   FILTER_docs               — paths-filter output for docs paths
 #   FILTER_helm               — paths-filter output for helm paths
+#   FILTER_target_cluster_chart — paths-filter output for deploy/target-cluster paths
 #   FILTER_e2e_infra          — paths-filter output for e2e-infra paths
 #   FILTER_e2e_chaos          — paths-filter output for e2e-chaos paths
 #   FILTER_e2e_prometheus     — paths-filter output for e2e-prometheus paths
@@ -67,12 +68,14 @@ if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
   # Tag push: run the full release pipeline for all known operators.
   go_changed=true
   read -ra ops <<< "$ALL_OPERATORS"
-  echo "docs=true"      >> "$GITHUB_OUTPUT"
-  echo "helm=true"      >> "$GITHUB_OUTPUT"
-  echo "e2e-infra=true" >> "$GITHUB_OUTPUT"
+  echo "docs=true"                 >> "$GITHUB_OUTPUT"
+  echo "helm=true"                 >> "$GITHUB_OUTPUT"
+  echo "target-cluster-chart=true" >> "$GITHUB_OUTPUT"
+  echo "e2e-infra=true"            >> "$GITHUB_OUTPUT"
 else
   echo "docs=${FILTER_docs:-false}" >> "$GITHUB_OUTPUT"
   echo "helm=${FILTER_helm:-false}" >> "$GITHUB_OUTPUT"
+  echo "target-cluster-chart=${FILTER_target_cluster_chart:-false}" >> "$GITHUB_OUTPUT"
   # e2e-infra runs when its own paths change or any E2E test definition changes.
   if [[ "${FILTER_e2e_infra:-false}" == "true" || "$any_e2e_tests" == "true" ]]; then
     echo "e2e-infra=true"  >> "$GITHUB_OUTPUT"

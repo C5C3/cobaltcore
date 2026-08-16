@@ -1,0 +1,25 @@
+{{/*
+The namespaces placed CRs are projected into. The five workload operators do not
+create the namespace their children land in, and a write into a missing one
+fails, so the cluster owner creates them here unless something else already does.
+*/}}
+{{- include "target-cluster-access.requireNamespaces" . }}
+{{- if .Values.createNamespaces }}
+{{- range $namespace := .Values.namespaces }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $namespace }}
+  annotations:
+    # This namespace holds every child placed here, their PersistentVolumeClaims
+    # among them, while the release that owns it grants nothing but access. The
+    # two documented ways of taking access away — `helm uninstall`, and dropping
+    # an entry from values.namespaces before a `helm upgrade` — would otherwise
+    # cascade a delete over the workloads instead, and a namespace delete takes
+    # the volumes with it.
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "target-cluster-access.labels" $ | nindent 4 }}
+{{- end }}
+{{- end }}

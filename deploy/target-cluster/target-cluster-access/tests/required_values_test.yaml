@@ -1,0 +1,32 @@
+# Required-values guard unit tests.
+#
+# The guard aborts the whole render, so the assertions are chart-wide rather
+# than per template: whichever template Helm reaches first raises the error, and
+# pinning one of them would only pin the render order.
+suite: RequiredValues
+tests:
+  - it: should fail on the chart default, which declares no namespace
+    asserts:
+      - failedTemplate:
+          errorMessage: "values.namespaces must name at least one namespace (the namespaces key of the registration Secret)"
+
+  - it: should fail on an empty namespaces list
+    set:
+      namespaces: []
+    asserts:
+      - failedTemplate:
+          errorMessage: "values.namespaces must name at least one namespace (the namespaces key of the registration Secret)"
+
+  - it: should fail when namespaces is absent
+    set:
+      namespaces: null
+    asserts:
+      - failedTemplate:
+          errorMessage: "values.namespaces must name at least one namespace (the namespaces key of the registration Secret)"
+
+  - it: should render once a namespace is declared
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - notFailedTemplate: {}

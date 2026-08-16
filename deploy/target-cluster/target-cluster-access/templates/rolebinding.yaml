@@ -1,0 +1,23 @@
+{{/*
+One RoleBinding per declared namespace, each binding that namespace's Role to
+the single account in the release namespace.
+*/}}
+{{- include "target-cluster-access.requireNamespaces" . }}
+{{- range $namespace := .Values.namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "target-cluster-access.fullname" $ }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "target-cluster-access.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "target-cluster-access.fullname" $ }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $.Values.serviceAccount.name }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
