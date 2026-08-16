@@ -49,7 +49,6 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
-	kubeconfigprovider "sigs.k8s.io/multicluster-runtime/providers/kubeconfig"
 
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
@@ -120,7 +119,7 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 	targetClient, targetCfg := commonenvtest.StartEnvTestWithConfig(t, mcScheme, commonenvtest.CommonFakeCRDDirs())
 
 	// --- Environment A: the management cluster, hosting the manager.
-	provider := kubeconfigprovider.New(kubeconfigprovider.Options{
+	provider := commonmulticluster.NewKubeconfigProvider(commonmulticluster.KubeconfigProviderOptions{
 		Namespace: mcClustersNamespace,
 		// Without this the provider builds every target cluster's client on
 		// client-go's global scheme, which knows no CRD kind, and the first
