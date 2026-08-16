@@ -46,6 +46,17 @@ bao_exec() {
     env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" "$@"
 }
 
+# Like bao_exec but with stdin forwarding (-i), so secret material can be piped
+# in instead of passed as an argument. An argument is readable in two places:
+# kubectl encodes every element of the remote command as a repeated `command=`
+# query parameter and the API server records that request URI in its audit log,
+# and inside the container the expanded argument sits in /proc/<pid>/cmdline for
+# as long as the call runs.
+bao_exec_stdin() {
+  kubectl exec -i -n "${BAO_NAMESPACE}" "${POD}" -- \
+    env BAO_ADDR="${BAO_ADDR}" VAULT_CACERT="${VAULT_CACERT}" "$@"
+}
+
 # Polls .status.phase directly so a missing pod (StatefulSet still recreating
 # after pod-kill) is treated as "not yet Running" instead of a hard failure
 # the way `kubectl wait --for=jsonpath` would handle it.
@@ -108,7 +119,12 @@ unseal() {
       log "ERROR: unseal key index ${i} missing from Secret"
       exit 1
     fi
-    bao_exec bao operator unseal "${key}" > /dev/null
+    # `bao operator unseal` takes the share only from an argument or an
+    # interactive terminal prompt, so the share goes to sys/unseal instead:
+    # `key=-` tells `bao write` to read the value from stdin, keeping it out of
+    # both argv copies bao_exec_stdin describes. printf is a bash builtin, so
+    # the share never reaches a local argv either.
+    printf '%s' "${key}" | bao_exec_stdin bao write sys/unseal key=- > /dev/null
     log "  applied unseal key $((i + 1))/${KEY_THRESHOLD}"
   done
 }

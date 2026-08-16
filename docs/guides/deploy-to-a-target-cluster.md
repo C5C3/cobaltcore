@@ -312,6 +312,182 @@ kubectl --context kind-forge-target -n openstack get deploy keystone \
   -o jsonpath='{.metadata.labels}{"\n"}{.metadata.ownerReferences}{"\n"}'
 ```
 
+## Recover from a target node restart
+
+Stopping and starting the target's kind node container is routine maintenance,
+and nearly everything on the target comes back without help: MariaDB, memcached,
+and the placed Deployment. The operator-managed `OpenBaoCluster` instances come
+back unsealed too, since a static seal reads its key from a mounted Secret on
+every start. The shared OpenBao in namespace `shared-services` is the
+exception. It is Shamir-sealed with five key shares at a threshold of three,
+so it restarts sealed and stays sealed until someone applies three shares by
+hand. Everything downstream waits while it does: the ExternalSecrets on the
+target stop refreshing, and the placed CRs on the management cluster sit on
+their secrets gate.
+
+This was verified by hand once on this guide's devstack, and no end-to-end suite
+covers a node restart. On a single-cluster devstack the same procedure applies
+under that cluster's own kubectl context.
+
+### The failure signature
+
+The placed CR is not `Ready`, and its failing condition names the store:
+
+```bash
+kubectl --context kind-forge-mgmt -n openstack get keystone/keystone \
+  -o jsonpath='{.status.conditions[?(@.type=="SecretsReady")].message}{"\n"}'
+```
+
+`SecretsReady` carries reason `SecretStoreNotReady` and the message `SecretStore
+"openbao-tenant-store" is not ready; upstream secret backend unreachable`. On
+the target, the ExternalSecrets that feed the placed workload have stopped
+refreshing, but their printed status lags behind that: the STATUS and READY
+columns still carry `SecretSynced` and `True` from the last successful sync. The
+store is the readable target-side signal:
+
+```bash
+kubectl --context kind-forge-target -n openstack get secretstore
+```
+
+While the backend is sealed, `openbao-tenant-store` prints STATUS
+`InvalidProviderConfig` and READY `False`.
+
+The seal state itself comes from inside the pod. OpenBao's API listener in
+`shared-services` requires and verifies a client certificate, so every `bao`
+call carries the four env values the bring-up uses:
+
+```bash
+kubectl --context kind-forge-target -n shared-services exec openbao-0 -- \
+  env BAO_ADDR=https://127.0.0.1:8200 \
+      VAULT_CACERT=/openbao/tls/ca.crt \
+      VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+      VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
+      bao status
+```
+
+A sealed store answers `Initialized true` and `Sealed true`, and exits non-zero
+while doing so. `bao status` carries the seal state in its exit code: 0 for
+unsealed, 2 for sealed, 1 for a connection error.
+
+### Unseal the shared OpenBao
+
+The shares live in the Secret `openbao-init-keys` in `shared-services`, under
+data key `init-output`: the JSON that `bao operator init` printed at bring-up.
+Three of the five shares reach the threshold.
+
+Two details of the loop below are deliberate. That JSON also holds the store's
+root token, which grants strictly more than the shares do, so only
+`unseal_keys_b64` is read out of it and the shell drops it again at the end. And
+no share is ever passed as an argument, because a command line is readable in
+two places: `kubectl exec` encodes every element of the remote command as a
+repeated `command=` query parameter and the API server records the request URI
+in its audit log, and inside the container the expanded argument sits in
+`/proc/<pid>/cmdline` for as long as the call runs. Three shares are the whole
+threshold, so neither copy is acceptable. `bao operator unseal` takes the key
+only from an argument or an interactive terminal prompt, so the loop writes the
+share to `sys/unseal` instead: `key=-` tells `bao write` to read the value from
+stdin. A successful write prints nothing, a rejected share prints an error and
+exits non-zero.
+
+```bash
+unseal_keys=$(kubectl --context kind-forge-target -n shared-services \
+  get secret openbao-init-keys -o jsonpath='{.data.init-output}' \
+  | base64 -d | jq -c '.unseal_keys_b64')
+
+for i in 0 1 2; do
+  key=$(printf '%s' "$unseal_keys" | jq -r ".[$i]")
+  if [[ -z "$key" || "$key" == "null" ]]; then
+    echo "unseal key index $i missing from openbao-init-keys" >&2
+    break
+  fi
+  printf '%s' "$key" | kubectl --context kind-forge-target -n shared-services \
+    exec -i openbao-0 -- \
+    env BAO_ADDR=https://127.0.0.1:8200 \
+        VAULT_CACERT=/openbao/tls/ca.crt \
+        VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+        VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
+        bao write sys/unseal key=-
+done
+
+unset unseal_keys key
+```
+
+The guard is what keeps a failed read visible. A missing Secret, a wrong
+`--context`, or an absent `jq` leaves `unseal_keys` empty at exit status 0;
+without the guard the loop applies three empty keys, `bao` rejects each one, and
+the seal never lifts while nothing says which step actually failed.
+
+Re-run `bao status`: it exits 0 and reports `Sealed false`. The kind overlay
+runs a single replica, so `openbao-0` is the whole store. The production base
+runs three, and every pod that comes up sealed takes the same three shares.
+
+### If the keys are gone
+
+`openbao-init-keys` is the only custody of the shares. Without it there is no
+unseal path: recovery means re-initializing the store, which loses the raft data
+the old seal protected, and re-running the bring-up's OpenBao bootstrap to
+refill it.
+
+### If the pod is not up
+
+Exit code 1 from `bao status` is a connection error, so the server is not
+answering at all. Shares do nothing for a pod that never started. Check the pod
+and its volume first:
+
+```bash
+kubectl --context kind-forge-target -n shared-services get pod openbao-0
+kubectl --context kind-forge-target -n shared-services get pvc
+```
+
+Apply the shares only once `openbao-0` is `Running` and `bao status` reports the
+seal.
+
+### If consumers stay stale after the unseal
+
+Consumers usually recover on their own once the store is open, and on this
+devstack run both placed CRs were back to `Ready=True` within seconds of the
+third share, so the force-sync below is for the ones that stay in backoff.
+
+An ExternalSecret that failed against the sealed store is in retry backoff, and
+its next attempt can be minutes away. ESO re-syncs on a change to the
+ExternalSecret's own metadata, so an annotation with a fresh value forces one:
+
+```bash
+for es in keystone-admin keystone-db; do
+  kubectl --context kind-forge-target -n openstack annotate externalsecret "$es" \
+    force-sync=$(date +%s) --overwrite
+done
+```
+
+Both belong in the loop. The operator's secrets gate holds on `keystone-db` and
+`keystone-admin` alike, and a target restarted before ESO's first successful
+sync has no materialized `keystone-db` Secret to fall back on, so nudging only
+one of the two leaves the CR parked on `WaitingForDBCredentials` until the wait
+below times out. Leave `openbao-instance-unseal-key` out of it: that Secret
+carries the proving instance's seal key, which is never re-synced against a live
+instance.
+[Unseal-key custody](../reference/infrastructure/infrastructure-manifests.md#openbao-proving-instance)
+walks the full chain, from the seeded path in the management OpenBao to the mount
+inside the instance pod.
+
+Then wait for the placed CRs to come back:
+
+```bash
+kubectl --context kind-forge-mgmt -n openstack wait keystone/keystone \
+  --for=condition=Ready --timeout=10m
+```
+
+### The admission lock on the managed instances
+
+The openbao-operator chart ships a ValidatingAdmissionPolicy that denies every
+mutation of the `OpenBaoCluster` instances the operator manages, among them the
+proving instance `openbao-instance` in `openstack`. The shared OpenBao in
+`shared-services` is Helm-deployed and carries none of the labels that policy
+matches, which is why the unseal exec above and a plain pod delete there both go
+through.
+[OpenBao proving instance](../reference/infrastructure/infrastructure-manifests.md#openbao-proving-instance)
+covers the policy and the sanctioned way to restart a managed instance.
+
 ## See also
 
 - [Target Clusters](../reference/target-clusters.md): the registration Secret's
