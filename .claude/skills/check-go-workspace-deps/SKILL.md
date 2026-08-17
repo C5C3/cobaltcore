@@ -31,7 +31,7 @@ The repo declares three things that have to agree:
 |---|---|---|
 | Workspace member set | `go.work` (`use (…)` block) | the directories listed are exactly the modules participating in workspace mode |
 | Go directive | `go.work` `go <ver>` and each `operators/<op>/go.mod` / `internal/common/go.mod` `go <ver>` | a single version string (e.g. `1.25.10`) shared across all modules |
-| Shared dependency versions | each `go.mod` `require ( … )` block — specifically the k8s.io/*, sigs.k8s.io/controller-runtime, and github.com/dc-tec/openbao-operator entries | identical version per module (controller-runtime, k8s.io/api, k8s.io/apimachinery, k8s.io/client-go, k8s.io/apiextensions-apiserver, openbao-operator) |
+| Shared dependency versions | each `go.mod` `require ( … )` block — specifically the k8s.io/*, sigs.k8s.io/controller-runtime, sigs.k8s.io/multicluster-runtime, and github.com/dc-tec/openbao-operator entries | identical version per module (controller-runtime, multicluster-runtime, k8s.io/api, k8s.io/apimachinery, k8s.io/client-go, k8s.io/apiextensions-apiserver, openbao-operator) |
 | Workspace sum file | `go.work.sum` | a *tracked* file per CC-0001 REQ-009 (gitignore intentionally does *not* exclude it) |
 
 The authoritative gate is `go build ./...` from each module root, which
@@ -70,8 +70,11 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   in every member's `go.mod` (exact string match, e.g. `1.25.10`).
   A delta is a real toolchain hazard: the workspace uses one Go
   version, the per-module CI legs use another.
-- **W4** — for each shared dep (controller-runtime, k8s.io/api,
-  k8s.io/apimachinery, k8s.io/client-go, k8s.io/apiextensions-apiserver,
+- **W4** — for each shared dep (controller-runtime,
+  sigs.k8s.io/multicluster-runtime — every module builds on the
+  multicluster manager and builder since the target-cluster work —,
+  k8s.io/api, k8s.io/apimachinery, k8s.io/client-go,
+  k8s.io/apiextensions-apiserver,
   github.com/dc-tec/openbao-operator — required by both `operators/c5c3`
   and `operators/barbican`, which register its CR types in one scheme),
   every module that requires it (direct or indirect) pins the same

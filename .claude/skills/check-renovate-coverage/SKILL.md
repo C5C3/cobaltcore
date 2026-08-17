@@ -34,7 +34,7 @@ which Renovate has to understand:
 | Layer | Where it lives | Renovate handle |
 |---|---|---|
 | OpenStack release tags | `releases/<release>/source-refs.yaml` (one line per component: `keystone: "29.0.0"`) | customManager #1 — matches `^(?<depName>[\w.-]+):\s*"(?<currentValue>\d+\.\d+\.\d+)"` per file under `releases/.*/source-refs.yaml` |
-| Shell script constants | `hack/deploy-infra.sh` (`FLUX_OPERATOR_VERSION="v…"`, `GATEWAY_API_VERSION="${…:-v…}"`) | customManager — one regex per constant; the existing managers cover `FLUX_OPERATOR_VERSION` only |
+| Shell script constants | `hack/deploy-infra.sh` and `hack/deploy-mgmt-cluster.sh` (`FLUX_OPERATOR_VERSION="v…"` — deliberately duplicated across the two bring-up scripts, one customManager matches both files —, `GATEWAY_API_VERSION="${…:-v…}"`) | customManager — one regex per constant |
 | kind base manifests | `deploy/kind/base/flux-web.yaml` (`- version: "…"`), `deploy/kind/base/envoy-gateway.yaml` (range like `">=0.0.0 <0.0.0"`) | customManager — one regex per file shape |
 | FluxCD HelmRelease versions | `deploy/flux-system/releases/*.yaml` (`spec.chart.spec.version`) | native `flux` / `helm-values` manager (no customManager needed) |
 | Go module deps | `operators/*/go.mod`, `internal/common/go.mod` | native `gomod` manager (no customManager needed) |

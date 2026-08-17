@@ -14,7 +14,9 @@
 #       orphan Tempest dir survives a removed release
 #   L3  every release is covered by a basic-deployment e2e suite (the plain
 #       suite's tag or a basic-deployment-<slug> variant), variant fixtures
-#       and image refs carry the right version, and no orphan variant remains
+#       and image refs carry the right version, no orphan variant remains,
+#       and every release pinned by a tests/e2e-multicluster/ fixture
+#       (tag / openStackRelease) still exists under releases/
 #   L4  every default-release reference (deploy/kind ControlPlane, deploy-infra
 #       preload, RELEASE:- fallbacks in hack/, image tags in ci.yaml) points at
 #       an existing releases/<version>/ directory
@@ -214,6 +216,25 @@ for vdir in tests/e2e/keystone/basic-deployment-*/; do
       fail "${ct} carries image refs for another release: $(echo "${stray}" | tr '\n' ' ')"
     fi
   fi
+done
+shopt -u nullglob
+
+# The two-cluster placed-services fixtures pin a release too (service image
+# tag + openStackRelease); a retired release would break the e2e-multicluster
+# job, and nothing else audits that tree. The ci.yaml side of the same pins
+# (the job's kind image preloads) is covered by the generic L4 image-tag scan.
+shopt -s nullglob
+for f in tests/e2e-multicluster/*/*.yaml; do
+  mc_versions="$(grep -hoE '(tag|openStackRelease):[[:space:]]*"[0-9]{4}\.[12]"' "${f}" 2>/dev/null \
+    | grep -oE '[0-9]{4}\.[12]' | sort -u || true)"
+  [[ -z "${mc_versions}" ]] && continue
+  for v in ${mc_versions}; do
+    if release_exists "${v}"; then
+      pass "${f} pins release \"${v}\" (exists under releases/)"
+    else
+      fail "${f} pins release \"${v}\" but releases/${v}/ does not exist"
+    fi
+  done
 done
 shopt -u nullglob
 

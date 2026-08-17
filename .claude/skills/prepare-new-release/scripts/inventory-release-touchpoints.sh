@@ -122,6 +122,9 @@ for f in hack/ci-build-service-image.sh hack/ci-build-tempest-image.sh hack/run-
 done
 printf '  [INFO] ci.yaml hard-coded image tags: %s\n' \
   "$(grep -oE ':[0-9]{4}\.[12]' .github/workflows/ci.yaml | tr -d ':' | sort -u | tr '\n' ' ')"
+printf '  [INFO] e2e-multicluster placed-services fixtures pin: %s\n' \
+  "$(grep -rhoE '(tag|openStackRelease):[[:space:]]*"[0-9]{4}\.[12]"' tests/e2e-multicluster/ 2>/dev/null \
+    | grep -oE '[0-9]{4}\.[12]' | sort -u | tr '\n' ' ')"
 printf '  [INFO] renovate regression tests probe: %s\n' \
   "$(grep -ohE 'releases/[0-9]{4}\.[12]' tests/unit/renovate/*_test.sh 2>/dev/null | sort -u | tr '\n' ' ')"
 from_ru="$(sed -nE 's/.*tag:[[:space:]]*"([^"]+)".*/\1/p' tests/e2e/keystone/release-upgrade/00-keystone-cr.yaml 2>/dev/null | head -1)"

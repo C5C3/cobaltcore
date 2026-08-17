@@ -95,6 +95,14 @@ code `1` means at least one `[FAIL]`. Interpret:
   abbreviations (e.g. `InfraReady` for `InfrastructureReady` in ASCII
   art) and cross-operator references demote to `[INFO]` — confirm
   those by hand.
+- **K6** — every condition type referenced in
+  `docs/reference/target-clusters.md` is set by *some* operator. The
+  cross-cluster page documents the placement contract across all
+  operators (the `TargetClusterUnavailable` gate conditions, `KORCReady`
+  wait states, satellite-CRD conditions), sits outside every
+  per-operator corpus, and would otherwise go stale unnoticed when a
+  condition is renamed. Checked against the union of all operators
+  plus `internal/common/`, where shared sub-reconcilers live.
 - The **inventory** lists, per operator and sub-reconciler:
   - the condition type(s) it sets (literals and constants),
   - the entry in `subReconcilerConditionTypes` it expects,
@@ -114,7 +122,7 @@ grep, not a Go parser. Using the printed inventory, confirm:
    the `*_test.go` actually exercises the condition transitions the
    `reconcile_*.go` performs (Reason / Message / Status). Counting
    tests by file existence is necessary but not sufficient.
-3. For each `[FAIL]` from K4 / K5, decide: doc fix or code fix.
+3. For each `[FAIL]` from K4 / K5 / K6, decide: doc fix or code fix.
 4. For each `[INFO]` abbreviation or cross-operator reference from
    K5, confirm the prose really means the full condition type.
 

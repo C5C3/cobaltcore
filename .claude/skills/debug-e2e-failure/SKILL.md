@@ -6,9 +6,9 @@ description: >-
   failure back to the suite directory under tests/, classify it against the
   known flake patterns, and reproduce it locally against a kind cluster.
   Use when a CI e2e job fails (e2e-infra, e2e-operator, e2e-chaos,
-  e2e-prometheus, e2e-controlplane, e2e-operator-upgrade, tempest), when
-  asked to debug a chainsaw suite, or when reproducing an e2e failure
-  locally.
+  e2e-prometheus, e2e-controlplane, e2e-operator-upgrade,
+  e2e-multicluster, tempest), when asked to debug a chainsaw suite, or
+  when reproducing an e2e failure locally.
 ---
 
 # Debug an e2e failure
@@ -34,6 +34,7 @@ log and uploads a JUnit report artifact from `_output/reports/`.
 | `e2e-chaos` (`pod` / `network`) | explicit `test_dirs` matrix over `tests/e2e-chaos/`, chaos config (`parallel: 1`, `assert: 300s`); `network` leg is `continue-on-error` (kernel-module dependency stays flaky); the `pod` leg runs on `blacksmith-4vcpu-ubuntu-2404`, the `network` leg on `self-hosted` | diag dump + `e2e-chaos-junit-report-<suite>` |
 | `e2e-prometheus` | `tests/e2e/keystone/prometheus-stack/` with `WITH_PROMETHEUS=true` | diag dump + `e2e-prometheus-junit-report` |
 | `e2e-controlplane` | `tests/e2e/c5c3/full-controlplane-keystone/` — full chain (c5c3-operator + K-ORC + keystone-operator), `E2E_REQUIRE_CONTROLPLANE_STACK=true` flips presence-guard SKIPs into failures | diag dump (`OPERATOR=c5c3`) + `e2e-controlplane-junit-report` |
+| `e2e-multicluster` | `tests/e2e-multicluster/` (own `chainsaw-config.yaml`) across **two** kind clusters: `forge-target` runs the infrastructure (`INFRA_ONLY=true` bring-up + the `deploy/target-cluster/target-cluster-access` chart), `forge-mgmt` runs keystone-operator + barbican-operator and holds the placed CRs; the operators reach the target through the `forge-target` registration Secret in `c5c3-clusters` | **two** diag dumps — management (`OPERATOR=keystone`) and target (no `OPERATOR`; the infrastructure section is the whole dump) — + `e2e-multicluster-junit-report` |
 | `tempest (<release>)` | `hack/ci-run-tempest.sh` against a Ready Keystone CR from `tests/tempest/<svc>-<slug>/` | `tempest-<release>-results` artifact (JUnit + logs; `tempest.conf` excluded — carries the admin password) |
 
 Two gating facts worth knowing before reading results: the happy-path
@@ -109,6 +110,16 @@ Family-specific constraints:
 - `make e2e-operator-upgrade` must run against a cluster **without** a
   pre-deployed keystone-operator (the suite installs the released
   baseline itself).
+- `e2e-multicluster` needs the two-cluster stack first:
+  `INFRA_ONLY=true CLUSTER_NAME=forge-target make deploy-infra` for the
+  target, `hack/deploy-mgmt-cluster.sh` for the management cluster
+  (leaves the kubectl context there), the two operators via
+  `hack/ci-deploy-operator.sh`, and the target registration from
+  `docs/guides/deploy-to-a-target-cluster.md`. `make e2e-multicluster`
+  preflights each prerequisite separately — the reachable management
+  context, the `forge-target` registration Secret in `c5c3-clusters`,
+  and chainsaw's own `_output/forge-target.kubeconfig` — trust their
+  remediation hints; the guide is the full walkthrough.
 - After an OpenBao pod kill, run `tests/e2e-chaos/unseal-openbao.sh` —
   the single-replica kind topology has no auto-unseal.
 
@@ -155,5 +166,8 @@ Family-specific constraints:
   `tests/e2e/README.md` and `tests/e2e-chaos/README.md` for the
   conventions; new **chaos** suites must additionally be added to the
   `test_dirs` matrix in `ci.yaml` (the regex flags don't filter).
+  Two-cluster suites live under `tests/e2e-multicluster/` **outside**
+  `tests/e2e/` on purpose: every suite there runs against one cluster
+  and `make e2e` sweeps that whole tree.
 - Pair with [[check-fixture-drift]] for schema mismatches and
   [[check-crd-drift]] when the webhook rejects what the CRD allows.

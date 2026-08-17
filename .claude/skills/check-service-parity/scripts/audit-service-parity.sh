@@ -32,6 +32,10 @@
 #       (naming.APISelectorLabels), per-component pod-template labels
 #       (naming.ComponentLabels), Job-pod exclusion on the API PDB
 #       (naming.ExcludeJobPods)
+#   P12 target-cluster placement: spec.targetClusterRef on the CRD, the
+#       webhook immutability mirror (validation.TargetClusterRefImmutable),
+#       a targetclusterref invalid-cr fixture, the multicluster builder,
+#       and the remote-children sweep (SweepRemoteChildren)
 #
 # The keystone reference is audited too — a reference regression is its own
 # [FAIL]. Deliberate thin-profile deviations (a service that legitimately
@@ -454,6 +458,43 @@ for svc in ${SERVICES}; do
 done
 
 # ---------------------------------------------------------------------------
+# P12 — target-cluster placement
+# ---------------------------------------------------------------------------
+# Since the multicluster conversion every service CR is born placeable: the
+# spec carries targetClusterRef (shared commonv1.TargetClusterRefSpec), the
+# webhook mirrors the CEL immutability rule, an invalid-cr fixture pins the
+# empty-name rejection, the controller runs on the multicluster builder, and
+# deletion sweeps label-owned remote children (no cross-cluster
+# ownerReferences exist to cascade). A service missing any of these cannot be
+# placed — or worse, strands its remote children on delete. Whether the
+# service is exercised by the two-cluster placed-services suite is inventory,
+# not a check: suite membership is a coverage decision (keystone + barbican
+# today), the artifacts below are not.
+hdr "P12: target-cluster placement (targetClusterRef, webhook mirror, fixture, mc builder, remote sweep)"
+for svc in ${SERVICES}; do
+  t=0; grep -q "TargetClusterRef" "operators/${svc}/api/v1alpha1/${svc}_types.go" 2>/dev/null || t=1
+  check "${svc}" P12 "spec-field" "${t}" \
+    "spec.targetClusterRef modelled in operators/${svc}/api/v1alpha1/${svc}_types.go"
+
+  t=0; grep -rq "TargetClusterRefImmutable" "operators/${svc}/api/v1alpha1/" 2>/dev/null || t=1
+  check "${svc}" P12 "webhook-immutable" "${t}" \
+    "webhook mirrors targetClusterRef immutability (validation.TargetClusterRefImmutable)"
+
+  fixture_count=$( (find "tests/e2e/${svc}/invalid-cr" -name '*targetclusterref*' 2>/dev/null || true) | wc -l | tr -d ' ')
+  t=0; [[ "${fixture_count}" -gt 0 ]] || t=1
+  check "${svc}" P12 "invalid-cr-fixture" "${t}" \
+    "invalid-cr corpus carries a targetclusterref rejection fixture"
+
+  t=0; grep -rq "multicluster-runtime/pkg/builder" "operators/${svc}/internal/controller/" 2>/dev/null || t=1
+  check "${svc}" P12 "mc-builder" "${t}" \
+    "controller wires the multicluster builder (sigs.k8s.io/multicluster-runtime/pkg/builder)"
+
+  t=0; grep -rq "SweepRemoteChildren" "operators/${svc}/internal/controller/" 2>/dev/null || t=1
+  check "${svc}" P12 "remote-sweep" "${t}" \
+    "deletion sweeps remote children (commonmulticluster.SweepRemoteChildren)"
+done
+
+# ---------------------------------------------------------------------------
 # Inventory — one line per service and layer
 # ---------------------------------------------------------------------------
 hdr "Inventory"
@@ -465,7 +506,13 @@ for svc in ${SERVICES}; do
   else
     chaos_suites=$( (find tests/e2e-chaos -maxdepth 1 -type d -name "${svc}-*" 2>/dev/null || true) | wc -l | tr -d ' ')
   fi
-  info "${svc}: helm-tests=${helm_tests} e2e-suites=${e2e_suites} chaos-suites=${chaos_suites}"
+  svc_kind="$(tr '[:lower:]' '[:upper:]' <<< "${svc:0:1}")${svc:1}"
+  if grep -rq "kind: ${svc_kind}$" tests/e2e-multicluster/ 2>/dev/null; then
+    placed="yes"
+  else
+    placed="no"
+  fi
+  info "${svc}: helm-tests=${helm_tests} e2e-suites=${e2e_suites} chaos-suites=${chaos_suites} placed-services-suite=${placed}"
 done
 
 # ---------------------------------------------------------------------------

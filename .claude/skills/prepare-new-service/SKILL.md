@@ -40,9 +40,9 @@ Every service in forge threads through five layers. Keystone
 | Layer | Canonical locations | Auto-extends? |
 |---|---|---|
 | 1. Container image | `images/<svc>/Dockerfile`, `releases/*/source-refs.yaml`, `releases/*/extra-packages.yaml`, `tests/container-images/verify_<svc>.sh` | build/test matrix: **yes** (from source-refs keys); hadolint matrix in `build-images.yaml`: **no** |
-| 2. Service operator | `operators/<svc>/` (api, controller — including the recurring-maintenance CronJobs of § Recurring maintenance jobs —, webhook, helm chart on `operators/shared/helm/operator-library`), `go.work`, `Makefile` `OPERATORS` | **no** — module + enumerations by hand |
+| 2. Service operator | `operators/<svc>/` (api, controller — including the recurring-maintenance CronJobs of § Recurring maintenance jobs and the target-cluster placement artefacts of § Placement on target clusters —, webhook, helm chart on `operators/shared/helm/operator-library`), `go.work`, `Makefile` `OPERATORS` | **no** — module + enumerations by hand |
 | 3. CI / e2e / deploy | `ci.yaml` paths-filter + `ALL_OPERATORS` + matrices, `tests/ci/verify_<svc>_ci_pipeline.sh`, `tests/e2e/<svc>/`, `tests/e2e/<svc>-operator/`, `tests/e2e-chaos/<svc>-*/`, `tests/tempest/<svc>-*/`, `deploy/flux-system/releases/<svc>-operator.yaml`, kind devstack wiring (`deploy/kind/base/openstack-gateway.yaml` listener + `deploy/kind/infrastructure/<svc>-nip-io-tls-certificate.yaml`, the `deploy/kind/base/kustomization.yaml` HelmRelease suspend patch **plus its counterparts in `hack/deploy-infra.sh`**: the flux-path un-suspend patch, the `enable_operator_servicemonitor` call, and the `hack/refresh-operator-image-digests.sh` target tuple — a service missing from the un-suspend list stays suspended on the quick-start path, its CRDs never install, and the c5c3-operator's controlplane cache never syncs), OpenBao bootstrap legs (`deploy/openbao/bootstrap/`, `deploy/openbao/policies/`) | chainsaw suites: **yes** (auto-discovered); ci.yaml wiring: **no** (3-step procedure in `hack/ci-resolve-changes.sh` header); devstack/OpenBao wiring: **no** |
-| 4. ControlPlane (c5c3) | `ServicesSpec` in `operators/c5c3/api/v1alpha1/controlplane_types.go` (incl. `publicEndpoint` + `databaseCredentialsMode` per-service fields), `reconcile_<svc>.go` (+ `reconcile_<svc>_dbcredentials.go` for DB services), catalog row in `reconcile_catalog.go`, teardown in `reconcile_delete.go`, condition/instrumentation maps, RBAC markers + helm `_helpers.tpl`, scheme, webhook, envtest full chain (`integration_test.go`) + `tests/e2e/c5c3/full-controlplane-keystone/` | **no** — ~10 enumeration points |
+| 4. ControlPlane (c5c3) | `ServicesSpec` in `operators/c5c3/api/v1alpha1/controlplane_types.go` (incl. `publicEndpoint`, `databaseCredentialsMode`, and `targetClusterRef` per-service fields), `reconcile_<svc>.go` (+ `reconcile_<svc>_dbcredentials.go` for DB services), catalog row in `reconcile_catalog.go`, teardown in `reconcile_delete.go` + the placed-namespace sweep, condition/instrumentation maps, RBAC markers + helm `_helpers.tpl`, scheme, webhook (incl. the per-service placement rules — `tests/e2e/c5c3/invalid-cr/` pins them), envtest full chain (`integration_test.go`) + `tests/e2e/c5c3/full-controlplane-keystone/` | **no** — ~10 enumeration points |
 | 5. Documentation | `docs/reference/<svc>/` (hand-written, `quadrant: operator` frontmatter), VitePress sidebar, per-service guides under `docs/guides/<svc>/`, quick-start extension (`docs/quick-start-controlplane.md`), `tests/unit/docs/` conventions | **no** — no doc generator exists |
 
 ## Procedure
@@ -123,6 +123,17 @@ applies and which decisions need a Phase-0 spike:
   **both** releases.
 - **Stateful key material?** (fernet-like) — keystone's rotation machinery
   is deliberately NOT extracted; a second consumer changes that calculus.
+- **Operator-side dial-outs when placed?** Every service CR is born
+  placeable on a target cluster (§ Placement on target clusters — the
+  five artefacts are scaffold, not follow-up). The profile question is
+  what *breaks* when the children live elsewhere: an operator that dials
+  a cluster-local endpoint itself (OpenBao provisioning, DB admin
+  connections) needs the port-forward tunnel seam
+  (`commonmulticluster.NewPortForwardDialer` — barbican's OpenBao dials
+  are the worked example), HTTP health probes go through
+  `ResolveHTTPDoer` (the API-server service proxy when placed), and any
+  optional child kind (HTTPRoute) needs the per-cluster capability probe
+  (`ChildrenServeKind`).
 - **Depends on other services?** Determines the gating condition in the
   c5c3 sub-reconciler chain (e.g. Horizon gates on `KeystoneReady`).
 - **Tempest plugin maintained upstream?** If not (e.g. horizon), plan
@@ -217,7 +228,9 @@ Standard phase skeleton (drop/merge phases the profile rules out):
   rendered Deployment and Service pinned in the same checkbox that adds
   them; one checkbox per recurring-maintenance task from the profile,
   which is part of the scaffold, not a follow-up (§ Recurring maintenance
-  jobs).
+  jobs); the five placement artefacts of § Placement on target clusters
+  are scaffold too — [[check-service-parity]] P12 flags a service that
+  lands without them.
 - **Phase 3 — CI, e2e, deploy stack** (alongside Phase 2) — including the
   kind Gateway listener/cert, OpenBao bootstrap legs, and chaos suites.
 - **Phase 4 — ControlPlane integration** (blocked on Phase 2) — including
@@ -268,6 +281,7 @@ back.
 | `deployment.BuildService(ns, name, labels, selector, port, targetPort)` — `port` and `targetPort` stay separate so traffic can route to a sidecar | a hand-assembled `corev1.Service` literal |
 | the component-label contract from `internal/common/naming`: API pod template labelled `ComponentLabels(app, instance, ComponentAPI)`, API Service selecting on `APISelectorLabels`, API PDB on `SelectorLabels` + `ExcludeJobPods()`, while `Deployment.spec.selector` and the NetworkPolicy `podSelector` stay on `SelectorLabels` (see § Recurring maintenance jobs for why) | a name+instance Service selector that admits every pod of the instance — including maintenance Job pods — as an API endpoint |
 | `bootstrap.NewScheme(<extra AddToScheme funcs>...)` in `main.go` | `var scheme = runtime.NewScheme()` plus an `init()` block |
+| `mcbuilder.ControllerManagedBy(mgr)` (sigs.k8s.io/multicluster-runtime) with `commonmulticluster.EngageLocalCluster` / `EngageNoProviderClusters`, remote child watches via `AddRemoteChildWatches` (+ `ClusterServesKind` for optional kinds), and every child access routed through `ResolveChildrenClient` — see § Placement on target clusters | a single-cluster `ctrl.NewControllerManagedBy` with `Owns()` watches and direct `r.Client` child writes |
 | embedding `webhook.NoopDeleteValidator[T]` | a per-webhook `ValidateDelete` method |
 | passing the bound method `instrumenter.Instrument` into the pipeline | a package-local `instrumentSubReconciler` wrapper |
 | referencing `commonreconcile.*` / `healthcheck.*` requeue constants directly | package-local aliases in a `requeue_intervals.go` (keep that file only for genuinely operator-specific waits; horizon has none and therefore no file) |
@@ -296,6 +310,56 @@ sidecar, autoscaling, hash annotations). Generate the new operator's pins
 in the same commit that adds its builders — they are what makes the next
 change to the shared `BuildWorkload` provably byte-neutral for this
 service, and they cost nothing to write while the builder is fresh.
+
+## Placement on target clusters (verified 2026-08-17 post-multicluster, re-verify at HEAD)
+
+Since the multicluster conversion, every service CR is born placeable:
+`spec.targetClusterRef` keeps the CR, its status, and its webhook on the
+management cluster while every projected child lands on the named target.
+The five artefacts below are one contract and land with the scaffold —
+[[check-service-parity]] P12 audits them, and a follower service picking
+up only the spec field is the drift it exists to catch:
+
+- **API** — `TargetClusterRef *commonv1.TargetClusterRefSpec` on the
+  Spec (shared type in `internal/common/types`; carries its own CEL
+  immutability rule).
+- **Webhook** — mirror the immutability via
+  `validation.TargetClusterRefImmutable` plus the create-time checks
+  via `validation.TargetClusterRef`.
+- **invalid-cr fixture** — the `targetclusterref-empty-name` rejection
+  (every operator's corpus carries one; copy the keystone shape).
+- **Controller** — the multicluster builder
+  (`mcbuilder.ControllerManagedBy` with `EngageLocalCluster` /
+  `EngageNoProviderClusters`), remote requests mapped via
+  `commonmulticluster.TargetClusterOf`, remote child watches via
+  `AddRemoteChildWatches`, and **every** child write through the
+  resolved children client (`ResolveChildrenClient`; a resolver miss
+  fails the operator's first gate condition with reason
+  `TargetClusterUnavailable`). Remote children are written label-owned
+  via the ownership claim (`Claim` stamps labels instead of a
+  cross-cluster ownerReference, which cannot exist).
+- **Deletion** — a conditional `RemoteChildrenFinalizer` plus
+  `SweepRemoteChildren`: nothing cascades for label-owned remote
+  children, so an operator that skips the sweep leaks every placed
+  child.
+
+What stays service-specific: cluster-local dial-outs from the operator
+need the port-forward tunnel (`NewPortForwardDialer` — barbican's
+OpenBao provisioning is the worked example), HTTP health probes route
+through `ResolveHTTPDoer` (API-server service proxy when placed), and
+optional child kinds gate on the per-cluster capability probe
+(`ChildrenServeKind` — the HTTPRoute precedent). Prove the split on the
+dual envtest (`internal/common/testutil/multicluster`; keystone's
+two-cluster and remote-teardown tests are the templates). The c5c3 side
+adds `targetClusterRef` to the service's `Service<Svc>Spec`, the
+placement rules to the ControlPlane webhook (+ invalid-cr fixtures),
+and the placed ensemble to the deletion sweep. Whether the service
+joins the two-cluster placed-services suite
+(`tests/e2e-multicluster/`, keystone + barbican today) is a Phase-3
+decision — membership also means extending the hard-coded image list
+in the ci.yaml `e2e-multicluster` job. `docs/reference/target-clusters.md`
+is the authoritative contract (ownership labels, teardown order,
+per-service placement notes) and gains the new service's row in Phase 5.
 
 ## Recurring maintenance jobs
 

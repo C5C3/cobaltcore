@@ -1,8 +1,9 @@
 ---
 name: check-fixture-drift
 description: >-
-  Audit whether every Keystone / c5c3 CR fixture under tests/e2e/ and
-  tests/e2e-chaos/ still validates against the *current* CRD schema —
+  Audit whether every Keystone / c5c3 CR fixture under tests/e2e/,
+  tests/e2e-chaos/, and tests/e2e-multicluster/ still validates against
+  the *current* CRD schema —
   no removed Spec field is still referenced, every fixture's
   apiVersion / kind matches a real CRD, every invalid-cr fixture is
   reachable from a Chainsaw test, and the existing
@@ -15,7 +16,8 @@ description: >-
 
 This skill verifies that the forge **test fixtures still match the CRD
 they claim to instantiate**: every `apiVersion: keystone.openstack.c5c3.io/v1alpha1`
-fixture under `tests/e2e/` and `tests/e2e-chaos/` uses only Spec fields
+fixture under `tests/e2e/`, `tests/e2e-chaos/`, and
+`tests/e2e-multicluster/` uses only Spec fields
 that the current CRD schema accepts, every invalid-cr fixture is
 referenced from a Chainsaw test that exercises it, and the
 `verify-invalid-cr-fixtures` generator's outputs stay in sync.
@@ -33,6 +35,7 @@ of truth:
 |---|---|---|
 | Happy-path e2e CR | `tests/e2e/keystone/<scenario>/*.yaml` (filename pattern `<NN>-*.yaml`, referenced from `chainsaw-test.yaml`) | the Keystone CRD `operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml` and the webhook in `operators/keystone/internal/controller/` |
 | Chaos / scale e2e CR | `tests/e2e-chaos/<scenario>/*.yaml`, `tests/e2e/infrastructure/*` | same CRD |
+| Two-cluster placed e2e CR | `tests/e2e-multicluster/<scenario>/*.yaml` — Keystone, Barbican, and BarbicanSecretStore CRs carrying `targetClusterRef` | same CRDs (the barbican kinds validate against the barbican CRD set) |
 | Invalid-CR webhook reject | `tests/e2e/keystone/invalid-cr/<NN>-*.yaml` (paired with the Python generator `_generate.py` and the unit test `test_generate.py`) | `keystone_types.go` `+kubebuilder:validation:*` markers and the webhook validation logic |
 | Chainsaw test wiring | `tests/e2e/<area>/<scenario>/chainsaw-test.yaml` | references the local `<NN>-*.yaml` files by relative path |
 

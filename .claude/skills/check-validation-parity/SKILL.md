@@ -83,8 +83,9 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   a `ValidatingWebhookConfiguration` has its invalid-cr corpus wired to a
   `chainsaw-test.yaml`. A corpus that is missing entirely is reported as
   an `[INFO] GAP` — grade it in the report rather than the script,
-  because the corpus convention currently exists only for service
-  operators.
+  because a freshly webhook-validated operator may legitimately lag its
+  corpus by a PR. Every current operator carries one, including c5c3
+  (`tests/e2e/c5c3/invalid-cr/`, landed with the placement rules).
 
 ### 2. Cross-reference the inventory
 
@@ -172,8 +173,10 @@ These recurring shapes are worth grepping for first:
 5. **Webhook-validated CRD without a corpus.** An operator registers a
    `ValidatingWebhookConfiguration` and rejects CRs in code, but has no
    `tests/e2e/<op>/invalid-cr/` at all — every rejection path is pinned
-   only by unit tests that never cross the wire (today: c5c3's
-   ControlPlane webhook).
+   only by unit tests that never cross the wire. c5c3 ran that way
+   until the ControlPlane placement rules landed its corpus
+   (`tests/e2e/c5c3/invalid-cr/`); watch for the shape on the next
+   webhook-validated CRD.
 
 ## Notes
 

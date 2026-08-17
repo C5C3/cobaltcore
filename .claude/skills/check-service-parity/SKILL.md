@@ -38,7 +38,7 @@ threads through five layers:
 |---|---|---|
 | Container image | `images/<svc>/Dockerfile`, `tests/container-images/verify_<svc>.sh`, `releases/*/`(source-refs, extra-packages, test-excludes) | the keystone image contract and `verify_release_config.sh` |
 | Service operator | `operators/<svc>/` (module, CRD, webhook, helm chart, dashboards) | the keystone operator scaffolding on `internal/common` |
-| CI / e2e / deploy | `.github/workflows/*.yaml`, `hack/ci-resolve-changes.sh` env, `tests/e2e/<svc>/`, `tests/e2e-chaos/`, `deploy/flux-system/`, the per-service lists in `hack/deploy-infra.sh` + `hack/refresh-operator-image-digests.sh` | the enumeration points and canonical suite set keystone populates |
+| CI / e2e / deploy | `.github/workflows/*.yaml`, `hack/ci-resolve-changes.sh` env, `tests/e2e/<svc>/`, `tests/e2e-chaos/`, `tests/e2e-multicluster/` (when the service joins the placed-services suite: fixtures **and** the hard-coded image list in the ci.yaml `e2e-multicluster` job), `deploy/flux-system/`, the per-service lists in `hack/deploy-infra.sh` + `hack/refresh-operator-image-digests.sh` | the enumeration points and canonical suite set keystone populates |
 | ControlPlane integration | `operators/c5c3/api/` `ServicesSpec`, `internal/controller/reconcile_<svc>.go`, c5c3 chart RBAC | the keystone projection (`reconcile_keystone.go`, `KeystoneReady`) |
 | Documentation | `docs/reference/<svc>/`, `docs/guides/<svc>/enable-<svc>-operator-*.md`, `docs/.vitepress/config.ts` | the keystone reference/guide set |
 
@@ -143,8 +143,23 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   `targetPort` admits it, the missing readiness probe makes it ready
   from its first moment, and in-cluster API traffic answers
   `ECONNREFUSED` for its whole runtime (#778, fixed in #785).
+- **P12** — target-cluster placement: since the multicluster
+  conversion every service CR is born placeable, and the five artefacts
+  travel together — `spec.targetClusterRef` (the shared
+  `commonv1.TargetClusterRefSpec`), the webhook immutability mirror
+  (`validation.TargetClusterRefImmutable`), a `targetclusterref`
+  invalid-cr rejection fixture, the multicluster builder
+  (`mcbuilder.ControllerManagedBy` with remote child watches), and the
+  remote-children deletion sweep
+  (`commonmulticluster.SweepRemoteChildren` behind
+  `RemoteChildrenFinalizer`). A service missing any of them cannot be
+  placed, or strands label-owned remote children on delete — no
+  cross-cluster ownerReference exists to cascade for it.
 - The **inventory** lists, per service, the helm-unittest, e2e, and
-  chaos suite counts. Cross-reference outliers by hand in step 2.
+  chaos suite counts, plus whether the service appears in the
+  two-cluster placed-services suite (`tests/e2e-multicluster/` —
+  keystone and barbican today; membership is a coverage decision, not
+  a P12 failure). Cross-reference outliers by hand in step 2.
 
 ### 2. Cross-reference by hand
 
@@ -184,6 +199,18 @@ The script checks presence, not content. Using the inventory, confirm:
    `maintenance-endpoint-isolation` suite pins the isolation
    end-to-end; a service with maintenance CronJobs and no equivalent
    assertion is a candidate for pattern 2 below.
+7. That the placement wiring P12 smoke-checks actually routes every
+   child write through the resolved children client (grep for direct
+   `r.Client.Create`/`Patch` on child kinds that bypass
+   `ResolveChildrenClient`), and that a service dialing cluster-local
+   endpoints from the operator (OpenBao, DB admin connections) does so
+   through the tunnel/proxy seam when placed — barbican's
+   port-forward-tunneled OpenBao dials are the worked example. Decide
+   whether the service should join the placed-services suite
+   (`tests/e2e-multicluster/`) or record why keystone + barbican
+   coverage suffices; the ci.yaml `e2e-multicluster` job hard-codes
+   the image list it preloads, so suite membership means extending
+   that job too.
 
 ### 3. Run the per-layer authoritative gates
 
@@ -255,7 +282,15 @@ These recurring shapes are worth grepping for first:
    landed in the newest `releases/<version>/source-refs.yaml` but not
    the older ones (or vice versa), so the build matrix builds the
    service for half the supported releases.
-7. **Maintenance pod template with bare `commonLabels`.** A new
+7. **Placement artefacts landing piecemeal.** The five P12 artefacts
+   are one contract: a `targetClusterRef` spec field without the
+   webhook mirror admits a mutable placement (the children strand on
+   the old cluster), and a multicluster builder without the
+   remote-children sweep leaks every placed child on delete — remote
+   children are label-owned, so nothing cascades for them. The five
+   land in one arc for a reason; a follower service picking up only
+   the spec field is the drift to catch.
+8. **Maintenance pod template with bare `commonLabels`.** A new
    Job/CronJob builder copies the workload's label set instead of
    `naming.ComponentLabels` with its own component value, so its pods
    satisfy the API Service selector again — the #778 shape P11 exists

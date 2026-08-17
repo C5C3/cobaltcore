@@ -4,8 +4,9 @@ description: >-
   Audit whether every OpenStack release under releases/<version>/ is fully
   wired through the forge repo — the mandatory release config files, the
   per-release Tempest config directory the CI matrix generator hard-requires,
-  the per-release basic-deployment e2e variant, the default-release
-  references in deploy/kind/, hack/, and ci.yaml, the Renovate regression
+  the per-release basic-deployment e2e variant, the release pins in the
+  two-cluster placed-services fixtures, the default-release references in
+  deploy/kind/, hack/, and ci.yaml, the Renovate regression
   tests, the upgrade-path e2e suites, and the version-pattern lockstep
   across CRD marker, webhook, and release.ParseRelease. Use when asked to
   check release wiring, after adding or removing a releases/<version>/
@@ -36,6 +37,7 @@ touch points are enumerated by hand and drift silently:
 | Release config files | `releases/<version>/{source-refs,test-refs,extra-packages}.yaml`, `upper-constraints.txt`, `test-excludes/<svc>.txt` | `tests/container-images/verify_release_config.sh` |
 | Tempest config | `tests/tempest/keystone-<slug>/` (slug = version with `.` → `-`), four files | `hack/ci-generate-tempest-matrix.sh` — **hard-fails the pipeline** when the directory is missing |
 | Per-release e2e variant | `tests/e2e/keystone/basic-deployment-<slug>/` (or the plain `basic-deployment` suite for the default release) | hand-maintained fixtures with hard-coded names and image refs |
+| Placed-services release pins | `tests/e2e-multicluster/placed-services/*.yaml` (`tag:` + `openStackRelease:`) and the matching kind image preloads in the ci.yaml `e2e-multicluster` job | hand-maintained; the suite runs one release, not a matrix |
 | Default-release references | `deploy/kind/controlplane/controlplane.yaml` `openStackRelease`, `hack/deploy-infra.sh` `cp_release`, `RELEASE:-` fallbacks in `hack/ci-build-*.sh` + `hack/run-tempest.sh`, image tags in `.github/workflows/ci.yaml` | the `releases/` directory set |
 | Renovate regression tests | `tests/unit/renovate/*_test.sh` reference a concrete `releases/<version>/` file | the `releases/` directory set |
 | Upgrade-path e2e | `tests/e2e/keystone/release-upgrade/`, `tests/e2e/keystone/upgrade-flow/` fixture tags | the newest sequential transition implied by the sorted release list |
@@ -82,7 +84,12 @@ inventory. Interpret:
   plain suite (whose fixture tag names the default release) or a
   `basic-deployment-<slug>/` variant. Variant fixtures and
   `ghcr.io/...:<tag>` image refs must carry the variant's version —
-  these are hand-maintained and rot first.
+  these are hand-maintained and rot first. The two-cluster
+  placed-services fixtures (`tests/e2e-multicluster/`) are checked
+  here too: every `tag:` / `openStackRelease:` they pin must still
+  exist under `releases/`, or the `e2e-multicluster` job breaks on
+  the retire (the ci.yaml preload side of the same pins falls under
+  the L4 image-tag scan).
 - **L4** — every default-release reference resolves to an existing
   `releases/<version>/`: the kind quick-start ControlPlane, the
   deploy-infra image preload, the three `RELEASE:-` fallbacks, and
