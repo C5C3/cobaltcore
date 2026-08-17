@@ -26,6 +26,7 @@ hdr()  { echo; echo "=== $* ==="; }
 # Shared deps the operators+common library are expected to align on.
 SHARED_DEPS=(
   "sigs.k8s.io/controller-runtime"
+  "sigs.k8s.io/multicluster-runtime"
   "k8s.io/api"
   "k8s.io/apimachinery"
   "k8s.io/client-go"

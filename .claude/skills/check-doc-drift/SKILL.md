@@ -30,7 +30,8 @@ splits the corpus into three areas, each with a single source of truth:
 |---|---|---|
 | Operator reference | `docs/reference/<op>/` reconciler pages (e.g. `keystone-reconciler.md`, `controlplane-reconciler.md`, `horizon-reconciler.md`) | `operators/<op>/internal/controller/reconcile_*.go` + `operators/<op>/api/v1alpha1/*_types.go` + `internal/common/` |
 | CRD reference | `docs/reference/<op>/*-crd.md` | `operators/<op>/api/v1alpha1/*_types.go` and the generated CRDs under `operators/<op>/config/crd/bases/` |
-| Infrastructure stack | `docs/guides/`, `docs/quick-start*.md`, `docs/reference/infrastructure/` | `deploy/` kustomize tree + `hack/deploy-infra.sh` + `releases/<version>/source-refs.yaml` |
+| Infrastructure stack | `docs/guides/`, `docs/quick-start*.md`, `docs/reference/infrastructure/` | `deploy/` kustomize tree + `hack/deploy-infra.sh` (incl. `INFRA_ONLY`) + `hack/deploy-mgmt-cluster.sh` + the `deploy/target-cluster/target-cluster-access` helm chart + `releases/<version>/source-refs.yaml` |
+| Cross-cluster reference | `docs/reference/target-clusters.md` (the placement contract: ownership labels, teardown order, capability probing, per-service placement notes) | `internal/common/multicluster/` + the placement paths in `operators/*/internal/controller/` + the `Makefile` `e2e-multicluster` target |
 
 A doc that contradicts its source is a defect even when the build is
 green: the compiler never reads prose. The audit's job is to surface
@@ -93,6 +94,13 @@ delegate the areas to parallel sub-agents for a large corpus.
   `docs/reference/infrastructure/`, confirm a matching directory
   exists under `deploy/` and that `hack/deploy-infra.sh` still
   installs it in the documented order.
+- **Cross-cluster reference** — `docs/reference/target-clusters.md`
+  spans every operator: confirm the documented ownership-label set,
+  teardown order, registration-Secret contract (`forge-target` in
+  `c5c3-clusters`), and per-service placement notes still match
+  `internal/common/multicluster/` and the operators' placement code.
+  Its condition-type mentions are cross-checked mechanically by
+  [[check-condition-coverage]] (K6) — do not duplicate that here.
 Flag any pair where the doc and the source disagree.
 
 ### 3. Report

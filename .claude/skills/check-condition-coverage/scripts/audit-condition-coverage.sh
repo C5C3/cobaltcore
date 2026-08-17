@@ -13,9 +13,15 @@
 #   K3  every reconcile_*.go has a paired _test.go
 #   K4  every condition type in the instrumentation map is documented
 #   K5  every condition type referenced in docs is set in code
+#   K6  every condition type referenced in the cross-operator page
+#       docs/reference/target-clusters.md is set by some operator
 #
 # The per-operator doc corpus is docs/reference/<op>/*.md. Operators
 # without a reference-doc directory skip K4/K5 with [INFO].
+# docs/reference/target-clusters.md sits outside every per-operator
+# corpus and names conditions of many operators, so K6 checks it once,
+# against the union of all operators (and internal/common, where shared
+# sub-reconcilers live).
 #
 # Defers Go-AST-aware checks to the existing per-operator drift-guard test:
 #   TestSubReconcilerConditionTypesCoversAllNames
@@ -237,6 +243,30 @@ for op in "${OPERATORS[@]}"; do
     info "${fname}: literals=[${lits}] consts=[${cnst}]"
   done
 done
+
+# ---------------------------------------------------------------------------
+# K6 — the cross-operator target-clusters page references only conditions
+#      some operator actually sets
+# ---------------------------------------------------------------------------
+# docs/reference/target-clusters.md documents the placement contract across
+# every operator (gate conditions with TargetClusterUnavailable, KORCReady
+# wait states, satellite-CRD conditions). It lives outside every per-operator
+# doc corpus, so K4/K5 never read it — a condition renamed in code would go
+# stale there unnoticed without this check.
+hdr "K6: docs/reference/target-clusters.md condition references resolve"
+TC_DOC="docs/reference/target-clusters.md"
+if [[ -f "${TC_DOC}" ]]; then
+  tc_types=$(grep -hoE '\b[A-Z][A-Za-z]+Ready\b' "${TC_DOC}" 2>/dev/null | sort -u || true)
+  for t in ${tc_types}; do
+    if grep -rqE "\"${t}\"|conditionType${t}\b" operators/*/internal/controller/ internal/common/ 2>/dev/null; then
+      pass "${t} (target-clusters.md) is set by some operator"
+    else
+      fail "target-clusters.md references ${t}, which no operator sets — stale cross-cluster doc?"
+    fi
+  done
+else
+  info "docs/reference/target-clusters.md missing — skipping K6"
+fi
 
 # ---------------------------------------------------------------------------
 hdr "Summary"

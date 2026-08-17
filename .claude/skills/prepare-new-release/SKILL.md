@@ -31,6 +31,7 @@ edits themselves follow `docs/contributing/adding-a-new-release.md`.
 | Release config files | `releases/<version>/{source-refs,test-refs,extra-packages}.yaml`, `upper-constraints.txt`, `test-excludes/` | **no** — created by hand |
 | Tempest config | `tests/tempest/keystone-<slug>/` — `hack/ci-generate-tempest-matrix.sh` **hard-fails the whole pipeline** without it | **no** |
 | Per-release e2e variant | `tests/e2e/keystone/basic-deployment-<slug>/` | **no** — hand-cloned, hard-coded names and image refs |
+| Placed-services release pins | `tests/e2e-multicluster/placed-services/*.yaml` (`tag:` + `openStackRelease:`) and the ci.yaml `e2e-multicluster` job's kind image preloads | **no** — the suite runs one pinned release, not a matrix; bumped only when that pin moves |
 | Constraint overrides | repo-root `overrides/<version>/constraints.txt` via `scripts/apply-constraint-overrides.sh` | **no** — only when a service is pinned in its own upper-constraints |
 | Default-release references | kind ControlPlane, `deploy-infra` preload, `RELEASE:-` fallbacks, `ci.yaml` image tags | **no** — a decision, not a mechanical bump |
 | Upgrade-path e2e | `release-upgrade/`, `upgrade-flow/` fixture tags | **no** — must move to the newest transition |
@@ -102,10 +103,11 @@ None of these are mechanical; decide and record each:
   `internal/common/release/release_test.go` when worthwhile.
 - **Retire the oldest release?** Deleting `releases/<old>/` auto-shrinks
   the matrices, but leaves orphans: the Tempest directory, the e2e
-  variant, default references, and the `tests/unit/renovate/` probes
-  that pin a concrete `releases/<version>/` file. Run
-  [[check-release-wiring]] after the removal — its L2–L6 checks exist
-  precisely for this.
+  variant, default references, the placed-services pins
+  (`tests/e2e-multicluster/` fixtures + the ci.yaml `e2e-multicluster`
+  preloads), and the `tests/unit/renovate/` probes that pin a concrete
+  `releases/<version>/` file. Run [[check-release-wiring]] after the
+  removal — its L2–L6 checks exist precisely for this.
 
 ### 5. Verify
 
