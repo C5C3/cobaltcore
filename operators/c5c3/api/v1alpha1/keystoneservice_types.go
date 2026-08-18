@@ -24,10 +24,11 @@ import (
 // Secret derive their names from metadata.name, and credential delivery lands
 // in the CR's own namespace.
 //
-// DECISION: this is TYPES ONLY for now — the dedicated controller, the
-// defaulting/validating webhook, and the operator wiring land in follow-up
-// packages of the same effort. Until the controller exists a KeystoneService
-// is admitted (the schema rules below hold) but not acted on.
+// DECISION: the defaulting/validating webhook and the operator wiring (RBAC,
+// manager setup, watches) land in follow-up packages of the same effort. The
+// reconciler therefore resolves the effective user, domain and service names
+// itself, and paces itself with requeue timers rather than watches, until
+// those packages arrive.
 type KeystoneService struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -103,7 +104,10 @@ type KeystoneServiceCatalogSpec struct {
 	ServiceType string `json:"serviceType"`
 
 	// ServiceName optionally overrides the catalog service name. When empty
-	// K-ORC names the service after the child CR.
+	// the registration falls back to the CR's metadata.name — NOT to K-ORC's
+	// own default, which is the child CR's name: that name carries an
+	// operator-generated uniqueness suffix and would leak into the catalog as
+	// the advertised service name.
 	//
 	// The pattern and the caps mirror K-ORC's own OpenStackName, which the
 	// name is cast to on the child Service CR: a name admitted here can
@@ -115,6 +119,23 @@ type KeystoneServiceCatalogSpec struct {
 	// +kubebuilder:validation:MaxLength=255
 	// +kubebuilder:validation:Pattern=`^[^,]+$`
 	ServiceName string `json:"serviceName,omitempty"`
+
+	// Adopt is the explicit consent that a pre-existing catalog service row of
+	// this type and name may be taken over. The collision posture mirrors the
+	// account block's and is fail-loudly by default: a declared catalog entry
+	// whose service row already exists in Keystone surfaces a collision
+	// condition and is never touched. Setting adopt=true opts into operator
+	// ownership of that row's lifecycle — an adopted row is a managed K-ORC
+	// Service, so it is DELETED from the catalog when the KeystoneService is
+	// deleted, exactly like one the operator created.
+	//
+	// Blind creation is not an option the reconciler offers: K-ORC's service
+	// actuator matches an existing row on name and type, so a managed create
+	// silently adopts an exact match anyway, while a near-match duplicates the
+	// row (Keystone enforces no uniqueness on service names). Adopt only what
+	// the registration should own.
+	// +optional
+	Adopt bool `json:"adopt,omitempty"`
 
 	// Endpoints declares the endpoint rows registered for this entry, at most
 	// one per interface (apiserver-enforced via listType=map). An entry with
@@ -222,6 +243,82 @@ type KeystoneServiceStatus struct {
 	// reconciled, so a stale status is distinguishable from a current one.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Catalog reports the observed state of the declared catalog entry. It is
+	// nil while no catalog block is declared.
+	// +optional
+	Catalog *KeystoneServiceCatalogStatus `json:"catalog,omitempty"`
+
+	// Account reports the observed state of the declared service account. It
+	// is nil while no account block is declared.
+	// +optional
+	Account *KeystoneServiceAccountStatus `json:"account,omitempty"`
+}
+
+// KeystoneServiceCatalogStatus reports the observed state of a registered
+// catalog entry.
+type KeystoneServiceCatalogStatus struct {
+	// ServiceID is the OpenStack service id K-ORC resolved (or created). Empty
+	// until the Service child is Available.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	ServiceID string `json:"serviceID,omitempty"`
+
+	// Endpoints reports the registered endpoint rows, one per declared
+	// interface.
+	// +optional
+	// +listType=map
+	// +listMapKey=interface
+	Endpoints []KeystoneServiceEndpointStatus `json:"endpoints,omitempty"`
+}
+
+// KeystoneServiceEndpointStatus reports the observed state of one registered
+// endpoint row.
+type KeystoneServiceEndpointStatus struct {
+	// Interface is the catalog interface the endpoint is published under. It
+	// keys the listType=map Endpoints list.
+	Interface ExternalEndpointType `json:"interface"`
+
+	// ID is the OpenStack endpoint id K-ORC resolved (or created). Empty until
+	// the Endpoint child is Available.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	ID string `json:"id,omitempty"`
+}
+
+// KeystoneServiceAccountStatus reports the observed state of a registered
+// service account. It is the per-CR twin of the ControlPlane's inline
+// ServiceAccountStatus, minus that type's name key (a CR carries one account)
+// and secretNamespace (delivery is always the CR's own namespace).
+type KeystoneServiceAccountStatus struct {
+	// SecretName is the name of the materialized Secret carrying the account's
+	// credentials (key "password" and a ready-to-use "clouds.yaml"), in the
+	// KeystoneService's own namespace. It is the documented, stable handle
+	// consumers read the credentials from.
+	// +optional
+	SecretName string `json:"secretName,omitempty"`
+
+	// UserID is the OpenStack user id K-ORC resolved (or created). Empty until
+	// the User is Available.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	UserID string `json:"userID,omitempty"`
+
+	// ProjectID is the OpenStack project id K-ORC resolved (or created). Empty
+	// until the Project is Available.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	ProjectID string `json:"projectID,omitempty"`
+
+	// PasswordGeneration is the monotonically increasing generation of the
+	// password currently applied to the user. It increments on every rotation.
+	// +optional
+	PasswordGeneration int64 `json:"passwordGeneration,omitempty"`
+
+	// LastPasswordRotation is the timestamp of the last successful password
+	// rotation.
+	// +optional
+	LastPasswordRotation *metav1.Time `json:"lastPasswordRotation,omitempty"`
 }
 
 func init() {
