@@ -5,7 +5,7 @@
 
 # Verify hack/deploy-infra.sh gates the target-cluster posture behind
 # INFRA_ONLY: a cluster deployed with it runs the third-party infrastructure
-# and no forge operator, so the c5c3-operator HelmRelease is suspended AND its
+# and no CobaltCore operator, so the c5c3-operator HelmRelease is suspended AND its
 # Deployment scaled to zero whatever the ControlPlane branch above did.
 #
 # Implementation: bash + tests/lib/assertions.sh, mirroring the sibling
@@ -76,7 +76,7 @@ test_explicit_values_pass_through() {
 
 # ---------------------------------------------------------------------------
 # Test 3: the gate suspends the HelmRelease AND scales the Deployment, for
-# EVERY forge operator
+# EVERY CobaltCore operator
 # The scale is the half that matters on a re-used cluster: a HelmRelease
 # suspended after the chart installed leaves the Deployment running. Covering
 # only c5c3 would leave an INFRA_ONLY=true WITH_CONTROLPLANE=true target running
@@ -84,7 +84,7 @@ test_explicit_values_pass_through() {
 # sets applying the same children is what the split exists to prevent.
 # ---------------------------------------------------------------------------
 test_gate_suspends_and_scales() {
-  echo "Test: the INFRA_ONLY gate suspends and scales down every forge operator"
+  echo "Test: the INFRA_ONLY gate suspends and scales down every CobaltCore operator"
 
   local gate_line suspend_line scale_line loop_line
   gate_line="$(grep -n '"${INFRA_ONLY}" == "true"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"

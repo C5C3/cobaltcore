@@ -208,7 +208,7 @@ provision_devshell() {
   local -a warnings=()
 
   if ! command -v go >/dev/null 2>&1; then
-    echo "forge devshell: go not found on PATH — skipping Go-tool installs." >&2
+    echo "CobaltCore devshell: go not found on PATH — skipping Go-tool installs." >&2
     warnings+=("go toolchain (not on PATH)")
   else
     # gofumpt — reuse the Makefile target (installs into bin/ at the pin).
@@ -295,14 +295,14 @@ provision_devshell() {
   fi
 
   if [ "${#warnings[@]}" -gt 0 ]; then
-    echo "forge devshell: could not provision the following (offline/network?):" >&2
+    echo "CobaltCore devshell: could not provision the following (offline/network?):" >&2
     local w
     for w in "${warnings[@]}"; do
       echo "  - ${w}" >&2
     done
-    echo "forge devshell: re-run 'source hack/nix-devshell-hook.sh' when back online." >&2
+    echo "CobaltCore devshell: re-run 'source hack/nix-devshell-hook.sh' when back online." >&2
   else
-    echo "forge devshell: CI toolchain ready — bin/ prepended to PATH."
+    echo "CobaltCore devshell: CI toolchain ready — bin/ prepended to PATH."
   fi
 }
 

@@ -682,7 +682,7 @@ func TestReconcileInfrastructure_DedicatedProjectsChildren(t *testing.T) {
 // TestReconcileInfrastructure_SkipsSharedInstancesNoServiceResolvesTo pins the
 // consumer-driven provisioning rule: a MANAGED shared instance every service has
 // opted out of has no consumer, so it is not provisioned and does not gate
-// readiness. Keystone is the ControlPlane's only database consumer, and the
+// readiness. Keystone is this fixture's only database consumer, and the
 // webhook materializes spec.infrastructure.database whenever it is omitted (3
 // Galera replicas, 100Gi) — so provisioning the declared set rather than the
 // resolved one would leave a full Galera cluster nothing talks to, with
@@ -871,7 +871,7 @@ func TestReconcileInfrastructure_DedicatedAdoptsExistingWithoutMutating(t *testi
 // TestReconcileInfrastructure_DedicatedBrownfieldProvisionsNothing covers the
 // managed-versus-brownfield split at the dedicated level: a dedicated instance
 // that references an externally operated endpoint provisions no child CR. Keystone
-// is the only database consumer and it points at an external one here, so no
+// is this fixture's only database consumer and it points at an external one, so no
 // MariaDB is created at all — the shared managed database it opted out of has no
 // consumer left. The shared cache still has one (Horizon resolves to it), so it is
 // still provisioned.

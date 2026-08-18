@@ -29,7 +29,7 @@
 # the install.
 #
 # INFRA_ONLY and CLUSTER_NAME are threaded for the e2e-multicluster job, whose
-# target cluster runs the infrastructure and no forge operator and is not named
+# target cluster runs the infrastructure and no CobaltCore operator and is not named
 # `forge`. Unset by every other caller, so deploy-infra.sh keeps its defaults
 # (INFRA_ONLY=false, CLUSTER_NAME=forge).
 

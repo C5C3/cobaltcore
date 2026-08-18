@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # audit-validation-parity.sh — mechanical validation-parity checks for the
-# forge repo. Verifies, per operator API surface:
+# CobaltCore repo. Verifies, per operator API surface:
 #   V1  inventory: kubebuilder validation-marker families, XValidation/CEL
 #       rules (with message), webhook field.* error-helper counts, and the
 #       invalid-cr fixture count — printed for the hand cross-reference
