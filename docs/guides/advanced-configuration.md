@@ -492,7 +492,7 @@ it from the typed `spec.logging.debug` field — so this example now draws an
 Beyond the ownership registry, the validating webhook checks every option name in
 `spec.extraConfig` against a catalog of the options the service actually accepts.
 Each operator embeds one catalog per OpenStack release, generated from the
-`oslo-config-generator` run of the exact service image forge ships for that
+`oslo-config-generator` run of the exact service image CobaltCore ships for that
 release. The catalog answers a single question: does this option name exist?
 Values are never inspected. Keystone derives the release from `spec.image.tag`;
 Glance derives it from `spec.openStackRelease`. An option that sits in a known

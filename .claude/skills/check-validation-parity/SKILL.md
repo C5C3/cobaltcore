@@ -13,7 +13,7 @@ description: >-
 
 # Check validation parity
 
-This skill verifies that the forge **CR validation logic stays in parity
+This skill verifies that the CobaltCore **CR validation logic stays in parity
 across its four representations**: every admission rule declared as a
 kubebuilder marker or CEL `XValidation` has a coherent webhook twin (or a
 deliberate reason not to), every webhook-enforced rule is exercised by a

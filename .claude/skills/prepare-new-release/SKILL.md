@@ -2,7 +2,7 @@
 name: prepare-new-release
 description: >-
   Analyze and prepare the addition of a new OpenStack release (e.g. 2026.2)
-  into forge — inventory the touch points the auto-discovery does not cover
+  into CobaltCore — inventory the touch points the auto-discovery does not cover
   (release config files under releases/<version>/, the Tempest config
   directory the CI matrix generator hard-requires, per-release e2e variants,
   constraint overrides), and walk the decision points: moving the default

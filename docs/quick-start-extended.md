@@ -443,7 +443,7 @@ kubectl port-forward svc/headlamp -n headlamp-system 8080:80
 
 Open `http://localhost:8080`, paste the token. The sidebar shows **Flux → Helm Releases /
 Kustomizations / Sources** alongside the standard resources. The `headlamp` ServiceAccount is
-bound to a read-only ClusterRole covering Flux toolkit API groups and forge-stack CRDs.
+bound to a read-only ClusterRole covering Flux toolkit API groups and the CobaltCore CRDs.
 
 ### Accessing the Flux UI
 

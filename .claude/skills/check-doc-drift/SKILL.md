@@ -1,7 +1,7 @@
 ---
 name: check-doc-drift
 description: >-
-  Audit the forge documentation for drift against the implementation —
+  Audit the CobaltCore documentation for drift against the implementation —
   the docs/reference/ pages vs the operator code, the guides and
   quick-starts vs the deploy/ infrastructure stack. Use when
   asked to check documentation drift, after adding or
@@ -11,7 +11,7 @@ description: >-
 
 # Check documentation drift
 
-This skill verifies that the forge documentation still **describes what
+This skill verifies that the CobaltCore documentation still **describes what
 the code actually does**: every sub-reconciler, status condition,
 operator binary, CRD field, and FluxCD component
 named in `docs/` (and `README.md`) is checked

@@ -2,7 +2,7 @@
 title: Overview
 ---
 
-# CobaltCore Forge
+# CobaltCore
 
 CobaltCore (C5C3) is a Kubernetes-native OpenStack distribution for operating
 Hosted Control Planes across a multi-cluster topology — Management, Control

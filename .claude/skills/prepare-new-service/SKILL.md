@@ -1,7 +1,7 @@
 ---
 name: prepare-new-service
 description: >-
-  Analyze and prepare the onboarding of a new OpenStack service into forge —
+  Analyze and prepare the onboarding of a new OpenStack service into CobaltCore —
   inventory the five layers (container image, service operator, CI/e2e,
   ControlPlane integration, documentation) against the Keystone reference
   implementation, check what keystone scaffolding must be generalized into
@@ -34,7 +34,7 @@ block records the release-decoupling decisions that
 
 ## The five layers
 
-Every service in forge threads through five layers. Keystone
+Every service in CobaltCore threads through five layers. Keystone
 (`operators/keystone`) is the reference implementation for all of them.
 
 | Layer | Canonical locations | Auto-extends? |
@@ -79,7 +79,7 @@ applies and which decisions need a Phase-0 spike:
   somebody to run on a schedule — above all the database cleanup every
   soft-deleting service needs? Enumerate it here, in the profile, and
   carry it into Phase 2; it is not follow-up work. A package deployment
-  has a cron entry on the controller node doing this, forge has nothing:
+  has a cron entry on the controller node doing this, CobaltCore has nothing:
   unless the operator projects a CronJob, no run ever happens, and the
   growth is silent — no probe, condition, or metric observes a purge that
   was never scheduled. § Recurring maintenance jobs below is the build
@@ -367,7 +367,7 @@ Every OpenStack service that soft-deletes rows, caches artefacts, or ages
 out records assumes an operator sweeps up on a schedule. Upstream ships
 the commands and documents the cadence; scheduling them is the deployer's
 job. Package deployments answer that with a cron entry on the controller
-node — forge has no such place, so a maintenance task that the service
+node — CobaltCore has no such place, so a maintenance task that the service
 operator does not project simply never runs. That failure is invisible by
 construction: the deployment stays Ready, every probe passes, and the
 only symptom is a table, a cache, or a disk that keeps growing until it
@@ -497,7 +497,7 @@ breaks structurally. Profile these instead of the Python questions:
 
 - **Upstream artifacts first:** check what upstream actually publishes
   (Aurora: npm packages only, via Changesets; both upstream Dockerfiles
-  are dev-grade). Default posture: forge builds the production image from
+  are dev-grade). Default posture: CobaltCore builds the production image from
   source at a pinned upstream git ref.
 - **Release decoupling — do NOT add a `releases/*/source-refs.yaml`
   key.** The keys *are* the build/test/verify matrix

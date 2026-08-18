@@ -14,7 +14,7 @@ description: >-
 
 # Check fixture drift
 
-This skill verifies that the forge **test fixtures still match the CRD
+This skill verifies that the CobaltCore **test fixtures still match the CRD
 they claim to instantiate**: every `apiVersion: keystone.openstack.c5c3.io/v1alpha1`
 fixture under `tests/e2e/`, `tests/e2e-chaos/`, and
 `tests/e2e-multicluster/` uses only Spec fields

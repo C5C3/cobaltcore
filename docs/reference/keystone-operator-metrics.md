@@ -18,7 +18,7 @@ dashboard references a metric the operator does not register.
 The sub-reconciler duration/error pair
 (`keystone_operator_reconcile_duration_seconds` and
 `keystone_operator_reconcile_errors_total`) is shared with the other
-forge operators. It lives in the
+CobaltCore operators. It lives in the
 [`internal/common/instrumentation`](https://github.com/c5c3/forge/blob/main/internal/common/instrumentation/instrumentation.go)
 package and is exposed as the instrumenter declared beside the glue in
 `internal/controller/instrumentation.go`. Both the sub-reconciler vectors and

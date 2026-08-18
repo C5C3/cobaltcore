@@ -10,7 +10,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Observability & Diagnostics
 
-How to read what a forge service operator is doing — without tailing controller
+How to read what a CobaltCore service operator is doing — without tailing controller
 logs. The walkthrough reads the devstack's Keystone CR; the other service
 operators surface the same channels on their own CRs.
 

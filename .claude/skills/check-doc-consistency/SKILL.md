@@ -1,7 +1,7 @@
 ---
 name: check-doc-consistency
 description: >-
-  Audit documentation consistency across forge docs — terminology,
+  Audit documentation consistency across the CobaltCore docs — terminology,
   naming, release/version references, repeated examples, cross-page
   claims, and alignment with code or configuration when docs describe
   implementation details. Use when asked to check for contradictions,
@@ -11,7 +11,7 @@ description: >-
 
 # Check documentation consistency
 
-This skill verifies that forge documentation **agrees with itself and
+This skill verifies that the CobaltCore documentation **agrees with itself and
 with the source of truth it describes**. It is the cross-document and
 cross-layer check: the same concept should keep the same name, version,
 shape, and meaning everywhere it appears.

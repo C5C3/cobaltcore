@@ -1,7 +1,7 @@
 ---
 name: check-doc-structure
 description: >-
-  Audit documentation structure and navigation for forge docs — required
+  Audit documentation structure and navigation for the CobaltCore docs — required
   frontmatter, heading hierarchy, section order, index/nav coverage,
   link and anchor integrity, orphan pages, and duplicate or misplaced
   topics. Use when asked to check doc structure, after adding or moving
@@ -10,7 +10,7 @@ description: >-
 
 # Check documentation structure
 
-This skill verifies that forge documentation is **structurally sound and
+This skill verifies that the CobaltCore documentation is **structurally sound and
 navigable**: pages have the expected frontmatter, headings appear in the
 right order, links resolve, anchors exist, and docs show up where readers
 expect them in the site nav and index pages.

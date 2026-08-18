@@ -2923,8 +2923,9 @@ Every sub-reconciler invocation is instrumented for Prometheus via a single
 package-scope `instrumenter`, declared in
 `operators/c5c3/internal/controller/instrumentation.go`. Its `Instrument` method
 comes from the shared `internal/common/instrumentation` package — the
-duration/error metric pair and the wrapper logic are identical across all forge
-operators and live there; the c5c3 file supplies only the `c5c3_operator` prefix
+duration/error metric pair and the wrapper logic are identical across all
+CobaltCore operators and live there; the c5c3 file supplies only the
+`c5c3_operator` prefix
 and the `subReconcilerConditionTypes` map. `Reconcile` wraps every
 sub-reconciler call with it; a direct call that bypasses it is a contract
 violation.

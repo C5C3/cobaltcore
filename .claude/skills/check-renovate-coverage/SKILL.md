@@ -1,7 +1,7 @@
 ---
 name: check-renovate-coverage
 description: >-
-  Audit whether every pinned version in the forge repo — OpenStack
+  Audit whether every pinned version in the CobaltCore repo — OpenStack
   release tags under releases/<version>/source-refs.yaml, shell-script
   VERSION constants under hack/, kind / FluxCD HelmRelease versions
   under deploy/kind/ and deploy/flux-system/, and tool-version pins in
@@ -15,7 +15,7 @@ description: >-
 
 # Check Renovate coverage
 
-This skill verifies that the forge **dependency pins are all reachable
+This skill verifies that the CobaltCore **dependency pins are all reachable
 by Renovate**: every version literal that a human edits when bumping a
 dependency must be paired with a matcher (native or custom) that
 Renovate can crank, and every customManager must have a packageRules
@@ -28,7 +28,7 @@ version literal or after editing `renovate.json`.
 
 ## What Renovate coverage means here
 
-A version pin in forge typically threads through three things, all of
+A version pin in CobaltCore typically threads through three things, all of
 which Renovate has to understand:
 
 | Layer | Where it lives | Renovate handle |

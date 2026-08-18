@@ -1,7 +1,7 @@
 ---
 name: debug-e2e-failure
 description: >-
-  Diagnose a failing chainsaw e2e job in the forge CI — resolve the failed
+  Diagnose a failing chainsaw e2e job in the CobaltCore CI — resolve the failed
   run, pull the failed-step logs and JUnit/diagnostic evidence, map the
   failure back to the suite directory under tests/, classify it against the
   known flake patterns, and reproduce it locally against a kind cluster.

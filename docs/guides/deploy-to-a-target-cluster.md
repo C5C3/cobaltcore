@@ -32,7 +32,7 @@ INFRA_ONLY=true CLUSTER_NAME=forge-target KIND_HOST_PORT=9443 make deploy-infra
 ```
 
 Follow that tutorial through its **Step 2 — Cluster + infrastructure stack** and
-stop there. `INFRA_ONLY=true` keeps every forge operator off this cluster, which
+stop there. `INFRA_ONLY=true` keeps every CobaltCore operator off this cluster, which
 is what the two-cluster split is for, so the tutorial's operator and CR steps do
 not apply here. Host port 9443 leaves 8443 free for a `forge` devstack you may
 already be running, and overriding `KIND_HOST_PORT` needs `yq` v4.x on `PATH`.
@@ -56,7 +56,7 @@ the examples below resolve on the target: `openstack-db`,
    external-secrets, openbao-operator, and the Prometheus operator CRDs. Every
    controller-runtime watch registers against this cluster at builder time, so
    those kinds have to be installed here even though no child is written here.
-   The script installs no forge operator, and it leaves the kubectl context on
+   The script installs no CobaltCore operator, and it leaves the kubectl context on
    the cluster it created:
 
    ```bash
