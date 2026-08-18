@@ -40,10 +40,11 @@ spec:
           Secret derive their names from metadata.name, and credential delivery lands
           in the CR's own namespace.
 
-          DECISION: this is TYPES ONLY for now — the dedicated controller, the
-          defaulting/validating webhook, and the operator wiring land in follow-up
-          packages of the same effort. Until the controller exists a KeystoneService
-          is admitted (the schema rules below hold) but not acted on.
+          DECISION: the defaulting/validating webhook and the operator wiring (RBAC,
+          manager setup, watches) land in follow-up packages of the same effort. The
+          reconciler therefore resolves the effective user, domain and service names
+          itself, and paces itself with requeue timers rather than watches, until
+          those packages arrive.
         properties:
           apiVersion:
             description: |-
@@ -175,6 +176,23 @@ spec:
                   Catalog declares the service's catalog entry: one service row plus at
                   most one endpoint row per interface.
                 properties:
+                  adopt:
+                    description: |-
+                      Adopt is the explicit consent that a pre-existing catalog service row of
+                      this type and name may be taken over. The collision posture mirrors the
+                      account block's and is fail-loudly by default: a declared catalog entry
+                      whose service row already exists in Keystone surfaces a collision
+                      condition and is never touched. Setting adopt=true opts into operator
+                      ownership of that row's lifecycle — an adopted row is a managed K-ORC
+                      Service, so it is DELETED from the catalog when the KeystoneService is
+                      deleted, exactly like one the operator created.
+
+                      Blind creation is not an option the reconciler offers: K-ORC's service
+                      actuator matches an existing row on name and type, so a managed create
+                      silently adopts an exact match anyway, while a near-match duplicates the
+                      row (Keystone enforces no uniqueness on service names). Adopt only what
+                      the registration should own.
+                    type: boolean
                   endpoints:
                     description: |-
                       Endpoints declares the endpoint rows registered for this entry, at most
@@ -213,7 +231,10 @@ spec:
                   serviceName:
                     description: |-
                       ServiceName optionally overrides the catalog service name. When empty
-                      K-ORC names the service after the child CR.
+                      the registration falls back to the CR's metadata.name — NOT to K-ORC's
+                      own default, which is the child CR's name: that name carries an
+                      operator-generated uniqueness suffix and would leak into the catalog as
+                      the advertised service name.
 
                       The pattern and the caps mirror K-ORC's own OpenStackName, which the
                       name is cast to on the child Service CR: a name admitted here can
@@ -274,6 +295,86 @@ spec:
           status:
             description: KeystoneServiceStatus defines the observed state of a KeystoneService.
             properties:
+              account:
+                description: |-
+                  Account reports the observed state of the declared service account. It
+                  is nil while no account block is declared.
+                properties:
+                  lastPasswordRotation:
+                    description: |-
+                      LastPasswordRotation is the timestamp of the last successful password
+                      rotation.
+                    format: date-time
+                    type: string
+                  passwordGeneration:
+                    description: |-
+                      PasswordGeneration is the monotonically increasing generation of the
+                      password currently applied to the user. It increments on every rotation.
+                    format: int64
+                    type: integer
+                  projectID:
+                    description: |-
+                      ProjectID is the OpenStack project id K-ORC resolved (or created). Empty
+                      until the Project is Available.
+                    maxLength: 1024
+                    type: string
+                  secretName:
+                    description: |-
+                      SecretName is the name of the materialized Secret carrying the account's
+                      credentials (key "password" and a ready-to-use "clouds.yaml"), in the
+                      KeystoneService's own namespace. It is the documented, stable handle
+                      consumers read the credentials from.
+                    type: string
+                  userID:
+                    description: |-
+                      UserID is the OpenStack user id K-ORC resolved (or created). Empty until
+                      the User is Available.
+                    maxLength: 1024
+                    type: string
+                type: object
+              catalog:
+                description: |-
+                  Catalog reports the observed state of the declared catalog entry. It is
+                  nil while no catalog block is declared.
+                properties:
+                  endpoints:
+                    description: |-
+                      Endpoints reports the registered endpoint rows, one per declared
+                      interface.
+                    items:
+                      description: |-
+                        KeystoneServiceEndpointStatus reports the observed state of one registered
+                        endpoint row.
+                      properties:
+                        id:
+                          description: |-
+                            ID is the OpenStack endpoint id K-ORC resolved (or created). Empty until
+                            the Endpoint child is Available.
+                          maxLength: 1024
+                          type: string
+                        interface:
+                          description: |-
+                            Interface is the catalog interface the endpoint is published under. It
+                            keys the listType=map Endpoints list.
+                          enum:
+                          - public
+                          - internal
+                          - admin
+                          type: string
+                      required:
+                      - interface
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - interface
+                    x-kubernetes-list-type: map
+                  serviceID:
+                    description: |-
+                      ServiceID is the OpenStack service id K-ORC resolved (or created). Empty
+                      until the Service child is Available.
+                    maxLength: 1024
+                    type: string
+                type: object
               conditions:
                 description: |-
                   Conditions represent the latest available observations of the
