@@ -11,7 +11,7 @@ challenged, and reshaped before anyone commits to an implementation.
 Pages in this section are explicitly **not**:
 
 - **Decided architecture.** Accepted designs and their rationale live in the
-  architecture documentation, not here. A Future page graduates by being
+  [architecture documentation](../architecture/), not here. A Future page graduates by being
   triaged through a GitHub issue and, if accepted, turned into a proper
   design — at which point the sketch here is replaced by a pointer or removed.
 - **Reference documentation.** Nothing described here is guaranteed to exist
@@ -28,3 +28,13 @@ Pages in this section are explicitly **not**:
   running it is documented in
   [Adopt an External Keystone](../guides/keystone/adopt-external-keystone.md). The page
   keeps the later phases (infrastructure attach, service takeover) as sketches.
+- [Hypervisor Cluster](./hypervisor-cluster.md) — the dedicated bare-metal
+  compute cluster from the original architecture document: Hypervisor
+  Operator, node agents, and the LibVirt virtualization layer. Raw form, not
+  elaborated.
+- [Storage Cluster](./storage-cluster.md) — the dedicated Ceph cluster from
+  the original architecture document: Rook, the External Arbiter Operator,
+  and Prysm. Raw form, not elaborated.
+- [Management Cluster](./management-cluster.md) — splitting GitOps, OpenBao,
+  and ESO out of the single implemented cluster, plus Greenhouse and the
+  Aurora Dashboard. Raw form, not elaborated.

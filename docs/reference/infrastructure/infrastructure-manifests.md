@@ -234,7 +234,7 @@ artifact. All other repositories use standard HTTPS Helm registries.
 
 ## HelmRelease Operators
 
-Fourteen HelmRelease CRs deploy the infrastructure operators and CRD charts (K-ORC is
+Fifteen HelmRelease CRs deploy the infrastructure operators and CRD charts (K-ORC is
 applied separately via a Flux `Kustomization` — see
 [K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller)). All use
 `apiVersion: helm.toolkit.fluxcd.io/v2` and share these common settings:
@@ -268,6 +268,7 @@ mariadb-operator-crds     (no dependencies)
 ├── horizon-operator      dependsOn: cert-manager, memcached-operator, external-secrets, keystone-operator
 ├── glance-operator       dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator
 ├── placement-operator    dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator
+├── barbican-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator, openbao-operator
 └── c5c3-operator         dependsOn: keystone-operator, external-secrets, mariadb-operator, memcached-operator
 ```
 
