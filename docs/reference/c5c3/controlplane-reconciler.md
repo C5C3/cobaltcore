@@ -827,11 +827,12 @@ a service opted into instead. `managedInfraInstances` enumerates them by walking
 the effective-instance resolvers per service and deduplicating on the identity of
 the child CR they resolve to — so several services on one shared instance ensure
 it exactly once, and a **shared instance every service has opted out of has no
-consumer and is not provisioned at all**. Keystone is the ControlPlane's only
-database consumer, and the defaulting webhook materializes
-`spec.infrastructure.database` whenever it is omitted, so provisioning the
-declared set instead would leave a full Galera cluster nothing talks to — with
-`InfrastructureReady` blocked on it coming up. A backing service is **managed**
+consumer and is not provisioned at all**. The defaulting webhook materializes
+`spec.infrastructure.database` whenever it is omitted, so once every declared
+database consumer — Keystone, Glance, Placement, Barbican — has taken a
+dedicated instance, provisioning the declared set instead would leave a full
+Galera cluster nothing talks to — with `InfrastructureReady` blocked on it
+coming up. A backing service is **managed**
 when its `clusterRef` is set and **brownfield** (provisions nothing) when
 `host`/`servers` are set instead.
 

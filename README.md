@@ -6,13 +6,13 @@ Prototyping ground for CobaltCore.
 
 CobaltCore (C5C3) is a Kubernetes-native OpenStack distribution for operating Hosted Control Planes across
 a multi-cluster topology (Management, Control Plane, Hypervisor, Storage). This repository delivers everything
-needed for a fully self-contained Keystone deployment stack — from infrastructure deployment manifests through
-the Keystone Operator to the c5c3-operator orchestration layer — built with Operator SDK (Go), controller-runtime,
+needed for a fully self-contained OpenStack control-plane stack — from infrastructure deployment manifests through
+the service operators to the c5c3-operator orchestration layer — built with Operator SDK (Go), controller-runtime,
 and Kubebuilder.
 
-The implementation follows a Keystone-first strategy: the Keystone Operator serves as the reference implementation
-establishing patterns for all subsequent operators. The c5c3-operator orchestrates Keystone, Horizon, Glance,
-Placement, and Barbican children from one ControlPlane resource.
+The Keystone Operator is the reference implementation: it establishes the patterns every service operator
+follows. Horizon, Glance, Placement, and Barbican are built on the same scaffolding, and the c5c3-operator
+orchestrates all of them as children of one ControlPlane resource.
 
 The architecture is organized as a Go Workspace monorepo with a shared library (`internal/common/`), individual
 operator modules (`operators/keystone/`, `operators/horizon/`, `operators/glance/`, `operators/placement/`,

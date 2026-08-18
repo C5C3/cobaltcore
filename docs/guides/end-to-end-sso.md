@@ -271,8 +271,9 @@ holds no role on. Grant the role before asking users to log in:
 openstack role add --domain corp --user alice member
 ```
 
-A `403` on `/project/` right after login is expected in a Keystone-only stack —
-there are no compute or network services in the catalog yet.
+A `403` on `/project/` right after login is expected on this devstack — there
+are no compute or network services in the catalog for the project dashboard to
+render.
 
 ## Standalone Keystone, without a ControlPlane
 
