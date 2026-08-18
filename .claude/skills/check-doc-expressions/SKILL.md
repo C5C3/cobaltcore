@@ -1,7 +1,7 @@
 ---
 name: check-doc-expressions
 description: >-
-  Audit documentation prose quality for forge docs — sentence clarity,
+  Audit documentation prose quality for the CobaltCore docs — sentence clarity,
   active voice, terminology, ambiguity, tone, jargon control, adherence
   to STYLE_GUIDE.md's rhetorical-device budget, and the readability of
   command examples and code-adjacent explanations. Use when asked to
@@ -11,7 +11,7 @@ description: >-
 
 # Check documentation expressions
 
-This skill verifies that forge documentation **reads cleanly and says
+This skill verifies that the CobaltCore documentation **reads cleanly and says
 exactly what it means**. It focuses on prose quality rather than page
 shape: sentences should be direct, terminology should be consistent,
 examples should be readable, and important claims should not be buried

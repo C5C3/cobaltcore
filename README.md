@@ -1,6 +1,6 @@
-# CobaltCore Forge
+# CobaltCore
 
-Prototyping ground for CobaltCore.
+Kubernetes-native operators and deployment stack for OpenStack Hosted Control Planes.
 
 ## Overview
 

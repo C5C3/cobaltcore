@@ -252,7 +252,7 @@ Operators with stricter cluster policies must take extra steps:
   `internal/common/bootstrap/manager.go` to the controller-runtime
   `SecureServing` configuration and bind a cert/key pair (for example by
   mounting a cert-manager-issued Secret on the operator Deployment). The chart
-  does not ship this configuration — it is a forge-wide bootstrap change rather
+  does not ship this configuration — it is a stack-wide bootstrap change rather
   than a per-operator override.
 
 The metrics endpoint exposes **no credentials, secrets,

@@ -2,7 +2,7 @@
 name: check-release-wiring
 description: >-
   Audit whether every OpenStack release under releases/<version>/ is fully
-  wired through the forge repo — the mandatory release config files, the
+  wired through the CobaltCore repo — the mandatory release config files, the
   per-release Tempest config directory the CI matrix generator hard-requires,
   the per-release basic-deployment e2e variant, the release pins in the
   two-cluster placed-services fixtures, the default-release references in

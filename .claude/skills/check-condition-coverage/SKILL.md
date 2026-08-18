@@ -1,7 +1,7 @@
 ---
 name: check-condition-coverage
 description: >-
-  Audit Status condition coverage end-to-end for every forge operator —
+  Audit Status condition coverage end-to-end for every CobaltCore operator —
   every condition type set by a sub-reconciler must appear in that
   operator's subReconcilerConditionTypes map (so metrics labels
   resolve), every sub-reconciler must have a unit test, and every
@@ -13,7 +13,7 @@ description: >-
 
 # Check condition coverage
 
-This skill verifies that each forge operator's **status conditions are
+This skill verifies that each CobaltCore operator's **status conditions are
 wired end-to-end**: every condition type set in the sub-reconcilers is
 registered in that operator's `subReconcilerConditionTypes` map (so the
 `<op>_operator_reconcile_errors_total{condition_type=…}` Prometheus

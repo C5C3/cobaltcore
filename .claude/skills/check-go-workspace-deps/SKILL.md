@@ -1,7 +1,7 @@
 ---
 name: check-go-workspace-deps
 description: >-
-  Audit the forge Go workspace for dependency-version drift between
+  Audit the CobaltCore Go workspace for dependency-version drift between
   the operators/<op>/go.mod files and internal/common/go.mod —
   controller-runtime, k8s.io/api, k8s.io/apimachinery, k8s.io/client-go,
   the Go directive, and the toolchain pin must stay in lockstep so
@@ -12,7 +12,7 @@ description: >-
 
 # Check Go workspace consistency
 
-This skill verifies that the forge **Go workspace's shared dependencies
+This skill verifies that the CobaltCore **Go workspace's shared dependencies
 stay in lockstep** across all modules. The repo uses a Go workspace
 (`go.work` lists `internal/common`, `operators/c5c3`, `operators/keystone`),
 which means the *build* picks one version per dep — but each module's
@@ -171,7 +171,7 @@ These recurring shapes are worth grepping for first:
   explicitly-scoped task.
 - The shared-dep list at the top of the script is opinionated —
   controller-runtime, the k8s.io/* family, and the openbao-operator
-  API module. If forge later adds another cross-cutting dep (e.g. a
+  API module. If CobaltCore later adds another cross-cutting dep (e.g. a
   metrics library, a tracing client), extend that list so the W4
   check covers it.
 - `go.work.sum` is intentionally tracked per CC-0001 REQ-009. Do not

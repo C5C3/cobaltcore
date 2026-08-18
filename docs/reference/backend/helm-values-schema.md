@@ -6,7 +6,7 @@ quadrant: backend
 # Helm Values Schema
 
 Reference documentation for the `values.schema.json` JSON Schema that validates
-the Helm chart values of every forge operator — **keystone-operator** and
+the Helm chart values of every CobaltCore operator — **keystone-operator** and
 **c5c3-operator**, plus the glance-operator, horizon-operator, and
 placement-operator siblings. Helm
 enforces this schema automatically during `helm install`, `helm upgrade`,

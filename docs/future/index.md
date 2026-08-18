@@ -4,7 +4,7 @@ title: Future
 
 # Future
 
-This section collects **idea sketches** for the forge project: explorations of
+This section collects **idea sketches** for the CobaltCore project: explorations of
 where the operators could go next, written down early enough to be discussed,
 challenged, and reshaped before anyone commits to an implementation.
 

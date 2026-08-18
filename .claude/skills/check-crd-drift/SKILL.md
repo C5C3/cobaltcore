@@ -1,7 +1,7 @@
 ---
 name: check-crd-drift
 description: >-
-  Audit whether every forge operator CRD is in sync across its three
+  Audit whether every CobaltCore operator CRD is in sync across its three
   representations — the Go +kubebuilder source under operators/<op>/api/,
   the controller-gen output under operators/<op>/config/crd/bases/, and
   the Helm chart copy under operators/<op>/helm/<op>-operator/crds/.
@@ -12,7 +12,7 @@ description: >-
 
 # Check CRD drift
 
-This skill verifies that the forge generated CRDs still **reflect their
+This skill verifies that the CobaltCore generated CRDs still **reflect their
 Go +kubebuilder source**: every kubebuilder marker is regenerable into
 the YAML under `config/crd/bases/`, every Helm chart `crds/` file is a
 byte-for-byte mirror of the corresponding base, and `make verify-crd-sync`
