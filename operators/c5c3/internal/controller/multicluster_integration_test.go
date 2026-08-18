@@ -151,7 +151,12 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		RegisterWebhooks: func(mgr ctrl.Manager) error {
 			// mgr.GetAPIReader() mirrors main.go: admission lookups read the API
 			// server directly, never a stale cache.
-			return (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
+			if err := (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			// The webhook manifests installed by envtest carry the KeystoneService
+			// entries (failurePolicy=Fail), so the handler must be served here too.
+			return (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr)
 		},
 		RegisterController: func(mgr ctrl.Manager) error {
 			// The provider's engagement machinery has to be registered before the

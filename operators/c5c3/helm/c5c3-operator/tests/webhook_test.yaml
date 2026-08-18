@@ -98,6 +98,62 @@ tests:
           path: metadata.annotations["cert-manager.io/inject-ca-from"]
           value: NAMESPACE/RELEASE-NAME-c5c3-operator-webhook
 
+  # The KeystoneService entries ride the shared template's additionalWebhooks
+  # list, so they land at index 1 of BOTH configurations. The entry declares no
+  # apiGroup of its own, so asserting it here pins the inheritance from the
+  # base dict.
+  - it: should carry the KeystoneService mutating webhook as second entry
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: webhooks[1].name
+          value: mkeystoneservice.kb.io
+      - equal:
+          path: webhooks[1].clientConfig.service.path
+          value: /mutate-c5c3-io-v1alpha1-keystoneservice
+      - equal:
+          path: webhooks[1].rules[0].apiGroups
+          value:
+            - c5c3.io
+      - equal:
+          path: webhooks[1].rules[0].resources
+          value:
+            - keystoneservices
+      - equal:
+          path: webhooks[1].failurePolicy
+          value: Fail
+      - equal:
+          path: webhooks[1].sideEffects
+          value: None
+
+  - it: should carry the KeystoneService validating webhook as second entry
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: webhooks[1].name
+          value: vkeystoneservice.kb.io
+      - equal:
+          path: webhooks[1].clientConfig.service.path
+          value: /validate-c5c3-io-v1alpha1-keystoneservice
+      - equal:
+          path: webhooks[1].rules[0].apiGroups
+          value:
+            - c5c3.io
+      - equal:
+          path: webhooks[1].rules[0].resources
+          value:
+            - keystoneservices
+      - contains:
+          path: webhooks[1].rules[0].operations
+          content: CREATE
+      - contains:
+          path: webhooks[1].rules[0].operations
+          content: UPDATE
+      # DELETE must NOT be intercepted on the KeystoneService entry either.
+      - notContains:
+          path: webhooks[1].rules[0].operations
+          content: DELETE
+
   - it: should not render any documents when webhook is disabled
     set:
       webhook:

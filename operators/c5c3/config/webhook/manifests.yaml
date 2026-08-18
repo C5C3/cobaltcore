@@ -24,6 +24,26 @@ webhooks:
     resources:
     - controlplanes
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-c5c3-io-v1alpha1-keystoneservice
+  failurePolicy: Fail
+  name: mkeystoneservice.kb.io
+  rules:
+  - apiGroups:
+    - c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - keystoneservices
+  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -49,4 +69,24 @@ webhooks:
     - UPDATE
     resources:
     - controlplanes
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-c5c3-io-v1alpha1-keystoneservice
+  failurePolicy: Fail
+  name: vkeystoneservice.kb.io
+  rules:
+  - apiGroups:
+    - c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - keystoneservices
   sideEffects: None
