@@ -2693,12 +2693,21 @@ main() {
     # WITH_CONTROLPLANE_CR (default: by hand — see the ControlPlane Quick Start).
     log "=== WITH_CONTROLPLANE: bringing up the c5c3 ControlPlane stack ==="
     if [[ "${CONTROLPLANE_OPERATORS}" == "flux" ]]; then
+      # Remove suspension from Flux HelmReleases and Kustomizations
+      kubectl patch helmrelease/keystone-operator -n keystone-system --type merge \
+        -p '{"spec":{"suspend":false}}' 2>/dev/null || true
       kubectl wait helmrelease/keystone-operator -n keystone-system \
         --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
         || log "  keystone-operator not Ready yet (continuing; the ControlPlane tolerates it)."
+
+      kubectl patch kustomization/k-orc -n flux-system --type merge \
+        -p '{"spec":{"suspend":false}}' 2>/dev/null || true
       kubectl wait kustomization/k-orc -n flux-system \
         --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
         || log "  k-orc Kustomization not Ready yet (continuing)."
+
+      kubectl patch helmrelease/c5c3-operator -n c5c3-system --type merge \
+        -p '{"spec":{"suspend":false}}' 2>/dev/null || true
       kubectl wait helmrelease/c5c3-operator -n c5c3-system \
         --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s" 2>/dev/null \
         || log "  c5c3-operator not Ready yet (continuing)."
