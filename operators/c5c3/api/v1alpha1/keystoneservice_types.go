@@ -24,11 +24,13 @@ import (
 // Secret derive their names from metadata.name, and credential delivery lands
 // in the CR's own namespace.
 //
-// DECISION: the defaulting/validating webhook and the operator wiring (RBAC,
-// manager setup, watches) land in follow-up packages of the same effort. The
-// reconciler therefore resolves the effective user, domain and service names
-// itself, and paces itself with requeue timers rather than watches, until
-// those packages arrive.
+// DECISION: the operator wiring (RBAC, manager setup, watches) lands in a
+// follow-up package of the same effort, so the reconciler paces itself with
+// requeue timers rather than watches until it arrives. It also resolves the
+// effective user, domain and service names itself rather than trusting the
+// defaulting webhook, because admission can be absent rather than merely
+// unavailable (an unregistered webhook during install, a GitOps or etcd
+// restore replaying stored objects).
 type KeystoneService struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -55,6 +57,16 @@ type KeystoneServiceList struct {
 type KeystoneServiceSpec struct {
 	// ControlPlaneRef names the ControlPlane whose identity plane this
 	// service registers against.
+	//
+	// The reference is frozen after creation: every child this CR projects
+	// authenticates through the referenced plane's admin credential, so
+	// re-pointing a live registration would strand the Keystone user, project
+	// and catalog row it already created on the old plane, owned by nothing.
+	// Delete and re-create the CR to register against another ControlPlane.
+	// The namespace half is frozen by the validating webhook instead of here:
+	// an empty value means the CR's own namespace, and a CEL rule on a spec
+	// field cannot read metadata.namespace to resolve it.
+	// +kubebuilder:validation:XValidation:rule="self.name == oldSelf.name",message="controlPlaneRef.name is immutable; delete and re-create the KeystoneService to register against another ControlPlane"
 	ControlPlaneRef ControlPlaneRefSpec `json:"controlPlaneRef"`
 
 	// Catalog declares the service's catalog entry: one service row plus at
@@ -97,10 +109,19 @@ type KeystoneServiceCatalogSpec struct {
 	// DNS-1123 label shape. "identity" is rejected: the identity catalog
 	// entry is ControlPlane-owned in both modes (created in Managed, imported
 	// in External) and cannot be registered through a KeystoneService.
+	//
+	// It is frozen after creation, together with the effective service name.
+	// The collision probe that decides whether a pre-existing row of this type
+	// and name may be taken over runs only while no managed Service child
+	// exists, so an in-place edit re-shapes the registered row without ever
+	// re-probing: an exact match would silently adopt a row the registration
+	// does not own, a near match would duplicate one. Delete and re-create the
+	// CR, which runs the probe again.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	// +kubebuilder:validation:XValidation:rule="self != 'identity'",message="the identity catalog entry is ControlPlane-owned and cannot be registered through a KeystoneService"
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="serviceType is immutable; delete and re-create the KeystoneService to register a different service type"
 	ServiceType string `json:"serviceType"`
 
 	// ServiceName optionally overrides the catalog service name. When empty
@@ -114,10 +135,18 @@ type KeystoneServiceCatalogSpec struct {
 	// therefore never be rejected downstream by the K-ORC CRD, which would
 	// wedge the reconcile in an exponential backoff loop that no
 	// KeystoneService field error explains.
+	//
+	// It is frozen after creation for the reason serviceType above is. The
+	// freeze the validating webhook applies is the load-bearing one: it
+	// compares the EFFECTIVE name, so setting an explicit serviceName on a
+	// registration that relied on the metadata.name fallback is a rename too,
+	// which this rule alone cannot see (a transition rule does not evaluate
+	// when the old object left the field unset).
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
 	// +kubebuilder:validation:Pattern=`^[^,]+$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="serviceName is immutable; delete and re-create the KeystoneService to rename its catalog entry"
 	ServiceName string `json:"serviceName,omitempty"`
 
 	// Adopt is the explicit consent that a pre-existing catalog service row of
@@ -175,20 +204,38 @@ type KeystoneServiceAccountSpec struct {
 	// OpenStackName (a comma would only move the rejection to the K-ORC CRD,
 	// which wedges the reconcile in an exponential backoff no KeystoneService
 	// field error explains).
+	//
+	// It is frozen after creation: the name identifies a live Keystone user,
+	// so an in-place edit would mint a second user and strand the first one,
+	// still holding the password its consumers authenticate with. Delete and
+	// re-create the CR to rename it. The validating webhook compares the
+	// EFFECTIVE name, which is what admits the one benign transition this rule
+	// cannot see: materializing the metadata.name fallback onto a CR stored
+	// before the defaulting webhook existed.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
 	// +kubebuilder:validation:Pattern=`^[^,]+$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="userName is immutable; delete and re-create the KeystoneService to rename its user"
 	UserName string `json:"userName,omitempty"`
 
 	// DomainName is the OpenStack domain the user and project live in. When
 	// empty the reconciler resolves it to the referenced ControlPlane's
 	// effective admin domain (spec.korc.adminCredential.domainName). The
 	// pattern and caps mirror K-ORC's KeystoneName/OpenStackName filters.
+	//
+	// It is frozen after creation, because moving a live user and project to
+	// another domain is a re-creation, not an edit. The webhook compares the
+	// declared value rather than the effective one: resolving the fallback
+	// needs the referenced ControlPlane's admin domain, which admission cannot
+	// read, so setting an explicit domainName on a CR that relied on the
+	// fallback is rejected even where it names that same domain. Delete and
+	// re-create the CR to move it.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
 	// +kubebuilder:validation:Pattern=`^[^,]+$`
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="domainName is immutable; delete and re-create the KeystoneService to move it to another domain"
 	DomainName string `json:"domainName,omitempty"`
 
 	// Adopt is the explicit consent that a pre-existing Keystone user of this
@@ -207,6 +254,16 @@ type KeystoneServiceAccountSpec struct {
 	// Project is the OpenStack project the service user is associated with,
 	// either referenced (the default) or created and owned by the
 	// registration.
+	//
+	// Both leaves are frozen after creation. Re-pointing name would leave the
+	// role assignments the registration minted behind on the old project,
+	// and flipping create would either orphan a project the registration owns
+	// or adopt one it does not. The rules live on this field rather than on
+	// ServiceAccountProjectSpec because the ControlPlane's inline service
+	// accounts share that type and enforce the same freeze in their own
+	// webhook arm.
+	// +kubebuilder:validation:XValidation:rule="self.name == oldSelf.name",message="project.name is immutable; delete and re-create the KeystoneService to re-point its project"
+	// +kubebuilder:validation:XValidation:rule="(has(self.create) && self.create) == (has(oldSelf.create) && oldSelf.create)",message="project.create is immutable; a managed<->referenced flip would orphan or adopt the live project"
 	Project ServiceAccountProjectSpec `json:"project"`
 
 	// Roles are the OpenStack role names assigned to the user on the project.
