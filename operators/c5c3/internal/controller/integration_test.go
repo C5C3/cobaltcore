@@ -3474,6 +3474,20 @@ func TestIntegration_KeystoneService_SchemaValidation(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			// The catalog takeover consent decision D6 requires. It is a plain
+			// optional bool, so what this pins is that the field reached the CRD
+			// schema at all: without it the reconciler's adopt arm is unreachable
+			// and every pre-existing catalog row is a permanent collision.
+			name: "catalog adopt consent is accepted",
+			spec: c5c3v1alpha1.KeystoneServiceSpec{
+				ControlPlaneRef: ref,
+				Catalog: &c5c3v1alpha1.KeystoneServiceCatalogSpec{
+					ServiceType: "image", ServiceName: "glance", Adopt: true,
+				},
+			},
+			wantErr: false,
+		},
 	}
 
 	for i, tc := range cases {
