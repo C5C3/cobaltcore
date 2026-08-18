@@ -263,8 +263,8 @@ type infraInstance struct {
 //
 // The set is the instances the ControlPlane's services actually RESOLVE to (the
 // effective-* resolvers), NOT the set of declared blocks. That distinction is
-// load-bearing once a service opts out: Keystone is the only database consumer,
-// so a ControlPlane whose Keystone took a dedicated database leaves the shared
+// load-bearing once a service opts out: a ControlPlane whose declared database
+// consumers all took dedicated databases leaves the shared
 // spec.infrastructure.database with no consumer at all — and the webhook
 // materializes that block (3 Galera replicas, 100Gi) whenever it is omitted.
 // Enumerating declarations would provision that cluster anyway and then gate
