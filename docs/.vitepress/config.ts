@@ -13,6 +13,7 @@ export default defineConfig({
   themeConfig: {
     nav: [
       { text: 'Home', link: '/' },
+      { text: 'Architecture', link: '/architecture/' },
       { text: 'Quick Start', link: '/quick-start' },
       { text: 'Guides', link: '/guides/observability' },
       { text: 'Reference', link: '/reference/keystone/' },
@@ -27,6 +28,13 @@ export default defineConfig({
           { text: 'Quick Start', link: '/quick-start' },
           { text: 'Quick Start (Extended)', link: '/quick-start-extended' },
           { text: 'Quick Start (ControlPlane)', link: '/quick-start-controlplane' },
+        ],
+      },
+      {
+        text: 'Architecture',
+        items: [
+          { text: 'Overview', link: '/architecture/' },
+          { text: 'Core Components', link: '/architecture/core-components' },
         ],
       },
       {
@@ -223,6 +231,9 @@ export default defineConfig({
         items: [
           { text: 'Overview', link: '/future/' },
           { text: 'Brownfield Keystone Adoption', link: '/future/brownfield-keystone-adoption' },
+          { text: 'Hypervisor Cluster', link: '/future/hypervisor-cluster' },
+          { text: 'Storage Cluster', link: '/future/storage-cluster' },
+          { text: 'Management Cluster', link: '/future/management-cluster' },
         ],
       },
       {

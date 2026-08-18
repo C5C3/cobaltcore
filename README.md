@@ -4,11 +4,11 @@ Kubernetes-native operators and deployment stack for OpenStack Hosted Control Pl
 
 ## Overview
 
-CobaltCore (C5C3) is a Kubernetes-native OpenStack distribution for operating Hosted Control Planes across
-a multi-cluster topology (Management, Control Plane, Hypervisor, Storage). This repository delivers everything
-needed for a fully self-contained OpenStack control-plane stack — from infrastructure deployment manifests through
-the service operators to the c5c3-operator orchestration layer — built with Operator SDK (Go), controller-runtime,
-and Kubebuilder.
+CobaltCore (C5C3) is a Kubernetes-native OpenStack distribution for operating Hosted Control Planes. This
+repository delivers everything needed for a fully self-contained OpenStack control-plane stack — from
+infrastructure deployment manifests through the service operators to the c5c3-operator orchestration layer —
+built with Operator SDK (Go), controller-runtime, and Kubebuilder. How the pieces fit together, including the
+implemented management/target-cluster topology, is described in [the architecture documentation](docs/architecture/index.md).
 
 The Keystone Operator is the reference implementation: it establishes the patterns every service operator
 follows. Horizon, Glance, Placement, and Barbican are built on the same scaffolding, and the c5c3-operator
