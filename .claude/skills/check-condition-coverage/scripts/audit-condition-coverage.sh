@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # audit-condition-coverage.sh — mechanical condition-coverage checks for
-# every forge operator that wires sub-reconciler instrumentation
+# every CobaltCore operator that wires sub-reconciler instrumentation
 # (discovered via operators/*/internal/controller/instrumentation.go):
 #   K1  every condition type set in reconcile_*.go (literal or resolved
 #       conditionType<X>Ready constant) is registered in

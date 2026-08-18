@@ -28,7 +28,7 @@ set -euo pipefail
 # Remove an entry once a fixed dependency version is available and pinned.
 declare -A ALLOWLIST=(
 	# GO-2026-5377 (CVE-2026-42876, GHSA-fq7h-9x26-6j22): privilege escalation via
-	# secret overwriting in the External Secrets *controller*. forge only imports
+	# secret overwriting in the External Secrets *controller*. CobaltCore only imports
 	# the external-secrets/apis types for scheme registration in envtest/simulator
 	# test harnesses and never runs the ESO controller, so the vulnerable code path
 	# is not shipped. The advisory's apis-submodule range is "introduced: 0" with no

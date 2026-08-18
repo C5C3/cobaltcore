@@ -6,12 +6,12 @@
 # hack/deploy-mgmt-cluster.sh — Bring up the management cluster of the
 # two-cluster devstack.
 #
-# The management cluster runs the forge operators and nothing else: the
+# The management cluster runs the CobaltCore operators and nothing else: the
 # Keystone, Barbican and ControlPlane CRs live here, while every child they
 # project lands on a registered target cluster. The target half is a second kind
 # cluster brought up with `INFRA_ONLY=true CLUSTER_NAME=forge-target
 # hack/deploy-infra.sh`, which installs the third-party infrastructure (MariaDB,
-# Memcached, OpenBao, ESO) and no forge operator.
+# Memcached, OpenBao, ESO) and no CobaltCore operator.
 #
 # What this script installs:
 #   1. A kind cluster (no config file: no host ports, no NodePort mappings —

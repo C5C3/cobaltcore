@@ -697,8 +697,8 @@ spec:
                        "Referer": f"https://{HORIZON}/auth/login/"})
           final = data.decode(errors="replace")
           assert "Invalid credentials" not in final, "LDAP-domain login rejected the credentials"
-          # A /project/ 403 after login is expected in a Keystone-only stack
-          # (no compute/network services in the catalog) and must not fail here.
+          # A /project/ 403 after login is expected — no compute/network
+          # services are in the catalog — and must not fail here.
           assert "sessionid" in jar(HORIZON), "LDAP-domain login established no dashboard session"
           print("OK: LDAP-domain login through the domain field established a session")
           ' "$ENVOY_IP" "$ADMIN_PASSWORD"

@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# audit-fixture-drift.sh — mechanical fixture-drift checks for the forge repo.
+# audit-fixture-drift.sh — mechanical fixture-drift checks for the CobaltCore repo.
 # Verifies that test fixtures still match the CRD they claim to instantiate:
 #   X1  every kind: Keystone fixture uses the current apiVersion
 #   X2  every Spec field in a kind: Keystone fixture appears in the CRD schema

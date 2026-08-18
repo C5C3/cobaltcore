@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# audit-release-wiring.sh — mechanical release-wiring checks for the forge repo.
+# audit-release-wiring.sh — mechanical release-wiring checks for the CobaltCore repo.
 # Verifies that every OpenStack release under releases/<version>/ is fully
 # wired through the repo, and that no release-shaped reference points at a
 # version that has no releases/ directory:

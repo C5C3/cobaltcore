@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# audit-doc-drift.sh — mechanical doc-drift checks for the forge repo.
+# audit-doc-drift.sh — mechanical doc-drift checks for the CobaltCore repo.
 # Verifies that docs/ (and README.md) still describe the operator code
 # and infrastructure stack accurately:
 #   D1  Makefile OPERATORS default matches the operator modules under operators/
