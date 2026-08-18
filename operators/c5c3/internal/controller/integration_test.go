@@ -86,7 +86,12 @@ func setupControlPlaneEnvTest(t testing.TB) (client.Client, context.Context, con
 		func(mgr ctrl.Manager) error {
 			// mgr.GetAPIReader() mirrors the production wiring in main.go: webhook
 			// admission lookups read the API server directly, never a stale cache.
-			return (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
+			if err := (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			// The webhook manifests installed by envtest carry the KeystoneService
+			// entries (failurePolicy=Fail), so the handler must be served here too.
+			return (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
 			r := &ControlPlaneReconciler{
@@ -3348,9 +3353,13 @@ func TestIntegration_CredentialRotation_ServiceAccountValidation(t *testing.T) {
 // TestIntegration_KeystoneService_SchemaValidation pins the KeystoneService
 // CRD's declarative schema against the real envtest API server: the
 // at-least-one-block CEL rule, the identity-type rejection, the K-ORC-mirror
-// patterns, the listType=map endpoint key, and the required fields. There is
-// no KeystoneService webhook yet, so the schema rules are the only admission
-// gate.
+// patterns, the listType=map endpoint key, and the required fields.
+//
+// It pins the SCHEMA layer specifically, even though the validating webhook
+// now mirrors most of these rules: schema validation runs between the mutating
+// and the validating webhook, so every rejection below is still the schema's
+// own, and its message is the one a user sees. The webhook's twin of each rule
+// is covered by the unit tests in the api package.
 func TestIntegration_KeystoneService_SchemaValidation(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -3509,6 +3518,190 @@ func TestIntegration_KeystoneService_SchemaValidation(t *testing.T) {
 			} else {
 				g.Expect(err).NotTo(HaveOccurred(), "admission must accept: %s", tc.name)
 			}
+		})
+	}
+}
+
+// integrationKeystoneService returns a valid two-block KeystoneService for the
+// admission tests below. metadata.name, the catalog service name and the user
+// name are three DISTINCT values: every fallback the webhook resolves lands on
+// metadata.name, so a fixture that shared them would hide a broken one.
+func integrationKeystoneService(namespace string) *c5c3v1alpha1.KeystoneService {
+	return &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: "glance-registration", Namespace: namespace},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "controlplane"},
+			Catalog: &c5c3v1alpha1.KeystoneServiceCatalogSpec{
+				ServiceType: "image",
+				ServiceName: "glance",
+				Endpoints: []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+					{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://image.example.com"},
+				},
+			},
+			Account: &c5c3v1alpha1.KeystoneServiceAccountSpec{
+				UserName: "glance-user",
+				Project:  c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+				Roles:    []string{"admin"},
+			},
+		},
+	}
+}
+
+// TestIntegration_KeystoneService_Defaulting pins the mutating webhook against
+// the real envtest API server. The reconciler resolves the effective user name
+// defensively (keystoneServiceUserName), so a broken defaulter would not surface
+// as a reconcile failure — only the STORED object shows it, which is what this
+// test reads back.
+func TestIntegration_KeystoneService_Defaulting(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	g := NewGomegaWithT(t)
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ks-default-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+	// An account block without a user name takes the CR's own name.
+	implicit := integrationKeystoneService(ns.Name)
+	implicit.Spec.Account.UserName = ""
+	g.Expect(c.Create(ctx, implicit)).To(Succeed())
+
+	stored := &c5c3v1alpha1.KeystoneService{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(implicit), stored)).To(Succeed())
+	g.Expect(stored.Spec.Account.UserName).To(Equal("glance-registration"),
+		"the defaulting webhook must materialize userName from metadata.name")
+
+	// An explicit user name survives admission untouched.
+	explicit := integrationKeystoneService(ns.Name)
+	explicit.Name = "explicit-registration"
+	g.Expect(c.Create(ctx, explicit)).To(Succeed())
+
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(explicit), stored)).To(Succeed())
+	g.Expect(stored.Spec.Account.UserName).To(Equal("glance-user"))
+
+	// A catalog-only CR gains no account block.
+	catalogOnly := integrationKeystoneService(ns.Name)
+	catalogOnly.Name = "catalog-only-registration"
+	catalogOnly.Spec.Account = nil
+	g.Expect(c.Create(ctx, catalogOnly)).To(Succeed())
+
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(catalogOnly), stored)).To(Succeed())
+	g.Expect(stored.Spec.Account).To(BeNil())
+}
+
+// TestIntegration_KeystoneService_Immutability drives the identity freezes over
+// the real API server, where BOTH admission layers are live: the CRD's CEL
+// transition rules and the validating webhook. Two cases are reachable only
+// through the webhook and are marked as such — a CEL transition rule does not
+// evaluate when the field is absent on one side of the update, and none can
+// read metadata.namespace to resolve the effective ControlPlane namespace.
+func TestIntegration_KeystoneService_Immutability(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	cases := []struct {
+		name    string
+		mutate  func(*c5c3v1alpha1.KeystoneService)
+		wantErr bool
+		wantSub string
+	}{
+		{
+			name:    "controlPlaneRef name is frozen",
+			mutate:  func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.ControlPlaneRef.Name = "other-plane" },
+			wantErr: true, wantSub: "controlPlaneRef.name is immutable",
+		},
+		{
+			// Webhook-only: resolving the effective namespace needs
+			// metadata.namespace, which a CEL rule on a spec field cannot read.
+			name:    "controlPlaneRef namespace is frozen",
+			mutate:  func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.ControlPlaneRef.Namespace = "other-namespace" },
+			wantErr: true, wantSub: "controlPlaneRef.namespace is immutable",
+		},
+		{
+			name:    "serviceType is frozen",
+			mutate:  func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Catalog.ServiceType = "volume" },
+			wantErr: true, wantSub: "serviceType is immutable",
+		},
+		{
+			name:    "serviceName is frozen",
+			mutate:  func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Catalog.ServiceName = "glance-renamed" },
+			wantErr: true, wantSub: "serviceName is immutable",
+		},
+		{
+			// Webhook-only: the new object omits the field, so the CEL transition
+			// rule never evaluates — yet dropping it renames the catalog row to
+			// metadata.name.
+			name:    "serviceName cleared to the fallback is frozen",
+			mutate:  func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Catalog.ServiceName = "" },
+			wantErr: true, wantSub: "serviceName is immutable",
+		},
+		{
+			name:    "userName is frozen",
+			mutate:  func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Account.UserName = "glance-renamed" },
+			wantErr: true, wantSub: "userName is immutable",
+		},
+		{
+			name:    "domainName is frozen",
+			mutate:  func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Account.DomainName = "corp" },
+			wantErr: true, wantSub: "domainName is immutable",
+		},
+		{
+			name:    "project name is frozen",
+			mutate:  func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Account.Project.Name = "other-project" },
+			wantErr: true, wantSub: "project.name is immutable",
+		},
+		{
+			name:    "project create is frozen",
+			mutate:  func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Account.Project.Create = true },
+			wantErr: true, wantSub: "project.create is immutable",
+		},
+		{
+			name:   "adopt consent stays mutable",
+			mutate: func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Catalog.Adopt, ks.Spec.Account.Adopt = true, true },
+		},
+		{
+			name: "endpoint rows stay mutable",
+			mutate: func(ks *c5c3v1alpha1.KeystoneService) {
+				ks.Spec.Catalog.Endpoints = []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+					{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://image.example.com/v2"},
+					{Interface: c5c3v1alpha1.ExternalEndpointTypeInternal, URL: "https://image.internal"},
+				}
+			},
+		},
+		{
+			name:   "roles stay mutable",
+			mutate: func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Account.Roles = []string{"admin", "reader"} },
+		},
+		{
+			name:   "a whole block may be removed",
+			mutate: func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Account = nil },
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ks-immutable-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			ks := integrationKeystoneService(ns.Name)
+			ks.Name = fmt.Sprintf("ks-immutable-%d", i)
+			g.Expect(c.Create(ctx, ks)).To(Succeed())
+
+			stored := &c5c3v1alpha1.KeystoneService{}
+			g.Expect(c.Get(ctx, client.ObjectKeyFromObject(ks), stored)).To(Succeed())
+			tc.mutate(stored)
+
+			err := c.Update(ctx, stored)
+			if !tc.wantErr {
+				g.Expect(err).NotTo(HaveOccurred(), "admission must accept: %s", tc.name)
+				return
+			}
+			g.Expect(err).To(HaveOccurred(), "admission must reject: %s", tc.name)
+			g.Expect(apierrors.IsInvalid(err)).To(BeTrue(),
+				fmt.Sprintf("expected Invalid for %q, got: %v", tc.name, err))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantSub))
 		})
 	}
 }

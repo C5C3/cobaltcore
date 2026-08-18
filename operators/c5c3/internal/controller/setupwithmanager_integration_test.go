@@ -67,7 +67,12 @@ func TestSetupWithManager_BothControllersStart(t *testing.T) {
 		func(mgr ctrl.Manager) error {
 			// mgr.GetAPIReader() mirrors main.go: admission lookups read the API
 			// server directly, never a stale cache.
-			return (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
+			if err := (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			// The webhook manifests installed by envtest carry the KeystoneService
+			// entries (failurePolicy=Fail), so the handler must be served here too.
+			return (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
 			// Mirror operators/c5c3/main.go: both controllers are registered on the
@@ -137,7 +142,12 @@ func TestBuildControlPlaneController_StartsWithoutServiceCRDs(t *testing.T) {
 		func(mgr ctrl.Manager) error {
 			// mgr.GetAPIReader() mirrors main.go: admission lookups read the API
 			// server directly, never a stale cache.
-			return (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr)
+			if err := (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			// The webhook manifests installed by envtest carry the KeystoneService
+			// entries (failurePolicy=Fail), so the handler must be served here too.
+			return (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr)
 		},
 		func(mgr ctrl.Manager) error {
 			r := &ControlPlaneReconciler{

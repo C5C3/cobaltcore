@@ -5,4 +5,10 @@
       "mutatePath" "/mutate-c5c3-io-v1alpha1-controlplane"
       "validatePath" "/validate-c5c3-io-v1alpha1-controlplane"
       "apiGroup" "c5c3.io"
-      "resource" "controlplanes") }}
+      "resource" "controlplanes"
+      "additionalWebhooks" (list (dict
+        "mutatingWebhookName" "mkeystoneservice.kb.io"
+        "validatingWebhookName" "vkeystoneservice.kb.io"
+        "mutatePath" "/mutate-c5c3-io-v1alpha1-keystoneservice"
+        "validatePath" "/validate-c5c3-io-v1alpha1-keystoneservice"
+        "resource" "keystoneservices"))) }}

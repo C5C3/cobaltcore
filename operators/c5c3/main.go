@@ -146,6 +146,13 @@ func main() {
 				if err := (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
 					return err
 				}
+				// No Client here: every KeystoneService rule is decidable from the
+				// object under admission alone. The cross-object checks its inline
+				// ancestor carries are left to the reconciler's collision probes,
+				// which fail loudly (see KeystoneServiceWebhook).
+				if err := (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
