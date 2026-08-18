@@ -3345,6 +3345,160 @@ func TestIntegration_CredentialRotation_ServiceAccountValidation(t *testing.T) {
 	}
 }
 
+// TestIntegration_KeystoneService_SchemaValidation pins the KeystoneService
+// CRD's declarative schema against the real envtest API server: the
+// at-least-one-block CEL rule, the identity-type rejection, the K-ORC-mirror
+// patterns, the listType=map endpoint key, and the required fields. There is
+// no KeystoneService webhook yet, so the schema rules are the only admission
+// gate.
+func TestIntegration_KeystoneService_SchemaValidation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	ref := c5c3v1alpha1.ControlPlaneRefSpec{Name: "controlplane"}
+	account := &c5c3v1alpha1.KeystoneServiceAccountSpec{
+		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
+	}
+
+	cases := []struct {
+		name       string
+		spec       c5c3v1alpha1.KeystoneServiceSpec
+		wantErr    bool
+		wantErrSub string
+	}{
+		{
+			name:       "neither catalog nor account is rejected",
+			spec:       c5c3v1alpha1.KeystoneServiceSpec{ControlPlaneRef: ref},
+			wantErr:    true,
+			wantErrSub: "at least one of spec.catalog or spec.account must be set",
+		},
+		{
+			name: "identity service type is rejected",
+			spec: c5c3v1alpha1.KeystoneServiceSpec{
+				ControlPlaneRef: ref,
+				Catalog:         &c5c3v1alpha1.KeystoneServiceCatalogSpec{ServiceType: "identity"},
+			},
+			wantErr:    true,
+			wantErrSub: "ControlPlane-owned",
+		},
+		{
+			name: "comma in serviceName is rejected",
+			spec: c5c3v1alpha1.KeystoneServiceSpec{
+				ControlPlaneRef: ref,
+				Catalog: &c5c3v1alpha1.KeystoneServiceCatalogSpec{
+					ServiceType: "image", ServiceName: "glance,evil",
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "serviceName",
+		},
+		{
+			name: "endpoint url without scheme is rejected",
+			spec: c5c3v1alpha1.KeystoneServiceSpec{
+				ControlPlaneRef: ref,
+				Catalog: &c5c3v1alpha1.KeystoneServiceCatalogSpec{
+					ServiceType: "image",
+					Endpoints: []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+						{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "keystone.example"},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "url",
+		},
+		{
+			name: "duplicate endpoint interface rows are rejected",
+			spec: c5c3v1alpha1.KeystoneServiceSpec{
+				ControlPlaneRef: ref,
+				Catalog: &c5c3v1alpha1.KeystoneServiceCatalogSpec{
+					ServiceType: "image",
+					Endpoints: []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+						{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://image.example/a"},
+						{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://image.example/b"},
+					},
+				},
+			},
+			wantErr:    true,
+			wantErrSub: "Duplicate value",
+		},
+		{
+			name: "account without project is rejected",
+			spec: c5c3v1alpha1.KeystoneServiceSpec{
+				ControlPlaneRef: ref,
+				Account:         &c5c3v1alpha1.KeystoneServiceAccountSpec{UserName: "glance"},
+			},
+			wantErr:    true,
+			wantErrSub: "project",
+		},
+		{
+			name: "controlPlaneRef namespace outside the DNS-1123 label shape is rejected",
+			spec: c5c3v1alpha1.KeystoneServiceSpec{
+				ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{
+					Name: "controlplane", Namespace: "Not-A-Label",
+				},
+				Account: account,
+			},
+			wantErr:    true,
+			wantErrSub: "namespace",
+		},
+		{
+			name: "catalog-only registration without endpoints is accepted",
+			spec: c5c3v1alpha1.KeystoneServiceSpec{
+				ControlPlaneRef: ref,
+				Catalog:         &c5c3v1alpha1.KeystoneServiceCatalogSpec{ServiceType: "image"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "account-only registration with only a project is accepted",
+			spec: c5c3v1alpha1.KeystoneServiceSpec{
+				ControlPlaneRef: ref,
+				Account:         account,
+			},
+			wantErr: false,
+		},
+		{
+			name: "both blocks with one endpoint row per interface are accepted",
+			spec: c5c3v1alpha1.KeystoneServiceSpec{
+				ControlPlaneRef: ref,
+				Catalog: &c5c3v1alpha1.KeystoneServiceCatalogSpec{
+					ServiceType: "image", ServiceName: "glance",
+					Endpoints: []c5c3v1alpha1.KeystoneServiceEndpointSpec{
+						{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://image.example/public"},
+						{Interface: c5c3v1alpha1.ExternalEndpointTypeInternal, URL: "https://image.example/internal"},
+						{Interface: c5c3v1alpha1.ExternalEndpointTypeAdmin, URL: "https://image.example/admin"},
+					},
+				},
+				Account: account,
+			},
+			wantErr: false,
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ks-cel-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			ks := &c5c3v1alpha1.KeystoneService{
+				ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("ks-%d", i), Namespace: ns.Name},
+				Spec:       tc.spec,
+			}
+			err := c.Create(ctx, ks)
+			if tc.wantErr {
+				g.Expect(err).To(HaveOccurred(), "admission must reject: %s", tc.name)
+				g.Expect(apierrors.IsInvalid(err)).To(BeTrue(),
+					fmt.Sprintf("expected Invalid for %q, got: %v", tc.name, err))
+				g.Expect(err.Error()).To(ContainSubstring(tc.wantErrSub))
+			} else {
+				g.Expect(err).NotTo(HaveOccurred(), "admission must accept: %s", tc.name)
+			}
+		})
+	}
+}
+
 // integrationExternalControlPlane returns the issue's minimal External-mode
 // sketch CR (mode: External + external.authURL + korc.adminCredential.
 // passwordSecretRef, no infrastructure block) for the envtest matrix.
