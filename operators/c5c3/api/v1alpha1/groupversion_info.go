@@ -5,7 +5,8 @@
 // Package v1alpha1 contains the API types for the c5c3 ControlPlane operator
 // It defines the ControlPlane aggregate CRD that projects an
 // OpenStack control plane (Keystone today; more services later) plus the
-// CredentialRotation and SecretAggregate helper CRDs.
+// CredentialRotation and SecretAggregate helper CRDs and the KeystoneService
+// registration CRD.
 //
 // DECISION (plan decision #1): the API group is "c5c3.io" (NOT
 // keystone.openstack.c5c3.io). The ControlPlane is a cross-service aggregate,
