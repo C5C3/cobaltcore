@@ -19,9 +19,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -772,72 +770,6 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceSecret(
 		return controllerutil.SetControllerReference(ks, secret, r.Scheme)
 	})
 	return err
-}
-
-// forceRepushKeystoneServicePushSecret stamps a content hash on the PushSecret so
-// ESO re-pushes immediately. ESO's PushSecret controller reacts only to the
-// PushSecret's own metadata hash — it does not watch the source Secret — so
-// without this a rotated password would not reach OpenBao until the hourly
-// refresh. An unchanged hash is a no-op, so a steady-state pass writes nothing.
-//
-// The read-modify-write runs under RetryOnConflict: ESO mutates this object's
-// status on every push, so a 409 between the Get and the Update is expected
-// concurrency rather than a fault.
-func (r *KeystoneServiceReconciler) forceRepushKeystoneServicePushSecret(
-	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, name, annotation, hash string,
-) error {
-	key := types.NamespacedName{Namespace: ks.Namespace, Name: name}
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		ps := &esov1alpha1.PushSecret{}
-		if err := r.Get(ctx, key, ps); err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil
-			}
-			return err
-		}
-		if ps.Annotations[annotation] == hash {
-			return nil
-		}
-		if ps.Annotations == nil {
-			ps.Annotations = map[string]string{}
-		}
-		ps.Annotations[annotation] = hash
-		return r.Update(ctx, ps)
-	}); err != nil {
-		return fmt.Errorf("forcing PushSecret %q re-push: %w", name, err)
-	}
-	return nil
-}
-
-// forceSyncKeystoneServiceExternalSecret nudges ESO to re-materialize the consumer
-// Secret now rather than at the next hourly refresh. ESO folds the
-// ExternalSecret's annotations into its sync-decision hash, so a changed trigger
-// forces a re-sync and an unchanged one is a no-op. A missing ExternalSecret is a
-// no-op nil: the freshness gate is the caller's byte-compare, not this nudge.
-func (r *KeystoneServiceReconciler) forceSyncKeystoneServiceExternalSecret(
-	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, name, trigger string,
-) error {
-	key := types.NamespacedName{Namespace: ks.Namespace, Name: name}
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		es := &esov1.ExternalSecret{}
-		if err := r.Get(ctx, key, es); err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil
-			}
-			return err
-		}
-		if es.Annotations[esov1.AnnotationForceSync] == trigger {
-			return nil
-		}
-		if es.Annotations == nil {
-			es.Annotations = map[string]string{}
-		}
-		es.Annotations[esov1.AnnotationForceSync] = trigger
-		return r.Update(ctx, es)
-	}); err != nil {
-		return fmt.Errorf("forcing ExternalSecret %q re-sync: %w", name, err)
-	}
-	return nil
 }
 
 // keystoneServiceStoreReady gates the account's delivery leg on the store the

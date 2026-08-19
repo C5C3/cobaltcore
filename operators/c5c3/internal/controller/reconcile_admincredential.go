@@ -12,13 +12,11 @@ import (
 	"fmt"
 	"time"
 
-	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -415,34 +413,7 @@ func parseAppCredIdentity(cloudsYAML []byte) (appCredIdentity, bool) {
 // owning condition flips True. Shared by the admin-credential and service-account
 // sub-reconcilers.
 func (r *ControlPlaneReconciler) forceSyncExternalSecret(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, namespace, name, trigger string) error {
-	key := types.NamespacedName{Namespace: namespace, Name: name}
-	// Read-modify-write the force-sync annotation under RetryOnConflict: ESO mutates
-	// this ExternalSecret's status and its own annotations on every refresh (and on
-	// the force-sync it triggers), so a 409 Conflict between our Get and Update is
-	// expected concurrency — NOT a clouds.yaml fault. Re-reading and retrying keeps a
-	// transient conflict from flipping AdminCredentialReady to False/CloudsYamlError
-	// (and incrementing the sub-reconciler error counter) for what self-heals on the
-	// very next attempt.
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		es := &esov1.ExternalSecret{}
-		if err := c.Get(ctx, key, es); err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil
-			}
-			return err
-		}
-		if es.Annotations[esov1.AnnotationForceSync] == trigger {
-			return nil
-		}
-		if es.Annotations == nil {
-			es.Annotations = map[string]string{}
-		}
-		es.Annotations[esov1.AnnotationForceSync] = trigger
-		return c.Update(ctx, es)
-	}); err != nil {
-		return fmt.Errorf("forcing ExternalSecret %q re-sync: %w", name, err)
-	}
-	return nil
+	return resyncExternalSecret(ctx, c, namespace, name, trigger)
 }
 
 // adminAppCredentialPushContentHashAnnotation stamps the assembled clouds.yaml
@@ -480,29 +451,5 @@ const adminAppCredentialCACertHashAnnotation = "c5c3.io/push-cacert-hash" //noli
 // PushSecret on the cluster ESO reconciles it from. Shared by the
 // admin-credential and service-account sub-reconcilers.
 func (r *ControlPlaneReconciler) forceRepushPushSecret(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, namespace, name, annotation, hash string) error {
-	key := types.NamespacedName{Namespace: namespace, Name: name}
-	// Read-modify-write under RetryOnConflict: ESO mutates the PushSecret's status
-	// (and re-pushes on the metadata change this triggers), so a 409 Conflict
-	// between our Get and Update is expected concurrency, not a fault — retrying
-	// keeps a transient conflict from surfacing as a PushSecretError.
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		ps := &esov1alpha1.PushSecret{}
-		if err := c.Get(ctx, key, ps); err != nil {
-			if apierrors.IsNotFound(err) {
-				return nil
-			}
-			return err
-		}
-		if ps.Annotations[annotation] == hash {
-			return nil
-		}
-		if ps.Annotations == nil {
-			ps.Annotations = map[string]string{}
-		}
-		ps.Annotations[annotation] = hash
-		return c.Update(ctx, ps)
-	}); err != nil {
-		return fmt.Errorf("forcing PushSecret %q re-push: %w", name, err)
-	}
-	return nil
+	return repushPushSecret(ctx, c, namespace, name, annotation, hash)
 }
