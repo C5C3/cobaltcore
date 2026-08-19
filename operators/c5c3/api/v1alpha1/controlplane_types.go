@@ -1611,6 +1611,47 @@ type KORCSpec struct {
 	// +listMapKey=name
 	// +kubebuilder:validation:MaxItems=32
 	ServiceAccounts []ServiceAccountSpec `json:"serviceAccounts,omitempty"`
+
+	// ServiceRegistrations declares which namespaces this control plane consents
+	// to standalone KeystoneService registrations from. See
+	// ServiceRegistrationsSpec.
+	// +optional
+	ServiceRegistrations *ServiceRegistrationsSpec `json:"serviceRegistrations,omitempty"`
+}
+
+// ServiceRegistrationsSpec carries the control plane's consent to standalone
+// KeystoneService CRs registering against it.
+//
+// A KeystoneService can mint a Keystone service user with arbitrary roles, so a
+// CR in a namespace the control plane does not consent to would turn namespace
+// access into cloud admin. The reconciler therefore gates every registration on
+// this block and reports Ready=False/NamespaceNotAllowed for a namespace it does
+// not admit, projecting nothing.
+type ServiceRegistrationsSpec struct {
+	// AllowedNamespaces admits KeystoneService CRs from namespaces OUTSIDE the ones
+	// the control plane already owns. The control plane's own namespace and its
+	// dedicated service namespaces (declared via the services' namespace blocks;
+	// see ServiceNamespaceSpec) are always admitted and need no entry here — the
+	// control plane provisions a tenant store in each of them, and their contents
+	// are already its own.
+	//
+	// The list is an ADMISSION GATE, not a revocation tool. Removing a namespace
+	// freezes reconciliation of the KeystoneService CRs in it — they report
+	// Ready=False/NamespaceNotAllowed — while every Keystone user, catalog row and
+	// delivered Secret already minted stays in place and keeps authenticating.
+	// Teardown happens only through deletion of the KeystoneService CR itself, so
+	// an edit here can never destroy credentials a running service depends on.
+	//
+	// listType=set makes the API server reject duplicate entries; the RFC-1123
+	// label shape and the item cap mirror the delivery-namespace field on
+	// ServiceAccountSpec.
+	// +optional
+	// +listType=set
+	// +kubebuilder:validation:MaxItems=32
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=63
+	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	AllowedNamespaces []string `json:"allowedNamespaces,omitempty"`
 }
 
 // ServiceAccountSpec declares one composite OpenStack service account: a K-ORC
