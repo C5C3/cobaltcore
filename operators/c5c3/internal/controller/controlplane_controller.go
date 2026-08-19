@@ -6,6 +6,7 @@
 package controller
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -776,6 +777,13 @@ func secretToControlPlaneMapper(c client.Reader) handler.MapFunc {
 //
 // The cluster-scoped leg keeps the shared fan-out: a ClusterSecretStore is
 // namespace-less, so its List is already unscoped.
+//
+// A ControlPlane also matches on the store it provisions in an ALLOWLISTED
+// registration namespace, which is not one it occupies (see
+// reconcileRegistrationTenantStores). That store is not the plane's own delivery
+// path, so it is matched separately rather than by widening the namespace test:
+// only an operator-provisioned trio qualifies, so a plane that overrode its store
+// reference never matches one.
 func namespacedStoreToControlPlaneMapper(c client.Reader) handler.MapFunc {
 	return func(ctx context.Context, obj client.Object) []reconcile.Request {
 		var list c5c3v1alpha1.ControlPlaneList
@@ -788,17 +796,52 @@ func namespacedStoreToControlPlaneMapper(c client.Reader) handler.MapFunc {
 		var requests []reconcile.Request
 		for i := range list.Items {
 			cp := &list.Items[i]
-			ref := effectiveControlPlaneStoreRef(cp)
-			if ref.Kind != commonv1.SecretStoreKindNamespaced || ref.Name != obj.GetName() {
-				continue
-			}
-			if !slices.Contains(controlPlaneNamespaces(cp), obj.GetNamespace()) {
+			if !storeWakesControlPlane(cp, obj) {
 				continue
 			}
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cp)})
 		}
 		return requests
 	}
+}
+
+// storeWakesControlPlane reports whether a namespaced SecretStore event is one cp
+// has to reconcile on: the store it routes its own secret traffic through, in a
+// namespace it occupies, or a per-tenant store it provisions in an allowlisted
+// registration namespace.
+func storeWakesControlPlane(cp *c5c3v1alpha1.ControlPlane, store client.Object) bool {
+	ref := effectiveControlPlaneStoreRef(cp)
+	if ref.Kind == commonv1.SecretStoreKindNamespaced && ref.Name == store.GetName() &&
+		slices.Contains(controlPlaneNamespaces(cp), store.GetNamespace()) {
+		return true
+	}
+	// The registration stores are operator-provisioned, so an explicit
+	// spec.secretStoreRef means there are none to wake for.
+	if cp.Spec.SecretStoreRef != nil || store.GetName() != esoTenantStoreName {
+		return false
+	}
+	sr := cp.Spec.KORC.ServiceRegistrations
+	return sr != nil && slices.Contains(sr.AllowedNamespaces, store.GetNamespace())
+}
+
+// keystoneServiceToControlPlaneMapper enqueues the ControlPlane a KeystoneService
+// registers against, so a registration appearing in or leaving an allowlisted
+// namespace moves that namespace into or out of the tenant-store provisioning set
+// at watch latency rather than at the next periodic resync.
+//
+// It needs no client: the reference resolves from the object alone, its namespace
+// defaulting to the CR's own exactly as resolveControlPlane resolves it. An empty
+// name (a CR that bypassed admission) maps to nothing rather than to a request for
+// an unnamed ControlPlane.
+func keystoneServiceToControlPlaneMapper(_ context.Context, obj client.Object) []reconcile.Request {
+	ks, ok := obj.(*c5c3v1alpha1.KeystoneService)
+	if !ok || ks.Spec.ControlPlaneRef.Name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{
+		Namespace: cmp.Or(ks.Spec.ControlPlaneRef.Namespace, ks.Namespace),
+		Name:      ks.Spec.ControlPlaneRef.Name,
+	}}}
 }
 
 // controlPlaneNamespaces returns every namespace the ControlPlane occupies: its
@@ -1081,7 +1124,17 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		// ControlPlane must re-drive NamespacesReady rather than wait for the next
 		// periodic resync.
 		Watches(&corev1.Namespace{}, crossNamespaceChildHandler(),
-			mcbuilder.WithPredicates(crossNamespaceChildPredicate()), engageLocal, engageNoProviders)
+			mcbuilder.WithPredicates(crossNamespaceChildPredicate()), engageLocal, engageNoProviders).
+		// Standalone registrations: which allowlisted namespaces host one is what
+		// decides where reconcileRegistrationTenantStores provisions a tenant store,
+		// so a KeystoneService appearing or being deleted has to re-drive the plane.
+		// The CR is never a child of the ControlPlane — it is authored by whoever
+		// runs the service — so it is mapped by its own reference, not by ownership.
+		// The predicate drops the KeystoneService controller's status-only writes,
+		// which cannot move the provisioning set.
+		Watches(&c5c3v1alpha1.KeystoneService{}, commonmulticluster.LocalRequests(
+			keystoneServiceToControlPlaneMapper,
+		), mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders)
 
 	// The same children, once more, on the clusters a ControlPlane can place a
 	// service on. Neither the Owns legs nor the cross-namespace ones above reach

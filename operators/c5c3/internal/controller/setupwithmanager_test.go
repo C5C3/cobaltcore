@@ -459,3 +459,125 @@ func TestControlPlaneTargetClusters_PropagatesTheReadError(t *testing.T) {
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
 		"a missing ControlPlane must surface as NotFound, the answer the handler silences")
 }
+
+// --- keystoneServiceToControlPlaneMapper ---
+
+// TestKeystoneServiceToControlPlaneMapper_ExplicitReferenceNamespace a
+// registration naming the ControlPlane's namespace explicitly maps to exactly that
+// ControlPlane.
+func TestKeystoneServiceToControlPlaneMapper_ExplicitReferenceNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: "billing", Namespace: "tenant-a"},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "cp", Namespace: "openstack"},
+		},
+	}
+
+	g.Expect(keystoneServiceToControlPlaneMapper(context.Background(), ks)).To(ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "openstack", Name: "cp"}},
+	))
+}
+
+// TestKeystoneServiceToControlPlaneMapper_DefaultsToItsOwnNamespace an omitted
+// reference namespace means the CR's own, exactly as resolveControlPlane resolves
+// it — so the mapper and the reconciler cannot disagree on which plane is meant.
+func TestKeystoneServiceToControlPlaneMapper_DefaultsToItsOwnNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: "billing", Namespace: "tenant-a"},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "cp"},
+		},
+	}
+
+	g.Expect(keystoneServiceToControlPlaneMapper(context.Background(), ks)).To(ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "tenant-a", Name: "cp"}},
+	))
+}
+
+// TestKeystoneServiceToControlPlaneMapper_IgnoresUnusableObjects a CR that
+// bypassed admission and carries no reference name maps to nothing, rather than to
+// a request for an unnamed ControlPlane; so does an object of another kind.
+func TestKeystoneServiceToControlPlaneMapper_IgnoresUnusableObjects(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	nameless := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: "billing", Namespace: "tenant-a"},
+	}
+	g.Expect(keystoneServiceToControlPlaneMapper(context.Background(), nameless)).To(BeEmpty())
+
+	other := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "billing", Namespace: "tenant-a"}}
+	g.Expect(keystoneServiceToControlPlaneMapper(context.Background(), other)).To(BeEmpty())
+}
+
+// --- namespacedStoreToControlPlaneMapper: the registration-namespace arm ---
+
+// allowlistingMapperControlPlane returns a mapper fixture admitting registrations
+// from the given namespaces.
+func allowlistingMapperControlPlane(name, namespace string, allowed ...string) *c5c3v1alpha1.ControlPlane {
+	cp := mapperControlPlane(name, namespace, "admin-secret")
+	cp.Spec.KORC.ServiceRegistrations = &c5c3v1alpha1.ServiceRegistrationsSpec{AllowedNamespaces: allowed}
+	return cp
+}
+
+// TestNamespacedStoreToControlPlaneMapper_WakesOnAnAllowlistedRegistrationStore the
+// per-tenant store the ControlPlane provisions in an allowlisted namespace is one
+// it owns the lifecycle of, so its deletion or readiness flip must re-drive the
+// plane even though the namespace is not one the plane occupies.
+func TestNamespacedStoreToControlPlaneMapper_WakesOnAnAllowlistedRegistrationStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := allowlistingMapperControlPlane("cp", "openstack", "tenant-a")
+	c := newControlPlaneMapperClient(t, cp)
+	mapper := namespacedStoreToControlPlaneMapper(c)
+
+	store := &esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{
+		Name: esoTenantStoreName, Namespace: "tenant-a",
+	}}
+
+	g.Expect(mapper(context.Background(), store)).To(ConsistOf(
+		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "openstack", Name: "cp"}},
+	))
+}
+
+// TestNamespacedStoreToControlPlaneMapper_IgnoresUnrelatedRegistrationStores the
+// arm is narrow on purpose: only the operator-provisioned store name, only an
+// allowlisted namespace, and only while the plane has not overridden its store
+// reference — an override means the operator provisions no registration store at all.
+func TestNamespacedStoreToControlPlaneMapper_IgnoresUnrelatedRegistrationStores(t *testing.T) {
+	ctx := context.Background()
+
+	for name, build := range map[string]func() (*c5c3v1alpha1.ControlPlane, *esov1.SecretStore){
+		"another store in an allowlisted namespace": func() (*c5c3v1alpha1.ControlPlane, *esov1.SecretStore) {
+			return allowlistingMapperControlPlane("cp", "openstack", "tenant-a"),
+				&esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{Name: "somebody-elses-store", Namespace: "tenant-a"}}
+		},
+		"the tenant store in an unlisted namespace": func() (*c5c3v1alpha1.ControlPlane, *esov1.SecretStore) {
+			return allowlistingMapperControlPlane("cp", "openstack", "tenant-a"),
+				&esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: "tenant-z"}}
+		},
+		"an overridden store reference": func() (*c5c3v1alpha1.ControlPlane, *esov1.SecretStore) {
+			cp := allowlistingMapperControlPlane("cp", "openstack", "tenant-a")
+			cp.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+				Kind: commonv1.SecretStoreKindCluster, Name: "shared-store",
+			}
+			return cp, &esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{
+				Name: esoTenantStoreName, Namespace: "tenant-a",
+			}}
+		},
+		"no allowlist at all": func() (*c5c3v1alpha1.ControlPlane, *esov1.SecretStore) {
+			return mapperControlPlane("cp", "openstack", "admin-secret"),
+				&esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: "tenant-a"}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp, store := build()
+			mapper := namespacedStoreToControlPlaneMapper(newControlPlaneMapperClient(t, cp))
+			g.Expect(mapper(ctx, store)).To(BeEmpty())
+		})
+	}
+}
