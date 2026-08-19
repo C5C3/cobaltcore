@@ -105,6 +105,14 @@ func setupControlPlaneEnvTest(t testing.TB) (client.Client, context.Context, con
 			if err := registerControlPlaneSecretNameIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
 				return err
 			}
+			// The KeystoneService index, registered in production by the
+			// KeystoneService controller's own setup on this same manager.
+			// reconcileRegistrationTenantStores resolves its registrations through
+			// it, so without it a control plane with an allowlist would report
+			// ProvisioningError instead of provisioning anything.
+			if err := registerKeystoneServiceControlPlaneRefIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
+				return err
+			}
 
 			memcached := &unstructured.Unstructured{}
 			memcached.SetGroupVersionKind(memcachedGVK)
@@ -136,6 +144,11 @@ func setupControlPlaneEnvTest(t testing.TB) (client.Client, context.Context, con
 				Watches(memcached, handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)).
 				Watches(&esov1.ExternalSecret{}, handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)).
 				Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)).
+				// Mirror the registration watch SetupWithManager registers, so a
+				// KeystoneService appearing in or leaving an allowlisted namespace
+				// moves the tenant-store provisioning set at watch latency here too.
+				Watches(&c5c3v1alpha1.KeystoneService{},
+					handler.EnqueueRequestsFromMapFunc(keystoneServiceToControlPlaneMapper)).
 				WithOptions(controller.Options{SkipNameValidation: ptr.To(true)}).
 				Complete(r)
 		},
@@ -5538,4 +5551,83 @@ func TestIntegration_DedicatedNamespaces_RefusesToAdoptForeignNamespace(t *testi
 	g.Expect(c.Get(ctx, client.ObjectKey{Name: foreign.Name}, untouched)).To(Succeed())
 	g.Expect(untouched.Labels).NotTo(HaveKey(controlPlaneNameLabel),
 		"a namespace the operator refuses to own must never be labelled")
+}
+
+// TestIntegration_RegistrationTenantStore_ProvisionedAndCollected drives the
+// allowlisted-namespace tenant store over a real API server: it must appear when a
+// registration shows up in an admitted namespace and go away again when the last
+// one is deleted.
+//
+// It is the one place the whole loop is exercised end to end — the field index the
+// registration List resolves through, the watch leg that re-drives the plane, and
+// the cross-namespace ownership labels a foreign trio carries instead of an owner
+// reference — none of which a fake client can prove on its own.
+func TestIntegration_RegistrationTenantStore_ProvisionedAndCollected(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-regstore-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create the control plane namespace")
+	tenant := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-regstore-tenant-"}}
+	g.Expect(c.Create(ctx, tenant)).To(Succeed(), "create the registration namespace")
+
+	cp := integrationManagedControlPlane("controlplane", ns.Name)
+	cp.Spec.KORC.ServiceRegistrations = &c5c3v1alpha1.ServiceRegistrationsSpec{
+		AllowedNamespaces: []string{tenant.Name},
+	}
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create the ControlPlane CR")
+
+	// The sub-reconciler under test is a TAIL-GROUP member, and the blocking prefix
+	// ahead of it short-circuits at the first non-zero result. Drive the plane past
+	// that prefix, or the tail never runs and this test would prove nothing.
+	driveControlPlaneToAdminCredentialReady(t, ctx, c, cp)
+
+	storeKey := client.ObjectKey{Namespace: tenant.Name, Name: esoTenantStoreName}
+
+	// Admitting a namespace provisions nothing by itself: it is worth a store only
+	// once something in it actually registers.
+	g.Consistently(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, storeKey, &esov1.SecretStore{}))
+	}, 2*time.Second, itPollInterval).Should(BeTrue(),
+		"an allowlisted namespace with no registration must not receive a tenant store")
+
+	registration := integrationKeystoneService(tenant.Name)
+	// An empty reference namespace means the CR's OWN, which is the tenant
+	// namespace here, so the plane it registers against has to be named explicitly.
+	registration.Spec.ControlPlaneRef.Namespace = ns.Name
+	g.Expect(c.Create(ctx, registration)).To(Succeed(), "create the KeystoneService")
+
+	// The trio, label-owned: a cross-namespace child cannot carry an owner reference.
+	g.Eventually(func(gm Gomega) {
+		store := &esov1.SecretStore{}
+		gm.Expect(c.Get(ctx, storeKey, store)).To(Succeed())
+		gm.Expect(store.Labels).To(Equal(controlPlaneChildLabels(cp)))
+		gm.Expect(metav1.GetControllerOf(store)).To(BeNil())
+
+		sa := &corev1.ServiceAccount{}
+		gm.Expect(c.Get(ctx, client.ObjectKey{
+			Namespace: tenant.Name, Name: esoTenantServiceAccountName,
+		}, sa)).To(Succeed())
+
+		cert := &unstructured.Unstructured{}
+		cert.SetGroupVersionKind(certificateGVK)
+		gm.Expect(c.Get(ctx, client.ObjectKey{
+			Namespace: tenant.Name, Name: esoTenantClientCertName,
+		}, cert)).To(Succeed())
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"a registration in an allowlisted namespace must bring the tenant-store trio with it")
+
+	// And it goes away with the last registration.
+	g.Expect(c.Delete(ctx, registration)).To(Succeed(), "delete the KeystoneService")
+
+	g.Eventually(func(gm Gomega) {
+		gm.Expect(apierrors.IsNotFound(c.Get(ctx, storeKey, &esov1.SecretStore{}))).To(BeTrue())
+		gm.Expect(apierrors.IsNotFound(c.Get(ctx, client.ObjectKey{
+			Namespace: tenant.Name, Name: esoTenantServiceAccountName,
+		}, &corev1.ServiceAccount{}))).To(BeTrue())
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the trio must be collected once the namespace's last registration is gone")
 }
