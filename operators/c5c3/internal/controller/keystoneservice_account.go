@@ -652,7 +652,7 @@ func (r *KeystoneServiceReconciler) publishKeystoneServiceAccount(
 	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, ks, ps); err != nil {
 		return false, fmt.Errorf("ensuring the registration PushSecret: %w", err)
 	}
-	if err := r.forceRepushKeystoneServicePushSecret(ctx, ks, ps.Name, keystoneServicePushContentHashAnnotation, contentHash); err != nil {
+	if err := repushPushSecret(ctx, r.Client, ks.Namespace, ps.Name, keystoneServicePushContentHashAnnotation, contentHash); err != nil {
 		return false, err
 	}
 	pushed := &esov1alpha1.PushSecret{}
@@ -669,7 +669,7 @@ func (r *KeystoneServiceReconciler) publishKeystoneServiceAccount(
 	// The completed push is part of the trigger: without it a re-sync could
 	// materialize the value that was in OpenBao BEFORE this generation's push.
 	syncTrigger := contentHash + "/" + pushed.Status.SyncedResourceVersion
-	if err := r.forceSyncKeystoneServiceExternalSecret(ctx, ks, keystoneServiceCredentialsSecretName(ks), syncTrigger); err != nil {
+	if err := resyncExternalSecret(ctx, r.Client, ks.Namespace, keystoneServiceCredentialsSecretName(ks), syncTrigger); err != nil {
 		return false, err
 	}
 

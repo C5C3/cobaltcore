@@ -13,7 +13,12 @@ import (
 	"strconv"
 	"strings"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -133,6 +138,79 @@ func deleteRegistrationChild(ctx context.Context, c client.Client, obj client.Ob
 	obj.SetNamespace(namespace)
 	if err := client.IgnoreNotFound(c.Delete(ctx, obj)); err != nil {
 		return fmt.Errorf("deleting %s child %q: %w", errPrefix, name, err)
+	}
+	return nil
+}
+
+// --- ESO nudges ---
+
+// repushPushSecret nudges ESO to re-push the named PushSecret's source Secret to
+// OpenBao by stamping the given annotation on it. ESO's PushSecret controller
+// re-pushes only when the PushSecret object's own metadata hash changes — it does
+// not watch the referenced Secret — so without this stamp a source-Secret update
+// (a rotated service-account password, a newly projected CA bundle, the
+// bootstrap-to-minted credential handoff) would not reach OpenBao until the
+// hourly refreshInterval. Each caller keys its own annotation by the content it
+// owns, so an unchanged value writes nothing and a steady-state pass is a no-op.
+//
+// The read-modify-write runs under RetryOnConflict: ESO mutates the PushSecret's
+// status on every push, so a 409 between the Get and the Update is expected
+// concurrency, not a fault. A missing PushSecret is a nil no-op — the freshness
+// gate is the caller's byte-compare, not this nudge.
+func repushPushSecret(ctx context.Context, c client.Client, namespace, name, annotation, hash string) error {
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		ps := &esov1alpha1.PushSecret{}
+		if err := c.Get(ctx, key, ps); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		if ps.Annotations[annotation] == hash {
+			return nil
+		}
+		if ps.Annotations == nil {
+			ps.Annotations = map[string]string{}
+		}
+		ps.Annotations[annotation] = hash
+		return c.Update(ctx, ps)
+	}); err != nil {
+		return fmt.Errorf("forcing PushSecret %q re-push: %w", name, err)
+	}
+	return nil
+}
+
+// resyncExternalSecret nudges ESO to re-materialize the consumer Secret now
+// rather than at the next hourly refresh. ESO folds the ExternalSecret's
+// annotations into its sync-decision hash, so a changed trigger forces a re-sync
+// and an unchanged one writes nothing.
+//
+// Like repushPushSecret it retries on conflict — ESO mutates this object's status
+// and its own annotations on every refresh — and treats a missing ExternalSecret
+// as a nil no-op: the sub-reconciler that owns the ExternalSecret's creation, and
+// the byte-compare gate at the call site, are what guarantee the materialized
+// value is fresh before the owning condition flips True.
+func resyncExternalSecret(ctx context.Context, c client.Client, namespace, name, trigger string) error {
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		es := &esov1.ExternalSecret{}
+		if err := c.Get(ctx, key, es); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		if es.Annotations[esov1.AnnotationForceSync] == trigger {
+			return nil
+		}
+		if es.Annotations == nil {
+			es.Annotations = map[string]string{}
+		}
+		es.Annotations[esov1.AnnotationForceSync] = trigger
+		return c.Update(ctx, es)
+	}); err != nil {
+		return fmt.Errorf("forcing ExternalSecret %q re-sync: %w", name, err)
 	}
 	return nil
 }
