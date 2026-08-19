@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A duplicate spec.korc.serviceRegistrations.allowedNamespaces entry is
+# rejected by the apiserver's listType=set semantics. Consent is a set: a
+# namespace listed twice cannot be admitted twice, and the duplicate would
+# survive the edit that removes the entry an operator meant to revoke.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-registration-duplicate-namespace
+spec:
+  openStackRelease: "2025.2"
+  services:
+    keystone:
+      mode: External
+      external:
+        authURL: https://keystone.example.com/v3
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
+    serviceRegistrations:
+      allowedNamespaces:
+      - tenant-a
+      - tenant-a

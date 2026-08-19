@@ -758,6 +758,26 @@ spec:
             ($error != null): true
             (contains($error, 'services.keystone.publicEndpoint')): true
             (contains($error, 'must use scheme https when any service is placed away from Keystone')): true
+  # An allowedNamespaces entry outside the RFC-1123 label shape names no
+  # namespace the gate could ever admit a registration from (CRD items pattern).
+  - try:
+    - apply:
+        file: 88-registration-namespace-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'allowedNamespaces[0]')): true
+            (contains($error, 'should match')): true
+  # Consent is a set: a namespace listed twice is rejected by the apiserver's
+  # listType=set semantics, so no duplicate can survive the edit that revokes it.
+  - try:
+    - apply:
+        file: 89-registration-namespace-duplicate.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'allowedNamespaces')): true
+            (contains($error, 'Duplicate value')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
