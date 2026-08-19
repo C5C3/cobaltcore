@@ -725,6 +725,40 @@ spec:
                     x-kubernetes-list-map-keys:
                     - name
                     x-kubernetes-list-type: map
+                  serviceRegistrations:
+                    description: |-
+                      ServiceRegistrations declares which namespaces this control plane consents
+                      to standalone KeystoneService registrations from. See
+                      ServiceRegistrationsSpec.
+                    properties:
+                      allowedNamespaces:
+                        description: |-
+                          AllowedNamespaces admits KeystoneService CRs from namespaces OUTSIDE the ones
+                          the control plane already owns. The control plane's own namespace and its
+                          dedicated service namespaces (declared via the services' namespace blocks;
+                          see ServiceNamespaceSpec) are always admitted and need no entry here — the
+                          control plane provisions a tenant store in each of them, and their contents
+                          are already its own.
+
+                          The list is an ADMISSION GATE, not a revocation tool. Removing a namespace
+                          freezes reconciliation of the KeystoneService CRs in it — they report
+                          Ready=False/NamespaceNotAllowed — while every Keystone user, catalog row and
+                          delivered Secret already minted stays in place and keeps authenticating.
+                          Teardown happens only through deletion of the KeystoneService CR itself, so
+                          an edit here can never destroy credentials a running service depends on.
+
+                          listType=set makes the API server reject duplicate entries; the RFC-1123
+                          label shape and the item cap mirror the delivery-namespace field on
+                          ServiceAccountSpec.
+                        items:
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        maxItems: 32
+                        type: array
+                        x-kubernetes-list-type: set
+                    type: object
                 required:
                 - adminCredential
                 type: object
