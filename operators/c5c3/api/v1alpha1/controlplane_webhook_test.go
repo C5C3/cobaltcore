@@ -2745,6 +2745,109 @@ func TestValidateUpdate_RejectsServiceAccountTargetNamespaceChange(t *testing.T)
 	})
 }
 
+// --- Service-registration allowlist tests (spec.korc.serviceRegistrations) ---
+
+// registrationControlPlane returns a managed ControlPlane in namespace "openstack"
+// whose allowlist admits the entries passed in, so each test mutates one aspect of
+// a CR that is otherwise valid.
+func registrationControlPlane(allowed ...string) *ControlPlane {
+	cp := validControlPlane()
+	cp.Namespace = "openstack"
+	cp.Spec.KORC.ServiceRegistrations = &ServiceRegistrationsSpec{AllowedNamespaces: allowed}
+	return cp
+}
+
+func TestValidateCreate_AcceptsServiceRegistrationAllowlist(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	_, err := w.ValidateCreate(context.Background(), registrationControlPlane("tenant-a", "tenant-b"))
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_AcceptsAbsentServiceRegistrations pins the default posture:
+// no block at all is the own-plus-dedicated default, not an omission to reject.
+func TestValidateCreate_AcceptsAbsentServiceRegistrations(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.KORC.ServiceRegistrations = nil
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_AcceptsEmptyServiceRegistrationAllowlist pins that a declared
+// block with no entries is legal: it admits exactly what the absent block admits.
+func TestValidateCreate_AcceptsEmptyServiceRegistrationAllowlist(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	_, err := w.ValidateCreate(context.Background(), registrationControlPlane())
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_AcceptsRedundantServiceRegistrationNamespaces pins the
+// deliberate no-op: the ControlPlane's own namespace and a dedicated service
+// namespace are admitted implicitly, so listing either is redundant rather than
+// wrong. Rejecting them would make removing the keystone namespace block fail on
+// an allowlist entry that never changed.
+func TestValidateCreate_AcceptsRedundantServiceRegistrationNamespaces(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := registrationControlPlane("openstack", "identity")
+	cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
+		Name: "identity", Lifecycle: ServiceNamespaceLifecycleManaged,
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsServiceRegistrationNamespaceBadPattern mirrors the
+// per-item RFC-1123 Pattern marker for webhook-bypassed callers: the value names a
+// Kubernetes namespace.
+func TestValidateCreate_RejectsServiceRegistrationNamespaceBadPattern(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	_, err := w.ValidateCreate(context.Background(), registrationControlPlane("Tenant_A"))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("serviceRegistrations.allowedNamespaces[0]"))
+	g.Expect(err.Error()).To(ContainSubstring("RFC-1123 label"))
+}
+
+// TestValidateCreate_RejectsDuplicateServiceRegistrationNamespace mirrors the
+// listType=set duplicate rejection the apiserver applies, for the same
+// webhook-bypassed callers.
+func TestValidateCreate_RejectsDuplicateServiceRegistrationNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	_, err := w.ValidateCreate(context.Background(), registrationControlPlane("tenant-a", "tenant-a"))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("serviceRegistrations.allowedNamespaces[1]"))
+	g.Expect(err.Error()).To(ContainSubstring("Duplicate value"))
+}
+
+// TestValidateCreate_RejectsTooManyServiceRegistrationNamespaces mirrors the
+// MaxItems cap: every admitted namespace is one the registration gate consults on
+// every pass.
+func TestValidateCreate_RejectsTooManyServiceRegistrationNamespaces(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	allowed := make([]string, 0, maxServiceRegistrationNamespaces+1)
+	for i := range maxServiceRegistrationNamespaces + 1 {
+		allowed = append(allowed, fmt.Sprintf("tenant-%d", i))
+	}
+
+	_, err := w.ValidateCreate(context.Background(), registrationControlPlane(allowed...))
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("serviceRegistrations.allowedNamespaces"))
+	g.Expect(err.Error()).To(ContainSubstring("must have at most 32 items"))
+}
+
 // --- Per-service dedicated backing services ---
 
 // dedicatedControlPlane returns a ControlPlane whose Keystone service opts into a
