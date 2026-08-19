@@ -2754,3 +2754,91 @@ func TestReconcileDelete_StallEscapeKeepsTheRemoteChildrenFinalizer(t *testing.T
 	expectSwept(t, target, placedChild)
 	g.Expect(apierrors.IsNotFound(local.Get(ctx, key, &c5c3v1alpha1.ControlPlane{}))).To(BeTrue())
 }
+
+// TestSweepRegistrationTenantStores_CollectsTheForeignTrio a tenant-store trio the
+// ControlPlane provisioned in an allowlisted registration namespace is collected
+// before the finalizer is released. Nothing else can reach it: it sits outside
+// every namespace the dedicated-namespace teardown walks, and a cross-namespace
+// child carries no owner reference for a GC cascade to follow.
+func TestSweepRegistrationTenantStores_CollectsTheForeignTrio(t *testing.T) {
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := allowlistingControlPlane("tenant-a")
+	store, cert, sa := ownedTenantTrioIn("tenant-a", cp)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, store, cert, sa).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, APIReader: c, Recorder: record.NewFakeRecorder(10)}
+
+	r.sweepRegistrationTenantStores(ctx, cp)
+
+	expectSwept(t, c, store, cert, sa)
+}
+
+// TestSweepRegistrationTenantStores_LeavesForeignObjectsAlone the sweep is
+// ownership-checked against live state, so a same-named store somebody else runs in
+// a namespace we happen to share survives the teardown.
+func TestSweepRegistrationTenantStores_LeavesForeignObjectsAlone(t *testing.T) {
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := allowlistingControlPlane("tenant-a")
+	// Same names, no ownership labels: not ours.
+	foreignStore := readyTenantSecretStore(esoTenantStoreName, "tenant-a", "", "")
+	foreignSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Name: esoTenantServiceAccountName, Namespace: "tenant-a",
+	}}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreignStore, foreignSA).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, APIReader: c, Recorder: record.NewFakeRecorder(10)}
+
+	r.sweepRegistrationTenantStores(ctx, cp)
+
+	expectPresent(t, c, foreignStore, foreignSA)
+}
+
+// TestSweepRegistrationTenantStores_LeavesTheOwnNamespacesAlone the sweep walks
+// only namespaces OUTSIDE the ones the ControlPlane occupies. The store in its own
+// namespace is owner-referenced and reaped by the GC cascade, and a dedicated
+// service namespace is the dedicated-namespace teardown's to sweep, in its own
+// order — collecting either here would race that order.
+func TestSweepRegistrationTenantStores_LeavesTheOwnNamespacesAlone(t *testing.T) {
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := allowlistingControlPlane("tenant-a")
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name: "identity", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+		},
+	}
+	store, cert, sa := ownedTenantTrioIn("identity", cp)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, store, cert, sa).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, APIReader: c, Recorder: record.NewFakeRecorder(10)}
+
+	r.sweepRegistrationTenantStores(ctx, cp)
+
+	expectPresent(t, c, store, cert, sa)
+}
+
+// TestSweepNamespacesBeforeRelease_CollectsRegistrationTenantStores pins the
+// WIRING, not just the sweep: the release gate every teardown path funnels through
+// has to reach the registration tenant stores, or the trios stay behind in
+// namespaces nothing points back from once the ControlPlane leaves etcd.
+func TestSweepNamespacesBeforeRelease_CollectsRegistrationTenantStores(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingControlPlane(time.Minute)
+	cp.Spec.KORC.ServiceRegistrations = &c5c3v1alpha1.ServiceRegistrationsSpec{
+		AllowedNamespaces: []string{"tenant-a"},
+	}
+	store, cert, sa := ownedTenantTrioIn("tenant-a", cp)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, store, cert, sa).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, APIReader: c, Recorder: record.NewFakeRecorder(10)}
+
+	done, err := r.sweepNamespacesBeforeRelease(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+
+	expectSwept(t, c, store, cert, sa)
+}
