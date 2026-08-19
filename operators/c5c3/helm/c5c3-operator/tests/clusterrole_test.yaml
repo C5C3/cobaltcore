@@ -1,12 +1,13 @@
 # ClusterRole RBAC rules unit tests.
-# Rules mirror the +kubebuilder:rbac markers on the ControlPlane and
-# CredentialRotation reconcilers (deduplicated), plus the leases rule for
-# leader election — 31 rules total (clustersecretstores read-only and
-# secretstores read-write are separate rules since the operator provisions the
-# per-tenant SecretStore; the namespaces rule lets reconcileNamespaces ensure the
-# per-service dedicated namespaces; the clusterroles rule is bind-only on the
-# single name system:auth-delegator; the endpointslices rule is get-only, for the
-# API-server addresses a dedicated OpenBao instance needs egress to).
+# Rules mirror the +kubebuilder:rbac markers on the ControlPlane,
+# CredentialRotation and KeystoneService reconcilers (deduplicated), plus the
+# leases rule for leader election — 34 rules total (clustersecretstores
+# read-only and secretstores read-write are separate rules since the operator
+# provisions the per-tenant SecretStore; the namespaces rule lets
+# reconcileNamespaces ensure the per-service dedicated namespaces; the
+# clusterroles rule is bind-only on the single name system:auth-delegator; the
+# endpointslices rule is get-only, for the API-server addresses a dedicated
+# OpenBao instance needs egress to).
 suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
@@ -15,7 +16,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 31
+          count: 34
 
   - it: should grant full CRUD on controlplanes
     asserts:
@@ -92,6 +93,47 @@ tests:
               - get
               - update
               - patch
+
+  - it: should grant read/update on keystoneservices
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - keystoneservices
+            verbs:
+              - get
+              - list
+              - watch
+              - update
+
+  - it: should grant get/update/patch on keystoneservices/status
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - keystoneservices/status
+            verbs:
+              - get
+              - update
+              - patch
+
+  - it: should grant update on keystoneservices/finalizers
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - c5c3.io
+            resources:
+              - keystoneservices/finalizers
+            verbs:
+              - update
 
   - it: should grant read-only on secretaggregates
     asserts:
