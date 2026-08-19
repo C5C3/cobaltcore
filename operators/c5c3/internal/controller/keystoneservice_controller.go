@@ -173,16 +173,23 @@ func (r *KeystoneServiceReconciler) reconcileNormal(ctx context.Context, ks *c5c
 
 	credRef, managedCredRef := keystoneServiceCredentialRefs(cp)
 
+	// Each declared block runs through the shared instrumenter, so its duration
+	// and errors land on the c5c3_operator metric vectors under its own
+	// sub_reconciler label (see subReconcilerConditionTypes).
 	requeue := false
 	if ks.Spec.Catalog != nil {
-		res, err := r.ensureCatalog(ctx, ks, cp, credRef, managedCredRef)
+		res, err := instrumenter.Instrument(ctx, "KeystoneServiceCatalog", func(ctx context.Context) (ctrl.Result, error) {
+			return r.ensureCatalog(ctx, ks, cp, credRef, managedCredRef)
+		})
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 		requeue = requeue || !res.IsZero()
 	}
 	if ks.Spec.Account != nil {
-		res, err := r.ensureAccount(ctx, ks, cp, credRef, managedCredRef)
+		res, err := instrumenter.Instrument(ctx, "KeystoneServiceAccount", func(ctx context.Context) (ctrl.Result, error) {
+			return r.ensureAccount(ctx, ks, cp, credRef, managedCredRef)
+		})
 		if err != nil {
 			return ctrl.Result{}, err
 		}
