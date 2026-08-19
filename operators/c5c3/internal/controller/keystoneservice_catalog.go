@@ -10,9 +10,7 @@ import (
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/c5c3/forge/internal/common/apply"
@@ -60,18 +58,8 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 	// not the spec's application credential: K-ORC must still reach Keystone to
 	// DELETE the row at teardown, and the application credential is revoked by its
 	// own finalizer while that delete is in flight.
-	service := &orcv1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceCatalogServiceRef(ks), Namespace: ks.Namespace},
-		Spec: orcv1alpha1.ServiceSpec{
-			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
-			CloudCredentialsRef: managedCredRef,
-			Resource: &orcv1alpha1.ServiceResourceSpec{
-				Type:    catalog.ServiceType,
-				Name:    ptr.To(orcv1alpha1.OpenStackName(serviceName)),
-				Enabled: ptr.To(true),
-			},
-		},
-	}
+	service := managedCatalogServiceChild(keystoneServiceCatalogServiceRef(ks), ks.Namespace,
+		catalog.ServiceType, serviceName, managedCredRef)
 	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, service, apply.FieldManager); err != nil {
 		fail(reasonKeystoneServiceCatalogError, fmt.Sprintf("applying the catalog Service: %v", err))
 		return ctrl.Result{}, err
@@ -82,19 +70,8 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 
 	endpoints := make([]*orcv1alpha1.Endpoint, 0, len(catalog.Endpoints))
 	for _, ep := range catalog.Endpoints {
-		endpoint := &orcv1alpha1.Endpoint{
-			ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceCatalogEndpointRef(ks, ep.Interface), Namespace: ks.Namespace},
-			Spec: orcv1alpha1.EndpointSpec{
-				ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
-				CloudCredentialsRef: managedCredRef,
-				Resource: &orcv1alpha1.EndpointResourceSpec{
-					Interface:  string(ep.Interface),
-					URL:        ep.URL,
-					ServiceRef: orcv1alpha1.KubernetesNameRef(service.Name),
-					Enabled:    ptr.To(true),
-				},
-			},
-		}
+		endpoint := managedCatalogEndpointChild(keystoneServiceCatalogEndpointRef(ks, ep.Interface), ks.Namespace,
+			string(ep.Interface), ep.URL, service.Name, managedCredRef)
 		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, endpoint, apply.FieldManager); err != nil {
 			fail(reasonKeystoneServiceCatalogError, fmt.Sprintf("applying the %q catalog Endpoint: %v", ep.Interface, err))
 			return ctrl.Result{}, err
@@ -182,19 +159,7 @@ func (r *KeystoneServiceReconciler) keystoneServiceCatalogCollisionGate(
 
 	// The filter carries the type AND the effective name, so the probe answers the
 	// question K-ORC's own adoption asks — it matches a row on exactly that pair.
-	probe := &orcv1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: probeName, Namespace: ks.Namespace},
-		Spec: orcv1alpha1.ServiceSpec{
-			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
-			CloudCredentialsRef: credRef,
-			Import: &orcv1alpha1.ServiceImport{
-				Filter: &orcv1alpha1.ServiceFilter{
-					Type: ptr.To(ks.Spec.Catalog.ServiceType),
-					Name: ptr.To(orcv1alpha1.OpenStackName(serviceName)),
-				},
-			},
-		},
-	}
+	probe := unmanagedServiceImport(probeName, ks.Namespace, ks.Spec.Catalog.ServiceType, serviceName, credRef)
 	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, probe, apply.FieldManager); err != nil {
 		return false, fmt.Errorf("registration Service probe %q: %w", probeName, err)
 	}

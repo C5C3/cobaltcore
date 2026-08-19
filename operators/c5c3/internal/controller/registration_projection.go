@@ -12,14 +12,21 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/c5c3/forge/internal/common/secrets"
+	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
 
 // This file is the ONE projection layer both registration mechanisms run on:
@@ -213,4 +220,241 @@ func resyncExternalSecret(ctx context.Context, c client.Client, namespace, name,
 		return fmt.Errorf("forcing ExternalSecret %q re-sync: %w", name, err)
 	}
 	return nil
+}
+
+// --- K-ORC child spec builders ---
+//
+// Every builder is a pure projection: it takes the child's name, its namespace,
+// the credential the child authenticates with, and the identity it stands for,
+// and returns the fully populated typed object. Both mechanisms' naming helpers
+// stay where they are, so the caller decides WHICH child is built and the builder
+// decides WHAT it looks like — the shape that must not drift between them.
+//
+// The unmanaged* builders are imports: they REFERENCE an OpenStack resource and
+// never create or delete it, which is also what makes them safe as collision
+// probes. The managed* builders declare a Resource K-ORC creates and, at
+// teardown, deletes.
+
+// unmanagedDomainImport builds the Domain import an account's user and project
+// resolve their domain against, filtered on the domain name alone.
+func unmanagedDomainImport(name, namespace, domainName string, credRef orcv1alpha1.CloudCredentialsReference) *orcv1alpha1.Domain {
+	return &orcv1alpha1.Domain{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: orcv1alpha1.DomainSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+			CloudCredentialsRef: credRef,
+			Import: &orcv1alpha1.DomainImport{
+				Filter: &orcv1alpha1.DomainFilter{Name: ptr.To(orcv1alpha1.KeystoneName(domainName))},
+			},
+		},
+	}
+}
+
+// unmanagedProjectImport builds the Project import filtered on the project name
+// within a domain. It serves both the referenced project (project.create=false)
+// and the collision probe that gates creating a managed one.
+func unmanagedProjectImport(name, namespace, projectName, domainRef string, credRef orcv1alpha1.CloudCredentialsReference) *orcv1alpha1.Project {
+	return &orcv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: orcv1alpha1.ProjectSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+			CloudCredentialsRef: credRef,
+			Import: &orcv1alpha1.ProjectImport{
+				Filter: &orcv1alpha1.ProjectFilter{
+					Name:      ptr.To(orcv1alpha1.KeystoneName(projectName)),
+					DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
+				},
+			},
+		},
+	}
+}
+
+// managedProjectChild builds the managed Project the operator creates once the
+// collision probe reports no project of that name exists in the domain.
+func managedProjectChild(name, namespace, projectName, domainRef string, credRef orcv1alpha1.CloudCredentialsReference) *orcv1alpha1.Project {
+	return &orcv1alpha1.Project{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: orcv1alpha1.ProjectSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+			CloudCredentialsRef: credRef,
+			Resource: &orcv1alpha1.ProjectResourceSpec{
+				Name:      ptr.To(orcv1alpha1.KeystoneName(projectName)),
+				DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
+			},
+		},
+	}
+}
+
+// unmanagedUserImport builds the short-lived User import that decides
+// exists/absent before a managed User is created. The filter carries the domain,
+// so it answers the question K-ORC's own adoption asks.
+func unmanagedUserImport(name, namespace, userName, domainRef string, credRef orcv1alpha1.CloudCredentialsReference) *orcv1alpha1.User {
+	return &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: orcv1alpha1.UserSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+			CloudCredentialsRef: credRef,
+			Import: &orcv1alpha1.UserImport{
+				Filter: &orcv1alpha1.UserFilter{
+					Name:      ptr.To(orcv1alpha1.OpenStackName(userName)),
+					DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
+				},
+			},
+		},
+	}
+}
+
+// unmanagedRoleImport builds the Role import for one declared role. It carries NO
+// DomainRef: Keystone roles are global by default, and reading a role never
+// mutates it, so the import rides the spec's own clouds.yaml.
+func unmanagedRoleImport(name, namespace, role string, credRef orcv1alpha1.CloudCredentialsReference) *orcv1alpha1.Role {
+	return &orcv1alpha1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: orcv1alpha1.RoleSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+			CloudCredentialsRef: credRef,
+			Import: &orcv1alpha1.RoleImport{
+				Filter: &orcv1alpha1.RoleFilter{Name: ptr.To(orcv1alpha1.KeystoneName(role))},
+			},
+		},
+	}
+}
+
+// managedRoleAssignmentChild builds the managed RoleAssignment binding one role to
+// an account's user on its project. It authenticates via the admin PASSWORD cloud,
+// not the spec's application credential, so a teardown Delete survives the
+// credential's own revoke.
+func managedRoleAssignmentChild(
+	name, namespace, roleRef, userRef, projectRef string, credRef orcv1alpha1.CloudCredentialsReference,
+) *orcv1alpha1.RoleAssignment {
+	return &orcv1alpha1.RoleAssignment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: orcv1alpha1.RoleAssignmentSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+			CloudCredentialsRef: credRef,
+			Resource: &orcv1alpha1.RoleAssignmentResourceSpec{
+				RoleRef:    orcv1alpha1.KubernetesNameRef(roleRef),
+				UserRef:    ptr.To(orcv1alpha1.KubernetesNameRef(userRef)),
+				ProjectRef: ptr.To(orcv1alpha1.KubernetesNameRef(projectRef)),
+			},
+		},
+	}
+}
+
+// unmanagedServiceImport builds the catalog collision probe. The filter carries
+// the type AND the effective name, the exact pair K-ORC's service actuator
+// matches an existing row on.
+func unmanagedServiceImport(name, namespace, serviceType, serviceName string, credRef orcv1alpha1.CloudCredentialsReference) *orcv1alpha1.Service {
+	return &orcv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: orcv1alpha1.ServiceSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
+			CloudCredentialsRef: credRef,
+			Import: &orcv1alpha1.ServiceImport{
+				Filter: &orcv1alpha1.ServiceFilter{
+					Type: ptr.To(serviceType),
+					Name: ptr.To(orcv1alpha1.OpenStackName(serviceName)),
+				},
+			},
+		},
+	}
+}
+
+// managedCatalogServiceChild builds the managed Service CR for one catalog row.
+func managedCatalogServiceChild(name, namespace, serviceType, serviceName string, credRef orcv1alpha1.CloudCredentialsReference) *orcv1alpha1.Service {
+	return &orcv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: orcv1alpha1.ServiceSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+			CloudCredentialsRef: credRef,
+			Resource: &orcv1alpha1.ServiceResourceSpec{
+				Type:    serviceType,
+				Name:    ptr.To(orcv1alpha1.OpenStackName(serviceName)),
+				Enabled: ptr.To(true),
+			},
+		},
+	}
+}
+
+// managedCatalogEndpointChild builds the managed Endpoint CR for one interface of
+// a catalog row, pointing at that row's Service CR.
+func managedCatalogEndpointChild(
+	name, namespace, iface, url, serviceRef string, credRef orcv1alpha1.CloudCredentialsReference,
+) *orcv1alpha1.Endpoint {
+	return &orcv1alpha1.Endpoint{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: orcv1alpha1.EndpointSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+			CloudCredentialsRef: credRef,
+			Resource: &orcv1alpha1.EndpointResourceSpec{
+				Interface:  iface,
+				URL:        url,
+				ServiceRef: orcv1alpha1.KubernetesNameRef(serviceRef),
+				Enabled:    ptr.To(true),
+			},
+		},
+	}
+}
+
+// generatedPasswordMutator fills the K-ORC-facing password key on a
+// generation-scoped Secret, once. A new generation is a NEW Secret name, never an
+// in-place edit — that name flip is the only thing K-ORC's user actuator reacts
+// to — so a value already present is preserved.
+func generatedPasswordMutator(secret *corev1.Secret) error {
+	if len(secret.Data[serviceAccountPasswordKey]) > 0 {
+		return nil
+	}
+	v, err := generateAppCredSecretValue()
+	if err != nil {
+		return err
+	}
+	secret.Data[serviceAccountPasswordKey] = []byte(v)
+	return nil
+}
+
+// accountPushSecretSpec builds the PushSecret mirroring an account's assembled
+// source Secret to its per-CR OpenBao path. DeletionPolicy Delete: the credential
+// dies with the account that owns it.
+func accountPushSecretSpec(name, namespace, sourceName, remoteKey string, storeRef commonv1.SecretStoreRefSpec) *esov1alpha1.PushSecret {
+	return &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: esov1alpha1.PushSecretSpec{
+			DeletionPolicy:  esov1alpha1.PushSecretDeletionPolicyDelete,
+			SecretStoreRefs: secrets.PushSecretStoreRefs(storeRef),
+			Selector: esov1alpha1.PushSecretSelector{
+				Secret: &esov1alpha1.PushSecretSecret{Name: sourceName},
+			},
+			Data: []esov1alpha1.PushSecretData{{
+				Match: esov1alpha1.PushSecretMatch{
+					RemoteRef: esov1alpha1.PushSecretRemoteRef{RemoteKey: remoteKey},
+				},
+			}},
+		},
+	}
+}
+
+// accountExternalSecretSpec builds the ExternalSecret that materializes an
+// account's consumer Secret from its per-CR OpenBao path. It reads back the
+// "password" and "clouds.yaml" properties — the documented consumption contract —
+// and refreshes hourly. CreationPolicy Owner ties the materialized Secret's life
+// to the ExternalSecret, so the delete sweeps never have to name it.
+func accountExternalSecretSpec(name, namespace, remoteKey string, storeRef commonv1.SecretStoreRefSpec) *esov1.ExternalSecret {
+	return &esov1.ExternalSecret{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: esov1.ExternalSecretSpec{
+			RefreshInterval: &metav1.Duration{Duration: time.Hour},
+			SecretStoreRef:  secrets.ESOSecretStoreRef(storeRef),
+			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
+			Data: []esov1.ExternalSecretData{
+				{
+					SecretKey: serviceAccountPasswordKey,
+					RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: serviceAccountPasswordKey},
+				},
+				{
+					SecretKey: appCredCloudsYAMLKey,
+					RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: appCredCloudsYAMLKey},
+				},
+			},
+		},
+	}
 }

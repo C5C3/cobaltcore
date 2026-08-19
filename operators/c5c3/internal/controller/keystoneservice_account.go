@@ -12,9 +12,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
-	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -198,16 +196,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceDomain(
 	if name == adminDomainRef(cp) {
 		return name, nil
 	}
-	domain := &orcv1alpha1.Domain{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ks.Namespace},
-		Spec: orcv1alpha1.DomainSpec{
-			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
-			CloudCredentialsRef: credRef,
-			Import: &orcv1alpha1.DomainImport{
-				Filter: &orcv1alpha1.DomainFilter{Name: ptr.To(orcv1alpha1.KeystoneName(keystoneServiceDomainName(cp, ks)))},
-			},
-		},
-	}
+	domain := unmanagedDomainImport(name, ks.Namespace, keystoneServiceDomainName(cp, ks), credRef)
 	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, domain, apply.FieldManager); err != nil {
 		return "", fmt.Errorf("registration Domain import %q: %w", name, err)
 	}
@@ -231,19 +220,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceProject(
 	domainName := keystoneServiceDomainName(cp, ks)
 
 	if !account.Project.Create {
-		project := &orcv1alpha1.Project{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ks.Namespace},
-			Spec: orcv1alpha1.ProjectSpec{
-				ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
-				CloudCredentialsRef: credRef,
-				Import: &orcv1alpha1.ProjectImport{
-					Filter: &orcv1alpha1.ProjectFilter{
-						Name:      ptr.To(orcv1alpha1.KeystoneName(account.Project.Name)),
-						DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
-					},
-				},
-			},
-		}
+		project := unmanagedProjectImport(name, ks.Namespace, account.Project.Name, domainRef, credRef)
 		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, project, apply.FieldManager); err != nil {
 			return nil, false, fmt.Errorf("registration referenced Project import %q: %w", name, err)
 		}
@@ -257,19 +234,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceProject(
 	case err == nil:
 		// Already ours: converge below.
 	case apierrors.IsNotFound(err):
-		probe := &orcv1alpha1.Project{
-			ObjectMeta: metav1.ObjectMeta{Name: keystoneServiceProjectProbeRef(ks), Namespace: ks.Namespace},
-			Spec: orcv1alpha1.ProjectSpec{
-				ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
-				CloudCredentialsRef: credRef,
-				Import: &orcv1alpha1.ProjectImport{
-					Filter: &orcv1alpha1.ProjectFilter{
-						Name:      ptr.To(orcv1alpha1.KeystoneName(account.Project.Name)),
-						DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
-					},
-				},
-			},
-		}
+		probe := unmanagedProjectImport(keystoneServiceProjectProbeRef(ks), ks.Namespace, account.Project.Name, domainRef, credRef)
 		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, probe, apply.FieldManager); err != nil {
 			return nil, false, fmt.Errorf("registration Project probe %q: %w", probe.Name, err)
 		}
@@ -298,17 +263,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceProject(
 		return nil, false, fmt.Errorf("reading managed Project %q: %w", name, err)
 	}
 
-	project := &orcv1alpha1.Project{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ks.Namespace},
-		Spec: orcv1alpha1.ProjectSpec{
-			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
-			CloudCredentialsRef: managedCredRef,
-			Resource: &orcv1alpha1.ProjectResourceSpec{
-				Name:      ptr.To(orcv1alpha1.KeystoneName(account.Project.Name)),
-				DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
-			},
-		},
-	}
+	project := managedProjectChild(name, ks.Namespace, account.Project.Name, domainRef, managedCredRef)
 	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, project, apply.FieldManager); err != nil {
 		return nil, false, fmt.Errorf("registration managed Project %q: %w", name, err)
 	}
@@ -344,19 +299,7 @@ func (r *KeystoneServiceReconciler) keystoneServiceUserCollisionGate(
 		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, probeName, ks.Namespace, "registration")
 	}
 
-	probe := &orcv1alpha1.User{
-		ObjectMeta: metav1.ObjectMeta{Name: probeName, Namespace: ks.Namespace},
-		Spec: orcv1alpha1.UserSpec{
-			ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
-			CloudCredentialsRef: credRef,
-			Import: &orcv1alpha1.UserImport{
-				Filter: &orcv1alpha1.UserFilter{
-					Name:      ptr.To(orcv1alpha1.OpenStackName(userName)),
-					DomainRef: ptr.To(orcv1alpha1.KubernetesNameRef(domainRef)),
-				},
-			},
-		},
-	}
+	probe := unmanagedUserImport(probeName, ks.Namespace, userName, domainRef, credRef)
 	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, probe, apply.FieldManager); err != nil {
 		return false, fmt.Errorf("registration User probe %q: %w", probeName, err)
 	}
@@ -499,16 +442,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServicePasswordSecret(
 	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, gen int64,
 ) error {
 	name := keystoneServicePasswordSecretName(ks, gen)
-	if err := r.ensureKeystoneServiceSecret(ctx, ks, name, func(secret *corev1.Secret) error {
-		if len(secret.Data[serviceAccountPasswordKey]) == 0 {
-			v, gerr := generateAppCredSecretValue()
-			if gerr != nil {
-				return gerr
-			}
-			secret.Data[serviceAccountPasswordKey] = []byte(v)
-		}
-		return nil
-	}); err != nil {
+	if err := r.ensureKeystoneServiceSecret(ctx, ks, name, generatedPasswordMutator); err != nil {
 		return fmt.Errorf("ensuring registration password Secret %q: %w", name, err)
 	}
 	return nil
@@ -536,32 +470,13 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceRoles(
 		roleImportName := keystoneServiceRoleImportRef(ks, role)
 		assignmentName := keystoneServiceRoleAssignmentRef(ks, role)
 
-		roleObj := &orcv1alpha1.Role{
-			ObjectMeta: metav1.ObjectMeta{Name: roleImportName, Namespace: ks.Namespace},
-			Spec: orcv1alpha1.RoleSpec{
-				ManagementPolicy:    orcv1alpha1.ManagementPolicyUnmanaged,
-				CloudCredentialsRef: credRef,
-				Import: &orcv1alpha1.RoleImport{
-					Filter: &orcv1alpha1.RoleFilter{Name: ptr.To(orcv1alpha1.KeystoneName(role))},
-				},
-			},
-		}
+		roleObj := unmanagedRoleImport(roleImportName, ks.Namespace, role, credRef)
 		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, roleObj, apply.FieldManager); err != nil {
 			return false, fmt.Errorf("registration Role import %q: %w", roleImportName, err)
 		}
 
-		assignment := &orcv1alpha1.RoleAssignment{
-			ObjectMeta: metav1.ObjectMeta{Name: assignmentName, Namespace: ks.Namespace},
-			Spec: orcv1alpha1.RoleAssignmentSpec{
-				ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
-				CloudCredentialsRef: managedCredRef,
-				Resource: &orcv1alpha1.RoleAssignmentResourceSpec{
-					RoleRef:    orcv1alpha1.KubernetesNameRef(roleImportName),
-					UserRef:    ptr.To(orcv1alpha1.KubernetesNameRef(keystoneServiceUserRef(ks))),
-					ProjectRef: ptr.To(orcv1alpha1.KubernetesNameRef(keystoneServiceProjectRef(ks))),
-				},
-			},
-		}
+		assignment := managedRoleAssignmentChild(assignmentName, ks.Namespace, roleImportName,
+			keystoneServiceUserRef(ks), keystoneServiceProjectRef(ks), managedCredRef)
 		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, assignment, apply.FieldManager); err != nil {
 			return false, fmt.Errorf("registration RoleAssignment %q: %w", assignmentName, err)
 		}
@@ -688,21 +603,11 @@ func (r *KeystoneServiceReconciler) publishKeystoneServiceAccount(
 // the per-CR OpenBao path. DeletionPolicy Delete: the credential dies with the
 // registration that owns it.
 func keystoneServicePushSecret(ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane) *esov1alpha1.PushSecret {
-	return &esov1alpha1.PushSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: keystoneServicePushSecretName(ks), Namespace: ks.Namespace},
-		Spec: esov1alpha1.PushSecretSpec{
-			DeletionPolicy:  esov1alpha1.PushSecretDeletionPolicyDelete,
-			SecretStoreRefs: secrets.PushSecretStoreRefs(effectiveControlPlaneStoreRef(cp)),
-			Selector: esov1alpha1.PushSecretSelector{
-				Secret: &esov1alpha1.PushSecretSecret{Name: keystoneServiceSourceSecretName(ks)},
-			},
-			Data: []esov1alpha1.PushSecretData{{
-				Match: esov1alpha1.PushSecretMatch{
-					RemoteRef: esov1alpha1.PushSecretRemoteRef{RemoteKey: keystoneServiceRemoteKeyFor(ks)},
-				},
-			}},
-		},
-	}
+	return accountPushSecretSpec(
+		keystoneServicePushSecretName(ks), ks.Namespace,
+		keystoneServiceSourceSecretName(ks), keystoneServiceRemoteKeyFor(ks),
+		effectiveControlPlaneStoreRef(cp),
+	)
 }
 
 // ensureKeystoneServiceExternalSecret create-or-updates the ExternalSecret that
@@ -713,25 +618,8 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceExternalSecret(
 	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
 ) error {
 	name := keystoneServiceCredentialsSecretName(ks)
-	remoteKey := keystoneServiceRemoteKeyFor(ks)
-	es := &esov1.ExternalSecret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ks.Namespace},
-		Spec: esov1.ExternalSecretSpec{
-			RefreshInterval: &metav1.Duration{Duration: time.Hour},
-			SecretStoreRef:  secrets.ESOSecretStoreRef(effectiveControlPlaneStoreRef(cp)),
-			Target:          esov1.ExternalSecretTarget{Name: name, CreationPolicy: esov1.CreatePolicyOwner},
-			Data: []esov1.ExternalSecretData{
-				{
-					SecretKey: serviceAccountPasswordKey,
-					RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: serviceAccountPasswordKey},
-				},
-				{
-					SecretKey: appCredCloudsYAMLKey,
-					RemoteRef: esov1.ExternalSecretDataRemoteRef{Key: remoteKey, Property: appCredCloudsYAMLKey},
-				},
-			},
-		},
-	}
+	es := accountExternalSecretSpec(name, ks.Namespace,
+		keystoneServiceRemoteKeyFor(ks), effectiveControlPlaneStoreRef(cp))
 	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, es, apply.FieldManager); err != nil {
 		return fmt.Errorf("ensuring the registration ExternalSecret %q: %w", name, err)
 	}
