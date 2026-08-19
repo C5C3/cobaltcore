@@ -4,7 +4,7 @@ go 1.26.6
 
 require (
 	github.com/cert-manager/cert-manager v1.20.2
-	github.com/external-secrets/external-secrets/apis v0.0.0-20260803120615-8552ed8d11d1
+	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/go-logr/logr v1.4.4
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.42.1

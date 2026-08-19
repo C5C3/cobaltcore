@@ -4,7 +4,7 @@ go 1.26.6
 
 require (
 	github.com/c5c3/forge/internal/common v0.0.0
-	github.com/external-secrets/external-secrets/apis v0.0.0-20260803120615-8552ed8d11d1
+	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
