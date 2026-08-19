@@ -3522,6 +3522,88 @@ func TestIntegration_KeystoneService_SchemaValidation(t *testing.T) {
 	}
 }
 
+// TestIntegration_ControlPlane_ServiceRegistrationsSchemaValidation pins the
+// service-registration allowlist against the real envtest API server: the
+// per-item RFC-1123 pattern, the listType=set duplicate rejection, and the two
+// shapes that must stay legal (an absent block, an empty list).
+//
+// It pins the SCHEMA layer specifically. The webhook's defense-in-depth twin of
+// each rule is covered by the unit tests in the api package, but schema
+// validation is what a webhook-bypassed caller still hits, and its message is the
+// one the chainsaw rejection fixtures assert on — this is their cluster-free
+// counterpart.
+func TestIntegration_ControlPlane_ServiceRegistrationsSchemaValidation(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	// wantErrSubs carries every substring the chainsaw rejection fixture asserts
+	// on, so a message the apiserver rewords fails here rather than in the
+	// cluster-bound e2e job.
+	cases := []struct {
+		name        string
+		allowed     *c5c3v1alpha1.ServiceRegistrationsSpec
+		wantErr     bool
+		wantErrSubs []string
+	}{
+		{
+			name:        "an entry outside the RFC-1123 label shape is rejected",
+			allowed:     &c5c3v1alpha1.ServiceRegistrationsSpec{AllowedNamespaces: []string{"Tenant_A"}},
+			wantErr:     true,
+			wantErrSubs: []string{"allowedNamespaces[0]", "should match"},
+		},
+		{
+			name: "a duplicate entry is rejected by listType=set",
+			allowed: &c5c3v1alpha1.ServiceRegistrationsSpec{
+				AllowedNamespaces: []string{"tenant-a", "tenant-a"},
+			},
+			wantErr:     true,
+			wantErrSubs: []string{"allowedNamespaces", "Duplicate value"},
+		},
+		{
+			name:    "an absent block is accepted (the own-plus-dedicated default)",
+			allowed: nil,
+			wantErr: false,
+		},
+		{
+			name:    "a declared block with no entries is accepted",
+			allowed: &c5c3v1alpha1.ServiceRegistrationsSpec{},
+			wantErr: false,
+		},
+		{
+			name: "distinct label-shaped entries are accepted",
+			allowed: &c5c3v1alpha1.ServiceRegistrationsSpec{
+				AllowedNamespaces: []string{"tenant-a", "tenant-b"},
+			},
+			wantErr: false,
+		},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			// One namespace per case: a ControlPlane is unique per namespace.
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-allowlist-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+			cp := integrationMinimalControlPlane(fmt.Sprintf("cp-allowlist-%d", i), ns.Name)
+			cp.Spec.KORC.ServiceRegistrations = tc.allowed
+
+			err := c.Create(ctx, cp)
+			if tc.wantErr {
+				g.Expect(err).To(HaveOccurred(), "admission must reject: %s", tc.name)
+				g.Expect(apierrors.IsInvalid(err)).To(BeTrue(),
+					fmt.Sprintf("expected Invalid for %q, got: %v", tc.name, err))
+				for _, sub := range tc.wantErrSubs {
+					g.Expect(err.Error()).To(ContainSubstring(sub))
+				}
+			} else {
+				g.Expect(err).NotTo(HaveOccurred(), "admission must accept: %s", tc.name)
+			}
+		})
+	}
+}
+
 // integrationKeystoneService returns a valid two-block KeystoneService for the
 // admission tests below. metadata.name, the catalog service name and the user
 // name are three DISTINCT values: every fallback the webhook resolves lands on

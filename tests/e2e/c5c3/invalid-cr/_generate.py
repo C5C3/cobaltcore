@@ -56,6 +56,9 @@ LICENSE_HEADER = """\
 #   {glance}              the spec.services.glance entry (indent 4) or ""
 #   {placement}           the spec.services.placement entry (indent 4) or ""
 #   {barbican}            the spec.services.barbican entry (indent 4) or ""
+#   {service_accounts}    the spec.korc.serviceAccounts block (indent 4) or ""
+#   {service_registrations}
+#                         the spec.korc.serviceRegistrations block (indent 4) or ""
 #
 # korc.adminCredential.applicationCredential is intentionally omitted: the
 # defaulting webhook materializes it (rotation.mode etc.) before the CRD's
@@ -76,7 +79,7 @@ spec:
       passwordSecretRef:
         name: external-admin
         key: password
-{service_accounts}"""
+{service_accounts}{service_registrations}"""
 
 # A valid External keystone service body (indent 6): the issue's sketch shape.
 VALID_EXTERNAL_KEYSTONE = (
@@ -165,6 +168,8 @@ class Fixture:
     global_extra_config: str = ""
     # The spec.korc.serviceAccounts block (indent 4, trailing newline) or "".
     service_accounts: str = ""
+    # The spec.korc.serviceRegistrations block (indent 4, trailing newline) or "".
+    service_registrations: str = ""
 
     def render(self) -> str:
         body = SCAFFOLD.format(
@@ -177,6 +182,7 @@ class Fixture:
             placement=self.placement,
             barbican=self.barbican,
             service_accounts=self.service_accounts,
+            service_registrations=self.service_registrations,
         )
         comment_lines = "".join(f"# {line}\n" for line in self.comment.splitlines())
         return LICENSE_HEADER + comment_lines + body
@@ -1644,6 +1650,38 @@ FIXTURES: tuple[Fixture, ...] = (
             "        name: edge\n"
         ),
         infrastructure=MANAGED_INFRA,
+    ),
+    # --- service-registration allowlist (still the create-rejection matrix) ---
+    Fixture(
+        filename="88-registration-namespace-invalid.yaml",
+        comment=(
+            "spec.korc.serviceRegistrations.allowedNamespaces[] outside the RFC-1123\n"
+            "label shape is rejected (CRD items pattern): each entry names a Kubernetes\n"
+            "namespace the registration gate admits KeystoneService CRs from, so a value\n"
+            "no namespace can carry would sit in the allowlist admitting nothing."
+        ),
+        name="cp-registration-bad-namespace",
+        service_registrations=(
+            "    serviceRegistrations:\n"
+            "      allowedNamespaces:\n"
+            "      - Tenant_A\n"
+        ),
+    ),
+    Fixture(
+        filename="89-registration-namespace-duplicate.yaml",
+        comment=(
+            "A duplicate spec.korc.serviceRegistrations.allowedNamespaces entry is\n"
+            "rejected by the apiserver's listType=set semantics. Consent is a set: a\n"
+            "namespace listed twice cannot be admitted twice, and the duplicate would\n"
+            "survive the edit that removes the entry an operator meant to revoke."
+        ),
+        name="cp-registration-duplicate-namespace",
+        service_registrations=(
+            "    serviceRegistrations:\n"
+            "      allowedNamespaces:\n"
+            "      - tenant-a\n"
+            "      - tenant-a\n"
+        ),
     ),
     # --- transition wave F: target-cluster assignment freeze
     #     (Test: c5c3-invalid-cr-target-cluster-freeze) ---
