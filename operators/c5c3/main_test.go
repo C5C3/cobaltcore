@@ -30,6 +30,8 @@ func TestSchemeRegistersAllExpectedGVKs(t *testing.T) {
 		{Group: "c5c3.io", Version: "v1alpha1", Kind: "ControlPlaneList"},
 		{Group: "c5c3.io", Version: "v1alpha1", Kind: "CredentialRotation"},
 		{Group: "c5c3.io", Version: "v1alpha1", Kind: "CredentialRotationList"},
+		{Group: "c5c3.io", Version: "v1alpha1", Kind: "KeystoneService"},
+		{Group: "c5c3.io", Version: "v1alpha1", Kind: "KeystoneServiceList"},
 		// Keystone child CR.
 		{Group: "keystone.openstack.c5c3.io", Version: "v1alpha1", Kind: "Keystone"},
 		// MariaDB child CR.
@@ -38,10 +40,16 @@ func TestSchemeRegistersAllExpectedGVKs(t *testing.T) {
 		{Group: "external-secrets.io", Version: "v1alpha1", Kind: "PushSecret"},
 		{Group: "external-secrets.io", Version: "v1", Kind: "ClusterSecretStore"},
 		{Group: "external-secrets.io", Version: "v1", Kind: "ExternalSecret"},
-		// K-ORC: ApplicationCredential, Service, Endpoint.
+		// K-ORC: the admin ApplicationCredential plus every kind the ControlPlane
+		// and KeystoneService reconcilers project and Own.
 		{Group: "openstack.k-orc.cloud", Version: "v1alpha1", Kind: "ApplicationCredential"},
 		{Group: "openstack.k-orc.cloud", Version: "v1alpha1", Kind: "Service"},
 		{Group: "openstack.k-orc.cloud", Version: "v1alpha1", Kind: "Endpoint"},
+		{Group: "openstack.k-orc.cloud", Version: "v1alpha1", Kind: "User"},
+		{Group: "openstack.k-orc.cloud", Version: "v1alpha1", Kind: "Domain"},
+		{Group: "openstack.k-orc.cloud", Version: "v1alpha1", Kind: "Project"},
+		{Group: "openstack.k-orc.cloud", Version: "v1alpha1", Kind: "Role"},
+		{Group: "openstack.k-orc.cloud", Version: "v1alpha1", Kind: "RoleAssignment"},
 		// Core client-go type the Secret watch and admin-secret reads rely on.
 		{Group: "", Version: "v1", Kind: "Secret"},
 	}
