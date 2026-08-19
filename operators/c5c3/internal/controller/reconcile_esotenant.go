@@ -293,32 +293,50 @@ func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(
 	server, mountPath := r.openBaoConnection(ctx, cp, secrets.EffectiveStoreRef(nil))
 
 	for _, ns := range controlPlaneNamespaces(cp) {
-		c := children[ns]
-		if err := r.ensureUnownedOrOwned(ctx, c, cp, esoTenantServiceAccount(ns)); err != nil {
-			return fmt.Errorf("ensuring per-tenant ServiceAccount in namespace %q: %w", ns, err)
+		if err := r.ensureESOTenantStoreTrioIn(ctx, children[ns], cp, ns, server, mountPath); err != nil {
+			return err
 		}
+	}
+	return nil
+}
 
-		// The cert-manager Certificate is handled as an unstructured object (no Go
-		// module ships its type), and apply.EnsureObject converts typed structs, not
-		// unstructured inputs — so this projection stays read-modify-write while the
-		// typed sibling objects around it use Server-Side Apply.
-		live := &unstructured.Unstructured{}
-		live.SetGroupVersionKind(certificateGVK)
-		live.SetName(esoTenantClientCertName)
-		live.SetNamespace(ns)
-		if _, err := controllerutil.CreateOrUpdate(ctx, c, live, func() error {
-			if err := refuseForeignAdoption(c, cp, live, r.Scheme); err != nil {
-				return err
-			}
-			applyESOTenantCertificateSpec(live, ns)
-			return claimChildOwnership(c, cp, live, r.Scheme)
-		}); err != nil {
-			return fmt.Errorf("ensuring per-tenant client Certificate in namespace %q: %w", ns, err)
-		}
+// ensureESOTenantStoreTrioIn create-or-updates ONE namespace's tenant-store trio
+// with the client c, in the order the ensemble depends on: the auth identity and
+// the TLS material before the store that references them.
+//
+// It is shared by the two sub-reconcilers that provision the trio — the
+// ControlPlane's own namespaces (ensureESOTenantStoreObjects) and the allowlisted
+// registration namespaces (reconcileRegistrationTenantStores) — so the ownership
+// mechanism, the adoption refusal and the error wording are written once. server
+// and mountPath are the OpenBao connection the caller resolved from the shared
+// cluster store; every trio copies the same one.
+func (r *ControlPlaneReconciler) ensureESOTenantStoreTrioIn(
+	ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, namespace, server, mountPath string,
+) error {
+	if err := r.ensureUnownedOrOwned(ctx, c, cp, esoTenantServiceAccount(namespace)); err != nil {
+		return fmt.Errorf("ensuring per-tenant ServiceAccount in namespace %q: %w", namespace, err)
+	}
 
-		if err := r.ensureUnownedOrOwned(ctx, c, cp, esoTenantSecretStore(ns, server, mountPath)); err != nil {
-			return fmt.Errorf("ensuring per-tenant SecretStore in namespace %q: %w", ns, err)
+	// The cert-manager Certificate is handled as an unstructured object (no Go
+	// module ships its type), and apply.EnsureObject converts typed structs, not
+	// unstructured inputs — so this projection stays read-modify-write while the
+	// typed sibling objects around it use Server-Side Apply.
+	live := &unstructured.Unstructured{}
+	live.SetGroupVersionKind(certificateGVK)
+	live.SetName(esoTenantClientCertName)
+	live.SetNamespace(namespace)
+	if _, err := controllerutil.CreateOrUpdate(ctx, c, live, func() error {
+		if err := refuseForeignAdoption(c, cp, live, r.Scheme); err != nil {
+			return err
 		}
+		applyESOTenantCertificateSpec(live, namespace)
+		return claimChildOwnership(c, cp, live, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("ensuring per-tenant client Certificate in namespace %q: %w", namespace, err)
+	}
+
+	if err := r.ensureUnownedOrOwned(ctx, c, cp, esoTenantSecretStore(namespace, server, mountPath)); err != nil {
+		return fmt.Errorf("ensuring per-tenant SecretStore in namespace %q: %w", namespace, err)
 	}
 	return nil
 }
