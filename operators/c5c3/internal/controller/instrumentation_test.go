@@ -127,22 +127,58 @@ func TestInstrumenterInstrument_RecordsMetrics(t *testing.T) {
 
 // TestSubReconcilerConditionTypesCoversAllNames is a drift guard: every
 // condition_type value in subReconcilerConditionTypes must be a member of
-// subConditionTypes, otherwise an addition to one list without the other will
-// silently produce metrics with a stale condition_type label. The reverse
-// direction is NOT asserted because subConditionTypes may legitimately contain
-// entries (e.g. aggregated conditions) that have no dedicated sub-reconciler.
+// subConditionTypes or of the KeystoneService CR's
+// keystoneServiceSubConditionTypes, otherwise an addition to one list without
+// the other will silently produce metrics with a stale condition_type label.
+// The reverse direction is NOT asserted because subConditionTypes may
+// legitimately contain entries (e.g. aggregated conditions) that have no
+// dedicated sub-reconciler.
 func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 	g := NewGomegaWithT(t)
 
-	known := make(map[string]struct{}, len(subConditionTypes))
+	known := make(map[string]struct{}, len(subConditionTypes)+len(keystoneServiceSubConditionTypes))
 	for _, ct := range subConditionTypes {
+		known[ct] = struct{}{}
+	}
+	for _, ct := range keystoneServiceSubConditionTypes {
 		known[ct] = struct{}{}
 	}
 
 	for name, condType := range subReconcilerConditionTypes {
 		_, ok := known[condType]
 		g.Expect(ok).To(BeTrue(),
-			"sub_reconciler %q maps to condition_type %q which is not in subConditionTypes — "+
-				"update subConditionTypes or fix the mapping", name, condType)
+			"sub_reconciler %q maps to condition_type %q which is in neither subConditionTypes "+
+				"nor keystoneServiceSubConditionTypes — update the lists or fix the mapping", name, condType)
+	}
+}
+
+// TestInstrumenterInstrument_KeystoneServiceLabelPairs proves the two
+// KeystoneService block legs resolve their condition_type labels through
+// subReconcilerConditionTypes instead of falling back to UNKNOWN — the gap the
+// condition-coverage audit exists to catch.
+func TestInstrumenterInstrument_KeystoneServiceLabelPairs(t *testing.T) {
+	g := NewGomegaWithT(t)
+	reg := withTestInstrumenter(t)
+
+	for name, condType := range map[string]string{
+		"KeystoneServiceCatalog": conditionTypeKeystoneServiceCatalogReady,
+		"KeystoneServiceAccount": conditionTypeKeystoneServiceAccountReady,
+	} {
+		durLabels := map[string]string{"sub_reconciler": name}
+		errLabels := map[string]string{"sub_reconciler": name, "condition_type": condType}
+
+		_, err := instrumenter.Instrument(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
+			return ctrl.Result{}, nil
+		})
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(histogramSampleCountOn(t, reg, reconcileDurationMetric, durLabels)).
+			To(Equal(uint64(1)), "success path must observe exactly one duration sample for %s", name)
+
+		_, err = instrumenter.Instrument(context.Background(), name, func(_ context.Context) (ctrl.Result, error) {
+			return ctrl.Result{}, errors.New("boom")
+		})
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(counterValueOn(t, reg, reconcileErrorsMetric, errLabels)).
+			To(Equal(1.0), "error path must attribute %s to condition_type %s", name, condType)
 	}
 }
