@@ -5,18 +5,13 @@
 package controller
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -423,74 +418,38 @@ func (r *KeystoneServiceReconciler) publishKeystoneServiceAccount(
 	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
 	userName, projectName, domain string, gen int64,
 ) (bool, error) {
-	pwSecret := &corev1.Secret{}
-	pwKey := types.NamespacedName{Name: keystoneServicePasswordSecretName(ks, gen), Namespace: ks.Namespace}
-	if err := r.Get(ctx, pwKey, pwSecret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("reading the registration password Secret: %w", err)
-	}
-	password := pwSecret.Data[serviceAccountPasswordKey]
-	if len(password) == 0 {
-		return false, nil
-	}
-
-	// nil target-cluster ref: a registration is delivered on the management
-	// cluster, so the document resolves the in-cluster auth URL.
-	cloudsYAML := []byte(buildServiceAccountCloudsYAML(cp, userName, projectName, domain, string(password), nil))
 	sourceName := keystoneServiceSourceSecretName(ks)
-	if err := r.ensureKeystoneServiceSecret(ctx, ks, sourceName, func(secret *corev1.Secret) error {
-		secret.Data[serviceAccountPasswordKey] = password
-		secret.Data["username"] = []byte(userName)
-		secret.Data["project_name"] = []byte(projectName)
-		secret.Data["user_domain_name"] = []byte(domain)
-		secret.Data["project_domain_name"] = []byte(domain)
-		secret.Data["auth_url"] = []byte(korcAuthURL(cp, nil))
-		secret.Data["region_name"] = []byte(korcRegion(cp))
-		secret.Data[appCredCloudsYAMLKey] = cloudsYAML
-		return nil
-	}); err != nil {
-		return false, fmt.Errorf("assembling the registration source Secret %q: %w", sourceName, err)
-	}
+	return publishAccountCredentials(ctx, cp, accountPublication{
+		management:         r.Client,
+		delivery:           r.Client,
+		childNamespace:     ks.Namespace,
+		deliveryNamespace:  ks.Namespace,
+		passwordSecretName: keystoneServicePasswordSecretName(ks, gen),
 
-	sum := sha256.Sum256(cloudsYAML)
-	contentHash := hex.EncodeToString(sum[:])
+		userName:    userName,
+		projectName: projectName,
+		domain:      domain,
+		// nil target-cluster ref: a registration is delivered on the management
+		// cluster, so the document resolves the in-cluster auth URL.
+		deliveryRef: nil,
 
-	ps := keystoneServicePushSecret(ks, cp)
-	if err := secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, ks, ps); err != nil {
-		return false, fmt.Errorf("ensuring the registration PushSecret: %w", err)
-	}
-	if err := repushPushSecret(ctx, r.Client, ks.Namespace, ps.Name, keystoneServicePushContentHashAnnotation, contentHash); err != nil {
-		return false, err
-	}
-	pushed := &esov1alpha1.PushSecret{}
-	if err := r.Get(ctx, types.NamespacedName{Name: ps.Name, Namespace: ks.Namespace}, pushed); err != nil {
-		return false, fmt.Errorf("reading the registration PushSecret: %w", err)
-	}
-	if !pushSecretReady(pushed) {
-		return false, nil
-	}
+		sourceSecretName:      sourceName,
+		credentialsSecretName: keystoneServiceCredentialsSecretName(ks),
+		pushSecret:            keystoneServicePushSecret(ks, cp),
+		pushHashAnnotation:    keystoneServicePushContentHashAnnotation,
 
-	if err := r.ensureKeystoneServiceExternalSecret(ctx, ks, cp); err != nil {
-		return false, err
-	}
-	// The completed push is part of the trigger: without it a re-sync could
-	// materialize the value that was in OpenBao BEFORE this generation's push.
-	syncTrigger := contentHash + "/" + pushed.Status.SyncedResourceVersion
-	if err := resyncExternalSecret(ctx, r.Client, ks.Namespace, keystoneServiceCredentialsSecretName(ks), syncTrigger); err != nil {
-		return false, err
-	}
+		ensureSourceSecret: func(ctx context.Context, mutate func(*corev1.Secret) error) error {
+			return r.ensureKeystoneServiceSecret(ctx, ks, sourceName, mutate)
+		},
+		ensurePushSecret: func(ctx context.Context, ps *esov1alpha1.PushSecret) error {
+			return secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, ks, ps)
+		},
+		ensureExternalSecret: func(ctx context.Context) error {
+			return r.ensureKeystoneServiceExternalSecret(ctx, ks, cp)
+		},
 
-	materialized := &corev1.Secret{}
-	credKey := types.NamespacedName{Name: keystoneServiceCredentialsSecretName(ks), Namespace: ks.Namespace}
-	if err := r.Get(ctx, credKey, materialized); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("reading the materialized registration Secret: %w", err)
-	}
-	return bytes.Equal(materialized.Data[serviceAccountPasswordKey], password), nil
+		errPrefix: "registration",
+	})
 }
 
 // keystoneServicePushSecret builds the PushSecret mirroring the source Secret to

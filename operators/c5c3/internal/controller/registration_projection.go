@@ -5,6 +5,7 @@
 package controller
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -30,6 +31,7 @@ import (
 	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
+	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
 // This file is the ONE projection layer both registration mechanisms run on:
@@ -757,4 +759,123 @@ func applyAccountRole(
 		out.blocked = out.assignment
 	}
 	return out, nil
+}
+
+// --- publish leg ---
+
+// accountPublication describes one account's delivery: where its
+// generation-scoped password is read from, what the assembled document says, and
+// how each delivery object is written. The three ensure closures are the seam the
+// two ownership strategies enter through — a controller reference at home versus
+// the ownership labels a cross-namespace or cross-cluster child needs.
+type accountPublication struct {
+	management client.Client // reads the password Secret, always on the management cluster
+	delivery   client.Client // writes the delivery objects, on the consumer's cluster
+	// childNamespace is where the K-ORC-facing password Secret lives. It never
+	// moves: K-ORC resolves the managed User's passwordRef in the User's own
+	// namespace.
+	childNamespace     string
+	deliveryNamespace  string
+	passwordSecretName string
+
+	userName, projectName, domain string
+	// deliveryRef resolves the auth URL for the cluster the document is READ on;
+	// nil means the in-cluster one.
+	deliveryRef *commonv1.TargetClusterRefSpec
+
+	sourceSecretName, credentialsSecretName string
+	pushSecret                              *esov1alpha1.PushSecret
+	pushHashAnnotation                      string
+
+	ensureSourceSecret   func(ctx context.Context, mutate func(*corev1.Secret) error) error
+	ensurePushSecret     func(ctx context.Context, ps *esov1alpha1.PushSecret) error
+	ensureExternalSecret func(ctx context.Context) error
+
+	errPrefix string
+}
+
+// publishAccountCredentials assembles the source Secret, mirrors it to the per-CR
+// OpenBao path, materializes the consumer Secret, and reports whether the
+// materialized "password" matches the current generation — so a rotated-away
+// password never reads ready. It runs only once K-ORC confirms the current
+// password is applied to the user.
+//
+// Every input that is merely not there yet is a bounded wait, not an error: a
+// missing password Secret, an empty password key, an unsynced PushSecret, and a
+// not-yet-materialized consumer Secret all return (false, nil), because each
+// resolves on a later pass without anything being fixed.
+func publishAccountCredentials(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, pub accountPublication,
+) (bool, error) {
+	pwSecret := &corev1.Secret{}
+	pwKey := types.NamespacedName{Name: pub.passwordSecretName, Namespace: pub.childNamespace}
+	if err := pub.management.Get(ctx, pwKey, pwSecret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading %s password Secret: %w", pub.errPrefix, err)
+	}
+	password := pwSecret.Data[serviceAccountPasswordKey]
+	if len(password) == 0 {
+		return false, nil
+	}
+
+	// The document is read on the cluster it is delivered to, so its auth_url is
+	// resolved for that cluster: a consumer beside a placed service cannot reach
+	// the management cluster's in-cluster Keystone Service DNS name.
+	cloudsYAML := []byte(buildServiceAccountCloudsYAML(cp, pub.userName, pub.projectName, pub.domain, string(password), pub.deliveryRef))
+	if err := pub.ensureSourceSecret(ctx, func(secret *corev1.Secret) error {
+		secret.Data[serviceAccountPasswordKey] = password
+		secret.Data["username"] = []byte(pub.userName)
+		secret.Data["project_name"] = []byte(pub.projectName)
+		secret.Data["user_domain_name"] = []byte(pub.domain)
+		secret.Data["project_domain_name"] = []byte(pub.domain)
+		secret.Data["auth_url"] = []byte(korcAuthURL(cp, pub.deliveryRef))
+		secret.Data["region_name"] = []byte(korcRegion(cp))
+		secret.Data[appCredCloudsYAMLKey] = cloudsYAML
+		return nil
+	}); err != nil {
+		return false, fmt.Errorf("assembling %s source Secret %q in namespace %q: %w",
+			pub.errPrefix, pub.sourceSecretName, pub.deliveryNamespace, err)
+	}
+
+	sum := sha256.Sum256(cloudsYAML)
+	contentHash := hex.EncodeToString(sum[:])
+
+	if err := pub.ensurePushSecret(ctx, pub.pushSecret); err != nil {
+		return false, fmt.Errorf("ensuring %s PushSecret: %w", pub.errPrefix, err)
+	}
+	if err := repushPushSecret(ctx, pub.delivery, pub.deliveryNamespace, pub.pushSecret.Name,
+		pub.pushHashAnnotation, contentHash); err != nil {
+		return false, fmt.Errorf("forcing %s PushSecret re-push: %w", pub.errPrefix, err)
+	}
+	pushed := &esov1alpha1.PushSecret{}
+	pushedKey := types.NamespacedName{Name: pub.pushSecret.Name, Namespace: pub.deliveryNamespace}
+	if err := pub.delivery.Get(ctx, pushedKey, pushed); err != nil {
+		return false, fmt.Errorf("reading %s PushSecret: %w", pub.errPrefix, err)
+	}
+	if !pushSecretReady(pushed) {
+		return false, nil
+	}
+
+	if err := pub.ensureExternalSecret(ctx); err != nil {
+		return false, fmt.Errorf("ensuring %s ExternalSecret: %w", pub.errPrefix, err)
+	}
+	// The completed push is part of the trigger: without it a re-sync could
+	// materialize the value that was in OpenBao BEFORE this generation's push.
+	syncTrigger := contentHash + "/" + pushed.Status.SyncedResourceVersion
+	if err := resyncExternalSecret(ctx, pub.delivery, pub.deliveryNamespace,
+		pub.credentialsSecretName, syncTrigger); err != nil {
+		return false, fmt.Errorf("forcing %s ExternalSecret re-sync: %w", pub.errPrefix, err)
+	}
+
+	materialized := &corev1.Secret{}
+	credKey := types.NamespacedName{Name: pub.credentialsSecretName, Namespace: pub.deliveryNamespace}
+	if err := pub.delivery.Get(ctx, credKey, materialized); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading materialized %s Secret: %w", pub.errPrefix, err)
+	}
+	return bytes.Equal(materialized.Data[serviceAccountPasswordKey], password), nil
 }
