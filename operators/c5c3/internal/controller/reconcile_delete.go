@@ -696,10 +696,49 @@ func (r *ControlPlaneReconciler) sweepNamespacesBeforeRelease(
 	if err != nil || !done {
 		return false, err
 	}
+	r.sweepRegistrationTenantStores(ctx, cp)
 	if err := r.deleteBarbicanAuthDelegatorBinding(ctx, cp); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// sweepRegistrationTenantStores deletes, best-effort, the tenant-store trios this
+// ControlPlane provisioned in the allowlisted namespaces standalone registrations
+// come from (see reconcileRegistrationTenantStores).
+//
+// Nothing else collects them. They sit outside every namespace
+// teardownDedicatedNamespaces walks, and a cross-namespace child carries ownership
+// labels rather than an owner reference, so no GC cascade reaches them either.
+//
+// Errors are logged rather than propagated, exactly like
+// sweepExternalNamespaceResidue: this is one of the last steps before the
+// ControlPlane is released, and a residual trio is a repairable leak, whereas an
+// error here would wedge the CR on a finalizer that can never clear.
+//
+// Unlike the per-pass collection this does NOT wait for a namespace's last
+// registration to leave. The plane is going away, so the store has nothing left to
+// reach, and a KeystoneService still standing out there fails its own teardown open
+// once the ControlPlane it references is gone. A registration mid-purge can lose
+// the store its OpenBao cleanup rides on, which is the same trade the teardown
+// already takes past its stall windows: a leak somebody can collect beats a CR
+// nobody can delete.
+func (r *ControlPlaneReconciler) sweepRegistrationTenantStores(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) {
+	logger := log.FromContext(ctx)
+
+	namespaces, err := r.registrationTenantStoreNamespaces(ctx, cp)
+	if err != nil {
+		logger.V(1).Info("best-effort registration tenant-store sweep could not enumerate its namespaces",
+			"error", err.Error())
+		return
+	}
+	for _, namespace := range namespaces {
+		logger.Info("sweeping the registration tenant store of a terminating ControlPlane", "namespace", namespace)
+		if err := r.deleteESOTenantStoreTrioIn(ctx, cp, namespace); err != nil {
+			logger.V(1).Info("best-effort registration tenant-store sweep could not delete a trio",
+				"namespace", namespace, "error", err.Error())
+		}
+	}
 }
 
 // teardownDedicatedNamespaces deletes the children the ControlPlane placed in a
