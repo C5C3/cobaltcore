@@ -228,17 +228,22 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceProject(
 	}
 
 	// create:true — probe before creating a managed Project, unless we already own
-	// one, in which case the verdict is settled and the probe is dropped.
-	managed := &orcv1alpha1.Project{}
-	switch err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ks.Namespace}, managed); {
-	case err == nil:
-		// Already ours: converge below.
-	case apierrors.IsNotFound(err):
-		probe := unmanagedProjectImport(keystoneServiceProjectProbeRef(ks), ks.Namespace, account.Project.Name, domainRef, credRef)
-		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, probe, apply.FieldManager); err != nil {
-			return nil, false, fmt.Errorf("registration Project probe %q: %w", probe.Name, err)
-		}
-		switch interpretProbe(probe) {
+	// one, in which case the verdict is settled. adopt is never set here: project
+	// takeover is expressed as account.project.create=false.
+	probe := unmanagedProjectImport(keystoneServiceProjectProbeRef(ks), ks.Namespace, account.Project.Name, domainRef, credRef)
+	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, ks, managedChildProbeInput{
+		kind:        "Project",
+		managed:     &orcv1alpha1.Project{},
+		managedName: name,
+		namespace:   ks.Namespace,
+		probe:       probe,
+		errPrefix:   "registration",
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if !proceed {
+		switch verdict {
 		case probeResolved:
 			keystoneServiceFail(ks, conditionTypeKeystoneServiceAccountReady)(reasonServiceAccountCollision, fmt.Sprintf(
 				"the registration wants to CREATE project %q in domain %q, but a project of that name already exists "+
@@ -246,21 +251,15 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceProject(
 					"reference the existing project instead",
 				account.Project.Name, domainName,
 			))
-			return probe, false, nil
 		case probePending:
 			r.keystoneServiceWaitOrClassify(ks, cp, conditionTypeKeystoneServiceAccountReady,
 				reasonProbingForCollision,
 				fmt.Sprintf("probing whether project %q already exists in Keystone before creating it", account.Project.Name),
 				probe)
-			return probe, false, nil
 		case probeAbsent:
-			// Safe to create; drop the probe and fall through.
+			// Unreachable: an absent probe proceeds.
 		}
-		if err := deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.Project{}, keystoneServiceProjectProbeRef(ks), ks.Namespace, "registration"); err != nil {
-			return nil, false, err
-		}
-	default:
-		return nil, false, fmt.Errorf("reading managed Project %q: %w", name, err)
+		return probe, false, nil
 	}
 
 	project := managedProjectChild(name, ks.Namespace, account.Project.Name, domainRef, managedCredRef)
@@ -281,30 +280,21 @@ func (r *KeystoneServiceReconciler) keystoneServiceUserCollisionGate(
 	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
 	credRef orcv1alpha1.CloudCredentialsReference, userName, domainRef string,
 ) (bool, error) {
-	probeName := keystoneServiceUserProbeRef(ks)
-
-	existing := &orcv1alpha1.User{}
-	switch err := r.Get(ctx, types.NamespacedName{Name: keystoneServiceUserRef(ks), Namespace: ks.Namespace}, existing); {
-	case err == nil:
-		// The managed User is already ours; no probe is needed any more.
-		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, probeName, ks.Namespace, "registration")
-	case apierrors.IsNotFound(err):
-	default:
-		return false, fmt.Errorf("reading managed User %q: %w", keystoneServiceUserRef(ks), err)
+	probe := unmanagedUserImport(keystoneServiceUserProbeRef(ks), ks.Namespace, userName, domainRef, credRef)
+	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, ks, managedChildProbeInput{
+		kind:             "User",
+		managed:          &orcv1alpha1.User{},
+		managedName:      keystoneServiceUserRef(ks),
+		namespace:        ks.Namespace,
+		adopt:            ks.Spec.Account.Adopt,
+		probe:            probe,
+		dropProbeOnOwned: true,
+		errPrefix:        "registration",
+	})
+	if err != nil || proceed {
+		return proceed, err
 	}
-
-	// adopt: take over the pre-existing user (and rotate its password) without
-	// probing at all.
-	if ks.Spec.Account.Adopt {
-		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, probeName, ks.Namespace, "registration")
-	}
-
-	probe := unmanagedUserImport(probeName, ks.Namespace, userName, domainRef, credRef)
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, probe, apply.FieldManager); err != nil {
-		return false, fmt.Errorf("registration User probe %q: %w", probeName, err)
-	}
-
-	switch interpretProbe(probe) {
+	switch verdict {
 	case probeResolved:
 		keystoneServiceFail(ks, conditionTypeKeystoneServiceAccountReady)(reasonServiceAccountCollision, fmt.Sprintf(
 			"the registration resolves to Keystone user %q in domain %q, which already exists; the operator fails "+
@@ -312,17 +302,15 @@ func (r *KeystoneServiceReconciler) keystoneServiceUserCollisionGate(
 				"the account (and rotate its password), or remove the account block",
 			userName, keystoneServiceDomainName(cp, ks),
 		))
-		return false, nil
 	case probePending:
 		r.keystoneServiceWaitOrClassify(ks, cp, conditionTypeKeystoneServiceAccountReady,
 			reasonProbingForCollision,
 			fmt.Sprintf("probing whether Keystone user %q already exists before creating the service account", userName),
 			probe)
-		return false, nil
 	case probeAbsent:
-		// The user does not exist; drop the probe and create the managed User.
+		// Unreachable: an absent probe proceeds.
 	}
-	return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, probeName, ks.Namespace, "registration")
+	return false, nil
 }
 
 // ensureKeystoneServiceUser create-or-updates the managed K-ORC User with the

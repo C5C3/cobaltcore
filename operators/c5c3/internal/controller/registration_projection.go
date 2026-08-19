@@ -20,11 +20,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/secrets"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 )
@@ -457,4 +459,89 @@ func accountExternalSecretSpec(name, namespace, remoteKey string, storeRef commo
 			},
 		},
 	}
+}
+
+// --- collision probe gate ---
+
+// probeChild is a K-ORC typed object usable both as a Kubernetes object and as a
+// K-ORC status surface. Every K-ORC kind satisfies it, which is what lets one gate
+// serve the User, Project and Service probes.
+type probeChild interface {
+	client.Object
+	orcv1alpha1.ObjectWithConditions
+}
+
+// managedChildProbeInput describes one collision gate. Both mechanisms build the
+// managed child's identity themselves — the gate never derives a name — so this
+// carries only what the gate reads.
+type managedChildProbeInput struct {
+	// kind is the K-ORC kind the two error texts name ("User", "Project",
+	// "Service"). It is passed rather than derived from the scheme so a failure
+	// here can never be a lookup error with no sensible fallback.
+	kind string
+	// managed is an EMPTY typed object of that kind; the live Get reads into it.
+	managed     client.Object
+	managedName string
+	namespace   string
+	// adopt short-circuits the probe: the caller consented to taking over a
+	// pre-existing OpenStack resource. Only the user and catalog gates set it;
+	// project takeover is expressed as project.create=false, never as adopt.
+	adopt bool
+	// probe is the fully built unmanaged import, applied and then interpreted.
+	probe probeChild
+	// dropProbeOnOwned deletes a leftover probe on the already-owned path. It is
+	// true for the user and catalog gates and false for the project gates,
+	// matching what each kind does today.
+	dropProbeOnOwned bool
+	errPrefix        string
+}
+
+// managedChildProbeGate reports whether a managed child may be created without
+// silently adopting a pre-existing OpenStack resource.
+//
+// K-ORC's managed create matches an existing resource and takes it over rather
+// than failing, so the operator decides first: it creates nothing while it owns
+// no managed child, and instead applies a short-lived UNMANAGED import that
+// answers exists/absent. proceed is true when the operator already owns the
+// managed child, adopt was requested, or the probe reports the resource absent;
+// the probe is deleted on adopt, on absent, and — only when dropProbeOnOwned — on
+// the owned path.
+//
+// verdict carries the interpretation for the two proceed=false cases, so each
+// caller renders its own collision and probing messages. A Kubernetes read error
+// on the managed child, or a failed probe apply, is returned as an error and
+// never collapsed into a verdict: a gate that cannot see is not a gate that says
+// "absent".
+func managedChildProbeGate(
+	ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, in managedChildProbeInput,
+) (bool, probeVerdict, error) {
+	dropProbe := func() error {
+		return deleteRegistrationChild(ctx, c, in.probe, in.probe.GetName(), in.namespace, in.errPrefix)
+	}
+
+	switch err := c.Get(ctx, types.NamespacedName{Name: in.managedName, Namespace: in.namespace}, in.managed); {
+	case err == nil:
+		// Already ours: the verdict is settled, whatever is in Keystone.
+		if in.dropProbeOnOwned {
+			return true, probeAbsent, dropProbe()
+		}
+		return true, probeAbsent, nil
+	case apierrors.IsNotFound(err):
+	default:
+		return false, probePending, fmt.Errorf("reading managed %s %q: %w", in.kind, in.managedName, err)
+	}
+
+	if in.adopt {
+		return true, probeAbsent, dropProbe()
+	}
+
+	if err := apply.EnsureObject(ctx, c, scheme, owner, in.probe, apply.FieldManager); err != nil {
+		return false, probePending, fmt.Errorf("%s %s probe %q: %w", in.errPrefix, in.kind, in.probe.GetName(), err)
+	}
+	switch verdict := interpretProbe(in.probe); verdict {
+	case probeResolved, probePending:
+		return false, verdict, nil
+	case probeAbsent:
+	}
+	return true, probeAbsent, dropProbe()
 }

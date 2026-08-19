@@ -618,17 +618,21 @@ func (r *ControlPlaneReconciler) ensureServiceAccountProject(
 	}
 
 	// create:true — probe for a pre-existing project before creating a managed one
-	// (K-ORC would silently adopt it). Skip the probe once the managed Project we
-	// own already exists.
-	managed := &orcv1alpha1.Project{}
-	switch err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, managed); {
-	case err == nil:
-		// already ours — drop any leftover probe and converge.
-	case apierrors.IsNotFound(err):
-		verdict, probe, err := r.serviceAccountProjectProbe(ctx, cp, sa, credRef, domainRef)
-		if err != nil {
-			return nil, false, err
-		}
+	// (K-ORC would silently adopt it). adopt is never set here: project takeover is
+	// expressed as project.create=false, so sa.Adopt gates the user only.
+	probe := unmanagedProjectImport(serviceAccountProjectProbeRef(cp, sa), ns, sa.Project.Name, domainRef, credRef)
+	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, cp, managedChildProbeInput{
+		kind:        "Project",
+		managed:     &orcv1alpha1.Project{},
+		managedName: name,
+		namespace:   ns,
+		probe:       probe,
+		errPrefix:   "service-account",
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if !proceed {
 		switch verdict {
 		case probeResolved:
 			st.collision = fmt.Sprintf(
@@ -637,21 +641,14 @@ func (r *ControlPlaneReconciler) ensureServiceAccountProject(
 					"reference the existing project instead",
 				sa.Name, sa.Project.Name, serviceAccountDomainName(cp, sa),
 			)
-			return probe, false, nil
 		case probePending:
 			st.probingMsg = fmt.Sprintf("probing whether project %q already exists in Keystone before creating it for service account %q",
 				sa.Project.Name, sa.Name)
 			st.pendingObjs = pendingServiceAccountObjs(probe)
-			return probe, false, nil
 		case probeAbsent:
-			// No pre-existing project; fall through to create the managed Project.
+			// Unreachable: an absent probe proceeds.
 		}
-		// probeAbsent — remove the probe and fall through to create the managed Project.
-		if err := deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.Project{}, serviceAccountProjectProbeRef(cp, sa), ns, "service-account"); err != nil {
-			return nil, false, err
-		}
-	default:
-		return nil, false, fmt.Errorf("reading managed Project %q: %w", name, err)
+		return probe, false, nil
 	}
 
 	project := managedProjectChild(name, ns, sa.Project.Name, domainRef, managedCredRef)
@@ -672,24 +669,19 @@ func (r *ControlPlaneReconciler) serviceAccountUserCollisionGate(
 ) (bool, error) {
 	ns := childNamespace(cp)
 
-	existing := &orcv1alpha1.User{}
-	switch err := r.Get(ctx, types.NamespacedName{Name: serviceAccountUserRef(cp, sa), Namespace: ns}, existing); {
-	case err == nil:
-		// The managed User already exists (we own it); no probe needed.
-		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, serviceAccountUserProbeRef(cp, sa), ns, "service-account")
-	case apierrors.IsNotFound(err):
-	default:
-		return false, fmt.Errorf("reading managed User %q: %w", serviceAccountUserRef(cp, sa), err)
-	}
-
-	// adopt: skip the probe and take over the pre-existing user's password.
-	if sa.Adopt {
-		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, serviceAccountUserProbeRef(cp, sa), ns, "service-account")
-	}
-
-	verdict, probe, err := r.serviceAccountUserProbe(ctx, cp, sa, credRef, userName, domainRef)
-	if err != nil {
-		return false, err
+	probe := unmanagedUserImport(serviceAccountUserProbeRef(cp, sa), ns, userName, domainRef, credRef)
+	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, cp, managedChildProbeInput{
+		kind:             "User",
+		managed:          &orcv1alpha1.User{},
+		managedName:      serviceAccountUserRef(cp, sa),
+		namespace:        ns,
+		adopt:            sa.Adopt,
+		probe:            probe,
+		dropProbeOnOwned: true,
+		errPrefix:        "service-account",
+	})
+	if err != nil || proceed {
+		return proceed, err
 	}
 	switch verdict {
 	case probeResolved:
@@ -699,42 +691,14 @@ func (r *ControlPlaneReconciler) serviceAccountUserCollisionGate(
 				"the account (and rotate its password), or remove the entry",
 			sa.Name, userName, serviceAccountDomainName(cp, sa),
 		)
-		return false, nil
 	case probePending:
 		st.probingMsg = fmt.Sprintf("probing whether Keystone user %q already exists before creating service account %q",
 			userName, sa.Name)
 		st.pendingObjs = pendingServiceAccountObjs(probe)
-		return false, nil
 	case probeAbsent:
-		// The user does not exist; drop the probe and create the managed User below.
+		// Unreachable: an absent probe proceeds.
 	}
-	return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, serviceAccountUserProbeRef(cp, sa), ns, "service-account")
-}
-
-// serviceAccountUserProbe ensures the short-lived unmanaged User import used to
-// decide exists/absent before creating the managed User, and returns its verdict.
-func (r *ControlPlaneReconciler) serviceAccountUserProbe(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
-	credRef orcv1alpha1.CloudCredentialsReference, userName, domainRef string,
-) (probeVerdict, *orcv1alpha1.User, error) {
-	probe := unmanagedUserImport(serviceAccountUserProbeRef(cp, sa), childNamespace(cp), userName, domainRef, credRef)
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, probe, apply.FieldManager); err != nil {
-		return probePending, nil, fmt.Errorf("service-account User probe %q: %w", probe.Name, err)
-	}
-	return interpretProbe(probe), probe, nil
-}
-
-// serviceAccountProjectProbe ensures the short-lived unmanaged Project import used
-// to decide exists/absent before creating a managed Project.
-func (r *ControlPlaneReconciler) serviceAccountProjectProbe(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
-	credRef orcv1alpha1.CloudCredentialsReference, domainRef string,
-) (probeVerdict, *orcv1alpha1.Project, error) {
-	probe := unmanagedProjectImport(serviceAccountProjectProbeRef(cp, sa), childNamespace(cp), sa.Project.Name, domainRef, credRef)
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, probe, apply.FieldManager); err != nil {
-		return probePending, nil, fmt.Errorf("service-account Project probe %q: %w", probe.Name, err)
-	}
-	return interpretProbe(probe), probe, nil
+	return false, nil
 }
 
 // ensureServiceAccountUser create-or-updates the managed K-ORC User with the

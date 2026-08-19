@@ -9,8 +9,6 @@ import (
 	"fmt"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/c5c3/forge/internal/common/apply"
@@ -141,30 +139,24 @@ func (r *KeystoneServiceReconciler) keystoneServiceCatalogCollisionGate(
 	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
 	credRef orcv1alpha1.CloudCredentialsReference, serviceName string,
 ) (bool, error) {
-	probeName := keystoneServiceCatalogServiceProbeRef(ks)
-
-	existing := &orcv1alpha1.Service{}
-	switch err := r.Get(ctx, types.NamespacedName{Name: keystoneServiceCatalogServiceRef(ks), Namespace: ks.Namespace}, existing); {
-	case err == nil:
-		// The managed Service is already ours; the verdict is settled.
-		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.Service{}, probeName, ks.Namespace, "registration")
-	case apierrors.IsNotFound(err):
-	default:
-		return false, fmt.Errorf("reading managed Service %q: %w", keystoneServiceCatalogServiceRef(ks), err)
-	}
-
-	if ks.Spec.Catalog.Adopt {
-		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.Service{}, probeName, ks.Namespace, "registration")
-	}
-
 	// The filter carries the type AND the effective name, so the probe answers the
 	// question K-ORC's own adoption asks — it matches a row on exactly that pair.
-	probe := unmanagedServiceImport(probeName, ks.Namespace, ks.Spec.Catalog.ServiceType, serviceName, credRef)
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, probe, apply.FieldManager); err != nil {
-		return false, fmt.Errorf("registration Service probe %q: %w", probeName, err)
+	probe := unmanagedServiceImport(keystoneServiceCatalogServiceProbeRef(ks), ks.Namespace,
+		ks.Spec.Catalog.ServiceType, serviceName, credRef)
+	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, ks, managedChildProbeInput{
+		kind:             "Service",
+		managed:          &orcv1alpha1.Service{},
+		managedName:      keystoneServiceCatalogServiceRef(ks),
+		namespace:        ks.Namespace,
+		adopt:            ks.Spec.Catalog.Adopt,
+		probe:            probe,
+		dropProbeOnOwned: true,
+		errPrefix:        "registration",
+	})
+	if err != nil || proceed {
+		return proceed, err
 	}
-
-	switch interpretProbe(probe) {
+	switch verdict {
 	case probeResolved:
 		keystoneServiceFail(ks, conditionTypeKeystoneServiceCatalogReady)(reasonKeystoneServiceCatalogCollision, fmt.Sprintf(
 			"a catalog entry of type %q named %q already exists in Keystone; the operator will not silently take over "+
@@ -172,16 +164,14 @@ func (r *KeystoneServiceReconciler) keystoneServiceCatalogCollisionGate(
 				"catalog.serviceName",
 			ks.Spec.Catalog.ServiceType, serviceName,
 		))
-		return false, nil
 	case probePending:
 		r.keystoneServiceWaitOrClassify(ks, cp, conditionTypeKeystoneServiceCatalogReady,
 			reasonProbingForCollision,
 			fmt.Sprintf("probing whether a catalog entry of type %q named %q already exists in Keystone",
 				ks.Spec.Catalog.ServiceType, serviceName),
 			probe)
-		return false, nil
 	case probeAbsent:
-		// No pre-existing row; drop the probe and create the managed Service.
+		// Unreachable: an absent probe proceeds.
 	}
-	return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.Service{}, probeName, ks.Namespace, "registration")
+	return false, nil
 }
