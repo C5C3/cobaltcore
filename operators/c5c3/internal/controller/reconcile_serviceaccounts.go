@@ -12,7 +12,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
-	"strconv"
 	"strings"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -22,10 +21,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/forge/internal/common/apply"
@@ -710,109 +707,23 @@ func (r *ControlPlaneReconciler) ensureServiceAccountUser(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
 	managedCredRef orcv1alpha1.CloudCredentialsReference, domainRef, projectRef string,
 ) (*orcv1alpha1.User, int64, bool, *metav1.Time, error) {
-	ns := childNamespace(cp)
-	userName := serviceAccountUserName(sa)
-	name := serviceAccountUserRef(cp, sa)
-
-	existing := &orcv1alpha1.User{}
-	getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ns}, existing)
-	exists := getErr == nil
-	if getErr != nil && !apierrors.IsNotFound(getErr) {
-		return nil, 0, false, nil, fmt.Errorf("reading managed User %q: %w", name, getErr)
-	}
-
-	var currentGen int64
-	if exists && existing.Spec.Resource != nil && existing.Spec.Resource.PasswordRef != nil {
-		if g, ok := parseServiceAccountGeneration(string(*existing.Spec.Resource.PasswordRef)); ok {
-			currentGen = g
-		}
-	}
-	if currentGen < 1 {
-		currentGen = 1
-	}
-	// The empty generation annotation is the CredentialRotation reconciler's
-	// rotation nudge.
-	rotating := false
-	if exists {
-		if v, present := existing.Annotations[serviceAccountPasswordGenerationAnnotation]; present && v == "" {
-			rotating = true
-		}
-	}
-	desiredGen := currentGen
-	if !exists {
-		desiredGen = 1
-	} else if rotating {
-		desiredGen = currentGen + 1
-	}
-
-	if err := r.ensureServiceAccountPasswordSecret(ctx, cp, sa, desiredGen); err != nil {
-		return nil, 0, false, nil, err
-	}
-	passwordRefName := serviceAccountPasswordSecretName(cp, sa, desiredGen)
-
-	// This projection stays read-modify-write (not Server-Side Apply): the mutate
-	// closure reads the LIVE User's CreationTimestamp and existing
-	// serviceAccountPasswordGenerationAnnotation to decide whether to (re-)stamp the
-	// generation, which cannot be expressed as a pure projection of cp.Spec.
-	user := &orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
-	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, user, func() error {
-		user.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyManaged
-		user.Spec.Import = nil
-		user.Spec.CloudCredentialsRef = managedCredRef
-		if user.Spec.Resource == nil {
-			user.Spec.Resource = &orcv1alpha1.UserResourceSpec{}
-		}
-		user.Spec.Resource.Name = ptr.To(orcv1alpha1.OpenStackName(userName))
-		user.Spec.Resource.DomainRef = ptr.To(orcv1alpha1.KubernetesNameRef(domainRef))
-		user.Spec.Resource.DefaultProjectRef = ptr.To(orcv1alpha1.KubernetesNameRef(projectRef))
-		user.Spec.Resource.PasswordRef = ptr.To(orcv1alpha1.KubernetesNameRef(passwordRefName))
-		if user.Annotations == nil {
-			user.Annotations = map[string]string{}
-		}
-		// Stamp the generation on a fresh create or a rotation. In the steady state
-		// stamp only when the key is ABSENT (re-derive) — a present-but-empty value
-		// is a rotation nudge this pass did not observe (the lost-rotation race);
-		// leave it so the NEXT pass rotates. Mirrors shouldStampPasswordHash.
-		if _, present := user.Annotations[serviceAccountPasswordGenerationAnnotation]; user.CreationTimestamp.IsZero() || rotating || !present {
-			user.Annotations[serviceAccountPasswordGenerationAnnotation] = strconv.FormatInt(desiredGen, 10)
-		}
-		return controllerutil.SetControllerReference(cp, user, r.Scheme)
+	return ensureManagedAccountUser(ctx, r.Client, r.Scheme, cp, managedAccountUserInput{
+		name:           serviceAccountUserRef(cp, sa),
+		namespace:      childNamespace(cp),
+		userName:       serviceAccountUserName(sa),
+		domainRef:      domainRef,
+		projectRef:     projectRef,
+		managedCredRef: managedCredRef,
+		passwordSecretNameFor: func(gen int64) string {
+			return serviceAccountPasswordSecretName(cp, sa, gen)
+		},
+		ensurePasswordSecret: func(ctx context.Context, gen int64) error {
+			return r.ensureServiceAccountPasswordSecret(ctx, cp, sa, gen)
+		},
+		passwordSecretPrefix: serviceAccountChildPrefix(cp) + sa.Name + "-password-v",
+		ownsChild:            func(obj client.Object) bool { return r.ownsServiceAccountChild(cp, obj) },
+		errPrefix:            "service-account",
 	})
-	if err != nil {
-		return nil, 0, false, nil, fmt.Errorf("service-account managed User %q: %w", name, err)
-	}
-
-	// Record the rotation timestamp and prune superseded password Secrets once
-	// K-ORC confirms the current generation is applied.
-	var rotatedAt *metav1.Time
-	if rotating {
-		now := metav1.Now()
-		rotatedAt = &now
-	}
-	applied := user.Status.Resource != nil && user.Status.Resource.AppliedPasswordRef == passwordRefName
-	if applied {
-		// List the account's password Secrets that ACTUALLY exist and delete only
-		// the superseded generations, rather than blind-Deleting v1..v(desiredGen-1)
-		// every steady-state pass. This runs on every reconcile once applied stays
-		// true, so a blind loop would issue a growing, unbounded stream of NotFound
-		// DELETE round-trips for long-gone generations that never converges.
-		var pwSecrets corev1.SecretList
-		if err := r.List(ctx, &pwSecrets, client.InNamespace(ns)); err != nil {
-			return nil, 0, false, nil, fmt.Errorf("listing superseded password Secrets: %w", err)
-		}
-		prefix := serviceAccountChildPrefix(cp) + sa.Name + "-password-v"
-		for i := range pwSecrets.Items {
-			name := pwSecrets.Items[i].Name
-			if g, ok := parseServiceAccountGeneration(name); ok &&
-				strings.HasPrefix(name, prefix) && g < desiredGen &&
-				r.ownsServiceAccountChild(cp, &pwSecrets.Items[i]) {
-				if err := deleteRegistrationChild(ctx, r.Client, &corev1.Secret{}, name, ns, "service-account"); err != nil {
-					return nil, 0, false, nil, err
-				}
-			}
-		}
-	}
-	return user, desiredGen, op == controllerutil.OperationResultCreated, rotatedAt, nil
 }
 
 // ensureServiceAccountRoles projects the declared roles onto K-ORC CRs and reports

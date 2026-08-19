@@ -25,6 +25,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/secrets"
@@ -544,4 +545,136 @@ func managedChildProbeGate(
 	case probeAbsent:
 	}
 	return true, probeAbsent, dropProbe()
+}
+
+// --- managed user, generation-scoped password and rotation ---
+
+// managedAccountUserInput describes the managed User one account projects. The
+// caller supplies every name (its own naming helpers produce them) and the two
+// strategies that differ: how a generation-scoped password Secret is ensured, and
+// what counts as a child this owner may delete.
+type managedAccountUserInput struct {
+	name, namespace       string // the managed User child CR
+	userName              string // OpenStack user name
+	domainRef, projectRef string // sibling child CR names
+	managedCredRef        orcv1alpha1.CloudCredentialsReference
+	passwordSecretNameFor func(gen int64) string
+	ensurePasswordSecret  func(ctx context.Context, gen int64) error
+	// passwordSecretPrefix guards the superseded-generation prune: only Secrets
+	// named "<this account's prefix>password-v<N>" are candidates.
+	passwordSecretPrefix string
+	ownsChild            func(obj client.Object) bool
+	errPrefix            string
+}
+
+// ensureManagedAccountUser create-or-updates the managed K-ORC User with the
+// current-generation password, and flips the passwordRef to a fresh generation
+// when the CredentialRotation reconciler has cleared the generation annotation.
+// K-ORC's user actuator re-applies the password only when the passwordRef NAME
+// changes, so a rotation is a Secret-name flip, never a content edit.
+//
+// It returns the applied User, the desired generation, whether the User was
+// created this pass (the one-shot deferral event both callers emit), and the
+// rotation timestamp — non-nil only when a nudge was consumed this pass.
+//
+// This projection stays read-modify-write (not Server-Side Apply): the mutate
+// closure reads the LIVE User's CreationTimestamp and existing
+// serviceAccountPasswordGenerationAnnotation to decide whether to (re-)stamp the
+// generation, which cannot be expressed as a pure projection of the spec.
+func ensureManagedAccountUser(
+	ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, in managedAccountUserInput,
+) (*orcv1alpha1.User, int64, bool, *metav1.Time, error) {
+	existing := &orcv1alpha1.User{}
+	getErr := c.Get(ctx, types.NamespacedName{Name: in.name, Namespace: in.namespace}, existing)
+	exists := getErr == nil
+	if getErr != nil && !apierrors.IsNotFound(getErr) {
+		return nil, 0, false, nil, fmt.Errorf("reading managed User %q: %w", in.name, getErr)
+	}
+
+	var currentGen int64
+	if exists && existing.Spec.Resource != nil && existing.Spec.Resource.PasswordRef != nil {
+		if g, ok := parseServiceAccountGeneration(string(*existing.Spec.Resource.PasswordRef)); ok {
+			currentGen = g
+		}
+	}
+	if currentGen < 1 {
+		currentGen = 1
+	}
+	// The empty generation annotation is the CredentialRotation reconciler's
+	// rotation nudge.
+	rotating := false
+	if exists {
+		if v, present := existing.Annotations[serviceAccountPasswordGenerationAnnotation]; present && v == "" {
+			rotating = true
+		}
+	}
+	desiredGen := currentGen
+	if !exists {
+		desiredGen = 1
+	} else if rotating {
+		desiredGen = currentGen + 1
+	}
+
+	if err := in.ensurePasswordSecret(ctx, desiredGen); err != nil {
+		return nil, 0, false, nil, err
+	}
+	passwordRefName := in.passwordSecretNameFor(desiredGen)
+
+	user := &orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: in.name, Namespace: in.namespace}}
+	op, err := controllerutil.CreateOrUpdate(ctx, c, user, func() error {
+		user.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyManaged
+		user.Spec.Import = nil
+		user.Spec.CloudCredentialsRef = in.managedCredRef
+		if user.Spec.Resource == nil {
+			user.Spec.Resource = &orcv1alpha1.UserResourceSpec{}
+		}
+		user.Spec.Resource.Name = ptr.To(orcv1alpha1.OpenStackName(in.userName))
+		user.Spec.Resource.DomainRef = ptr.To(orcv1alpha1.KubernetesNameRef(in.domainRef))
+		user.Spec.Resource.DefaultProjectRef = ptr.To(orcv1alpha1.KubernetesNameRef(in.projectRef))
+		user.Spec.Resource.PasswordRef = ptr.To(orcv1alpha1.KubernetesNameRef(passwordRefName))
+		if user.Annotations == nil {
+			user.Annotations = map[string]string{}
+		}
+		// Stamp the generation on a fresh create or a rotation. In the steady state
+		// stamp only when the key is ABSENT (re-derive) — a present-but-empty value
+		// is a rotation nudge this pass did not observe (the lost-rotation race);
+		// leave it so the NEXT pass rotates. Mirrors shouldStampPasswordHash.
+		if _, present := user.Annotations[serviceAccountPasswordGenerationAnnotation]; user.CreationTimestamp.IsZero() || rotating || !present {
+			user.Annotations[serviceAccountPasswordGenerationAnnotation] = strconv.FormatInt(desiredGen, 10)
+		}
+		return controllerutil.SetControllerReference(owner, user, scheme)
+	})
+	if err != nil {
+		return nil, 0, false, nil, fmt.Errorf("%s managed User %q: %w", in.errPrefix, in.name, err)
+	}
+
+	// Record the rotation timestamp and prune superseded password Secrets once
+	// K-ORC confirms the current generation is applied.
+	var rotatedAt *metav1.Time
+	if rotating {
+		now := metav1.Now()
+		rotatedAt = &now
+	}
+	if user.Status.Resource != nil && user.Status.Resource.AppliedPasswordRef == passwordRefName {
+		// List the account's password Secrets that ACTUALLY exist and delete only
+		// the superseded generations, rather than blind-Deleting v1..v(desiredGen-1)
+		// every steady-state pass. This runs on every reconcile once applied stays
+		// true, so a blind loop would issue a growing, unbounded stream of NotFound
+		// DELETE round-trips for long-gone generations that never converges.
+		var pwSecrets corev1.SecretList
+		if err := c.List(ctx, &pwSecrets, client.InNamespace(in.namespace)); err != nil {
+			return nil, 0, false, nil, fmt.Errorf("listing superseded password Secrets: %w", err)
+		}
+		for i := range pwSecrets.Items {
+			secretName := pwSecrets.Items[i].Name
+			if g, ok := parseServiceAccountGeneration(secretName); ok &&
+				strings.HasPrefix(secretName, in.passwordSecretPrefix) && g < desiredGen &&
+				in.ownsChild(&pwSecrets.Items[i]) {
+				if err := deleteRegistrationChild(ctx, c, &corev1.Secret{}, secretName, in.namespace, in.errPrefix); err != nil {
+					return nil, 0, false, nil, err
+				}
+			}
+		}
+	}
+	return user, desiredGen, op == controllerutil.OperationResultCreated, rotatedAt, nil
 }

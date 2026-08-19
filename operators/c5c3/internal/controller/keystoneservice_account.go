@@ -10,8 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"strconv"
-	"strings"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
@@ -19,10 +17,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/secrets"
@@ -326,100 +322,23 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceUser(
 	ctx context.Context, ks *c5c3v1alpha1.KeystoneService,
 	managedCredRef orcv1alpha1.CloudCredentialsReference, domainRef string,
 ) (*orcv1alpha1.User, int64, bool, *metav1.Time, error) {
-	name := keystoneServiceUserRef(ks)
-	userName := keystoneServiceUserName(ks)
-
-	existing := &orcv1alpha1.User{}
-	getErr := r.Get(ctx, types.NamespacedName{Name: name, Namespace: ks.Namespace}, existing)
-	exists := getErr == nil
-	if getErr != nil && !apierrors.IsNotFound(getErr) {
-		return nil, 0, false, nil, fmt.Errorf("reading managed User %q: %w", name, getErr)
-	}
-
-	var currentGen int64
-	if exists && existing.Spec.Resource != nil && existing.Spec.Resource.PasswordRef != nil {
-		if g, ok := parseServiceAccountGeneration(string(*existing.Spec.Resource.PasswordRef)); ok {
-			currentGen = g
-		}
-	}
-	if currentGen < 1 {
-		currentGen = 1
-	}
-	// An empty generation annotation is the CredentialRotation reconciler's
-	// rotation nudge.
-	rotating := false
-	if exists {
-		if v, present := existing.Annotations[serviceAccountPasswordGenerationAnnotation]; present && v == "" {
-			rotating = true
-		}
-	}
-	desiredGen := currentGen
-	if !exists {
-		desiredGen = 1
-	} else if rotating {
-		desiredGen = currentGen + 1
-	}
-
-	if err := r.ensureKeystoneServicePasswordSecret(ctx, ks, desiredGen); err != nil {
-		return nil, 0, false, nil, err
-	}
-	passwordRefName := keystoneServicePasswordSecretName(ks, desiredGen)
-
-	user := &orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ks.Namespace}}
-	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, user, func() error {
-		user.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyManaged
-		user.Spec.Import = nil
-		user.Spec.CloudCredentialsRef = managedCredRef
-		if user.Spec.Resource == nil {
-			user.Spec.Resource = &orcv1alpha1.UserResourceSpec{}
-		}
-		user.Spec.Resource.Name = ptr.To(orcv1alpha1.OpenStackName(userName))
-		user.Spec.Resource.DomainRef = ptr.To(orcv1alpha1.KubernetesNameRef(domainRef))
-		user.Spec.Resource.DefaultProjectRef = ptr.To(orcv1alpha1.KubernetesNameRef(keystoneServiceProjectRef(ks)))
-		user.Spec.Resource.PasswordRef = ptr.To(orcv1alpha1.KubernetesNameRef(passwordRefName))
-		if user.Annotations == nil {
-			user.Annotations = map[string]string{}
-		}
-		// Stamp the generation on a fresh create or a rotation. In the steady state
-		// stamp only when the key is ABSENT (re-derive): a present-but-empty value is
-		// a rotation nudge this pass did not observe, so leaving it makes the NEXT
-		// pass rotate rather than losing the request.
-		if _, present := user.Annotations[serviceAccountPasswordGenerationAnnotation]; user.CreationTimestamp.IsZero() || rotating || !present {
-			user.Annotations[serviceAccountPasswordGenerationAnnotation] = strconv.FormatInt(desiredGen, 10)
-		}
-		return controllerutil.SetControllerReference(ks, user, r.Scheme)
+	return ensureManagedAccountUser(ctx, r.Client, r.Scheme, ks, managedAccountUserInput{
+		name:           keystoneServiceUserRef(ks),
+		namespace:      ks.Namespace,
+		userName:       keystoneServiceUserName(ks),
+		domainRef:      domainRef,
+		projectRef:     keystoneServiceProjectRef(ks),
+		managedCredRef: managedCredRef,
+		passwordSecretNameFor: func(gen int64) string {
+			return keystoneServicePasswordSecretName(ks, gen)
+		},
+		ensurePasswordSecret: func(ctx context.Context, gen int64) error {
+			return r.ensureKeystoneServicePasswordSecret(ctx, ks, gen)
+		},
+		passwordSecretPrefix: keystoneServiceChildPrefix(ks) + "password-v",
+		ownsChild:            func(obj client.Object) bool { return ownsKeystoneServiceChild(ks, obj) },
+		errPrefix:            "registration",
 	})
-	if err != nil {
-		return nil, 0, false, nil, fmt.Errorf("registration managed User %q: %w", name, err)
-	}
-
-	var rotatedAt *metav1.Time
-	if rotating {
-		now := metav1.Now()
-		rotatedAt = &now
-	}
-	// Prune superseded generations only once K-ORC confirms the current one is
-	// applied, and only the ones that actually exist: a blind delete of v1..v(N-1)
-	// on every steady-state pass would issue a growing stream of NotFound round
-	// trips that never converges.
-	if user.Status.Resource != nil && user.Status.Resource.AppliedPasswordRef == passwordRefName {
-		var pwSecrets corev1.SecretList
-		if err := r.List(ctx, &pwSecrets, client.InNamespace(ks.Namespace)); err != nil {
-			return nil, 0, false, nil, fmt.Errorf("listing superseded password Secrets: %w", err)
-		}
-		prefix := keystoneServiceChildPrefix(ks) + "password-v"
-		for i := range pwSecrets.Items {
-			secretName := pwSecrets.Items[i].Name
-			if g, ok := parseServiceAccountGeneration(secretName); ok &&
-				strings.HasPrefix(secretName, prefix) && g < desiredGen &&
-				ownsKeystoneServiceChild(ks, &pwSecrets.Items[i]) {
-				if err := deleteRegistrationChild(ctx, r.Client, &corev1.Secret{}, secretName, ks.Namespace, "registration"); err != nil {
-					return nil, 0, false, nil, err
-				}
-			}
-		}
-	}
-	return user, desiredGen, op == controllerutil.OperationResultCreated, rotatedAt, nil
 }
 
 // ensureKeystoneServicePasswordSecret ensures the generation-scoped, operator-owned
