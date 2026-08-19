@@ -170,14 +170,14 @@ func (r *KeystoneServiceReconciler) keystoneServiceCatalogCollisionGate(
 	switch err := r.Get(ctx, types.NamespacedName{Name: keystoneServiceCatalogServiceRef(ks), Namespace: ks.Namespace}, existing); {
 	case err == nil:
 		// The managed Service is already ours; the verdict is settled.
-		return true, r.keystoneServiceDeleteChild(ctx, &orcv1alpha1.Service{}, ks, probeName)
+		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.Service{}, probeName, ks.Namespace, "registration")
 	case apierrors.IsNotFound(err):
 	default:
 		return false, fmt.Errorf("reading managed Service %q: %w", keystoneServiceCatalogServiceRef(ks), err)
 	}
 
 	if ks.Spec.Catalog.Adopt {
-		return true, r.keystoneServiceDeleteChild(ctx, &orcv1alpha1.Service{}, ks, probeName)
+		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.Service{}, probeName, ks.Namespace, "registration")
 	}
 
 	// The filter carries the type AND the effective name, so the probe answers the
@@ -218,5 +218,5 @@ func (r *KeystoneServiceReconciler) keystoneServiceCatalogCollisionGate(
 	case probeAbsent:
 		// No pre-existing row; drop the probe and create the managed Service.
 	}
-	return true, r.keystoneServiceDeleteChild(ctx, &orcv1alpha1.Service{}, ks, probeName)
+	return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.Service{}, probeName, ks.Namespace, "registration")
 }
