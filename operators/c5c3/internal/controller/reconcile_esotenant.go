@@ -6,11 +6,16 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esmetav1 "github.com/external-secrets/external-secrets/apis/meta/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/utils/ptr"
@@ -339,4 +344,283 @@ func (r *ControlPlaneReconciler) ensureESOTenantStoreTrioIn(
 		return fmt.Errorf("ensuring per-tenant SecretStore in namespace %q: %w", namespace, err)
 	}
 	return nil
+}
+
+// reconcileRegistrationTenantStores provisions the tenant-store trio in every
+// ALLOWLISTED namespace hosting a KeystoneService registered against this control
+// plane, and collects it again once the last registration there is gone. It drives
+// RegistrationTenantStoresReady.
+//
+// It exists because credential delivery is namespace-local. A registration's
+// consumer Secret is materialised through the tenant store in the CR's OWN
+// namespace (keystoneServiceStoreReady), and reconcileESOTenantStore provisions one
+// only in the namespaces the control plane occupies. Without this, an allowlisted
+// foreign registration mints its Keystone account and then waits forever on a store
+// nobody creates.
+//
+// It is a SEPARATE sub-reconciler in the tail group rather than an arm of
+// reconcileESOTenantStore, and that separation is the point: the tenant-store step
+// runs in the chain's BLOCKING PREFIX, where a non-zero result parks DBCredentials,
+// AdminPassword and Keystone behind it. These namespaces are not the operator's —
+// a foreign object can occupy the store's name, a certificate can fail to issue
+// there — and none of that may reach the plane's core reconciliation. A failure
+// here surfaces in this condition (and, through it, in the aggregate Ready) and
+// stops there.
+//
+// The OpenBao side needs nothing: the eso-tenant role binds the ServiceAccount name
+// in ANY namespace and its templated policy confines each token to its own, so a
+// trio in a foreign namespace authenticates as that namespace's tenant identity and
+// reaches only its own paths.
+func (r *ControlPlaneReconciler) reconcileRegistrationTenantStores(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	fail := conditionFailer(cp, conditionTypeRegistrationTenantStoresReady)
+
+	// An explicit store reference opts the whole control plane out of
+	// operator-provisioned stores, so there is nothing to provision — and nothing
+	// this sub-reconciler ever created to collect either.
+	if cp.Spec.SecretStoreRef != nil {
+		ref := secrets.EffectiveStoreRef(cp.Spec.SecretStoreRef)
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeRegistrationTenantStoresReady,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: cp.Generation,
+			Reason:             "StoreRefOverridden",
+			Message: fmt.Sprintf("explicit spec.secretStoreRef (%s %q) overrides the operator-provisioned per-tenant "+
+				"store; a registration resolves that store in its own namespace itself", ref.Kind, ref.Name),
+		})
+		return ctrl.Result{}, nil
+	}
+
+	// What this control plane already provisioned outside its own namespaces, found
+	// by ownership label. Enumerated BEFORE the allowlist is consulted, so emptying
+	// the allowlist still collects the trios whose registrations have left.
+	provisioned, err := r.registrationTenantStoreNamespaces(ctx, cp)
+	if err != nil {
+		fail("ProvisioningError", err.Error())
+		return ctrl.Result{}, err
+	}
+
+	var allowed []string
+	if sr := cp.Spec.KORC.ServiceRegistrations; sr != nil {
+		allowed = sr.AllowedNamespaces
+	}
+
+	// Nothing admitted and nothing standing: return before the registration List
+	// below, so a control plane that never uses the feature never depends on the
+	// field index the KeystoneService controller registers.
+	if len(allowed) == 0 && len(provisioned) == 0 {
+		setRegistrationTenantStoresReady(cp, "NoRegistrationNamespaces", noRegistrationNamespacesMessage)
+		return ctrl.Result{}, nil
+	}
+
+	// Registrations per namespace. The count drives both halves: a namespace with
+	// registrations is provisioned, one without them is collected.
+	registrations, err := r.registrationCountsByNamespace(ctx, cp)
+	if err != nil {
+		fail("ProvisioningError", err.Error())
+		return ctrl.Result{}, err
+	}
+
+	occupied := controlPlaneNamespaces(cp)
+	var targets []string
+	for ns := range registrations {
+		if slices.Contains(occupied, ns) || !slices.Contains(allowed, ns) {
+			continue
+		}
+		targets = append(targets, ns)
+	}
+	slices.Sort(targets)
+
+	// Provision. Every namespace is attempted even after one fails, so a single
+	// broken namespace cannot starve its peers; the failures are reported together.
+	//
+	// A failure here reports the condition and REQUEUES rather than returning an
+	// error. The cause is usually a tenant-side one that no backoff resolves — a
+	// foreign object holding the store's name — and returning an error would put the
+	// whole ControlPlane reconcile into exponential backoff for it, which is the
+	// blast radius this sub-reconciler is separate in order to avoid.
+	server, mountPath := r.openBaoConnection(ctx, cp, secrets.EffectiveStoreRef(nil))
+	var failed []string
+	var errs []error
+	for _, ns := range targets {
+		if err := r.ensureESOTenantStoreTrioIn(ctx, r.Client, cp, ns, server, mountPath); err != nil {
+			failed = append(failed, ns)
+			errs = append(errs, err)
+		}
+	}
+
+	// Collect what the spec no longer asks for. A namespace that still holds
+	// registrations is FROZEN rather than collected, even when the allowlist stopped
+	// admitting it: de-listing is an admission gate, and revoking the store under a
+	// running service would destroy credentials it depends on.
+	for _, ns := range provisioned {
+		if slices.Contains(targets, ns) {
+			continue
+		}
+		if registrations[ns] > 0 {
+			logger.V(1).Info("namespace is no longer admitted but still hosts registrations; keeping its per-tenant store",
+				"namespace", ns, "registrations", registrations[ns])
+			continue
+		}
+		logger.Info("collecting the per-tenant store of a namespace with no service registrations left", "namespace", ns)
+		if err := r.deleteESOTenantStoreTrioIn(ctx, cp, ns); err != nil {
+			failed = append(failed, ns)
+			errs = append(errs, err)
+		}
+	}
+
+	if len(errs) > 0 {
+		fail("ProvisioningError", fmt.Sprintf("registration tenant stores in namespace(s) %s: %v",
+			strings.Join(failed, ", "), errors.Join(errs...)))
+		return ctrl.Result{RequeueAfter: esoTenantStoreRequeueAfter}, nil
+	}
+
+	if len(targets) == 0 {
+		setRegistrationTenantStoresReady(cp, "NoRegistrationNamespaces", noRegistrationNamespacesMessage)
+		return ctrl.Result{}, nil
+	}
+
+	// Every store must be Ready, not just written: a registration's delivery leg
+	// gates on exactly this, so reporting True while a store is still issuing its
+	// client certificate would claim a delivery path that does not carry yet.
+	for _, ns := range targets {
+		ready, err := secrets.IsSecretStoreReady(ctx, r.Client, esoTenantStoreName, ns)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !ready {
+			logger.Info("registration tenant store not ready yet, requeuing", "namespace", ns)
+			fail("SecretStoreNotReady", fmt.Sprintf(
+				"per-tenant SecretStore %q in registration namespace %q is not ready yet; waiting on cert issuance "+
+					"and the OpenBao backend", esoTenantStoreName, ns))
+			return ctrl.Result{RequeueAfter: esoTenantStoreRequeueAfter}, nil
+		}
+	}
+
+	setRegistrationTenantStoresReady(cp, "RegistrationTenantStoresReady", fmt.Sprintf(
+		"per-tenant SecretStore %q is Ready in all %d allowlisted registration namespace(s)",
+		esoTenantStoreName, len(targets)))
+	return ctrl.Result{}, nil
+}
+
+// noRegistrationNamespacesMessage is the True/NoRegistrationNamespaces message.
+// Two arms reach it — nothing admitted at all, and an allowlist no registration
+// sits in — and they report the same state, so they share one literal rather than
+// two that can drift.
+const noRegistrationNamespacesMessage = "no allowlisted namespace hosts a service registration; " +
+	"no per-tenant store is provisioned outside this control plane's own namespaces"
+
+// setRegistrationTenantStoresReady upserts the True arms of the condition. The
+// False arms go through conditionFailer, which truncates for them.
+func setRegistrationTenantStoresReady(cp *c5c3v1alpha1.ControlPlane, reason, message string) {
+	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+		Type:               conditionTypeRegistrationTenantStoresReady,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: cp.Generation,
+		Reason:             reason,
+		Message:            message,
+	})
+}
+
+// registrationTenantStoreNamespaces returns the namespaces OUTSIDE the ones the
+// control plane occupies where it has already provisioned a tenant store, sorted
+// and deduplicated.
+//
+// The label selector IS the ownership test here: the trio of a namespace the
+// control plane does not own carries the ownership labels rather than an owner
+// reference (Kubernetes forbids one across namespaces), and the store in its OWN
+// namespace is owner-referenced and label-less, so it cannot appear in this list at
+// all. The namespaces it occupies are excluded on top, because the blocking
+// tenant-store step owns those.
+func (r *ControlPlaneReconciler) registrationTenantStoreNamespaces(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) ([]string, error) {
+	var stores esov1.SecretStoreList
+	if err := r.List(ctx, &stores, client.MatchingLabels(controlPlaneChildLabels(cp))); err != nil {
+		return nil, fmt.Errorf("listing the provisioned registration tenant stores: %w", err)
+	}
+	occupied := controlPlaneNamespaces(cp)
+	var namespaces []string
+	for i := range stores.Items {
+		store := &stores.Items[i]
+		if store.Name != esoTenantStoreName || slices.Contains(occupied, store.Namespace) {
+			continue
+		}
+		namespaces = append(namespaces, store.Namespace)
+	}
+	slices.Sort(namespaces)
+	return slices.Compact(namespaces), nil
+}
+
+// registrationCountsByNamespace returns how many KeystoneService CRs registered
+// against cp live in each namespace, resolved through the field index the
+// KeystoneService controller registers (KeystoneServiceControlPlaneRefIndexKey), so
+// a registration naming a same-named control plane in another namespace is never
+// counted here.
+//
+// A CR that is Terminating still counts. Its own teardown runs its ESO cleanup
+// through this very store, so collecting the store while the CR is still going
+// would strand the OpenBao path it is in the middle of purging.
+func (r *ControlPlaneReconciler) registrationCountsByNamespace(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) (map[string]int, error) {
+	var registrations c5c3v1alpha1.KeystoneServiceList
+	if err := r.List(ctx, &registrations, client.MatchingFields{
+		KeystoneServiceControlPlaneRefIndexKey: cp.Namespace + "/" + cp.Name,
+	}); err != nil {
+		return nil, fmt.Errorf("listing KeystoneServices for registration tenant stores: %w", err)
+	}
+	counts := make(map[string]int, len(registrations.Items))
+	for i := range registrations.Items {
+		counts[registrations.Items[i].Namespace]++
+	}
+	return counts, nil
+}
+
+// deleteESOTenantStoreTrioIn removes one registration namespace's trio, in the
+// reverse of the order it was created: the store first, then the identity and the
+// TLS material it authenticated with, so nothing is left authenticating through
+// material that is already gone.
+//
+// Each object is ownership-checked against its LIVE state, so a same-named object
+// belonging to somebody else in this shared namespace is left alone. The reads go
+// through the UNCACHED reader: a cached Get on a ServiceAccount would have
+// controller-runtime start a cluster-wide ServiceAccount informer (see
+// ControlPlaneReconciler.APIReader and adoptionPrecheckReader), and a collection
+// runs only when a namespace's last registration has left, so the round trips are
+// rare.
+func (r *ControlPlaneReconciler) deleteESOTenantStoreTrioIn(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, namespace string,
+) error {
+	certificate := &unstructured.Unstructured{}
+	certificate.SetGroupVersionKind(certificateGVK)
+	certificate.SetName(esoTenantClientCertName)
+	certificate.SetNamespace(namespace)
+
+	objs := []client.Object{
+		&esov1.SecretStore{ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: namespace}},
+		certificate,
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: esoTenantServiceAccountName, Namespace: namespace}},
+	}
+
+	var errs []error
+	for _, obj := range objs {
+		key := client.ObjectKeyFromObject(obj)
+		switch err := r.apiReader().Get(ctx, key, obj); {
+		case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
+			continue
+		case err != nil:
+			errs = append(errs, fmt.Errorf("reading %T %s before collecting it: %w", obj, key, err))
+			continue
+		}
+		if !isControlPlaneChild(obj, cp) {
+			continue
+		}
+		if err := client.IgnoreNotFound(r.Delete(ctx, obj)); err != nil {
+			errs = append(errs, fmt.Errorf("collecting %T %s: %w", obj, key, err))
+		}
+	}
+	return errors.Join(errs...)
 }

@@ -12,6 +12,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -556,4 +557,557 @@ func TestReconcileESOTenantStore_UnresolvableTargetProvisionsNothing(t *testing.
 		g.Expect(c.List(ctx, &accounts)).To(Succeed())
 		g.Expect(accounts.Items).To(BeEmpty(), "no tenant ServiceAccount may be provisioned on the %s cluster", name)
 	}
+}
+
+// --- registration tenant stores (allowlisted foreign namespaces) ---
+
+// registrationTenantStoreClient builds the fake client the registration
+// tenant-store tests drive the reconciler with. The KeystoneService field index is
+// registered because reconcileRegistrationTenantStores resolves its registrations
+// through it, exactly as the manager does in production.
+func registrationTenantStoreClient(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	return fake.NewClientBuilder().
+		WithScheme(korcTestScheme(t)).
+		WithObjects(objs...).
+		WithIndex(&c5c3v1alpha1.KeystoneService{}, KeystoneServiceControlPlaneRefIndexKey,
+			keystoneServiceControlPlaneRefExtractor).
+		Build()
+}
+
+// allowlistingControlPlane returns a managed ControlPlane admitting service
+// registrations from the given namespaces.
+func allowlistingControlPlane(namespaces ...string) *c5c3v1alpha1.ControlPlane {
+	cp := dbCredManagedControlPlane()
+	cp.Spec.KORC.ServiceRegistrations = &c5c3v1alpha1.ServiceRegistrationsSpec{
+		AllowedNamespaces: namespaces,
+	}
+	return cp
+}
+
+// registrationIn returns a KeystoneService in namespace registered against cp.
+func registrationIn(namespace, name string, cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+	return &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: cp.Name, Namespace: cp.Namespace},
+		},
+	}
+}
+
+// registrationTenantStoresCondition returns the RegistrationTenantStoresReady
+// condition off the CR.
+func registrationTenantStoresCondition(cp *c5c3v1alpha1.ControlPlane) *metav1.Condition {
+	return conditions.GetCondition(cp.Status.Conditions, conditionTypeRegistrationTenantStoresReady)
+}
+
+// ownedTenantTrioIn returns the three objects of a tenant-store trio already
+// provisioned by cp in a foreign namespace: label-owned, since a cross-namespace
+// child carries no owner reference. The store is Ready so the readiness rollup
+// passes without an ESO controller.
+func ownedTenantTrioIn(namespace string, cp *c5c3v1alpha1.ControlPlane) (*esov1.SecretStore, *unstructured.Unstructured, *corev1.ServiceAccount) {
+	store := readyTenantSecretStore(esoTenantStoreName, namespace, "", "")
+	store.Labels = controlPlaneChildLabels(cp)
+
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certificateGVK)
+	cert.SetName(esoTenantClientCertName)
+	cert.SetNamespace(namespace)
+	cert.SetLabels(controlPlaneChildLabels(cp))
+
+	sa := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Name: esoTenantServiceAccountName, Namespace: namespace, Labels: controlPlaneChildLabels(cp),
+	}}
+	return store, cert, sa
+}
+
+// expectTenantTrio asserts the trio exists in namespace and carries cp's ownership
+// labels — the only ownership mechanism a cross-namespace child can carry.
+func expectTenantTrio(t *testing.T, c client.Client, cp *c5c3v1alpha1.ControlPlane, namespace string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	store := &esov1.SecretStore{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: esoTenantStoreName}, store)).To(Succeed())
+	g.Expect(store.Labels).To(Equal(controlPlaneChildLabels(cp)))
+	g.Expect(metav1.GetControllerOf(store)).To(BeNil(), "a cross-namespace child cannot carry an owner reference")
+
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certificateGVK)
+	g.Expect(c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: esoTenantClientCertName}, cert)).To(Succeed())
+	g.Expect(cert.GetLabels()).To(Equal(controlPlaneChildLabels(cp)))
+
+	sa := &corev1.ServiceAccount{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: esoTenantServiceAccountName}, sa)).To(Succeed())
+	g.Expect(sa.Labels).To(Equal(controlPlaneChildLabels(cp)))
+}
+
+// expectNoTenantTrio asserts no part of the trio is left in namespace.
+func expectNoTenantTrio(t *testing.T, c client.Client, namespace string) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cert := &unstructured.Unstructured{}
+	cert.SetGroupVersionKind(certificateGVK)
+	for name, obj := range map[string]client.Object{
+		"SecretStore":    &esov1.SecretStore{},
+		"Certificate":    cert,
+		"ServiceAccount": &corev1.ServiceAccount{},
+	} {
+		objectName := esoTenantStoreName
+		switch name {
+		case "Certificate":
+			objectName = esoTenantClientCertName
+		case "ServiceAccount":
+			objectName = esoTenantServiceAccountName
+		}
+		err := c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: objectName}, obj)
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "%s must not exist in namespace %q", name, namespace)
+	}
+}
+
+// TestReconcileRegistrationTenantStores_ProvisionsForAllowlistedRegistration an
+// allowlisted namespace hosting a KeystoneService registered against this
+// ControlPlane receives the full trio, label-owned and without an owner reference,
+// and the condition reports the store Ready.
+func TestReconcileRegistrationTenantStores_ProvisionsForAllowlistedRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a")
+	// The store the reconciler is about to create cannot report Ready by itself in
+	// a fake client, so it is seeded Ready and the apply reasserts its spec.
+	seeded, _, _ := ownedTenantTrioIn("tenant-a", cp)
+	c := registrationTenantStoreClient(t, cp, readyClusterSecretStore(), seeded,
+		registrationIn("tenant-a", "billing", cp))
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t)}
+
+	res, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue(), "a fully provisioned and Ready set requests no requeue")
+
+	expectTenantTrio(t, c, cp, "tenant-a")
+
+	cond := registrationTenantStoresCondition(cp)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("RegistrationTenantStoresReady"))
+	g.Expect(cond.ObservedGeneration).To(Equal(cp.Generation))
+}
+
+// TestReconcileRegistrationTenantStores_IgnoresAnotherControlPlanesRegistration a
+// KeystoneService in an allowlisted namespace that references a DIFFERENT
+// ControlPlane must not put that namespace into the provisioning set: the field
+// index resolves the reference namespace-qualified, so a same-named plane elsewhere
+// is not this one.
+func TestReconcileRegistrationTenantStores_IgnoresAnotherControlPlanesRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a")
+	other := &c5c3v1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: cp.Name, Namespace: "elsewhere"}}
+	foreign := registrationIn("tenant-a", "foreign", other)
+
+	c := registrationTenantStoreClient(t, cp, readyClusterSecretStore(), foreign)
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t)}
+
+	_, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	expectNoTenantTrio(t, c, "tenant-a")
+	g.Expect(registrationTenantStoresCondition(cp).Reason).To(Equal("NoRegistrationNamespaces"))
+}
+
+// TestReconcileRegistrationTenantStores_AllowlistedButEmptyNamespaceGetsNothing the
+// allowlist alone provisions nothing: a namespace is only worth a store once it
+// actually hosts a registration.
+func TestReconcileRegistrationTenantStores_AllowlistedButEmptyNamespaceGetsNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a", "tenant-b")
+	c := registrationTenantStoreClient(t, cp, readyClusterSecretStore())
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t)}
+
+	res, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+
+	expectNoTenantTrio(t, c, "tenant-a")
+	expectNoTenantTrio(t, c, "tenant-b")
+	g.Expect(registrationTenantStoresCondition(cp).Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(registrationTenantStoresCondition(cp).Reason).To(Equal("NoRegistrationNamespaces"))
+}
+
+// TestReconcileRegistrationTenantStores_UnlistedNamespaceGetsNothing a registration
+// in a namespace the allowlist does not carry is not provisioned for. Its own CR
+// already reports NamespaceNotAllowed.
+func TestReconcileRegistrationTenantStores_UnlistedNamespaceGetsNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a")
+	c := registrationTenantStoreClient(t, cp, readyClusterSecretStore(),
+		registrationIn("tenant-unlisted", "billing", cp))
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t)}
+
+	_, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	expectNoTenantTrio(t, c, "tenant-unlisted")
+	g.Expect(registrationTenantStoresCondition(cp).Reason).To(Equal("NoRegistrationNamespaces"))
+}
+
+// TestReconcileRegistrationTenantStores_NoRegistrationNamespacesShapes the three
+// ways the provisioning set comes out empty all report True/NoRegistrationNamespaces,
+// write nothing, and request no requeue.
+func TestReconcileRegistrationTenantStores_NoRegistrationNamespacesShapes(t *testing.T) {
+	ctx := context.Background()
+
+	for name, build := range map[string]func() (*c5c3v1alpha1.ControlPlane, []client.Object){
+		"nil block": func() (*c5c3v1alpha1.ControlPlane, []client.Object) {
+			return dbCredManagedControlPlane(), nil
+		},
+		"empty list": func() (*c5c3v1alpha1.ControlPlane, []client.Object) {
+			return allowlistingControlPlane(), nil
+		},
+		"no matching registrations": func() (*c5c3v1alpha1.ControlPlane, []client.Object) {
+			cp := allowlistingControlPlane("tenant-a")
+			return cp, []client.Object{registrationIn("tenant-unlisted", "billing", cp)}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp, extra := build()
+			objs := append([]client.Object{cp, readyClusterSecretStore()}, extra...)
+			c := registrationTenantStoreClient(t, objs...)
+			r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t)}
+
+			res, err := r.reconcileRegistrationTenantStores(ctx, cp)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(res.IsZero()).To(BeTrue(), "an empty provisioning set requests no requeue")
+
+			var stores esov1.SecretStoreList
+			g.Expect(c.List(ctx, &stores)).To(Succeed())
+			g.Expect(stores.Items).To(BeEmpty(), "nothing may be provisioned")
+
+			cond := registrationTenantStoresCondition(cp)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			g.Expect(cond.Reason).To(Equal("NoRegistrationNamespaces"))
+		})
+	}
+}
+
+// TestReconcileRegistrationTenantStores_StoreRefOverridden an explicit
+// spec.secretStoreRef opts the whole plane out: nothing is provisioned and nothing
+// is collected, even with an allowlisted namespace hosting a registration.
+func TestReconcileRegistrationTenantStores_StoreRefOverridden(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a")
+	cp.Spec.SecretStoreRef = &commonv1.SecretStoreRefSpec{
+		Kind: commonv1.SecretStoreKindCluster, Name: "shared-store",
+	}
+	seeded, cert, sa := ownedTenantTrioIn("tenant-a", cp)
+	c := registrationTenantStoreClient(t, cp, readyClusterSecretStore(), seeded, cert, sa,
+		registrationIn("tenant-a", "billing", cp))
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t)}
+
+	res, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+
+	// Untouched in both directions: neither reasserted nor collected.
+	expectTenantTrio(t, c, cp, "tenant-a")
+
+	cond := registrationTenantStoresCondition(cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("StoreRefOverridden"))
+	g.Expect(cond.Message).To(ContainSubstring("shared-store"))
+}
+
+// TestReconcileRegistrationTenantStores_WaitsForStoreReadiness a provisioned store
+// that is not Ready yet holds the condition False and requeues, naming the
+// namespace to look at.
+func TestReconcileRegistrationTenantStores_WaitsForStoreReadiness(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a")
+	c := registrationTenantStoreClient(t, cp, readyClusterSecretStore(),
+		registrationIn("tenant-a", "billing", cp))
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t)}
+
+	res, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(esoTenantStoreRequeueAfter))
+
+	// The trio is written; only its readiness is outstanding.
+	expectTenantTrio(t, c, cp, "tenant-a")
+
+	cond := registrationTenantStoresCondition(cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
+	g.Expect(cond.Message).To(ContainSubstring("tenant-a"))
+}
+
+// TestReconcileRegistrationTenantStores_ForeignStoreFailsOnlyItsNamespace a
+// pre-existing store nobody labelled as ours is refused rather than adopted, and
+// that refusal must not starve the other allowlisted namespace in the same pass.
+func TestReconcileRegistrationTenantStores_ForeignStoreFailsOnlyItsNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a", "tenant-b")
+	// Unlabelled: somebody else's store occupying the name in tenant-a.
+	foreign := readyTenantSecretStore(esoTenantStoreName, "tenant-a", "", "")
+	healthy, _, _ := ownedTenantTrioIn("tenant-b", cp)
+
+	c := registrationTenantStoreClient(t, cp, readyClusterSecretStore(), foreign, healthy,
+		registrationIn("tenant-a", "billing", cp), registrationIn("tenant-b", "imaging", cp))
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t), APIReader: c}
+
+	res, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a tenant-side name collision must not put the whole ControlPlane reconcile into backoff")
+	g.Expect(res.RequeueAfter).To(Equal(esoTenantStoreRequeueAfter))
+
+	// The healthy namespace still got its full trio in the very same pass.
+	expectTenantTrio(t, c, cp, "tenant-b")
+
+	// The foreign store was not adopted: no ownership labels were stamped on it.
+	live := &esov1.SecretStore{}
+	g.Expect(c.Get(ctx, types.NamespacedName{Namespace: "tenant-a", Name: esoTenantStoreName}, live)).To(Succeed())
+	g.Expect(live.Labels).NotTo(HaveKey(controlPlaneNameLabel))
+
+	cond := registrationTenantStoresCondition(cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ProvisioningError"))
+	g.Expect(cond.Message).To(ContainSubstring("tenant-a"))
+	g.Expect(cond.Message).NotTo(ContainSubstring("tenant-b"))
+}
+
+// TestReconcileRegistrationTenantStores_RegistrationListFailure a failing
+// KeystoneService List is an infrastructure fault on our side, so it surfaces as
+// ProvisioningError AND as a returned error, which is what backs the workqueue off.
+func TestReconcileRegistrationTenantStores_RegistrationListFailure(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a")
+	c := fake.NewClientBuilder().
+		WithScheme(korcTestScheme(t)).
+		WithObjects(cp, readyClusterSecretStore()).
+		WithIndex(&c5c3v1alpha1.KeystoneService{}, KeystoneServiceControlPlaneRefIndexKey,
+			keystoneServiceControlPlaneRefExtractor).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*c5c3v1alpha1.KeystoneServiceList); ok {
+					return errors.New("cache down")
+				}
+				return cl.List(ctx, list, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t)}
+
+	_, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("listing KeystoneServices for registration tenant stores"))
+	g.Expect(err.Error()).To(ContainSubstring("cache down"))
+
+	cond := registrationTenantStoresCondition(cp)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("ProvisioningError"))
+}
+
+// TestReconcileRegistrationTenantStores_StoreListFailure the enumeration of what is
+// already provisioned fails the same way: condition plus a returned error.
+func TestReconcileRegistrationTenantStores_StoreListFailure(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a")
+	c := fake.NewClientBuilder().
+		WithScheme(korcTestScheme(t)).
+		WithObjects(cp).
+		WithIndex(&c5c3v1alpha1.KeystoneService{}, KeystoneServiceControlPlaneRefIndexKey,
+			keystoneServiceControlPlaneRefExtractor).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*esov1.SecretStoreList); ok {
+					return errors.New("cache down")
+				}
+				return cl.List(ctx, list, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t)}
+
+	_, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("listing the provisioned registration tenant stores"))
+
+	g.Expect(registrationTenantStoresCondition(cp).Reason).To(Equal("ProvisioningError"))
+}
+
+// TestReconcileRegistrationTenantStores_StoreReadinessReadFailurePropagates a
+// readiness read that fails is propagated as the wrapped error from
+// secrets.IsSecretStoreReady rather than folded into a False condition, so the
+// workqueue backs off instead of reporting a state nobody observed.
+func TestReconcileRegistrationTenantStores_StoreReadinessReadFailurePropagates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a")
+	seeded, _, _ := ownedTenantTrioIn("tenant-a", cp)
+	// The provisioning pass reads the store once for its adoption pre-check before
+	// the rollup reads it again, so only the SECOND read is failed. Failing both
+	// would exercise the provisioning path instead of the one under test.
+	var storeReads atomic.Int32
+	c := fake.NewClientBuilder().
+		WithScheme(korcTestScheme(t)).
+		WithObjects(cp, readyClusterSecretStore(), seeded, registrationIn("tenant-a", "billing", cp)).
+		WithIndex(&c5c3v1alpha1.KeystoneService{}, KeystoneServiceControlPlaneRefIndexKey,
+			keystoneServiceControlPlaneRefExtractor).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*esov1.SecretStore); ok && key.Namespace == "tenant-a" {
+					if storeReads.Add(1) > 1 {
+						return apierrors.NewInternalError(errors.New("etcd unavailable"))
+					}
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t), APIReader: c}
+
+	_, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("getting SecretStore"))
+	g.Expect(err.Error()).To(ContainSubstring("etcd unavailable"))
+}
+
+// TestReconcileRegistrationTenantStores_CollectsWhenTheLastRegistrationLeaves once
+// a namespace holds no registration any more its trio is collected, all three
+// objects of it.
+func TestReconcileRegistrationTenantStores_CollectsWhenTheLastRegistrationLeaves(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a")
+	store, cert, sa := ownedTenantTrioIn("tenant-a", cp)
+	c := registrationTenantStoreClient(t, cp, readyClusterSecretStore(), store, cert, sa)
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t), APIReader: c}
+
+	res, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.IsZero()).To(BeTrue())
+
+	expectNoTenantTrio(t, c, "tenant-a")
+	g.Expect(registrationTenantStoresCondition(cp).Reason).To(Equal("NoRegistrationNamespaces"))
+}
+
+// TestReconcileRegistrationTenantStores_DeListingFreezesInsteadOfCollecting per D9
+// the allowlist is an admission gate, not a revocation tool: removing a namespace
+// that still hosts registrations leaves its store standing, because collecting it
+// would destroy credentials a running service depends on.
+func TestReconcileRegistrationTenantStores_DeListingFreezesInsteadOfCollecting(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	// The namespace is no longer allowlisted, but its registration is still there.
+	cp := allowlistingControlPlane()
+	store, cert, sa := ownedTenantTrioIn("tenant-a", cp)
+	c := registrationTenantStoreClient(t, cp, readyClusterSecretStore(), store, cert, sa,
+		registrationIn("tenant-a", "billing", cp))
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t), APIReader: c}
+
+	_, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	expectTenantTrio(t, c, cp, "tenant-a")
+	g.Expect(registrationTenantStoresCondition(cp).Reason).To(Equal("NoRegistrationNamespaces"),
+		"a frozen namespace is not part of the provisioning set the rollup reports on")
+}
+
+// TestReconcileRegistrationTenantStores_LeavesTheOwnNamespacesAlone the collection
+// walks only namespaces OUTSIDE the ones the control plane occupies: the blocking
+// tenant-store step owns those, and collecting one here would delete the store the
+// plane's own credential material rides on.
+func TestReconcileRegistrationTenantStores_LeavesTheOwnNamespacesAlone(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a")
+	// A label-owned trio in a dedicated service namespace, which controlPlaneNamespaces
+	// carries and reconcileESOTenantStore owns.
+	cp.Spec.Services.Keystone = &c5c3v1alpha1.ServiceKeystoneSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name: "identity", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+		},
+	}
+	store, cert, sa := ownedTenantTrioIn("identity", cp)
+	c := registrationTenantStoreClient(t, cp, readyClusterSecretStore(), store, cert, sa)
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t), APIReader: c}
+
+	_, err := r.reconcileRegistrationTenantStores(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	expectTenantTrio(t, c, cp, "identity")
+}
+
+// TestDeleteESOTenantStoreTrioIn_LeavesForeignObjectsAlone the collection is
+// ownership-checked against live state, so a same-named object belonging to
+// somebody else in a shared namespace survives.
+func TestDeleteESOTenantStoreTrioIn_LeavesForeignObjectsAlone(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a")
+	foreignStore := readyTenantSecretStore(esoTenantStoreName, "tenant-a", "", "")
+	foreignSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Name: esoTenantServiceAccountName, Namespace: "tenant-a",
+	}}
+	c := registrationTenantStoreClient(t, cp, foreignStore, foreignSA)
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t), APIReader: c}
+
+	g.Expect(r.deleteESOTenantStoreTrioIn(ctx, cp, "tenant-a")).To(Succeed())
+	expectPresent(t, c, foreignStore, foreignSA)
+}
+
+// TestDeleteESOTenantStoreTrioIn_RemovesTheStoreBeforeItsCredentials the order is
+// load-bearing and the reverse of provisioning: the store authenticates with the
+// ServiceAccount and the client certificate, so removing either of those first
+// would leave a live store authenticating against material that is already gone.
+func TestDeleteESOTenantStoreTrioIn_RemovesTheStoreBeforeItsCredentials(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	cp := allowlistingControlPlane("tenant-a")
+	store, cert, sa := ownedTenantTrioIn("tenant-a", cp)
+
+	var order []string
+	c := fake.NewClientBuilder().
+		WithScheme(korcTestScheme(t)).
+		WithObjects(cp, store, cert, sa).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				switch obj.(type) {
+				case *esov1.SecretStore:
+					order = append(order, "SecretStore")
+				case *unstructured.Unstructured:
+					order = append(order, "Certificate")
+				case *corev1.ServiceAccount:
+					order = append(order, "ServiceAccount")
+				}
+				return cl.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: korcTestScheme(t), APIReader: c}
+
+	g.Expect(r.deleteESOTenantStoreTrioIn(ctx, cp, "tenant-a")).To(Succeed())
+	g.Expect(order).To(Equal([]string{"SecretStore", "Certificate", "ServiceAccount"}))
 }

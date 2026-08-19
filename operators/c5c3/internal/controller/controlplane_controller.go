@@ -85,7 +85,13 @@ const (
 	conditionTypeAdminPasswordReady   = "AdminPasswordReady"   //nolint:gosec // G101 false positive: condition type name, not a credential.
 	conditionTypeCatalogReady         = "CatalogReady"
 	conditionTypeServiceAccountsReady = "ServiceAccountsReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
-	conditionTypeReady                = "Ready"
+	// conditionTypeRegistrationTenantStoresReady covers the per-tenant stores
+	// provisioned in the ALLOWLISTED namespaces standalone KeystoneService CRs
+	// register from, which conditionTypeESOTenantStoreReady deliberately does not:
+	// that one gates the blocking prefix, and a namespace the control plane does not
+	// occupy must never park the plane's own credential material behind it.
+	conditionTypeRegistrationTenantStoresReady = "RegistrationTenantStoresReady" //nolint:gosec // G101 false positive: condition type name, not a credential.
+	conditionTypeReady                         = "Ready"
 )
 
 // controlPlaneORCFinalizer blocks the ControlPlane CR from leaving etcd until
@@ -115,6 +121,7 @@ var subConditionTypes = []string{
 	conditionTypeAdminPasswordReady,
 	conditionTypeCatalogReady,
 	conditionTypeServiceAccountsReady,
+	conditionTypeRegistrationTenantStoresReady,
 }
 
 // ControlPlaneReconciler reconciles a ControlPlane object.
@@ -354,27 +361,31 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// genuinely feeds the next: a later step applying before its predecessor
 	// converged would fail or wedge.
 	//
-	// The tail is a RunSequentialGroup of eight independent projections (Horizon,
-	// KORC, AdminCredential, Catalog, ServiceAccounts, Glance, Placement,
-	// Barbican). Running every member on every pass is safe: every member runs
-	// each pass, its condition always persists, the members' requeues aggregate to
-	// the shortest member interval, and one member's failure no longer suppresses
-	// its peers (member errors are joined). A still-converging Horizon therefore no
-	// longer parks KORC, the AdminCredential/Catalog/ServiceAccounts identity
-	// bootstrap, Glance, Placement, or Barbican.
+	// The tail is a RunSequentialGroup of nine independent projections (Horizon,
+	// KORC, AdminCredential, Catalog, ServiceAccounts, Glance, Placement, Barbican,
+	// RegistrationTenantStores). Running every member on every pass is safe: every
+	// member runs each pass, its condition always persists, the members' requeues
+	// aggregate to the shortest member interval, and one member's failure no longer
+	// suppresses its peers (member errors are joined). A still-converging Horizon
+	// therefore no longer parks KORC, the AdminCredential/Catalog/ServiceAccounts
+	// identity bootstrap, Glance, Placement, or Barbican.
 	//
 	// Correctness rests on each member gating itself on the conditions it
 	// consumes rather than on its position in the chain — the prefix's
 	// short-circuit is gone, so a member that assumed an unreachable peer had
 	// blocked it would now run against unverified state. Every member except
-	// KORC opens with an in-memory conditions.AllTrue gate and returns before
-	// touching the API; KORC has no condition gate and runs its full body every
-	// pass, which is what dominates the group's steady-state API cost.
+	// KORC and RegistrationTenantStores opens with an in-memory conditions.AllTrue
+	// gate and returns before touching the API; those two have no condition gate
+	// and run their full body every pass, which is what dominates the group's
+	// steady-state API cost.
 	//
 	// Onboarding rule: a future service whose projection is independent of the
 	// others joins the tail group rather than the blocking prefix — and MUST
 	// carry its own condition gate, following the seven gated members rather than
-	// KORC.
+	// KORC. RegistrationTenantStores is ungated for the same reason KORC is, not
+	// as an exemption from that rule: it consumes no condition this chain
+	// produces, because the tenant-store trio depends on cert-manager and OpenBao
+	// alone.
 	//
 	// Either phase's outcome funnels through updateStatus, so conditions and
 	// the requeue/error are persisted by construction on every exit path. Every
@@ -464,6 +475,18 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				// until the OpenBao instance it provisions serves requests.
 				{Name: "Barbican", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcileBarbican(ctx, &cp)
+				}},
+				// RegistrationTenantStores provisions the per-tenant store in the
+				// allowlisted namespaces standalone KeystoneService CRs register
+				// from. Like KORC it carries no condition gate, and legitimately
+				// so: it consumes no condition this chain produces, because the
+				// trio it writes depends on cert-manager and OpenBao alone —
+				// exactly like its blocking-prefix twin, which likewise runs
+				// ungated. It sits in the GROUP rather than in that prefix so a
+				// namespace the control plane does not own can never park
+				// DBCredentials, AdminPassword and Keystone behind it.
+				{Name: "RegistrationTenantStores", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileRegistrationTenantStores(ctx, &cp)
 				}},
 			})
 		}},
