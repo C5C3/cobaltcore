@@ -482,6 +482,10 @@ const (
 	// maxServiceAccounts mirrors the MaxItems marker on KORCSpec.ServiceAccounts.
 	maxServiceAccounts = 32
 
+	// maxServiceRegistrationNamespaces mirrors the MaxItems marker on
+	// ServiceRegistrationsSpec.AllowedNamespaces.
+	maxServiceRegistrationNamespaces = 32
+
 	// serviceAccountChildNameOverhead is the longest fixed part of a child name
 	// EVERY account embeds its own name in — everything except the ControlPlane
 	// name and the account name. That is the password Secret
@@ -670,6 +674,45 @@ func validateServiceAccounts(cp *ControlPlane) field.ErrorList {
 			seenManagedProjects[key] = struct{}{}
 		}
 	}
+	return allErrs
+}
+
+// validateServiceRegistrations mirrors the declarative constraints on
+// ServiceRegistrationsSpec.AllowedNamespaces as defense-in-depth for callers that
+// bypass CRD schema admission: the RFC-1123 label shape of each entry, the
+// listType=set duplicate rejection, and the MaxItems cap.
+//
+// It deliberately adds NO rule of its own. In particular an entry naming the
+// ControlPlane's own namespace or one of its dedicated service namespaces is a
+// redundant no-op rather than an error: both are admitted implicitly, and
+// rejecting them would couple the allowlist to unrelated spec edits — dropping a
+// service's namespace block would invalidate an allowlist entry that never
+// changed, on the very update that removed the block.
+func validateServiceRegistrations(cp *ControlPlane) field.ErrorList {
+	sr := cp.Spec.KORC.ServiceRegistrations
+	if sr == nil || len(sr.AllowedNamespaces) == 0 {
+		return nil
+	}
+	var allErrs field.ErrorList
+	basePath := field.NewPath("spec", "korc", "serviceRegistrations", "allowedNamespaces")
+
+	if len(sr.AllowedNamespaces) > maxServiceRegistrationNamespaces {
+		allErrs = append(allErrs, field.TooMany(basePath, len(sr.AllowedNamespaces), maxServiceRegistrationNamespaces))
+	}
+
+	seen := make(map[string]struct{}, len(sr.AllowedNamespaces))
+	for i, ns := range sr.AllowedNamespaces {
+		entryPath := basePath.Index(i)
+		if !namespaceNamePattern.MatchString(ns) {
+			allErrs = append(allErrs, field.Invalid(entryPath, ns,
+				"must be a lowercase alphanumeric RFC-1123 label (it names a Kubernetes namespace)"))
+		}
+		if _, dup := seen[ns]; dup {
+			allErrs = append(allErrs, field.Duplicate(entryPath, ns))
+		}
+		seen[ns] = struct{}{}
+	}
+
 	return allErrs
 }
 
@@ -2115,6 +2158,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validateBarbican(cp)...)
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
 	allErrs = append(allErrs, validateServiceAccounts(cp)...)
+	allErrs = append(allErrs, validateServiceRegistrations(cp)...)
 	allErrs = append(allErrs, validateDedicatedBackingServices(cp)...)
 	allErrs = append(allErrs, validateServiceCredentialsModeOverrides(cp)...)
 	allErrs = append(allErrs, validateServiceNamespaces(cp)...)
