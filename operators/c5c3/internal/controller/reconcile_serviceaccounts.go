@@ -588,8 +588,8 @@ func (r *ControlPlaneReconciler) ensureServiceAccountDomain(
 	if name == adminDomainRef(cp) {
 		return name, nil
 	}
-	domain := unmanagedDomainImport(name, childNamespace(cp), serviceAccountDomainName(cp, sa), credRef)
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, domain, apply.FieldManager); err != nil {
+	if err := ensureAccountDomainImport(ctx, r.Client, r.Scheme, cp,
+		name, childNamespace(cp), serviceAccountDomainName(cp, sa), credRef); err != nil {
 		return "", fmt.Errorf("service-account Domain import %q: %w", name, err)
 	}
 	return name, nil
@@ -750,53 +750,40 @@ func (r *ControlPlaneReconciler) ensureServiceAccountRoles(
 	ns := childNamespace(cp)
 	ready := true
 	for _, role := range sa.Roles {
-		roleImportName := serviceAccountRoleImportRef(cp, role)
-		assignmentName := serviceAccountRoleAssignmentRef(cp, sa, role)
-
-		roleObj := unmanagedRoleImport(roleImportName, ns, role, credRef)
-		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, roleObj, apply.FieldManager); err != nil {
-			return false, fmt.Errorf("service-account Role import %q: %w", roleImportName, err)
+		out, err := applyAccountRole(ctx, r.Client, r.Scheme, cp,
+			serviceAccountRoleImportRef(cp, role), serviceAccountRoleAssignmentRef(cp, sa, role), ns, role,
+			credRef, managedCredRef, userRef, projectRef, "service-account")
+		if err != nil {
+			return false, err
 		}
-
-		assignment := managedRoleAssignmentChild(assignmentName, ns, roleImportName, userRef, projectRef, managedCredRef)
-		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, assignment, apply.FieldManager); err != nil {
-			return false, fmt.Errorf("service-account RoleAssignment %q: %w", assignmentName, err)
+		if termErr := out.terminalErr; termErr != nil {
+			st.terminalMsg = fmt.Sprintf(
+				"K-ORC reported a terminal error on service account %q role %q: %v", sa.Name, role, termErr,
+			)
+			return false, nil
 		}
-
-		// A terminal K-ORC error on either object fails loud.
-		for _, obj := range []orcv1alpha1.ObjectWithConditions{roleObj, assignment} {
-			if termErr := orcv1alpha1.GetTerminalError(obj); termErr != nil {
-				st.terminalMsg = fmt.Sprintf(
-					"K-ORC reported a terminal error on service account %q role %q: %v", sa.Name, role, termErr,
+		if out.blocked == nil {
+			continue
+		}
+		ready = false
+		st.pendingObjs = append(st.pendingObjs, out.blocked)
+		if st.waitMsg != "" {
+			continue
+		}
+		if _, isImport := out.blocked.(*orcv1alpha1.Role); isImport {
+			st.waitMsg = fmt.Sprintf(
+				"service account %q: Role import for role %q is registered but not yet Available", sa.Name, role,
+			)
+			if out.stalled {
+				st.waitMsg += fmt.Sprintf(
+					"; role %q may not exist in Keystone — create it there or fix the spelling", role,
 				)
-				return false, nil
-			}
-		}
-
-		if !korcAvailableUpToDate(roleObj) {
-			ready = false
-			st.pendingObjs = append(st.pendingObjs, roleObj)
-			if st.waitMsg == "" {
-				st.waitMsg = fmt.Sprintf(
-					"service account %q: Role import for role %q is registered but not yet Available", sa.Name, role,
-				)
-				if korcImportStalled(roleObj, externalImportStallGrace) {
-					st.waitMsg += fmt.Sprintf(
-						"; role %q may not exist in Keystone — create it there or fix the spelling", role,
-					)
-				}
 			}
 			continue
 		}
-		if !korcAvailableUpToDate(assignment) {
-			ready = false
-			st.pendingObjs = append(st.pendingObjs, assignment)
-			if st.waitMsg == "" {
-				st.waitMsg = fmt.Sprintf(
-					"service account %q: RoleAssignment for role %q is registered but not yet Available", sa.Name, role,
-				)
-			}
-		}
+		st.waitMsg = fmt.Sprintf(
+			"service account %q: RoleAssignment for role %q is registered but not yet Available", sa.Name, role,
+		)
 	}
 	return ready, nil
 }
