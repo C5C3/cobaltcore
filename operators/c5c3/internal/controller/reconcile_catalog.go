@@ -10,7 +10,6 @@ import (
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -295,24 +294,10 @@ func internalCatalogURL(ref *commonv1.TargetClusterRefSpec, inCluster, public st
 func managedCatalogService(
 	cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference, row managedCatalogServiceRow,
 ) *orcv1alpha1.Service {
-	return &orcv1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			// The K-ORC CRs are ControlPlane-scoped, not service-scoped: they stay in
-			// the ControlPlane's namespace, owner-referenced, however the services are
-			// placed. Only the URL they register follows the service.
-			Name:      row.crName,
-			Namespace: childNamespace(cp),
-		},
-		Spec: orcv1alpha1.ServiceSpec{
-			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
-			CloudCredentialsRef: credRef,
-			Resource: &orcv1alpha1.ServiceResourceSpec{
-				Type:    row.serviceType,
-				Name:    ptr.To(orcv1alpha1.OpenStackName(row.serviceName)),
-				Enabled: ptr.To(true),
-			},
-		},
-	}
+	// The K-ORC CRs are ControlPlane-scoped, not service-scoped: they stay in the
+	// ControlPlane's namespace, owner-referenced, however the services are placed.
+	// Only the URL they register follows the service.
+	return managedCatalogServiceChild(row.crName, childNamespace(cp), row.serviceType, row.serviceName, credRef)
 }
 
 // managedCatalogEndpoint builds the MANAGED K-ORC Endpoint CR for one endpoint of
@@ -323,22 +308,7 @@ func managedCatalogEndpoint(
 	cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference,
 	row managedCatalogServiceRow, ep managedCatalogEndpointRow,
 ) *orcv1alpha1.Endpoint {
-	return &orcv1alpha1.Endpoint{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      ep.crName,
-			Namespace: childNamespace(cp),
-		},
-		Spec: orcv1alpha1.EndpointSpec{
-			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
-			CloudCredentialsRef: credRef,
-			Resource: &orcv1alpha1.EndpointResourceSpec{
-				Interface:  ep.iface,
-				URL:        ep.url,
-				ServiceRef: orcv1alpha1.KubernetesNameRef(row.crName),
-				Enabled:    ptr.To(true),
-			},
-		},
-	}
+	return managedCatalogEndpointChild(ep.crName, childNamespace(cp), ep.iface, ep.url, row.crName, credRef)
 }
 
 // catalogTerminalError records a terminal K-ORC catalog failure: it sets
