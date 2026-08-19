@@ -303,17 +303,27 @@ func TestKeystoneService_ControlPlaneReadErrorIsWrapped(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("fetching ControlPlane"))
 }
 
-func TestKeystoneService_ForeignNamespaceIsNotAllowed(t *testing.T) {
-	g := NewGomegaWithT(t)
-
-	cp := ksControlPlane()
+// ksForeignCR returns a two-block registration sitting in the foreign namespace
+// tenant-a, referencing the ControlPlane explicitly. It is the shared fixture of
+// the allowlist gate tests below.
+func ksForeignCR(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
 	ks := keystoneServiceCR()
 	ks.Namespace = "tenant-a"
 	ks.Spec.Account = ksAccountSpec()
 	ks.Spec.Catalog = ksCatalogSpec()
 	ks.Spec.ControlPlaneRef.Namespace = cp.Namespace
+	return ks
+}
 
-	c, r := ksClientBuilder(t, cp, ks, readyTenantStoreFor(cp))
+// reconcileForeignKS drives one Reconcile against the CR in tenant-a and returns
+// the reloaded CR and the client, so a gate test can assert on both the
+// conditions and what was (not) projected.
+func reconcileForeignKS(
+	t *testing.T, objs ...client.Object,
+) (*c5c3v1alpha1.KeystoneService, client.Client) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+	c, r := ksClientBuilder(t, objs...)
 	_, err := r.Reconcile(context.Background(), ctrl.Request{
 		NamespacedName: types.NamespacedName{Namespace: "tenant-a", Name: ksTestName},
 	})
@@ -322,6 +332,14 @@ func TestKeystoneService_ForeignNamespaceIsNotAllowed(t *testing.T) {
 	got := &c5c3v1alpha1.KeystoneService{}
 	g.Expect(c.Get(context.Background(),
 		types.NamespacedName{Namespace: "tenant-a", Name: ksTestName}, got)).To(Succeed())
+	return got, c
+}
+
+// expectNamespaceNotAllowed asserts the shared gate failure on both declared
+// blocks and that the pass projected nothing.
+func expectNamespaceNotAllowed(t *testing.T, got *c5c3v1alpha1.KeystoneService, c client.Client) {
+	t.Helper()
+	g := NewGomegaWithT(t)
 	for _, cond := range []*metav1.Condition{ksAccountCondition(got), ksCatalogCondition(got)} {
 		g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 		g.Expect(cond.Reason).To(Equal(reasonKeystoneServiceNamespaceNotAllowed))
@@ -329,6 +347,164 @@ func TestKeystoneService_ForeignNamespaceIsNotAllowed(t *testing.T) {
 	var users orcv1alpha1.UserList
 	g.Expect(c.List(context.Background(), &users)).To(Succeed())
 	g.Expect(users.Items).To(BeEmpty(), "an unlisted namespace must project nothing")
+	var services orcv1alpha1.ServiceList
+	g.Expect(c.List(context.Background(), &services)).To(Succeed())
+	g.Expect(services.Items).To(BeEmpty(), "an unlisted namespace must project nothing")
+}
+
+// TestKeystoneService_ForeignNamespaceIsNotAllowed covers the three ways a
+// ControlPlane withholds consent from a foreign namespace: no allowlist block at
+// all (the default posture), a declared block with no entries, and a block that
+// lists only OTHER namespaces.
+func TestKeystoneService_ForeignNamespaceIsNotAllowed(t *testing.T) {
+	cases := []struct {
+		name    string
+		allowed *c5c3v1alpha1.ServiceRegistrationsSpec
+	}{
+		{name: "no serviceRegistrations block", allowed: nil},
+		{name: "empty allowlist", allowed: &c5c3v1alpha1.ServiceRegistrationsSpec{}},
+		{
+			name: "allowlist naming only other namespaces",
+			allowed: &c5c3v1alpha1.ServiceRegistrationsSpec{
+				AllowedNamespaces: []string{"tenant-b", "tenant-c"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cp := ksControlPlane()
+			cp.Spec.KORC.ServiceRegistrations = tc.allowed
+			ks := ksForeignCR(cp)
+
+			got, c := reconcileForeignKS(t, cp, ks, readyTenantStoreFor(cp))
+			expectNamespaceNotAllowed(t, got, c)
+		})
+	}
+}
+
+// TestKeystoneService_NamespaceNotAllowedNamesTheRemedy pins that the condition
+// alone tells an operator what to edit. Without the field path the only signal is
+// a registration stuck at NamespaceNotAllowed with nothing naming the surface that
+// would admit it.
+func TestKeystoneService_NamespaceNotAllowedNamesTheRemedy(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksForeignCR(cp)
+
+	got, _ := reconcileForeignKS(t, cp, ks, readyTenantStoreFor(cp))
+
+	g.Expect(ksCatalogCondition(got).Message).To(
+		ContainSubstring("spec.korc.serviceRegistrations.allowedNamespaces"))
+}
+
+// TestKeystoneService_AllowlistedForeignNamespaceIsAdmitted pins the widened
+// gate: a listed namespace passes and the catalog block projects. The observable
+// is the collision PROBE, not the managed Service row — ensureCatalog probes
+// before it creates, so the probe is what a first pass past the gate leaves
+// behind.
+func TestKeystoneService_AllowlistedForeignNamespaceIsAdmitted(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	cp.Spec.KORC.ServiceRegistrations = &c5c3v1alpha1.ServiceRegistrationsSpec{
+		AllowedNamespaces: []string{"tenant-a"},
+	}
+	ks := ksForeignCR(cp)
+	ks.Spec.Account = nil // catalog-only: the account leg gates on a tenant store of its own.
+
+	got, c := reconcileForeignKS(t, cp, ks, readyTenantStoreFor(cp))
+
+	g.Expect(ksCatalogCondition(got).Reason).NotTo(Equal(reasonKeystoneServiceNamespaceNotAllowed))
+	probe := &orcv1alpha1.Service{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Namespace: "tenant-a", Name: keystoneServiceCatalogServiceProbeRef(ks),
+	}, probe)).To(Succeed(), "an admitted registration must project into its own namespace")
+}
+
+// TestKeystoneService_DedicatedServiceNamespaceIsAdmitted pins the implicit
+// layer: a namespace the ControlPlane placed one of its own services in is
+// admitted without an allowlist entry. It is already the ControlPlane's, and it
+// is where the built-in registrations project.
+func TestKeystoneService_DedicatedServiceNamespaceIsAdmitted(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	cp.Spec.Services.Keystone.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name: "tenant-a", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	g.Expect(cp.Spec.KORC.ServiceRegistrations).To(BeNil(), "no allowlist entry may be needed")
+	ks := ksForeignCR(cp)
+	ks.Spec.Account = nil
+
+	got, c := reconcileForeignKS(t, cp, ks, readyTenantStoreFor(cp))
+
+	g.Expect(ksCatalogCondition(got).Reason).NotTo(Equal(reasonKeystoneServiceNamespaceNotAllowed))
+	probe := &orcv1alpha1.Service{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Namespace: "tenant-a", Name: keystoneServiceCatalogServiceProbeRef(ks),
+	}, probe)).To(Succeed())
+}
+
+// TestKeystoneService_DeListingFreezesInsteadOfTearingDown pins decision D9: the
+// gate returns BEFORE the prune sweep, so removing a namespace from the allowlist
+// stops reconciliation dead instead of reaping what the registration already
+// minted.
+//
+// The pair is what makes it a regression test. Both legs seed the SAME
+// undeclared child — an endpoint row for an interface the spec no longer carries,
+// which a reconciling pass is supposed to prune. De-listed, it must survive; still
+// listed, the very same object is swept. A gate that ran after sweepChildren would
+// pass the first leg by accident, since a frozen CR that reaps nothing and a
+// reconciling CR that reaps everything look alike until the two are compared.
+func TestKeystoneService_DeListingFreezesInsteadOfTearingDown(t *testing.T) {
+	// The child the spec does not declare: ksCatalogSpec() carries no endpoints.
+	undeclaredEndpoint := func(ks *c5c3v1alpha1.KeystoneService) *orcv1alpha1.Endpoint {
+		return &orcv1alpha1.Endpoint{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypePublic),
+				Namespace:       ks.Namespace,
+				OwnerReferences: ownedByKS(ks),
+			},
+		}
+	}
+	endpointExists := func(c client.Client, ks *c5c3v1alpha1.KeystoneService) error {
+		return c.Get(context.Background(), types.NamespacedName{
+			Namespace: ks.Namespace,
+			Name:      keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypePublic),
+		}, &orcv1alpha1.Endpoint{})
+	}
+
+	t.Run("de-listed: the registration freezes and the child survives", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		cp := ksControlPlane() // de-listed: no allowlist block left
+		ks := ksForeignCR(cp)
+		ks.Spec.Account = nil
+
+		got, c := reconcileForeignKS(t, cp, ks, undeclaredEndpoint(ks), readyTenantStoreFor(cp))
+
+		g.Expect(ksCatalogCondition(got).Reason).To(Equal(reasonKeystoneServiceNamespaceNotAllowed))
+		g.Expect(endpointExists(c, ks)).To(Succeed(),
+			"de-listing must freeze the registration, never reap what it already minted")
+	})
+
+	t.Run("still listed: the same undeclared child is pruned", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		cp := ksControlPlane()
+		cp.Spec.KORC.ServiceRegistrations = &c5c3v1alpha1.ServiceRegistrationsSpec{
+			AllowedNamespaces: []string{"tenant-a"},
+		}
+		ks := ksForeignCR(cp)
+		ks.Spec.Account = nil
+
+		_, c := reconcileForeignKS(t, cp, ks, undeclaredEndpoint(ks), readyTenantStoreFor(cp))
+
+		g.Expect(apierrors.IsNotFound(endpointExists(c, ks))).To(BeTrue(),
+			"an admitted registration prunes what its spec stopped declaring")
+	})
 }
 
 func TestKeystoneService_WaitsForAdminCredential(t *testing.T) {
