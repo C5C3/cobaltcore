@@ -291,7 +291,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceProject(
 		case probeAbsent:
 			// Safe to create; drop the probe and fall through.
 		}
-		if err := r.keystoneServiceDeleteChild(ctx, &orcv1alpha1.Project{}, ks, keystoneServiceProjectProbeRef(ks)); err != nil {
+		if err := deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.Project{}, keystoneServiceProjectProbeRef(ks), ks.Namespace, "registration"); err != nil {
 			return nil, false, err
 		}
 	default:
@@ -332,7 +332,7 @@ func (r *KeystoneServiceReconciler) keystoneServiceUserCollisionGate(
 	switch err := r.Get(ctx, types.NamespacedName{Name: keystoneServiceUserRef(ks), Namespace: ks.Namespace}, existing); {
 	case err == nil:
 		// The managed User is already ours; no probe is needed any more.
-		return true, r.keystoneServiceDeleteChild(ctx, &orcv1alpha1.User{}, ks, probeName)
+		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, probeName, ks.Namespace, "registration")
 	case apierrors.IsNotFound(err):
 	default:
 		return false, fmt.Errorf("reading managed User %q: %w", keystoneServiceUserRef(ks), err)
@@ -341,7 +341,7 @@ func (r *KeystoneServiceReconciler) keystoneServiceUserCollisionGate(
 	// adopt: take over the pre-existing user (and rotate its password) without
 	// probing at all.
 	if ks.Spec.Account.Adopt {
-		return true, r.keystoneServiceDeleteChild(ctx, &orcv1alpha1.User{}, ks, probeName)
+		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, probeName, ks.Namespace, "registration")
 	}
 
 	probe := &orcv1alpha1.User{
@@ -379,7 +379,7 @@ func (r *KeystoneServiceReconciler) keystoneServiceUserCollisionGate(
 	case probeAbsent:
 		// The user does not exist; drop the probe and create the managed User.
 	}
-	return true, r.keystoneServiceDeleteChild(ctx, &orcv1alpha1.User{}, ks, probeName)
+	return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, probeName, ks.Namespace, "registration")
 }
 
 // ensureKeystoneServiceUser create-or-updates the managed K-ORC User with the
@@ -482,7 +482,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceUser(
 			if g, ok := parseServiceAccountGeneration(secretName); ok &&
 				strings.HasPrefix(secretName, prefix) && g < desiredGen &&
 				ownsKeystoneServiceChild(ks, &pwSecrets.Items[i]) {
-				if err := r.keystoneServiceDeleteChild(ctx, &corev1.Secret{}, ks, secretName); err != nil {
+				if err := deleteRegistrationChild(ctx, r.Client, &corev1.Secret{}, secretName, ks.Namespace, "registration"); err != nil {
 					return nil, 0, false, nil, err
 				}
 			}

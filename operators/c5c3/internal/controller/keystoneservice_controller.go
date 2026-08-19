@@ -880,16 +880,3 @@ func (r *KeystoneServiceReconciler) keystoneServiceWaitOrClassify(
 	}
 	fail(waitReason, waitMessage)
 }
-
-// keystoneServiceDeleteChild issues an idempotent Delete on one named child in the
-// CR's namespace, tolerating NotFound. It drops resolved probes and superseded
-// password Secrets, neither of which the sweep may touch while its block is
-// declared.
-func (r *KeystoneServiceReconciler) keystoneServiceDeleteChild(ctx context.Context, obj client.Object, ks *c5c3v1alpha1.KeystoneService, name string) error {
-	obj.SetName(name)
-	obj.SetNamespace(ks.Namespace)
-	if err := client.IgnoreNotFound(r.Delete(ctx, obj)); err != nil {
-		return fmt.Errorf("deleting KeystoneService child %q: %w", name, err)
-	}
-	return nil
-}

@@ -11,7 +11,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -71,19 +70,6 @@ const (
 	reasonServiceAccountError = "ServiceAccountError"
 )
 
-// serviceAccountPasswordGenerationAnnotation stamps the current password
-// generation N onto the managed K-ORC User CR. reconcileServiceAccounts derives
-// N from the User's passwordRef suffix and the annotation is the rotation nudge
-// marker: the CredentialRotation reconciler CLEARS it to "" to request a rotation
-// (mirroring adminPasswordHashAnnotation), and an empty value drives a generation
-// bump on the next pass.
-const serviceAccountPasswordGenerationAnnotation = "forge.c5c3.io/password-generation" //nolint:gosec // G101 false positive: annotation key, not a credential.
-
-// serviceAccountPasswordKey is the Secret data key the generated password is
-// stored under. K-ORC's passwordRef reads exactly this key; it is also the key
-// the materialized consumer Secret carries.
-const serviceAccountPasswordKey = "password"
-
 // serviceAccountPushContentHashAnnotation stamps the assembled clouds.yaml
 // content hash onto a service-account PushSecret, forcing an immediate re-push on
 // a rotation (ESO's PushSecret controller does not watch the source Secret).
@@ -139,29 +125,6 @@ func serviceAccountDomainRef(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.Serv
 		return adminDomainRef(cp)
 	}
 	return serviceAccountChildPrefix(cp) + "domain-" + sa.Name
-}
-
-// serviceAccountRoleSlugNonAlnum matches every maximal run of characters outside
-// [a-z0-9], which serviceAccountRoleSlug collapses to a single "-".
-var serviceAccountRoleSlugNonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
-
-// serviceAccountRoleSlug derives a deterministic, name-safe discriminator for a
-// role to embed in the Role import / RoleAssignment child CR names. It lowercases
-// the role, collapses every run of characters outside [a-z0-9] to a single "-",
-// trims leading/trailing "-", truncates the readable base to 16 chars, and appends
-// "-" plus the first 8 hex chars of sha256(role). The hash is taken over the
-// ORIGINAL role string (before normalization): Keystone role names are
-// case-sensitive and up to 255 chars, so hashing the raw value keeps two roles
-// that normalize alike ("Member" vs "member", or two long names sharing a 16-char
-// prefix) alias-free. The result is at most 25 bytes.
-func serviceAccountRoleSlug(role string) string {
-	sum := sha256.Sum256([]byte(role))
-	suffix := hex.EncodeToString(sum[:])[:8]
-	base := strings.Trim(serviceAccountRoleSlugNonAlnum.ReplaceAllString(strings.ToLower(role), "-"), "-")
-	if len(base) > 16 {
-		base = base[:16]
-	}
-	return base + "-" + suffix
 }
 
 // serviceAccountRoleImportRef names the unmanaged Role import for one role. It is
@@ -271,21 +234,6 @@ func serviceAccountRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.S
 // by pruneServiceAccounts and the deletion sweep.
 func (r *ControlPlaneReconciler) ownsServiceAccountChild(cp *c5c3v1alpha1.ControlPlane, obj client.Object) bool {
 	return isControlPlaneChild(obj, cp) && strings.HasPrefix(obj.GetName(), serviceAccountChildPrefix(cp))
-}
-
-// parseServiceAccountGeneration extracts the generation N from a password Secret
-// name of the form "…-password-vN". ok is false when the name carries no such
-// suffix or N is not a positive integer.
-func parseServiceAccountGeneration(passwordRefName string) (int64, bool) {
-	i := strings.LastIndex(passwordRefName, "-password-v")
-	if i < 0 {
-		return 0, false
-	}
-	n, err := strconv.ParseInt(passwordRefName[i+len("-password-v"):], 10, 64)
-	if err != nil || n < 1 {
-		return 0, false
-	}
-	return n, true
 }
 
 // serviceAccountState carries one account's ensure outcome: the projected status
@@ -721,7 +669,7 @@ func (r *ControlPlaneReconciler) ensureServiceAccountProject(
 			// No pre-existing project; fall through to create the managed Project.
 		}
 		// probeAbsent — remove the probe and fall through to create the managed Project.
-		if err := r.deleteServiceAccountChild(ctx, &orcv1alpha1.Project{}, serviceAccountProjectProbeRef(cp, sa), ns); err != nil {
+		if err := deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.Project{}, serviceAccountProjectProbeRef(cp, sa), ns, "service-account"); err != nil {
 			return nil, false, err
 		}
 	default:
@@ -760,7 +708,7 @@ func (r *ControlPlaneReconciler) serviceAccountUserCollisionGate(
 	switch err := r.Get(ctx, types.NamespacedName{Name: serviceAccountUserRef(cp, sa), Namespace: ns}, existing); {
 	case err == nil:
 		// The managed User already exists (we own it); no probe needed.
-		return true, r.deleteServiceAccountChild(ctx, &orcv1alpha1.User{}, serviceAccountUserProbeRef(cp, sa), ns)
+		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, serviceAccountUserProbeRef(cp, sa), ns, "service-account")
 	case apierrors.IsNotFound(err):
 	default:
 		return false, fmt.Errorf("reading managed User %q: %w", serviceAccountUserRef(cp, sa), err)
@@ -768,7 +716,7 @@ func (r *ControlPlaneReconciler) serviceAccountUserCollisionGate(
 
 	// adopt: skip the probe and take over the pre-existing user's password.
 	if sa.Adopt {
-		return true, r.deleteServiceAccountChild(ctx, &orcv1alpha1.User{}, serviceAccountUserProbeRef(cp, sa), ns)
+		return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, serviceAccountUserProbeRef(cp, sa), ns, "service-account")
 	}
 
 	verdict, probe, err := r.serviceAccountUserProbe(ctx, cp, sa, credRef, userName, domainRef)
@@ -792,30 +740,7 @@ func (r *ControlPlaneReconciler) serviceAccountUserCollisionGate(
 	case probeAbsent:
 		// The user does not exist; drop the probe and create the managed User below.
 	}
-	return true, r.deleteServiceAccountChild(ctx, &orcv1alpha1.User{}, serviceAccountUserProbeRef(cp, sa), ns)
-}
-
-// probeVerdict is the interpretation of a collision probe import.
-type probeVerdict int
-
-const (
-	// probePending — the probe has not resolved either way yet.
-	probePending probeVerdict = iota
-	// probeResolved — the probe matched an existing OpenStack resource (collision).
-	probeResolved
-	// probeAbsent — the probe reports the resource does not exist (safe to create).
-	probeAbsent
-)
-
-func interpretProbe(obj orcv1alpha1.ObjectWithConditions) probeVerdict {
-	switch {
-	case korcAvailableUpToDate(obj):
-		return probeResolved
-	case korcImportPendingExternal(obj):
-		return probeAbsent
-	default:
-		return probePending
-	}
+	return true, deleteRegistrationChild(ctx, r.Client, &orcv1alpha1.User{}, serviceAccountUserProbeRef(cp, sa), ns, "service-account")
 }
 
 // serviceAccountUserProbe ensures the short-lived unmanaged User import used to
@@ -973,7 +898,7 @@ func (r *ControlPlaneReconciler) ensureServiceAccountUser(
 			if g, ok := parseServiceAccountGeneration(name); ok &&
 				strings.HasPrefix(name, prefix) && g < desiredGen &&
 				r.ownsServiceAccountChild(cp, &pwSecrets.Items[i]) {
-				if err := r.deleteServiceAccountChild(ctx, &corev1.Secret{}, name, ns); err != nil {
+				if err := deleteRegistrationChild(ctx, r.Client, &corev1.Secret{}, name, ns, "service-account"); err != nil {
 					return nil, 0, false, nil, err
 				}
 			}
@@ -1257,30 +1182,6 @@ func (r *ControlPlaneReconciler) ensureServiceAccountExternalSecret(
 		return fmt.Errorf("ensuring service-account ExternalSecret %q: %w", name, err)
 	}
 	return nil
-}
-
-// deleteServiceAccountChild issues an idempotent Delete on a single named child in
-// childNamespace(cp), tolerating NotFound. It is used to drop resolved probes and
-// superseded password Secrets.
-func (r *ControlPlaneReconciler) deleteServiceAccountChild(ctx context.Context, obj client.Object, name, ns string) error {
-	obj.SetName(name)
-	obj.SetNamespace(ns)
-	if err := client.IgnoreNotFound(r.Delete(ctx, obj)); err != nil {
-		return fmt.Errorf("deleting service-account child %q: %w", name, err)
-	}
-	return nil
-}
-
-// pendingServiceAccountObjs returns the not-yet-resolved objects among the given
-// ones, for the External-mode classifier.
-func pendingServiceAccountObjs(objs ...orcv1alpha1.ObjectWithConditions) []orcv1alpha1.ObjectWithConditions {
-	var pending []orcv1alpha1.ObjectWithConditions
-	for _, obj := range objs {
-		if obj != nil && !korcAvailableUpToDate(obj) {
-			pending = append(pending, obj)
-		}
-	}
-	return pending
 }
 
 // serviceAccountWaitMessage names the stuck dependency (Project before User, the
