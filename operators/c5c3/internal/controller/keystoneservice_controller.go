@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -173,7 +174,8 @@ func (r *KeystoneServiceReconciler) reconcileNormal(ctx context.Context, ks *c5c
 
 	if !keystoneServiceNamespaceAllowed(cp, ks) {
 		r.failDeclaredBlocks(ks, reasonKeystoneServiceNamespaceNotAllowed, fmt.Sprintf(
-			"ControlPlane %s/%s does not admit service registrations from namespace %q; nothing is projected",
+			"ControlPlane %s/%s does not admit service registrations from namespace %q; nothing is projected. "+
+				"Add the namespace to its spec.korc.serviceRegistrations.allowedNamespaces to admit it",
 			cp.Namespace, cp.Name, ks.Namespace,
 		))
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
@@ -334,14 +336,33 @@ func (r *KeystoneServiceReconciler) resolveControlPlane(
 // keystoneServiceNamespaceAllowed reports whether cp consents to a registration
 // from ks's namespace.
 //
-// Today consent is own-namespace-only, which is what makes this controller safe
-// to run before an authorization surface exists: a KeystoneService can mint a
-// service user with arbitrary roles, so admitting a foreign namespace by default
-// would turn namespace access into cloud admin. It is the ONE seam the
-// ControlPlane's namespace allowlist widens; every other part of the reconciler
-// is already namespace-agnostic.
+// Consent matters because a KeystoneService can mint a service user with
+// arbitrary roles: admitting a namespace by default would turn namespace access
+// into cloud admin. Three layers grant it, in widening order.
+//
+// The ControlPlane's OWN namespace and its DEDICATED service namespaces are
+// admitted implicitly. Both are already the ControlPlane's: it declares the
+// dedicated ones itself through the services' namespace blocks and provisions a
+// tenant store in each, which is the same reasoning that lets an inline service
+// account deliver its consumer Secret there.
+//
+// Every OTHER namespace needs an explicit entry in
+// spec.korc.serviceRegistrations.allowedNamespaces. A nil block and an empty list
+// are therefore identical: both leave the implicit two layers and admit nothing
+// beyond them.
 func keystoneServiceNamespaceAllowed(cp *c5c3v1alpha1.ControlPlane, ks *c5c3v1alpha1.KeystoneService) bool {
-	return ks.Namespace == cp.Namespace
+	if ks.Namespace == cp.Namespace {
+		return true
+	}
+	for _, ns := range cp.DedicatedServiceNamespaces() {
+		if ns.Name == ks.Namespace {
+			return true
+		}
+	}
+	if sr := cp.Spec.KORC.ServiceRegistrations; sr != nil {
+		return slices.Contains(sr.AllowedNamespaces, ks.Namespace)
+	}
+	return false
 }
 
 // keystoneServiceCredentialRefs returns the two clouds.yaml references the
@@ -848,8 +869,8 @@ func (r *KeystoneServiceReconciler) keystoneServiceWaitOrClassify(
 // KeystoneService is indexed by its RESOLVED ControlPlane reference, as the
 // namespace-qualified "<namespace>/<name>". The qualification matters twice: the
 // ControlPlane watch must not wake registrations referencing a same-named
-// ControlPlane in another namespace, and once the allowlist admits foreign
-// namespaces the mapper's cluster-wide List needs no widening.
+// ControlPlane in another namespace, and it is what lets the mapper's List stay
+// cluster-wide now that the allowlist admits foreign namespaces.
 const KeystoneServiceControlPlaneRefIndexKey = "spec.controlPlaneRef"
 
 // keystoneServiceControlPlaneRefExtractor returns the resolved
@@ -877,8 +898,8 @@ func registerKeystoneServiceControlPlaneRefIndex(ctx context.Context, indexer cl
 // controlPlaneToKeystoneServicesMapper maps a ControlPlane event to reconcile
 // requests for every KeystoneService referencing it, resolved through the
 // KeystoneServiceControlPlaneRefIndexKey index. The List is cluster-wide on
-// purpose: a registration may sit in a foreign namespace once the allowlist
-// admits one, and the namespace-qualified index key already scopes the match. A
+// purpose: a registration may sit in any namespace the allowlist admits, and the
+// namespace-qualified index key already scopes the match. A
 // List failure is logged and maps to nothing — a MapFunc cannot return an error,
 // and the korcRequeueAfter polls are the fallback.
 func controlPlaneToKeystoneServicesMapper(c client.Reader) handler.MapFunc {
@@ -939,9 +960,9 @@ func (r *KeystoneServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 //     reference — the seven K-ORC kinds, the ESO delivery pair, and the
 //     operator-written password/source Secrets.
 //   - ControlPlane, WITHOUT a predicate: the AdminCredentialReady flip the
-//     shared gate waits on and the allowlist edits a later change adds both
-//     arrive as ControlPlane updates, and both must re-enqueue the
-//     registrations at watch latency rather than at the next poll.
+//     shared gate waits on and the allowlist edits that admit or de-list a
+//     namespace both arrive as ControlPlane updates, and both must re-enqueue
+//     the registrations at watch latency rather than at the next poll.
 //   - Secret, through the consumer-Secret mapper: the materialized credentials
 //     Secret is ESO-owned, so only its name contract maps it back to the CR.
 func (r *KeystoneServiceReconciler) setupWithOptions(mgr ctrl.Manager, opts crcontroller.Options) error {
