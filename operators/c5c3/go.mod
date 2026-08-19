@@ -10,7 +10,7 @@ require (
 	github.com/c5c3/forge/operators/keystone v0.0.0-00010101000000-000000000000
 	github.com/c5c3/forge/operators/placement v0.0.0-00010101000000-000000000000
 	github.com/dc-tec/openbao-operator v0.0.0-20260809153555-40bc6cd5a2c2
-	github.com/external-secrets/external-secrets/apis v0.0.0-20260803120615-8552ed8d11d1
+	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/k-orc/openstack-resource-controller/v2 v2.5.1-0.20260803003919-c22784ca3ff5
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.42.1
