@@ -64,6 +64,35 @@ coordination.k8s.io/leases rule required for leader election.
     - get
     - update
     - patch
+# c5c3.io - keystoneservices
+# The KeystoneService reconciler reads the CRs and updates them only to
+# install and release its teardown finalizer; it never creates or deletes
+# them, so the rule carries no create/delete.
+- apiGroups:
+    - c5c3.io
+  resources:
+    - keystoneservices
+  verbs:
+    - get
+    - list
+    - watch
+    - update
+# c5c3.io - keystoneservices/status
+- apiGroups:
+    - c5c3.io
+  resources:
+    - keystoneservices/status
+  verbs:
+    - get
+    - update
+    - patch
+# c5c3.io - keystoneservices/finalizers
+- apiGroups:
+    - c5c3.io
+  resources:
+    - keystoneservices/finalizers
+  verbs:
+    - update
 # c5c3.io - secretaggregates (read-only)
 # The ControlPlane reconciler only observes SecretAggregate CRs; it never
 # creates or mutates them, so the rule is intentionally read-only.
