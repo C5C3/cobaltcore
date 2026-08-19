@@ -36,6 +36,10 @@ var subReconcilerConditionTypes = map[string]string{
 	"AdminPassword":   conditionTypeAdminPasswordReady,
 	"Catalog":         conditionTypeCatalogReady,
 	"ServiceAccounts": conditionTypeServiceAccountsReady,
+	// The per-tenant stores of the allowlisted namespaces standalone registrations
+	// come from, kept apart from ESOTenantStore's own series because the two carry
+	// different blast radii and one alert should not read as the other.
+	"RegistrationTenantStores": conditionTypeRegistrationTenantStoresReady,
 	// The KeystoneService controller's two block legs. The names carry the CR
 	// kind as a prefix because "Catalog" and "ServiceAccounts" already label the
 	// ControlPlane's inline legs, and the two mechanisms must stay
