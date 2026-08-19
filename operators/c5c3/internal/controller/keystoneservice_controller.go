@@ -21,13 +21,19 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
 	"github.com/c5c3/forge/internal/common/secrets"
+	"github.com/c5c3/forge/internal/common/watch"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -101,9 +107,20 @@ const (
 // built-ins keep the placed-service delivery legs.
 type KeystoneServiceReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme                  *runtime.Scheme
+	Recorder                record.EventRecorder
+	MaxConcurrentReconciles int
 }
+
+// RBAC for the KeystoneService kind itself: the controller reads the CRs and
+// updates them only to install and release its teardown finalizer; it never
+// creates or deletes them. Every other kind it touches (the K-ORC kinds, the
+// ESO kinds, Secrets, events, ControlPlane reads) is already granted by the
+// ControlPlane and CredentialRotation marker blocks, and the chart mirrors the
+// deduplicated union.
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices/finalizers,verbs=update
 
 // Reconcile drives one KeystoneService CR: finalizer installation, the gated
 // projection of the declared blocks, and the deletion teardown.
@@ -429,12 +446,17 @@ func keystoneServicePushSecretName(ks *c5c3v1alpha1.KeystoneService) string {
 	return keystoneServiceChildPrefix(ks) + "backup"
 }
 
+// keystoneServiceCredentialsSecretSuffix is the fixed tail of the consumer
+// Secret's name. Defined once so the name builder and the consumer-Secret watch
+// mapper cannot disagree on the contract.
+const keystoneServiceCredentialsSecretSuffix = "-credentials"
+
 // keystoneServiceCredentialsSecretName is the consumer-facing handle, and the one
 // child name deliberately NOT carrying the internal prefix: it is the documented
 // contract a service reads its credentials from, so it stays predictable from the
 // CR's name alone.
 func keystoneServiceCredentialsSecretName(ks *c5c3v1alpha1.KeystoneService) string {
-	return ks.Name + "-credentials"
+	return ks.Name + keystoneServiceCredentialsSecretSuffix
 }
 
 // keystoneServiceDomainRef returns the Domain import the account's user and
@@ -818,4 +840,137 @@ func (r *KeystoneServiceReconciler) keystoneServiceWaitOrClassify(
 		}
 	}
 	fail(waitReason, waitMessage)
+}
+
+// --- manager wiring ---
+
+// KeystoneServiceControlPlaneRefIndexKey is the field-indexer key under which a
+// KeystoneService is indexed by its RESOLVED ControlPlane reference, as the
+// namespace-qualified "<namespace>/<name>". The qualification matters twice: the
+// ControlPlane watch must not wake registrations referencing a same-named
+// ControlPlane in another namespace, and once the allowlist admits foreign
+// namespaces the mapper's cluster-wide List needs no widening.
+const KeystoneServiceControlPlaneRefIndexKey = "spec.controlPlaneRef"
+
+// keystoneServiceControlPlaneRefExtractor returns the resolved
+// "<namespace>/<name>" of obj's ControlPlane reference, the namespace defaulting
+// to the CR's own exactly as resolveControlPlane resolves it. An empty name (a
+// CR that bypassed admission) indexes nothing rather than a dangling
+// "<namespace>/" key.
+func keystoneServiceControlPlaneRefExtractor(obj client.Object) []string {
+	ks, ok := obj.(*c5c3v1alpha1.KeystoneService)
+	if !ok || ks.Spec.ControlPlaneRef.Name == "" {
+		return nil
+	}
+	return []string{cmp.Or(ks.Spec.ControlPlaneRef.Namespace, ks.Namespace) + "/" + ks.Spec.ControlPlaneRef.Name}
+}
+
+// registerKeystoneServiceControlPlaneRefIndex registers the field indexer
+// controlPlaneToKeystoneServicesMapper relies on for its MatchingFields lookup.
+// setupWithOptions calls it before the watch legs are wired, mirroring
+// registerControlPlaneSecretNameIndex.
+func registerKeystoneServiceControlPlaneRefIndex(ctx context.Context, indexer client.FieldIndexer) error {
+	return indexer.IndexField(ctx, &c5c3v1alpha1.KeystoneService{},
+		KeystoneServiceControlPlaneRefIndexKey, keystoneServiceControlPlaneRefExtractor)
+}
+
+// controlPlaneToKeystoneServicesMapper maps a ControlPlane event to reconcile
+// requests for every KeystoneService referencing it, resolved through the
+// KeystoneServiceControlPlaneRefIndexKey index. The List is cluster-wide on
+// purpose: a registration may sit in a foreign namespace once the allowlist
+// admits one, and the namespace-qualified index key already scopes the match. A
+// List failure is logged and maps to nothing — a MapFunc cannot return an error,
+// and the korcRequeueAfter polls are the fallback.
+func controlPlaneToKeystoneServicesMapper(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var registrations c5c3v1alpha1.KeystoneServiceList
+		if err := c.List(ctx, &registrations, client.MatchingFields{
+			KeystoneServiceControlPlaneRefIndexKey: obj.GetNamespace() + "/" + obj.GetName(),
+		}); err != nil {
+			log.FromContext(ctx).Error(err, "listing KeystoneServices for ControlPlane watch")
+			return nil
+		}
+		requests := make([]reconcile.Request, 0, len(registrations.Items))
+		for i := range registrations.Items {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: client.ObjectKeyFromObject(&registrations.Items[i]),
+			})
+		}
+		return requests
+	}
+}
+
+// credentialsSecretToKeystoneServiceMapper maps a Secret event to the
+// KeystoneService whose consumer Secret it is. The consumer Secret is ESO-owned
+// (CreationPolicy: Owner), so no owner reference points at the CR and the Owns
+// legs never fire for it; the <cr-name>-credentials name contract is what maps
+// it back. A Secret without the suffix maps to nothing without a read, and a
+// trimmed name naming no KeystoneService is somebody else's Secret.
+func credentialsSecretToKeystoneServiceMapper(c client.Reader) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		name, found := strings.CutSuffix(obj.GetName(), keystoneServiceCredentialsSecretSuffix)
+		if !found || name == "" {
+			return nil
+		}
+		key := client.ObjectKey{Namespace: obj.GetNamespace(), Name: name}
+		var ks c5c3v1alpha1.KeystoneService
+		if err := c.Get(ctx, key, &ks); err != nil {
+			if !apierrors.IsNotFound(err) {
+				log.FromContext(ctx).Error(err, "fetching KeystoneService for consumer-Secret watch", "keystoneService", key)
+			}
+			return nil
+		}
+		return []reconcile.Request{{NamespacedName: key}}
+	}
+}
+
+// SetupWithManager registers the KeystoneServiceReconciler with the manager.
+func (r *KeystoneServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return r.setupWithOptions(mgr, bootstrap.ControllerOptions(r.MaxConcurrentReconciles))
+}
+
+// setupWithOptions carries the production wiring SetupWithManager applies. The
+// controller options are a parameter so the integration suite can register this
+// exact chain with SkipNameValidation set, rather than a hand-built copy of it
+// that drifts the moment a leg is added.
+//
+// The watch surface, beyond the CR itself:
+//   - Owns: every same-namespace child the projections create with a controller
+//     reference — the seven K-ORC kinds, the ESO delivery pair, and the
+//     operator-written password/source Secrets.
+//   - ControlPlane, WITHOUT a predicate: the AdminCredentialReady flip the
+//     shared gate waits on and the allowlist edits a later change adds both
+//     arrive as ControlPlane updates, and both must re-enqueue the
+//     registrations at watch latency rather than at the next poll.
+//   - Secret, through the consumer-Secret mapper: the materialized credentials
+//     Secret is ESO-owned, so only its name contract maps it back to the CR.
+func (r *KeystoneServiceReconciler) setupWithOptions(mgr ctrl.Manager, opts crcontroller.Options) error {
+	// Register the field indexer before the watch legs so
+	// controlPlaneToKeystoneServicesMapper can rely on it for its
+	// MatchingFields lookup.
+	if err := registerKeystoneServiceControlPlaneRefIndex(context.Background(), mgr.GetFieldIndexer()); err != nil {
+		return err
+	}
+	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(opts).
+		// Filter the CR's own status-only updates so Status().Update does not
+		// re-wake the controller (see watch.CRUpdatePredicate).
+		For(&c5c3v1alpha1.KeystoneService{}, builder.WithPredicates(watch.CRUpdatePredicate())).
+		Owns(&orcv1alpha1.Service{}).
+		Owns(&orcv1alpha1.Endpoint{}).
+		Owns(&orcv1alpha1.User{}).
+		Owns(&orcv1alpha1.Domain{}).
+		Owns(&orcv1alpha1.Project{}).
+		Owns(&orcv1alpha1.Role{}).
+		Owns(&orcv1alpha1.RoleAssignment{}).
+		Owns(&esov1.ExternalSecret{}).
+		Owns(&esov1alpha1.PushSecret{}).
+		Owns(&corev1.Secret{}).
+		Watches(&c5c3v1alpha1.ControlPlane{}, handler.EnqueueRequestsFromMapFunc(
+			controlPlaneToKeystoneServicesMapper(mgr.GetClient()),
+		)).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(
+			credentialsSecretToKeystoneServiceMapper(mgr.GetClient()),
+		)).
+		Complete(r)
 }

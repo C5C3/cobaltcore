@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
@@ -892,3 +893,186 @@ func ksConvergedCatalog(ks *c5c3v1alpha1.KeystoneService) []client.Object {
 // ksUnknownStoreRef selects a store kind IsStoreRefReady refuses to resolve,
 // which is how a store READ failure is provoked without an interceptor.
 var ksUnknownStoreRef = commonv1.SecretStoreRefSpec{Kind: "NotAStoreKind", Name: "openbao"}
+
+// --- manager wiring: extractor and watch mappers ---
+
+// newKeystoneServiceMapperClient returns a fake client pre-registered with the
+// KeystoneServiceControlPlaneRefIndexKey field indexer so
+// controlPlaneToKeystoneServicesMapper can resolve its MatchingFields lookup,
+// mirroring newControlPlaneMapperClient.
+func newKeystoneServiceMapperClient(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	return fake.NewClientBuilder().
+		WithScheme(korcTestScheme(t)).
+		WithObjects(objs...).
+		WithIndex(&c5c3v1alpha1.KeystoneService{}, KeystoneServiceControlPlaneRefIndexKey, keystoneServiceControlPlaneRefExtractor).
+		Build()
+}
+
+// mapperKeystoneService builds a minimal KeystoneService referencing the named
+// ControlPlane. An empty refNamespace leaves the reference namespace unset, the
+// shape the defaulting contract resolves to the CR's own namespace.
+func mapperKeystoneService(name, namespace, refName, refNamespace string) *c5c3v1alpha1.KeystoneService {
+	return &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, UID: types.UID(name + "-uid")},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: refName, Namespace: refNamespace},
+		},
+	}
+}
+
+func TestKeystoneServiceControlPlaneRefExtractor_ExplicitNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := mapperKeystoneService("reg", "team-a", "cp", "plane-ns")
+	g.Expect(keystoneServiceControlPlaneRefExtractor(ks)).To(ConsistOf("plane-ns/cp"),
+		"an explicit reference namespace must qualify the index value")
+}
+
+func TestKeystoneServiceControlPlaneRefExtractor_DefaultsNamespace(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := mapperKeystoneService("reg", "team-a", "cp", "")
+	g.Expect(keystoneServiceControlPlaneRefExtractor(ks)).To(ConsistOf("team-a/cp"),
+		"an omitted reference namespace must default to the CR's own, as resolveControlPlane does")
+}
+
+func TestKeystoneServiceControlPlaneRefExtractor_EmptyNameIndexesNothing(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ks := mapperKeystoneService("reg", "team-a", "", "")
+	g.Expect(keystoneServiceControlPlaneRefExtractor(ks)).To(BeEmpty(),
+		"an admission-bypassed CR without a reference name must not index a dangling namespace key")
+}
+
+func TestControlPlaneToKeystoneServicesMapper_EnqueuesReferencingRegistrations(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// Two referencing registrations — one with an explicit reference namespace,
+	// one relying on the same-namespace default — and one referencing another
+	// plane, which must stay out of the result.
+	c := newKeystoneServiceMapperClient(t,
+		mapperKeystoneService("reg-explicit", "default", "cp", "default"),
+		mapperKeystoneService("reg-defaulted", "default", "cp", ""),
+		mapperKeystoneService("reg-other", "default", "other-cp", ""),
+	)
+	mapper := controlPlaneToKeystoneServicesMapper(c)
+
+	cp := &c5c3v1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default"}}
+	g.Expect(mapper(context.Background(), cp)).To(ConsistOf(
+		reconcile.Request{NamespacedName: client.ObjectKey{Namespace: "default", Name: "reg-explicit"}},
+		reconcile.Request{NamespacedName: client.ObjectKey{Namespace: "default", Name: "reg-defaulted"}},
+	), "exactly the registrations whose resolved reference names the event ControlPlane must be enqueued")
+}
+
+func TestControlPlaneToKeystoneServicesMapper_ReturnsNothingWithoutReferrers(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	c := newKeystoneServiceMapperClient(t)
+	mapper := controlPlaneToKeystoneServicesMapper(c)
+
+	cp := &c5c3v1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default"}}
+	g.Expect(mapper(context.Background(), cp)).To(BeEmpty(),
+		"a ControlPlane nothing references must map to no requests")
+}
+
+func TestControlPlaneToKeystoneServicesMapper_IgnoresSameNamedControlPlaneElsewhere(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	c := newKeystoneServiceMapperClient(t,
+		mapperKeystoneService("reg", "team-a", "cp", ""),
+	)
+	mapper := controlPlaneToKeystoneServicesMapper(c)
+
+	// Same ControlPlane name, different namespace: the namespace-qualified index
+	// key must not match the team-a registration.
+	cp := &c5c3v1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "team-b"}}
+	g.Expect(mapper(context.Background(), cp)).To(BeEmpty(),
+		"a same-named ControlPlane in another namespace must not wake the registration")
+}
+
+func TestControlPlaneToKeystoneServicesMapper_ReturnsNilOnListError(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	c := fake.NewClientBuilder().
+		WithScheme(korcTestScheme(t)).
+		WithIndex(&c5c3v1alpha1.KeystoneService{}, KeystoneServiceControlPlaneRefIndexKey, keystoneServiceControlPlaneRefExtractor).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(_ context.Context, _ client.WithWatch, _ client.ObjectList, _ ...client.ListOption) error {
+				return errors.New("cache down")
+			},
+		}).
+		Build()
+	mapper := controlPlaneToKeystoneServicesMapper(c)
+
+	cp := &c5c3v1alpha1.ControlPlane{ObjectMeta: metav1.ObjectMeta{Name: "cp", Namespace: "default"}}
+	g.Expect(mapper(context.Background(), cp)).To(BeNil(),
+		"a List failure must map to nothing; the periodic requeues are the fallback")
+}
+
+func TestCredentialsSecretToKeystoneServiceMapper_EnqueuesOwningRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	c := newKeystoneServiceMapperClient(t, mapperKeystoneService("reg", "default", "cp", ""))
+	mapper := credentialsSecretToKeystoneServiceMapper(c)
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "reg-credentials", Namespace: "default"}}
+	g.Expect(mapper(context.Background(), secret)).To(ConsistOf(
+		reconcile.Request{NamespacedName: client.ObjectKey{Namespace: "default", Name: "reg"}},
+	), "the consumer Secret must enqueue exactly the registration its name contract points at")
+}
+
+func TestCredentialsSecretToKeystoneServiceMapper_IgnoresNonCredentialsNames(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	// The Get interceptor proves the mapper never reads for a Secret outside the
+	// name contract: reaching it would fail the assertion below.
+	got := false
+	c := fake.NewClientBuilder().
+		WithScheme(korcTestScheme(t)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+				got = true
+				return errors.New("unexpected read")
+			},
+		}).
+		Build()
+	mapper := credentialsSecretToKeystoneServiceMapper(c)
+
+	for _, name := range []string{"reg-password-v1", "-credentials"} {
+		secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}}
+		g.Expect(mapper(context.Background(), secret)).To(BeNil(),
+			"Secret %q is outside the name contract and must map to nothing", name)
+	}
+	g.Expect(got).To(BeFalse(), "no Get may be issued for a Secret outside the name contract")
+}
+
+func TestCredentialsSecretToKeystoneServiceMapper_IgnoresUnknownRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	c := newKeystoneServiceMapperClient(t)
+	mapper := credentialsSecretToKeystoneServiceMapper(c)
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "reg-credentials", Namespace: "default"}}
+	g.Expect(mapper(context.Background(), secret)).To(BeNil(),
+		"a -credentials Secret without a matching registration is somebody else's Secret")
+}
+
+func TestCredentialsSecretToKeystoneServiceMapper_ReturnsNilOnGetError(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	c := fake.NewClientBuilder().
+		WithScheme(korcTestScheme(t)).
+		WithObjects(mapperKeystoneService("reg", "default", "cp", "")).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+				return errors.New("cache down")
+			},
+		}).
+		Build()
+	mapper := credentialsSecretToKeystoneServiceMapper(c)
+
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "reg-credentials", Namespace: "default"}}
+	g.Expect(mapper(context.Background(), secret)).To(BeNil(),
+		"a non-NotFound Get failure must map to nothing; the periodic requeues are the fallback")
+}

@@ -135,6 +135,17 @@ func main() {
 			}).SetupWithManager(mgr); err != nil {
 				return err
 			}
+			// The KeystoneService reconciler also runs on the local manager: a
+			// registration delivers into its own namespace on the management
+			// cluster, so it carries no cluster Resolver.
+			if err := (&controller.KeystoneServiceReconciler{
+				Client:                  mgr.GetClient(),
+				Scheme:                  mgr.GetScheme(),
+				Recorder:                mgr.GetEventRecorderFor("keystoneservice-controller"), //nolint:staticcheck // SA1019: reconciler consumes record.EventRecorder (old events API); GetEventRecorder returns the incompatible events/v1 type.
+				MaxConcurrentReconciles: maxConcurrentReconciles,
+			}).SetupWithManager(mgr); err != nil {
+				return err
+			}
 			if webhooks {
 				// DECISION Client must be non-nil for the
 				// one-ControlPlane-per-namespace ValidateCreate check. It reads
