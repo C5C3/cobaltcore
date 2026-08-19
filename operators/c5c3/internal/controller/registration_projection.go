@@ -678,3 +678,83 @@ func ensureManagedAccountUser(
 	}
 	return user, desiredGen, op == controllerutil.OperationResultCreated, rotatedAt, nil
 }
+
+// --- role and domain legs ---
+
+// ensureAccountDomainImport applies the unmanaged Domain import an account's user
+// and project resolve their domain against. It is only reached when the effective
+// domain is NOT the admin domain: that case reuses the admin import, and each
+// caller keeps that early return because each resolves the admin handle its own
+// way. The apply error is returned unwrapped, so the caller keeps naming the
+// mechanism in its own words.
+func ensureAccountDomainImport(
+	ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object,
+	name, namespace, domainName string, credRef orcv1alpha1.CloudCredentialsReference,
+) error {
+	return apply.EnsureObject(ctx, c, scheme, owner, unmanagedDomainImport(name, namespace, domainName, credRef), apply.FieldManager)
+}
+
+// accountRoleOutcome is what one (account, role) pair resolved to. The caller
+// renders every message from it, so the two mechanisms keep their own wording and
+// their own reporting model.
+type accountRoleOutcome struct {
+	roleObj    *orcv1alpha1.Role
+	assignment *orcv1alpha1.RoleAssignment
+	// terminalErr is the first terminal K-ORC error, role import before
+	// assignment: K-ORC has stopped retrying, so a bounded wait would never
+	// resolve.
+	terminalErr error
+	// blocked is the first object that is not Available, in the same order, and
+	// nil once both are ready. Naming the ROOT dependency keeps a wait from
+	// pointing at an assignment that is merely queued behind its import.
+	blocked orcv1alpha1.ObjectWithConditions
+	// stalled reports that the role import has been unresolved past
+	// externalImportStallGrace, which is when "the role may not exist in Keystone"
+	// stops being noise and becomes the likely cause.
+	stalled bool
+}
+
+// applyAccountRole applies one declared role in dependency order: an UNMANAGED
+// Role import filtered by name (Keystone roles are global, and reading one never
+// mutates it, so it rides the spec's own clouds.yaml) and a MANAGED RoleAssignment
+// binding it to the account's user on its project. The assignment authenticates
+// via the admin PASSWORD cloud, so a teardown Delete survives the application
+// credential's revoke.
+//
+// Both names are deterministic per (account, role), so both applies are pure
+// projections. Only the object construction, the apply and the inspection live
+// here; the per-role loop, the precedence and every message stay in the caller.
+func applyAccountRole(
+	ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object,
+	importName, assignmentName, namespace, role string,
+	credRef, managedCredRef orcv1alpha1.CloudCredentialsReference,
+	userRef, projectRef, errPrefix string,
+) (accountRoleOutcome, error) {
+	var out accountRoleOutcome
+
+	out.roleObj = unmanagedRoleImport(importName, namespace, role, credRef)
+	if err := apply.EnsureObject(ctx, c, scheme, owner, out.roleObj, apply.FieldManager); err != nil {
+		return out, fmt.Errorf("%s Role import %q: %w", errPrefix, importName, err)
+	}
+
+	out.assignment = managedRoleAssignmentChild(assignmentName, namespace, importName, userRef, projectRef, managedCredRef)
+	if err := apply.EnsureObject(ctx, c, scheme, owner, out.assignment, apply.FieldManager); err != nil {
+		return out, fmt.Errorf("%s RoleAssignment %q: %w", errPrefix, assignmentName, err)
+	}
+
+	for _, obj := range []orcv1alpha1.ObjectWithConditions{out.roleObj, out.assignment} {
+		if termErr := orcv1alpha1.GetTerminalError(obj); termErr != nil {
+			out.terminalErr = termErr
+			break
+		}
+	}
+
+	out.stalled = korcImportStalled(out.roleObj, externalImportStallGrace)
+	switch {
+	case !korcAvailableUpToDate(out.roleObj):
+		out.blocked = out.roleObj
+	case !korcAvailableUpToDate(out.assignment):
+		out.blocked = out.assignment
+	}
+	return out, nil
+}

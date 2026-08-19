@@ -192,8 +192,8 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceDomain(
 	if name == adminDomainRef(cp) {
 		return name, nil
 	}
-	domain := unmanagedDomainImport(name, ks.Namespace, keystoneServiceDomainName(cp, ks), credRef)
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, domain, apply.FieldManager); err != nil {
+	if err := ensureAccountDomainImport(ctx, r.Client, r.Scheme, ks,
+		name, ks.Namespace, keystoneServiceDomainName(cp, ks), credRef); err != nil {
 		return "", fmt.Errorf("registration Domain import %q: %w", name, err)
 	}
 	return name, nil
@@ -374,47 +374,34 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceRoles(
 	waitMessage := ""
 
 	for _, role := range ks.Spec.Account.Roles {
-		roleImportName := keystoneServiceRoleImportRef(ks, role)
-		assignmentName := keystoneServiceRoleAssignmentRef(ks, role)
-
-		roleObj := unmanagedRoleImport(roleImportName, ks.Namespace, role, credRef)
-		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, roleObj, apply.FieldManager); err != nil {
-			return false, fmt.Errorf("registration Role import %q: %w", roleImportName, err)
+		out, err := applyAccountRole(ctx, r.Client, r.Scheme, ks,
+			keystoneServiceRoleImportRef(ks, role), keystoneServiceRoleAssignmentRef(ks, role), ks.Namespace, role,
+			credRef, managedCredRef, keystoneServiceUserRef(ks), keystoneServiceProjectRef(ks), "registration")
+		if err != nil {
+			return false, err
 		}
-
-		assignment := managedRoleAssignmentChild(assignmentName, ks.Namespace, roleImportName,
-			keystoneServiceUserRef(ks), keystoneServiceProjectRef(ks), managedCredRef)
-		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, assignment, apply.FieldManager); err != nil {
-			return false, fmt.Errorf("registration RoleAssignment %q: %w", assignmentName, err)
+		if termErr := out.terminalErr; termErr != nil {
+			keystoneServiceFail(ks, conditionTypeKeystoneServiceAccountReady)(reasonServiceAccountsFailed, fmt.Sprintf(
+				"K-ORC reported a terminal error on role %q: %v", role, termErr,
+			))
+			return false, nil
 		}
-
-		for _, obj := range []orcv1alpha1.ObjectWithConditions{roleObj, assignment} {
-			if termErr := orcv1alpha1.GetTerminalError(obj); termErr != nil {
-				keystoneServiceFail(ks, conditionTypeKeystoneServiceAccountReady)(reasonServiceAccountsFailed, fmt.Sprintf(
-					"K-ORC reported a terminal error on role %q: %v", role, termErr,
-				))
-				return false, nil
-			}
+		if out.blocked == nil {
+			continue
 		}
-
-		if !korcAvailableUpToDate(roleObj) {
-			ready = false
-			pending = append(pending, roleObj)
-			if waitMessage == "" {
-				waitMessage = fmt.Sprintf("the Role import for role %q is registered but not yet Available", role)
-				if korcImportStalled(roleObj, externalImportStallGrace) {
-					waitMessage += fmt.Sprintf("; role %q may not exist in Keystone — create it there or fix the spelling", role)
-				}
+		ready = false
+		pending = append(pending, out.blocked)
+		if waitMessage != "" {
+			continue
+		}
+		if _, isImport := out.blocked.(*orcv1alpha1.Role); isImport {
+			waitMessage = fmt.Sprintf("the Role import for role %q is registered but not yet Available", role)
+			if out.stalled {
+				waitMessage += fmt.Sprintf("; role %q may not exist in Keystone — create it there or fix the spelling", role)
 			}
 			continue
 		}
-		if !korcAvailableUpToDate(assignment) {
-			ready = false
-			pending = append(pending, assignment)
-			if waitMessage == "" {
-				waitMessage = fmt.Sprintf("the RoleAssignment for role %q is registered but not yet Available", role)
-			}
-		}
+		waitMessage = fmt.Sprintf("the RoleAssignment for role %q is registered but not yet Available", role)
 	}
 
 	if !ready {
