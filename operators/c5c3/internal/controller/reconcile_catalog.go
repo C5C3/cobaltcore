@@ -84,13 +84,13 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 	// is a pure projection of cp.Spec, so it is applied via Server-Side Apply under
 	// the shared field manager rather than read-modify-write.
 	//
-	// The catalog is driven from managedCatalogRows so a second service is a table
-	// row, not a copied literal. The first row is always the identity (Keystone)
-	// service: an identity-type Service named "keystone" and a single public Endpoint
-	// whose URL defaults to the in-cluster Keystone Service URL and rises to the
-	// external publicEndpoint when Keystone is exposed via a Gateway (see
-	// keystoneCatalogURL). A second image (Glance) row joins it whenever
-	// spec.services.glance is set.
+	// The catalog is driven from managedCatalogRows, whose one row is the identity
+	// (Keystone) service: an identity-type Service named "keystone" and a single
+	// public Endpoint whose URL defaults to the in-cluster Keystone Service URL and
+	// rises to the external publicEndpoint when Keystone is exposed via a Gateway
+	// (see keystoneCatalogURL). The built-in services register their own catalog
+	// entries through the KeystoneService children the ControlPlane projects for
+	// them, so none of them adds a row here.
 	type appliedCatalogRow struct {
 		row       managedCatalogServiceRow
 		service   *orcv1alpha1.Service
@@ -175,18 +175,13 @@ type managedCatalogEndpointRow struct {
 // OpenStack service (type and name), the deterministic name of the K-ORC Service
 // CR that registers it, and the Endpoint rows registered under it.
 //
-// NAMING CONVENTION for FUTURE rows: a service of type {type} gets a Service CR
-// named "{cp}-{type}-service" and, per interface, an Endpoint CR named
-// "{cp}-{type}-endpoint-{iface}". The identity row is the ONE exception — it
-// keeps its legacy CR names ("{cp}-identity-service" / "{cp}-identity-endpoint",
-// via keystoneServiceName / keystoneEndpointName) because renaming a live CR
-// would delete and re-add its catalog row on upgrade. Every new row follows the
-// generic convention from the start, so only identity carries the legacy shape.
+// The identity row keeps its established CR names ("{cp}-identity-service" /
+// "{cp}-identity-endpoint", via keystoneServiceName / keystoneEndpointName):
+// renaming a live CR would delete and re-add its catalog row on upgrade.
 //
-// endpoints is a list so a row can register several interfaces. The identity row
-// exercises only the default posture — a single public entry whose URL falls back
-// to the in-cluster Keystone Service URL — while the image (Glance) row exercises
-// the multi-interface list, registering both an internal and a public Endpoint.
+// endpoints is a list so a row can register several interfaces. The identity row,
+// the only row today, exercises the default posture alone: a single public entry
+// whose URL falls back to the in-cluster Keystone Service URL.
 type managedCatalogServiceRow struct {
 	serviceType string
 	serviceName string
@@ -195,18 +190,16 @@ type managedCatalogServiceRow struct {
 }
 
 // managedCatalogRows returns the managed service-catalog rows the ControlPlane
-// registers via K-ORC. The first row is always the identity (Keystone) service
-// with a single public Endpoint, keyed on the legacy CR names so the live catalog
-// rows are never renamed (see managedCatalogServiceRow). When spec.services.glance
-// is set a second row registers the image (Glance) service under the generic
-// naming convention, with an internal and a public Endpoint (D6 — both interfaces
-// from the start so no later catalog migration is needed), and when
-// spec.services.placement is set a placement row joins on the same terms. A
-// further service is added here as another row, not by copying the builder call
-// sites. It is mode-independent: reconcileDelete enumerates the same rows to tear
-// down the CRs in both keystone modes.
+// registers via K-ORC: the identity (Keystone) service with a single public
+// Endpoint, keyed on the legacy CR names so the live catalog rows are never
+// renamed (see managedCatalogServiceRow), and nothing else. A declared image,
+// placement or key-manager service adds no row here — each built-in carries its
+// catalog entry on the KeystoneService child the ControlPlane projects for it, and
+// the KeystoneService controller registers that entry under the child's own names.
+// It is mode-independent: reconcileDelete enumerates the same row to tear down the
+// CRs in both keystone modes.
 func managedCatalogRows(cp *c5c3v1alpha1.ControlPlane) []managedCatalogServiceRow {
-	rows := []managedCatalogServiceRow{{
+	return []managedCatalogServiceRow{{
 		serviceType: "identity",
 		serviceName: "keystone",
 		crName:      keystoneServiceName(cp),
@@ -216,55 +209,6 @@ func managedCatalogRows(cp *c5c3v1alpha1.ControlPlane) []managedCatalogServiceRo
 			url:    keystoneCatalogURL(cp),
 		}},
 	}}
-	if cp.Spec.Services.Glance != nil {
-		rows = append(rows, managedCatalogServiceRow{
-			serviceType: "image",
-			serviceName: "glance",
-			crName:      glanceCatalogServiceName(cp),
-			endpoints: []managedCatalogEndpointRow{
-				{
-					iface:  "internal",
-					crName: glanceCatalogEndpointName(cp, "internal"),
-					url: internalCatalogURL(cp.GlanceTargetClusterRef(),
-						glanceEndpointURL(cp), glanceCatalogURL(cp)),
-				},
-				{iface: "public", crName: glanceCatalogEndpointName(cp, "public"), url: glanceCatalogURL(cp)},
-			},
-		})
-	}
-	if cp.Spec.Services.Placement != nil {
-		rows = append(rows, managedCatalogServiceRow{
-			serviceType: "placement",
-			serviceName: "placement",
-			crName:      placementCatalogServiceName(cp),
-			endpoints: []managedCatalogEndpointRow{
-				{
-					iface:  "internal",
-					crName: placementCatalogEndpointName(cp, "internal"),
-					url: internalCatalogURL(cp.PlacementTargetClusterRef(),
-						placementEndpointURL(cp), placementCatalogURL(cp)),
-				},
-				{iface: "public", crName: placementCatalogEndpointName(cp, "public"), url: placementCatalogURL(cp)},
-			},
-		})
-	}
-	if cp.Spec.Services.Barbican != nil {
-		rows = append(rows, managedCatalogServiceRow{
-			serviceType: "key-manager",
-			serviceName: "barbican",
-			crName:      barbicanCatalogServiceName(cp),
-			endpoints: []managedCatalogEndpointRow{
-				{
-					iface:  "internal",
-					crName: barbicanCatalogEndpointName(cp, "internal"),
-					url: internalCatalogURL(cp.BarbicanTargetClusterRef(),
-						barbicanEndpointURL(cp), barbicanCatalogURL(cp)),
-				},
-				{iface: "public", crName: barbicanCatalogEndpointName(cp, "public"), url: barbicanCatalogURL(cp)},
-			},
-		})
-	}
-	return rows
 }
 
 // internalCatalogURL picks the URL a catalog row advertises on its INTERNAL
