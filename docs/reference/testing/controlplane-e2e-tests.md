@@ -43,8 +43,13 @@ deploys keystone-operator, c5c3-operator, and K-ORC as local dev images
 (`CONTROLPLANE_OPERATORS=external`), seeds the per-CR OpenBao paths
 (`CONTROLPLANE_NAME=controlplane-keystone`), and runs the
 `full-controlplane-keystone` suite so broken wiring in the live chain fails
-the build instead of skipping. See the
-[CI workflow reference](../ci-cd/ci-workflow.md) for the job definition.
+the build instead of skipping. A second step on the same job runs
+`keystone-service-foreign-namespace`, which brings up a Keystone-only
+ControlPlane of its own and seeds that plane's OpenBao paths itself. The two
+suites run in sequence because the shared chainsaw config sets `failFast`, so
+one invocation over both directories would let a failure in either abort the
+other. See the [CI workflow reference](../ci-cd/ci-workflow.md) for the job
+definition.
 
 ## Running the Tests
 
@@ -70,6 +75,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | Suite | CR Name(s) | Behaviour Validated |
 | --- | --- | --- |
 | [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check |
+| [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, and de-listing freezes instead of tearing down |
 | [external-keystone](#external-keystone) | `controlplane-external` (+ 3 negative CRs) | External mode against a plain, operator-free Keystone: convergence with zero children, imports, the app-credential round-trip, no catalog pollution, service accounts, drift + rotation, `endpoint_type` detection, and zero-blast-radius deletion |
 | [federated-controlplane](#federated-controlplane) | `controlplane-sso` | The end-user SSO experience: websso projection, the login page's SSO choice and domain field, the websso round trip through the gateway |
 | [deletion-orchestration](#deletion-orchestration) | `deletion-orch` | ORC-teardown finalizer sequencing; deletion completes even when Keystone is already gone |
@@ -357,6 +363,61 @@ covered by the c5c3 operator integration test
 behaviour only a live OpenBao can prove. It SKIPs cleanly when the stack — or the
 `eso-tenant` role (bootstrap predating #605) — is absent.
 
+### keystone-service-foreign-namespace
+
+Exercises the one thing the `KeystoneService` CRD exists for and no other suite
+reaches: registering a service from a namespace the ControlPlane does not own.
+Three mechanisms have to agree, and each looks healthy on its own while the
+combination is broken. The ControlPlane's allowlist
+(`spec.korc.serviceRegistrations.allowedNamespaces`) decides which namespaces may
+register. The tenant store the ControlPlane provisions into an admitted namespace
+carries the credentials back out. The KeystoneService controller projects the
+K-ORC children into the ControlPlane's namespace, beside the admin credential
+K-ORC authenticates them with, and delivers only the consumer Secret into the
+registration's own namespace.
+
+The suite runs three legs against a live Keystone, OpenBao, ESO and cert-manager:
+
+1. **Positive**: an allowlisted namespace registers a catalog entry and an
+   account. Its tenant-store trio appears, the seven projected K-ORC children
+   reach `Available` in the ControlPlane's namespace, the consumer Secret
+   `workflow-credentials` is materialised with its `password` and `clouds.yaml`
+   keys, and a Job in that namespace runs `openstack token issue` and
+   `openstack catalog show workflow` with it. Authenticating is what separates a
+   delivered Secret from a correct one.
+2. **Negative**: a `KeystoneService` in a namespace the allowlist never carries
+   holds at `Ready=False/NamespaceNotAllowed` on both blocks, with nothing
+   projected in either namespace and a condition message naming the field that
+   would admit it. The check repeats after a settle, so a projection still in
+   flight cannot pass as none.
+3. **Freeze**: removing the namespace from the allowlist flips its registration
+   to `NamespaceNotAllowed` while the consumer Secret, the Keystone user and the
+   tenant store all stay. That is decision D9: the allowlist is an admission gate,
+   not a revocation tool, and an edit to it can never strand a running service.
+   Re-listing the namespace recovers the registration.
+
+Its ControlPlane is its own. The webhook admits one ControlPlane per namespace,
+and the canonical `controlplane-keystone` belongs to the full-chain suite, so this
+one runs a Keystone-only plane named `cp` in the ephemeral test namespace. A
+managed plane outside `openstack` needs two OpenBao prerequisites that
+`deploy-infra` seeds only for the identity it was given: the Model B admin
+password at `bootstrap/{namespace}/{controlplane}-keystone/admin` and the
+database-engine role behind the dynamic DB credential. The suite seeds both with
+the same scripts the deploy stack runs (`write-bootstrap-secrets.sh` with
+`KORC_CONTROLPLANES` pointing at its own identity, then `setup-database-tenant.sh`).
+Everything else the plane needs in its namespace is operator-projected or
+cluster-scoped.
+
+The teardown is part of the contract rather than cleanup: deleting the
+registration has to reach Keystone through K-ORC, drop the consumer Secret with
+its ExternalSecret, and let the plane collect the tenant store once the namespace
+holds no registration.
+
+Run it locally against a full ControlPlane stack with
+`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it after
+the full-chain suite. It is the second chainsaw step of the `e2e-controlplane` CI
+job.
+
 ## File Layout
 
 ```text
@@ -390,6 +451,12 @@ tests/e2e/c5c3/
 │   ├── chainsaw-test.yaml              Full chain, link by link
 │   ├── 00-controlplane-cr.yaml         ControlPlane CR (controlplane-keystone)
 │   └── 01-openstack-verify-job.yaml    openstack CLI verify Job
+├── keystone-service-foreign-namespace/
+│   ├── chainsaw-test.yaml              Cross-namespace registration, three legs
+│   ├── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; @TENANT_NS@ token)
+│   ├── 01-keystoneservice-tenant.yaml  The admitted registration (workflow)
+│   ├── 02-keystoneservice-outsider.yaml  The refused registration (outsider)
+│   └── 03-openstack-verify-job.yaml    openstack CLI verify Job on the consumer Secret
 ├── multi-controlplane/
 │   ├── chainsaw-test.yaml              Two-tenant isolation contract
 │   ├── 00-tenant-a-controlplane.yaml   ControlPlane CR controlplane-a
