@@ -132,56 +132,17 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 		{func() client.Object { return &orcv1alpha1.ApplicationCredential{} }, adminAppCredentialName(cp)},
 	}
 
-	// The managed-mode catalog children come from the same per-service table that
-	// registers them (managedCatalogRows), so a second service is a table row here
-	// too, not a second hard-coded pair. In External mode these very names belong to
-	// the unmanaged identity imports instead; either way a name that never existed in
-	// the current mode is simply NotFound and tolerated as already-gone.
+	// The managed-mode catalog children come from the same table that registers them
+	// (managedCatalogRows), today the identity row alone: a built-in service's rows
+	// belong to the KeystoneService child projected for it, and that child's own
+	// finalizer takes them out of the catalog. In External mode these very names
+	// belong to the unmanaged identity imports instead; either way a name that never
+	// existed in the current mode is simply NotFound and tolerated as already-gone.
 	for _, row := range managedCatalogRows(cp) {
 		objs = append(objs, orcChildObject{newService, row.crName})
 		for _, ep := range row.endpoints {
 			objs = append(objs, orcChildObject{newEndpoint, ep.crName})
 		}
-	}
-
-	// Preserved-orphan cover for the image catalog row. When spec.services.glance is
-	// set, managedCatalogRows already enumerated its Service/Endpoints above. When it
-	// is UNSET the reconcile-time sweep (deleteOrphanedGlance) only removes those CRs
-	// on the deletion opt-in, so a glance removal without the opt-in leaves the row
-	// standing — enumerate its names unconditionally here so the ControlPlane teardown
-	// still tears it down. A name that never existed is simply NotFound and tolerated
-	// as already-gone.
-	if cp.Spec.Services.Glance == nil {
-		objs = append(
-			objs,
-			orcChildObject{newService, glanceCatalogServiceName(cp)},
-			orcChildObject{newEndpoint, glanceCatalogEndpointName(cp, "internal")},
-			orcChildObject{newEndpoint, glanceCatalogEndpointName(cp, "public")},
-		)
-	}
-
-	// The same preserved-orphan cover for the placement catalog row: a placement
-	// removal without the deletion opt-in leaves the row standing, so its names are
-	// enumerated unconditionally here and torn down with the ControlPlane.
-	if cp.Spec.Services.Placement == nil {
-		objs = append(
-			objs,
-			orcChildObject{newService, placementCatalogServiceName(cp)},
-			orcChildObject{newEndpoint, placementCatalogEndpointName(cp, "internal")},
-			orcChildObject{newEndpoint, placementCatalogEndpointName(cp, "public")},
-		)
-	}
-
-	// And the same cover for the key-manager catalog row: a barbican removal without
-	// the deletion opt-in leaves the row standing, so its names are enumerated
-	// unconditionally here and torn down with the ControlPlane.
-	if cp.Spec.Services.Barbican == nil {
-		objs = append(
-			objs,
-			orcChildObject{newService, barbicanCatalogServiceName(cp)},
-			orcChildObject{newEndpoint, barbicanCatalogEndpointName(cp, "internal")},
-			orcChildObject{newEndpoint, barbicanCatalogEndpointName(cp, "public")},
-		)
 	}
 
 	objs = append(
@@ -420,7 +381,12 @@ func (r *ControlPlaneReconciler) ownedCatalogEntryChildren(
 // CRs, so the K-ORC finalizers could never complete and the ControlPlane /
 // namespace would hang indefinitely on Terminating ORC CRs. Holding the
 // ControlPlane CR in etcd (via this finalizer) defers the GC cascade, keeping
-// Keystone reachable while K-ORC revokes. The flow:
+// Keystone reachable while K-ORC revokes.
+//
+// Ahead of all of it, the KeystoneService registrations the ControlPlane projects
+// for its built-in services are deleted and waited for: their K-ORC CRs belong to
+// the registration, and its controller drives them through the very admin
+// credential step 1 revokes (deleteRegistrationsBeforeTeardown). The flow:
 //
 //  1. Delete every owned K-ORC CR (idempotent; NotFound / CRD-absent tolerated)
 //     and collect those still present (Terminating behind a K-ORC finalizer).
@@ -437,9 +403,9 @@ func (r *ControlPlaneReconciler) ownedCatalogEntryChildren(
 //     authenticate with the admin application credential whose revocation
 //     step 1 already triggered (the managed children ride the admin-password
 //     cloud instead). Waiting on them is waiting on a dead-credential retry
-//     loop only the stall breaker would cut, five minutes later. Nothing is
+//     loop only the stall breaker would cut, at orcTeardownDeadline. Nothing is
 //     orphaned: an import never owned the OpenStack resource behind it.
-//  4. While managed CRs remain and the bounded orcTeardownStallTimeout has not
+//  4. While managed CRs remain and the bounded orcTeardownDeadline has not
 //     elapsed, report KORCReady=False/FinalizingORC and requeue.
 //  5. Once the stall timeout elapses (K-ORC cannot make progress — most likely
 //     Keystone is already gone, so it cannot revoke), force-remove the
@@ -456,6 +422,18 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		// A ControlPlane that placed nothing carries no remote-children finalizer, so
 		// this is the same no-op it always was.
 		return r.reconcileDeleteRemoteChildren(ctx, cp)
+	}
+
+	// The projected KeystoneService registrations go FIRST, and the rest of the
+	// teardown waits for them. Their K-ORC CRs are owned by the registration rather
+	// than by this ControlPlane, so no enumeration here names them, and their
+	// controller drives them through the admin credential deleteORCResources is
+	// about to revoke. Released first, the KeystoneService controller would find
+	// its ControlPlane NotFound, fail open, and leave those CRs Terminating behind
+	// K-ORC finalizers nothing can complete — the namespace wedge this finalizer
+	// exists to prevent.
+	if res, halt, err := r.deleteRegistrationsBeforeTeardown(ctx, cp); halt {
+		return res, err
 	}
 
 	remaining, hasLiveWork, err := r.deleteORCResources(ctx, cp)
@@ -553,7 +531,7 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 	// owned PushSecrets. Within the stall window, wait and requeue; updateStatus
 	// persists the FinalizingORC condition so the wait is operator-visible. The
 	// reason matches the FinalizingORC event above.
-	if time.Since(cp.DeletionTimestamp.Time) <= orcTeardownStallTimeout {
+	if time.Since(cp.DeletionTimestamp.Time) <= orcTeardownDeadline {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeKORCReady,
 			Status:             metav1.ConditionFalse,
@@ -598,7 +576,7 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		r.Recorder.Event(cp, "Warning", "ORCTeardownStalled", fmt.Sprintf(
 			"K-ORC CRs %v stayed Terminating longer than %s (K-ORC may be unable to reach Keystone to revoke); "+
 				"force-removed their K-ORC finalizers and releasing the ControlPlane",
-			names, orcTeardownStallTimeout,
+			names, orcTeardownDeadline,
 		))
 		if len(orphaned) > 0 {
 			r.Recorder.Event(cp, "Warning", "ORCResourcesOrphaned", fmt.Sprintf(
@@ -610,7 +588,7 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 			))
 		}
 		log.FromContext(ctx).Info("ORC teardown stalled; force-removed K-ORC finalizers",
-			"remaining", names, "orphaned", orphaned, "stallTimeout", orcTeardownStallTimeout)
+			"remaining", names, "orphaned", orphaned, "deadline", orcTeardownDeadline)
 	}
 
 	// A PushSecret still present past the stall window means ESO cannot finish
@@ -634,7 +612,7 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		r.Recorder.Event(cp, "Warning", "OpenBaoCleanupStalled", fmt.Sprintf(
 			"ESO could not delete the mirrored OpenBao data behind %d PushSecret(s) within %s; the OpenBao "+
 				"path(s) %v may still hold the revoked credential — delete them by hand",
-			len(pushRemaining), orcTeardownStallTimeout, stuckKeys,
+			len(pushRemaining), orcTeardownDeadline, stuckKeys,
 		))
 	}
 
@@ -782,7 +760,7 @@ func (r *ControlPlaneReconciler) sweepRegistrationTenantStores(ctx context.Conte
 // Warning records that its children were left running, and the sweep continues
 // without it, because holding the CR in Terminating forever helps nobody.
 //
-// Past orcTeardownStallTimeout the sweep stops waiting: it emits a Warning naming
+// Past orcTeardownDeadline the sweep stops waiting: it emits a Warning naming
 // what is stuck and reports done, so a wedged child can never make a namespace
 // undeletable. That mirrors the ORC stall escape, and it is the same trade — a
 // repairable leak beats a permanently wedged namespace.
@@ -795,7 +773,7 @@ func (r *ControlPlaneReconciler) teardownDedicatedNamespaces(
 	}
 	logger := log.FromContext(ctx)
 
-	stalled := time.Since(cp.DeletionTimestamp.Time) > orcTeardownStallTimeout
+	stalled := time.Since(cp.DeletionTimestamp.Time) > orcTeardownDeadline
 
 	var stuck, unresolved []string
 	for _, assignment := range assignments {
@@ -912,10 +890,10 @@ func (r *ControlPlaneReconciler) teardownDedicatedNamespaces(
 	r.Recorder.Event(cp, "Warning", "NamespaceTeardownStalled", fmt.Sprintf(
 		"cross-namespace child(ren) %v stayed present longer than %s; releasing the ControlPlane anyway. "+
 			"They carry no owner reference, so nothing will garbage-collect them — remove them by hand",
-		stuck, orcTeardownStallTimeout,
+		stuck, orcTeardownDeadline,
 	))
 	logger.Info("cross-namespace teardown stalled; releasing the ControlPlane anyway",
-		"stuck", stuck, "stallTimeout", orcTeardownStallTimeout)
+		"stuck", stuck, "deadline", orcTeardownDeadline)
 	return true, nil
 }
 
@@ -1476,6 +1454,119 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 				"object", key, "error", err.Error())
 		}
 	}
+}
+
+// deleteRegistrationsBeforeTeardown deletes the projected KeystoneService
+// registrations and reports whether reconcileDelete must stop on them this pass,
+// with the (result, error) it returns when it does.
+//
+// It runs before deleteORCResources for the reason deleteOwnedPushSecrets runs
+// before the release: the cleanup it triggers only works while what it
+// authenticates through is still alive. Here that is the whole identity plane —
+// the KeystoneService controller drives the registration's own K-ORC CRs, and
+// they resolve the admin credential the very next step revokes.
+//
+// The wait is bounded by registrationTeardownStallTimeout, a budget of its OWN
+// rather than a share of the one the K-ORC and namespace sweeps hold: it blocks
+// both of them, so a single deadline measured from the deletion timestamp would
+// let an unreachable Keystone spend the whole window here and leave the admin
+// credential's revocation with no time at all — orcTeardownDeadline adds this
+// window on top for exactly that reason. Past it the trade is the one every stall
+// escape in this teardown makes: a registration that cannot finish leaves a
+// repairable leak, whereas waiting forever leaves a ControlPlane nobody can
+// delete. The Warning names what stayed, because past the release nothing can
+// finish it — the registration's controller finds its plane gone and fails open.
+func (r *ControlPlaneReconciler) deleteRegistrationsBeforeTeardown(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) (ctrl.Result, bool, error) {
+	remaining, err := r.deleteProjectedRegistrations(ctx, cp)
+	if err != nil {
+		return ctrl.Result{}, true, err
+	}
+	if len(remaining) == 0 {
+		return ctrl.Result{}, false, nil
+	}
+
+	if time.Since(cp.DeletionTimestamp.Time) <= registrationTeardownStallTimeout {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeKORCReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: cp.Generation,
+			Reason:             "FinalizingServiceRegistrations",
+			Message: fmt.Sprintf(
+				"waiting for %d projected KeystoneService registration(s) to finish their teardown before "+
+					"revoking the admin credential: %v", len(remaining), remaining),
+		})
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, true, nil
+	}
+
+	r.Recorder.Event(cp, "Warning", "ServiceRegistrationTeardownStalled", fmt.Sprintf(
+		"KeystoneService registration(s) %v stayed present longer than %s; continuing the ControlPlane teardown "+
+			"anyway. Their K-ORC CRs still hold the catalog rows and service users they registered, and once this "+
+			"ControlPlane is gone nothing can remove them — delete them from Keystone by hand",
+		remaining, registrationTeardownStallTimeout))
+	log.FromContext(ctx).Info("KeystoneService registration teardown stalled; continuing the ControlPlane teardown",
+		"registrations", remaining, "stallTimeout", registrationTeardownStallTimeout)
+	return ctrl.Result{}, false, nil
+}
+
+// deleteProjectedRegistrations issues an idempotent Delete on every
+// KeystoneService registration this ControlPlane projects for a built-in service
+// and returns those still present afterwards, as "namespace/name".
+//
+// The names are enumerated whether or not the spec still declares the service:
+// dropping a services.<svc> block without the deletion opt-in PRESERVES the
+// registration (the same reserve the reconcile-time sweeps make for the service
+// children), and a preserved registration still has to come down with the plane.
+// <Svc>Namespace() resolves correctly in both cases — for a service placed in a
+// dedicated namespace the block cannot be dropped at all
+// (validateServiceNamespacesImmutable), so the fallback to the ControlPlane's own
+// namespace is only ever taken for a co-located one.
+//
+// The registration always lives on the MANAGEMENT cluster, beside the
+// ControlPlane, whatever cluster its service runs on — so one client reaches all
+// of them. Ownership is re-checked against the live object, so a same-named
+// KeystoneService this ControlPlane did not project is never deleted; that also
+// covers an External-lifecycle namespace, whose registration nothing else reaches
+// (no owner reference to cascade from, and the namespace itself is never deleted).
+func (r *ControlPlaneReconciler) deleteProjectedRegistrations(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) ([]string, error) {
+	keys := []client.ObjectKey{
+		{Name: glanceName(cp), Namespace: cp.GlanceNamespace()},
+		{Name: placementName(cp), Namespace: cp.PlacementNamespace()},
+		{Name: barbicanName(cp), Namespace: cp.BarbicanNamespace()},
+	}
+
+	var remaining []string
+	for _, key := range keys {
+		ks := &c5c3v1alpha1.KeystoneService{}
+		switch err := r.Get(ctx, key, ks); {
+		case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
+			continue
+		case err != nil:
+			return nil, fmt.Errorf("getting KeystoneService %s for teardown: %w", key, err)
+		}
+		if !isControlPlaneChild(ks, cp) {
+			continue
+		}
+		if ks.DeletionTimestamp.IsZero() {
+			if err := client.IgnoreNotFound(r.Delete(ctx, ks)); err != nil {
+				return nil, fmt.Errorf("deleting KeystoneService %s: %w", key, err)
+			}
+		}
+		// Re-Get: a registration that had nothing to tear down carries no finalizer
+		// and is gone with the Delete, so waiting a whole requeue cycle on it would
+		// delay the teardown for nothing.
+		switch err := r.Get(ctx, key, &c5c3v1alpha1.KeystoneService{}); {
+		case apierrors.IsNotFound(err):
+		case err != nil:
+			return nil, fmt.Errorf("re-checking KeystoneService %s: %w", key, err)
+		default:
+			remaining = append(remaining, key.String())
+		}
+	}
+	return remaining, nil
 }
 
 // deleteOwnedPushSecrets issues an idempotent Delete on every PushSecret this

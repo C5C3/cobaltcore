@@ -115,6 +115,25 @@ const (
 	// progressing revoke is not cut short.
 	orcTeardownStallTimeout = 5 * time.Minute
 
+	// registrationTeardownStallTimeout bounds how long the ControlPlane finalizer
+	// waits for the projected KeystoneService registrations to disappear before
+	// continuing the teardown without them. It is a budget of its OWN rather than a
+	// share of orcTeardownStallTimeout because the two waits are sequential, not
+	// concurrent: the registration wait blocks the K-ORC sweep entirely, so one
+	// deadline measured from the deletion timestamp would let an unreachable
+	// Keystone consume the whole window here and leave the admin
+	// ApplicationCredential's revocation without a single attempt. Shorter than the
+	// K-ORC window because a registration that cannot finish is stuck on the very
+	// Keystone the sweep behind it still has to be given time to reach.
+	registrationTeardownStallTimeout = 2 * time.Minute
+
+	// orcTeardownDeadline is the point, measured from the deletion timestamp, at
+	// which the K-ORC sweep, the owned-PushSecret wait and the cross-namespace
+	// sweep give up (they run after each other, on whatever is left, so they share
+	// one). It is the registration window plus the K-ORC one, so each phase gets
+	// its own budget instead of racing the phase before it for a shared deadline.
+	orcTeardownDeadline = registrationTeardownStallTimeout + orcTeardownStallTimeout
+
 	// crdRecheckInterval is the cadence at which the crdWatchGate re-probes
 	// discovery for the optional sibling-operator CRDs that were missing when
 	// the operator started. When one of them appears the gate returns an error

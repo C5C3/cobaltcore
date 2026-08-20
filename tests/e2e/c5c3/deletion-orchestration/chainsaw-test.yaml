@@ -19,9 +19,10 @@
 #      longer recreates it while the ControlPlane is Terminating). K-ORC can now
 #      no longer revoke the admin credential against the Keystone API.
 #   4. Assert ControlPlane deletion COMPLETES within a window larger than the
-#      bounded stall timeout (orcTeardownStallTimeout = 5m): the finalizer waits,
-#      then force-removes the stuck openstack.k-orc.cloud/* finalizers and
-#      releases the ControlPlane.
+#      bounded stall deadline (orcTeardownDeadline = 7m, the 2m registration
+#      window plus orcTeardownStallTimeout): the finalizer waits, then
+#      force-removes the stuck openstack.k-orc.cloud/* finalizers and releases
+#      the ControlPlane.
 #   5. Assert the projected Keystone, MariaDB, Memcached, and all five K-ORC CRs
 #      are garbage-collected, and that an ORC-teardown event was emitted.
 #   6. Assert the Barbican ensemble is reclaimed with it: the child, its
@@ -57,7 +58,7 @@ metadata:
 spec:
   namespace: openstack
   # The full chain bring-up (now including the dedicated OpenBao instance the
-  # Barbican secret store is provisioned against) plus the bounded stall (5m) and
+  # Barbican secret store is provisioned against) plus the bounded stall (7m) and
   # the GC cascade is long-running, so the consolidated script and its diagnostic
   # catch get generous bounds well above the 120s suite default.
   timeouts:
@@ -274,9 +275,9 @@ spec:
           kubectl delete keystone "${KEYSTONE_CR}" -n "${CP_NS}" --ignore-not-found --wait=false
 
           # ── Deletion must COMPLETE despite Keystone being gone ──────────────
-          # The finalizer waits up to orcTeardownStallTimeout (5m), then force-
+          # The finalizer waits up to orcTeardownDeadline (7m), then force-
           # removes the stuck openstack.k-orc.cloud/* finalizers and releases the
-          # ControlPlane. 10m bounds that with comfortable headroom.
+          # ControlPlane. 10m bounds that with headroom.
           echo "== waiting for ControlPlane deletion to complete (<=10m) =="
           kubectl wait --for=delete "controlplane/${CP_NAME}" -n "${CP_NS}" --timeout=10m
           echo "OK: ControlPlane deletion completed — did not hang on Terminating ORC CRs."

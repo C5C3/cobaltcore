@@ -208,7 +208,7 @@ Covers the `c5c3.io/orc-teardown` finalizer. Drives a ControlPlane to Ready,
 initiates deletion, then deletes the projected Keystone CR so K-ORC can no
 longer revoke the admin credential against a live API. Asserts that
 ControlPlane deletion still **completes** within a window larger than the
-bounded stall timeout (`orcTeardownStallTimeout`, 5m): the finalizer waits,
+bounded stall deadline (`orcTeardownDeadline`, 7m): the finalizer waits,
 then force-removes the stuck `openstack.k-orc.cloud/*` finalizers. Also
 asserts the projected Keystone, MariaDB, Memcached, and all five K-ORC CRs are
 garbage-collected and an ORC-teardown event (`ORCTeardownComplete`, or the

@@ -336,19 +336,6 @@ func keystoneCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
 	return keystoneEndpointURL(cp)
 }
 
-// glanceCatalogServiceName / glanceCatalogEndpointName return the deterministic
-// names of the owned K-ORC Service/Endpoint CRs registering the image catalog
-// entry. Unlike identity, the image row follows the generic naming convention from
-// the start (see managedCatalogServiceRow): "{cp}-image-service" and, per interface,
-// "{cp}-image-endpoint-{iface}".
-func glanceCatalogServiceName(cp *c5c3v1alpha1.ControlPlane) string {
-	return cp.Name + "-image-service"
-}
-
-func glanceCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) string {
-	return cp.Name + "-image-endpoint-" + iface
-}
-
 // glanceCatalogURL returns the URL registered for the K-ORC image catalog PUBLIC
 // Endpoint. Per D6 the image service registers both a public and an internal
 // endpoint from the start; the internal endpoint advertises the in-cluster
@@ -369,19 +356,6 @@ func glanceCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
 	return glanceEndpointURL(cp)
 }
 
-// placementCatalogServiceName / placementCatalogEndpointName return the
-// deterministic names of the owned K-ORC Service/Endpoint CRs registering the
-// placement catalog entry, under the generic naming convention (see
-// managedCatalogServiceRow): "{cp}-placement-service" and, per interface,
-// "{cp}-placement-endpoint-{iface}".
-func placementCatalogServiceName(cp *c5c3v1alpha1.ControlPlane) string {
-	return cp.Name + "-placement-service"
-}
-
-func placementCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) string {
-	return cp.Name + "-placement-endpoint-" + iface
-}
-
 // placementCatalogURL returns the URL registered for the K-ORC placement catalog
 // PUBLIC Endpoint. Like the image row, the placement service registers both a
 // public and an internal endpoint from the start; the internal endpoint
@@ -400,19 +374,6 @@ func placementCatalogURL(cp *c5c3v1alpha1.ControlPlane) string {
 		return fmt.Sprintf("https://%s", gw.Hostname)
 	}
 	return placementEndpointURL(cp)
-}
-
-// barbicanCatalogServiceName / barbicanCatalogEndpointName return the
-// deterministic names of the owned K-ORC Service/Endpoint CRs registering the
-// key-manager catalog entry, under the generic naming convention (see
-// managedCatalogServiceRow): "{cp}-key-manager-service" and, per interface,
-// "{cp}-key-manager-endpoint-{iface}".
-func barbicanCatalogServiceName(cp *c5c3v1alpha1.ControlPlane) string {
-	return cp.Name + "-key-manager-service"
-}
-
-func barbicanCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) string {
-	return cp.Name + "-key-manager-endpoint-" + iface
 }
 
 // barbicanCatalogURL returns the URL registered for the K-ORC key-manager catalog
