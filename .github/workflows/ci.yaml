@@ -1523,6 +1523,14 @@ jobs:
   # loudly (E2E_REQUIRE_CONTROLPLANE_STACK=true), so broken wiring in the live
   # chain fails the build instead of SKIPping.
   #
+  # It then runs the keystone-service-foreign-namespace suite, which brings up a
+  # second, Keystone-only ControlPlane of its own to register against from
+  # namespaces that plane does not own. The two are SEPARATE steps rather than one
+  # chainsaw invocation over both directories: the shared config sets failFast, so
+  # a red registration suite would abort the full-chain suite this job exists for,
+  # and sequential steps also keep two identity planes from converging on one node
+  # at the same time.
+  #
   # A real MariaDB + Memcached + Keystone + three operators + OpenBao + ESO +
   # K-ORC + cert-manager + Envoy on one node is heavy, so this is a dedicated job
   # with an extended timeout on the larger runner (matching tempest).
@@ -1664,6 +1672,17 @@ jobs:
           mkdir -p _output/reports
           chainsaw test --config tests/e2e/chainsaw-config.yaml \
             tests/e2e/c5c3/full-controlplane-keystone/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      # The foreign-namespace registration suite runs against the same cluster but
+      # in its own invocation, so its failure cannot cascade into the full-chain
+      # result above. A distinct report name keeps that run's JUnit XML intact.
+      - name: Run foreign-namespace registration E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-keystone-service \
+            tests/e2e/c5c3/keystone-service-foreign-namespace/
         env:
           E2E_REQUIRE_CONTROLPLANE_STACK: "true"
       - name: Dump diagnostic info
