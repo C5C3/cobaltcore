@@ -851,6 +851,17 @@ func (r *ControlPlaneReconciler) teardownDedicatedNamespaces(
 			return false, err
 		}
 		if external {
+			// Both sweeps above ran on the TARGET cluster, and an External namespace is
+			// never deleted, so a namespace that also carries a tenant-store trio at
+			// home (esoTenantStoreClusters) has nothing left to collect it. The Managed
+			// arm below needs no equivalent: deleting the namespace on both clusters
+			// takes each copy with it.
+			if hostsHomeRegistration(cp, assignment.Name) {
+				if err := r.deleteESOTenantStoreTrioIn(ctx, cp, assignment.Name); err != nil {
+					logger.V(1).Info("best-effort collection of the home tenant-store trio failed",
+						"namespace", assignment.Name, "error", err.Error())
+				}
+			}
 			continue
 		}
 

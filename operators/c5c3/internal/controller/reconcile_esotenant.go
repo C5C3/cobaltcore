@@ -206,11 +206,12 @@ func (r *ControlPlaneReconciler) reconcileESOTenantStore(ctx context.Context, cp
 		return ctrl.Result{}, nil
 	}
 
-	// Each namespace's trio is written to the cluster that namespace lives on: the
-	// tenant store has to authenticate from the cluster whose ESO materialises the
-	// Secrets, and its client certificate has to be issued by the cert-manager
-	// there. Every cluster is resolved before the first write, so one that does not
-	// resolve leaves the whole ensemble unwritten.
+	// Each namespace's trio is written to the clusters that namespace's delivery
+	// paths read it from (see esoTenantStoreClusters). A tenant store has to
+	// authenticate from the cluster whose ESO materialises the Secrets, and its
+	// client certificate has to be issued by the cert-manager there. Every cluster
+	// is resolved before the first write, so one that does not resolve leaves the
+	// whole ensemble unwritten.
 	namespaces := controlPlaneNamespaces(cp)
 	children, err := r.childrenClientsFor(ctx, cp, namespaces...)
 	if err != nil {
@@ -232,23 +233,32 @@ func (r *ControlPlaneReconciler) reconcileESOTenantStore(ctx context.Context, cp
 	// EVERY store must be Ready, not just the one in the ControlPlane's namespace:
 	// a service placed in a namespace of its own materialises its secret material
 	// through THAT namespace's store, so a store still issuing its client cert
-	// there is as load-bearing as the one at home. Each store is read from the
-	// cluster it was written to. The first unready store is named with its
-	// namespace so the condition says which one to look at.
+	// there is as load-bearing as the one at home. The gate covers exactly the
+	// copies that were written, each read from the cluster it was written to,
+	// because each carries a delivery path of its own. The first unready store is
+	// named with its namespace and its cluster, so the condition says which one to
+	// look at and where.
 	for _, ns := range namespaces {
-		ready, err := secrets.IsSecretStoreReady(ctx, children[ns], esoTenantStoreName, ns)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if !ready {
-			logger.Info("per-tenant secret store not ready yet, requeuing", "namespace", ns)
+		for _, c := range r.esoTenantStoreClusters(cp, ns, children[ns]) {
+			ready, err := secrets.IsSecretStoreReady(ctx, c, esoTenantStoreName, ns)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if ready {
+				continue
+			}
+			cluster := "management cluster"
+			if commonmulticluster.IsRemote(c) {
+				cluster = "target cluster"
+			}
+			logger.Info("per-tenant secret store not ready yet, requeuing", "namespace", ns, "cluster", cluster)
 			conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 				Type:               conditionTypeESOTenantStoreReady,
 				Status:             metav1.ConditionFalse,
 				ObservedGeneration: cp.Generation,
 				Reason:             "SecretStoreNotReady",
-				Message: fmt.Sprintf("per-tenant SecretStore %q in namespace %q is not ready yet; waiting on cert "+
-					"issuance and the OpenBao backend", esoTenantStoreName, ns),
+				Message: fmt.Sprintf("per-tenant SecretStore %q in namespace %q on the %s is not ready yet; waiting "+
+					"on cert issuance and the OpenBao backend", esoTenantStoreName, ns, cluster),
 			})
 			return ctrl.Result{RequeueAfter: esoTenantStoreRequeueAfter}, nil
 		}
@@ -284,8 +294,9 @@ func (r *ControlPlaneReconciler) reconcileESOTenantStore(ctx context.Context, cp
 // cascade reaps them; elsewhere they carry the ownership labels and the teardown
 // deletes them explicitly.
 //
-// children holds the client each namespace's trio is written with, resolved by
-// the caller before anything is written (see reconcileESOTenantStore).
+// children holds the client each namespace resolved to, from which
+// esoTenantStoreClusters derives the clusters its trio is written to. The caller
+// resolves all of them before anything is written (see reconcileESOTenantStore).
 func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, children map[string]client.Client,
 ) error {
@@ -298,11 +309,63 @@ func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(
 	server, mountPath := r.openBaoConnection(ctx, cp, secrets.EffectiveStoreRef(nil))
 
 	for _, ns := range controlPlaneNamespaces(cp) {
-		if err := r.ensureESOTenantStoreTrioIn(ctx, children[ns], cp, ns, server, mountPath); err != nil {
-			return err
+		for _, c := range r.esoTenantStoreClusters(cp, ns, children[ns]) {
+			if err := r.ensureESOTenantStoreTrioIn(ctx, c, cp, ns, server, mountPath); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
+}
+
+// esoTenantStoreClusters returns the clusters ns's tenant-store trio is written
+// to and gated on. An unplaced namespace exists at home alone, which is what
+// clustersFor answers for it.
+//
+// A PLACED namespace exists on both clusters, but it only needs a store on both
+// where it has a delivery path on both. Every path that follows the service to
+// its cluster — the admin password, the Keystone and per-service DB credentials,
+// an inline service account's consumer Secret — resolves the store through
+// childrenClientFor and reads it THERE. The one exception is a KeystoneService
+// registration: its CR lives on the management cluster beside the ControlPlane,
+// in the namespace of the service it registers, and its controller gates delivery
+// on a SecretStore read locally in that namespace. So a placed namespace hosting
+// a registration gets the home copy as well, and a placed Keystone or Horizon
+// namespace does not — a store nothing reads would still be certificate-issued,
+// ESO-validated against OpenBao for the life of the plane, and, sitting in the
+// pipeline's blocking prefix, would park the whole chain behind its readiness.
+func (r *ControlPlaneReconciler) esoTenantStoreClusters(
+	cp *c5c3v1alpha1.ControlPlane, ns string, children client.Client,
+) []client.Client {
+	if !commonmulticluster.IsRemote(children) || hostsHomeRegistration(cp, ns) {
+		return r.clustersFor(children)
+	}
+	return []client.Client{children}
+}
+
+// hostsHomeRegistration reports whether ns can host a KeystoneService
+// registration, which is the same question as whether something reads its tenant
+// store on the MANAGEMENT cluster: a registration is reconciled where its CR
+// lives, and keystoneServiceStoreReady resolves the store through the home client
+// in the CR's own namespace.
+//
+// Two kinds land in a namespace this ControlPlane occupies. The registrations it
+// projects for its built-in services go to the namespace of the service they
+// register. A THIRD-PARTY one goes to any namespace the serviceRegistrations
+// allowlist admits — and that allowlist may name a namespace this ControlPlane
+// also placed a service in (validateServiceRegistrations deliberately forbids
+// nothing of the sort), which is precisely the case
+// reconcileRegistrationTenantStores excludes as already covered here.
+//
+// An undeclared built-in service resolves to the ControlPlane's own namespace,
+// which is never a placed one, so those arms are only ever consulted for a
+// service that has a namespace of its own.
+func hostsHomeRegistration(cp *c5c3v1alpha1.ControlPlane, ns string) bool {
+	if ns == cp.GlanceNamespace() || ns == cp.PlacementNamespace() || ns == cp.BarbicanNamespace() {
+		return true
+	}
+	sr := cp.Spec.KORC.ServiceRegistrations
+	return sr != nil && slices.Contains(sr.AllowedNamespaces, ns)
 }
 
 // ensureESOTenantStoreTrioIn create-or-updates ONE namespace's tenant-store trio
