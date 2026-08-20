@@ -128,6 +128,15 @@ func desiredPlacementRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.K
 		c5c3v1alpha1.PlacementServiceAccountName, c5c3v1alpha1.PlacementServiceProjectName)
 }
 
+// desiredBarbicanRegistration builds the registration child for Barbican: the
+// key-manager catalog entry and the "barbican" service account.
+func desiredBarbicanRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+	return builtinRegistration(cp, barbicanName(cp), cp.BarbicanNamespace(), "key-manager", "barbican",
+		internalCatalogURL(cp.BarbicanTargetClusterRef(), barbicanEndpointURL(cp), barbicanCatalogURL(cp)),
+		barbicanCatalogURL(cp),
+		c5c3v1alpha1.BarbicanServiceAccountName, c5c3v1alpha1.BarbicanServiceProjectName)
+}
+
 // reconcileBuiltinRegistration drives the registration leg every built-in
 // service shares: it applies the registration child, mirrors the credentials the
 // child delivers onto the cluster a placed service runs on, and gates on the

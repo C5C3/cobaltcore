@@ -249,12 +249,13 @@ type serviceAccountState struct {
 //
 // reconcileServiceAccounts returns BEFORE its status projection on every error
 // path, so without this the last converged slice — Ready=true entries included —
-// survives a pass that could not verify a single account. That stale slice is a
-// live gate, not just cosmetic status: reconcileBarbican runs in the same
-// RunSequentialGroup tail and gates on it via barbicanServiceAccountReady, so a
-// stale True would keep Barbican projecting — and keep its dynamic DB-credential
-// generator minting MySQL users — for a service whose Keystone identity this pass
-// could not confirm. A persistent error would hold that gate open indefinitely.
+// survives a pass that could not verify a single account. Those per-account ready
+// flags are the entire status surface of the user-declared inline entries in
+// spec.korc.serviceAccounts: the built-in services take their Keystone identity
+// from a projected KeystoneService child and read nothing here, so a flag left
+// reading True vouches for an identity this pass could not confirm, and nothing
+// else contradicts it. A persistent error would leave that reading standing
+// indefinitely.
 //
 // Clearing ALL entries rather than only the account that errored is deliberate:
 // the pass returns early, so the accounts ordered after the failing one were never

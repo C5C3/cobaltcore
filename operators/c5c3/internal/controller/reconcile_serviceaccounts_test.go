@@ -160,29 +160,36 @@ func TestReconcileServiceAccounts_SecretStoreNotReady(t *testing.T) {
 }
 
 // TestReconcileServiceAccounts_ErrorClearsStaleReadyStatus pins the invariant the
-// Barbican gate rides on: a pass that fails before its status projection must not
-// leave the previously-converged Ready=true entries behind. reconcileBarbican is
-// no longer unreachable behind a short-circuiting RunPipeline — it runs in the same
-// RunSequentialGroup tail — and gates on exactly this slice, so a stale True would
-// let it keep projecting (and keep minting DB credentials) for a service account
-// this pass could not verify.
+// per-account ready flags rest on: a pass that fails before its status projection
+// must not leave the previously-converged Ready=true entries behind. Those flags
+// are the entire readiness report a user-declared inline entry gets, so a stale
+// True vouches for a Keystone identity this pass could not verify and nothing else
+// contradicts it.
 func TestReconcileServiceAccounts_ErrorClearsStaleReadyStatus(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := saControlPlane()
 	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, c5c3v1alpha1.ServiceAccountSpec{
-		Name:    barbicanServiceAccountName,
+		Name:    "cinder",
 		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
 	})
-	// The last converged pass left both accounts Ready — barbican among them.
+	// The last converged pass left both accounts Ready — cinder among them.
 	rotated := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
 	cp.Status.ServiceAccounts = []c5c3v1alpha1.ServiceAccountStatus{
 		{Name: "nova", Ready: true},
-		{Name: barbicanServiceAccountName, Ready: true, LastPasswordRotation: &rotated},
+		{Name: "cinder", Ready: true, LastPasswordRotation: &rotated},
 	}
-	g.Expect(barbicanServiceAccountReady(cp)).To(BeTrue(), "precondition: the Barbican gate starts open")
+	readyFor := func(name string) bool {
+		for _, s := range cp.Status.ServiceAccounts {
+			if s.Name == name {
+				return s.Ready
+			}
+		}
+		return false
+	}
+	g.Expect(readyFor("cinder")).To(BeTrue(), "precondition: the cinder account starts Ready")
 
 	// Fail every managed-User read, so the FIRST account errors and the pass
-	// returns before barbican is attempted at all.
+	// returns before cinder is attempted at all.
 	s := korcTestScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).
@@ -204,10 +211,10 @@ func TestReconcileServiceAccounts_ErrorClearsStaleReadyStatus(t *testing.T) {
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal(reasonServiceAccountError))
 
-	// The gate this pass could not vouch for is closed — including for the account
-	// the early return never reached.
-	g.Expect(barbicanServiceAccountReady(cp)).To(BeFalse(),
-		"a failed pass must not leave the Barbican service-account gate reading stale-True")
+	// The readiness this pass could not vouch for is cleared — including for the
+	// account the early return never reached.
+	g.Expect(readyFor("cinder")).To(BeFalse(),
+		"a failed pass must not leave the cinder account reading stale-True")
 	for _, sa := range cp.Status.ServiceAccounts {
 		g.Expect(sa.Ready).To(BeFalse(), "account %q still reports stale readiness", sa.Name)
 	}

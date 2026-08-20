@@ -7,12 +7,12 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
-	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -37,9 +37,9 @@ import (
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
-// barbicanTestScheme registers c5c3, client-go, barbican, openbao, K-ORC, and
-// external-secrets types: the projection ensures a DB-credential ExternalSecret,
-// provisions an OpenBao ensemble, and its teardown sweeps the catalog CRs.
+// barbicanTestScheme registers c5c3, client-go, barbican, openbao, and
+// external-secrets types: the projection ensures a DB-credential ExternalSecret
+// and provisions an OpenBao ensemble.
 func barbicanTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -55,9 +55,6 @@ func barbicanTestScheme(t *testing.T) *runtime.Scheme {
 	if err := openbaov1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding openbao scheme: %v", err)
 	}
-	if err := orcv1alpha1.AddToScheme(s); err != nil {
-		t.Fatalf("adding K-ORC scheme: %v", err)
-	}
 	if err := esov1.AddToScheme(s); err != nil {
 		t.Fatalf("adding external-secrets scheme: %v", err)
 	}
@@ -68,9 +65,10 @@ func barbicanTestScheme(t *testing.T) *runtime.Scheme {
 }
 
 // barbicanControlPlane builds a ControlPlane with services.barbican set on a
-// dedicated secret store, a KeystoneReady=True condition, the auto-injected
-// barbican service account, and a Ready per-account status for it: every gate
-// reconcileBarbican checks is already passed.
+// dedicated secret store and a KeystoneReady=True condition — the one gate
+// reconcileBarbican reads off the ControlPlane itself. The other gate is the
+// projected KeystoneService child, which newBarbicanTestReconciler seeds Ready
+// (see withReadyBarbicanRegistration).
 func barbicanControlPlane() *c5c3v1alpha1.ControlPlane {
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{
@@ -106,11 +104,6 @@ func barbicanControlPlane() *c5c3v1alpha1.ControlPlane {
 				AdminCredential: c5c3v1alpha1.AdminCredentialSpec{
 					PasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
 				},
-				ServiceAccounts: []c5c3v1alpha1.ServiceAccountSpec{{
-					Name:    "barbican",
-					Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service-barbican", Create: true},
-					Roles:   []string{"service"},
-				}},
 			},
 		},
 	}
@@ -121,8 +114,50 @@ func barbicanControlPlane() *c5c3v1alpha1.ControlPlane {
 		Reason:             "KeystoneReady",
 		Message:            "ready",
 	})
-	cp.Status.ServiceAccounts = []c5c3v1alpha1.ServiceAccountStatus{{Name: "barbican", Ready: true}}
 	return cp
+}
+
+// readyBarbicanRegistration builds the KeystoneService child the Barbican
+// projection gates on, converged: account provisioned, catalog registered,
+// aggregate Ready. A child in a dedicated namespace carries the ownership labels,
+// so the projection re-applies it instead of refusing to adopt a same-named
+// foreign CR.
+func readyBarbicanRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+	ks := barbicanRegistration(cp, metav1.Condition{
+		Type:    conditionTypeKeystoneServiceAccountReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  reasonKeystoneServiceAccountProvisioned,
+		Message: "account provisioned",
+	})
+	conditions.SetCondition(&ks.Status.Conditions, metav1.Condition{
+		Type:    conditionTypeKeystoneServiceCatalogReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  reasonKeystoneServiceCatalogRegistered,
+		Message: "catalog registered",
+	})
+	conditions.SetCondition(&ks.Status.Conditions, metav1.Condition{
+		Type:    conditionTypeReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  "AllReady",
+		Message: "All sub-conditions are ready",
+	})
+	return ks
+}
+
+// barbicanRegistration builds the KeystoneService child at the projected
+// name/namespace carrying the given conditions, for the tests that drive the gate
+// and the readiness fold from a child that has not converged.
+func barbicanRegistration(cp *c5c3v1alpha1.ControlPlane, conds ...metav1.Condition) *c5c3v1alpha1.KeystoneService {
+	ks := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: barbicanName(cp), Namespace: cp.BarbicanNamespace()},
+	}
+	if ks.Namespace != cp.Namespace {
+		stampControlPlaneChildLabels(ks, cp)
+	}
+	for _, cond := range conds {
+		conditions.SetCondition(&ks.Status.Conditions, cond)
+	}
+	return ks
 }
 
 // externalBarbicanSecretStore switches cp's Barbican onto a secret store run
@@ -250,13 +285,67 @@ func withBarbicanGatesPassed(objs []client.Object) []client.Object {
 	return append(objs, availableBarbicanOpenBaoCluster(cp))
 }
 
+// withReadyBarbicanRegistration seeds the converged KeystoneService child the
+// projection gates on, unless the test seeded one of its own — which is what the
+// gate and readiness-fold tests do.
+//
+// A fake client runs no KeystoneService controller, so without this every
+// projection test would hold at the registration gate and assert against a
+// Barbican that was deliberately not projected.
+func withReadyBarbicanRegistration(objs []client.Object) []client.Object {
+	var cp *c5c3v1alpha1.ControlPlane
+	for _, o := range objs {
+		if c, ok := o.(*c5c3v1alpha1.ControlPlane); ok {
+			cp = c
+			break
+		}
+	}
+	if cp == nil || cp.Spec.Services.Barbican == nil {
+		return objs
+	}
+	for _, o := range objs {
+		if _, ok := o.(*c5c3v1alpha1.KeystoneService); ok {
+			return objs
+		}
+	}
+	return append(objs, readyBarbicanRegistration(cp))
+}
+
+// withBarbicanTenantStore seeds the per-tenant SecretStore in the key manager's
+// namespace when that service is PLACED, unless the test seeded one of its own.
+// The credential mirror a placed service gets is gated on that store, so without
+// it every placement test would hold at SecretStoreNotReady.
+//
+// The store lands on the local client because newBarbicanTestReconciler wires no
+// resolver, which resolves every namespace to the management cluster. The tests
+// that exercise the two-cluster legs build their reconciler themselves.
+func withBarbicanTenantStore(objs []client.Object) []client.Object {
+	var cp *c5c3v1alpha1.ControlPlane
+	for _, o := range objs {
+		if c, ok := o.(*c5c3v1alpha1.ControlPlane); ok {
+			cp = c
+			break
+		}
+	}
+	if cp == nil || targetClusterRefForNamespace(cp, cp.BarbicanNamespace()) == nil {
+		return objs
+	}
+	for _, o := range objs {
+		if _, ok := o.(*esov1.SecretStore); ok {
+			return objs
+		}
+	}
+	return append(objs, readyTenantSecretStore(esoTenantStoreName, cp.BarbicanNamespace(), "", ""))
+}
+
 func newBarbicanTestReconciler(t *testing.T, objs ...client.Object) *ControlPlaneReconciler {
 	t.Helper()
 	s := barbicanTestScheme(t)
+	seeded := withBarbicanTenantStore(withReadyBarbicanRegistration(withBarbicanGatesPassed(objs)))
 	cb := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(seedAPIServerEndpointSlice(withBarbicanGatesPassed(objs))...).
+		WithObjects(seedAPIServerEndpointSlice(seeded)...).
 		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
-			&openbaov1alpha1.OpenBaoCluster{})
+			&openbaov1alpha1.OpenBaoCluster{}, &c5c3v1alpha1.KeystoneService{})
 	return &ControlPlaneReconciler{Client: cb.Build(), Scheme: s}
 }
 
@@ -350,26 +439,11 @@ func TestReconcileBarbican_UnsetPreservesChildAndTearsDownDynamicGenerator(t *te
 // TestReconcileBarbican_UnsetDeletesChildStoreAndEnsembleWithOptIn verifies the
 // opt-in deletion sweep removes everything the projection placed: the child, its
 // secret store, every object of the dedicated OpenBao ensemble (down to the
-// cluster-scoped auth-delegator binding), the DB-credential objects, and the
-// key-manager catalog CRs.
+// cluster-scoped auth-delegator binding), and the DB-credential objects.
 func TestReconcileBarbican_UnsetDeletesChildStoreAndEnsembleWithOptIn(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := barbicanControlPlane()
-	// Catalog CRs as the catalog sub-reconciler left them, owned by this
-	// ControlPlane so the sweep is allowed to remove them.
-	catalogService := &orcv1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: barbicanCatalogServiceName(cp), Namespace: childNamespace(cp),
-			Labels: controlPlaneChildLabels(cp),
-		},
-	}
-	catalogEndpoint := &orcv1alpha1.Endpoint{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: barbicanCatalogEndpointName(cp, "internal"), Namespace: childNamespace(cp),
-			Labels: controlPlaneChildLabels(cp),
-		},
-	}
-	r := newBarbicanTestReconciler(t, cp, catalogService, catalogEndpoint)
+	r := newBarbicanTestReconciler(t, cp)
 	ctx := context.Background()
 
 	_, err := r.reconcileBarbican(ctx, cp)
@@ -450,16 +524,6 @@ func TestReconcileBarbican_UnsetDeletesChildStoreAndEnsembleWithOptIn(t *testing
 			types.NamespacedName{Name: barbicanOpenBaoAuthDelegatorName(instanceName, ns)},
 			&rbacv1.ClusterRoleBinding{},
 		},
-		{
-			"catalog Service",
-			types.NamespacedName{Name: barbicanCatalogServiceName(cp), Namespace: childNamespace(cp)},
-			&orcv1alpha1.Service{},
-		},
-		{
-			"catalog Endpoint",
-			types.NamespacedName{Name: barbicanCatalogEndpointName(cp, "internal"), Namespace: childNamespace(cp)},
-			&orcv1alpha1.Endpoint{},
-		},
 	}
 	for _, tc := range gone {
 		g.Expect(r.Get(ctx, tc.key, tc.obj)).NotTo(Succeed(), "the %s must be swept", tc.what)
@@ -511,11 +575,10 @@ func TestReconcileBarbican_UnsetDeletionDefersTenantWhileInstanceFinalizes(t *te
 
 // TestReconcileBarbican_UnsetPreservesForeignObjects proves the deletion sweep is
 // ownership-checked across every object it names: a Barbican child, its secret
-// store, the OpenBao instance, a catalog Service CR, and the FIXED-name
-// barbican-db-creds ServiceAccount that this ControlPlane does NOT own all survive
-// an opt-in teardown. The ServiceAccount name is not CR-derived, so in a shared
-// service namespace it is exactly the object a collision would hand to somebody
-// else.
+// store, the OpenBao instance, and the FIXED-name barbican-db-creds ServiceAccount
+// that this ControlPlane does NOT own all survive an opt-in teardown. The
+// ServiceAccount name is not CR-derived, so in a shared service namespace it is
+// exactly the object a collision would hand to somebody else.
 func TestReconcileBarbican_UnsetPreservesForeignObjects(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := barbicanControlPlane()
@@ -535,10 +598,7 @@ func TestReconcileBarbican_UnsetPreservesForeignObjects(t *testing.T) {
 	foreignSA := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{Name: barbicanDBCredentialServiceAccountName, Namespace: ns},
 	}
-	foreignCatalogService := &orcv1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: barbicanCatalogServiceName(cp), Namespace: childNamespace(cp)},
-	}
-	r := newBarbicanTestReconciler(t, cp, foreignChild, foreignStore, foreignInstance, foreignSA, foreignCatalogService)
+	r := newBarbicanTestReconciler(t, cp, foreignChild, foreignStore, foreignInstance, foreignSA)
 	ctx := context.Background()
 
 	_, err := r.reconcileBarbican(ctx, cp)
@@ -552,8 +612,6 @@ func TestReconcileBarbican_UnsetPreservesForeignObjects(t *testing.T) {
 		&openbaov1alpha1.OpenBaoCluster{})).To(Succeed(), "a foreign OpenBao instance must never be deleted")
 	g.Expect(r.Get(ctx, types.NamespacedName{Name: barbicanDBCredentialServiceAccountName, Namespace: ns},
 		&corev1.ServiceAccount{})).To(Succeed(), "a foreign barbican-db-creds ServiceAccount must never be deleted")
-	g.Expect(r.Get(ctx, types.NamespacedName{Name: barbicanCatalogServiceName(cp), Namespace: childNamespace(cp)},
-		&orcv1alpha1.Service{})).To(Succeed(), "a catalog Service CR we do not own must never be deleted")
 }
 
 // TestReconcileBarbican_UnsetDeletionToleratesAlreadyGoneObjects covers the
@@ -651,32 +709,24 @@ func TestReconcileBarbican_GatedOnKeystoneReady(t *testing.T) {
 	g.Expect(list.Items).To(BeEmpty())
 }
 
-func TestReconcileBarbican_GatedOnServiceAccountNotDeclared(t *testing.T) {
+// TestReconcileBarbican_GatedOnRegistrationAccountNotReady pins the registration
+// gate: while the child's AccountReady is False no Barbican is projected, the
+// child's own reason and message are relayed, and a Barbican projected by an
+// earlier pass is left running on the credentials it already has.
+func TestReconcileBarbican_GatedOnRegistrationAccountNotReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := barbicanControlPlane()
-	// Drop the auto-injected barbican service account (a webhook-bypassed CR).
-	cp.Spec.KORC.ServiceAccounts = nil
-	r := newBarbicanTestReconciler(t, cp)
-
-	res, err := r.reconcileBarbican(context.Background(), cp)
-
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.IsZero()).To(BeTrue(), "a missing SA declaration is not a transient wait, so no requeue")
-	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
-	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("ServiceAccountNotDeclared"))
-	g.Expect(cond.Message).To(ContainSubstring("spec.korc.serviceAccounts"))
-
-	var list barbicanv1alpha1.BarbicanList
-	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
-	g.Expect(list.Items).To(BeEmpty())
-}
-
-func TestReconcileBarbican_GatedOnServiceAccountNotReady(t *testing.T) {
-	g := NewGomegaWithT(t)
-	cp := barbicanControlPlane()
-	cp.Status.ServiceAccounts = []c5c3v1alpha1.ServiceAccountStatus{{Name: "barbican", Ready: false}}
-	r := newBarbicanTestReconciler(t, cp)
+	ks := barbicanRegistration(cp, metav1.Condition{
+		Type:    conditionTypeKeystoneServiceAccountReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  reasonServiceAccountCollision,
+		Message: `user "barbican" already exists in Keystone`,
+	})
+	existing := &barbicanv1alpha1.Barbican{
+		ObjectMeta: metav1.ObjectMeta{Name: barbicanName(cp), Namespace: cp.BarbicanNamespace()},
+		Spec:       barbicanv1alpha1.BarbicanSpec{Region: "RegionPrevious"},
+	}
+	r := newBarbicanTestReconciler(t, cp, ks, existing)
 
 	res, err := r.reconcileBarbican(context.Background(), cp)
 
@@ -684,11 +734,133 @@ func TestReconcileBarbican_GatedOnServiceAccountNotReady(t *testing.T) {
 	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("WaitingForServiceAccount"))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+	g.Expect(cond.Message).To(ContainSubstring(reasonServiceAccountCollision))
+	g.Expect(cond.Message).To(ContainSubstring(`user "barbican" already exists in Keystone`))
+
+	g.Expect(getProjectedBarbican(t, r.Client, cp).Spec.Region).To(Equal("RegionPrevious"),
+		"the gate must write no Barbican at all, leaving a previously projected one untouched")
+}
+
+// TestReconcileBarbican_GatedOnRegistrationWithoutConditions covers the child that
+// exists but has not been reconciled yet: the gate holds on a waiting message
+// rather than reading a missing condition as ready.
+func TestReconcileBarbican_GatedOnRegistrationWithoutConditions(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	r := newBarbicanTestReconciler(t, cp, barbicanRegistration(cp))
+
+	res, err := r.reconcileBarbican(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+	g.Expect(cond.Message).To(ContainSubstring(conditionTypeKeystoneServiceAccountReady))
 
 	var list barbicanv1alpha1.BarbicanList
 	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
-	g.Expect(list.Items).To(BeEmpty(), "the SA gate must block projection")
+	g.Expect(list.Items).To(BeEmpty(), "the registration gate must block projection")
+}
+
+// TestReconcileBarbican_RegistrationNotFoundAfterEnsureHolds covers the read-back
+// that misses: a child the API server has not made readable yet is a wait, not an
+// error.
+func TestReconcileBarbican_RegistrationNotFoundAfterEnsureHolds(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	s := barbicanTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(seedAPIServerEndpointSlice(withBarbicanGatesPassed([]client.Object{cp}))...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
+			&openbaov1alpha1.OpenBaoCluster{}, &c5c3v1alpha1.KeystoneService{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*c5c3v1alpha1.KeystoneService); ok {
+					return apierrors.NewNotFound(
+						schema.GroupResource{Group: "c5c3.io", Resource: "keystoneservices"}, key.Name)
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileBarbican(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred(), "a child that is not readable yet is not a failure")
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+
+	var list barbicanv1alpha1.BarbicanList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty())
+}
+
+// TestReconcileBarbican_RegistrationReadFailureSurfaces covers the other half: a
+// read that fails for any reason OTHER than absence is an error, wrapped with what
+// it was reading.
+func TestReconcileBarbican_RegistrationReadFailureSurfaces(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	s := barbicanTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(seedAPIServerEndpointSlice(withBarbicanGatesPassed([]client.Object{cp}))...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
+			&openbaov1alpha1.OpenBaoCluster{}, &c5c3v1alpha1.KeystoneService{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*c5c3v1alpha1.KeystoneService); ok {
+					return apierrors.NewInternalError(errors.New("etcd is unavailable"))
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("reading the barbican KeystoneService child:"))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+}
+
+// TestReconcileBarbican_NeverAdoptsForeignRegistration proves the registration
+// write is refused rather than allowed to overwrite a same-named KeystoneService in
+// a namespace the ControlPlane does not own: the refusal surfaces on BarbicanReady
+// and the foreign CR keeps its spec.
+func TestReconcileBarbican_NeverAdoptsForeignRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	cp.Spec.Services.Barbican.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name: "barbican", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	foreign := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: barbicanName(cp), Namespace: "barbican"},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "someone-else"},
+		},
+	}
+	r := newBarbicanTestReconciler(t, cp, foreign)
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+
+	g.Expect(err).To(HaveOccurred(), "adopting a foreign registration must be refused")
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+	g.Expect(cond.Message).To(ContainSubstring("refusing to adopt pre-existing"))
+
+	var live c5c3v1alpha1.KeystoneService
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: barbicanName(cp), Namespace: "barbican",
+	}, &live)).To(Succeed())
+	g.Expect(live.Spec.ControlPlaneRef.Name).To(Equal("someone-else"),
+		"a foreign registration must never be overwritten")
+	g.Expect(live.Labels).NotTo(HaveKey(controlPlaneNameLabel))
 }
 
 // TestReconcileBarbican_DynamicCredentialNotReady_DefersProjection is the gate
@@ -755,7 +927,7 @@ func TestReconcileBarbican_OpenBaoInstanceNotAvailableDefersStoreAndChild(t *tes
 // projection: the release-derived image, the backing services (with the fixed
 // barbican schema, the operator-owned secretRef, and the Dynamic mode of the
 // managed shared database), the top-down Keystone endpoint, the region, the
-// service user derived from the injected account, the resolved ESO store ref, the
+// service user the registration child declares, the resolved ESO store ref, the
 // gateway, the default replicas, and the deliberately-unset apiServer/dbClean.
 func TestReconcileBarbican_ProjectedChildFields(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -771,7 +943,6 @@ func TestReconcileBarbican_ProjectedChildFields(t *testing.T) {
 		ParentRef: commonv1.GatewayParentRefSpec{Name: "openstack-gw"},
 		Hostname:  "barbican.example.com",
 	}
-	sa := cp.Spec.KORC.ServiceAccounts[0]
 	r := newBarbicanTestReconciler(t, cp)
 
 	_, err := r.reconcileBarbican(context.Background(), cp)
@@ -807,12 +978,17 @@ func TestReconcileBarbican_ProjectedChildFields(t *testing.T) {
 
 	g.Expect(b.Spec.Region).To(Equal("RegionOne"))
 
-	// The service user comes from the injected barbican account.
+	// The service user names the account the registration child declares. The user
+	// and project names are what the injected spec.korc.serviceAccounts entry
+	// carried too, so the consumer Secret is the discriminator: it is the one the
+	// registration delivers, not the one reconcileServiceAccounts materialises.
 	g.Expect(b.Spec.ServiceUser.Username).To(Equal("barbican"))
 	g.Expect(b.Spec.ServiceUser.ProjectName).To(Equal("service-barbican"))
-	g.Expect(b.Spec.ServiceUser.UserDomainName).To(Equal(serviceAccountDomainName(cp, sa)))
-	g.Expect(b.Spec.ServiceUser.ProjectDomainName).To(Equal(b.Spec.ServiceUser.UserDomainName))
-	g.Expect(b.Spec.ServiceUser.SecretRef.Name).To(Equal("cp-service-account-barbican-credentials"))
+	// Both domains resolve to the ControlPlane's effective admin domain, which is
+	// what the registration resolves its own unset domainName to.
+	g.Expect(b.Spec.ServiceUser.UserDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(b.Spec.ServiceUser.ProjectDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(b.Spec.ServiceUser.SecretRef.Name).To(Equal("cp-barbican-credentials"))
 	g.Expect(b.Spec.ServiceUser.SecretRef.Key).To(Equal("password"))
 
 	// The resolved ESO store selection, so the child never falls back to its own
@@ -1042,6 +1218,243 @@ func TestReconcileBarbican_CrossNamespaceChildrenAreLabelledNotOwned(t *testing.
 	g.Expect(store.Spec.BarbicanRef.Name).To(Equal("cp-barbican"))
 }
 
+// --- the projected KeystoneService registration ---
+
+func getProjectedBarbicanRegistration(
+	t *testing.T, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) *c5c3v1alpha1.KeystoneService {
+	t.Helper()
+	ks := &c5c3v1alpha1.KeystoneService{}
+	key := types.NamespacedName{Name: barbicanName(cp), Namespace: cp.BarbicanNamespace()}
+	if err := c.Get(context.Background(), key, ks); err != nil {
+		t.Fatalf("getting projected KeystoneService %s: %v", key, err)
+	}
+	return ks
+}
+
+// TestReconcileBarbican_ProjectsTheRegistration pins the registration's content:
+// the key-manager catalog entry with both endpoint rows, the service account in
+// its own per-service project, and the explicit controlPlaneRef a child in a
+// dedicated namespace needs to resolve the ControlPlane at all.
+func TestReconcileBarbican_ProjectsTheRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	r := newBarbicanTestReconciler(t, cp)
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ks := getProjectedBarbicanRegistration(t, r.Client, cp)
+	g.Expect(ks.Name).To(Equal("cp-barbican"))
+	g.Expect(ks.Namespace).To(Equal("default"))
+	g.Expect(ks.Spec.ControlPlaneRef.Name).To(Equal("cp"))
+	g.Expect(ks.Spec.ControlPlaneRef.Namespace).To(Equal("default"),
+		"the namespace is explicit so a child in a dedicated namespace resolves the right ControlPlane")
+
+	g.Expect(ks.Spec.Catalog).NotTo(BeNil())
+	g.Expect(ks.Spec.Catalog.ServiceType).To(Equal("key-manager"))
+	g.Expect(ks.Spec.Catalog.ServiceName).To(Equal("barbican"))
+	g.Expect(ks.Spec.Catalog.Adopt).To(BeFalse(), "a colliding catalog row must fail loud, never be adopted")
+	g.Expect(ks.Spec.Catalog.Endpoints).To(HaveLen(2))
+	g.Expect(ks.Spec.Catalog.Endpoints[0].Interface).To(Equal(c5c3v1alpha1.ExternalEndpointTypeInternal))
+	g.Expect(ks.Spec.Catalog.Endpoints[0].URL).To(Equal(barbicanEndpointURL(cp)))
+	g.Expect(ks.Spec.Catalog.Endpoints[1].Interface).To(Equal(c5c3v1alpha1.ExternalEndpointTypePublic))
+	g.Expect(ks.Spec.Catalog.Endpoints[1].URL).To(Equal(barbicanCatalogURL(cp)))
+
+	g.Expect(ks.Spec.Account).NotTo(BeNil())
+	g.Expect(ks.Spec.Account.UserName).To(Equal("barbican"))
+	g.Expect(ks.Spec.Account.DomainName).To(BeEmpty(),
+		"an unset domain lets the registration resolve the ControlPlane's admin domain")
+	g.Expect(ks.Spec.Account.Adopt).To(BeFalse(), "a colliding user must fail loud, never be taken over")
+	g.Expect(ks.Spec.Account.Project.Name).To(Equal("service-barbican"))
+	g.Expect(ks.Spec.Account.Project.Create).To(BeTrue())
+	g.Expect(ks.Spec.Account.Roles).To(Equal([]string{"service"}))
+
+	g.Expect(metav1.IsControlledBy(ks, cp)).To(BeTrue(),
+		"a co-located registration carries the ControlPlane controller owner reference")
+}
+
+// TestReconcileBarbican_PlacedRegistrationEndpointsFollowThePlacement covers the
+// internal row of a placed service: the in-cluster Service URL resolves nowhere
+// outside its cluster, so the placed entry advertises the public URL on both
+// interfaces.
+func TestReconcileBarbican_PlacedRegistrationEndpointsFollowThePlacement(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedBarbicanControlPlane("remote-a")
+	cp.Spec.Services.Barbican.PublicEndpoint = "https://barbican.example.com"
+	r := newBarbicanTestReconciler(t, cp)
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ks := getProjectedBarbicanRegistration(t, r.Client, cp)
+	g.Expect(ks.Spec.Catalog.Endpoints[0].URL).To(Equal("https://barbican.example.com"))
+	g.Expect(ks.Spec.Catalog.Endpoints[1].URL).To(Equal("https://barbican.example.com"))
+}
+
+// TestReconcileBarbican_CrossNamespaceRegistrationIsLabelledNotOwned verifies the
+// ownership substitute for a registration in a namespace of its own: the two
+// ownership labels and no owner reference.
+func TestReconcileBarbican_CrossNamespaceRegistrationIsLabelledNotOwned(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	cp.Spec.Services.Barbican.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name: "barbican", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	r := newBarbicanTestReconciler(t, cp)
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ks := getProjectedBarbicanRegistration(t, r.Client, cp)
+	g.Expect(ks.Namespace).To(Equal("barbican"))
+	g.Expect(ks.OwnerReferences).To(BeEmpty(), "a cross-namespace child cannot carry an owner reference")
+	g.Expect(ks.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(ks.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "default"))
+	g.Expect(ks.Spec.ControlPlaneRef.Namespace).To(Equal("default"))
+}
+
+// TestReconcileBarbican_ReadyFoldsInTheRegistration proves BarbicanReady is the
+// conjunction of both children: a Ready Barbican whose registration collided on
+// the catalog row keeps BarbicanReady False, naming the failing child condition.
+func TestReconcileBarbican_ReadyFoldsInTheRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	ks := barbicanRegistration(cp,
+		metav1.Condition{
+			Type:    conditionTypeKeystoneServiceAccountReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  reasonKeystoneServiceAccountProvisioned,
+			Message: "account provisioned",
+		},
+		metav1.Condition{
+			Type:    conditionTypeKeystoneServiceCatalogReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonKeystoneServiceCatalogCollision,
+			Message: `a service row of type "key-manager" named "barbican" already exists`,
+		},
+		metav1.Condition{
+			Type:    conditionTypeReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "NotAllReady",
+			Message: "One or more sub-conditions are not ready",
+		},
+	)
+	r := newBarbicanTestReconciler(t, cp, ks)
+	ctx := context.Background()
+
+	_, err := r.reconcileBarbican(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The Barbican child itself reaches Ready.
+	b := getProjectedBarbican(t, r.Client, cp)
+	conditions.SetCondition(&b.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: b.Generation,
+		Reason:             "AllReady",
+		Message:            "ready",
+	})
+	g.Expect(r.Client.Status().Update(ctx, b)).To(Succeed())
+
+	res, err := r.reconcileBarbican(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+		"a Barbican nothing can discover through the catalog is not ready")
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneServiceCatalogCollision),
+		"the failing sub-condition's reason is relayed, not the aggregate's")
+	g.Expect(cond.Message).To(ContainSubstring(conditionTypeKeystoneServiceCatalogReady))
+	g.Expect(cond.Message).To(ContainSubstring("cp-barbican"))
+}
+
+// TestReconcileBarbican_UnsetDeletesRegistrationWithOptIn verifies the opt-in
+// teardown removes the registration too — which is what unregisters Barbican from
+// the catalog and the identity plane.
+func TestReconcileBarbican_UnsetDeletesRegistrationWithOptIn(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	r := newBarbicanTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileBarbican(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	getProjectedBarbicanRegistration(t, r.Client, cp)
+
+	cp.Spec.Services.Barbican = nil
+	cp.Annotations = map[string]string{barbicanDeletionAllowedAnnotation: "true"}
+	_, err = r.reconcileBarbican(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var list c5c3v1alpha1.KeystoneServiceList
+	g.Expect(r.Client.List(ctx, &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty(), "the opt-in annotation must delete the owned registration")
+}
+
+// TestReconcileBarbican_UnsetPreservesForeignRegistration is the ownership guard on
+// that sweep: a same-named KeystoneService the ControlPlane does not own survives.
+func TestReconcileBarbican_UnsetPreservesForeignRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	cp.Spec.Services.Barbican = nil
+	cp.Annotations = map[string]string{barbicanDeletionAllowedAnnotation: "true"}
+
+	foreign := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: barbicanName(cp), Namespace: cp.BarbicanNamespace()},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "someone-else"},
+		},
+	}
+	r := newBarbicanTestReconciler(t, cp, foreign)
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: barbicanName(cp), Namespace: cp.BarbicanNamespace(),
+	}, &c5c3v1alpha1.KeystoneService{})).To(Succeed(),
+		"a KeystoneService we do not own must never be deleted")
+}
+
+// TestReconcileBarbican_UnsetPreservesRegistrationByDefault pins the preserve
+// default: without the opt-in annotation a previously projected registration stays,
+// so an accidental block drop never unregisters a running service.
+func TestReconcileBarbican_UnsetPreservesRegistrationByDefault(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	r := newBarbicanTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileBarbican(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cp.Spec.Services.Barbican = nil
+	_, err = r.reconcileBarbican(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	getProjectedBarbicanRegistration(t, r.Client, cp)
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("BarbicanNotManaged"))
+}
+
+// TestReconcileBarbican_NilBlockProjectsNoRegistration covers the staged-adoption
+// path: a ControlPlane that manages no key manager registers none either.
+func TestReconcileBarbican_NilBlockProjectsNoRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	cp.Spec.Services.Barbican = nil
+	r := newBarbicanTestReconciler(t, cp)
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var list c5c3v1alpha1.KeystoneServiceList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty())
+}
+
 // TestReconcileBarbican_InvalidRejectionSurfacesDistinctReason covers the wedge an
 // immutable child field produces: the Barbican API server rejects the UPDATE with
 // an Invalid (422) error and the loop re-attempts it on every requeue with no
@@ -1070,15 +1483,17 @@ func TestReconcileBarbican_InvalidRejectionSurfacesDistinctReason(t *testing.T) 
 		)},
 	)
 	applies := 0
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
-		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{}).
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyBarbicanRegistration(cp)).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
+			&c5c3v1alpha1.KeystoneService{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Apply: func(ctx context.Context, wc client.WithWatch, ac runtime.ApplyConfiguration,
 				opts ...client.ApplyOption,
 			) error {
-				// The store applies normally; only the child is rejected.
+				// The registration and the store apply normally; only the child is
+				// rejected.
 				applies++
-				if applies == 1 {
+				if applies <= 2 {
 					return wc.Apply(ctx, ac, opts...)
 				}
 				return invalidErr
@@ -1350,8 +1765,8 @@ func TestReconcileBarbican_SecretStoreRejectionSurfacesDistinctReason(t *testing
 	g := NewGomegaWithT(t)
 	s := barbicanTestScheme(t)
 	cp := barbicanControlPlane()
-	// Brownfield database and external store: the store is the first (and only)
-	// object this pass applies.
+	// Brownfield database and external store: the store is the only object this
+	// pass applies past the registration.
 	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
 		Host:      "db.example.com",
 		Database:  "keystone",
@@ -1366,10 +1781,19 @@ func TestReconcileBarbican_SecretStoreRejectionSurfacesDistinctReason(t *testing
 			field.NewPath("spec", "openBao", "kvMountpoint"), "tenant-barbican", "kvMountpoint is immutable",
 		)},
 	)
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
-		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{}).
+	applies := 0
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyBarbicanRegistration(cp)).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
+			&c5c3v1alpha1.KeystoneService{}).
 		WithInterceptorFuncs(interceptor.Funcs{
-			Apply: func(context.Context, client.WithWatch, runtime.ApplyConfiguration, ...client.ApplyOption) error {
+			Apply: func(ctx context.Context, wc client.WithWatch, ac runtime.ApplyConfiguration,
+				opts ...client.ApplyOption,
+			) error {
+				// The registration applies normally; the store is the next object out.
+				applies++
+				if applies == 1 {
+					return wc.Apply(ctx, ac, opts...)
+				}
 				return invalidErr
 			},
 		}).Build()
@@ -1618,19 +2042,24 @@ func placedBarbicanControlPlane(targetCluster string) *c5c3v1alpha1.ControlPlane
 }
 
 // splitBarbicanReconciler builds a reconciler over two fake clusters: the
-// management one holding cp, where every projected CR stays, and a target cluster
-// — registered under every name — holding target, the OpenBao ensemble the
-// service takes with it.
+// management one holding cp and its converged registration, where every projected
+// CR stays, and a target cluster — registered under every name — holding target,
+// the OpenBao ensemble the service takes with it.
+//
+// The target also carries the per-tenant SecretStore the credential mirror is
+// gated on, so the placed pass reaches the legs these tests are about.
 func splitBarbicanReconciler(
 	t *testing.T, cp *c5c3v1alpha1.ControlPlane, target ...client.Object,
 ) (*ControlPlaneReconciler, client.Client) {
 	t.Helper()
 	s := barbicanTestScheme(t)
+	target = append(target, readyTenantSecretStore(esoTenantStoreName, cp.BarbicanNamespace(), "", ""))
 	remote := fake.NewClientBuilder().WithScheme(s).WithObjects(target...).
 		WithStatusSubresource(&openbaov1alpha1.OpenBaoCluster{}).Build()
 	return &ControlPlaneReconciler{
-		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
-			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{}).Build(),
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyBarbicanRegistration(cp)).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
+				&c5c3v1alpha1.KeystoneService{}).Build(),
 		Scheme:   s,
 		Resolver: &childrenResolver{children: remote},
 	}, remote
@@ -1671,8 +2100,9 @@ func TestReconcileBarbican_PlacedOpenBaoGateIsAnsweredFromTheTarget(t *testing.T
 
 // TestReconcileBarbican_UnresolvableTargetParksTheEnsemble covers the cluster that
 // does not resolve: the pass parks on the reason every operator reports that
-// failure under, keeps the sub-reconciler's own requeue cadence, and writes
-// nothing on either cluster — not the ensemble, not the store, not the child.
+// failure under and writes nothing on either cluster — not the ensemble, not the
+// store, not the child. The credential mirror resolves the cluster first, so the
+// requeue is the registration leg's cadence.
 func TestReconcileBarbican_UnresolvableTargetParksTheEnsemble(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
@@ -1681,15 +2111,16 @@ func TestReconcileBarbican_UnresolvableTargetParksTheEnsemble(t *testing.T) {
 
 	remote := fake.NewClientBuilder().WithScheme(s).Build()
 	r := &ControlPlaneReconciler{
-		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
-			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{}).Build(),
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyBarbicanRegistration(cp)).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
+				&c5c3v1alpha1.KeystoneService{}).Build(),
 		Scheme:   s,
 		Resolver: &childrenResolver{children: remote, err: mcruntime.ErrClusterNotFound},
 	}
 
 	res, err := r.reconcileBarbican(ctx, cp)
 	g.Expect(err).NotTo(HaveOccurred(), "an unregistered cluster is a state to wait out, not a reconcile failure")
-	g.Expect(res.RequeueAfter).To(Equal(infraRequeueAfter))
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
 
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
@@ -1786,4 +2217,133 @@ func TestBarbicanKeystoneEndpoint_FollowsThePlacement(t *testing.T) {
 			g.Expect(barbicanKeystoneEndpoint(cp)).To(Equal(tc.want))
 		})
 	}
+}
+
+// --- the credential mirror of a placed service ---
+
+// TestReconcileBarbican_MirrorsRegistrationCredentialsToTheTarget covers the
+// reason the mirror exists: the registration delivers its consumer Secret at home,
+// and a Barbican running on another cluster reads it there — from an
+// ExternalSecret of the same name, over the same OpenBao path.
+func TestReconcileBarbican_MirrorsRegistrationCredentialsToTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := placedBarbicanControlPlane("remote-a")
+
+	instance := availableBarbicanOpenBaoCluster(cp)
+	instance.Labels = remoteChildLabels(cp)
+	r, remote := splitBarbicanReconciler(t, cp, instance, defaultKubernetesEndpointSlice())
+
+	_, err := r.reconcileBarbican(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var mirror esov1.ExternalSecret
+	g.Expect(remote.Get(ctx, types.NamespacedName{
+		Name: "cp-barbican-credentials", Namespace: "key-manager",
+	}, &mirror)).To(Succeed())
+	g.Expect(mirror.Spec.SecretStoreRef.Name).To(Equal(esoTenantStoreName))
+	g.Expect(mirror.Spec.SecretStoreRef.Kind).To(Equal(string(commonv1.SecretStoreKindNamespaced)))
+	g.Expect(mirror.Spec.Target.Name).To(Equal("cp-barbican-credentials"))
+	for _, d := range mirror.Spec.Data {
+		g.Expect(d.RemoteRef.Key).To(Equal("openstack/keystone/key-manager/cp-barbican/service-accounts/credentials"))
+	}
+	// No owner reference crosses a cluster boundary, so the labels are the whole of
+	// the mirror's identity — and what the teardown sweep selects on.
+	g.Expect(mirror.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(mirror.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "default"))
+	g.Expect(mirror.OwnerReferences).To(BeEmpty())
+}
+
+// TestReconcileBarbican_NoMirrorForACoLocatedService is the other half: the
+// registration's own delivery already lands in a co-located service's namespace,
+// so no second ExternalSecret is written for it.
+func TestReconcileBarbican_NoMirrorForACoLocatedService(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := barbicanControlPlane()
+	r := newBarbicanTestReconciler(t, cp)
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: "cp-barbican-credentials", Namespace: "default",
+	}, &esov1.ExternalSecret{})).NotTo(Succeed(),
+		"a co-located service must get no mirror at all")
+}
+
+// TestReconcileBarbican_MirrorHoldsOnANotReadyTargetStore covers the store gate on
+// the target cluster: an ExternalSecret written against a store that is not ready
+// never syncs, so the projection waits and names the store, the namespace, and the
+// cluster it is missing on. The cluster that does not resolve at all is covered by
+// TestReconcileBarbican_UnresolvableTargetParksTheEnsemble.
+func TestReconcileBarbican_MirrorHoldsOnANotReadyTargetStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := barbicanTestScheme(t)
+	cp := placedBarbicanControlPlane("remote-a")
+
+	// The store exists at home but not on the target, which is the cluster the
+	// mirror is materialized on.
+	remote := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).
+			WithObjects(cp, readyBarbicanRegistration(cp),
+				readyTenantSecretStore(esoTenantStoreName, cp.BarbicanNamespace(), "", "")).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
+				&c5c3v1alpha1.KeystoneService{}).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote},
+	}
+
+	res, err := r.reconcileBarbican(ctx, cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountStoreNotReady))
+	g.Expect(cond.Message).To(ContainSubstring(esoTenantStoreName))
+	g.Expect(cond.Message).To(ContainSubstring(`namespace "key-manager"`))
+	g.Expect(cond.Message).To(ContainSubstring("target cluster"))
+
+	g.Expect(remote.Get(ctx, types.NamespacedName{
+		Name: "cp-barbican-credentials", Namespace: "key-manager",
+	}, &esov1.ExternalSecret{})).NotTo(Succeed(), "nothing may be written against a store that is not ready")
+	var instances openbaov1alpha1.OpenBaoClusterList
+	g.Expect(remote.List(ctx, &instances)).To(Succeed())
+	g.Expect(instances.Items).To(BeEmpty(), "the gate holds ahead of the ensemble too")
+}
+
+// TestReconcileBarbican_MirrorStoreLookupFailurePropagates covers the store read
+// that fails outright, as opposed to reporting not-ready: it is wrapped with what
+// was being checked and returned, so the reconcile retries with backoff.
+func TestReconcileBarbican_MirrorStoreLookupFailurePropagates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := barbicanTestScheme(t)
+	cp := placedBarbicanControlPlane("remote-a")
+
+	remote := fake.NewClientBuilder().WithScheme(s).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*esov1.SecretStore); ok {
+					return apierrors.NewInternalError(errors.New("the target apiserver is unavailable"))
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{
+		Client: fake.NewClientBuilder().WithScheme(s).WithObjects(cp, readyBarbicanRegistration(cp)).
+			WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &barbicanv1alpha1.Barbican{},
+				&c5c3v1alpha1.KeystoneService{}).Build(),
+		Scheme:   s,
+		Resolver: &childrenResolver{children: remote},
+	}
+
+	_, err := r.reconcileBarbican(context.Background(), cp)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`in namespace "key-manager"`))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeBarbicanReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
 }
