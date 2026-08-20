@@ -5631,3 +5631,85 @@ func TestIntegration_RegistrationTenantStore_ProvisionedAndCollected(t *testing.
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
 		"the trio must be collected once the namespace's last registration is gone")
 }
+
+// TestIntegration_KeystoneService_ForeignChildrenLandInThePlaneNamespace walks
+// the placement over a real API server, which is the only place two of its
+// properties exist at all.
+//
+// A fake client accepts any ownerReference and any label. An API server does not:
+// it is what proves a child written into the ControlPlane's namespace, marked
+// only by labels, is admitted and then STAYS — nothing owner-references it, so no
+// garbage collection cascade can reach it and the finalizer sweep is the only
+// thing that ever removes it. The unit tests can assert the intent; only this can
+// assert the contract.
+//
+// The KeystoneService controller is not among the reconcilers the envtest manager
+// runs, so the test drives it directly against the live client, the way the
+// production controller would.
+func TestIntegration_KeystoneService_ForeignChildrenLandInThePlaneNamespace(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ksplace-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create the control plane namespace")
+	tenant := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-ksplace-tenant-"}}
+	g.Expect(c.Create(ctx, tenant)).To(Succeed(), "create the registration namespace")
+
+	cp := integrationManagedControlPlane("controlplane", ns.Name)
+	cp.Spec.KORC.ServiceRegistrations = &c5c3v1alpha1.ServiceRegistrationsSpec{
+		AllowedNamespaces: []string{tenant.Name},
+	}
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create the ControlPlane CR")
+	driveControlPlaneToAdminCredentialReady(t, ctx, c, cp)
+
+	registration := integrationKeystoneService(tenant.Name)
+	registration.Spec.Account = nil // catalog-only: the account leg gates on ESO, which envtest has none of.
+	registration.Spec.ControlPlaneRef.Namespace = ns.Name
+	g.Expect(c.Create(ctx, registration)).To(Succeed(), "create the KeystoneService")
+
+	r := &KeystoneServiceReconciler{Client: c, Scheme: c.Scheme()}
+	reconcile := func() {
+		t.Helper()
+		_, err := r.Reconcile(ctx, ctrl.Request{
+			NamespacedName: client.ObjectKeyFromObject(registration),
+		})
+		g.Expect(err).NotTo(HaveOccurred())
+	}
+	reconcile() // installs the finalizer
+	reconcile() // projects
+
+	probeKey := client.ObjectKey{
+		Namespace: ns.Name, Name: keystoneServiceCatalogServiceProbeRef(registration),
+	}
+	probe := &orcv1alpha1.Service{}
+	g.Expect(c.Get(ctx, probeKey, probe)).To(Succeed(),
+		"the API server admits a registration child in the plane's namespace")
+	g.Expect(probe.Labels).To(HaveKeyWithValue(keystoneServiceNameLabel, registration.Name))
+	g.Expect(probe.Labels).To(HaveKeyWithValue(keystoneServiceNamespaceLabel, registration.Namespace))
+	g.Expect(metav1.GetControllerOf(probe)).To(BeNil(),
+		"no owner reference is possible across namespaces")
+
+	// Nothing K-ORC in the tenant's namespace, where the admin clouds.yaml the
+	// child authenticates with does not exist.
+	var tenantServices orcv1alpha1.ServiceList
+	g.Expect(c.List(ctx, &tenantServices, client.InNamespace(tenant.Name))).To(Succeed())
+	g.Expect(tenantServices.Items).To(BeEmpty())
+
+	// The child outlives its CR's deletion until the finalizer sweep removes it:
+	// unreferenced, it is invisible to the garbage collector.
+	g.Expect(c.Delete(ctx, registration)).To(Succeed(), "delete the KeystoneService")
+	g.Eventually(func() bool {
+		reconcile()
+		return apierrors.IsNotFound(c.Get(ctx, probeKey, &orcv1alpha1.Service{}))
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the teardown is what reaps a label-owned child, and it must find it")
+	g.Eventually(func() bool {
+		reconcile()
+		return apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(registration),
+			&c5c3v1alpha1.KeystoneService{}))
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"and then releases the finalizer, once no owned child is listed any more")
+}
