@@ -151,11 +151,19 @@ func openBaoBackupPushSecretNames(keystone *keystonev1alpha1.Keystone) []string 
 //	   Deletes up-front lets ESO's cleanup finalizers run in parallel — a
 //	   serialised Delete→Get loop doubles the worst-case deletion window when
 //	   both objects are held Terminating by ESO.
-//	2. Get each PushSecret. On the first one still present (typically
-//	   Terminating behind ESO's cleanup finalizer) record the
-//	   OpenBaoFinalizerBlocked condition and return done=false so the Keystone
-//	   CR stays alive for the next reconcile. Return done=true only when every
-//	   Get returns NotFound.
+//	2. Get each PushSecret. While one is still present (typically Terminating
+//	   behind ESO's cleanup finalizer) record the OpenBaoFinalizerBlocked
+//	   condition and return done=false so the Keystone CR stays alive for the
+//	   next reconcile. Return done=true when every Get returns NotFound.
+//
+//	   This gone-wait is bounded by OpenBaoCleanupStallTimeout: a PushSecret
+//	   held Terminating past that deadline means ESO's purge can no longer
+//	   succeed (its SecretStore or the store's auth died with the surrounding
+//	   teardown — a namespace deletion reaps them unsequenced), so the handler
+//	   force-removes the PushSecret finalizers after an OpenBaoCleanupStalled
+//	   Warning naming the kv-v2 paths that keep their data, and reports
+//	   done=true. Without the bound, the wedged purge holds the Keystone CR —
+//	   and the namespace containing it — in Terminating forever.
 //
 // NotFound on Get or Delete is tolerated as success for idempotency — a
 // repeated Delete against an already-terminating object is also a no-op.
@@ -242,30 +250,66 @@ func (r *KeystoneReconciler) finalizeOpenBaoSecrets(
 		}
 	}
 
-	// Pass 2: confirm each PushSecret is gone. Returning on the first
-	// still-present object is sufficient — the blocked condition is recorded
-	// once per pass and the subsequent requeue re-enters this function to
-	// re-check the remaining names.
+	// Pass 2: confirm each PushSecret is gone. The blocked condition is
+	// recorded once per pass and the subsequent requeue re-enters this
+	// function to re-check.
+	var held []*esov1alpha1.PushSecret
 	for _, name := range names {
 		key := client.ObjectKey{Namespace: keystone.Namespace, Name: name}
-		getErr := children.Get(ctx, key, &esov1alpha1.PushSecret{})
+		ps := &esov1alpha1.PushSecret{}
+		getErr := children.Get(ctx, key, ps)
 		if apierrors.IsNotFound(getErr) {
 			continue
 		}
 		if getErr != nil {
 			return false, fmt.Errorf("getting PushSecret %s: %w", key, getErr)
 		}
-
-		// PushSecret still present — likely Terminating behind ESO's cleanup
-		// finalizer. Record the blocked condition, log which PushSecret is
-		// holding up release, and requeue.
-		setOpenBaoFinalizerBlockedCondition(keystone, name)
-		logger.V(1).Info("openbao finalizer blocked on PushSecret garbage collection",
-			"pushsecret", name)
-		return false, nil
+		held = append(held, ps)
+	}
+	if len(held) == 0 {
+		return true, nil
 	}
 
-	return true, nil
+	// Bounded gone-wait. A PushSecret still Terminating this long after the
+	// CR's deletion means ESO can no longer purge its kv-v2 path: the store
+	// the purge authenticates through is gone — under a namespace deletion the
+	// per-tenant SecretStore, its ServiceAccount, and its client-certificate
+	// Secret are reaped unsequenced — and every retry fails the same way.
+	// Waiting further wedges the CR, and with it the namespace holding it.
+	// Force-remove the PushSecret finalizers and name the kv-v2 paths that
+	// keep their data: like the ControlPlane's own stalled PushSecrets
+	// (OpenBaoCleanupStalled there too), they are repair-by-hand outcomes,
+	// traded explicitly against hanging forever.
+	if !keystone.DeletionTimestamp.IsZero() &&
+		time.Since(keystone.DeletionTimestamp.Time) > OpenBaoCleanupStallTimeout {
+		heldNames := make([]string, 0, len(held))
+		var stuckKeys []string
+		for _, ps := range held {
+			heldNames = append(heldNames, ps.Name)
+			for _, d := range ps.Spec.Data {
+				stuckKeys = append(stuckKeys, d.Match.RemoteRef.RemoteKey)
+			}
+			ps.Finalizers = nil
+			if updErr := children.Update(ctx, ps); updErr != nil && !apierrors.IsNotFound(updErr) {
+				return false, fmt.Errorf("force-removing finalizers from PushSecret %q: %w", ps.Name, updErr)
+			}
+		}
+		r.Recorder.Eventf(keystone, corev1.EventTypeWarning, "OpenBaoCleanupStalled",
+			"ESO could not delete the OpenBao data behind PushSecret(s) %v within %s of deletion; the kv-v2 "+
+				"path(s) %v may still hold the backed-up keys — delete them by hand",
+			heldNames, OpenBaoCleanupStallTimeout, stuckKeys)
+		logger.Info("openbao cleanup stalled; force-removed backup PushSecret finalizers",
+			"pushsecrets", heldNames, "remoteKeys", stuckKeys, "stallTimeout", OpenBaoCleanupStallTimeout)
+		return true, nil
+	}
+
+	// Still within the stall window — likely Terminating behind ESO's cleanup
+	// finalizer with the remote DeleteSecret in flight. Record the blocked
+	// condition, log which PushSecret is holding up release, and requeue.
+	setOpenBaoFinalizerBlockedCondition(keystone, held[0].Name)
+	logger.V(1).Info("openbao finalizer blocked on PushSecret garbage collection",
+		"pushsecret", held[0].Name)
+	return false, nil
 }
 
 // setOpenBaoFinalizerBlockedCondition records that the openbao finalizer is

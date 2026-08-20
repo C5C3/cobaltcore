@@ -173,9 +173,11 @@ CRs (no MariaDB CRs) and repeated requeue polls do not produce noise:
 | `OpenBaoSecretsFinalized` | Normal | Backup PushSecrets deleted; OpenBao finalizer released | `OpenBao backup PushSecrets deleted; releasing openbao-finalizer` |
 | `RemoteChildrenAbandoned` | Warning | Deletion begins while the target cluster the CR named no longer resolves; the finalizers are released without touching what was written there | `Target cluster is no longer registered; releasing the finalizer without deleting the MariaDB Database, User, and Grant on it` |
 | `ESOAdoptionTimedOut` | Warning | A backup PushSecret was not adopted by ESO within the bounded wait after deletion; the controller force-deletes it to release the finalizer | `PushSecret "<name>" not adopted by ESO within <timeout> of deletion; force-deleting to release the openbao-finalizer (the OpenBao kv-v2 path may be orphaned only if ESO is not running)` |
+| `OpenBaoCleanupStalled` | Warning | A backup PushSecret stayed Terminating behind ESO's cleanup finalizer past the bounded gone-wait — ESO can no longer purge its kv-v2 path, typically because a namespace deletion reaped the SecretStore the purge authenticates through; the controller force-removes the PushSecret finalizers so the CR (and its namespace) can finish deleting | `ESO could not delete the OpenBao data behind PushSecret(s) [<names>] within <timeout> of deletion; the kv-v2 path(s) [<paths>] may still hold the backed-up keys — delete them by hand` |
 
 **Source:** finalizer handlers in `keystone_controller.go`; `ESOAdoptionTimedOut`
-from the adoption-wait pass in `reconcile_secrets.go`
+and `OpenBaoCleanupStalled` from the adoption-wait and gone-wait passes in
+`reconcile_secrets.go`
 
 ### Deployment Rollout
 
@@ -287,6 +289,7 @@ KeystoneReconciler.Reconcile()
   │     ├─ MariaDB cleanup done           → Normal  DatabaseFinalized
   │     ├─ Backup PushSecrets still live  → Normal  FinalizingOpenBaoSecrets
   │     ├─ ESO adoption wait exceeded     → Warning ESOAdoptionTimedOut
+  │     ├─ ESO purge gone-wait exceeded   → Warning OpenBaoCleanupStalled
   │     └─ PushSecrets deleted            → Normal  OpenBaoSecretsFinalized
   │
   ├── reconcileBootstrap()

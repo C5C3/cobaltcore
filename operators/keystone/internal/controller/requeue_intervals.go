@@ -37,4 +37,20 @@ const (
 	// force-deletes the unadopted PushSecret after an ESOAdoptionTimedOut
 	// Warning event (issue #475).
 	OpenBaoAdoptionWaitTimeout = 10 * time.Minute
+
+	// OpenBaoCleanupStallTimeout bounds how long the OpenBao finalizer's Pass-2
+	// gone-wait blocks Keystone CR deletion while a backup PushSecret stays
+	// Terminating behind ESO's cleanup finalizer. ESO purges a kv-v2 path within
+	// seconds while the selected SecretStore still authenticates; a PushSecret
+	// held Terminating this long means the purge can no longer succeed —
+	// typically the CR's namespace is being deleted and the per-tenant
+	// SecretStore, its ServiceAccount, or its client-certificate Secret are
+	// already gone, so every retry fails the same way. Past the deadline the
+	// handler force-removes the PushSecret finalizers after an
+	// OpenBaoCleanupStalled Warning naming the kv-v2 paths that keep their data,
+	// so a namespace deletion cannot wedge forever on an unpurgeable PushSecret.
+	// The value mirrors the ControlPlane's orcTeardownStallTimeout, its
+	// precedent for the same give-up-and-name-the-orphans trade-off. Like
+	// OpenBaoAdoptionWaitTimeout, it runs from the CR's deletionTimestamp.
+	OpenBaoCleanupStallTimeout = 5 * time.Minute
 )

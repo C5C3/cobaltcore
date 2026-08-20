@@ -1230,6 +1230,87 @@ func TestFinalizeOpenBaoSecrets_SetsBlockedConditionOnStall(t *testing.T) {
 	g.Expect(cond.ObservedGeneration).To(Equal(ks.Generation))
 }
 
+// TestFinalizeOpenBaoSecrets_ForceReleasesAfterCleanupStall verifies the
+// bounded Pass-2 gone-wait: a CR deleting for longer than
+// OpenBaoCleanupStallTimeout no longer blocks on PushSecrets held Terminating
+// by ESO's cleanup finalizer — the handler strips their finalizers, emits an
+// OpenBaoCleanupStalled Warning, and reports done=true so the CR (and the
+// namespace holding it) can finish deleting. This is the wedge a namespace
+// deletion produces: the per-tenant SecretStore dies unsequenced, ESO's purge
+// can never succeed, and without the bound the wait never ends.
+func TestFinalizeOpenBaoSecrets_ForceReleasesAfterCleanupStall(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+	ks.DeletionTimestamp = &metav1.Time{
+		Time: time.Now().Add(-(OpenBaoCleanupStallTimeout + time.Minute)),
+	}
+
+	fernet := pushSecretWithPendingDelete("test-keystone-fernet-keys-backup")
+	credential := pushSecretWithPendingDelete("test-keystone-credential-keys-backup")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(fernet, credential).
+		Build()
+
+	rec := record.NewFakeRecorder(10)
+	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue(),
+		"a purge that can no longer succeed must not hold the CR past the stall timeout")
+	g.Expect(drainEventReasons(rec)).To(ContainElement("OpenBaoCleanupStalled"))
+
+	// Stripping the finalizers lets the API server complete the pending
+	// deletion, so both PushSecrets must be gone from the store.
+	for _, name := range []string{
+		"test-keystone-fernet-keys-backup", "test-keystone-credential-keys-backup",
+	} {
+		getErr := c.Get(context.Background(),
+			client.ObjectKey{Name: name, Namespace: "default"}, &esov1alpha1.PushSecret{})
+		g.Expect(apierrors.IsNotFound(getErr)).To(BeTrue(),
+			"PushSecret %s must be released once its finalizers are stripped", name)
+	}
+}
+
+// TestFinalizeOpenBaoSecrets_HoldsWithinCleanupWindow verifies the bound does
+// not fire early: a CR deleting for less than OpenBaoCleanupStallTimeout still
+// blocks on a Terminating PushSecret with OpenBaoFinalizerBlocked, keeps ESO's
+// finalizers in place, and emits no OpenBaoCleanupStalled Warning — a healthy
+// in-flight purge must never be cut short.
+func TestFinalizeOpenBaoSecrets_HoldsWithinCleanupWindow(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := secretsTestScheme()
+	ks := secretsTestKeystone()
+	ks.DeletionTimestamp = &metav1.Time{Time: time.Now().Add(-time.Minute)}
+
+	fernet := pushSecretWithPendingDelete("test-keystone-fernet-keys-backup")
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(fernet).
+		Build()
+
+	rec := record.NewFakeRecorder(10)
+	r := &KeystoneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	done, err := r.finalizeOpenBaoSecrets(context.Background(), r.Client, ks)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeFalse())
+	g.Expect(drainEventReasons(rec)).NotTo(ContainElement("OpenBaoCleanupStalled"))
+
+	fresh := &esov1alpha1.PushSecret{}
+	g.Expect(c.Get(context.Background(),
+		client.ObjectKey{Name: "test-keystone-fernet-keys-backup", Namespace: "default"},
+		fresh)).To(Succeed())
+	g.Expect(fresh.Finalizers).NotTo(BeEmpty(),
+		"within the stall window ESO keeps its finalizers and the purge its chance")
+}
+
 // TestHasESOFinalizer covers each shape the finalizer list can take on a
 // backup PushSecret so the adoption check in finalizeOpenBaoSecrets recognises
 // ESO adoption regardless of ordering or co-resident finalizers.
