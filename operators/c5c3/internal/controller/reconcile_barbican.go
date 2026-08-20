@@ -13,7 +13,6 @@ import (
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
-	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -103,13 +102,6 @@ const defaultBarbicanKVMountpoint = c5c3v1alpha1.DefaultBarbicanKVMountpoint
 // stores by the barbicanName(cp)+"-" prefix, so the suffix must stay under it.
 const barbicanSecretStoreNameSuffix = "-store"
 
-// barbicanServiceAccountName mirrors c5c3v1alpha1.BarbicanServiceAccountName, the
-// single source of truth for the spec.korc.serviceAccounts entry the Barbican
-// projection consumes for its Keystone service user. The defaulting webhook
-// auto-injects it (name barbican, project service-barbican (create), roles
-// [service]) whenever services.barbican is set.
-const barbicanServiceAccountName = c5c3v1alpha1.BarbicanServiceAccountName
-
 // barbicanName returns the deterministic name of the Barbican CR projected from
 // the given ControlPlane (see barbicanNameSuffix).
 func barbicanName(cp *c5c3v1alpha1.ControlPlane) string {
@@ -156,30 +148,6 @@ func barbicanEndpointURL(cp *c5c3v1alpha1.ControlPlane) string {
 	return managedServiceURL(barbicanName(cp), cp.BarbicanNamespace(), 9311, "")
 }
 
-// barbicanServiceAccount returns the auto-injected "barbican" entry from
-// spec.korc.serviceAccounts and whether it is declared. The Barbican projection
-// derives its Keystone service user from this entry.
-func barbicanServiceAccount(cp *c5c3v1alpha1.ControlPlane) (c5c3v1alpha1.ServiceAccountSpec, bool) {
-	for _, sa := range cp.Spec.KORC.ServiceAccounts {
-		if sa.Name == barbicanServiceAccountName {
-			return sa, true
-		}
-	}
-	return c5c3v1alpha1.ServiceAccountSpec{}, false
-}
-
-// barbicanServiceAccountReady reports whether the per-account status entry for the
-// barbican service account is Ready, the readiness reconcileServiceAccounts
-// computes for it in the same reconcile pass, ahead of this sub-reconciler.
-func barbicanServiceAccountReady(cp *c5c3v1alpha1.ControlPlane) bool {
-	for _, s := range cp.Status.ServiceAccounts {
-		if s.Name == barbicanServiceAccountName {
-			return s.Ready
-		}
-	}
-	return false
-}
-
 // barbicanSecretStoreDedicated reports whether the Barbican service stores its
 // secret material in the OpenBao instance the ControlPlane provisions for it,
 // rather than in a server run outside this control plane. The CRD's union rule
@@ -194,13 +162,14 @@ func barbicanSecretStoreDedicated(cp *c5c3v1alpha1.ControlPlane) bool {
 // its BarbicanSecretStore, and drives the BarbicanReady condition.
 //
 // The sub-reconciler is GATED on KeystoneReady (Barbican validates every token
-// against the ControlPlane's Keystone child) and on the barbican service account
-// (Barbican authenticates as that Keystone user). Once gated through, it ensures
-// the DB-credential ExternalSecret, provisions the dedicated OpenBao instance when
-// the service takes one, attaches the secret store, projects the Barbican CR
-// (database/cache DeepCopied from the resolved backing services, the Keystone
-// endpoint derived top-down via barbicanKeystoneEndpoint), and mirrors the child's
-// Ready condition back into BarbicanReady.
+// against the ControlPlane's Keystone child) and on the KeystoneService child it
+// projects for Barbican (Barbican authenticates as the Keystone user that
+// registration provisions). Once gated through, it ensures the DB-credential
+// ExternalSecret, provisions the dedicated OpenBao instance when the service takes
+// one, attaches the secret store, projects the Barbican CR (database/cache
+// DeepCopied from the resolved backing services, the Keystone endpoint derived
+// top-down via barbicanKeystoneEndpoint), and folds both children's readiness into
+// BarbicanReady.
 func (r *ControlPlaneReconciler) reconcileBarbican(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -280,35 +249,14 @@ func (r *ControlPlaneReconciler) reconcileBarbican(ctx context.Context, cp *c5c3
 		return ctrl.Result{RequeueAfter: keystoneInfraGateRequeueAfter}, nil
 	}
 
-	// Gate on the barbican service account. Its declaration is auto-injected by the
-	// defaulting webhook whenever services.barbican is set; a missing entry means
-	// admission was bypassed, so fail loud with a named field rather than projecting
-	// a Barbican with no Keystone user. A declared-but-not-yet-Ready account defers
-	// projection until its user and password are provisioned.
-	sa, declared := barbicanServiceAccount(cp)
-	if !declared {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeBarbicanReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "ServiceAccountNotDeclared",
-			Message: fmt.Sprintf("no spec.korc.serviceAccounts entry named %q is declared; the defaulting webhook "+
-				"injects it whenever services.barbican is set, so a ControlPlane reaching here bypassed admission",
-				barbicanServiceAccountName),
-		})
-		return ctrl.Result{}, nil
-	}
-	if !barbicanServiceAccountReady(cp) {
-		logger.Info("barbican service account not ready, deferring Barbican projection")
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeBarbicanReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForServiceAccount",
-			Message: fmt.Sprintf("service account %q is not yet Ready; Barbican projection deferred until its "+
-				"Keystone user and password are provisioned", barbicanServiceAccountName),
-		})
-		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	// Register Barbican against the identity plane: one KeystoneService child
+	// carrying the key-manager catalog entry and the service account Barbican
+	// authenticates as, mirrored onto a placed Barbican's cluster and gated on the
+	// account it provisions.
+	child, regRes, halt, err := r.reconcileBuiltinRegistration(ctx, cp, desiredBarbicanRegistration(cp),
+		"Barbican", conditionTypeBarbicanReady)
+	if halt {
+		return regRes, err
 	}
 
 	// The EFFECTIVE credentials mode of the database Barbican connects to, resolved
@@ -487,16 +435,20 @@ func (r *ControlPlaneReconciler) reconcileBarbican(ctx context.Context, cp *c5c3
 
 	barbican.Spec.Region = cp.Spec.Region
 
-	// The Keystone service user Barbican authenticates as, derived from the
-	// auto-injected barbican service account: the user and project domains resolve
-	// to the same effective domain the account is provisioned in, and the password
-	// is read from the account's materialized consumer Secret.
+	// The Keystone service user Barbican authenticates as, the account the
+	// registration child provisions: user and project as declared on that child,
+	// both domains the ControlPlane's effective admin domain (which the registration
+	// resolves the same way, its own domainName being unset), and the password read
+	// from the consumer Secret the registration delivers.
 	barbican.Spec.ServiceUser = barbicanv1alpha1.ServiceUserSpec{
-		Username:          serviceAccountUserName(sa),
-		ProjectName:       sa.Project.Name,
-		UserDomainName:    serviceAccountDomainName(cp, sa),
-		ProjectDomainName: serviceAccountDomainName(cp, sa),
-		SecretRef:         commonv1.SecretRefSpec{Name: serviceAccountCredentialsSecretName(cp, sa), Key: "password"},
+		Username:          c5c3v1alpha1.BarbicanServiceAccountName,
+		ProjectName:       c5c3v1alpha1.BarbicanServiceProjectName,
+		UserDomainName:    adminDomainName(cp),
+		ProjectDomainName: adminDomainName(cp),
+		SecretRef: commonv1.SecretRefSpec{
+			Name: keystoneServiceCredentialsSecretName(child),
+			Key:  "password",
+		},
 	}
 
 	// Project the ControlPlane's RESOLVED store selection onto the Barbican child so
@@ -524,7 +476,7 @@ func (r *ControlPlaneReconciler) reconcileBarbican(ctx context.Context, cp *c5c3
 	// at reconcile time stay authoritative, so both keep tracking the operator
 	// defaults instead of being frozen into the projection.
 
-	return commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp,
+	res, err := commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp,
 		commonreconcile.ChildProjectionParams[*barbicanv1alpha1.Barbican]{
 			Child:          barbican,
 			ConditionType:  conditionTypeBarbicanReady,
@@ -548,6 +500,18 @@ func (r *ControlPlaneReconciler) reconcileBarbican(ctx context.Context, cp *c5c3
 			ChildConditions: func(b *barbicanv1alpha1.Barbican) []metav1.Condition { return b.Status.Conditions },
 			Unowned:         crossNamespace,
 		})
+	if err != nil || !res.IsZero() {
+		return res, err
+	}
+
+	// The Barbican child is ready. BarbicanReady still folds in the registration: a
+	// running Barbican whose catalog entry never landed is reachable by nothing that
+	// discovers it through the catalog, and the ControlPlane must not report the key
+	// manager as ready for it.
+	if readyRes, pending := foldBuiltinRegistrationReady(cp, child, conditionTypeBarbicanReady); pending {
+		return readyRes, nil
+	}
+	return res, nil
 }
 
 // barbicanSecretStoreFor builds the single BarbicanSecretStore projected from
@@ -686,7 +650,7 @@ func (r *ControlPlaneReconciler) reconcileBarbicanSecretStore(
 
 // deleteOrphanedBarbican removes a previously-projected Barbican child and
 // everything that followed it (the secret store, the DB-credential objects, and
-// the key-manager catalog K-ORC CRs) when spec.services.barbican is unset AND the
+// the KeystoneService registration) when spec.services.barbican is unset AND the
 // ControlPlane has opted in to deletion via barbicanDeletionAllowedAnnotation
 // (the caller gates this). The dedicated OpenBao ensemble behind the store — the
 // instance, its raft PVC, and its seal key — takes the SECOND opt-in
@@ -702,12 +666,12 @@ func (r *ControlPlaneReconciler) reconcileBarbicanSecretStore(
 // It returns a requeue while the OpenBao instance is still finalizing: the tenant
 // admitting the namespace to the openbao-operator is what the instance's own
 // teardown runs under, so it is removed only once the instance is gone.
+//
+// Deleting the registration is what removes Barbican from the Keystone catalog and
+// from the identity plane: the KeystoneService controller's finalizer tears down
+// the catalog rows, the service user and its project behind it.
 func (r *ControlPlaneReconciler) deleteOrphanedBarbican(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	barbicanNS := cp.BarbicanNamespace()
-	// The catalog CRs are ControlPlane-scoped and live in the ControlPlane's own
-	// namespace regardless of Barbican placement (see managedCatalogService), so
-	// they are swept from childNamespace(cp), not barbicanNS.
-	catalogNS := childNamespace(cp)
 	instanceName := barbicanOpenBaoName(cp)
 
 	// The Dynamic-mode client Certificate has no Go type, so it is addressed
@@ -741,14 +705,16 @@ func (r *ControlPlaneReconciler) deleteOrphanedBarbican(ctx context.Context, cp 
 		&corev1.ServiceAccount{
 			ObjectMeta: metav1.ObjectMeta{Name: barbicanDBCredentialServiceAccountName, Namespace: barbicanNS},
 		},
-		// The Barbican catalog K-ORC CRs: the key-manager Service and its
-		// internal/public Endpoints, in catalogNS.
-		&orcv1alpha1.Service{ObjectMeta: metav1.ObjectMeta{Name: barbicanCatalogServiceName(cp), Namespace: catalogNS}},
-		&orcv1alpha1.Endpoint{
-			ObjectMeta: metav1.ObjectMeta{Name: barbicanCatalogEndpointName(cp, "internal"), Namespace: catalogNS},
-		},
-		&orcv1alpha1.Endpoint{
-			ObjectMeta: metav1.ObjectMeta{Name: barbicanCatalogEndpointName(cp, "public"), Namespace: catalogNS},
+		// The KeystoneService registration. It lives beside the service, on the
+		// management cluster whatever cluster Barbican runs on. The credential mirror
+		// a PLACED service carries is not swept here: like every object this function
+		// names it is resolved through BarbicanNamespace(), which without a
+		// services.barbican block is the ControlPlane's own namespace — so this sweep
+		// reaches co-located objects only. The mirror is reaped by the ControlPlane
+		// teardown, which sweeps a placed namespace's label-owned ExternalSecrets on
+		// the target cluster.
+		&c5c3v1alpha1.KeystoneService{
+			ObjectMeta: metav1.ObjectMeta{Name: barbicanName(cp), Namespace: barbicanNS},
 		},
 	}
 	for _, child := range children {
