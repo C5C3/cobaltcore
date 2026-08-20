@@ -125,6 +125,11 @@ func setupControlPlaneEnvTest(t testing.TB) (client.Client, context.Context, con
 				Owns(&orcv1alpha1.Service{}).
 				Owns(&orcv1alpha1.Endpoint{}).
 				Owns(memcached).
+				// The registration children of the built-in services: their
+				// AccountReady and aggregate Ready are what the Glance, Placement and
+				// Barbican gates consume, and a co-located child carries a controller
+				// owner reference.
+				Owns(&c5c3v1alpha1.KeystoneService{}).
 				// Mirror the identity-backend watch SetupWithManager registers, so
 				// a backend event wakes the ControlPlane exactly as in production.
 				Watches(&keystonev1alpha1.KeystoneIdentityBackend{}, handler.EnqueueRequestsFromMapFunc(
@@ -144,6 +149,8 @@ func setupControlPlaneEnvTest(t testing.TB) (client.Client, context.Context, con
 				Watches(memcached, handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)).
 				Watches(&esov1.ExternalSecret{}, handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)).
 				Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)).
+				Watches(&c5c3v1alpha1.KeystoneService{},
+					handler.EnqueueRequestsFromMapFunc(crossNamespaceChildMapper)).
 				// Mirror the registration watch SetupWithManager registers, so a
 				// KeystoneService appearing in or leaving an allowlisted namespace
 				// moves the tenant-store provisioning set at watch latency here too.
