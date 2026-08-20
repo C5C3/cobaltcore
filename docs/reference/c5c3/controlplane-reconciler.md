@@ -2598,12 +2598,24 @@ The ControlPlane reconciler therefore installs a single finalizer,
 `c5c3.io/orc-teardown`, added on the first reconcile before any K-ORC CR is
 projected. On deletion it:
 
-1. **Deletes the owned K-ORC CRs first** and holds the ControlPlane CR in etcd.
+1. **Deletes the projected `KeystoneService` registrations first** and waits for
+   them to go. Their K-ORC CRs belong to the registration, not to the
+   ControlPlane, so no enumeration in the sweep below names them, and their
+   controller tears them down through the very admin credential step 2 revokes.
+   While one is still Terminating the reconciler reports `KORCReady=False` with
+   reason `FinalizingServiceRegistrations` and requeues; past
+   `registrationTeardownStallTimeout` (2 minutes) it continues anyway and a
+   **Warning** `ServiceRegistrationTeardownStalled` names what was left behind.
+   That window is a budget of its own rather than a share of the K-ORC one: this
+   wait blocks the sweep below entirely, so a shared deadline would let an
+   unreachable Keystone spend it all here and leave the admin credential's
+   revocation with no time at all.
+2. **Deletes the owned K-ORC CRs** and holds the ControlPlane CR in etcd.
    Holding the CR defers the owner-reference GC cascade, so Keystone stays
    reachable while K-ORC revokes. While ORC CRs are still Terminating the
    reconciler reports `KORCReady=False` with reason `FinalizingORC` and requeues
    at the K-ORC cadence.
-2. **Deletes the owned PushSecrets alongside them.** Their
+3. **Deletes the owned PushSecrets alongside them.** Their
    `deletionPolicy: Delete` cleanup — ESO deleting the mirrored OpenBao data —
    needs the per-tenant `SecretStore` and its `eso-tenant-auth` ServiceAccount,
    both of which the post-release GC cascade reaps unsequenced. Deleting the
@@ -2615,7 +2627,7 @@ projected. On deletion it:
    as well as at home, because both the PushSecrets and the store their purge
    authenticates through live there; the force-remove goes to the cluster the
    PushSecret was found on.
-3. **Tears down the cross-namespace children before releasing.** A service
+4. **Tears down the cross-namespace children before releasing.** A service
    placed in a namespace of its own — and the backing services, tenant store,
    and credential material that follow it — carries no owner reference, so no GC
    cascade reaches it; releasing the finalizer first would strand every one of
@@ -2649,10 +2661,10 @@ projected. On deletion it:
    [label-selected sweep](#the-placed-namespaces--openstackc5c3ioremote-children)
    follows them. While children remain the condition
    reports `NamespacesReady=False/FinalizingNamespaces`; past the
-   `orcTeardownStallTimeout` the sweep stops waiting, emits a **Warning**
+   `orcTeardownDeadline` the sweep stops waiting, emits a **Warning**
    `NamespaceTeardownStalled` naming what is stuck, and releases anyway — a wedged
    child must not make a namespace undeletable forever.
-4. **Removes the auth-delegator `ClusterRoleBinding` by hand.** A dedicated
+5. **Removes the auth-delegator `ClusterRoleBinding` by hand.** A dedicated
    Barbican secret store places one cluster-scoped object,
    `{instance}-{hash}-auth-delegator`. A namespaced owner cannot own it, so no GC
    cascade collects it, and the per-namespace sweep in step 3 reaches it only
@@ -2666,12 +2678,12 @@ projected. On deletion it:
    `authDelegatorBinding` — leaves the binding standing with a **Warning**
    `AuthDelegatorBindingNotReclaimed` naming it, rather than holding the
    ControlPlane in `Terminating` for a grant the target withdrew.
-5. **Releases the finalizers once the ORC CRs, PushSecrets, and cross-namespace
+6. **Releases the finalizers once the ORC CRs, PushSecrets, and cross-namespace
    children are gone**, letting GC cascade-delete the same-namespace Keystone,
    the infrastructure, and the remaining children. The remote-children finalizer
    goes in the same update, because by then every placed namespace has been swept
    or its cluster abandoned.
-6. **Releases an unmanaged-only remainder immediately.** K-ORC re-fetches the
+7. **Releases an unmanaged-only remainder immediately.** K-ORC re-fetches the
    imported resource through an *authenticated* actuator before releasing any
    finalizer, and the unmanaged imports authenticate with the admin application
    credential whose revocation step 1 already triggered — so once every CR
@@ -2680,13 +2692,14 @@ projected. On deletion it:
    `openstack.k-orc.cloud/*` finalizers right away and emits a **Normal**
    `ORCImportsReleased` event. An import's deletion is CR-only, so the external
    installation is untouched and nothing is orphaned.
-7. **Bounds the wait.** If managed ORC CRs stay Terminating longer than the
-   `orcTeardownStallTimeout` (5 minutes) — typically because Keystone is already
+8. **Bounds the wait.** If managed ORC CRs stay Terminating past
+   `orcTeardownDeadline` (the 2-minute registration window plus
+   `orcTeardownStallTimeout`, 5 minutes) — typically because Keystone is already
    gone and K-ORC cannot revoke — the reconciler force-removes the stuck
    `openstack.k-orc.cloud/*` finalizers (preserving any non-K-ORC finalizers),
    emits a **Warning** `ORCTeardownStalled` event, and releases the ControlPlane
    finalizer so deletion completes rather than wedging forever.
-8. **Names what the escape orphaned.** The escape strips the very finalizer that
+9. **Names what the escape orphaned.** The escape strips the very finalizer that
    would have revoked the credential or removed the catalog row, so every
    `Managed` CR it releases leaves its OpenStack resource behind with no
    Kubernetes object naming it. A second **Warning**, `ORCResourcesOrphaned`,
@@ -2882,7 +2895,7 @@ K-ORC CR's `ManagementPolicy`, not by the ControlPlane's mode:
   revocation; the app credential does not.
 
 That holds for a teardown K-ORC can complete. The **stall escape is the deliberate
-exception**: past `orcTeardownStallTimeout` it releases every stuck CR by stripping
+exception**: past `orcTeardownDeadline` it releases every stuck CR by stripping
 the finalizer that would have done the revoke or the `DELETE`, so each `Managed` CR
 it releases orphans its OpenStack resource. Those are the CRs the
 `ORCResourcesOrphaned` Warning names.

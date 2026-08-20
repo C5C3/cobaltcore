@@ -386,7 +386,11 @@ func TestReconcileDelete_ForceRemovesORCFinalizersAfterStall(t *testing.T) {
 	g.Expect(events).To(ContainElement(SatisfyAll(
 		ContainSubstring("Warning"),
 		ContainSubstring("ORCTeardownStalled"),
-	)), "the stall escape must emit a Warning ORCTeardownStalled event")
+		// The window the gate actually applies, not the K-ORC share of it: triage
+		// reads this number off the event and computes deletionTimestamp + it, so a
+		// stale one sends the operator hunting a controller stall that never happened.
+		ContainSubstring(orcTeardownDeadline.String()),
+	)), "the stall escape must emit a Warning ORCTeardownStalled event naming its own deadline")
 }
 
 // deletingExternalControlPlane returns an External-mode ControlPlane being
@@ -586,6 +590,237 @@ func TestDeleteOwnedPushSecrets_SweepsLabelOwnedInDedicatedNamespace(t *testing.
 		"a same-named PushSecret we do not own must be left alone")
 }
 
+// TestReconcileDelete_DeletesTheProjectedRegistrationsFirst pins the ordering the
+// registrations depend on: their K-ORC CRs are owned by the KeystoneService, not
+// by this ControlPlane, so no enumeration here names them and their controller
+// drives them through the admin credential this teardown revokes. The teardown
+// therefore deletes the registrations BEFORE it touches the admin
+// ApplicationCredential, and holds its finalizer while one is still Terminating.
+func TestReconcileDelete_DeletesTheProjectedRegistrationsFirst(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := deletingControlPlane(0)
+	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+
+	// The projected registration, owner-referenced because it is co-located, and
+	// carrying the finalizer its own controller releases once its children are gone.
+	registration := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       glanceName(cp),
+			Namespace:  cp.Namespace,
+			Finalizers: []string{keystoneServiceFinalizerName},
+		},
+	}
+	g.Expect(controllerutil.SetControllerReference(cp, registration, s)).To(Succeed())
+	// A live admin ApplicationCredential: if the pass reached the K-ORC sweep it
+	// would be marked for deletion, which is what must NOT happen yet.
+	ac := &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       adminAppCredentialName(cp),
+			Namespace:  childNamespace(cp),
+			Finalizers: []string{"openstack.k-orc.cloud/applicationcredential"},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, registration, ac).Build()
+	rec := record.NewFakeRecorder(10)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(ctx, key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter),
+		"a registration still finishing its own teardown must hold the pass")
+
+	gotRegistration := &c5c3v1alpha1.KeystoneService{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(registration), gotRegistration)).To(Succeed())
+	g.Expect(gotRegistration.DeletionTimestamp.IsZero()).To(BeFalse(),
+		"the projected registration must be deleted by the teardown, not left to the post-release GC cascade")
+
+	gotAC := &orcv1alpha1.ApplicationCredential{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(ac), gotAC)).To(Succeed())
+	g.Expect(gotAC.DeletionTimestamp.IsZero()).To(BeTrue(),
+		"the admin credential must survive until the registrations are gone; revoking it first "+
+			"leaves their K-ORC CRs unable to complete")
+
+	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeTrue())
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("FinalizingServiceRegistrations"))
+}
+
+// TestReconcileDelete_RegistrationStallLeavesTheKORCSweepItsOwnWindow guards the
+// budget split. The registration wait runs BEFORE the K-ORC sweep and blocks it,
+// so a single deadline measured from the deletion timestamp lets an unreachable
+// Keystone spend the whole window on the registrations and drop the sweep
+// straight into its force-remove escape — the admin ApplicationCredential would
+// be orphaned in Keystone, still granting admin scope on the cloud, without one
+// revocation attempt. That is the scenario both stalls exist for, so the two
+// windows are separate: registrationTeardownStallTimeout, then the K-ORC one on
+// top (orcTeardownDeadline).
+func TestReconcileDelete_RegistrationStallLeavesTheKORCSweepItsOwnWindow(t *testing.T) {
+	// A registration wedged behind the finalizer its own controller cannot
+	// release, plus the live admin credential the sweep behind it has to revoke.
+	setup := func(t *testing.T, deletionAge time.Duration) (
+		*ControlPlaneReconciler, *c5c3v1alpha1.ControlPlane, *record.FakeRecorder, client.Client,
+	) {
+		t.Helper()
+		s := korcTestScheme(t)
+		cp := deletingControlPlane(deletionAge)
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+		wedged := &c5c3v1alpha1.KeystoneService{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       glanceName(cp),
+				Namespace:  cp.Namespace,
+				Labels:     controlPlaneChildLabels(cp),
+				Finalizers: []string{keystoneServiceFinalizerName},
+			},
+		}
+		ac := &orcv1alpha1.ApplicationCredential{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       adminAppCredentialName(cp),
+				Namespace:  childNamespace(cp),
+				Finalizers: []string{"openstack.k-orc.cloud/applicationcredential"},
+			},
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, wedged, ac).Build()
+		rec := record.NewFakeRecorder(10)
+		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+		if err := c.Get(context.Background(), types.NamespacedName{
+			Name: cp.Name, Namespace: cp.Namespace,
+		}, cp); err != nil {
+			t.Fatalf("reading the ControlPlane back: %v", err)
+		}
+		return r, cp, rec, c
+	}
+	acKey := func(cp *c5c3v1alpha1.ControlPlane) types.NamespacedName {
+		return types.NamespacedName{Name: adminAppCredentialName(cp), Namespace: childNamespace(cp)}
+	}
+
+	// Past the registration window the teardown gives up on the registration and
+	// the K-ORC sweep begins — with its own window still ahead of it.
+	t.Run("the K-ORC sweep starts once the registration window is spent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		r, cp, rec, c := setup(t, registrationTeardownStallTimeout+time.Minute)
+
+		res, err := r.reconcileDelete(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+		events := strings.Join(drainEvents(rec), "\n")
+		g.Expect(events).To(ContainSubstring("ServiceRegistrationTeardownStalled"))
+
+		ac := &orcv1alpha1.ApplicationCredential{}
+		g.Expect(c.Get(ctx, acKey(cp), ac)).To(Succeed())
+		g.Expect(ac.DeletionTimestamp.IsZero()).To(BeFalse(),
+			"the sweep must issue the revoking Delete once the registrations are given up on")
+
+		cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+		g.Expect(cond).NotTo(BeNil())
+		g.Expect(cond.Reason).To(Equal("FinalizingORC"))
+	})
+
+	// And it keeps that window: a pass past the K-ORC budget of the OLD shared
+	// deadline must still be waiting on the revoke, not force-removing it.
+	t.Run("the K-ORC finalizer survives the old shared deadline", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		r, cp, rec, c := setup(t, orcTeardownStallTimeout+time.Minute)
+
+		res, err := r.reconcileDelete(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+		events := strings.Join(drainEvents(rec), "\n")
+		g.Expect(events).NotTo(ContainSubstring("ORCTeardownStalled"))
+		g.Expect(events).NotTo(ContainSubstring("ORCResourcesOrphaned"))
+
+		ac := &orcv1alpha1.ApplicationCredential{}
+		g.Expect(c.Get(ctx, acKey(cp), ac)).To(Succeed())
+		g.Expect(ac.Finalizers).To(ContainElement("openstack.k-orc.cloud/applicationcredential"),
+			"the admin credential must be given its own window to revoke before it is orphaned")
+		g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeTrue())
+	})
+}
+
+// TestDeleteProjectedRegistrations_ReachesAnExternalNamespaceAndSkipsForeignCRs
+// covers the registration nothing else can collect: one projected into a
+// dedicated namespace carries the ownership labels rather than an owner reference
+// (no cascade), and under the External lifecycle its namespace is never deleted
+// either. A same-named KeystoneService this ControlPlane did not project is left
+// standing.
+func TestDeleteProjectedRegistrations_ReachesAnExternalNamespaceAndSkipsForeignCRs(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := deletingControlPlane(0)
+	cp.Spec.Services.Placement = &c5c3v1alpha1.ServicePlacementSpec{
+		Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+			Name:      "placement",
+			Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleExternal,
+		},
+	}
+	cp.Spec.Services.Barbican = &c5c3v1alpha1.ServiceBarbicanSpec{}
+
+	ours := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      placementName(cp),
+			Namespace: "placement",
+			Labels:    controlPlaneChildLabels(cp),
+		},
+	}
+	// Same name, no claim: somebody else's registration in a namespace this
+	// ControlPlane does not own.
+	foreign := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: barbicanName(cp), Namespace: cp.Namespace},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ours, foreign).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	remaining, err := r.deleteProjectedRegistrations(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(remaining).To(BeEmpty(), "a registration with no finalizer is gone with the Delete")
+
+	err = c.Get(ctx, client.ObjectKeyFromObject(ours), &c5c3v1alpha1.KeystoneService{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"the registration in an External namespace must be deleted: nothing else can reach it")
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(foreign), &c5c3v1alpha1.KeystoneService{})).To(Succeed(),
+		"a KeystoneService this ControlPlane did not project must be left alone")
+}
+
+// TestDeleteProjectedRegistrations_EnumeratesAPreservedRegistration pins that the
+// names are enumerated whether or not the spec still declares the service:
+// dropping a services.<svc> block without the deletion opt-in preserves the
+// registration, and a preserved one still has to come down with the plane.
+func TestDeleteProjectedRegistrations_EnumeratesAPreservedRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := deletingControlPlane(0) // no services.glance at all
+	preserved := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      glanceName(cp),
+			Namespace: cp.Namespace,
+			Labels:    controlPlaneChildLabels(cp),
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, preserved).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	_, err := r.deleteProjectedRegistrations(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	err = c.Get(ctx, client.ObjectKeyFromObject(preserved), &c5c3v1alpha1.KeystoneService{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"a registration preserved past its service block must still be torn down with the ControlPlane")
+}
+
 // TestReconcileDelete_MixedRemainderStillWaitsForManaged asserts the release
 // shortcut stays gated on the managed children: while a managed CR (here the
 // application credential, whose revocation is real OpenStack work) is still
@@ -741,10 +976,8 @@ func TestReconcileDelete_ExternalMode_TearsDownOnlyOwnedORCCRs(t *testing.T) {
 	// Every owned K-ORC CR is gone — including the three per-interface identity
 	// Endpoint imports and the opt-in entry's Service/Endpoint.
 	children := orcChildObjects(cp)
-	g.Expect(children).To(HaveLen(5+len(externalCatalogInterfaces)+2+3+3+3),
-		"the sweep must enumerate the catalog imports, the declared entry, and the three preserved-orphan "+
-			"image-catalog, placement-catalog, and key-manager-catalog names (none of those services is set in "+
-			"External mode)")
+	g.Expect(children).To(HaveLen(5+len(externalCatalogInterfaces)+2),
+		"the sweep must enumerate the identity/admin CRs, the catalog imports, and the declared entry")
 	for _, child := range children {
 		obj := child.newObj()
 		key := types.NamespacedName{Name: child.name, Namespace: childNamespace(cp)}
@@ -817,39 +1050,47 @@ func TestDeleteORCResources_ExternalMode_LeavesUnmanagedImportsUntouched(t *test
 }
 
 // TestOrcChildObjects_ManagedModeUnchanged is the golden-behavior guard on the
-// sweep: a Managed ControlPlane with no image, no placement, and no key-manager
-// service enumerates exactly the five identity/admin CRs it always did, plus the
-// three preserved-orphan catalog names each of those teardowns adds
-// unconditionally (all NotFound-tolerated when the service was never set) — and
-// nothing more, so neither the External-mode nor the per-service additions widen
-// the managed blast radius.
+// sweep: a Managed ControlPlane enumerates exactly the five identity/admin CRs it
+// always did and nothing more, whether or not it declares an image, a placement or
+// a key-manager service. Their catalog rows belong to the KeystoneService child
+// projected for each of them, which tears them down under its own finalizer, so
+// neither the External-mode nor the per-service additions widen the managed blast
+// radius.
 func TestOrcChildObjects_ManagedModeUnchanged(t *testing.T) {
-	g := NewGomegaWithT(t)
+	assertIdentityAndAdminOnly := func(t *testing.T, cp *c5c3v1alpha1.ControlPlane) {
+		t.Helper()
+		g := NewGomegaWithT(t)
 
-	cp := korcControlPlane() // services.glance, .placement, and .barbican unset
-	children := orcChildObjects(cp)
-
-	g.Expect(children).To(HaveLen(14))
-	names := make([]string, 0, len(children))
-	for _, child := range children {
-		names = append(names, child.name)
+		children := orcChildObjects(cp)
+		g.Expect(children).To(HaveLen(5))
+		names := make([]string, 0, len(children))
+		for _, child := range children {
+			names = append(names, child.name)
+		}
+		g.Expect(names).To(ConsistOf(
+			adminAppCredentialName(cp),
+			keystoneServiceName(cp),
+			keystoneEndpointName(cp),
+			adminUserRef(cp),
+			adminDomainRef(cp),
+		))
 	}
-	g.Expect(names).To(ConsistOf(
-		adminAppCredentialName(cp),
-		keystoneServiceName(cp),
-		keystoneEndpointName(cp),
-		adminUserRef(cp),
-		adminDomainRef(cp),
-		glanceCatalogServiceName(cp),
-		glanceCatalogEndpointName(cp, "internal"),
-		glanceCatalogEndpointName(cp, "public"),
-		placementCatalogServiceName(cp),
-		placementCatalogEndpointName(cp, "internal"),
-		placementCatalogEndpointName(cp, "public"),
-		barbicanCatalogServiceName(cp),
-		barbicanCatalogEndpointName(cp, "internal"),
-		barbicanCatalogEndpointName(cp, "public"),
-	))
+
+	t.Run("no built-in service declared", func(t *testing.T) {
+		assertIdentityAndAdminOnly(t, korcControlPlane()) // services.glance, .placement, and .barbican unset
+	})
+
+	t.Run("every built-in service declared", func(t *testing.T) {
+		cp := korcControlPlane()
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+		cp.Spec.Services.Placement = &c5c3v1alpha1.ServicePlacementSpec{}
+		cp.Spec.Services.Barbican = &c5c3v1alpha1.ServiceBarbicanSpec{
+			SecretStore: c5c3v1alpha1.ServiceBarbicanSecretStoreSpec{
+				Dedicated: &c5c3v1alpha1.BarbicanDedicatedSecretStoreSpec{},
+			},
+		}
+		assertIdentityAndAdminOnly(t, cp)
+	})
 }
 
 // TestOrcChildObjects_ExternalOptInEnumeratesDeclaredEntry proves the sweep tracks
@@ -1629,7 +1870,7 @@ func TestTeardownDedicatedNamespaces_SweepsExternalNamespaceResidue(t *testing.T
 func TestTeardownDedicatedNamespaces_StallEscape(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := namespaceTeardownScheme(t)
-	cp := deletingNamespacedControlPlane(orcTeardownStallTimeout + time.Minute)
+	cp := deletingNamespacedControlPlane(orcTeardownDeadline + time.Minute)
 	cp.Spec.Services.Horizon = nil
 
 	wedged := &keystonev1alpha1.Keystone{
@@ -1653,6 +1894,8 @@ func TestTeardownDedicatedNamespaces_StallEscape(t *testing.T) {
 	events := strings.Join(drainEvents(rec), "\n")
 	g.Expect(events).To(ContainSubstring("NamespaceTeardownStalled"))
 	g.Expect(events).To(ContainSubstring("identity/" + keystoneName(cp)))
+	g.Expect(events).To(ContainSubstring(orcTeardownDeadline.String()),
+		"the Warning must name the deadline this sweep is gated on")
 }
 
 // --- barbican ensemble teardown ---
@@ -2586,7 +2829,7 @@ func TestReconcileDelete_StallEscapeKeepsTheRemoteChildrenFinalizer(t *testing.T
 	ctx := context.Background()
 	s := namespaceTeardownScheme(t)
 
-	cp := deletingPlacedControlPlane(orcTeardownStallTimeout+time.Minute,
+	cp := deletingPlacedControlPlane(orcTeardownDeadline+time.Minute,
 		c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
 	// A managed K-ORC CR wedged behind a finalizer K-ORC can no longer run.
 	wedged := &orcv1alpha1.ApplicationCredential{ObjectMeta: terminatingImportMeta(

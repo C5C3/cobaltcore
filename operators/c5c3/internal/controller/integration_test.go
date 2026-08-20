@@ -640,6 +640,33 @@ func simulateCatalogServiceEndpointAvailableWhenPresent(t testing.TB, ctx contex
 	g.Expect(c.Status().Update(ctx, ep)).To(Succeed(), "set identity Endpoint Available=True")
 }
 
+// The full-chain scenario still drives the retired inline catalog names — the ones
+// the ControlPlane registered itself before the built-in services moved onto their
+// KeystoneService children — so it carries its own copies until it is rewritten.
+func retiredGlanceCatalogServiceName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cp.Name + "-image-service"
+}
+
+func retiredGlanceCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) string {
+	return cp.Name + "-image-endpoint-" + iface
+}
+
+func retiredPlacementCatalogServiceName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cp.Name + "-placement-service"
+}
+
+func retiredPlacementCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) string {
+	return cp.Name + "-placement-endpoint-" + iface
+}
+
+func retiredBarbicanCatalogServiceName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cp.Name + "-key-manager-service"
+}
+
+func retiredBarbicanCatalogEndpointName(cp *c5c3v1alpha1.ControlPlane, iface string) string {
+	return cp.Name + "-key-manager-endpoint-" + iface
+}
+
 // simulateGlanceCatalogAvailableWhenPresent waits for the image (Glance) catalog
 // row reconcileCatalog projects when spec.services.glance is set — the image
 // Service plus its internal and public Endpoints — and marks each Available
@@ -656,7 +683,7 @@ func simulateGlanceCatalogAvailableWhenPresent(t testing.TB, ctx context.Context
 
 	svc := &orcv1alpha1.Service{}
 	g.Eventually(func() error {
-		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: glanceCatalogServiceName(cp)}, svc)
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: retiredGlanceCatalogServiceName(cp)}, svc)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "image Service should be registered")
 	meta.SetStatusCondition(&svc.Status.Conditions, metav1.Condition{
 		Type:               orcv1alpha1.ConditionAvailable,
@@ -672,7 +699,7 @@ func simulateGlanceCatalogAvailableWhenPresent(t testing.TB, ctx context.Context
 	for _, iface := range []string{"internal", "public"} {
 		ep := &orcv1alpha1.Endpoint{}
 		g.Eventually(func() error {
-			return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: glanceCatalogEndpointName(cp, iface)}, ep)
+			return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: retiredGlanceCatalogEndpointName(cp, iface)}, ep)
 		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "image %q Endpoint should be registered", iface)
 		meta.SetStatusCondition(&ep.Status.Conditions, metav1.Condition{
 			Type:               orcv1alpha1.ConditionAvailable,
@@ -701,7 +728,7 @@ func simulatePlacementCatalogAvailableWhenPresent(t testing.TB, ctx context.Cont
 
 	svc := &orcv1alpha1.Service{}
 	g.Eventually(func() error {
-		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: placementCatalogServiceName(cp)}, svc)
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: retiredPlacementCatalogServiceName(cp)}, svc)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "placement Service should be registered")
 	meta.SetStatusCondition(&svc.Status.Conditions, metav1.Condition{
 		Type:               orcv1alpha1.ConditionAvailable,
@@ -715,7 +742,7 @@ func simulatePlacementCatalogAvailableWhenPresent(t testing.TB, ctx context.Cont
 	for _, iface := range []string{"internal", "public"} {
 		ep := &orcv1alpha1.Endpoint{}
 		g.Eventually(func() error {
-			return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: placementCatalogEndpointName(cp, iface)}, ep)
+			return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: retiredPlacementCatalogEndpointName(cp, iface)}, ep)
 		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "placement %q Endpoint should be registered", iface)
 		meta.SetStatusCondition(&ep.Status.Conditions, metav1.Condition{
 			Type:               orcv1alpha1.ConditionAvailable,
@@ -742,7 +769,7 @@ func simulateBarbicanCatalogAvailableWhenPresent(t testing.TB, ctx context.Conte
 
 	svc := &orcv1alpha1.Service{}
 	g.Eventually(func() error {
-		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: barbicanCatalogServiceName(cp)}, svc)
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: retiredBarbicanCatalogServiceName(cp)}, svc)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "key-manager Service should be registered")
 	meta.SetStatusCondition(&svc.Status.Conditions, metav1.Condition{
 		Type:               orcv1alpha1.ConditionAvailable,
@@ -756,7 +783,7 @@ func simulateBarbicanCatalogAvailableWhenPresent(t testing.TB, ctx context.Conte
 	for _, iface := range []string{"internal", "public"} {
 		ep := &orcv1alpha1.Endpoint{}
 		g.Eventually(func() error {
-			return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: barbicanCatalogEndpointName(cp, iface)}, ep)
+			return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: retiredBarbicanCatalogEndpointName(cp, iface)}, ep)
 		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "key-manager %q Endpoint should be registered", iface)
 		meta.SetStatusCondition(&ep.Status.Conditions, metav1.Condition{
 			Type:               orcv1alpha1.ConditionAvailable,
@@ -1986,7 +2013,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// in-cluster Glance API URL at birth — this fixture sets no gateway, so the
 	// public interface has not yet diverged to an external URL.
 	imgSvc := &orcv1alpha1.Service{}
-	g.Expect(c.Get(ctx, types.NamespacedName{Name: glanceCatalogServiceName(final), Namespace: ns.Name}, imgSvc)).
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: retiredGlanceCatalogServiceName(final), Namespace: ns.Name}, imgSvc)).
 		To(Succeed(), "get projected image Service CR")
 	g.Expect(imgSvc.Spec.Resource).NotTo(BeNil())
 	g.Expect(imgSvc.Spec.Resource.Type).To(Equal("image"), "Service type must be image")
@@ -1995,11 +2022,11 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	wantGlanceURL := fmt.Sprintf("http://%s.%s.svc:9292", glanceName(final), ns.Name)
 	for _, iface := range []string{"internal", "public"} {
 		imgEP := &orcv1alpha1.Endpoint{}
-		g.Expect(c.Get(ctx, types.NamespacedName{Name: glanceCatalogEndpointName(final, iface), Namespace: ns.Name}, imgEP)).
+		g.Expect(c.Get(ctx, types.NamespacedName{Name: retiredGlanceCatalogEndpointName(final, iface), Namespace: ns.Name}, imgEP)).
 			To(Succeed(), "get projected image %q Endpoint CR", iface)
 		g.Expect(imgEP.Spec.Resource).NotTo(BeNil())
 		g.Expect(imgEP.Spec.Resource.Interface).To(Equal(iface), "Endpoint interface must be %q", iface)
-		g.Expect(string(imgEP.Spec.Resource.ServiceRef)).To(Equal(glanceCatalogServiceName(final)),
+		g.Expect(string(imgEP.Spec.Resource.ServiceRef)).To(Equal(retiredGlanceCatalogServiceName(final)),
 			"image Endpoint serviceRef must reference the image Service CR")
 		g.Expect(imgEP.Spec.Resource.URL).To(Equal(wantGlanceURL),
 			"both image Endpoint interfaces advertise the in-cluster Glance API URL (no gateway in this fixture)")
@@ -2010,7 +2037,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// served at the root, so the URL carries no path suffix, and with no gateway in
 	// this fixture the public interface has not diverged from the in-cluster one.
 	plSvc := &orcv1alpha1.Service{}
-	g.Expect(c.Get(ctx, types.NamespacedName{Name: placementCatalogServiceName(final), Namespace: ns.Name}, plSvc)).
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: retiredPlacementCatalogServiceName(final), Namespace: ns.Name}, plSvc)).
 		To(Succeed(), "get projected placement Service CR")
 	g.Expect(plSvc.Spec.Resource).NotTo(BeNil())
 	g.Expect(plSvc.Spec.Resource.Type).To(Equal("placement"), "Service type must be placement")
@@ -2019,11 +2046,11 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	wantPlacementURL := fmt.Sprintf("http://%s.%s.svc:8778", placementName(final), ns.Name)
 	for _, iface := range []string{"internal", "public"} {
 		plEP := &orcv1alpha1.Endpoint{}
-		g.Expect(c.Get(ctx, types.NamespacedName{Name: placementCatalogEndpointName(final, iface), Namespace: ns.Name}, plEP)).
+		g.Expect(c.Get(ctx, types.NamespacedName{Name: retiredPlacementCatalogEndpointName(final, iface), Namespace: ns.Name}, plEP)).
 			To(Succeed(), "get projected placement %q Endpoint CR", iface)
 		g.Expect(plEP.Spec.Resource).NotTo(BeNil())
 		g.Expect(plEP.Spec.Resource.Interface).To(Equal(iface), "Endpoint interface must be %q", iface)
-		g.Expect(string(plEP.Spec.Resource.ServiceRef)).To(Equal(placementCatalogServiceName(final)),
+		g.Expect(string(plEP.Spec.Resource.ServiceRef)).To(Equal(retiredPlacementCatalogServiceName(final)),
 			"placement Endpoint serviceRef must reference the placement Service CR")
 		g.Expect(plEP.Spec.Resource.URL).To(Equal(wantPlacementURL),
 			"both placement Endpoint interfaces advertise the in-cluster Placement API URL (no gateway in this fixture)")
@@ -2035,7 +2062,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// and with no gateway in this fixture the public interface has not diverged from
 	// the in-cluster one.
 	bnSvc := &orcv1alpha1.Service{}
-	g.Expect(c.Get(ctx, types.NamespacedName{Name: barbicanCatalogServiceName(final), Namespace: ns.Name}, bnSvc)).
+	g.Expect(c.Get(ctx, types.NamespacedName{Name: retiredBarbicanCatalogServiceName(final), Namespace: ns.Name}, bnSvc)).
 		To(Succeed(), "get projected key-manager Service CR")
 	g.Expect(bnSvc.Spec.Resource).NotTo(BeNil())
 	g.Expect(bnSvc.Spec.Resource.Type).To(Equal("key-manager"), "Service type must be key-manager")
@@ -2044,11 +2071,11 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	wantBarbicanURL := fmt.Sprintf("http://%s.%s.svc:9311", barbicanName(final), ns.Name)
 	for _, iface := range []string{"internal", "public"} {
 		bnEP := &orcv1alpha1.Endpoint{}
-		g.Expect(c.Get(ctx, types.NamespacedName{Name: barbicanCatalogEndpointName(final, iface), Namespace: ns.Name}, bnEP)).
+		g.Expect(c.Get(ctx, types.NamespacedName{Name: retiredBarbicanCatalogEndpointName(final, iface), Namespace: ns.Name}, bnEP)).
 			To(Succeed(), "get projected key-manager %q Endpoint CR", iface)
 		g.Expect(bnEP.Spec.Resource).NotTo(BeNil())
 		g.Expect(bnEP.Spec.Resource.Interface).To(Equal(iface), "Endpoint interface must be %q", iface)
-		g.Expect(string(bnEP.Spec.Resource.ServiceRef)).To(Equal(barbicanCatalogServiceName(final)),
+		g.Expect(string(bnEP.Spec.Resource.ServiceRef)).To(Equal(retiredBarbicanCatalogServiceName(final)),
 			"key-manager Endpoint serviceRef must reference the key-manager Service CR")
 		g.Expect(bnEP.Spec.Resource.URL).To(Equal(wantBarbicanURL),
 			"both key-manager Endpoint interfaces advertise the in-cluster Barbican API URL (no gateway in this fixture)")
