@@ -160,9 +160,9 @@ func TestReconcileServiceAccounts_SecretStoreNotReady(t *testing.T) {
 }
 
 // TestReconcileServiceAccounts_ErrorClearsStaleReadyStatus pins the invariant the
-// Glance gate rides on: a pass that fails before its status projection must not
-// leave the previously-converged Ready=true entries behind. reconcileGlance is no
-// longer unreachable behind a short-circuiting RunPipeline — it runs in the same
+// Placement gate rides on: a pass that fails before its status projection must not
+// leave the previously-converged Ready=true entries behind. reconcilePlacement is
+// no longer unreachable behind a short-circuiting RunPipeline — it runs in the same
 // RunSequentialGroup tail — and gates on exactly this slice, so a stale True would
 // let it keep projecting (and keep minting DB credentials) for a service account
 // this pass could not verify.
@@ -170,19 +170,19 @@ func TestReconcileServiceAccounts_ErrorClearsStaleReadyStatus(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := saControlPlane()
 	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, c5c3v1alpha1.ServiceAccountSpec{
-		Name:    glanceServiceAccountName,
+		Name:    placementServiceAccountName,
 		Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
 	})
-	// The last converged pass left both accounts Ready — glance among them.
+	// The last converged pass left both accounts Ready — placement among them.
 	rotated := metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
 	cp.Status.ServiceAccounts = []c5c3v1alpha1.ServiceAccountStatus{
 		{Name: "nova", Ready: true},
-		{Name: glanceServiceAccountName, Ready: true, LastPasswordRotation: &rotated},
+		{Name: placementServiceAccountName, Ready: true, LastPasswordRotation: &rotated},
 	}
-	g.Expect(glanceServiceAccountReady(cp)).To(BeTrue(), "precondition: the Glance gate starts open")
+	g.Expect(placementServiceAccountReady(cp)).To(BeTrue(), "precondition: the Placement gate starts open")
 
 	// Fail every managed-User read, so the FIRST account errors and the pass
-	// returns before glance is attempted at all.
+	// returns before placement is attempted at all.
 	s := korcTestScheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).
 		WithObjects(cp, readyClusterSecretStore(), readyTenantStoreFor(cp)).
@@ -206,8 +206,8 @@ func TestReconcileServiceAccounts_ErrorClearsStaleReadyStatus(t *testing.T) {
 
 	// The gate this pass could not vouch for is closed — including for the account
 	// the early return never reached.
-	g.Expect(glanceServiceAccountReady(cp)).To(BeFalse(),
-		"a failed pass must not leave the Glance service-account gate reading stale-True")
+	g.Expect(placementServiceAccountReady(cp)).To(BeFalse(),
+		"a failed pass must not leave the Placement service-account gate reading stale-True")
 	for _, sa := range cp.Status.ServiceAccounts {
 		g.Expect(sa.Ready).To(BeFalse(), "account %q still reports stale readiness", sa.Name)
 	}

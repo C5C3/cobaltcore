@@ -94,7 +94,7 @@ tests:
               - update
               - patch
 
-  - it: should grant read/update on keystoneservices
+  - it: should grant read/write on keystoneservices
     asserts:
       - contains:
           path: rules
@@ -107,7 +107,10 @@ tests:
               - get
               - list
               - watch
+              - create
               - update
+              - patch
+              - delete
 
   - it: should grant get/update/patch on keystoneservices/status
     asserts:

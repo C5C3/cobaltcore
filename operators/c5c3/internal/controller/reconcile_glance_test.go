@@ -7,6 +7,8 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,17 +17,22 @@ import (
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
@@ -57,10 +64,10 @@ func glanceTestScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// glanceControlPlane builds a ControlPlane with services.glance set, a
-// KeystoneReady=True condition, the auto-injected glance service account, and a
-// Ready per-account status for it — i.e. every gate reconcileGlance checks is
-// already passed.
+// glanceControlPlane builds a ControlPlane with services.glance set and a
+// KeystoneReady=True condition — the one gate reconcileGlance reads off the
+// ControlPlane itself. The other gate is the projected KeystoneService child,
+// which newGlanceTestReconciler seeds Ready (see withReadyGlanceRegistration).
 func glanceControlPlane() *c5c3v1alpha1.ControlPlane {
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{
@@ -103,11 +110,6 @@ func glanceControlPlane() *c5c3v1alpha1.ControlPlane {
 				AdminCredential: c5c3v1alpha1.AdminCredentialSpec{
 					PasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
 				},
-				ServiceAccounts: []c5c3v1alpha1.ServiceAccountSpec{{
-					Name:    "glance",
-					Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service", Create: true},
-					Roles:   []string{"service"},
-				}},
 			},
 		},
 	}
@@ -118,8 +120,49 @@ func glanceControlPlane() *c5c3v1alpha1.ControlPlane {
 		Reason:             "KeystoneReady",
 		Message:            "ready",
 	})
-	cp.Status.ServiceAccounts = []c5c3v1alpha1.ServiceAccountStatus{{Name: "glance", Ready: true}}
 	return cp
+}
+
+// readyGlanceRegistration builds the KeystoneService child the Glance projection
+// gates on, converged: account provisioned, catalog registered, aggregate Ready.
+// A child in a dedicated namespace carries the ownership labels, so the
+// projection re-applies it instead of refusing to adopt a same-named foreign CR.
+func readyGlanceRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+	ks := glanceRegistration(cp, metav1.Condition{
+		Type:    conditionTypeKeystoneServiceAccountReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  reasonKeystoneServiceAccountProvisioned,
+		Message: "account provisioned",
+	})
+	conditions.SetCondition(&ks.Status.Conditions, metav1.Condition{
+		Type:    conditionTypeKeystoneServiceCatalogReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  reasonKeystoneServiceCatalogRegistered,
+		Message: "catalog registered",
+	})
+	conditions.SetCondition(&ks.Status.Conditions, metav1.Condition{
+		Type:    conditionTypeReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  "AllReady",
+		Message: "All sub-conditions are ready",
+	})
+	return ks
+}
+
+// glanceRegistration builds the KeystoneService child at the projected
+// name/namespace carrying the given conditions, for the tests that drive the gate
+// and the readiness fold from a child that has not converged.
+func glanceRegistration(cp *c5c3v1alpha1.ControlPlane, conds ...metav1.Condition) *c5c3v1alpha1.KeystoneService {
+	ks := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: glanceName(cp), Namespace: cp.GlanceNamespace()},
+	}
+	if ks.Namespace != cp.Namespace {
+		stampControlPlaneChildLabels(ks, cp)
+	}
+	for _, cond := range conds {
+		conditions.SetCondition(&ks.Status.Conditions, cond)
+	}
+	return ks
 }
 
 // readyGlanceDBCredES builds a Ready Glance DB-credential ExternalSecret at the
@@ -188,11 +231,66 @@ func withReadyGlanceDBCred(objs []client.Object) []client.Object {
 	return append(objs, readyGlanceDBCredES(cp), materialisedGlanceDBCredSecret(cp))
 }
 
+// withReadyGlanceRegistration seeds the converged KeystoneService child the
+// projection gates on, unless the test seeded one of its own — which is what the
+// gate and readiness-fold tests do.
+//
+// A fake client runs no KeystoneService controller, so without this every
+// projection test would hold at the registration gate and assert against a Glance
+// that was deliberately not projected.
+func withReadyGlanceRegistration(objs []client.Object) []client.Object {
+	var cp *c5c3v1alpha1.ControlPlane
+	for _, o := range objs {
+		if c, ok := o.(*c5c3v1alpha1.ControlPlane); ok {
+			cp = c
+			break
+		}
+	}
+	if cp == nil || cp.Spec.Services.Glance == nil {
+		return objs
+	}
+	for _, o := range objs {
+		if _, ok := o.(*c5c3v1alpha1.KeystoneService); ok {
+			return objs
+		}
+	}
+	return append(objs, readyGlanceRegistration(cp))
+}
+
+// withGlanceTenantStore seeds the per-tenant SecretStore in the image service's
+// namespace when that service is PLACED, unless the test seeded one of its own.
+// The credential mirror a placed service gets is gated on that store, so without
+// it every placement test would hold at SecretStoreNotReady.
+//
+// The store lands on the local client because newGlanceTestReconciler wires no
+// resolver, which resolves every namespace to the management cluster. The tests
+// that exercise the two-cluster legs build their reconciler themselves.
+func withGlanceTenantStore(objs []client.Object) []client.Object {
+	var cp *c5c3v1alpha1.ControlPlane
+	for _, o := range objs {
+		if c, ok := o.(*c5c3v1alpha1.ControlPlane); ok {
+			cp = c
+			break
+		}
+	}
+	if cp == nil || targetClusterRefForNamespace(cp, cp.GlanceNamespace()) == nil {
+		return objs
+	}
+	for _, o := range objs {
+		if _, ok := o.(*esov1.SecretStore); ok {
+			return objs
+		}
+	}
+	return append(objs, readyTenantSecretStore(esoTenantStoreName, cp.GlanceNamespace(), "", ""))
+}
+
 func newGlanceTestReconciler(t *testing.T, objs ...client.Object) *ControlPlaneReconciler {
 	t.Helper()
 	s := glanceTestScheme(t)
-	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(withReadyGlanceDBCred(objs)...).
-		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &glancev1alpha1.Glance{})
+	seeded := withGlanceTenantStore(withReadyGlanceRegistration(withReadyGlanceDBCred(objs)))
+	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &glancev1alpha1.Glance{},
+			&c5c3v1alpha1.KeystoneService{})
 	return &ControlPlaneReconciler{Client: cb.Build(), Scheme: s}
 }
 
@@ -541,32 +639,24 @@ func TestReconcileGlance_GatedOnKeystoneReady(t *testing.T) {
 	g.Expect(list.Items).To(BeEmpty())
 }
 
-func TestReconcileGlance_GatedOnServiceAccountNotDeclared(t *testing.T) {
+// TestReconcileGlance_GatedOnRegistrationAccountNotReady pins the registration
+// gate: while the child's AccountReady is False no Glance is projected, the
+// child's own reason and message are relayed, and a Glance projected by an
+// earlier pass is left running on the credentials it already has.
+func TestReconcileGlance_GatedOnRegistrationAccountNotReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := glanceControlPlane()
-	// Drop the auto-injected glance service account (a webhook-bypassed CR).
-	cp.Spec.KORC.ServiceAccounts = nil
-	r := newGlanceTestReconciler(t, cp)
-
-	res, err := r.reconcileGlance(context.Background(), cp)
-
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.IsZero()).To(BeTrue(), "a missing SA declaration is not a transient wait — no requeue")
-	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
-	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("ServiceAccountNotDeclared"))
-	g.Expect(cond.Message).To(ContainSubstring("spec.korc.serviceAccounts"))
-
-	var list glancev1alpha1.GlanceList
-	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
-	g.Expect(list.Items).To(BeEmpty())
-}
-
-func TestReconcileGlance_GatedOnServiceAccountNotReady(t *testing.T) {
-	g := NewGomegaWithT(t)
-	cp := glanceControlPlane()
-	cp.Status.ServiceAccounts = []c5c3v1alpha1.ServiceAccountStatus{{Name: "glance", Ready: false}}
-	r := newGlanceTestReconciler(t, cp)
+	ks := glanceRegistration(cp, metav1.Condition{
+		Type:    conditionTypeKeystoneServiceAccountReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  reasonServiceAccountCollision,
+		Message: `user "glance" already exists in Keystone`,
+	})
+	existing := &glancev1alpha1.Glance{
+		ObjectMeta: metav1.ObjectMeta{Name: glanceName(cp), Namespace: cp.GlanceNamespace()},
+		Spec:       glancev1alpha1.GlanceSpec{Region: "RegionPrevious"},
+	}
+	r := newGlanceTestReconciler(t, cp, ks, existing)
 
 	res, err := r.reconcileGlance(context.Background(), cp)
 
@@ -574,11 +664,288 @@ func TestReconcileGlance_GatedOnServiceAccountNotReady(t *testing.T) {
 	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("WaitingForServiceAccount"))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+	g.Expect(cond.Message).To(ContainSubstring(reasonServiceAccountCollision))
+	g.Expect(cond.Message).To(ContainSubstring(`user "glance" already exists in Keystone`))
+
+	g.Expect(getProjectedGlance(t, r.Client, cp).Spec.Region).To(Equal("RegionPrevious"),
+		"the gate must write no Glance at all, leaving a previously projected one untouched")
+}
+
+// TestReconcileGlance_GatedOnRegistrationWithoutConditions covers the child that
+// exists but has not been reconciled yet: the gate holds on a waiting message
+// rather than reading a missing condition as ready.
+func TestReconcileGlance_GatedOnRegistrationWithoutConditions(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	r := newGlanceTestReconciler(t, cp, glanceRegistration(cp))
+
+	res, err := r.reconcileGlance(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+	g.Expect(cond.Message).To(ContainSubstring(conditionTypeKeystoneServiceAccountReady))
 
 	var list glancev1alpha1.GlanceList
 	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
-	g.Expect(list.Items).To(BeEmpty(), "the SA gate must block projection")
+	g.Expect(list.Items).To(BeEmpty(), "the registration gate must block projection")
+}
+
+// TestReconcileGlance_RegistrationNotFoundAfterEnsureHolds covers the read-back
+// that misses: a child the API server has not made readable yet is a wait, not an
+// error.
+func TestReconcileGlance_RegistrationNotFoundAfterEnsureHolds(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	s := glanceTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(withReadyGlanceDBCred([]client.Object{cp})...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &glancev1alpha1.Glance{},
+			&c5c3v1alpha1.KeystoneService{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*c5c3v1alpha1.KeystoneService); ok {
+					return apierrors.NewNotFound(
+						schema.GroupResource{Group: "c5c3.io", Resource: "keystoneservices"}, key.Name)
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileGlance(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred(), "a child that is not readable yet is not a failure")
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+
+	var list glancev1alpha1.GlanceList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty())
+}
+
+// TestReconcileGlance_RegistrationReadFailureSurfaces covers the other half: a
+// read that fails for any reason OTHER than absence is an error, wrapped with what
+// it was reading.
+func TestReconcileGlance_RegistrationReadFailureSurfaces(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	s := glanceTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(withReadyGlanceDBCred([]client.Object{cp})...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &glancev1alpha1.Glance{},
+			&c5c3v1alpha1.KeystoneService{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*c5c3v1alpha1.KeystoneService); ok {
+					return apierrors.NewInternalError(errors.New("etcd is unavailable"))
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("reading the glance KeystoneService child:"))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+}
+
+// TestReconcileGlance_NeverAdoptsForeignRegistration proves the registration
+// write is refused rather than allowed to overwrite a same-named KeystoneService
+// in a namespace the ControlPlane does not own: the refusal surfaces on
+// GlanceReady and the foreign CR keeps its spec.
+func TestReconcileGlance_NeverAdoptsForeignRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name: "images", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	foreign := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: glanceName(cp), Namespace: "images"},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "someone-else"},
+		},
+	}
+	r := newGlanceTestReconciler(t, cp, foreign)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+
+	g.Expect(err).To(HaveOccurred(), "adopting a foreign registration must be refused")
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+	g.Expect(cond.Message).To(ContainSubstring("refusing to adopt pre-existing"))
+
+	var live c5c3v1alpha1.KeystoneService
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: glanceName(cp), Namespace: "images",
+	}, &live)).To(Succeed())
+	g.Expect(live.Spec.ControlPlaneRef.Name).To(Equal("someone-else"),
+		"a foreign registration must never be overwritten")
+	g.Expect(live.Labels).NotTo(HaveKey(controlPlaneNameLabel))
+}
+
+// TestBuiltinRegistrationForeignFields_NamesAnUndeclaredEndpointInterface covers
+// the listType=map arm of the guard. It is a unit test rather than a pass through
+// reconcileGlance because the fake client carries no schema and replaces the
+// endpoints array wholesale, where a real apiserver merges it by listMapKey and
+// leaves an interface another field manager added standing.
+func TestBuiltinRegistrationForeignFields_NamesAnUndeclaredEndpointInterface(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	projected := desiredGlanceRegistration(cp).Spec
+
+	child := desiredGlanceRegistration(cp)
+	child.Spec.Catalog.Endpoints = append(child.Spec.Catalog.Endpoints,
+		c5c3v1alpha1.KeystoneServiceEndpointSpec{
+			Interface: c5c3v1alpha1.ExternalEndpointTypeAdmin,
+			URL:       "https://attacker.example.com",
+		})
+
+	g.Expect(builtinRegistrationForeignFields(&projected, child)).
+		To(ConsistOf("spec.catalog.endpoints[interface=admin]"))
+
+	// The interfaces the projection DOES declare are asserted in the apply body, so
+	// force-ownership reclaims them and the guard must stay silent on them.
+	untouched := desiredGlanceRegistration(cp)
+	untouched.Spec.Catalog.Endpoints[0].URL = "https://attacker.example.com"
+	g.Expect(builtinRegistrationForeignFields(&projected, untouched)).To(BeEmpty())
+}
+
+// TestReconcileGlance_ReclaimsARegistrationCarryingForeignFields covers the fields
+// the apply cannot take back. adopt is a bool with omitempty and rotation a nil
+// pointer, so the projection asserts neither and ForceOwnership has nothing to
+// force; endpoints is a listType=map, where an apply reconciles only the keys it
+// carries. An actor holding patch on keystoneservices could otherwise publish an
+// admin endpoint in the catalog, or flip adopt to take over a pre-existing
+// Keystone user — and the registration's own controller, which this ControlPlane
+// halting does not touch, would act on it. Field ownership constrains apply
+// requests only, so the projection resets them with an ordinary Update instead of
+// waiting for somebody to read a condition — and the pass records what it reset on
+// both the event and the service's condition.
+//
+// The endpoints arm is covered by
+// TestReclaimBuiltinRegistrationFields_ResetsTheEndpointList instead: the fake
+// client carries no schema and replaces the endpoints array wholesale, so a pass
+// through reconcileGlance never sees the undeclared row a real apiserver leaves
+// standing (the same reason
+// TestBuiltinRegistrationForeignFields_NamesAnUndeclaredEndpointInterface is a
+// unit test).
+func TestReconcileGlance_ReclaimsARegistrationCarryingForeignFields(t *testing.T) {
+	for name, tamper := range map[string]struct {
+		apply  func(*c5c3v1alpha1.KeystoneService)
+		field  string
+		assert func(g *WithT, live *c5c3v1alpha1.KeystoneService)
+	}{
+		"catalog adopt": {
+			apply: func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Catalog.Adopt = true },
+			field: "spec.catalog.adopt",
+			assert: func(g *WithT, live *c5c3v1alpha1.KeystoneService) {
+				g.Expect(live.Spec.Catalog.Adopt).To(BeFalse())
+			},
+		},
+		"account adopt": {
+			apply: func(ks *c5c3v1alpha1.KeystoneService) { ks.Spec.Account.Adopt = true },
+			field: "spec.account.adopt",
+			assert: func(g *WithT, live *c5c3v1alpha1.KeystoneService) {
+				g.Expect(live.Spec.Account.Adopt).To(BeFalse())
+			},
+		},
+		"account rotation": {
+			apply: func(ks *c5c3v1alpha1.KeystoneService) {
+				ks.Spec.Account.Rotation = &c5c3v1alpha1.ServiceAccountRotationSpec{
+					Mode: c5c3v1alpha1.ServiceAccountRotationModeManual,
+				}
+			},
+			field: "spec.account.rotation",
+			assert: func(g *WithT, live *c5c3v1alpha1.KeystoneService) {
+				g.Expect(live.Spec.Account.Rotation).To(BeNil())
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := glanceControlPlane()
+
+			// The live child is the one this ControlPlane projects, with one foreign
+			// field written on top of it by another field manager.
+			tampered := readyGlanceRegistration(cp)
+			tampered.Spec = desiredGlanceRegistration(cp).Spec
+			tamper.apply(tampered)
+			r := newGlanceTestReconciler(t, cp, tampered)
+			rec := record.NewFakeRecorder(10)
+			r.Recorder = rec
+
+			res, err := r.reconcileGlance(context.Background(), cp)
+			g.Expect(err).NotTo(HaveOccurred(), "a tampered child is remediated, not a failed reconcile")
+			g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+			events := strings.Join(drainEvents(rec), "\n")
+			g.Expect(events).To(ContainSubstring("ServiceRegistrationFieldsReclaimed"))
+			g.Expect(events).To(ContainSubstring(tamper.field))
+
+			// The event ages out of etcd on the cluster's TTL. Without the condition a
+			// tampering remediated overnight would leave the ControlPlane reporting
+			// Ready=True with no durable trace of it anywhere in the API.
+			cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+			g.Expect(cond).NotTo(BeNil())
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationFieldsReclaimed))
+			g.Expect(cond.Message).To(ContainSubstring(tamper.field))
+
+			var live c5c3v1alpha1.KeystoneService
+			g.Expect(r.Get(context.Background(), types.NamespacedName{
+				Name: glanceName(cp), Namespace: cp.GlanceNamespace(),
+			}, &live)).To(Succeed())
+			tamper.assert(g, &live)
+			g.Expect(builtinRegistrationForeignFields(&desiredGlanceRegistration(cp).Spec, &live)).To(BeEmpty())
+
+			err = r.Get(context.Background(), types.NamespacedName{
+				Name: glanceName(cp), Namespace: cp.GlanceNamespace(),
+			}, &glancev1alpha1.Glance{})
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+				"the pass that reclaims stops there; the reclaimed child is picked up on the next one")
+		})
+	}
+}
+
+// TestReclaimBuiltinRegistrationFields_ResetsTheEndpointList covers the arm the
+// pass-level test cannot reach: an endpoint row keyed on an interface the
+// projection does not declare is PUBLISHED in the Keystone catalog by the
+// registration's own controller, so admin-scoped clients resolving it send their
+// token wherever it points. The reclaim replaces the list rather than merging it.
+func TestReclaimBuiltinRegistrationFields_ResetsTheEndpointList(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cp := glanceControlPlane()
+
+	tampered := desiredGlanceRegistration(cp)
+	tampered.Spec.Catalog.Endpoints = append(tampered.Spec.Catalog.Endpoints,
+		c5c3v1alpha1.KeystoneServiceEndpointSpec{
+			Interface: c5c3v1alpha1.ExternalEndpointTypeAdmin,
+			URL:       "https://attacker.example.com",
+		})
+	s := glanceTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(tampered).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	projected := desiredGlanceRegistration(cp).Spec
+	g.Expect(r.reclaimBuiltinRegistrationFields(ctx, &projected, tampered)).To(Succeed())
+
+	var live c5c3v1alpha1.KeystoneService
+	g.Expect(c.Get(ctx, types.NamespacedName{
+		Name: glanceName(cp), Namespace: cp.GlanceNamespace(),
+	}, &live)).To(Succeed())
+	g.Expect(live.Spec.Catalog.Endpoints).To(Equal(projected.Catalog.Endpoints))
+	g.Expect(builtinRegistrationForeignFields(&projected, &live)).To(BeEmpty())
 }
 
 // --- projected child fields ---
@@ -807,12 +1174,13 @@ func TestReconcileGlance_RegionProjected(t *testing.T) {
 	g.Expect(gl.Spec.Region).To(Equal("RegionTwo"))
 }
 
-// TestReconcileGlance_ServiceUserFromServiceAccount verifies the Keystone service
-// user is derived from the auto-injected glance service account entry.
-func TestReconcileGlance_ServiceUserFromServiceAccount(t *testing.T) {
+// TestReconcileGlance_ServiceUserFromRegistration verifies the Keystone service
+// user names the account the registration child declares — not the inline
+// spec.korc.serviceAccounts entry, whose project this fixture deliberately spells
+// differently — and reads its password from the registration's consumer Secret.
+func TestReconcileGlance_ServiceUserFromRegistration(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := glanceControlPlane()
-	sa := cp.Spec.KORC.ServiceAccounts[0]
 	r := newGlanceTestReconciler(t, cp)
 
 	_, err := r.reconcileGlance(context.Background(), cp)
@@ -820,14 +1188,13 @@ func TestReconcileGlance_ServiceUserFromServiceAccount(t *testing.T) {
 
 	gl := getProjectedGlance(t, r.Client, cp)
 	g.Expect(gl.Spec.ServiceUser.Username).To(Equal("glance"))
-	g.Expect(gl.Spec.ServiceUser.ProjectName).To(Equal("service"))
-	// Both domains resolve to the account's effective domain.
-	g.Expect(gl.Spec.ServiceUser.UserDomainName).To(Equal(serviceAccountDomainName(cp, sa)))
-	g.Expect(gl.Spec.ServiceUser.ProjectDomainName).To(Equal(serviceAccountDomainName(cp, sa)))
-	g.Expect(gl.Spec.ServiceUser.UserDomainName).To(Equal(gl.Spec.ServiceUser.ProjectDomainName))
-	// The password comes from the account's materialized consumer Secret.
-	g.Expect(gl.Spec.ServiceUser.SecretRef.Name).To(Equal(serviceAccountCredentialsSecretName(cp, sa)))
-	g.Expect(gl.Spec.ServiceUser.SecretRef.Name).To(Equal("cp-service-account-glance-credentials"))
+	g.Expect(gl.Spec.ServiceUser.ProjectName).To(Equal("service-glance"))
+	// Both domains resolve to the ControlPlane's effective admin domain, which is
+	// what the registration resolves its own unset domainName to.
+	g.Expect(gl.Spec.ServiceUser.UserDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(gl.Spec.ServiceUser.ProjectDomainName).To(Equal(adminDomainName(cp)))
+	// The password comes from the Secret the registration delivers.
+	g.Expect(gl.Spec.ServiceUser.SecretRef.Name).To(Equal("cp-glance-credentials"))
 	g.Expect(gl.Spec.ServiceUser.SecretRef.Key).To(Equal("password"))
 }
 
@@ -1222,6 +1589,240 @@ func TestReconcileGlance_SetsControllerOwnerReference(t *testing.T) {
 		"the projected Glance must carry the ControlPlane controller owner reference")
 }
 
+// --- the projected KeystoneService registration ---
+
+func getProjectedRegistration(t *testing.T, c client.Client, cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+	t.Helper()
+	ks := &c5c3v1alpha1.KeystoneService{}
+	key := types.NamespacedName{Name: glanceName(cp), Namespace: cp.GlanceNamespace()}
+	if err := c.Get(context.Background(), key, ks); err != nil {
+		t.Fatalf("getting projected KeystoneService %s: %v", key, err)
+	}
+	return ks
+}
+
+// TestReconcileGlance_ProjectsTheRegistration pins the registration's content:
+// the image catalog entry with both endpoint rows, the service account in its own
+// per-service project, and the explicit controlPlaneRef a child in a dedicated
+// namespace needs to resolve the ControlPlane at all.
+func TestReconcileGlance_ProjectsTheRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ks := getProjectedRegistration(t, r.Client, cp)
+	g.Expect(ks.Name).To(Equal("cp-glance"))
+	g.Expect(ks.Namespace).To(Equal("default"))
+	g.Expect(ks.Spec.ControlPlaneRef.Name).To(Equal("cp"))
+	g.Expect(ks.Spec.ControlPlaneRef.Namespace).To(Equal("default"),
+		"the namespace is explicit so a child in a dedicated namespace resolves the right ControlPlane")
+
+	g.Expect(ks.Spec.Catalog).NotTo(BeNil())
+	g.Expect(ks.Spec.Catalog.ServiceType).To(Equal("image"))
+	g.Expect(ks.Spec.Catalog.ServiceName).To(Equal("glance"))
+	g.Expect(ks.Spec.Catalog.Adopt).To(BeFalse(), "a colliding catalog row must fail loud, never be adopted")
+	g.Expect(ks.Spec.Catalog.Endpoints).To(HaveLen(2))
+	g.Expect(ks.Spec.Catalog.Endpoints[0].Interface).To(Equal(c5c3v1alpha1.ExternalEndpointTypeInternal))
+	g.Expect(ks.Spec.Catalog.Endpoints[0].URL).To(Equal(glanceEndpointURL(cp)))
+	g.Expect(ks.Spec.Catalog.Endpoints[1].Interface).To(Equal(c5c3v1alpha1.ExternalEndpointTypePublic))
+	g.Expect(ks.Spec.Catalog.Endpoints[1].URL).To(Equal(glanceCatalogURL(cp)))
+
+	g.Expect(ks.Spec.Account).NotTo(BeNil())
+	g.Expect(ks.Spec.Account.UserName).To(Equal("glance"))
+	g.Expect(ks.Spec.Account.DomainName).To(BeEmpty(),
+		"an unset domain lets the registration resolve the ControlPlane's admin domain")
+	g.Expect(ks.Spec.Account.Adopt).To(BeFalse(), "a colliding user must fail loud, never be taken over")
+	g.Expect(ks.Spec.Account.Project.Name).To(Equal("service-glance"))
+	g.Expect(ks.Spec.Account.Project.Create).To(BeTrue())
+	g.Expect(ks.Spec.Account.Roles).To(Equal([]string{"service"}))
+
+	g.Expect(metav1.IsControlledBy(ks, cp)).To(BeTrue(),
+		"a co-located registration carries the ControlPlane controller owner reference")
+}
+
+// TestReconcileGlance_PlacedRegistrationEndpointsFollowThePlacement covers the
+// internal row of a placed service: the in-cluster Service URL resolves nowhere
+// outside its cluster, so the placed entry advertises the public URL on both
+// interfaces.
+func TestReconcileGlance_PlacedRegistrationEndpointsFollowThePlacement(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedGlanceControlPlane("remote-a")
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ks := getProjectedRegistration(t, r.Client, cp)
+	g.Expect(ks.Spec.Catalog.Endpoints[0].URL).To(Equal("https://glance.example.com"))
+	g.Expect(ks.Spec.Catalog.Endpoints[1].URL).To(Equal("https://glance.example.com"))
+}
+
+// TestReconcileGlance_CrossNamespaceRegistrationIsLabelledNotOwned verifies the
+// ownership substitute for a registration in a namespace of its own: the two
+// ownership labels and no owner reference.
+func TestReconcileGlance_CrossNamespaceRegistrationIsLabelledNotOwned(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name: "images", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ks := getProjectedRegistration(t, r.Client, cp)
+	g.Expect(ks.Namespace).To(Equal("images"))
+	g.Expect(ks.OwnerReferences).To(BeEmpty(), "a cross-namespace child cannot carry an owner reference")
+	g.Expect(ks.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(ks.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "default"))
+	g.Expect(ks.Spec.ControlPlaneRef.Namespace).To(Equal("default"))
+}
+
+// TestReconcileGlance_ReadyFoldsInTheRegistration proves GlanceReady is the
+// conjunction of both children: a Ready Glance whose registration collided on the
+// catalog row keeps GlanceReady False, naming the failing child condition.
+func TestReconcileGlance_ReadyFoldsInTheRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	ks := glanceRegistration(cp,
+		metav1.Condition{
+			Type:    conditionTypeKeystoneServiceAccountReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  reasonKeystoneServiceAccountProvisioned,
+			Message: "account provisioned",
+		},
+		metav1.Condition{
+			Type:    conditionTypeKeystoneServiceCatalogReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonKeystoneServiceCatalogCollision,
+			Message: `a service row of type "image" named "glance" already exists`,
+		},
+		metav1.Condition{
+			Type:    conditionTypeReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "NotAllReady",
+			Message: "One or more sub-conditions are not ready",
+		},
+	)
+	r := newGlanceTestReconciler(t, cp, ks)
+	ctx := context.Background()
+
+	_, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The Glance child itself reaches Ready.
+	gl := getProjectedGlance(t, r.Client, cp)
+	conditions.SetCondition(&gl.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: gl.Generation,
+		Reason:             "AllReady",
+		Message:            "ready",
+	})
+	g.Expect(r.Client.Status().Update(ctx, gl)).To(Succeed())
+
+	res, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+		"a Glance nothing can discover through the catalog is not ready")
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneServiceCatalogCollision),
+		"the failing sub-condition's reason is relayed, not the aggregate's")
+	g.Expect(cond.Message).To(ContainSubstring(conditionTypeKeystoneServiceCatalogReady))
+	g.Expect(cond.Message).To(ContainSubstring("cp-glance"))
+}
+
+// TestReconcileGlance_UnsetDeletesRegistrationWithOptIn verifies the opt-in
+// teardown removes the registration too — which is what unregisters Glance from
+// the catalog and the identity plane.
+func TestReconcileGlance_UnsetDeletesRegistrationWithOptIn(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	r := newGlanceTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	getProjectedRegistration(t, r.Client, cp)
+
+	cp.Spec.Services.Glance = nil
+	cp.Annotations = map[string]string{glanceDeletionAllowedAnnotation: "true"}
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var list c5c3v1alpha1.KeystoneServiceList
+	g.Expect(r.Client.List(ctx, &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty(), "the opt-in annotation must delete the owned registration")
+}
+
+// TestReconcileGlance_UnsetPreservesForeignRegistration is the ownership guard on
+// that sweep: a same-named KeystoneService the ControlPlane does not own survives.
+func TestReconcileGlance_UnsetPreservesForeignRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance = nil
+	cp.Annotations = map[string]string{glanceDeletionAllowedAnnotation: "true"}
+
+	foreign := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: glanceName(cp), Namespace: cp.GlanceNamespace()},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "someone-else"},
+		},
+	}
+	r := newGlanceTestReconciler(t, cp, foreign)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: glanceName(cp), Namespace: cp.GlanceNamespace(),
+	}, &c5c3v1alpha1.KeystoneService{})).To(Succeed(),
+		"a KeystoneService we do not own must never be deleted")
+}
+
+// TestReconcileGlance_UnsetPreservesRegistrationByDefault pins the preserve
+// default: without the opt-in annotation a previously projected registration
+// stays, so an accidental block drop never unregisters a running service.
+func TestReconcileGlance_UnsetPreservesRegistrationByDefault(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	r := newGlanceTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cp.Spec.Services.Glance = nil
+	_, err = r.reconcileGlance(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	getProjectedRegistration(t, r.Client, cp)
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("GlanceNotManaged"))
+}
+
+// TestReconcileGlance_NilBlockProjectsNoRegistration covers the staged-adoption
+// path: a ControlPlane that manages no image service registers none either.
+func TestReconcileGlance_NilBlockProjectsNoRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance = nil
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var list c5c3v1alpha1.KeystoneServiceList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty())
+}
+
 // TestGlanceEndpointURL pins the in-cluster Glance API endpoint convention the
 // later catalog package registers against: http://{name}.{ns}.svc:9292.
 func TestGlanceEndpointURL(t *testing.T) {
@@ -1553,4 +2154,154 @@ func TestGlanceKeystoneEndpoint_FollowsThePlacement(t *testing.T) {
 			g.Expect(glanceKeystoneEndpoint(cp)).To(Equal(tc.want))
 		})
 	}
+}
+
+// --- the credential mirror of a placed service ---
+
+// newPlacedGlanceReconciler wires a ControlPlane whose image service is placed on
+// a target cluster: the CR and its registration live on the management cluster,
+// the objects in onTarget on the other one.
+func newPlacedGlanceReconciler(
+	t *testing.T, cp *c5c3v1alpha1.ControlPlane, resolver *childrenResolver, onTarget ...client.Object,
+) *ControlPlaneReconciler {
+	t.Helper()
+	s := glanceTestScheme(t)
+	resolver.children = fake.NewClientBuilder().WithScheme(s).WithObjects(onTarget...).Build()
+	local := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(withReadyGlanceRegistration([]client.Object{cp})...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &glancev1alpha1.Glance{},
+			&c5c3v1alpha1.KeystoneService{}).
+		Build()
+	return &ControlPlaneReconciler{Client: local, Scheme: s, Resolver: resolver}
+}
+
+// TestReconcileGlance_MirrorsRegistrationCredentialsToTheTarget covers the reason
+// the mirror exists: the registration delivers its consumer Secret at home, and a
+// Glance running on another cluster reads it there — from an ExternalSecret of the
+// same name, over the same OpenBao path.
+func TestReconcileGlance_MirrorsRegistrationCredentialsToTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedGlanceControlPlane("remote-a")
+	resolver := &childrenResolver{}
+	r := newPlacedGlanceReconciler(t, cp, resolver,
+		readyTenantSecretStore(esoTenantStoreName, "images", "", ""))
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var mirror esov1.ExternalSecret
+	g.Expect(resolver.children.Get(context.Background(), types.NamespacedName{
+		Name: "cp-glance-credentials", Namespace: "images",
+	}, &mirror)).To(Succeed())
+	g.Expect(mirror.Spec.SecretStoreRef.Name).To(Equal(esoTenantStoreName))
+	g.Expect(mirror.Spec.SecretStoreRef.Kind).To(Equal(string(commonv1.SecretStoreKindNamespaced)))
+	g.Expect(mirror.Spec.Target.Name).To(Equal("cp-glance-credentials"))
+	for _, d := range mirror.Spec.Data {
+		g.Expect(d.RemoteRef.Key).To(Equal("openstack/keystone/images/cp-glance/service-accounts/credentials"))
+	}
+	// No owner reference crosses a cluster boundary, so the labels are the whole
+	// of the mirror's identity — and what the teardown sweep selects on.
+	g.Expect(mirror.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(mirror.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "default"))
+	g.Expect(mirror.OwnerReferences).To(BeEmpty())
+}
+
+// TestReconcileGlance_NoMirrorForACoLocatedService is the other half: the
+// registration's own delivery already lands in a co-located service's namespace,
+// so no second ExternalSecret is written for it.
+func TestReconcileGlance_NoMirrorForACoLocatedService(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	r := newGlanceTestReconciler(t, cp)
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: "cp-glance-credentials", Namespace: "default",
+	}, &esov1.ExternalSecret{})).NotTo(Succeed(),
+		"a co-located service must get no mirror at all")
+}
+
+// TestReconcileGlance_MirrorHoldsOnAnUnresolvableCluster covers the cluster that
+// does not resolve: the resolver's own text reaches the condition, and nothing is
+// projected.
+func TestReconcileGlance_MirrorHoldsOnAnUnresolvableCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedGlanceControlPlane("remote-a")
+	resolver := &childrenResolver{err: errors.New("cluster not found")}
+	r := newPlacedGlanceReconciler(t, cp, resolver)
+
+	res, err := r.reconcileGlance(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+
+	var list glancev1alpha1.GlanceList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty())
+}
+
+// TestReconcileGlance_MirrorHoldsOnANotReadyTargetStore covers the store gate on
+// the target cluster: an ExternalSecret written against a store that is not ready
+// never syncs, so the projection waits and names the store, the namespace, and the
+// cluster it is missing on.
+func TestReconcileGlance_MirrorHoldsOnANotReadyTargetStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedGlanceControlPlane("remote-a")
+	resolver := &childrenResolver{}
+	// The store exists at home but not on the target, which is the cluster the
+	// mirror is materialized on.
+	r := newPlacedGlanceReconciler(t, cp, resolver)
+
+	res, err := r.reconcileGlance(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountStoreNotReady))
+	g.Expect(cond.Message).To(ContainSubstring(esoTenantStoreName))
+	g.Expect(cond.Message).To(ContainSubstring(`namespace "images"`))
+	g.Expect(cond.Message).To(ContainSubstring("target cluster"))
+
+	g.Expect(resolver.children.Get(context.Background(), types.NamespacedName{
+		Name: "cp-glance-credentials", Namespace: "images",
+	}, &esov1.ExternalSecret{})).NotTo(Succeed(), "nothing may be written against a store that is not ready")
+}
+
+// TestReconcileGlance_MirrorStoreLookupFailurePropagates covers the store read
+// that fails outright, as opposed to reporting not-ready: it is wrapped with what
+// was being checked and returned, so the reconcile retries with backoff.
+func TestReconcileGlance_MirrorStoreLookupFailurePropagates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedGlanceControlPlane("remote-a")
+	s := glanceTestScheme(t)
+	target := fake.NewClientBuilder().WithScheme(s).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*esov1.SecretStore); ok {
+					return apierrors.NewInternalError(errors.New("the target apiserver is unavailable"))
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	local := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(withReadyGlanceRegistration([]client.Object{cp})...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &glancev1alpha1.Glance{},
+			&c5c3v1alpha1.KeystoneService{}).
+		Build()
+	r := &ControlPlaneReconciler{Client: local, Scheme: s, Resolver: &childrenResolver{children: target}}
+
+	_, err := r.reconcileGlance(context.Background(), cp)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`in namespace "images"`))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeGlanceReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
 }

@@ -238,6 +238,15 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=c5c3.io,resources=credentialrotations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=c5c3.io,resources=credentialrotations/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=c5c3.io,resources=secretaggregates,verbs=get;list;watch
+// The ControlPlane projects one KeystoneService per built-in service it manages,
+// resets a spec field another field manager wrote on one
+// (reclaimBuiltinRegistrationFields, an ordinary Update because field ownership
+// constrains apply requests only), and sweeps it on the deletion opt-in. Every
+// verb it writes with is named HERE rather than borrowed from the union
+// controller-gen builds with the KeystoneService controller's own block: narrowing
+// that block would otherwise drop one silently, and the reclaim would 403 on every
+// pass while the tampered catalog row stays published in Keystone.
+// +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices,verbs=create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=memcached.c5c3.io,resources=memcacheds,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete

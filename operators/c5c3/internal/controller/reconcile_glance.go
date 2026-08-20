@@ -12,7 +12,6 @@ import (
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
-	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -53,13 +52,6 @@ const glanceDeletionAllowedAnnotation = "c5c3.io/allow-glance-deletion"
 // cluster or takes a dedicated one — its own logical schema keeps it isolated
 // from Keystone's on a shared cluster.
 const defaultGlanceDatabaseName = "glance"
-
-// glanceServiceAccountName mirrors c5c3v1alpha1.GlanceServiceAccountName, the
-// single source of truth for the spec.korc.serviceAccounts entry the Glance
-// projection consumes for its Keystone service user. The defaulting webhook
-// auto-injects it (name glance, project service (create), roles [service])
-// whenever services.glance is set.
-const glanceServiceAccountName = c5c3v1alpha1.GlanceServiceAccountName
 
 // glanceName returns the deterministic name of the Glance CR projected from the
 // given ControlPlane (see glanceNameSuffix).
@@ -107,40 +99,17 @@ func glanceBackendName(cp *c5c3v1alpha1.ControlPlane, entryName string) string {
 	return glanceBackendNamePrefix(cp) + entryName
 }
 
-// glanceServiceAccount returns the auto-injected "glance" entry from
-// spec.korc.serviceAccounts and whether it is declared. The Glance projection
-// derives its Keystone service user from this entry.
-func glanceServiceAccount(cp *c5c3v1alpha1.ControlPlane) (c5c3v1alpha1.ServiceAccountSpec, bool) {
-	for _, sa := range cp.Spec.KORC.ServiceAccounts {
-		if sa.Name == glanceServiceAccountName {
-			return sa, true
-		}
-	}
-	return c5c3v1alpha1.ServiceAccountSpec{}, false
-}
-
-// glanceServiceAccountReady reports whether the per-account status entry for the
-// glance service account is Ready — the readiness reconcileServiceAccounts
-// computes for it in the same reconcile pass, ahead of this sub-reconciler.
-func glanceServiceAccountReady(cp *c5c3v1alpha1.ControlPlane) bool {
-	for _, s := range cp.Status.ServiceAccounts {
-		if s.Name == glanceServiceAccountName {
-			return s.Ready
-		}
-	}
-	return false
-}
-
 // reconcileGlance projects spec.services.glance into an owned Glance CR (and its
 // GlanceBackend children) and drives the GlanceReady condition.
 //
 // The sub-reconciler is GATED on KeystoneReady (Glance validates every token
-// against the ControlPlane's Keystone child) and on the glance service account
-// (Glance authenticates as that Keystone user). Once gated through, it ensures
-// the DB-credential ExternalSecret, projects the Glance CR — database/cache
-// DeepCopied from the resolved backing services, the Keystone endpoint derived
-// top-down (glanceKeystoneEndpoint) — and mirrors the child's Ready condition
-// back into GlanceReady.
+// against the ControlPlane's Keystone child) and on the KeystoneService child it
+// projects for Glance (Glance authenticates as the Keystone user that
+// registration provisions). Once gated through, it ensures the DB-credential
+// ExternalSecret, projects the Glance CR — database/cache DeepCopied from the
+// resolved backing services, the Keystone endpoint derived top-down
+// (glanceKeystoneEndpoint) — and folds both children's readiness into
+// GlanceReady.
 func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -212,35 +181,14 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 		return ctrl.Result{RequeueAfter: keystoneInfraGateRequeueAfter}, nil
 	}
 
-	// Gate on the glance service account. Its declaration is auto-injected by the
-	// defaulting webhook whenever services.glance is set; a missing entry means
-	// admission was bypassed, so fail loud with a named field rather than
-	// projecting a Glance with no Keystone user. A declared-but-not-yet-Ready
-	// account defers projection until its user and password are provisioned.
-	sa, declared := glanceServiceAccount(cp)
-	if !declared {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeGlanceReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "ServiceAccountNotDeclared",
-			Message: fmt.Sprintf("no spec.korc.serviceAccounts entry named %q is declared; the defaulting webhook "+
-				"injects it whenever services.glance is set, so a ControlPlane reaching here bypassed admission",
-				glanceServiceAccountName),
-		})
-		return ctrl.Result{}, nil
-	}
-	if !glanceServiceAccountReady(cp) {
-		logger.Info("glance service account not ready, deferring Glance projection")
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypeGlanceReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForServiceAccount",
-			Message: fmt.Sprintf("service account %q is not yet Ready; Glance projection deferred until its "+
-				"Keystone user and password are provisioned", glanceServiceAccountName),
-		})
-		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	// Register Glance against the identity plane: one KeystoneService child
+	// carrying the image catalog entry and the service account Glance
+	// authenticates as, mirrored onto a placed Glance's cluster and gated on the
+	// account it provisions.
+	child, regRes, halt, err := r.reconcileBuiltinRegistration(ctx, cp, desiredGlanceRegistration(cp),
+		"Glance", conditionTypeGlanceReady)
+	if halt {
+		return regRes, err
 	}
 
 	// The EFFECTIVE credentials mode of the database Glance connects to, resolved
@@ -341,16 +289,20 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 
 	glance.Spec.Region = cp.Spec.Region
 
-	// The Keystone service user Glance authenticates as, derived from the
-	// auto-injected glance service account: the user and project domains resolve to
-	// the same effective domain the account is provisioned in, and the password is
-	// read from the account's materialized consumer Secret.
+	// The Keystone service user Glance authenticates as, the account the
+	// registration child provisions: user and project as declared on that child,
+	// both domains the ControlPlane's effective admin domain (which the
+	// registration resolves the same way, its own domainName being unset), and the
+	// password read from the consumer Secret the registration delivers.
 	glance.Spec.ServiceUser = glancev1alpha1.ServiceUserSpec{
-		Username:          serviceAccountUserName(sa),
-		ProjectName:       sa.Project.Name,
-		UserDomainName:    serviceAccountDomainName(cp, sa),
-		ProjectDomainName: serviceAccountDomainName(cp, sa),
-		SecretRef:         commonv1.SecretRefSpec{Name: serviceAccountCredentialsSecretName(cp, sa), Key: "password"},
+		Username:          c5c3v1alpha1.GlanceServiceAccountName,
+		ProjectName:       c5c3v1alpha1.GlanceServiceProjectName,
+		UserDomainName:    adminDomainName(cp),
+		ProjectDomainName: adminDomainName(cp),
+		SecretRef: commonv1.SecretRefSpec{
+			Name: keystoneServiceCredentialsSecretName(child),
+			Key:  "password",
+		},
 	}
 
 	// Project the ControlPlane's RESOLVED store selection onto the Glance child so
@@ -422,7 +374,7 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 		return ctrl.Result{}, err
 	}
 
-	return commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp, commonreconcile.ChildProjectionParams[*glancev1alpha1.Glance]{
+	res, err := commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp, commonreconcile.ChildProjectionParams[*glancev1alpha1.Glance]{
 		Child:          glance,
 		ConditionType:  conditionTypeGlanceReady,
 		ReadyReason:    "GlanceReady",
@@ -445,17 +397,33 @@ func (r *ControlPlaneReconciler) reconcileGlance(ctx context.Context, cp *c5c3v1
 		ChildConditions: func(g *glancev1alpha1.Glance) []metav1.Condition { return g.Status.Conditions },
 		Unowned:         crossNamespace,
 	})
+	if err != nil || !res.IsZero() {
+		return res, err
+	}
+
+	// The Glance child is ready. GlanceReady still folds in the registration: a
+	// running Glance whose catalog entry never landed is reachable by nothing that
+	// discovers it through the catalog, and the ControlPlane must not report the
+	// image service as ready for it.
+	if readyRes, pending := foldBuiltinRegistrationReady(cp, child, conditionTypeGlanceReady); pending {
+		return readyRes, nil
+	}
+	return res, nil
 }
 
 // deleteOrphanedGlance removes a previously-projected Glance child — and the
-// GlanceBackend children, DB-credential ExternalSecret, and image catalog K-ORC
-// CRs that follow it — when spec.services.glance is unset AND the ControlPlane has
-// opted in to deletion via glanceDeletionAllowedAnnotation (the caller gates
-// this). Each object is only
+// GlanceBackend children, DB-credential ExternalSecret, and KeystoneService
+// registration that follow it — when spec.services.glance is unset AND the
+// ControlPlane has opted in to deletion via glanceDeletionAllowedAnnotation (the
+// caller gates this). Each object is only
 // deleted when this ControlPlane still owns it (by owner reference in its own
 // namespace, by the ownership labels in a service namespace); a hand-created
 // GlanceBackend that merely shares the namespace, or a foreign object colliding
 // on a name, is left alone.
+//
+// Deleting the registration is what removes Glance from the Keystone catalog and
+// from the identity plane: the KeystoneService controller's finalizer tears down
+// the catalog rows, the service user and its project behind it.
 func (r *ControlPlaneReconciler) deleteOrphanedGlance(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
 	glanceNS := cp.GlanceNamespace()
 
@@ -518,25 +486,20 @@ func (r *ControlPlaneReconciler) deleteOrphanedGlance(ctx context.Context, cp *c
 		}
 	}
 
-	// The Glance catalog K-ORC CRs: the image Service and its internal/public
-	// Endpoints. These are ControlPlane-scoped and live in the ControlPlane's own
-	// namespace regardless of Glance placement (see managedCatalogService), so they
-	// are swept from childNamespace(cp), not glanceNS. Each is ownership-checked, so
-	// a foreign CR colliding on a name is left alone.
-	catalogNS := childNamespace(cp)
-	catalogChildren := []client.Object{
-		&orcv1alpha1.Service{ObjectMeta: metav1.ObjectMeta{Name: glanceCatalogServiceName(cp), Namespace: catalogNS}},
-		&orcv1alpha1.Endpoint{ObjectMeta: metav1.ObjectMeta{Name: glanceCatalogEndpointName(cp, "internal"), Namespace: catalogNS}},
-		&orcv1alpha1.Endpoint{ObjectMeta: metav1.ObjectMeta{Name: glanceCatalogEndpointName(cp, "public"), Namespace: catalogNS}},
+	// The KeystoneService registration. It lives beside the service, on the
+	// management cluster whatever cluster Glance runs on. The credential mirror a
+	// PLACED service carries is not swept here: like every object this function
+	// names it is resolved through GlanceNamespace(), which without a
+	// services.glance block is the ControlPlane's own namespace — so this sweep
+	// reaches co-located objects only. The mirror is reaped by the
+	// ControlPlane teardown, which sweeps a placed namespace's label-owned
+	// ExternalSecrets on the target cluster.
+	registration := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: glanceName(cp), Namespace: glanceNS},
 	}
-	for _, child := range catalogChildren {
-		if err := commonreconcile.DeleteOrphanedChildFunc(ctx, r.Client, child, func(live client.Object) bool {
-			return isControlPlaneChild(live, cp)
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
+	return commonreconcile.DeleteOrphanedChildFunc(ctx, r.Client, registration, func(live client.Object) bool {
+		return isControlPlaneChild(live, cp)
+	})
 }
 
 // glanceBackendForEntry builds the GlanceBackend child projected from one
