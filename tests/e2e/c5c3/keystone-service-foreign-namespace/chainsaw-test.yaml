@@ -1,0 +1,651 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for CROSS-NAMESPACE service registration: a KeystoneService
+# in a namespace the ControlPlane does not own.
+#
+# Three mechanisms have to agree for that to work, and each of them looks healthy
+# on its own while the combination is broken:
+#
+#   1. The ADMISSION GATE on the ControlPlane
+#      (spec.korc.serviceRegistrations.allowedNamespaces) decides which
+#      namespaces may register at all.
+#   2. The TENANT STORE the ControlPlane provisions into an allowlisted
+#      namespace is what carries the credentials back out to the service.
+#   3. The KEYSTONE SERVICE CONTROLLER projects the K-ORC children beside the
+#      admin credential, in the ControlPlane's namespace, and delivers only the
+#      consumer Secret into the registration's own.
+#
+# Unit tests drive a fake client, envtest carries K-ORC as schema without a
+# controller, and neither sees Keystone, OpenBao, ESO or cert-manager. This suite
+# is the only place the three meet.
+#
+# ── Three legs ───────────────────────────────────────────────────────────────
+#   POSITIVE  an allowlisted namespace registers a catalog entry and an account,
+#             its tenant store appears, its consumer Secret is materialized, and
+#             a Job in that namespace authenticates with it.
+#   NEGATIVE  an unlisted namespace holds at Ready=False/NamespaceNotAllowed with
+#             nothing projected anywhere, re-checked after a settle so a late
+#             projection cannot pass as none.
+#   FREEZE    de-listing an admitted namespace freezes its registration instead
+#             of tearing it down (decision D9): the Secret, the Keystone user and
+#             the tenant store all survive, and re-listing recovers.
+#
+# ── Its own ControlPlane, and the two seeds it needs ─────────────────────────
+# The suite brings up a Keystone-only plane in chainsaw's ephemeral namespace
+# rather than reusing the canonical one: the webhook admits one ControlPlane per
+# namespace, and the full-chain suite owns openstack/controlplane-keystone.
+#
+# A managed plane outside openstack needs exactly two OpenBao prerequisites,
+# both of which the deploy stack seeds only for the identity it was told about:
+# the Model B admin password at bootstrap/<ns>/<cp>-keystone/admin, and the
+# database-engine role behind the dynamic DB credential. The suite seeds both
+# itself, with the same scripts deploy-infra runs. Everything else a ControlPlane
+# needs in its namespace is operator-projected or cluster-scoped.
+#
+# ── Presence guard ───────────────────────────────────────────────────────────
+# Mirrors the sibling c5c3 suites. The e2e-operator c5c3 matrix leg runs this
+# whole directory on a cluster carrying the stack's CRDs but none of its
+# operators, so a suite that hard-failed there would fail a job it was never
+# scoped to. E2E_REQUIRE_CONTROLPLANE_STACK=true flips the guard from SKIP to a
+# hard failure on the job that IS meant to carry the stack.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: keystone-service-foreign-namespace
+spec:
+  # The bring-up of a second full identity plane plus three registration legs and
+  # a bounded teardown runs well past the suite defaults. cleanup is generous
+  # because the ControlPlane's finalizer waits on K-ORC to take the Keystone
+  # rows out before it releases — and because on the failure path the namespace
+  # converges through the operators' bounded stall breakers (the ControlPlane's
+  # ORC teardown and the Keystone's OpenBao backup purge, 5m each), which the
+  # budget has to outlast back to back.
+  timeouts:
+    assert: 5m
+    exec: 40m
+    cleanup: 15m
+  steps:
+  - try:
+    - script:
+        timeout: 40m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every
+        # infra/keystone/c5c3 e2e script pins bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS="${NAMESPACE}"
+          CP_NAME="cp"
+          TENANT_NS="${NAMESPACE}-tenant"
+          OUTSIDER_NS="${NAMESPACE}-outsider"
+          KS_NAME=workflow
+          OUTSIDER_KS=outsider
+          CREDS_SECRET=workflow-credentials
+          TENANT_STORE=openbao-tenant-store
+          TENANT_SA=eso-tenant-auth
+          TENANT_CERT=eso-tenant-client-tls
+          CP_NAME_LABEL=c5c3.io/controlplane-name
+          CP_NS_LABEL=c5c3.io/controlplane-namespace
+          KS_SELECTOR="c5c3.io/keystoneservice-name=${KS_NAME},c5c3.io/keystoneservice-namespace=${TENANT_NS}"
+          OUTSIDER_SELECTOR="c5c3.io/keystoneservice-name=${OUTSIDER_KS},c5c3.io/keystoneservice-namespace=${OUTSIDER_NS}"
+          KORC_KINDS=users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud
+
+          REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
+          skip_or_fail() { # <reason...>
+            if [ "${REQUIRE_STACK}" = "true" ]; then
+              echo "ERROR: $*"
+              echo "       E2E_REQUIRE_CONTROLPLANE_STACK=true — the ControlPlane"
+              echo "       stack is required on this job, so this is a hard failure."
+              exit 1
+            fi
+            echo "SKIP: $*"
+            exit 0
+          }
+
+          # ── Presence guard ────────────────────────────────────────────────
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            keystoneservices.c5c3.io \
+            keystones.keystone.openstack.c5c3.io \
+            mariadbs.k8s.mariadb.com \
+            memcacheds.memcached.c5c3.io \
+            applicationcredentials.openstack.k-orc.cloud \
+            users.openstack.k-orc.cloud \
+            projects.openstack.k-orc.cloud \
+            roles.openstack.k-orc.cloud \
+            roleassignments.openstack.k-orc.cloud \
+            services.openstack.k-orc.cloud \
+            endpoints.openstack.k-orc.cloud \
+            domains.openstack.k-orc.cloud \
+            externalsecrets.external-secrets.io \
+            pushsecrets.external-secrets.io \
+            secretstores.external-secrets.io \
+            certificates.cert-manager.io; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            skip_or_fail "required CRDs not present:${missing}"
+          fi
+          if ! kubectl get clustersecretstore openbao-cluster-store >/dev/null 2>&1; then
+            skip_or_fail "openbao-cluster-store ClusterSecretStore not present."
+          fi
+          if ! kubectl get pod openbao-0 -n shared-services >/dev/null 2>&1; then
+            skip_or_fail "shared-services/openbao-0 not present."
+          fi
+          # The CRDs alone do not prove the stack: the e2e-operator (c5c3) matrix
+          # leg installs every CRD the c5c3 controller watches WITHOUT deploying
+          # the sibling operators. This suite needs a Keystone that actually
+          # serves, so probe for running pods (any namespace), not just schema.
+          # The probe captures via command substitution and retries; it must NOT
+          # be simplified back to `kubectl … | grep -q .`, which reads a transient
+          # apiserver error or an EPIPE as "no pods".
+          operator_running() { # <app.kubernetes.io/name label value>
+            local pods
+            for _ in 1 2 3 4 5; do
+              if pods="$(kubectl get pods -A -l "app.kubernetes.io/name=$1" --no-headers 2>/dev/null)" \
+                && [ -n "${pods}" ]; then
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
+          }
+          if ! operator_running keystone-operator; then
+            skip_or_fail "no keystone-operator is running; the cluster carries the stack's CRDs only."
+          fi
+          if ! operator_running c5c3-operator; then
+            skip_or_fail "no c5c3-operator is running."
+          fi
+
+          export BAO_TOKEN
+          BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
+            -o jsonpath='{.data.init-output}' | base64 -d | jq -r '.root_token')"
+          if [ -z "${BAO_TOKEN}" ] || [ "${BAO_TOKEN}" = "null" ]; then
+            skip_or_fail "could not extract the OpenBao root token."
+          fi
+          bao_exec() {
+            kubectl exec -n shared-services openbao-0 -- \
+              env BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN="${BAO_TOKEN}" \
+              VAULT_CACERT=/openbao/tls/ca.crt \
+              VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+              VAULT_CLIENT_KEY=/openbao/client-tls/tls.key "$@"
+          }
+          if ! bao_exec bao read auth/kubernetes/management/role/eso-tenant >/dev/null 2>&1; then
+            skip_or_fail "the eso-tenant OpenBao auth role is not configured."
+          fi
+          echo "OK: prerequisites present — running the foreign-namespace registration chain."
+
+          # ── Helpers ───────────────────────────────────────────────────────
+          # Explicit polls rather than `kubectl wait`, so a condition that is
+          # briefly absent retries instead of erroring out and the failure names
+          # the last observed status.
+          wait_condition() { # <resource> <name> <namespace> <conditionType> <expected> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" ctype="$4" want="$5" timeout="$6"
+            local deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get "${res}" "${name}" -n "${ns}" \
+                -o "jsonpath={.status.conditions[?(@.type=='${ctype}')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "${want}" ]; then
+                echo "OK: ${res}/${name} ${ctype}=${want}"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} ${ctype} not ${want} within ${timeout}s (last: '${status:-<none>}')"
+                kubectl get "${res}" "${name}" -n "${ns}" \
+                  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          wait_cp_condition() { # <conditionType> <timeoutSeconds>
+            wait_condition controlplane "${CP_NAME}" "${CP_NS}" "$1" True "$2"
+          }
+          wait_ks_condition() { # <name> <namespace> <conditionType> <expected> <timeoutSeconds>
+            wait_condition keystoneservice "$1" "$2" "$3" "$4" "$5"
+          }
+          condition_reason() { # <resource> <name> <namespace> <conditionType>
+            kubectl get "$1" "$2" -n "$3" \
+              -o "jsonpath={.status.conditions[?(@.type=='$4')].reason}" 2>/dev/null || true
+          }
+          condition_message() { # <resource> <name> <namespace> <conditionType>
+            kubectl get "$1" "$2" -n "$3" \
+              -o "jsonpath={.status.conditions[?(@.type=='$4')].message}" 2>/dev/null || true
+          }
+          # Waits on the REASON rather than the status, for the conditions whose
+          # status cannot tell the two states apart. RegistrationTenantStoresReady
+          # is True for all three of its outcomes — the stores are up, there is
+          # nothing to provision, or the plane opted out — so gating on True and
+          # then sampling the reason reads whatever the previous leg left behind:
+          # the wait returns at once on the state the leg is trying to move away
+          # from. Every such reason is also written by the ControlPlane reconciler,
+          # a DIFFERENT controller from the one whose condition the leg just waited
+          # on, so there is no status anywhere that a single wait can gate on.
+          wait_reason() { # <resource> <name> <namespace> <conditionType> <expectedReason> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" ctype="$4" want="$5" timeout="$6"
+            local deadline reason
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              reason="$(condition_reason "${res}" "${name}" "${ns}" "${ctype}")"
+              if [ "${reason}" = "${want}" ]; then
+                echo "OK: ${res}/${name} ${ctype} reports ${want}"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} ${ctype} did not report ${want} within ${timeout}s (last: '${reason:-<none>}')"
+                kubectl get "${res}" "${name}" -n "${ns}" \
+                  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+                return 1
+              fi
+              sleep 5
+            done
+          }
+          wait_cp_reason() { # <conditionType> <expectedReason> <timeoutSeconds>
+            wait_reason controlplane "${CP_NAME}" "${CP_NS}" "$1" "$2" "$3"
+          }
+          assert_eq() { # <description> <expected> <actual>
+            if [ "$2" != "$3" ]; then
+              echo "ERROR: $1 — expected '$2', got '$3'"
+              exit 1
+            fi
+            echo "OK: $1 ('$3')"
+          }
+          assert_nonempty() { # <description> <value>
+            if [ -z "$2" ]; then
+              echo "ERROR: $1 — value is empty"
+              exit 1
+            fi
+            echo "OK: $1 ('$2')"
+          }
+          count_of() { # <kinds> <namespace> [selector]
+            local kinds="$1" ns="$2" sel="${3:-}"
+            if [ -n "${sel}" ]; then
+              kubectl get "${kinds}" -n "${ns}" -l "${sel}" --no-headers 2>/dev/null | grep -c . || true
+            else
+              kubectl get "${kinds}" -n "${ns}" --no-headers 2>/dev/null | grep -c . || true
+            fi
+          }
+          wait_gone() { # <resource> <name> <namespace> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" timeout="$4" deadline
+            deadline=$(( $(date +%s) + timeout ))
+            while kubectl get "${res}" "${name}" -n "${ns}" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} in ${ns} still present after ${timeout}s"
+                return 1
+              fi
+              sleep 5
+            done
+            echo "OK: ${res}/${name} in ${ns} is gone"
+          }
+
+          # ── The two namespaces the plane does not own ─────────────────────
+          kubectl create namespace "${TENANT_NS}"
+          kubectl create namespace "${OUTSIDER_NS}"
+
+          # ── Seed the per-CR OpenBao paths this plane reads ────────────────
+          # deploy-infra seeds only the identity it was given (openstack/<name>),
+          # so an ephemeral plane seeds its own. The script is idempotent:
+          # everything it writes goes through write_secret_if_missing.
+          KORC_CONTROLPLANES="${CP_NS}/${CP_NAME}" \
+            ../../../../deploy/openbao/bootstrap/write-bootstrap-secrets.sh
+          echo "OK: the per-CR admin-password path is seeded."
+
+          # ── Apply the ControlPlane ────────────────────────────────────────
+          sed -e "s|@TENANT_NS@|${TENANT_NS}|g" 00-controlplane-cr.yaml \
+            | kubectl apply -n "${CP_NS}" -f -
+
+          wait_cp_condition InfrastructureReady 600
+          kubectl wait mariadb/openstack-db -n "${CP_NS}" --for=condition=Ready --timeout=600s
+
+          # The database-engine role is keyed on the SERVICE namespace, so it has
+          # to be onboarded for this plane's namespace before the dynamic DB
+          # credential can be issued.
+          ../../../../deploy/openbao/bootstrap/setup-database-tenant.sh "${CP_NS}" "${CP_NAME}"
+          echo "OK: OpenBao database-engine tenant onboarded."
+
+          wait_cp_condition DBCredentialsReady 300
+          wait_cp_condition KeystoneReady 900
+          wait_cp_condition KORCReady 600
+          wait_cp_condition AdminCredentialReady 600
+          echo "OK: the plane serves an identity plane registrations can reach."
+
+          # ══ LEG 1 — an allowlisted namespace registers ════════════════════
+          sed -e "s|@TENANT_NS@|${TENANT_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
+            01-keystoneservice-tenant.yaml | kubectl apply -f -
+
+          # The plane provisions the tenant store only once something in the
+          # namespace actually registers.
+          wait_cp_reason RegistrationTenantStoresReady RegistrationTenantStoresReady 600
+
+          wait_condition secretstore "${TENANT_STORE}" "${TENANT_NS}" Ready True 300
+          kubectl get serviceaccount "${TENANT_SA}" -n "${TENANT_NS}" >/dev/null
+          kubectl get certificate "${TENANT_CERT}" -n "${TENANT_NS}" >/dev/null
+          for obj in "secretstore/${TENANT_STORE}" "serviceaccount/${TENANT_SA}" "certificate/${TENANT_CERT}"; do
+            assert_eq "${obj} is labelled with its owning ControlPlane" "${CP_NAME}" \
+              "$(kubectl get "${obj}" -n "${TENANT_NS}" -o "jsonpath={.metadata.labels.${CP_NAME_LABEL//./\\.}}")"
+            assert_eq "${obj} names the ControlPlane's namespace" "${CP_NS}" \
+              "$(kubectl get "${obj}" -n "${TENANT_NS}" -o "jsonpath={.metadata.labels.${CP_NS_LABEL//./\\.}}")"
+          done
+          echo "OK: the tenant-store trio is provisioned in the registration's namespace."
+
+          # The registration itself. K-ORC has to create a user, a project, a role
+          # assignment, a service row and two endpoint rows in Keystone, and ESO
+          # has to round-trip the password through OpenBao, so this is the longest
+          # wait in the suite.
+          wait_ks_condition "${KS_NAME}" "${TENANT_NS}" Ready True 900
+          assert_eq "the registration aggregates to AllReady" "AllReady" \
+            "$(condition_reason keystoneservice "${KS_NAME}" "${TENANT_NS}" Ready)"
+          assert_eq "the catalog entry is registered" "CatalogRegistered" \
+            "$(condition_reason keystoneservice "${KS_NAME}" "${TENANT_NS}" CatalogReady)"
+          assert_eq "the account is provisioned" "AccountProvisioned" \
+            "$(condition_reason keystoneservice "${KS_NAME}" "${TENANT_NS}" AccountReady)"
+
+          assert_eq "status names the consumer Secret" "${CREDS_SECRET}" \
+            "$(kubectl get keystoneservice "${KS_NAME}" -n "${TENANT_NS}" -o jsonpath='{.status.account.secretName}')"
+          assert_nonempty "Keystone resolved the user id" \
+            "$(kubectl get keystoneservice "${KS_NAME}" -n "${TENANT_NS}" -o jsonpath='{.status.account.userID}')"
+          assert_nonempty "Keystone resolved the project id" \
+            "$(kubectl get keystoneservice "${KS_NAME}" -n "${TENANT_NS}" -o jsonpath='{.status.account.projectID}')"
+          assert_nonempty "Keystone resolved the service id" \
+            "$(kubectl get keystoneservice "${KS_NAME}" -n "${TENANT_NS}" -o jsonpath='{.status.catalog.serviceID}')"
+          assert_eq "both endpoint rows are reported" "2" \
+            "$(kubectl get keystoneservice "${KS_NAME}" -n "${TENANT_NS}" \
+              -o jsonpath='{.status.catalog.endpoints[*].interface}' | wc -w | tr -d ' ')"
+
+          # ── Where the children live ───────────────────────────────────────
+          # K-ORC reads the admin clouds.yaml from the child's OWN namespace, so
+          # the children belong to the plane's namespace and are marked by labels
+          # rather than an owner reference, which cannot cross a namespace.
+          assert_eq "the K-ORC children sit in the plane's namespace" "7" \
+            "$(count_of "${KORC_KINDS}" "${CP_NS}" "${KS_SELECTOR}")"
+          assert_eq "no K-ORC child is left where it could not authenticate" "0" \
+            "$(count_of "${KORC_KINDS}" "${TENANT_NS}")"
+          for kind in users projects roles roleassignments services endpoints; do
+            for child in $(kubectl get "${kind}.openstack.k-orc.cloud" -n "${CP_NS}" \
+              -l "${KS_SELECTOR}" -o jsonpath='{.items[*].metadata.name}'); do
+              assert_eq "${kind}/${child} is Available" "True" \
+                "$(kubectl get "${kind}.openstack.k-orc.cloud" "${child}" -n "${CP_NS}" \
+                  -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
+            done
+          done
+          echo "OK: every projected child is Available beside the admin credential."
+
+          # ── The credentials came back the other way ───────────────────────
+          wait_condition externalsecret "${CREDS_SECRET}" "${TENANT_NS}" Ready True 300
+          for k in password clouds.yaml; do
+            if ! kubectl get secret "${CREDS_SECRET}" -n "${TENANT_NS}" \
+                 -o "jsonpath={.data.$(printf '%s' "$k" | sed 's/\./\\./')}" | grep -q .; then
+              echo "ERROR: consumer Secret ${CREDS_SECRET} is missing key ${k}"; exit 1
+            fi
+          done
+          echo "OK: the consumer Secret carries both keys in the registration's namespace."
+
+          # ── And they authenticate ─────────────────────────────────────────
+          kubectl delete job workflow-verify -n "${TENANT_NS}" --ignore-not-found
+          sed -e "s|@TENANT_NS@|${TENANT_NS}|g" 03-openstack-verify-job.yaml | kubectl apply -f -
+          if ! kubectl wait --for=condition=complete "job/workflow-verify" -n "${TENANT_NS}" --timeout=5m; then
+            echo "ERROR: the verify Job did not complete"
+            kubectl logs -n "${TENANT_NS}" job/workflow-verify 2>&1 || true
+            exit 1
+          fi
+          # One capture, then here-strings: `kubectl logs | grep -q` exits on the
+          # first match, closing the pipe and killing kubectl with EPIPE, which
+          # pipefail then reports as failure BECAUSE it matched.
+          VERIFY_LOGS="$(kubectl logs -n "${TENANT_NS}" job/workflow-verify)"
+          echo "${VERIFY_LOGS}"
+          grep -qi "the delivered credentials authenticate" <<<"${VERIFY_LOGS}"
+          echo "OK: a service in the registration's namespace authenticates with what it was delivered."
+
+          # ══ LEG 2 — an unlisted namespace is refused ══════════════════════
+          sed -e "s|@OUTSIDER_NS@|${OUTSIDER_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
+            02-keystoneservice-outsider.yaml | kubectl apply -f -
+
+          wait_ks_condition "${OUTSIDER_KS}" "${OUTSIDER_NS}" Ready False 300
+          assert_eq "the refused registration does not aggregate ready" "NotAllReady" \
+            "$(condition_reason keystoneservice "${OUTSIDER_KS}" "${OUTSIDER_NS}" Ready)"
+          for ctype in CatalogReady AccountReady; do
+            assert_eq "${ctype} reports the gate" "NamespaceNotAllowed" \
+              "$(condition_reason keystoneservice "${OUTSIDER_KS}" "${OUTSIDER_NS}" "${ctype}")"
+          done
+          # The condition has to say what to edit, or an operator is left guessing.
+          if ! grep -q "spec.korc.serviceRegistrations.allowedNamespaces" \
+               <<<"$(condition_message keystoneservice "${OUTSIDER_KS}" "${OUTSIDER_NS}" CatalogReady)"; then
+            echo "ERROR: the refusal message does not name the field that admits the namespace"; exit 1
+          fi
+
+          assert_nothing_projected() { # <when>
+            assert_eq "nothing K-ORC in the refused namespace ($1)" "0" \
+              "$(count_of "${KORC_KINDS}" "${OUTSIDER_NS}")"
+            assert_eq "no refused child reached the plane's namespace ($1)" "0" \
+              "$(count_of "${KORC_KINDS}" "${CP_NS}" "${OUTSIDER_SELECTOR}")"
+            assert_eq "no ESO objects in the refused namespace ($1)" "0" \
+              "$(count_of externalsecrets,pushsecrets "${OUTSIDER_NS}")"
+            for obj in "secret/outsider-credentials" "secretstore/${TENANT_STORE}" \
+                       "serviceaccount/${TENANT_SA}" "certificate/${TENANT_CERT}"; do
+              if kubectl get "${obj}" -n "${OUTSIDER_NS}" >/dev/null 2>&1; then
+                echo "ERROR: ${obj} exists in the refused namespace ($1)"; exit 1
+              fi
+            done
+            echo "OK: the refused registration projected nothing ($1)."
+          }
+          assert_nothing_projected "immediately"
+          # A gate that merely reported the refusal while a projection was still
+          # in flight would pass the check above; the settle is what separates
+          # "refused" from "slow".
+          sleep 30
+          assert_nothing_projected "after a settle"
+          assert_eq "the admitted registration is untouched by its neighbour" "True" \
+            "$(kubectl get keystoneservice "${KS_NAME}" -n "${TENANT_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}")"
+
+          # ══ LEG 3 — de-listing freezes, it does not tear down ═════════════
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
+            -p '{"spec":{"korc":{"serviceRegistrations":null}}}'
+
+          wait_ks_condition "${KS_NAME}" "${TENANT_NS}" Ready False 300
+          for ctype in CatalogReady AccountReady; do
+            assert_eq "de-listing reports ${ctype} on the gate" "NamespaceNotAllowed" \
+              "$(condition_reason keystoneservice "${KS_NAME}" "${TENANT_NS}" "${ctype}")"
+          done
+          # Nothing it already minted may be reaped: the credentials a running
+          # service authenticates with outlive the allowlist edit.
+          kubectl get secret "${CREDS_SECRET}" -n "${TENANT_NS}" >/dev/null
+          assert_eq "the Keystone user survives de-listing" "1" \
+            "$(count_of users.openstack.k-orc.cloud "${CP_NS}" "${KS_SELECTOR}")"
+          kubectl get secretstore "${TENANT_STORE}" -n "${TENANT_NS}" >/dev/null
+          wait_cp_reason RegistrationTenantStoresReady NoRegistrationNamespaces 300
+          echo "OK: de-listing froze the registration and reaped nothing."
+
+          kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type merge \
+            -p "{\"spec\":{\"korc\":{\"serviceRegistrations\":{\"allowedNamespaces\":[\"${TENANT_NS}\"]}}}}"
+          wait_ks_condition "${KS_NAME}" "${TENANT_NS}" Ready True 600
+          wait_cp_reason RegistrationTenantStoresReady RegistrationTenantStoresReady 600
+          echo "OK: re-listing recovered the registration."
+
+          # ══ Teardown ══════════════════════════════════════════════════════
+          kubectl delete job workflow-verify -n "${TENANT_NS}" --ignore-not-found
+          kubectl delete keystoneservice "${OUTSIDER_KS}" -n "${OUTSIDER_NS}"
+          wait_gone keystoneservice "${OUTSIDER_KS}" "${OUTSIDER_NS}" 300
+
+          # The admitted one takes its Keystone identity with it. K-ORC holds the
+          # finalizer until the rows are out of the catalog and the user is gone,
+          # so this is the slow delete.
+          kubectl delete keystoneservice "${KS_NAME}" -n "${TENANT_NS}" --wait=false
+          wait_gone keystoneservice "${KS_NAME}" "${TENANT_NS}" 600
+          assert_eq "every projected child went with it" "0" \
+            "$(count_of "${KORC_KINDS}" "${CP_NS}" "${KS_SELECTOR}")"
+          DELETE_DEADLINE=$(( $(date +%s) + 300 ))
+          while kubectl get secret "${CREDS_SECRET}" -n "${TENANT_NS}" >/dev/null 2>&1; do
+            if [ "$(date +%s)" -ge "${DELETE_DEADLINE}" ]; then
+              echo "ERROR: the consumer Secret outlived its ExternalSecret"; exit 1
+            fi
+            sleep 5
+          done
+          # The trio goes when the namespace's last registration does.
+          wait_gone secretstore "${TENANT_STORE}" "${TENANT_NS}" 300
+          wait_cp_reason RegistrationTenantStoresReady NoRegistrationNamespaces 300
+          echo "OK: the registration's teardown reached Keystone, the Secret and the tenant store."
+
+          # The plane goes down in three ordered moves, because its residues
+          # cannot be sequenced by anyone else once the CR is gone:
+          #
+          #   1. Delete the ControlPlane (async). Its finalizer revokes the
+          #      admin application credential and takes the plane's own K-ORC
+          #      children back out of a Keystone that is still serving.
+          #   2. Once those children have drained, delete the projected
+          #      Keystone EXPLICITLY, while the ControlPlane finalizer still
+          #      holds the per-tenant SecretStore trio: the Keystone's
+          #      openbao-finalizer waits for ESO to purge the fernet- and
+          #      credential-keys backup paths, and ESO can only do that
+          #      against a store that still authenticates. Left to the
+          #      post-release GC cascade or the namespace deletion, the store
+          #      dies unsequenced and the purge holds the namespace until the
+          #      operator's bounded stall breaker (OpenBaoCleanupStallTimeout)
+          #      cuts it loose minutes later. This order keeps the teardown
+          #      prompt and orphans no kv-v2 path.
+          #   3. Only then wait the ControlPlane out, so chainsaw's namespace
+          #      cleanup meets finalizer-free residue.
+          CP_KORC_RESIDUE="${KORC_KINDS},domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          kubectl delete controlplane "${CP_NAME}" -n "${CP_NS}" --wait=false
+          DRAIN_DEADLINE=$(( $(date +%s) + 300 ))
+          while [ "$(count_of "${CP_KORC_RESIDUE}" "${CP_NS}")" != "0" ]; do
+            if [ "$(date +%s)" -ge "${DRAIN_DEADLINE}" ]; then
+              echo "ERROR: the plane's K-ORC children did not drain within 300s of its deletion"
+              kubectl get "${CP_KORC_RESIDUE}" -n "${CP_NS}" 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the plane's own K-ORC children drained against a live Keystone."
+          kubectl delete keystone "${CP_NAME}-keystone" -n "${CP_NS}" --ignore-not-found --wait=false
+          # Covers the operator's 5m stall window too: if the ControlPlane
+          # released between the drain check and the delete above, GC may
+          # already have reaped the tenant store, and the Keystone then leaves
+          # via the stall breaker rather than a completed purge.
+          wait_gone keystone "${CP_NAME}-keystone" "${CP_NS}" 420
+          kubectl wait --for=delete "controlplane/${CP_NAME}" -n "${CP_NS}" --timeout=10m
+          kubectl delete namespace "${TENANT_NS}" "${OUTSIDER_NS}" --wait=false || true
+          echo "OK: foreign-namespace registration proven end to end."
+    catch:
+    - script:
+        shell: bash
+        content: |
+          # A separate shell from the try script, so everything is re-derived.
+          TENANT_NS="${NAMESPACE}-tenant"
+          OUTSIDER_NS="${NAMESPACE}-outsider"
+          echo "=== ControlPlane ==="
+          kubectl get controlplane cp -n "${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== ControlPlane conditions ==="
+          kubectl get controlplane cp -n "${NAMESPACE}" \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
+          echo "=== KeystoneServices ==="
+          kubectl get keystoneservice -A -o yaml 2>&1 || true
+          echo "=== K-ORC children in the plane's namespace ==="
+          kubectl get users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud -n "${NAMESPACE}" -o wide 2>&1 || true
+          echo "=== Delivery + tenant store in the registration namespaces ==="
+          for ns in "${TENANT_NS}" "${OUTSIDER_NS}"; do
+            echo "--- ${ns} ---"
+            kubectl get secretstore,serviceaccount,certificate,externalsecret,pushsecret,secret -n "${ns}" 2>&1 || true
+            kubectl get users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud -n "${ns}" 2>&1 || true
+          done
+          echo "=== Verify Job ==="
+          kubectl logs -n "${TENANT_NS}" job/workflow-verify --tail=100 2>&1 || true
+          echo "=== c5c3-operator ==="
+          kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator -o wide 2>&1 || true
+          OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
+            -o 'jsonpath={.items[0].metadata.namespace}' 2>/dev/null || true)"
+          kubectl logs -n "${OPERATOR_NS:-c5c3-system}" -l app.kubernetes.io/name=c5c3-operator --tail=150 --all-containers 2>&1 || true
+          echo "=== keystone-operator ==="
+          kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --tail=100 --all-containers 2>&1 || true
+          echo "=== K-ORC controller ==="
+          kubectl logs -n orc-system -l app.kubernetes.io/name=openstack-resource-controller --tail=100 --all-containers 2>&1 || true
+          echo "=== external-secrets ==="
+          kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets --tail=100 --all-containers 2>&1 || true
+          echo "=== Events ==="
+          for ns in "${NAMESPACE}" "${TENANT_NS}" "${OUTSIDER_NS}"; do
+            echo "--- ${ns} ---"
+            kubectl get events -n "${ns}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+          done
+    finally:
+    - script:
+        shell: bash
+        content: |
+          # chainsaw owns the ephemeral namespace and reaps the ControlPlane with
+          # it; the two namespaces this suite created itself are not its to reap.
+          #
+          # ORDER MATTERS HERE, and only on the failure path. When the try block
+          # reached its own teardown it already did this in the right order and
+          # every delete below is a no-op. When it died early, this block is the
+          # only teardown there is — and firing all of them with --wait=false
+          # leaves K-ORC holding finalizers on rows it can no longer reach:
+          # chainsaw deletes the ephemeral namespace next, Keystone and MariaDB go
+          # down with it, and the namespace then sits in Terminating until the
+          # cleanup timeout expires. So the registrations go first, the plane's
+          # K-ORC children and its projected Keystone next, and the plane last,
+          # each waited on while the identity plane behind them still serves the
+          # calls their finalizers have to make.
+          #
+          # Every wait is bounded and best-effort: this is a teardown net, not an
+          # assertion, and it must not stretch a failed run. A finalizer that will
+          # not release inside its budget is left to chainsaw's own cleanup rather
+          # than force-removed, so a genuine teardown bug still surfaces instead of
+          # being papered over in here.
+          TENANT_NS="${NAMESPACE}-tenant"
+          OUTSIDER_NS="${NAMESPACE}-outsider"
+          gone_within() { # <resource> <name> <namespace> <timeoutSeconds>
+            local deadline
+            deadline=$(( $(date +%s) + $4 ))
+            while kubectl get "$1" "$2" -n "$3" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "WARN: $1/$2 in $3 still present after $4s; leaving it to chainsaw cleanup"
+                return 1
+              fi
+              sleep 5
+            done
+            return 0
+          }
+          kubectl delete job workflow-verify -n "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true
+
+          # The registrations first: K-ORC releases its finalizers only by taking
+          # the catalog rows and the user back out of a Keystone that is still up.
+          kubectl delete keystoneservice workflow -n "${TENANT_NS}" --ignore-not-found --wait=false 2>&1 || true
+          kubectl delete keystoneservice outsider -n "${OUTSIDER_NS}" --ignore-not-found --wait=false 2>&1 || true
+          gone_within keystoneservice workflow "${TENANT_NS}" 120 || true
+          # The unlisted one projected nothing, so it has nothing to hand back.
+          gone_within keystoneservice outsider "${OUTSIDER_NS}" 60 || true
+
+          # Then the plane, whose own finalizer revokes the admin credential that
+          # the registrations above needed in order to leave.
+          kubectl delete controlplane cp -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
+
+          # Mirror the try teardown's ordering as far as a net can: drain the
+          # plane's K-ORC children (bounded), then take the projected Keystone
+          # down explicitly while its OpenBao backup purge can still find the
+          # per-tenant store, then wait the plane out. When this ordering loses
+          # a race, the operators' bounded stall breakers still converge the
+          # namespace — inside chainsaw's cleanup budget instead of past it.
+          CP_KORC_RESIDUE="users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud"
+          DRAIN_DEADLINE=$(( $(date +%s) + 240 ))
+          while [ "$(kubectl get "${CP_KORC_RESIDUE}" -n "${NAMESPACE}" --no-headers 2>/dev/null | grep -c .)" != "0" ]; do
+            if [ "$(date +%s)" -ge "${DRAIN_DEADLINE}" ]; then
+              echo "WARN: K-ORC residue still present after 240s; leaving it to the stall breakers"
+              break
+            fi
+            sleep 5
+          done
+          kubectl delete keystone cp-keystone -n "${NAMESPACE}" --ignore-not-found --wait=false 2>&1 || true
+          gone_within keystone cp-keystone "${NAMESPACE}" 120 || true
+
+          gone_within controlplane cp "${NAMESPACE}" 240 || true
+
+          # Only now the two namespaces this suite made: nothing left in them is
+          # waiting on the identity plane that is about to go with the ephemeral
+          # namespace.
+          kubectl delete namespace "${TENANT_NS}" "${OUTSIDER_NS}" --ignore-not-found --wait=false 2>&1 || true

@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The registration the ControlPlane must refuse: same plane, same shape, from a
+# namespace the allowlist never carries.
+#
+# It declares BOTH blocks so both block conditions exist and both have to report
+# the refusal. A catalog-only CR would leave AccountReady at its True/NotDeclared
+# default and prove half the gate.
+#
+# The service type and project differ from the admitted registration's so that a
+# leak would be unambiguous: anything named for "messaging" appearing anywhere is
+# this CR escaping its gate, not the other one's work.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: outsider
+  namespace: "@OUTSIDER_NS@"
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+  catalog:
+    serviceType: messaging
+    endpoints:
+    - interface: public
+      url: "http://messaging-api.@OUTSIDER_NS@.svc.cluster.local:5671/v2"
+  account:
+    project:
+      name: service-messaging
+      create: true
+    roles:
+    - service

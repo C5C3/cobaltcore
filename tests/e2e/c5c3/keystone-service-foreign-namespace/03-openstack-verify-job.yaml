@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Proves the delivered credentials are the LIVE ones, from inside the namespace
+# they were delivered to.
+#
+# Asserting the Secret's two keys only proves ESO materialized something. This
+# authenticates with it: `token issue` fails unless the password in the Secret is
+# the password K-ORC applied to the Keystone user, and `catalog show` fails
+# unless the row the registration's catalog block asked for reached the catalog
+# the token carries.
+#
+# Both are identity calls, so the region workaround the full-chain suite needs
+# for its non-identity commands does not apply here: the identity endpoints
+# keystone-manage bootstrap creates carry RegionOne, which is what the delivered
+# clouds.yaml pins.
+#
+# The image is pinned to the tag the e2e-controlplane job loads into kind, with
+# IfNotPresent so it uses that copy rather than pulling from GHCR. The Job is
+# applied by the test script after the registration converges and removed in its
+# finally block.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: workflow-verify
+  namespace: "@TENANT_NS@"
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: osc
+        image: ghcr.io/c5c3/tempest:2025.2
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OS_CLIENT_CONFIG_FILE
+          value: /etc/openstack/clouds.yaml
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          echo "== openstack --os-cloud admin token issue =="
+          openstack --os-cloud admin token issue
+          echo "== openstack --os-cloud admin catalog show workflow =="
+          openstack --os-cloud admin catalog show workflow > /tmp/catalog-workflow.txt
+          cat /tmp/catalog-workflow.txt
+          grep -q "http://workflow-api.@TENANT_NS@.svc.cluster.local:8989/v2" /tmp/catalog-workflow.txt
+          echo "OK: the delivered credentials authenticate and the catalog carries the registered endpoint"
+        volumeMounts:
+        - name: clouds
+          mountPath: /etc/openstack
+          readOnly: true
+      volumes:
+      - name: clouds
+        secret:
+          secretName: workflow-credentials
