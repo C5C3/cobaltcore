@@ -250,9 +250,9 @@ type serviceAccountState struct {
 // reconcileServiceAccounts returns BEFORE its status projection on every error
 // path, so without this the last converged slice — Ready=true entries included —
 // survives a pass that could not verify a single account. That stale slice is a
-// live gate, not just cosmetic status: reconcilePlacement runs in the same
-// RunSequentialGroup tail and gates on it via placementServiceAccountReady, so a
-// stale True would keep Placement projecting — and keep its dynamic DB-credential
+// live gate, not just cosmetic status: reconcileBarbican runs in the same
+// RunSequentialGroup tail and gates on it via barbicanServiceAccountReady, so a
+// stale True would keep Barbican projecting — and keep its dynamic DB-credential
 // generator minting MySQL users — for a service whose Keystone identity this pass
 // could not confirm. A persistent error would hold that gate open indefinitely.
 //

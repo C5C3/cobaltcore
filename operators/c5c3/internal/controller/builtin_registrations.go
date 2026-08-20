@@ -119,6 +119,15 @@ func desiredGlanceRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.Keys
 		c5c3v1alpha1.GlanceServiceAccountName, c5c3v1alpha1.GlanceServiceProjectName)
 }
 
+// desiredPlacementRegistration builds the registration child for Placement: the
+// placement catalog entry and the "placement" service account.
+func desiredPlacementRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+	return builtinRegistration(cp, placementName(cp), cp.PlacementNamespace(), "placement", "placement",
+		internalCatalogURL(cp.PlacementTargetClusterRef(), placementEndpointURL(cp), placementCatalogURL(cp)),
+		placementCatalogURL(cp),
+		c5c3v1alpha1.PlacementServiceAccountName, c5c3v1alpha1.PlacementServiceProjectName)
+}
+
 // reconcileBuiltinRegistration drives the registration leg every built-in
 // service shares: it applies the registration child, mirrors the credentials the
 // child delivers onto the cluster a placed service runs on, and gates on the

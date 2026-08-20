@@ -11,7 +11,6 @@ import (
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
-	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -52,13 +51,6 @@ const placementDeletionAllowedAnnotation = "c5c3.io/allow-placement-deletion"
 // isolated from Keystone's on a shared cluster.
 const defaultPlacementDatabaseName = "placement"
 
-// placementServiceAccountName mirrors c5c3v1alpha1.PlacementServiceAccountName,
-// the single source of truth for the spec.korc.serviceAccounts entry the
-// Placement projection consumes for its Keystone service user. The defaulting
-// webhook auto-injects it (name placement, project service-placement (create),
-// roles [service]) whenever services.placement is set.
-const placementServiceAccountName = c5c3v1alpha1.PlacementServiceAccountName
-
 // placementName returns the deterministic name of the Placement CR projected from
 // the given ControlPlane (see placementNameSuffix).
 func placementName(cp *c5c3v1alpha1.ControlPlane) string {
@@ -90,40 +82,17 @@ func placementEndpointURL(cp *c5c3v1alpha1.ControlPlane) string {
 	return managedServiceURL(placementName(cp), cp.PlacementNamespace(), 8778, "")
 }
 
-// placementServiceAccount returns the auto-injected "placement" entry from
-// spec.korc.serviceAccounts and whether it is declared. The Placement projection
-// derives its Keystone service user from this entry.
-func placementServiceAccount(cp *c5c3v1alpha1.ControlPlane) (c5c3v1alpha1.ServiceAccountSpec, bool) {
-	for _, sa := range cp.Spec.KORC.ServiceAccounts {
-		if sa.Name == placementServiceAccountName {
-			return sa, true
-		}
-	}
-	return c5c3v1alpha1.ServiceAccountSpec{}, false
-}
-
-// placementServiceAccountReady reports whether the per-account status entry for
-// the placement service account is Ready — the readiness reconcileServiceAccounts
-// computes for it in the same reconcile pass, ahead of this sub-reconciler.
-func placementServiceAccountReady(cp *c5c3v1alpha1.ControlPlane) bool {
-	for _, s := range cp.Status.ServiceAccounts {
-		if s.Name == placementServiceAccountName {
-			return s.Ready
-		}
-	}
-	return false
-}
-
 // reconcilePlacement projects spec.services.placement into an owned Placement CR
 // and drives the PlacementReady condition.
 //
 // The sub-reconciler is GATED on KeystoneReady (Placement validates every token
-// against the ControlPlane's Keystone child) and on the placement service account
-// (Placement authenticates as that Keystone user). Once gated through, it ensures
-// the DB-credential ExternalSecret, projects the Placement CR — database/cache
-// DeepCopied from the resolved backing services, the Keystone endpoint derived
-// top-down (placementKeystoneEndpoint) — and mirrors the child's Ready condition
-// back into PlacementReady.
+// against the ControlPlane's Keystone child) and on the KeystoneService child it
+// projects for Placement (Placement authenticates as the Keystone user that
+// registration provisions). Once gated through, it ensures the DB-credential
+// ExternalSecret, projects the Placement CR — database/cache DeepCopied from the
+// resolved backing services, the Keystone endpoint derived top-down
+// (placementKeystoneEndpoint) — and folds both children's readiness into
+// PlacementReady.
 func (r *ControlPlaneReconciler) reconcilePlacement(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -195,35 +164,14 @@ func (r *ControlPlaneReconciler) reconcilePlacement(ctx context.Context, cp *c5c
 		return ctrl.Result{RequeueAfter: keystoneInfraGateRequeueAfter}, nil
 	}
 
-	// Gate on the placement service account. Its declaration is auto-injected by the
-	// defaulting webhook whenever services.placement is set; a missing entry means
-	// admission was bypassed, so fail loud with a named field rather than projecting
-	// a Placement with no Keystone user. A declared-but-not-yet-Ready account defers
-	// projection until its user and password are provisioned.
-	sa, declared := placementServiceAccount(cp)
-	if !declared {
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypePlacementReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "ServiceAccountNotDeclared",
-			Message: fmt.Sprintf("no spec.korc.serviceAccounts entry named %q is declared; the defaulting webhook "+
-				"injects it whenever services.placement is set, so a ControlPlane reaching here bypassed admission",
-				placementServiceAccountName),
-		})
-		return ctrl.Result{}, nil
-	}
-	if !placementServiceAccountReady(cp) {
-		logger.Info("placement service account not ready, deferring Placement projection")
-		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
-			Type:               conditionTypePlacementReady,
-			Status:             metav1.ConditionFalse,
-			ObservedGeneration: cp.Generation,
-			Reason:             "WaitingForServiceAccount",
-			Message: fmt.Sprintf("service account %q is not yet Ready; Placement projection deferred until its "+
-				"Keystone user and password are provisioned", placementServiceAccountName),
-		})
-		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	// Register Placement against the identity plane: one KeystoneService child
+	// carrying the placement catalog entry and the service account Placement
+	// authenticates as, mirrored onto a placed Placement's cluster and gated on
+	// the account it provisions.
+	child, regRes, halt, err := r.reconcileBuiltinRegistration(ctx, cp, desiredPlacementRegistration(cp),
+		"Placement", conditionTypePlacementReady)
+	if halt {
+		return regRes, err
 	}
 
 	// The EFFECTIVE credentials mode of the database Placement connects to, resolved
@@ -325,16 +273,20 @@ func (r *ControlPlaneReconciler) reconcilePlacement(ctx context.Context, cp *c5c
 
 	pl.Spec.Region = cp.Spec.Region
 
-	// The Keystone service user Placement authenticates as, derived from the
-	// auto-injected placement service account: the user and project domains resolve
-	// to the same effective domain the account is provisioned in, and the password
-	// is read from the account's materialized consumer Secret.
+	// The Keystone service user Placement authenticates as, the account the
+	// registration child provisions: user and project as declared on that child,
+	// both domains the ControlPlane's effective admin domain (which the
+	// registration resolves the same way, its own domainName being unset), and the
+	// password read from the consumer Secret the registration delivers.
 	pl.Spec.ServiceUser = placementv1alpha1.ServiceUserSpec{
-		Username:          serviceAccountUserName(sa),
-		ProjectName:       sa.Project.Name,
-		UserDomainName:    serviceAccountDomainName(cp, sa),
-		ProjectDomainName: serviceAccountDomainName(cp, sa),
-		SecretRef:         commonv1.SecretRefSpec{Name: serviceAccountCredentialsSecretName(cp, sa), Key: "password"},
+		Username:          c5c3v1alpha1.PlacementServiceAccountName,
+		ProjectName:       c5c3v1alpha1.PlacementServiceProjectName,
+		UserDomainName:    adminDomainName(cp),
+		ProjectDomainName: adminDomainName(cp),
+		SecretRef: commonv1.SecretRefSpec{
+			Name: keystoneServiceCredentialsSecretName(child),
+			Key:  "password",
+		},
 	}
 
 	// Project the ControlPlane's RESOLVED store selection onto the Placement child
@@ -358,7 +310,7 @@ func (r *ControlPlaneReconciler) reconcilePlacement(ctx context.Context, cp *c5c
 	// spec.apiServer is deliberately NOT set — the child-side uWSGI defaults stay
 	// authoritative, and tuning them stays a standalone-CR concern.
 
-	return commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp,
+	res, err := commonreconcile.ProjectChild(ctx, r.Client, r.Scheme, cp,
 		commonreconcile.ChildProjectionParams[*placementv1alpha1.Placement]{
 			Child:          pl,
 			ConditionType:  conditionTypePlacementReady,
@@ -382,21 +334,33 @@ func (r *ControlPlaneReconciler) reconcilePlacement(ctx context.Context, cp *c5c
 			ChildConditions: func(p *placementv1alpha1.Placement) []metav1.Condition { return p.Status.Conditions },
 			Unowned:         crossNamespace,
 		})
+	if err != nil || !res.IsZero() {
+		return res, err
+	}
+
+	// The Placement child is ready. PlacementReady still folds in the registration:
+	// a running Placement whose catalog entry never landed is reachable by nothing
+	// that discovers it through the catalog, and the ControlPlane must not report
+	// the placement service as ready for it.
+	if readyRes, pending := foldBuiltinRegistrationReady(cp, child, conditionTypePlacementReady); pending {
+		return readyRes, nil
+	}
+	return res, nil
 }
 
 // deleteOrphanedPlacement removes a previously-projected Placement child — and the
-// DB-credential ExternalSecret and placement catalog K-ORC CRs that follow it —
+// DB-credential ExternalSecret and KeystoneService registration that follow it —
 // when spec.services.placement is unset AND the ControlPlane has opted in to
 // deletion via placementDeletionAllowedAnnotation (the caller gates this). Each
 // object is only deleted when this ControlPlane still owns it (by owner reference
 // in its own namespace, by the ownership labels in a service namespace); a foreign
 // object colliding on a name is left alone.
+//
+// Deleting the registration is what removes Placement from the Keystone catalog
+// and from the identity plane: the KeystoneService controller's finalizer tears
+// down the catalog rows, the service user and its project behind it.
 func (r *ControlPlaneReconciler) deleteOrphanedPlacement(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) error {
 	placementNS := cp.PlacementNamespace()
-	// The catalog CRs are ControlPlane-scoped and live in the ControlPlane's own
-	// namespace regardless of Placement placement (see managedCatalogService), so
-	// they are swept from childNamespace(cp), not placementNS.
-	catalogNS := childNamespace(cp)
 
 	// The Dynamic-mode client Certificate has no Go type, so it is addressed
 	// unstructured.
@@ -424,15 +388,6 @@ func (r *ControlPlaneReconciler) deleteOrphanedPlacement(ctx context.Context, cp
 		&corev1.ServiceAccount{
 			ObjectMeta: metav1.ObjectMeta{Name: placementDBCredentialServiceAccountName, Namespace: placementNS},
 		},
-		// The Placement catalog K-ORC CRs: the placement Service and its
-		// internal/public Endpoints, in catalogNS.
-		&orcv1alpha1.Service{ObjectMeta: metav1.ObjectMeta{Name: placementCatalogServiceName(cp), Namespace: catalogNS}},
-		&orcv1alpha1.Endpoint{
-			ObjectMeta: metav1.ObjectMeta{Name: placementCatalogEndpointName(cp, "internal"), Namespace: catalogNS},
-		},
-		&orcv1alpha1.Endpoint{
-			ObjectMeta: metav1.ObjectMeta{Name: placementCatalogEndpointName(cp, "public"), Namespace: catalogNS},
-		},
 	}
 	for _, child := range children {
 		if err := commonreconcile.DeleteOrphanedChildFunc(ctx, r.Client, child, func(live client.Object) bool {
@@ -441,5 +396,19 @@ func (r *ControlPlaneReconciler) deleteOrphanedPlacement(ctx context.Context, cp
 			return err
 		}
 	}
-	return nil
+
+	// The KeystoneService registration. It lives beside the service, on the
+	// management cluster whatever cluster Placement runs on. The credential mirror
+	// a PLACED service carries is not swept here: like every object this function
+	// names it is resolved through PlacementNamespace(), which without a
+	// services.placement block is the ControlPlane's own namespace — so this sweep
+	// reaches co-located objects only. The mirror is reaped by the ControlPlane
+	// teardown, which sweeps a placed namespace's label-owned ExternalSecrets on
+	// the target cluster.
+	registration := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: placementName(cp), Namespace: placementNS},
+	}
+	return commonreconcile.DeleteOrphanedChildFunc(ctx, r.Client, registration, func(live client.Object) bool {
+		return isControlPlaneChild(live, cp)
+	})
 }

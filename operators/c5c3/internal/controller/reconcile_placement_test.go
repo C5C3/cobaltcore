@@ -7,31 +7,34 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
-	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/forge/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
 	commonv1 "github.com/c5c3/forge/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
 )
 
-// placementTestScheme registers c5c3, client-go, placement, K-ORC, and
-// external-secrets types (the projection ensures a DB-credential ExternalSecret,
-// the teardown sweeps the catalog CRs).
+// placementTestScheme registers c5c3, client-go, placement, and external-secrets
+// types (the projection ensures a DB-credential ExternalSecret).
 func placementTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
@@ -44,9 +47,6 @@ func placementTestScheme(t *testing.T) *runtime.Scheme {
 	if err := placementv1alpha1.AddToScheme(s); err != nil {
 		t.Fatalf("adding placement scheme: %v", err)
 	}
-	if err := orcv1alpha1.AddToScheme(s); err != nil {
-		t.Fatalf("adding K-ORC scheme: %v", err)
-	}
 	if err := esov1.AddToScheme(s); err != nil {
 		t.Fatalf("adding external-secrets scheme: %v", err)
 	}
@@ -56,10 +56,11 @@ func placementTestScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-// placementControlPlane builds a ControlPlane with services.placement set, a
-// KeystoneReady=True condition, the auto-injected placement service account, and a
-// Ready per-account status for it — i.e. every gate reconcilePlacement checks is
-// already passed.
+// placementControlPlane builds a ControlPlane with services.placement set and a
+// KeystoneReady=True condition — the one gate reconcilePlacement reads off the
+// ControlPlane itself. The other gate is the projected KeystoneService child,
+// which newPlacementTestReconciler seeds Ready (see
+// withReadyPlacementRegistration).
 func placementControlPlane() *c5c3v1alpha1.ControlPlane {
 	cp := &c5c3v1alpha1.ControlPlane{
 		ObjectMeta: metav1.ObjectMeta{
@@ -91,11 +92,6 @@ func placementControlPlane() *c5c3v1alpha1.ControlPlane {
 				AdminCredential: c5c3v1alpha1.AdminCredentialSpec{
 					PasswordSecretRef: commonv1.SecretRefSpec{Name: "keystone-admin"},
 				},
-				ServiceAccounts: []c5c3v1alpha1.ServiceAccountSpec{{
-					Name:    "placement",
-					Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service-placement", Create: true},
-					Roles:   []string{"service"},
-				}},
 			},
 		},
 	}
@@ -106,8 +102,50 @@ func placementControlPlane() *c5c3v1alpha1.ControlPlane {
 		Reason:             "KeystoneReady",
 		Message:            "ready",
 	})
-	cp.Status.ServiceAccounts = []c5c3v1alpha1.ServiceAccountStatus{{Name: "placement", Ready: true}}
 	return cp
+}
+
+// readyPlacementRegistration builds the KeystoneService child the Placement
+// projection gates on, converged: account provisioned, catalog registered,
+// aggregate Ready. A child in a dedicated namespace carries the ownership labels,
+// so the projection re-applies it instead of refusing to adopt a same-named
+// foreign CR.
+func readyPlacementRegistration(cp *c5c3v1alpha1.ControlPlane) *c5c3v1alpha1.KeystoneService {
+	ks := placementRegistration(cp, metav1.Condition{
+		Type:    conditionTypeKeystoneServiceAccountReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  reasonKeystoneServiceAccountProvisioned,
+		Message: "account provisioned",
+	})
+	conditions.SetCondition(&ks.Status.Conditions, metav1.Condition{
+		Type:    conditionTypeKeystoneServiceCatalogReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  reasonKeystoneServiceCatalogRegistered,
+		Message: "catalog registered",
+	})
+	conditions.SetCondition(&ks.Status.Conditions, metav1.Condition{
+		Type:    conditionTypeReady,
+		Status:  metav1.ConditionTrue,
+		Reason:  "AllReady",
+		Message: "All sub-conditions are ready",
+	})
+	return ks
+}
+
+// placementRegistration builds the KeystoneService child at the projected
+// name/namespace carrying the given conditions, for the tests that drive the gate
+// and the readiness fold from a child that has not converged.
+func placementRegistration(cp *c5c3v1alpha1.ControlPlane, conds ...metav1.Condition) *c5c3v1alpha1.KeystoneService {
+	ks := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: placementName(cp), Namespace: cp.PlacementNamespace()},
+	}
+	if ks.Namespace != cp.Namespace {
+		stampControlPlaneChildLabels(ks, cp)
+	}
+	for _, cond := range conds {
+		conditions.SetCondition(&ks.Status.Conditions, cond)
+	}
+	return ks
 }
 
 // notReadyPlacementDBCredES builds the Placement DB-credential ExternalSecret with
@@ -183,11 +221,66 @@ func withReadyPlacementDBCred(objs []client.Object) []client.Object {
 	return append(objs, readyPlacementDBCredES(cp), materialisedPlacementDBCredSecret(cp))
 }
 
+// withReadyPlacementRegistration seeds the converged KeystoneService child the
+// projection gates on, unless the test seeded one of its own — which is what the
+// gate and readiness-fold tests do.
+//
+// A fake client runs no KeystoneService controller, so without this every
+// projection test would hold at the registration gate and assert against a
+// Placement that was deliberately not projected.
+func withReadyPlacementRegistration(objs []client.Object) []client.Object {
+	var cp *c5c3v1alpha1.ControlPlane
+	for _, o := range objs {
+		if c, ok := o.(*c5c3v1alpha1.ControlPlane); ok {
+			cp = c
+			break
+		}
+	}
+	if cp == nil || cp.Spec.Services.Placement == nil {
+		return objs
+	}
+	for _, o := range objs {
+		if _, ok := o.(*c5c3v1alpha1.KeystoneService); ok {
+			return objs
+		}
+	}
+	return append(objs, readyPlacementRegistration(cp))
+}
+
+// withPlacementTenantStore seeds the per-tenant SecretStore in the placement
+// service's namespace when that service is PLACED, unless the test seeded one of
+// its own. The credential mirror a placed service gets is gated on that store, so
+// without it every placement test would hold at SecretStoreNotReady.
+//
+// The store lands on the local client because newPlacementTestReconciler wires no
+// resolver, which resolves every namespace to the management cluster. The tests
+// that exercise the two-cluster legs build their reconciler themselves.
+func withPlacementTenantStore(objs []client.Object) []client.Object {
+	var cp *c5c3v1alpha1.ControlPlane
+	for _, o := range objs {
+		if c, ok := o.(*c5c3v1alpha1.ControlPlane); ok {
+			cp = c
+			break
+		}
+	}
+	if cp == nil || targetClusterRefForNamespace(cp, cp.PlacementNamespace()) == nil {
+		return objs
+	}
+	for _, o := range objs {
+		if _, ok := o.(*esov1.SecretStore); ok {
+			return objs
+		}
+	}
+	return append(objs, readyTenantSecretStore(esoTenantStoreName, cp.PlacementNamespace(), "", ""))
+}
+
 func newPlacementTestReconciler(t *testing.T, objs ...client.Object) *ControlPlaneReconciler {
 	t.Helper()
 	s := placementTestScheme(t)
-	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(withReadyPlacementDBCred(objs)...).
-		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &placementv1alpha1.Placement{})
+	seeded := withPlacementTenantStore(withReadyPlacementRegistration(withReadyPlacementDBCred(objs)))
+	cb := fake.NewClientBuilder().WithScheme(s).WithObjects(seeded...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &placementv1alpha1.Placement{},
+			&c5c3v1alpha1.KeystoneService{})
 	return &ControlPlaneReconciler{Client: cb.Build(), Scheme: s}
 }
 
@@ -269,19 +362,11 @@ func TestReconcilePlacement_UnsetPreservesChildAndTearsDownDynamicGenerator(t *t
 // TestReconcilePlacement_UnsetDeletesChildWithOptIn verifies the opt-in deletion
 // sweep removes the child AND every DB-credential object — the generator-backed
 // ExternalSecret plus the Dynamic-mode VaultDynamicSecret, Certificate, and
-// ServiceAccount — and the placement catalog CRs that follow it.
+// ServiceAccount.
 func TestReconcilePlacement_UnsetDeletesChildWithOptIn(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := placementControlPlane()
-	// A catalog Service CR as the catalog sub-reconciler left it, owned by this
-	// ControlPlane so the sweep is allowed to remove it.
-	catalogService := &orcv1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: placementCatalogServiceName(cp), Namespace: childNamespace(cp),
-			Labels: controlPlaneChildLabels(cp),
-		},
-	}
-	r := newPlacementTestReconciler(t, cp, catalogService)
+	r := newPlacementTestReconciler(t, cp)
 	ctx := context.Background()
 
 	_, err := r.reconcilePlacement(ctx, cp)
@@ -318,18 +403,15 @@ func TestReconcilePlacement_UnsetDeletesChildWithOptIn(t *testing.T) {
 	g.Expect(r.Get(ctx, types.NamespacedName{
 		Name: placementDBCredentialClientCertName(cp), Namespace: cp.PlacementNamespace(),
 	}, sweptCert)).NotTo(Succeed(), "the mTLS client Certificate must be swept too")
-	g.Expect(r.Get(ctx, types.NamespacedName{
-		Name: placementCatalogServiceName(cp), Namespace: childNamespace(cp),
-	}, &orcv1alpha1.Service{})).NotTo(Succeed(), "the placement catalog Service CR must be swept too")
 }
 
 // TestReconcilePlacement_UnsetPreservesForeignObjects proves the deletion sweep
-// is ownership-checked across every object it names: a Placement child, a
-// catalog Service CR and — most importantly — the FIXED-name placement-db-creds
-// ServiceAccount that this ControlPlane does NOT own (no owner reference, no
-// ownership labels) all survive an opt-in teardown. The ServiceAccount name is
-// not CR-derived, so in a shared service namespace it is exactly the object a
-// collision would hand to somebody else.
+// is ownership-checked across every object it names: a Placement child and — most
+// importantly — the FIXED-name placement-db-creds ServiceAccount that this
+// ControlPlane does NOT own (no owner reference, no ownership labels) both
+// survive an opt-in teardown. The ServiceAccount name is not CR-derived, so in a
+// shared service namespace it is exactly the object a collision would hand to
+// somebody else.
 func TestReconcilePlacement_UnsetPreservesForeignObjects(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := placementControlPlane()
@@ -344,10 +426,7 @@ func TestReconcilePlacement_UnsetPreservesForeignObjects(t *testing.T) {
 			Name: placementDBCredentialServiceAccountName, Namespace: cp.PlacementNamespace(),
 		},
 	}
-	foreignCatalogService := &orcv1alpha1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: placementCatalogServiceName(cp), Namespace: childNamespace(cp)},
-	}
-	r := newPlacementTestReconciler(t, cp, foreignChild, foreignSA, foreignCatalogService)
+	r := newPlacementTestReconciler(t, cp, foreignChild, foreignSA)
 	ctx := context.Background()
 
 	_, err := r.reconcilePlacement(ctx, cp)
@@ -359,9 +438,6 @@ func TestReconcilePlacement_UnsetPreservesForeignObjects(t *testing.T) {
 	g.Expect(r.Get(ctx, types.NamespacedName{
 		Name: placementDBCredentialServiceAccountName, Namespace: cp.PlacementNamespace(),
 	}, &corev1.ServiceAccount{})).To(Succeed(), "a foreign placement-db-creds ServiceAccount must never be deleted")
-	g.Expect(r.Get(ctx, types.NamespacedName{
-		Name: placementCatalogServiceName(cp), Namespace: childNamespace(cp),
-	}, &orcv1alpha1.Service{})).To(Succeed(), "a catalog Service CR we do not own must never be deleted")
 }
 
 // TestReconcilePlacement_UnsetDeletionToleratesAlreadyGoneObjects covers the
@@ -435,32 +511,24 @@ func TestReconcilePlacement_GatedOnKeystoneReady(t *testing.T) {
 	g.Expect(list.Items).To(BeEmpty())
 }
 
-func TestReconcilePlacement_GatedOnServiceAccountNotDeclared(t *testing.T) {
+// TestReconcilePlacement_GatedOnRegistrationAccountNotReady pins the registration
+// gate: while the child's AccountReady is False no Placement is projected, the
+// child's own reason and message are relayed, and a Placement projected by an
+// earlier pass is left running on the credentials it already has.
+func TestReconcilePlacement_GatedOnRegistrationAccountNotReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := placementControlPlane()
-	// Drop the auto-injected placement service account (a webhook-bypassed CR).
-	cp.Spec.KORC.ServiceAccounts = nil
-	r := newPlacementTestReconciler(t, cp)
-
-	res, err := r.reconcilePlacement(context.Background(), cp)
-
-	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res.IsZero()).To(BeTrue(), "a missing SA declaration is not a transient wait — no requeue")
-	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypePlacementReady)
-	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("ServiceAccountNotDeclared"))
-	g.Expect(cond.Message).To(ContainSubstring("spec.korc.serviceAccounts"))
-
-	var list placementv1alpha1.PlacementList
-	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
-	g.Expect(list.Items).To(BeEmpty())
-}
-
-func TestReconcilePlacement_GatedOnServiceAccountNotReady(t *testing.T) {
-	g := NewGomegaWithT(t)
-	cp := placementControlPlane()
-	cp.Status.ServiceAccounts = []c5c3v1alpha1.ServiceAccountStatus{{Name: "placement", Ready: false}}
-	r := newPlacementTestReconciler(t, cp)
+	ks := placementRegistration(cp, metav1.Condition{
+		Type:    conditionTypeKeystoneServiceAccountReady,
+		Status:  metav1.ConditionFalse,
+		Reason:  reasonServiceAccountCollision,
+		Message: `user "placement" already exists in Keystone`,
+	})
+	existing := &placementv1alpha1.Placement{
+		ObjectMeta: metav1.ObjectMeta{Name: placementName(cp), Namespace: cp.PlacementNamespace()},
+		Spec:       placementv1alpha1.PlacementSpec{Region: "RegionPrevious"},
+	}
+	r := newPlacementTestReconciler(t, cp, ks, existing)
 
 	res, err := r.reconcilePlacement(context.Background(), cp)
 
@@ -468,11 +536,133 @@ func TestReconcilePlacement_GatedOnServiceAccountNotReady(t *testing.T) {
 	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypePlacementReady)
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(cond.Reason).To(Equal("WaitingForServiceAccount"))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+	g.Expect(cond.Message).To(ContainSubstring(reasonServiceAccountCollision))
+	g.Expect(cond.Message).To(ContainSubstring(`user "placement" already exists in Keystone`))
+
+	g.Expect(getProjectedPlacement(t, r.Client, cp).Spec.Region).To(Equal("RegionPrevious"),
+		"the gate must write no Placement at all, leaving a previously projected one untouched")
+}
+
+// TestReconcilePlacement_GatedOnRegistrationWithoutConditions covers the child
+// that exists but has not been reconciled yet: the gate holds on a waiting message
+// rather than reading a missing condition as ready.
+func TestReconcilePlacement_GatedOnRegistrationWithoutConditions(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	r := newPlacementTestReconciler(t, cp, placementRegistration(cp))
+
+	res, err := r.reconcilePlacement(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypePlacementReady)
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+	g.Expect(cond.Message).To(ContainSubstring(conditionTypeKeystoneServiceAccountReady))
 
 	var list placementv1alpha1.PlacementList
 	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
-	g.Expect(list.Items).To(BeEmpty(), "the SA gate must block projection")
+	g.Expect(list.Items).To(BeEmpty(), "the registration gate must block projection")
+}
+
+// TestReconcilePlacement_RegistrationNotFoundAfterEnsureHolds covers the read-back
+// that misses: a child the API server has not made readable yet is a wait, not an
+// error.
+func TestReconcilePlacement_RegistrationNotFoundAfterEnsureHolds(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	s := placementTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(withReadyPlacementDBCred([]client.Object{cp})...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &placementv1alpha1.Placement{},
+			&c5c3v1alpha1.KeystoneService{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*c5c3v1alpha1.KeystoneService); ok {
+					return apierrors.NewNotFound(
+						schema.GroupResource{Group: "c5c3.io", Resource: "keystoneservices"}, key.Name)
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcilePlacement(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred(), "a child that is not readable yet is not a failure")
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypePlacementReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
+
+	var list placementv1alpha1.PlacementList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty())
+}
+
+// TestReconcilePlacement_RegistrationReadFailureSurfaces covers the other half: a
+// read that fails for any reason OTHER than absence is an error, wrapped with what
+// it was reading.
+func TestReconcilePlacement_RegistrationReadFailureSurfaces(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	s := placementTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(withReadyPlacementDBCred([]client.Object{cp})...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &placementv1alpha1.Placement{},
+			&c5c3v1alpha1.KeystoneService{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*c5c3v1alpha1.KeystoneService); ok {
+					return apierrors.NewInternalError(errors.New("etcd is unavailable"))
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcilePlacement(context.Background(), cp)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("reading the placement KeystoneService child:"))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypePlacementReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+}
+
+// TestReconcilePlacement_NeverAdoptsForeignRegistration proves the registration
+// write is refused rather than allowed to overwrite a same-named KeystoneService
+// in a namespace the ControlPlane does not own: the refusal surfaces on
+// PlacementReady and the foreign CR keeps its spec.
+func TestReconcilePlacement_NeverAdoptsForeignRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	cp.Spec.Services.Placement.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name: "placement", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	foreign := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: placementName(cp), Namespace: "placement"},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "someone-else"},
+		},
+	}
+	r := newPlacementTestReconciler(t, cp, foreign)
+
+	_, err := r.reconcilePlacement(context.Background(), cp)
+
+	g.Expect(err).To(HaveOccurred(), "adopting a foreign registration must be refused")
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypePlacementReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
+	g.Expect(cond.Message).To(ContainSubstring("refusing to adopt pre-existing"))
+
+	var live c5c3v1alpha1.KeystoneService
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: placementName(cp), Namespace: "placement",
+	}, &live)).To(Succeed())
+	g.Expect(live.Spec.ControlPlaneRef.Name).To(Equal("someone-else"),
+		"a foreign registration must never be overwritten")
+	g.Expect(live.Labels).NotTo(HaveKey(controlPlaneNameLabel))
 }
 
 // TestReconcilePlacement_DBCredentialErrorSurfacesAndReturns pins the error leg of
@@ -593,7 +783,7 @@ func TestReconcilePlacement_DynamicCredentialStaleStaticUsername_LeavesExistingC
 // projection: the release-derived image, the backing services (with the fixed
 // placement schema, the operator-owned secretRef, and the Dynamic mode of the
 // managed shared database), the top-down Keystone endpoint, the region, the
-// service user derived from the injected account, the resolved store ref, the
+// service user the registration child declares, the resolved store ref, the
 // default replicas, and the deliberately-unset apiServer.
 func TestReconcilePlacement_ProjectedChildFields(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -605,7 +795,6 @@ func TestReconcilePlacement_ProjectedChildFields(t *testing.T) {
 		Hostname:  "keystone.example.com",
 	}
 	cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com:8443/v3"
-	sa := cp.Spec.KORC.ServiceAccounts[0]
 	r := newPlacementTestReconciler(t, cp)
 
 	_, err := r.reconcilePlacement(context.Background(), cp)
@@ -641,12 +830,17 @@ func TestReconcilePlacement_ProjectedChildFields(t *testing.T) {
 
 	g.Expect(pl.Spec.Region).To(Equal("RegionOne"))
 
-	// The service user comes from the injected placement account.
+	// The service user names the account the registration child declares. The user
+	// and project names are what the injected spec.korc.serviceAccounts entry
+	// carried too, so the consumer Secret is the discriminator: it is the one the
+	// registration delivers, not the one reconcileServiceAccounts materialises.
 	g.Expect(pl.Spec.ServiceUser.Username).To(Equal("placement"))
 	g.Expect(pl.Spec.ServiceUser.ProjectName).To(Equal("service-placement"))
-	g.Expect(pl.Spec.ServiceUser.UserDomainName).To(Equal(serviceAccountDomainName(cp, sa)))
-	g.Expect(pl.Spec.ServiceUser.ProjectDomainName).To(Equal(pl.Spec.ServiceUser.UserDomainName))
-	g.Expect(pl.Spec.ServiceUser.SecretRef.Name).To(Equal("cp-service-account-placement-credentials"))
+	// Both domains resolve to the ControlPlane's effective admin domain, which is
+	// what the registration resolves its own unset domainName to.
+	g.Expect(pl.Spec.ServiceUser.UserDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(pl.Spec.ServiceUser.ProjectDomainName).To(Equal(adminDomainName(cp)))
+	g.Expect(pl.Spec.ServiceUser.SecretRef.Name).To(Equal("cp-placement-credentials"))
 	g.Expect(pl.Spec.ServiceUser.SecretRef.Key).To(Equal("password"))
 
 	// The resolved store selection, so the child never falls back to its own default.
@@ -866,6 +1060,243 @@ func TestReconcilePlacement_CrossNamespaceChildIsLabelledNotOwned(t *testing.T) 
 	g.Expect(pl.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "default"))
 }
 
+// --- the projected KeystoneService registration ---
+
+func getProjectedPlacementRegistration(
+	t *testing.T, c client.Client, cp *c5c3v1alpha1.ControlPlane,
+) *c5c3v1alpha1.KeystoneService {
+	t.Helper()
+	ks := &c5c3v1alpha1.KeystoneService{}
+	key := types.NamespacedName{Name: placementName(cp), Namespace: cp.PlacementNamespace()}
+	if err := c.Get(context.Background(), key, ks); err != nil {
+		t.Fatalf("getting projected KeystoneService %s: %v", key, err)
+	}
+	return ks
+}
+
+// TestReconcilePlacement_ProjectsTheRegistration pins the registration's content:
+// the placement catalog entry with both endpoint rows, the service account in its
+// own per-service project, and the explicit controlPlaneRef a child in a dedicated
+// namespace needs to resolve the ControlPlane at all.
+func TestReconcilePlacement_ProjectsTheRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	r := newPlacementTestReconciler(t, cp)
+
+	_, err := r.reconcilePlacement(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ks := getProjectedPlacementRegistration(t, r.Client, cp)
+	g.Expect(ks.Name).To(Equal("cp-placement"))
+	g.Expect(ks.Namespace).To(Equal("default"))
+	g.Expect(ks.Spec.ControlPlaneRef.Name).To(Equal("cp"))
+	g.Expect(ks.Spec.ControlPlaneRef.Namespace).To(Equal("default"),
+		"the namespace is explicit so a child in a dedicated namespace resolves the right ControlPlane")
+
+	g.Expect(ks.Spec.Catalog).NotTo(BeNil())
+	g.Expect(ks.Spec.Catalog.ServiceType).To(Equal("placement"))
+	g.Expect(ks.Spec.Catalog.ServiceName).To(Equal("placement"))
+	g.Expect(ks.Spec.Catalog.Adopt).To(BeFalse(), "a colliding catalog row must fail loud, never be adopted")
+	g.Expect(ks.Spec.Catalog.Endpoints).To(HaveLen(2))
+	g.Expect(ks.Spec.Catalog.Endpoints[0].Interface).To(Equal(c5c3v1alpha1.ExternalEndpointTypeInternal))
+	g.Expect(ks.Spec.Catalog.Endpoints[0].URL).To(Equal(placementEndpointURL(cp)))
+	g.Expect(ks.Spec.Catalog.Endpoints[1].Interface).To(Equal(c5c3v1alpha1.ExternalEndpointTypePublic))
+	g.Expect(ks.Spec.Catalog.Endpoints[1].URL).To(Equal(placementCatalogURL(cp)))
+
+	g.Expect(ks.Spec.Account).NotTo(BeNil())
+	g.Expect(ks.Spec.Account.UserName).To(Equal("placement"))
+	g.Expect(ks.Spec.Account.DomainName).To(BeEmpty(),
+		"an unset domain lets the registration resolve the ControlPlane's admin domain")
+	g.Expect(ks.Spec.Account.Adopt).To(BeFalse(), "a colliding user must fail loud, never be taken over")
+	g.Expect(ks.Spec.Account.Project.Name).To(Equal("service-placement"))
+	g.Expect(ks.Spec.Account.Project.Create).To(BeTrue())
+	g.Expect(ks.Spec.Account.Roles).To(Equal([]string{"service"}))
+
+	g.Expect(metav1.IsControlledBy(ks, cp)).To(BeTrue(),
+		"a co-located registration carries the ControlPlane controller owner reference")
+}
+
+// TestReconcilePlacement_PlacedRegistrationEndpointsFollowThePlacement covers the
+// internal row of a placed service: the in-cluster Service URL resolves nowhere
+// outside its cluster, so the placed entry advertises the public URL on both
+// interfaces.
+func TestReconcilePlacement_PlacedRegistrationEndpointsFollowThePlacement(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedPlacementControlPlane("remote-a")
+	r := newPlacementTestReconciler(t, cp)
+
+	_, err := r.reconcilePlacement(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ks := getProjectedPlacementRegistration(t, r.Client, cp)
+	g.Expect(ks.Spec.Catalog.Endpoints[0].URL).To(Equal("https://placement.example.com"))
+	g.Expect(ks.Spec.Catalog.Endpoints[1].URL).To(Equal("https://placement.example.com"))
+}
+
+// TestReconcilePlacement_CrossNamespaceRegistrationIsLabelledNotOwned verifies the
+// ownership substitute for a registration in a namespace of its own: the two
+// ownership labels and no owner reference.
+func TestReconcilePlacement_CrossNamespaceRegistrationIsLabelledNotOwned(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	cp.Spec.Services.Placement.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+		Name: "placement", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+	}
+	r := newPlacementTestReconciler(t, cp)
+
+	_, err := r.reconcilePlacement(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	ks := getProjectedPlacementRegistration(t, r.Client, cp)
+	g.Expect(ks.Namespace).To(Equal("placement"))
+	g.Expect(ks.OwnerReferences).To(BeEmpty(), "a cross-namespace child cannot carry an owner reference")
+	g.Expect(ks.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(ks.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "default"))
+	g.Expect(ks.Spec.ControlPlaneRef.Namespace).To(Equal("default"))
+}
+
+// TestReconcilePlacement_ReadyFoldsInTheRegistration proves PlacementReady is the
+// conjunction of both children: a Ready Placement whose registration collided on
+// the catalog row keeps PlacementReady False, naming the failing child condition.
+func TestReconcilePlacement_ReadyFoldsInTheRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	ks := placementRegistration(cp,
+		metav1.Condition{
+			Type:    conditionTypeKeystoneServiceAccountReady,
+			Status:  metav1.ConditionTrue,
+			Reason:  reasonKeystoneServiceAccountProvisioned,
+			Message: "account provisioned",
+		},
+		metav1.Condition{
+			Type:    conditionTypeKeystoneServiceCatalogReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  reasonKeystoneServiceCatalogCollision,
+			Message: `a service row of type "placement" named "placement" already exists`,
+		},
+		metav1.Condition{
+			Type:    conditionTypeReady,
+			Status:  metav1.ConditionFalse,
+			Reason:  "NotAllReady",
+			Message: "One or more sub-conditions are not ready",
+		},
+	)
+	r := newPlacementTestReconciler(t, cp, ks)
+	ctx := context.Background()
+
+	_, err := r.reconcilePlacement(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// The Placement child itself reaches Ready.
+	pl := getProjectedPlacement(t, r.Client, cp)
+	conditions.SetCondition(&pl.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: pl.Generation,
+		Reason:             "AllReady",
+		Message:            "ready",
+	})
+	g.Expect(r.Client.Status().Update(ctx, pl)).To(Succeed())
+
+	res, err := r.reconcilePlacement(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypePlacementReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+		"a Placement nothing can discover through the catalog is not ready")
+	g.Expect(cond.Reason).To(Equal(reasonKeystoneServiceCatalogCollision),
+		"the failing sub-condition's reason is relayed, not the aggregate's")
+	g.Expect(cond.Message).To(ContainSubstring(conditionTypeKeystoneServiceCatalogReady))
+	g.Expect(cond.Message).To(ContainSubstring("cp-placement"))
+}
+
+// TestReconcilePlacement_UnsetDeletesRegistrationWithOptIn verifies the opt-in
+// teardown removes the registration too — which is what unregisters Placement from
+// the catalog and the identity plane.
+func TestReconcilePlacement_UnsetDeletesRegistrationWithOptIn(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	r := newPlacementTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcilePlacement(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	getProjectedPlacementRegistration(t, r.Client, cp)
+
+	cp.Spec.Services.Placement = nil
+	cp.Annotations = map[string]string{placementDeletionAllowedAnnotation: "true"}
+	_, err = r.reconcilePlacement(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var list c5c3v1alpha1.KeystoneServiceList
+	g.Expect(r.Client.List(ctx, &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty(), "the opt-in annotation must delete the owned registration")
+}
+
+// TestReconcilePlacement_UnsetPreservesForeignRegistration is the ownership guard
+// on that sweep: a same-named KeystoneService the ControlPlane does not own
+// survives.
+func TestReconcilePlacement_UnsetPreservesForeignRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	cp.Spec.Services.Placement = nil
+	cp.Annotations = map[string]string{placementDeletionAllowedAnnotation: "true"}
+
+	foreign := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: placementName(cp), Namespace: cp.PlacementNamespace()},
+		Spec: c5c3v1alpha1.KeystoneServiceSpec{
+			ControlPlaneRef: c5c3v1alpha1.ControlPlaneRefSpec{Name: "someone-else"},
+		},
+	}
+	r := newPlacementTestReconciler(t, cp, foreign)
+
+	_, err := r.reconcilePlacement(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: placementName(cp), Namespace: cp.PlacementNamespace(),
+	}, &c5c3v1alpha1.KeystoneService{})).To(Succeed(),
+		"a KeystoneService we do not own must never be deleted")
+}
+
+// TestReconcilePlacement_UnsetPreservesRegistrationByDefault pins the preserve
+// default: without the opt-in annotation a previously projected registration
+// stays, so an accidental block drop never unregisters a running service.
+func TestReconcilePlacement_UnsetPreservesRegistrationByDefault(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	r := newPlacementTestReconciler(t, cp)
+	ctx := context.Background()
+
+	_, err := r.reconcilePlacement(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	cp.Spec.Services.Placement = nil
+	_, err = r.reconcilePlacement(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	getProjectedPlacementRegistration(t, r.Client, cp)
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypePlacementReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("PlacementNotManaged"))
+}
+
+// TestReconcilePlacement_NilBlockProjectsNoRegistration covers the staged-adoption
+// path: a ControlPlane that manages no placement service registers none either.
+func TestReconcilePlacement_NilBlockProjectsNoRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	cp.Spec.Services.Placement = nil
+	r := newPlacementTestReconciler(t, cp)
+
+	_, err := r.reconcilePlacement(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var list c5c3v1alpha1.KeystoneServiceList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty())
+}
+
 // TestPlacementEndpointURL pins the in-cluster Placement API endpoint convention
 // the catalog registers against: http://{name}.{ns}.svc:8778.
 func TestPlacementEndpointURL(t *testing.T) {
@@ -968,4 +1399,154 @@ func TestPlacementKeystoneEndpoint_FollowsThePlacement(t *testing.T) {
 			g.Expect(placementKeystoneEndpoint(cp)).To(Equal(tc.want))
 		})
 	}
+}
+
+// --- the credential mirror of a placed service ---
+
+// newPlacedPlacementReconciler wires a ControlPlane whose placement service is
+// placed on a target cluster: the CR and its registration live on the management
+// cluster, the objects in onTarget on the other one.
+func newPlacedPlacementReconciler(
+	t *testing.T, cp *c5c3v1alpha1.ControlPlane, resolver *childrenResolver, onTarget ...client.Object,
+) *ControlPlaneReconciler {
+	t.Helper()
+	s := placementTestScheme(t)
+	resolver.children = fake.NewClientBuilder().WithScheme(s).WithObjects(onTarget...).Build()
+	local := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(withReadyPlacementRegistration([]client.Object{cp})...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &placementv1alpha1.Placement{},
+			&c5c3v1alpha1.KeystoneService{}).
+		Build()
+	return &ControlPlaneReconciler{Client: local, Scheme: s, Resolver: resolver}
+}
+
+// TestReconcilePlacement_MirrorsRegistrationCredentialsToTheTarget covers the
+// reason the mirror exists: the registration delivers its consumer Secret at home,
+// and a Placement running on another cluster reads it there — from an
+// ExternalSecret of the same name, over the same OpenBao path.
+func TestReconcilePlacement_MirrorsRegistrationCredentialsToTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedPlacementControlPlane("remote-a")
+	resolver := &childrenResolver{}
+	r := newPlacedPlacementReconciler(t, cp, resolver,
+		readyTenantSecretStore(esoTenantStoreName, "placement", "", ""))
+
+	_, err := r.reconcilePlacement(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var mirror esov1.ExternalSecret
+	g.Expect(resolver.children.Get(context.Background(), types.NamespacedName{
+		Name: "cp-placement-credentials", Namespace: "placement",
+	}, &mirror)).To(Succeed())
+	g.Expect(mirror.Spec.SecretStoreRef.Name).To(Equal(esoTenantStoreName))
+	g.Expect(mirror.Spec.SecretStoreRef.Kind).To(Equal(string(commonv1.SecretStoreKindNamespaced)))
+	g.Expect(mirror.Spec.Target.Name).To(Equal("cp-placement-credentials"))
+	for _, d := range mirror.Spec.Data {
+		g.Expect(d.RemoteRef.Key).To(Equal("openstack/keystone/placement/cp-placement/service-accounts/credentials"))
+	}
+	// No owner reference crosses a cluster boundary, so the labels are the whole
+	// of the mirror's identity — and what the teardown sweep selects on.
+	g.Expect(mirror.Labels).To(HaveKeyWithValue(controlPlaneNameLabel, "cp"))
+	g.Expect(mirror.Labels).To(HaveKeyWithValue(controlPlaneNamespaceLabel, "default"))
+	g.Expect(mirror.OwnerReferences).To(BeEmpty())
+}
+
+// TestReconcilePlacement_NoMirrorForACoLocatedService is the other half: the
+// registration's own delivery already lands in a co-located service's namespace,
+// so no second ExternalSecret is written for it.
+func TestReconcilePlacement_NoMirrorForACoLocatedService(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placementControlPlane()
+	r := newPlacementTestReconciler(t, cp)
+
+	_, err := r.reconcilePlacement(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(r.Get(context.Background(), types.NamespacedName{
+		Name: "cp-placement-credentials", Namespace: "default",
+	}, &esov1.ExternalSecret{})).NotTo(Succeed(),
+		"a co-located service must get no mirror at all")
+}
+
+// TestReconcilePlacement_MirrorHoldsOnAnUnresolvableCluster covers the cluster
+// that does not resolve: the resolver's own text reaches the condition, and
+// nothing is projected.
+func TestReconcilePlacement_MirrorHoldsOnAnUnresolvableCluster(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedPlacementControlPlane("remote-a")
+	resolver := &childrenResolver{err: errors.New("cluster not found")}
+	r := newPlacedPlacementReconciler(t, cp, resolver)
+
+	res, err := r.reconcilePlacement(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypePlacementReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(commonmulticluster.TargetClusterUnavailable))
+	g.Expect(cond.Message).To(ContainSubstring("cluster not found"))
+
+	var list placementv1alpha1.PlacementList
+	g.Expect(r.Client.List(context.Background(), &list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty())
+}
+
+// TestReconcilePlacement_MirrorHoldsOnANotReadyTargetStore covers the store gate
+// on the target cluster: an ExternalSecret written against a store that is not
+// ready never syncs, so the projection waits and names the store, the namespace,
+// and the cluster it is missing on.
+func TestReconcilePlacement_MirrorHoldsOnANotReadyTargetStore(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedPlacementControlPlane("remote-a")
+	resolver := &childrenResolver{}
+	// The store exists at home but not on the target, which is the cluster the
+	// mirror is materialized on.
+	r := newPlacedPlacementReconciler(t, cp, resolver)
+
+	res, err := r.reconcilePlacement(context.Background(), cp)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypePlacementReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountStoreNotReady))
+	g.Expect(cond.Message).To(ContainSubstring(esoTenantStoreName))
+	g.Expect(cond.Message).To(ContainSubstring(`namespace "placement"`))
+	g.Expect(cond.Message).To(ContainSubstring("target cluster"))
+
+	g.Expect(resolver.children.Get(context.Background(), types.NamespacedName{
+		Name: "cp-placement-credentials", Namespace: "placement",
+	}, &esov1.ExternalSecret{})).NotTo(Succeed(), "nothing may be written against a store that is not ready")
+}
+
+// TestReconcilePlacement_MirrorStoreLookupFailurePropagates covers the store read
+// that fails outright, as opposed to reporting not-ready: it is wrapped with what
+// was being checked and returned, so the reconcile retries with backoff.
+func TestReconcilePlacement_MirrorStoreLookupFailurePropagates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := placedPlacementControlPlane("remote-a")
+	s := placementTestScheme(t)
+	target := fake.NewClientBuilder().WithScheme(s).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*esov1.SecretStore); ok {
+					return apierrors.NewInternalError(errors.New("the target apiserver is unavailable"))
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	local := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(withReadyPlacementRegistration([]client.Object{cp})...).
+		WithStatusSubresource(&c5c3v1alpha1.ControlPlane{}, &placementv1alpha1.Placement{},
+			&c5c3v1alpha1.KeystoneService{}).
+		Build()
+	r := &ControlPlaneReconciler{Client: local, Scheme: s, Resolver: &childrenResolver{children: target}}
+
+	_, err := r.reconcilePlacement(context.Background(), cp)
+
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring(`in namespace "placement"`))
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypePlacementReady)
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceRegistrationError))
 }
