@@ -64,9 +64,10 @@ import (
 // reconciler on a management cluster with a second envtest environment
 // registered as target cluster, and walks the per-service placement split:
 // registration, a ControlPlane that places its Keystone service on the target,
-// the admin password it has to read back off that cluster, a ControlPlane naming
-// an unregistered cluster, and the deletion that sweeps the placed namespace off
-// the target again.
+// the admin password it has to read back off that cluster, a placed built-in
+// service whose registration stays home while its credentials are mirrored onto
+// the target, a ControlPlane naming an unregistered cluster, and the deletion
+// that sweeps the placed namespaces off the target again.
 func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -82,6 +83,7 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 		// assertions read one key through both clients.
 		mcNamespace         = "mc-cp"
 		mcKeystoneNamespace = "mc-cp-identity"
+		mcGlanceNamespace   = "mc-cp-image"
 		mcControlPlane      = "cp"
 
 		mcUnknownNamespace  = "mc-unknown"
@@ -290,7 +292,11 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 
 		// --- The ESO tenant trio: the store has to authenticate from the cluster
 		// whose ESO materialises the Secrets, and its client certificate has to be
-		// issued by the cert-manager there.
+		// issued by the cert-manager there. The KEYSTONE namespace gets no copy at
+		// home, because every path delivering into it — the admin password, the DB
+		// credentials, the service accounts — resolves its store on the cluster the
+		// service runs on. Only a namespace hosting a projected registration also
+		// needs one at home, which the image service below exercises.
 		mcEventuallyExists(t, ctx, targetClient, tenantSAKey, &corev1.ServiceAccount{}, "tenant ServiceAccount")
 		mcEventuallyExists(t, ctx, targetClient, tenantCertKey, mcCertificate(), "tenant Certificate")
 		mcEventuallyExists(t, ctx, targetClient, tenantStoreKey, &esov1.SecretStore{}, "tenant SecretStore")
@@ -463,6 +469,122 @@ func TestIntegration_Multicluster_ControlPlanePlacement(t *testing.T) {
 			"the catalog Endpoint must be registered on the management cluster")
 		mcExpectAbsent(t, ctx, targetClient, catalogServiceKey, &orcv1alpha1.Service{}, "catalog Service")
 		mcExpectAbsent(t, ctx, targetClient, catalogEndpointKey, &orcv1alpha1.Endpoint{}, "catalog Endpoint")
+	})
+
+	t.Run("a placed built-in service registers at home and mirrors its credentials", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		// The image service joins the plane on the same target cluster, in a
+		// namespace of its own. A placed catalog service has to advertise an
+		// externally routable address for the reason Keystone does: its catalog row
+		// is read from every cluster, and an in-cluster Service DNS name resolves on
+		// none of the others.
+		g.Eventually(func() error {
+			live := &c5c3v1alpha1.ControlPlane{}
+			if err := mgmtClient.Get(ctx, cpKey, live); err != nil {
+				return err
+			}
+			live.Spec.Services.Glance = integrationGlanceService()
+			live.Spec.Services.Glance.Namespace = &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name:      mcGlanceNamespace,
+				Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			}
+			live.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
+			live.Spec.Services.Glance.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: mcTargetCluster}
+			return mgmtClient.Update(ctx, live)
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "place the image service on the target cluster")
+
+		// --- The backing services follow the service, so the shared database and
+		// cache materialise a second time in the image service's namespace, on the
+		// cluster that namespace lives on. Infrastructure short-circuits the pipeline
+		// while either is converging, so nothing below runs until they report.
+		glanceMariaDBKey := client.ObjectKey{
+			Namespace: mcGlanceNamespace,
+			Name:      cp.Spec.Infrastructure.Database.ClusterRef.Name,
+		}
+		glanceMemcachedKey := client.ObjectKey{
+			Namespace: mcGlanceNamespace,
+			Name:      cp.Spec.Infrastructure.Cache.ClusterRef.Name,
+		}
+		mcEventuallyExists(t, ctx, targetClient, glanceMariaDBKey, &mariadbv1alpha1.MariaDB{}, "image-side MariaDB")
+		mcExpectAbsent(t, ctx, mgmtClient, glanceMariaDBKey, &mariadbv1alpha1.MariaDB{}, "image-side MariaDB")
+		simulateMariaDBReadyWhenPresent(t, ctx, targetClient, glanceMariaDBKey)
+		simulateMemcachedReadyWhenPresent(t, ctx, targetClient, glanceMemcachedKey)
+
+		// --- The tenant-store trio of the placed namespace exists on BOTH clusters.
+		// The copy on the target is what the ESO there materialises the service's
+		// Secrets through; the copy at home is what the registration resolves, since
+		// a KeystoneService is reconciled on the cluster its CR lives on.
+		glanceSAKey := client.ObjectKey{Namespace: mcGlanceNamespace, Name: esoTenantServiceAccountName}
+		glanceCertKey := client.ObjectKey{Namespace: mcGlanceNamespace, Name: esoTenantClientCertName}
+		glanceStoreKey := client.ObjectKey{Namespace: mcGlanceNamespace, Name: esoTenantStoreName}
+		for _, cluster := range []struct {
+			name string
+			c    client.Client
+		}{
+			{"management", mgmtClient},
+			{"target", targetClient},
+		} {
+			mcEventuallyExists(t, ctx, cluster.c, glanceSAKey, &corev1.ServiceAccount{},
+				cluster.name+"-side tenant ServiceAccount")
+			mcEventuallyExists(t, ctx, cluster.c, glanceCertKey, mcCertificate(),
+				cluster.name+"-side tenant Certificate")
+			mcEventuallyExists(t, ctx, cluster.c, glanceStoreKey, &esov1.SecretStore{},
+				cluster.name+"-side tenant SecretStore")
+		}
+
+		// --- The home copy alone does not open the gate: the plane holds on the
+		// target's, and its condition names the cluster it is waiting on.
+		ensureReadySecretStore(t, ctx, mgmtClient, esoTenantStoreName, mcGlanceNamespace)
+		g.Eventually(func(ig Gomega) {
+			live := &c5c3v1alpha1.ControlPlane{}
+			ig.Expect(mgmtClient.Get(ctx, cpKey, live)).To(Succeed())
+			cond := meta.FindStatusCondition(live.Status.Conditions, conditionTypeESOTenantStoreReady)
+			ig.Expect(cond).NotTo(BeNil())
+			ig.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			ig.Expect(cond.Reason).To(Equal("SecretStoreNotReady"))
+			ig.Expect(cond.Message).To(ContainSubstring(mcGlanceNamespace))
+			ig.Expect(cond.Message).To(ContainSubstring("on the target cluster"))
+		}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+			"a placed namespace is gated on both of its tenant stores, and the message says which one is missing")
+
+		ensureReadySecretStore(t, ctx, targetClient, esoTenantStoreName, mcGlanceNamespace)
+		waitForControlPlaneCondition(t, ctx, mgmtClient, cpKey,
+			conditionTypeESOTenantStoreReady, metav1.ConditionTrue, itEventuallyTimeout)
+
+		// --- The registration itself is reconciled at home whatever cluster the
+		// service runs on: it authenticates through the admin credential, which is
+		// materialised on the management cluster alone.
+		registrationKey := client.ObjectKey{Namespace: mcGlanceNamespace, Name: mcControlPlane + "-glance"}
+		mcEventuallyExists(t, ctx, mgmtClient, registrationKey, &c5c3v1alpha1.KeystoneService{},
+			"Glance registration")
+		mcExpectAbsent(t, ctx, targetClient, registrationKey, &c5c3v1alpha1.KeystoneService{},
+			"Glance registration")
+
+		// --- Its credentials, though, follow the service. The registration delivers
+		// them at home only, so the ControlPlane materialises the same OpenBao path a
+		// second time on the cluster the image service runs on, under the same name
+		// its pods read.
+		mirrorKey := client.ObjectKey{Namespace: mcGlanceNamespace, Name: mcControlPlane + "-glance-credentials"}
+		mirror := &esov1.ExternalSecret{}
+		mcEventuallyExists(t, ctx, targetClient, mirrorKey, mirror, "registration credentials mirror")
+		g.Expect(mirror.Spec.Data).NotTo(BeEmpty())
+		g.Expect(mirror.Spec.Data[0].RemoteRef.Key).To(Equal(
+			"openstack/keystone/"+mcGlanceNamespace+"/"+mcControlPlane+"-glance/service-accounts/credentials"),
+			"the mirror reads the registration's own per-CR OpenBao path")
+		g.Expect(mirror.Spec.SecretStoreRef.Kind).To(Equal(string(commonv1.SecretStoreKindNamespaced)))
+		g.Expect(mirror.Spec.SecretStoreRef.Name).To(Equal(esoTenantStoreName),
+			"the mirror routes through the ControlPlane's effective store, which is the tenant store beside it")
+		mcExpectRemoteClaim(t, ctx, targetClient, mirrorKey, &esov1.ExternalSecret{},
+			"registration credentials mirror", cp)
+
+		// --- And that is as far as this plane goes: no KeystoneService controller
+		// runs here, so the registration never provisions the Keystone account and
+		// GlanceReady parks on it rather than projecting a Glance that would
+		// authenticate as a user nothing created.
+		cond := waitForControlPlaneCondition(t, ctx, mgmtClient, cpKey,
+			conditionTypeGlanceReady, metav1.ConditionFalse, itEventuallyTimeout)
+		g.Expect(cond.Reason).To(Equal(reasonWaitingForServiceRegistration))
 	})
 
 	t.Run("a ControlPlane naming an unregistered cluster creates nothing", func(t *testing.T) {
