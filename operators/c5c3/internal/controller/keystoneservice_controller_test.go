@@ -419,8 +419,17 @@ func TestKeystoneService_AllowlistedForeignNamespaceIsAdmitted(t *testing.T) {
 	g.Expect(ksCatalogCondition(got).Reason).NotTo(Equal(reasonKeystoneServiceNamespaceNotAllowed))
 	probe := &orcv1alpha1.Service{}
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
-		Namespace: "tenant-a", Name: keystoneServiceCatalogServiceProbeRef(ks),
-	}, probe)).To(Succeed(), "an admitted registration must project into its own namespace")
+		Namespace: keystoneServiceChildNamespace(cp), Name: keystoneServiceCatalogServiceProbeRef(ks),
+	}, probe)).To(Succeed(),
+		"an admitted registration projects beside the admin credential K-ORC authenticates its children with")
+	g.Expect(probe.Labels).To(HaveKeyWithValue(keystoneServiceNameLabel, ks.Name))
+	g.Expect(probe.Labels).To(HaveKeyWithValue(keystoneServiceNamespaceLabel, ks.Namespace))
+	g.Expect(probe.OwnerReferences).To(BeEmpty(),
+		"an owner reference cannot cross namespaces, so ownership is carried by the labels alone")
+	g.Expect(apierrors.IsNotFound(c.Get(context.Background(), types.NamespacedName{
+		Namespace: ks.Namespace, Name: keystoneServiceCatalogServiceProbeRef(ks),
+	}, &orcv1alpha1.Service{}))).To(BeTrue(),
+		"no K-ORC child is left in the registration's own namespace, where it could not authenticate")
 }
 
 // TestKeystoneService_DedicatedServiceNamespaceIsAdmitted pins the implicit
@@ -443,7 +452,7 @@ func TestKeystoneService_DedicatedServiceNamespaceIsAdmitted(t *testing.T) {
 	g.Expect(ksCatalogCondition(got).Reason).NotTo(Equal(reasonKeystoneServiceNamespaceNotAllowed))
 	probe := &orcv1alpha1.Service{}
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
-		Namespace: "tenant-a", Name: keystoneServiceCatalogServiceProbeRef(ks),
+		Namespace: keystoneServiceChildNamespace(cp), Name: keystoneServiceCatalogServiceProbeRef(ks),
 	}, probe)).To(Succeed())
 }
 
@@ -459,19 +468,26 @@ func TestKeystoneService_DedicatedServiceNamespaceIsAdmitted(t *testing.T) {
 // pass the first leg by accident, since a frozen CR that reaps nothing and a
 // reconciling CR that reaps everything look alike until the two are compared.
 func TestKeystoneService_DeListingFreezesInsteadOfTearingDown(t *testing.T) {
-	// The child the spec does not declare: ksCatalogSpec() carries no endpoints.
-	undeclaredEndpoint := func(ks *c5c3v1alpha1.KeystoneService) *orcv1alpha1.Endpoint {
+	// The child the spec does not declare: ksCatalogSpec() carries no endpoints. It
+	// is seeded where the controller projects one — in the ControlPlane's
+	// namespace, marked by the ownership labels, since a foreign registration
+	// cannot owner-reference across namespaces.
+	undeclaredEndpoint := func(
+		ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
+	) *orcv1alpha1.Endpoint {
 		return &orcv1alpha1.Endpoint{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:            keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypePublic),
-				Namespace:       ks.Namespace,
-				OwnerReferences: ownedByKS(ks),
+				Name:      keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypePublic),
+				Namespace: keystoneServiceChildNamespace(cp),
+				Labels:    keystoneServiceChildLabels(ks),
 			},
 		}
 	}
-	endpointExists := func(c client.Client, ks *c5c3v1alpha1.KeystoneService) error {
+	endpointExists := func(
+		c client.Client, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
+	) error {
 		return c.Get(context.Background(), types.NamespacedName{
-			Namespace: ks.Namespace,
+			Namespace: keystoneServiceChildNamespace(cp),
 			Name:      keystoneServiceCatalogEndpointRef(ks, c5c3v1alpha1.ExternalEndpointTypePublic),
 		}, &orcv1alpha1.Endpoint{})
 	}
@@ -483,10 +499,10 @@ func TestKeystoneService_DeListingFreezesInsteadOfTearingDown(t *testing.T) {
 		ks := ksForeignCR(cp)
 		ks.Spec.Account = nil
 
-		got, c := reconcileForeignKS(t, cp, ks, undeclaredEndpoint(ks), readyTenantStoreFor(cp))
+		got, c := reconcileForeignKS(t, cp, ks, undeclaredEndpoint(ks, cp), readyTenantStoreFor(cp))
 
 		g.Expect(ksCatalogCondition(got).Reason).To(Equal(reasonKeystoneServiceNamespaceNotAllowed))
-		g.Expect(endpointExists(c, ks)).To(Succeed(),
+		g.Expect(endpointExists(c, ks, cp)).To(Succeed(),
 			"de-listing must freeze the registration, never reap what it already minted")
 	})
 
@@ -500,9 +516,9 @@ func TestKeystoneService_DeListingFreezesInsteadOfTearingDown(t *testing.T) {
 		ks := ksForeignCR(cp)
 		ks.Spec.Account = nil
 
-		_, c := reconcileForeignKS(t, cp, ks, undeclaredEndpoint(ks), readyTenantStoreFor(cp))
+		_, c := reconcileForeignKS(t, cp, ks, undeclaredEndpoint(ks, cp), readyTenantStoreFor(cp))
 
-		g.Expect(apierrors.IsNotFound(endpointExists(c, ks))).To(BeTrue(),
+		g.Expect(apierrors.IsNotFound(endpointExists(c, ks, cp))).To(BeTrue(),
 			"an admitted registration prunes what its spec stopped declaring")
 	})
 }
@@ -1251,4 +1267,167 @@ func TestCredentialsSecretToKeystoneServiceMapper_ReturnsNilOnGetError(t *testin
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "reg-credentials", Namespace: "default"}}
 	g.Expect(mapper(context.Background(), secret)).To(BeNil(),
 		"a non-NotFound Get failure must map to nothing; the periodic requeues are the fallback")
+}
+
+// --- where the children land ---
+
+// TestKeystoneService_ForeignChildrenProjectBesideTheAdminCredential pins the
+// placement the whole cross-namespace mechanism rests on. K-ORC reads the
+// clouds.yaml named by a child's cloudCredentialsRef, and resolves its domainRef,
+// in the CHILD's own namespace. The admin credential is materialized once, in the
+// ControlPlane's namespace, and stays there — copying it into every allowlisted
+// namespace would hand each tenant the cloud-admin credential the registration
+// allowlist exists to withhold. So the children go to the credential.
+//
+// Delivery is the other direction: the consumer Secret and the ESO objects that
+// materialize it belong to the service that reads them, in the CR's own namespace,
+// on that namespace's tenant store.
+func TestKeystoneService_ForeignChildrenProjectBesideTheAdminCredential(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	cp.Spec.KORC.ServiceRegistrations = &c5c3v1alpha1.ServiceRegistrationsSpec{
+		AllowedNamespaces: []string{"tenant-a"},
+	}
+	ks := ksForeignCR(cp)
+	ks.Spec.Catalog = nil // account-only: the catalog leg has its own placement test.
+
+	// An absent user probe lets the pass reach the managed User in one reconcile.
+	userProbe := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: keystoneServiceUserProbeRef(ks), Namespace: keystoneServiceChildNamespace(cp),
+			Labels: keystoneServiceChildLabels(ks),
+		},
+		Status: orcv1alpha1.UserStatus{Conditions: pendingImportConditions(0)},
+	}
+	got, c := reconcileForeignKS(t, cp, ks, userProbe,
+		readyTenantSecretStore(esoTenantStoreName, ks.Namespace, "", ""))
+
+	user := &orcv1alpha1.User{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Namespace: keystoneServiceChildNamespace(cp), Name: keystoneServiceUserRef(ks),
+	}, user)).To(Succeed(), "the managed User belongs where K-ORC can read the admin credential")
+	g.Expect(user.Labels).To(HaveKeyWithValue(keystoneServiceNameLabel, ks.Name))
+	g.Expect(user.Labels).To(HaveKeyWithValue(keystoneServiceNamespaceLabel, ks.Namespace))
+	g.Expect(user.OwnerReferences).To(BeEmpty(),
+		"Kubernetes rejects an owner reference across namespaces, so the labels carry ownership")
+	g.Expect(string(*user.Spec.Resource.DomainRef)).To(Equal(adminDomainRef(cp)),
+		"the admin Domain import it resolves against lives in that same namespace")
+
+	// The generation-scoped password Secret follows the User: K-ORC resolves
+	// passwordRef in the User's namespace too.
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Namespace: keystoneServiceChildNamespace(cp), Name: keystoneServicePasswordSecretName(ks, 1),
+	}, &corev1.Secret{})).To(Succeed())
+
+	// Nothing K-ORC is left behind in the tenant's namespace, where none of it
+	// could authenticate.
+	var tenantUsers orcv1alpha1.UserList
+	g.Expect(c.List(context.Background(), &tenantUsers, client.InNamespace(ks.Namespace))).To(Succeed())
+	g.Expect(tenantUsers.Items).To(BeEmpty(), "no K-ORC child may sit in the registration's own namespace")
+	var tenantProjects orcv1alpha1.ProjectList
+	g.Expect(c.List(context.Background(), &tenantProjects, client.InNamespace(ks.Namespace))).To(Succeed())
+	g.Expect(tenantProjects.Items).To(BeEmpty())
+	var tenantDomains orcv1alpha1.DomainList
+	g.Expect(c.List(context.Background(), &tenantDomains, client.InNamespace(ks.Namespace))).To(Succeed())
+	g.Expect(tenantDomains.Items).To(BeEmpty())
+
+	// The pass got past every gate and is waiting on K-ORC rather than failing:
+	// the delivery leg runs once the User reports the current password applied.
+	g.Expect(ksAccountCondition(got).Reason).To(Equal(reasonWaitingForServiceAccounts))
+}
+
+// TestKeystoneService_CoLocatedChildKeepsItsOwnerReference is the other half of
+// the placement contract: a registration in the ControlPlane's own namespace is
+// unchanged by the move, because its namespace already IS the child namespace. It
+// keeps the owner reference, so the garbage collector still reaps its children.
+func TestKeystoneService_CoLocatedChildKeepsItsOwnerReference(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := keystoneServiceCR()
+	ks.Spec.Catalog = ksCatalogSpec()
+	g.Expect(ks.Namespace).To(Equal(keystoneServiceChildNamespace(cp)), "the fixture must be co-located")
+
+	c, r := ksClientBuilder(t, cp, ks, readyTenantStoreFor(cp))
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: ks.Namespace, Name: ks.Name},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	probe := &orcv1alpha1.Service{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Namespace: ks.Namespace, Name: keystoneServiceCatalogServiceProbeRef(ks),
+	}, probe)).To(Succeed())
+	g.Expect(metav1.IsControlledBy(probe, ks)).To(BeTrue(),
+		"a co-located child is still owner-referenced, so GC reaps it")
+	g.Expect(probe.Labels).To(HaveKeyWithValue(keystoneServiceNameLabel, ks.Name),
+		"it carries the labels too, so one watch leg reaches both placements")
+}
+
+// TestKeystoneService_TeardownReapsLabelOwnedChildren proves the deletion path
+// follows the children to the ControlPlane's namespace. Nothing else can: a
+// cross-namespace child has no owner reference, so no garbage collection cascade
+// reaches it once the CR is gone.
+func TestKeystoneService_TeardownReapsLabelOwnedChildren(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksForeignCR(cp)
+	ks.DeletionTimestamp = ptr.To(metav1.Now())
+	ks.Finalizers = []string{keystoneServiceFinalizerName}
+
+	child := &orcv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      keystoneServiceCatalogServiceRef(ks),
+			Namespace: keystoneServiceChildNamespace(cp),
+			Labels:    keystoneServiceChildLabels(ks),
+		},
+	}
+	stranger := &orcv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      keystoneServiceCatalogServiceRef(ks) + "-not-ours",
+			Namespace: keystoneServiceChildNamespace(cp),
+		},
+	}
+
+	c, r := ksClientBuilder(t, cp, ks, child, stranger)
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: ks.Namespace, Name: ks.Name},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(apierrors.IsNotFound(c.Get(context.Background(), types.NamespacedName{
+		Namespace: keystoneServiceChildNamespace(cp), Name: keystoneServiceCatalogServiceRef(ks),
+	}, &orcv1alpha1.Service{}))).To(BeTrue(), "the label-owned child is torn down with the registration")
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Namespace: keystoneServiceChildNamespace(cp), Name: stranger.Name,
+	}, &orcv1alpha1.Service{})).To(Succeed(), "an unlabelled neighbour is never touched")
+}
+
+func TestKeystoneServiceChildToRequest(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	labelled := &orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{
+		Name: "child", Namespace: "default",
+		Labels: map[string]string{
+			keystoneServiceNameLabel:      "reg",
+			keystoneServiceNamespaceLabel: "tenant-a",
+		},
+	}}
+	g.Expect(keystoneServiceChildToRequest(context.Background(), labelled)).To(Equal([]reconcile.Request{{
+		NamespacedName: types.NamespacedName{Namespace: "tenant-a", Name: "reg"},
+	}}))
+
+	// A child of the ControlPlane's own inline machinery shares these namespaces
+	// and must map to nothing, as must a half-labelled object.
+	for _, obj := range []client.Object{
+		&orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "inline", Namespace: "default"}},
+		&orcv1alpha1.User{ObjectMeta: metav1.ObjectMeta{
+			Name: "half", Namespace: "default",
+			Labels: map[string]string{keystoneServiceNameLabel: "reg"},
+		}},
+	} {
+		g.Expect(keystoneServiceChildToRequest(context.Background(), obj)).To(BeEmpty())
+	}
 }

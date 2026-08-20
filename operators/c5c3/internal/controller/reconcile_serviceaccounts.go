@@ -584,7 +584,7 @@ func (r *ControlPlaneReconciler) ensureServiceAccountDomain(
 		return name, nil
 	}
 	if err := ensureAccountDomainImport(ctx, r.Client, r.Scheme, cp,
-		name, childNamespace(cp), serviceAccountDomainName(cp, sa), credRef); err != nil {
+		name, childNamespace(cp), serviceAccountDomainName(cp, sa), credRef, nil); err != nil {
 		return "", fmt.Errorf("service-account Domain import %q: %w", name, err)
 	}
 	return name, nil
@@ -747,7 +747,7 @@ func (r *ControlPlaneReconciler) ensureServiceAccountRoles(
 	for _, role := range sa.Roles {
 		out, err := applyAccountRole(ctx, r.Client, r.Scheme, cp,
 			serviceAccountRoleImportRef(cp, role), serviceAccountRoleAssignmentRef(cp, sa, role), ns, role,
-			credRef, managedCredRef, userRef, projectRef, "service-account")
+			credRef, managedCredRef, userRef, projectRef, "service-account", nil)
 		if err != nil {
 			return false, err
 		}
