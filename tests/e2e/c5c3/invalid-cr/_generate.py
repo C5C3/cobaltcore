@@ -1683,6 +1683,26 @@ FIXTURES: tuple[Fixture, ...] = (
             "      - tenant-a\n"
         ),
     ),
+    Fixture(
+        filename="90-inline-account-collides-with-builtin.yaml",
+        comment=(
+            "An inline spec.korc.serviceAccounts entry managing the Keystone user of a\n"
+            "DECLARED built-in service is rejected by the webhook: the KeystoneService\n"
+            "child the ControlPlane projects for that service already owns the user, so\n"
+            "both mechanisms would provision it and the registration would report a\n"
+            "permanent ServiceAccountCollision."
+        ),
+        name="cp-inline-account-collision",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        glance=VALID_GLANCE,
+        service_accounts=(
+            "    serviceAccounts:\n"
+            "    - name: glance\n"
+            "      project:\n"
+            "        name: service\n"
+        ),
+    ),
     # --- transition wave F: target-cluster assignment freeze
     #     (Test: c5c3-invalid-cr-target-cluster-freeze) ---
     Fixture(

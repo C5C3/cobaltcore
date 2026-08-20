@@ -734,9 +734,10 @@ const glanceBackendChildNameOverhead = len("-glance-")
 // Kubernetes caps CronJob names at 52 characters.
 const glanceChildNameOverhead = len("-glance")
 
-// GlanceServiceAccountName is the spec.korc.serviceAccounts entry the Glance
-// projection consumes; the defaulting webhook injects it and the reconciler
-// gates on it.
+// GlanceServiceAccountName is the OpenStack user name of the Keystone account
+// Glance authenticates as, carried as spec.account.userName on the
+// KeystoneService child projected for Glance. One account per service, named
+// after it.
 const GlanceServiceAccountName = "glance"
 
 // GlanceServiceProjectName is the Keystone project the KeystoneService child
@@ -745,9 +746,10 @@ const GlanceServiceAccountName = "glance"
 // lifecycle belong to exactly that service.
 const GlanceServiceProjectName = "service-glance"
 
-// PlacementServiceAccountName is the spec.korc.serviceAccounts entry the
-// Placement projection consumes; the defaulting webhook injects it and the
-// reconciler gates on it.
+// PlacementServiceAccountName is the OpenStack user name of the Keystone account
+// Placement authenticates as, carried as spec.account.userName on the
+// KeystoneService child projected for Placement, following the per-service
+// convention GlanceServiceAccountName describes.
 const PlacementServiceAccountName = "placement"
 
 // PlacementServiceProjectName is the Keystone project the KeystoneService child
@@ -763,9 +765,10 @@ const PlacementServiceProjectName = "service-placement"
 // Service name is a DNS-1035 label, capped at maxServiceNameBytes.
 const placementChildNameOverhead = len("-placement")
 
-// BarbicanServiceAccountName is the spec.korc.serviceAccounts entry the Barbican
-// projection consumes; the defaulting webhook injects it and the reconciler
-// gates on it.
+// BarbicanServiceAccountName is the OpenStack user name of the Keystone account
+// Barbican authenticates as, carried as spec.account.userName on the
+// KeystoneService child projected for Barbican, following the per-service
+// convention GlanceServiceAccountName describes.
 const BarbicanServiceAccountName = "barbican"
 
 // BarbicanServiceProjectName is the Keystone project the KeystoneService child
@@ -883,10 +886,13 @@ func validateBarbicanChildName(cp *ControlPlane) field.ErrorList {
 // credentialsSecretRef, and the non-empty-backends / exactly-one-default
 // invariants — and adds the rules the CRD schema cannot express: the public
 // endpoint's origin shape and its agreement with the gateway
-// (validateGlancePublicEndpoint), the composed GlanceBackend child-name length
-// bound, and the defense-in-depth requirement that the glance service account the
-// defaulting webhook injects is present (and, when Glance is placed in a
-// dedicated namespace, targets it).
+// (validateGlancePublicEndpoint) and the composed GlanceBackend child-name
+// length bound.
+//
+// The refusal of an inline service account that would fight the projected
+// registration over the glance Keystone user is NOT here: it holds whether or
+// not the block is declared, so it lives in validateBuiltinServiceAccountName,
+// which the two entry points call directly.
 //
 // The cross-field rule that services.glance is forbidden in External mode lives
 // in validateKeystoneMode with the rest of the External-mode matrix.
@@ -958,8 +964,6 @@ func validateGlance(cp *ControlPlane) field.ErrorList {
 		glPath, gl.ImportPlugins, gl.Staging,
 	)...)
 	allErrs = append(allErrs, validateGlanceBackends(cp, glPath.Child("backends"))...)
-	allErrs = append(allErrs, validateProjectedServiceAccount(
-		cp, GlanceServiceAccountName, "Glance", cp.GlanceNamespace())...)
 
 	return allErrs
 }
@@ -1136,65 +1140,114 @@ func validateGlanceBackends(cp *ControlPlane, backendsPath *field.Path) field.Er
 	return allErrs
 }
 
-// validateProjectedServiceAccount is the defense-in-depth twin of the defaulting
-// webhook's per-service service-account injection: a CR declaring services.<svc>
-// must carry the spec.korc.serviceAccounts entry named after that service (its
-// projection gates on the entry for [keystone_authtoken] token validation). The
-// defaulting webhook injects it; requiring it here catches a webhook-bypassed CR
-// that dropped it. When the service is placed in a dedicated namespace the entry
-// must TARGET that namespace, since its consumer credentials Secret is delivered
-// through that namespace's tenant store; when the service is co-located with the
-// ControlPlane the entry must leave targetNamespace empty or name the
-// ControlPlane's own namespace.
-//
-// accountName is both the serviceAccounts[] entry name and the services.<svc>
-// field name; displayName is the service's prose name for the messages;
-// serviceNamespace is the namespace the service is placed in (cp.<Svc>Namespace()).
-func validateProjectedServiceAccount(cp *ControlPlane, accountName, displayName, serviceNamespace string) field.ErrorList {
-	var allErrs field.ErrorList
-	saPath := field.NewPath("spec", "korc", "serviceAccounts")
+// builtinServiceAccountNames pairs each built-in service's reserved Keystone user
+// name with the service's display name, in the order the errors are reported.
+var builtinServiceAccountNames = []struct{ userName, displayName string }{
+	{GlanceServiceAccountName, "Glance"},
+	{PlacementServiceAccountName, "Placement"},
+	{BarbicanServiceAccountName, "Barbican"},
+}
 
-	index := -1
-	for i := range cp.Spec.KORC.ServiceAccounts {
-		if cp.Spec.KORC.ServiceAccounts[i].Name == accountName {
-			index = i
-			break
+// validateBuiltinServiceAccountName rejects an inline spec.korc.serviceAccounts
+// entry that manages the same Keystone user as the KeystoneService child a
+// built-in service is registered through.
+//
+// Both mechanisms would provision that one user, and neither of them yields: the
+// inline entry creates it, and the registration's collision probe then finds a
+// user it does not own and reports ServiceAccountCollision. The service's
+// readiness condition stays False for as long as both declarations stand, which
+// is a state only a spec edit resolves — and the operator has to be told which
+// edit, since the projection is implicit and nothing else in the CR names it.
+//
+// The three names are reserved UNCONDITIONALLY, not only while their
+// services.<svc> block is declared. Dropping the block without the deletion
+// opt-in PRESERVES the registration (reconcileGlance and its siblings), so the
+// registration keeps owning its Keystone user across an update the spec no longer
+// shows — and a check gated on the block would admit exactly the entry that then
+// collides with it forever. A ControlPlane that never runs the service pays a
+// name it cannot use for an unrelated account, which a rename settles.
+//
+// The comparison is on the EFFECTIVE identity — the user name (userName when set,
+// the entry name otherwise) AND the domain (domainName when set, the effective
+// admin domain otherwise), exactly as the reconciler resolves them. Keystone user
+// names are unique per domain, so an entry managing "glance" in a tenant domain
+// of its own is a different user and no collision at all; the registration leaves
+// spec.account.domainName unset and therefore always lands in the admin domain.
+func validateBuiltinServiceAccountName(cp *ControlPlane, index int, sa ServiceAccountSpec) field.ErrorList {
+	if effectiveServiceAccountDomain(cp, sa) != effectiveAdminDomain(cp) {
+		return nil
+	}
+	userName := effectiveServiceAccountUserName(sa)
+	for _, builtin := range builtinServiceAccountNames {
+		if userName != builtin.userName {
+			continue
+		}
+		return field.ErrorList{field.Invalid(
+			field.NewPath("spec", "korc", "serviceAccounts").Index(index), sa.Name, fmt.Sprintf(
+				"manages the Keystone user %q in the admin domain, which the KeystoneService registration this "+
+					"ControlPlane projects for %s owns; two mechanisms provisioning one user leave that "+
+					"registration permanently reporting a collision — rename this entry (or drop it: with %s "+
+					"declared the projected registration already creates the user, its project, and the "+
+					"credentials Secret %s reads)",
+				builtin.userName, builtin.displayName, builtin.displayName, builtin.displayName))}
+	}
+	return nil
+}
+
+// validateBuiltinServiceAccountNames runs validateBuiltinServiceAccountName over
+// every inline entry whose collision this revision introduces.
+//
+// oldObj is the admitted CR on an update and nil on a create. Entries the
+// previous revision ALREADY COLLIDED ON are SKIPPED, because the check would
+// otherwise reject every later update to a ControlPlane admitted under an
+// operator version that had no such rule — including the finalizer-removal update
+// that completes its deletion, which would wedge the CR (and its namespace) in
+// Terminating on a spec only a hand edit could fix. It is the same gating the
+// projected-child-name bounds get in ValidateUpdate, for the same reason.
+func validateBuiltinServiceAccountNames(oldObj, cp *ControlPlane) field.ErrorList {
+	var admitted map[string]struct{}
+	if oldObj != nil {
+		admitted = make(map[string]struct{}, len(oldObj.Spec.KORC.ServiceAccounts))
+		for i, sa := range oldObj.Spec.KORC.ServiceAccounts {
+			// Carried forward on the previous revision's VERDICT, not on its identity
+			// alone: spec.korc.adminCredential.domainName is mutable, so an entry
+			// carrying an explicit domainName keeps one identity across a move of the
+			// admin domain ONTO it while the collision predicate flips. Keyed on the
+			// identity alone, that entry would be waved through as grandfathered — and
+			// the two mechanisms provisioning its user would then leave the service
+			// reporting a collision forever.
+			if len(validateBuiltinServiceAccountName(oldObj, i, sa)) > 0 {
+				admitted[serviceAccountIdentityKey(oldObj, sa)] = struct{}{}
+			}
 		}
 	}
-	if index < 0 {
-		return field.ErrorList{field.Required(saPath, fmt.Sprintf(
-			"a service account named %q is required when services.%s is set; the defaulting webhook injects it "+
-				"so %s can validate the [keystone_authtoken] tokens it receives",
-			accountName, accountName, displayName,
-		))}
-	}
 
-	targetNamespace := cp.Spec.KORC.ServiceAccounts[index].TargetNamespace
-	tnPath := saPath.Index(index).Child("targetNamespace")
-	switch {
-	case serviceNamespace != cp.Namespace && targetNamespace != serviceNamespace:
-		allErrs = append(allErrs, field.Invalid(tnPath, targetNamespace, fmt.Sprintf(
-			"must equal the namespace %s is placed in (%q): the %s service account's consumer "+
-				"credentials Secret is delivered through that namespace's tenant store",
-			displayName, serviceNamespace, accountName,
-		)))
-	case serviceNamespace == cp.Namespace && targetNamespace != "" && targetNamespace != cp.Namespace:
-		allErrs = append(allErrs, field.Invalid(tnPath, targetNamespace, fmt.Sprintf(
-			"must be empty or the ControlPlane's own namespace when %s is co-located with the ControlPlane",
-			displayName)))
+	var allErrs field.ErrorList
+	for i, sa := range cp.Spec.KORC.ServiceAccounts {
+		if _, ok := admitted[serviceAccountIdentityKey(cp, sa)]; ok {
+			continue
+		}
+		allErrs = append(allErrs, validateBuiltinServiceAccountName(cp, i, sa)...)
 	}
-
 	return allErrs
+}
+
+// serviceAccountIdentityKey renders the (user, domain) pair an entry resolves to
+// into the key the cross-entry rules compare on. Keyed on the resolved identity
+// rather than the entry name so a rename that keeps the identity is not read as a
+// new account — and, above all, so an update that re-points an admitted entry at
+// a new Keystone user IS.
+func serviceAccountIdentityKey(cp *ControlPlane, sa ServiceAccountSpec) string {
+	return effectiveServiceAccountUserName(sa) + "\x00" + effectiveServiceAccountDomain(cp, sa)
 }
 
 // validatePlacement enforces the rules on the services.placement block. It
 // mirrors the declarative constraints as defense-in-depth for callers that
 // bypass CRD schema admission (the gateway hostname shape and the image
-// tag/digest XOR) and adds the rules the CRD schema cannot express: the public
+// tag/digest XOR) and adds the rule the CRD schema cannot express: the public
 // endpoint's origin shape and its agreement with the gateway
-// (validatePlacementPublicEndpoint), and the requirement that the placement
-// service account the defaulting webhook injects is present (and, when Placement
-// is placed in a dedicated namespace, targets it).
+// (validatePlacementPublicEndpoint). The inline-service-account refusal lives in
+// validateBuiltinServiceAccountName for the reason validateGlance describes.
 //
 // The projected-child-name bound lives in validatePlacementChildName, which runs
 // only on create and on the update that newly enables Placement.
@@ -1232,8 +1285,6 @@ func validatePlacement(cp *ControlPlane) field.ErrorList {
 	}
 
 	allErrs = append(allErrs, validatePlacementPublicEndpoint(plPath, pl)...)
-	allErrs = append(allErrs, validateProjectedServiceAccount(
-		cp, PlacementServiceAccountName, "Placement", cp.PlacementNamespace())...)
 
 	return allErrs
 }
@@ -1332,9 +1383,8 @@ func warnInsecurePlacementPublicEndpoint(cp *ControlPlane) admission.Warnings {
 // secret-store dedicated/external union and the external store's URL and
 // credentials reference) and adds the rules the CRD schema cannot express: the
 // public endpoint's origin shape and its agreement with the gateway
-// (validateBarbicanPublicEndpoint), and the requirement that the barbican
-// service account the defaulting webhook injects is present (and, when Barbican
-// is placed in a dedicated namespace, targets it).
+// (validateBarbicanPublicEndpoint). The inline-service-account refusal lives in
+// validateBuiltinServiceAccountName for the reason validateGlance describes.
 //
 // The projected-child-name bound lives in validateBarbicanChildName, which runs
 // only on create and on the update that newly enables Barbican.
@@ -1373,8 +1423,6 @@ func validateBarbican(cp *ControlPlane) field.ErrorList {
 
 	allErrs = append(allErrs, validateBarbicanSecretStore(bnPath.Child("secretStore"), &bn.SecretStore)...)
 	allErrs = append(allErrs, validateBarbicanPublicEndpoint(bnPath, bn)...)
-	allErrs = append(allErrs, validateProjectedServiceAccount(
-		cp, BarbicanServiceAccountName, "Barbican", cp.BarbicanNamespace())...)
 
 	return allErrs
 }
@@ -1820,67 +1868,12 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 		appCred.Rotation.Mode = RotationModePasswordDriven
 	}
 
-	// Inject the service account of every declared service the operator has not
-	// already declared one for. A later reconciler package gates each service's
-	// projection on its spec.korc.serviceAccounts entry, so a minimal
-	// services.<service> CR must work without the operator hand-wiring the account.
-	// The role is "service", NOT "member": Keystone's SRBAC default for
-	// identity:validate_token requires role "service", and the accounts exist so
-	// the services can validate the [keystone_authtoken] tokens they receive. The
-	// injection runs before the userName-defaulting loop below so the entries pick
-	// up UserName defaulting, and each targets the namespace its service is placed
-	// in so its consumer credentials Secret is delivered through that namespace's
-	// tenant store. The table order is the injection order, so a ControlPlane
-	// declaring several services grows its entries deterministically. Idempotent: a
-	// pre-existing entry (operator- or previously-injected) is left untouched.
-	for _, inject := range []struct {
-		declared    bool
-		name        string
-		projectName string
-		namespace   string
-	}{
-		{obj.Spec.Services.Glance != nil, GlanceServiceAccountName, "service", obj.GlanceNamespace()},
-		// Placement CREATES "service-placement", its own project rather than the
-		// "service" project the glance entry creates: each create:true entry projects
-		// a managed Project of its own, so two entries naming one project would have
-		// each adopt the other's Keystone row — which validateServiceAccounts rejects
-		// outright.
-		{obj.Spec.Services.Placement != nil, PlacementServiceAccountName, "service-placement", obj.PlacementNamespace()},
-		// Barbican creates "service-barbican" for the same reason placement creates
-		// its own project: no two create:true entries may name one project.
-		{obj.Spec.Services.Barbican != nil, BarbicanServiceAccountName, "service-barbican", obj.BarbicanNamespace()},
-	} {
-		if !inject.declared {
-			continue
-		}
-		declared := false
-		for i := range obj.Spec.KORC.ServiceAccounts {
-			if obj.Spec.KORC.ServiceAccounts[i].Name == inject.name {
-				declared = true
-				break
-			}
-		}
-		if declared {
-			continue
-		}
-		var targetNamespace string
-		if inject.namespace != obj.Namespace {
-			targetNamespace = inject.namespace
-		}
-		obj.Spec.KORC.ServiceAccounts = append(obj.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
-			Name:            inject.name,
-			Project:         ServiceAccountProjectSpec{Name: inject.projectName, Create: true},
-			Roles:           []string{"service"},
-			TargetNamespace: targetNamespace,
-		})
-	}
-
-	// serviceAccounts[i].userName defaults to serviceAccounts[i].name: the K-ORC
-	// User CR is named after the account, but the OpenStack user name it manages
-	// defaults to the same value unless the operator overrides it. Mirrors the
-	// cloudName/secretName defaulting discipline. (The domain default is resolved
-	// in the reconciler, not here, so it can follow spec.korc.adminCredential.
-	// domainName.)
+	// serviceAccounts[i].userName defaults to serviceAccounts[i].name on every
+	// entry the operator declared: the K-ORC User CR is named after the account,
+	// but the OpenStack user name it manages defaults to the same value unless the
+	// operator overrides it. Mirrors the cloudName/secretName defaulting
+	// discipline. (The domain default is resolved in the reconciler, not here, so
+	// it can follow spec.korc.adminCredential.domainName.)
 	for i := range obj.Spec.KORC.ServiceAccounts {
 		if obj.Spec.KORC.ServiceAccounts[i].UserName == "" {
 			obj.Spec.KORC.ServiceAccounts[i].UserName = obj.Spec.KORC.ServiceAccounts[i].Name
@@ -1920,6 +1913,7 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	allErrs = append(allErrs, validateGlanceChildName(obj)...)
 	allErrs = append(allErrs, validatePlacementChildName(obj)...)
 	allErrs = append(allErrs, validateBarbicanChildName(obj)...)
+	allErrs = append(allErrs, validateBuiltinServiceAccountNames(nil, obj)...)
 	if err := newInvalidIfErrs(obj, allErrs); err != nil {
 		return warnings, err
 	}
@@ -1986,6 +1980,13 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	if oldObj.Spec.Services.Barbican == nil {
 		allErrs = append(allErrs, validateBarbicanChildName(newObj)...)
 	}
+
+	// The reserved built-in service-account names re-run only for the entries whose
+	// effective identity this update introduces, for the same reason: a CR admitted
+	// under an operator version without the rule must stay updatable, or the
+	// finalizer-removal update that deletes it is rejected and the CR wedges in
+	// Terminating.
+	allErrs = append(allErrs, validateBuiltinServiceAccountNames(oldObj, newObj)...)
 
 	if err := newInvalidIfErrs(newObj, allErrs); err != nil {
 		return warnings, err

@@ -778,6 +778,18 @@ spec:
             ($error != null): true
             (contains($error, 'allowedNamespaces')): true
             (contains($error, 'Duplicate value')): true
+  # An inline service account managing the Keystone user of a DECLARED built-in
+  # service is refused: the KeystoneService child the ControlPlane projects for
+  # that service already owns the user, and letting both mechanisms provision it
+  # leaves the registration reporting ServiceAccountCollision forever.
+  - try:
+    - apply:
+        file: 90-inline-account-collides-with-builtin.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceAccounts[0]')): true
+            (contains($error, 'which the KeystoneService registration this ControlPlane projects for Glance owns')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

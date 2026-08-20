@@ -3125,51 +3125,33 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 	}
 }
 
-// TestIntegration_GlanceServiceAccountInjection proves the defaulting webhook
-// auto-injects the glance service account whenever services.glance is set and the
-// operator declared none, and that the injection is idempotent across a later
-// UPDATE. The Glance projection gates on a spec.korc.serviceAccounts entry named
-// "glance", so a minimal services.glance CR must converge without the operator
-// hand-wiring the account.
-func TestIntegration_GlanceServiceAccountInjection(t *testing.T) {
+// TestIntegration_GlanceServiceAccountNotInjected proves the admission chain grows
+// no spec.korc.serviceAccounts entry for a declared services.glance: the Glance
+// service user is provisioned by the projected KeystoneService child, so the
+// stored CR carries the field exactly as it was written — unset — on create and
+// across a later UPDATE, which re-runs defaulting.
+func TestIntegration_GlanceServiceAccountNotInjected(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
 	c, ctx, _ := setupControlPlaneEnvTest(t)
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-glance-inject-"}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-glance-account-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
 
-	// A managed ControlPlane with services.glance set and NO serviceAccounts of its
-	// own: the defaulting webhook must inject the glance account BEFORE the
-	// validating webhook's defense-in-depth check (validateProjectedServiceAccount)
-	// runs, or admission would reject the CR for the missing account.
-	cp := integrationManagedControlPlane("cp-glance-inject", ns.Name)
+	cp := integrationManagedControlPlane("cp-glance-account", ns.Name)
 	cp.Spec.Services.Glance = integrationGlanceService()
 	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeEmpty(), "the fixture declares no service accounts")
 	g.Expect(c.Create(ctx, cp)).To(Succeed(),
 		"create managed ControlPlane with services.glance and no serviceAccounts")
 
-	// Exactly one entry was injected: name glance, project service (created, not
-	// merely referenced), role "service" (Keystone SRBAC identity:validate_token —
-	// NOT "member"), and userName defaulted to the account name by the loop that
-	// runs after injection.
 	fetched := &c5c3v1alpha1.ControlPlane{}
 	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed(), "re-fetch defaulted ControlPlane")
-	g.Expect(fetched.Spec.KORC.ServiceAccounts).To(HaveLen(1),
-		"the defaulting webhook must inject exactly one service account")
-	injected := fetched.Spec.KORC.ServiceAccounts[0]
-	g.Expect(injected.Name).To(Equal("glance"))
-	g.Expect(injected.Project.Name).To(Equal("service"))
-	g.Expect(injected.Project.Create).To(BeTrue(), "the glance project is created, not merely referenced")
-	g.Expect(injected.Roles).To(Equal([]string{"service"}),
-		"the injected role is 'service' (identity:validate_token), never 'member'")
-	g.Expect(injected.UserName).To(Equal("glance"), "userName defaults to the account name")
+	g.Expect(fetched.Spec.KORC.ServiceAccounts).To(BeEmpty(),
+		"a declared Glance must leave the stored serviceAccounts unset")
 
-	// Idempotency: an UPDATE touching an unrelated field must NOT inject a second
-	// entry. The reconciler writes status (bumping resourceVersion), so drive the
-	// update through an Eventually that re-fetches and retries on the inevitable
-	// conflict.
+	// The reconciler writes status (bumping resourceVersion), so drive the update
+	// through an Eventually that re-fetches and retries on the inevitable conflict.
 	g.Eventually(func() error {
 		latest := &c5c3v1alpha1.ControlPlane{}
 		if err := c.Get(ctx, client.ObjectKeyFromObject(cp), latest); err != nil {
@@ -3178,39 +3160,30 @@ func TestIntegration_GlanceServiceAccountInjection(t *testing.T) {
 		if latest.Labels == nil {
 			latest.Labels = map[string]string{}
 		}
-		latest.Labels["glance-injection-test"] = "touched"
+		latest.Labels["glance-account-test"] = "touched"
 		return c.Update(ctx, latest)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "update an unrelated field")
 
 	afterUpdate := &c5c3v1alpha1.ControlPlane{}
 	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), afterUpdate)).To(Succeed(), "re-fetch after the update")
-	g.Expect(afterUpdate.Spec.KORC.ServiceAccounts).To(HaveLen(1),
-		"a re-defaulting UPDATE must not inject a second glance service account")
-	g.Expect(afterUpdate.Spec.KORC.ServiceAccounts[0].Name).To(Equal("glance"))
+	g.Expect(afterUpdate.Spec.KORC.ServiceAccounts).To(BeEmpty(),
+		"a re-defaulting UPDATE must not grow a service account either")
 }
 
-// TestIntegration_PlacementServiceAccountInjection is the Placement twin of
-// TestIntegration_GlanceServiceAccountInjection, on a ControlPlane that sets BOTH
-// services: the defaulting webhook must inject the glance account first and the
-// placement one after it, so a CR declaring both grows the two entries in a
-// deterministic order. The placement entry creates a project of its own
-// ("service-placement") rather than the "service" project the glance entry
-// creates, because two create:true entries naming one project would each adopt the
-// other's Keystone row. Injection is idempotent across a later UPDATE.
-func TestIntegration_PlacementServiceAccountInjection(t *testing.T) {
+// TestIntegration_PlacementServiceAccountNotInjected is the Placement twin of
+// TestIntegration_GlanceServiceAccountNotInjected, on a ControlPlane that sets
+// BOTH services: neither declaration grows an entry, so a CR running several
+// services stores spec.korc.serviceAccounts exactly as it wrote it.
+func TestIntegration_PlacementServiceAccountNotInjected(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
 	c, ctx, _ := setupControlPlaneEnvTest(t)
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-placement-inject-"}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-placement-account-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
 
-	// A managed ControlPlane with both services set and NO serviceAccounts of its
-	// own: the defaulting webhook must inject both accounts BEFORE the validating
-	// webhook's defense-in-depth check (validateProjectedServiceAccount, once per
-	// service) runs, or admission would reject the CR.
-	cp := integrationManagedControlPlane("cp-placement-inject", ns.Name)
+	cp := integrationManagedControlPlane("cp-placement-account", ns.Name)
 	cp.Spec.Services.Glance = integrationGlanceService()
 	cp.Spec.Services.Placement = integrationPlacementService()
 	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeEmpty(), "the fixture declares no service accounts")
@@ -3219,65 +3192,23 @@ func TestIntegration_PlacementServiceAccountInjection(t *testing.T) {
 
 	fetched := &c5c3v1alpha1.ControlPlane{}
 	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed(), "re-fetch defaulted ControlPlane")
-	g.Expect(fetched.Spec.KORC.ServiceAccounts).To(HaveLen(2),
-		"the defaulting webhook must inject one service account per set service")
-	g.Expect(fetched.Spec.KORC.ServiceAccounts[0].Name).To(Equal("glance"),
-		"the glance account is injected first")
-
-	injected := fetched.Spec.KORC.ServiceAccounts[1]
-	g.Expect(injected.Name).To(Equal("placement"))
-	g.Expect(injected.Project.Name).To(Equal("service-placement"),
-		"the placement account creates a project of its own, not the glance account's")
-	g.Expect(injected.Project.Create).To(BeTrue(), "the service-placement project is created, not merely referenced")
-	g.Expect(injected.Roles).To(Equal([]string{"service"}),
-		"the injected role is 'service' (identity:validate_token), never 'member'")
-	g.Expect(injected.UserName).To(Equal("placement"), "userName defaults to the account name")
-
-	// Idempotency: an UPDATE touching an unrelated field must NOT inject a third
-	// entry. The reconciler writes status (bumping resourceVersion), so drive the
-	// update through an Eventually that re-fetches and retries on the inevitable
-	// conflict.
-	g.Eventually(func() error {
-		latest := &c5c3v1alpha1.ControlPlane{}
-		if err := c.Get(ctx, client.ObjectKeyFromObject(cp), latest); err != nil {
-			return err
-		}
-		if latest.Labels == nil {
-			latest.Labels = map[string]string{}
-		}
-		latest.Labels["placement-injection-test"] = "touched"
-		return c.Update(ctx, latest)
-	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "update an unrelated field")
-
-	afterPlacementUpdate := &c5c3v1alpha1.ControlPlane{}
-	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), afterPlacementUpdate)).To(Succeed(), "re-fetch after the update")
-	g.Expect(afterPlacementUpdate.Spec.KORC.ServiceAccounts).To(HaveLen(2),
-		"a re-defaulting UPDATE must not inject a second placement service account")
-	g.Expect(afterPlacementUpdate.Spec.KORC.ServiceAccounts[1].Name).To(Equal("placement"))
+	g.Expect(fetched.Spec.KORC.ServiceAccounts).To(BeEmpty(),
+		"a declared Glance and Placement must leave the stored serviceAccounts unset")
 }
 
-// TestIntegration_BarbicanServiceAccountInjection is the Barbican twin of
-// TestIntegration_PlacementServiceAccountInjection, on a ControlPlane that sets all
-// three services: the defaulting webhook must inject the accounts in its table
-// order, so the barbican entry lands third. Like the placement entry it creates a
-// project of its own ("service-barbican") rather than the "service" project the
-// glance entry creates, because two create:true entries naming one project would
-// each adopt the other's Keystone row. Injection is idempotent across a later
-// UPDATE.
-func TestIntegration_BarbicanServiceAccountInjection(t *testing.T) {
+// TestIntegration_BarbicanServiceAccountNotInjected is the Barbican twin, on a
+// ControlPlane that sets all three services: the edge where every built-in is
+// declared at once and the stored CR still carries no service account.
+func TestIntegration_BarbicanServiceAccountNotInjected(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
 
 	c, ctx, _ := setupControlPlaneEnvTest(t)
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-barbican-inject-"}}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-barbican-account-"}}
 	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
 
-	// A managed ControlPlane with all three services set and NO serviceAccounts of
-	// its own: the defaulting webhook must inject all three accounts BEFORE the
-	// validating webhook's defense-in-depth check (validateProjectedServiceAccount,
-	// once per service) runs, or admission would reject the CR.
-	cp := integrationManagedControlPlane("cp-barbican-inject", ns.Name)
+	cp := integrationManagedControlPlane("cp-barbican-account", ns.Name)
 	cp.Spec.Services.Glance = integrationGlanceService()
 	cp.Spec.Services.Placement = integrationPlacementService()
 	cp.Spec.Services.Barbican = integrationBarbicanService()
@@ -3287,45 +3218,8 @@ func TestIntegration_BarbicanServiceAccountInjection(t *testing.T) {
 
 	fetched := &c5c3v1alpha1.ControlPlane{}
 	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed(), "re-fetch defaulted ControlPlane")
-	g.Expect(fetched.Spec.KORC.ServiceAccounts).To(HaveLen(3),
-		"the defaulting webhook must inject one service account per set service")
-	g.Expect(fetched.Spec.KORC.ServiceAccounts[0].Name).To(Equal("glance"),
-		"the glance account is injected first")
-	g.Expect(fetched.Spec.KORC.ServiceAccounts[1].Name).To(Equal("placement"),
-		"the placement account is injected second")
-
-	injected := fetched.Spec.KORC.ServiceAccounts[2]
-	g.Expect(injected.Name).To(Equal("barbican"))
-	g.Expect(injected.Project.Name).To(Equal("service-barbican"),
-		"the barbican account creates a project of its own, not the glance account's")
-	g.Expect(injected.Project.Create).To(BeTrue(), "the service-barbican project is created, not merely referenced")
-	g.Expect(injected.Roles).To(Equal([]string{"service"}),
-		"the injected role is 'service' (identity:validate_token), never 'member'")
-	g.Expect(injected.UserName).To(Equal("barbican"), "userName defaults to the account name")
-	g.Expect(injected.TargetNamespace).To(BeEmpty(),
-		"Barbican is co-located here, so the account delivers into the ControlPlane's own namespace")
-
-	// Idempotency: an UPDATE touching an unrelated field must NOT inject a fourth
-	// entry. The reconciler writes status (bumping resourceVersion), so drive the
-	// update through an Eventually that re-fetches and retries on the inevitable
-	// conflict.
-	g.Eventually(func() error {
-		latest := &c5c3v1alpha1.ControlPlane{}
-		if err := c.Get(ctx, client.ObjectKeyFromObject(cp), latest); err != nil {
-			return err
-		}
-		if latest.Labels == nil {
-			latest.Labels = map[string]string{}
-		}
-		latest.Labels["barbican-injection-test"] = "touched"
-		return c.Update(ctx, latest)
-	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "update an unrelated field")
-
-	afterBarbicanUpdate := &c5c3v1alpha1.ControlPlane{}
-	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), afterBarbicanUpdate)).To(Succeed(), "re-fetch after the update")
-	g.Expect(afterBarbicanUpdate.Spec.KORC.ServiceAccounts).To(HaveLen(3),
-		"a re-defaulting UPDATE must not inject a second barbican service account")
-	g.Expect(afterBarbicanUpdate.Spec.KORC.ServiceAccounts[2].Name).To(Equal("barbican"))
+	g.Expect(fetched.Spec.KORC.ServiceAccounts).To(BeEmpty(),
+		"three declared services must leave the stored serviceAccounts unset")
 }
 
 // TestIntegration_CredentialRotation_ServiceAccountValidation pins the two CEL
