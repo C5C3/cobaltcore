@@ -461,26 +461,26 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				{Name: "ServiceAccounts", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcileServiceAccounts(ctx, &cp)
 				}},
-				// Glance is gated on the glance service account's per-account
-				// readiness, which reconcileServiceAccounts computes into status
-				// in this same pass (and on KeystoneReady — Glance validates
-				// tokens against the Keystone child).
+				// Glance is gated on KeystoneReady (Glance validates tokens
+				// against the Keystone child) and on the KeystoneService child
+				// it projects for itself, whose AccountReady reports the
+				// Keystone user; the child's aggregate Ready folds into
+				// GlanceReady.
 				{Name: "Glance", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcileGlance(ctx, &cp)
 				}},
-				// Placement is gated exactly like Glance: on the placement
-				// service account's per-account readiness, which
-				// reconcileServiceAccounts computes into status in this same
-				// pass, and on KeystoneReady — Placement validates tokens
-				// against the Keystone child.
+				// Placement is gated exactly like Glance: on KeystoneReady —
+				// Placement validates tokens against the Keystone child — and
+				// on the AccountReady of the KeystoneService child it projects,
+				// whose aggregate Ready folds into PlacementReady.
 				{Name: "Placement", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcilePlacement(ctx, &cp)
 				}},
-				// Barbican is gated exactly like Glance and Placement: on the
-				// barbican service account's per-account readiness, which
-				// reconcileServiceAccounts computes into status in this same
-				// pass, and on KeystoneReady — Barbican validates tokens
-				// against the Keystone child. It carries one gate the others
+				// Barbican is gated exactly like Glance and Placement: on
+				// KeystoneReady — Barbican validates tokens against the
+				// Keystone child — and on the AccountReady of the
+				// KeystoneService child it projects, whose aggregate Ready
+				// folds into BarbicanReady. It carries one gate the others
 				// do not: on a dedicated secret store it holds the projection
 				// until the OpenBao instance it provisions serves requests.
 				{Name: "Barbican", Fn: func(ctx context.Context) (ctrl.Result, error) {
@@ -1094,6 +1094,19 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		Owns(&esov1.ExternalSecret{}, engageLocal, engageNoProviders).
 		Owns(&esov1alpha1.PushSecret{}, engageLocal, engageNoProviders).
 		Owns(&esgenv1alpha1.VaultDynamicSecret{}, engageLocal, engageNoProviders).
+		// The registration children of the built-in services: Glance, Placement and
+		// Barbican each project one KeystoneService and hold their projection until
+		// the child reports AccountReady, then their own readiness until it reports
+		// the aggregate Ready. Both are status-only writes, and the
+		// registration mapper leg further down drops exactly those through
+		// watch.CRUpdatePredicate, so without a leg of its own a child going ready
+		// would only reach the ControlPlane at the next periodic requeue. This Owns
+		// leg carries a child co-located with the ControlPlane, which holds a
+		// controller owner reference; a child placed in a namespace of its own
+		// rides the labelled cross-namespace leg below. An event matching several
+		// legs yields the same request several times, which the workqueue
+		// deduplicates.
+		Owns(&c5c3v1alpha1.KeystoneService{}, engageLocal, engageNoProviders).
 		Watches(&corev1.Secret{}, commonmulticluster.LocalRequests(
 			secretToControlPlaneMapper(local.GetClient()),
 		), engageLocal, engageNoProviders).
@@ -1129,6 +1142,11 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 			mcbuilder.WithPredicates(crossNamespaceChildPredicate()), engageLocal, engageNoProviders).
 		Watches(&esov1.ExternalSecret{}, crossNamespaceChildHandler(),
 			mcbuilder.WithPredicates(crossNamespaceChildPredicate()), engageLocal, engageNoProviders).
+		// A registration child of a service placed in a namespace of its own: the
+		// same status flips the Owns leg above carries for a co-located one, which
+		// is where the built-in registration children and their gates are described.
+		Watches(&c5c3v1alpha1.KeystoneService{}, crossNamespaceChildHandler(),
+			mcbuilder.WithPredicates(crossNamespaceChildPredicate()), engageLocal, engageNoProviders).
 		// The namespace itself: a Managed one being deleted out from under a live
 		// ControlPlane must re-drive NamespacesReady rather than wait for the next
 		// periodic resync.
@@ -1137,10 +1155,11 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		// Standalone registrations: which allowlisted namespaces host one is what
 		// decides where reconcileRegistrationTenantStores provisions a tenant store,
 		// so a KeystoneService appearing or being deleted has to re-drive the plane.
-		// The CR is never a child of the ControlPlane — it is authored by whoever
-		// runs the service — so it is mapped by its own reference, not by ownership.
-		// The predicate drops the KeystoneService controller's status-only writes,
-		// which cannot move the provisioning set.
+		// Such a CR is no child of the ControlPlane — it is authored by whoever runs
+		// the service — so it is mapped by its own reference, not by ownership; the
+		// ControlPlane's own registration children are covered by the two ownership
+		// legs above. The predicate drops the KeystoneService controller's
+		// status-only writes, which cannot move the provisioning set.
 		Watches(&c5c3v1alpha1.KeystoneService{}, commonmulticluster.LocalRequests(
 			keystoneServiceToControlPlaneMapper,
 		), mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders)
