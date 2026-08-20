@@ -11,7 +11,6 @@ import (
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/c5c3/forge/internal/common/apply"
 	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
 )
 
@@ -56,9 +55,9 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 	// not the spec's application credential: K-ORC must still reach Keystone to
 	// DELETE the row at teardown, and the application credential is revoked by its
 	// own finalizer while that delete is in flight.
-	service := managedCatalogServiceChild(keystoneServiceCatalogServiceRef(ks), ks.Namespace,
+	service := managedCatalogServiceChild(keystoneServiceCatalogServiceRef(ks), keystoneServiceChildNamespace(cp),
 		catalog.ServiceType, serviceName, managedCredRef)
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, service, apply.FieldManager); err != nil {
+	if err := r.ensureKeystoneServiceChild(ctx, ks, service); err != nil {
 		fail(reasonKeystoneServiceCatalogError, fmt.Sprintf("applying the catalog Service: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -68,9 +67,9 @@ func (r *KeystoneServiceReconciler) ensureCatalog(
 
 	endpoints := make([]*orcv1alpha1.Endpoint, 0, len(catalog.Endpoints))
 	for _, ep := range catalog.Endpoints {
-		endpoint := managedCatalogEndpointChild(keystoneServiceCatalogEndpointRef(ks, ep.Interface), ks.Namespace,
-			string(ep.Interface), ep.URL, service.Name, managedCredRef)
-		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, endpoint, apply.FieldManager); err != nil {
+		endpoint := managedCatalogEndpointChild(keystoneServiceCatalogEndpointRef(ks, ep.Interface),
+			keystoneServiceChildNamespace(cp), string(ep.Interface), ep.URL, service.Name, managedCredRef)
+		if err := r.ensureKeystoneServiceChild(ctx, ks, endpoint); err != nil {
 			fail(reasonKeystoneServiceCatalogError, fmt.Sprintf("applying the %q catalog Endpoint: %v", ep.Interface, err))
 			return ctrl.Result{}, err
 		}
@@ -141,17 +140,18 @@ func (r *KeystoneServiceReconciler) keystoneServiceCatalogCollisionGate(
 ) (bool, error) {
 	// The filter carries the type AND the effective name, so the probe answers the
 	// question K-ORC's own adoption asks — it matches a row on exactly that pair.
-	probe := unmanagedServiceImport(keystoneServiceCatalogServiceProbeRef(ks), ks.Namespace,
+	probe := unmanagedServiceImport(keystoneServiceCatalogServiceProbeRef(ks), keystoneServiceChildNamespace(cp),
 		ks.Spec.Catalog.ServiceType, serviceName, credRef)
 	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, ks, managedChildProbeInput{
 		kind:             "Service",
 		managed:          &orcv1alpha1.Service{},
 		managedName:      keystoneServiceCatalogServiceRef(ks),
-		namespace:        ks.Namespace,
+		namespace:        keystoneServiceChildNamespace(cp),
 		adopt:            ks.Spec.Catalog.Adopt,
 		probe:            probe,
 		dropProbeOnOwned: true,
 		errPrefix:        "registration",
+		ensure:           r.keystoneServiceEnsure(ks),
 	})
 	if err != nil || proceed {
 		return proceed, err

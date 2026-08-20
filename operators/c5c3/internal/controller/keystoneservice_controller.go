@@ -18,6 +18,7 @@ import (
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
@@ -30,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/c5c3/forge/internal/common/apply"
 	"github.com/c5c3/forge/internal/common/bootstrap"
 	"github.com/c5c3/forge/internal/common/conditions"
 	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
@@ -60,6 +62,18 @@ var keystoneServiceSubConditionTypes = []string{
 // keystoneServiceFinalizerName gates teardown of the projected children. It
 // follows controlPlaneORCFinalizer's shape: the group, then what it tears down.
 const keystoneServiceFinalizerName = "c5c3.io/keystoneservice-teardown"
+
+// The ownership labels a K-ORC child carries when it cannot carry an owner
+// reference, mirroring controlPlaneNameLabel / controlPlaneNamespaceLabel for the
+// ControlPlane's own cross-namespace children. A registration's children live
+// beside the admin credential (keystoneServiceChildNamespace), which for a
+// foreign registration is not the CR's namespace, and Kubernetes rejects an owner
+// reference across namespaces. The pair identifies the CR uniquely: a name is
+// only unique within its namespace, so both halves are required.
+const (
+	keystoneServiceNameLabel      = "c5c3.io/keystoneservice-name"
+	keystoneServiceNamespaceLabel = "c5c3.io/keystoneservice-namespace"
+)
 
 // Condition reasons this controller introduces. Everything with an equivalent in
 // the ControlPlane's inline machinery reuses that constant instead
@@ -218,7 +232,8 @@ func (r *KeystoneServiceReconciler) reconcileNormal(ctx context.Context, ks *c5c
 	// Prune whatever the spec stopped declaring — a removed role, a removed
 	// endpoint interface, a removed block — and hold the owning block's condition
 	// until the removal completes.
-	catalogSwept, accountSwept, err := r.sweepChildren(ctx, ks, keystoneServiceDeclaredChildNames(ks))
+	catalogSwept, accountSwept, err := r.sweepChildren(ctx, ks,
+		keystoneServiceChildNamespace(cp), keystoneServiceDeclaredChildNames(ks))
 	if err != nil {
 		r.failDeclaredBlocks(ks, reasonServiceAccountError, fmt.Sprintf("pruning undeclared registration children: %v", err))
 		return ctrl.Result{}, err
@@ -417,6 +432,27 @@ func keystoneServiceChildPrefix(ks *c5c3v1alpha1.KeystoneService) string {
 	return ks.Name + "-" + hex.EncodeToString(sum[:])[:8] + "-registration-"
 }
 
+// keystoneServiceChildNamespace is where a registration's K-ORC children and the
+// password Secret they resolve live: the ControlPlane's namespace, never the
+// registration's.
+//
+// K-ORC reads the clouds.yaml named by a child's cloudCredentialsRef from the
+// CHILD's own namespace, and resolves a domainRef there too. The admin credential
+// the operator authenticates every registration with is materialized once, in the
+// ControlPlane's namespace, and deliberately stays there: copying it into each
+// allowlisted namespace would hand every tenant the cloud-admin credential and
+// undo the escalation the registration allowlist exists to prevent. So the
+// children go to the credential rather than the credential to the children —
+// which is what the inline service accounts have always done (childNamespace in
+// reconcile_serviceaccounts.go).
+//
+// Only the DELIVERY objects stay in the registration's namespace: the assembled
+// source Secret, the PushSecret that pushes it through that namespace's tenant
+// store, the ExternalSecret, and the consumer Secret the service reads.
+func keystoneServiceChildNamespace(cp *c5c3v1alpha1.ControlPlane) string {
+	return cp.Namespace
+}
+
 // The child names embed a per-kind discriminator in a fixed position after the
 // prefix, so no CR's child can ever alias another's.
 func keystoneServiceUserRef(ks *c5c3v1alpha1.KeystoneService) string {
@@ -535,13 +571,109 @@ func keystoneServiceRemoteKeyFor(ks *c5c3v1alpha1.KeystoneService) string {
 	return "openstack/keystone/" + ks.Namespace + "/" + ks.Name + "/service-accounts/credentials"
 }
 
+// keystoneServiceChildLabels returns the ownership labels identifying ks as the
+// owner of a child it cannot owner-reference.
+func keystoneServiceChildLabels(ks *c5c3v1alpha1.KeystoneService) map[string]string {
+	return map[string]string{
+		keystoneServiceNameLabel:      ks.Name,
+		keystoneServiceNamespaceLabel: ks.Namespace,
+	}
+}
+
+// stampKeystoneServiceChildLabels merges ks's ownership labels onto obj,
+// preserving anything already there, so the child is recognizable the moment it
+// exists rather than after a later pass.
+func stampKeystoneServiceChildLabels(obj client.Object, ks *c5c3v1alpha1.KeystoneService) {
+	labels := obj.GetLabels()
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	for k, v := range keystoneServiceChildLabels(ks) {
+		labels[k] = v
+	}
+	obj.SetLabels(labels)
+}
+
+// claimKeystoneServiceChild makes obj a child of ks by the only mechanism its
+// namespace permits: a controller owner reference when it shares the CR's
+// namespace, so the garbage collector reaps it, and the ownership labels when it
+// does not, so the finalizer-driven teardown can still find it. It mirrors
+// claimChildOwnership, minus the target-cluster arm a registration never has: a
+// registration delivers on the management cluster by design.
+func claimKeystoneServiceChild(ks *c5c3v1alpha1.KeystoneService, obj client.Object, scheme *runtime.Scheme) error {
+	stampKeystoneServiceChildLabels(obj, ks)
+	if obj.GetNamespace() != ks.Namespace {
+		return nil
+	}
+	return controllerutil.SetControllerReference(ks, obj, scheme)
+}
+
+// ensureKeystoneServiceChild is the Server-Side-Apply twin of
+// claimKeystoneServiceChild, and the single write path for every child a
+// registration projects.
+//
+// A child that lands outside the CR's namespace cannot be owner-referenced, so
+// before adopting a name that already exists there the apply refuses anything
+// this registration did not create: the apply would otherwise overwrite a
+// stranger's spec and the teardown would then delete it. The pre-check reads
+// through the cached client rather than an uncached reader, unlike the
+// ControlPlane's ensureUnownedOrOwned: a registration's child names carry a
+// digest of the CR's identity, so a name collision with an object somebody else
+// authored is not a race to lose but a name nobody would write.
+func (r *KeystoneServiceReconciler) ensureKeystoneServiceChild(
+	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, obj client.Object,
+) error {
+	if obj.GetNamespace() != ks.Namespace {
+		live := obj.DeepCopyObject().(client.Object)
+		switch err := r.Get(ctx, client.ObjectKeyFromObject(obj), live); {
+		case apierrors.IsNotFound(err) || meta.IsNoMatchError(err):
+		case err != nil:
+			return fmt.Errorf("checking for a pre-existing %T %s before adopting it: %w",
+				obj, client.ObjectKeyFromObject(obj), err)
+		default:
+			if !isKeystoneServiceChild(live, ks) {
+				return fmt.Errorf("refusing to adopt pre-existing %T %s: it was not created by this "+
+					"registration, so adopting it would overwrite its spec and delete it at teardown",
+					obj, client.ObjectKeyFromObject(obj))
+			}
+		}
+	}
+	if err := claimKeystoneServiceChild(ks, obj, r.Scheme); err != nil {
+		return err
+	}
+	return apply.EnsureUnownedObject(ctx, r.Client, r.Scheme, obj, apply.FieldManager)
+}
+
+// keystoneServiceEnsure returns the ensure seam the shared projection helpers
+// take, bound to ks: every child they build is written through
+// ensureKeystoneServiceChild, so ownership follows the namespace it lands in.
+func (r *KeystoneServiceReconciler) keystoneServiceEnsure(ks *c5c3v1alpha1.KeystoneService) registrationEnsure {
+	return func(ctx context.Context, obj client.Object) error {
+		return r.ensureKeystoneServiceChild(ctx, ks, obj)
+	}
+}
+
+// isKeystoneServiceChild reports whether ks owns obj: either it is the controller
+// owner reference (the same-namespace case) or obj carries ks's ownership labels
+// (the cross-namespace case, where no owner reference is possible).
+func isKeystoneServiceChild(obj client.Object, ks *c5c3v1alpha1.KeystoneService) bool {
+	if metav1.IsControlledBy(obj, ks) {
+		return true
+	}
+	labels := obj.GetLabels()
+	return labels[keystoneServiceNameLabel] == ks.Name &&
+		labels[keystoneServiceNamespaceLabel] == ks.Namespace
+}
+
 // ownsKeystoneServiceChild reports whether obj is a child this CR created. BOTH
-// the controller reference and the name test must pass, so a foreign object
-// sharing the namespace can never be reshaped or swept. The name test admits the
-// unprefixed consumer-credentials name alongside the prefix, since that one child
-// is deliberately named for its consumers.
+// the ownership test and the name test must pass, so a foreign object sharing the
+// namespace can never be reshaped or swept — which matters more since the K-ORC
+// children moved to the ControlPlane's namespace, where they sit beside the
+// plane's own children and those of every other registration. The name test
+// admits the unprefixed consumer-credentials name alongside the prefix, since
+// that one child is deliberately named for its consumers.
 func ownsKeystoneServiceChild(ks *c5c3v1alpha1.KeystoneService, obj client.Object) bool {
-	if !metav1.IsControlledBy(obj, ks) {
+	if !isKeystoneServiceChild(obj, ks) {
 		return false
 	}
 	name := obj.GetName()
@@ -601,8 +733,13 @@ func keystoneServiceDeclaredChildNames(ks *c5c3v1alpha1.KeystoneService) map[str
 // object is gone: a K-ORC child stays Terminating behind its finalizer while the
 // Keystone row is removed, so the caller holds readiness until a later pass no
 // longer lists it.
+// childNS is where the K-ORC children and the password Secrets live (the
+// ControlPlane's namespace, see keystoneServiceChildNamespace); the delivery
+// objects are looked for in the CR's own namespace. The two are the same
+// namespace for a co-located registration, and the Secret sweep visits each of
+// them once.
 func (r *KeystoneServiceReconciler) sweepChildren(
-	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, keep map[string]bool,
+	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, childNS string, keep map[string]bool,
 ) (catalogSwept, accountSwept []string, err error) {
 	logger := log.FromContext(ctx)
 	ns := ks.Namespace
@@ -623,7 +760,8 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 		} else if keep[name] {
 			return nil
 		}
-		logger.Info("removing an undeclared KeystoneService child", "name", name, "namespace", ns)
+		logger.Info("removing an undeclared KeystoneService child",
+			"name", name, "namespace", obj.GetNamespace())
 		if err := client.IgnoreNotFound(r.Delete(ctx, obj)); err != nil {
 			return fmt.Errorf("deleting KeystoneService child %q: %w", name, err)
 		}
@@ -632,7 +770,7 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 	}
 
 	var assignments orcv1alpha1.RoleAssignmentList
-	if err := r.List(ctx, &assignments, client.InNamespace(ns)); err != nil {
+	if err := r.List(ctx, &assignments, client.InNamespace(childNS)); err != nil {
 		return nil, nil, fmt.Errorf("listing registration RoleAssignments: %w", err)
 	}
 	for i := range assignments.Items {
@@ -641,7 +779,7 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 		}
 	}
 	var roles orcv1alpha1.RoleList
-	if err := r.List(ctx, &roles, client.InNamespace(ns)); err != nil {
+	if err := r.List(ctx, &roles, client.InNamespace(childNS)); err != nil {
 		return nil, nil, fmt.Errorf("listing registration Roles: %w", err)
 	}
 	for i := range roles.Items {
@@ -650,7 +788,7 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 		}
 	}
 	var endpoints orcv1alpha1.EndpointList
-	if err := r.List(ctx, &endpoints, client.InNamespace(ns)); err != nil {
+	if err := r.List(ctx, &endpoints, client.InNamespace(childNS)); err != nil {
 		return nil, nil, fmt.Errorf("listing registration Endpoints: %w", err)
 	}
 	for i := range endpoints.Items {
@@ -659,7 +797,7 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 		}
 	}
 	var services orcv1alpha1.ServiceList
-	if err := r.List(ctx, &services, client.InNamespace(ns)); err != nil {
+	if err := r.List(ctx, &services, client.InNamespace(childNS)); err != nil {
 		return nil, nil, fmt.Errorf("listing registration Services: %w", err)
 	}
 	for i := range services.Items {
@@ -668,7 +806,7 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 		}
 	}
 	var users orcv1alpha1.UserList
-	if err := r.List(ctx, &users, client.InNamespace(ns)); err != nil {
+	if err := r.List(ctx, &users, client.InNamespace(childNS)); err != nil {
 		return nil, nil, fmt.Errorf("listing registration Users: %w", err)
 	}
 	for i := range users.Items {
@@ -677,7 +815,7 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 		}
 	}
 	var projects orcv1alpha1.ProjectList
-	if err := r.List(ctx, &projects, client.InNamespace(ns)); err != nil {
+	if err := r.List(ctx, &projects, client.InNamespace(childNS)); err != nil {
 		return nil, nil, fmt.Errorf("listing registration Projects: %w", err)
 	}
 	for i := range projects.Items {
@@ -686,7 +824,7 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 		}
 	}
 	var domains orcv1alpha1.DomainList
-	if err := r.List(ctx, &domains, client.InNamespace(ns)); err != nil {
+	if err := r.List(ctx, &domains, client.InNamespace(childNS)); err != nil {
 		return nil, nil, fmt.Errorf("listing registration Domains: %w", err)
 	}
 	for i := range domains.Items {
@@ -717,13 +855,23 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 			return nil, nil, err
 		}
 	}
-	var kubeSecrets corev1.SecretList
-	if err := r.List(ctx, &kubeSecrets, client.InNamespace(ns)); err != nil {
-		return nil, nil, fmt.Errorf("listing registration Secrets: %w", err)
+	// Secrets straddle both namespaces: the generation-scoped password Secret sits
+	// with the User that resolves it, the source and consumer Secrets with the
+	// service that reads them. A co-located registration has one namespace, so the
+	// second visit is skipped rather than listing the same Secrets twice.
+	secretNamespaces := []string{ns}
+	if childNS != ns {
+		secretNamespaces = append(secretNamespaces, childNS)
 	}
-	for i := range kubeSecrets.Items {
-		if err := sweep(&kubeSecrets.Items[i], &accountSwept); err != nil {
-			return nil, nil, err
+	for _, secretNS := range secretNamespaces {
+		var kubeSecrets corev1.SecretList
+		if err := r.List(ctx, &kubeSecrets, client.InNamespace(secretNS)); err != nil {
+			return nil, nil, fmt.Errorf("listing registration Secrets in namespace %q: %w", secretNS, err)
+		}
+		for i := range kubeSecrets.Items {
+			if err := sweep(&kubeSecrets.Items[i], &accountSwept); err != nil {
+				return nil, nil, err
+			}
 		}
 	}
 
@@ -764,7 +912,10 @@ func (r *KeystoneServiceReconciler) reconcileDelete(ctx context.Context, ks *c5c
 		controlPlaneGone = true
 	}
 
-	catalogSwept, accountSwept, err := r.sweepChildren(ctx, ks, nil)
+	// key.Namespace is where the children are, whether or not the plane itself is
+	// still there to be read: it is the resolved controlPlaneRef namespace, which
+	// is what keystoneServiceChildNamespace returns for a live one.
+	catalogSwept, accountSwept, err := r.sweepChildren(ctx, ks, key.Namespace, nil)
 	if err != nil {
 		if !controlPlaneGone {
 			return ctrl.Result{}, err
@@ -806,10 +957,15 @@ func (r *KeystoneServiceReconciler) removeFinalizer(ctx context.Context, ks *c5c
 // It stays read-modify-write rather than Server-Side Apply precisely because
 // mutate reads the LIVE Data to preserve generated-once values across passes,
 // which is not a pure projection.
+// The namespace is explicit because the two Secrets it writes no longer share
+// one: the generation-scoped password Secret belongs beside the User that
+// resolves it, the assembled source Secret beside the service that consumes it.
+// Ownership follows the namespace through claimKeystoneServiceChild.
 func (r *KeystoneServiceReconciler) ensureKeystoneServiceSecret(
-	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, name string, mutate func(*corev1.Secret) error,
+	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, name, namespace string,
+	mutate func(*corev1.Secret) error,
 ) error {
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ks.Namespace}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, secret, func() error {
 		if secret.Data == nil {
 			secret.Data = map[string][]byte{}
@@ -817,7 +973,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceSecret(
 		if err := mutate(secret); err != nil {
 			return err
 		}
-		return controllerutil.SetControllerReference(ks, secret, r.Scheme)
+		return claimKeystoneServiceChild(ks, secret, r.Scheme)
 	})
 	return err
 }
@@ -945,6 +1101,25 @@ func credentialsSecretToKeystoneServiceMapper(c client.Reader) handler.MapFunc {
 	}
 }
 
+// keystoneServiceChildToRequest maps a projected child back to the registration
+// that owns it, by the ownership labels every child carries.
+//
+// It replaces the Owns() legs the children used to arrive through. A child in the
+// ControlPlane's namespace cannot hold an owner reference to a registration in
+// another namespace, so ownership is expressed as labels and the mapping has to
+// read them. It needs no client: the labels carry the whole key.
+//
+// An object without both labels belongs to something else — the ControlPlane's
+// own inline children share these namespaces — and maps to nothing.
+func keystoneServiceChildToRequest(_ context.Context, obj client.Object) []reconcile.Request {
+	labels := obj.GetLabels()
+	name, namespace := labels[keystoneServiceNameLabel], labels[keystoneServiceNamespaceLabel]
+	if name == "" || namespace == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: namespace, Name: name}}}
+}
+
 // SetupWithManager registers the KeystoneServiceReconciler with the manager.
 func (r *KeystoneServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return r.setupWithOptions(mgr, bootstrap.ControllerOptions(r.MaxConcurrentReconciles))
@@ -977,16 +1152,23 @@ func (r *KeystoneServiceReconciler) setupWithOptions(mgr ctrl.Manager, opts crco
 		// Filter the CR's own status-only updates so Status().Update does not
 		// re-wake the controller (see watch.CRUpdatePredicate).
 		For(&c5c3v1alpha1.KeystoneService{}, builder.WithPredicates(watch.CRUpdatePredicate())).
-		Owns(&orcv1alpha1.Service{}).
-		Owns(&orcv1alpha1.Endpoint{}).
-		Owns(&orcv1alpha1.User{}).
-		Owns(&orcv1alpha1.Domain{}).
-		Owns(&orcv1alpha1.Project{}).
-		Owns(&orcv1alpha1.Role{}).
-		Owns(&orcv1alpha1.RoleAssignment{}).
+		// The K-ORC children and the password Secret live in the ControlPlane's
+		// namespace, so they carry the ownership labels instead of an owner
+		// reference and Owns() would never see them. The label mapper reaches both
+		// placements: a co-located child is stamped with the same labels on top of
+		// its owner reference, so one leg per kind covers every registration.
+		Watches(&orcv1alpha1.Service{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
+		Watches(&orcv1alpha1.Endpoint{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
+		Watches(&orcv1alpha1.User{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
+		Watches(&orcv1alpha1.Domain{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
+		Watches(&orcv1alpha1.Project{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
+		Watches(&orcv1alpha1.Role{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
+		Watches(&orcv1alpha1.RoleAssignment{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(keystoneServiceChildToRequest)).
+		// The delivery objects stay in the CR's own namespace, where an owner
+		// reference is legal and the garbage collector reaps them.
 		Owns(&esov1.ExternalSecret{}).
 		Owns(&esov1alpha1.PushSecret{}).
-		Owns(&corev1.Secret{}).
 		Watches(&c5c3v1alpha1.ControlPlane{}, handler.EnqueueRequestsFromMapFunc(
 			controlPlaneToKeystoneServicesMapper(mgr.GetClient()),
 		)).

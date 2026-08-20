@@ -106,7 +106,7 @@ func (r *KeystoneServiceReconciler) ensureAccount(
 	}
 
 	// (d) Managed user with its generation-scoped password.
-	user, gen, created, rotatedAt, err := r.ensureKeystoneServiceUser(ctx, ks, managedCredRef, domainRef)
+	user, gen, created, rotatedAt, err := r.ensureKeystoneServiceUser(ctx, ks, cp, managedCredRef, domainRef)
 	if err != nil {
 		fail(reasonServiceAccountError, fmt.Sprintf("ensuring the managed user: %v", err))
 		return ctrl.Result{}, err
@@ -188,7 +188,8 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceDomain(
 		return name, nil
 	}
 	if err := ensureAccountDomainImport(ctx, r.Client, r.Scheme, ks,
-		name, ks.Namespace, keystoneServiceDomainName(cp, ks), credRef); err != nil {
+		name, keystoneServiceChildNamespace(cp), keystoneServiceDomainName(cp, ks), credRef,
+		r.keystoneServiceEnsure(ks)); err != nil {
 		return "", fmt.Errorf("registration Domain import %q: %w", name, err)
 	}
 	return name, nil
@@ -211,8 +212,9 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceProject(
 	domainName := keystoneServiceDomainName(cp, ks)
 
 	if !account.Project.Create {
-		project := unmanagedProjectImport(name, ks.Namespace, account.Project.Name, domainRef, credRef)
-		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, project, apply.FieldManager); err != nil {
+		project := unmanagedProjectImport(name, keystoneServiceChildNamespace(cp),
+			account.Project.Name, domainRef, credRef)
+		if err := r.ensureKeystoneServiceChild(ctx, ks, project); err != nil {
 			return nil, false, fmt.Errorf("registration referenced Project import %q: %w", name, err)
 		}
 		return project, true, nil
@@ -221,14 +223,16 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceProject(
 	// create:true — probe before creating a managed Project, unless we already own
 	// one, in which case the verdict is settled. adopt is never set here: project
 	// takeover is expressed as account.project.create=false.
-	probe := unmanagedProjectImport(keystoneServiceProjectProbeRef(ks), ks.Namespace, account.Project.Name, domainRef, credRef)
+	probe := unmanagedProjectImport(keystoneServiceProjectProbeRef(ks), keystoneServiceChildNamespace(cp),
+		account.Project.Name, domainRef, credRef)
 	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, ks, managedChildProbeInput{
 		kind:        "Project",
 		managed:     &orcv1alpha1.Project{},
 		managedName: name,
-		namespace:   ks.Namespace,
+		namespace:   keystoneServiceChildNamespace(cp),
 		probe:       probe,
 		errPrefix:   "registration",
+		ensure:      r.keystoneServiceEnsure(ks),
 	})
 	if err != nil {
 		return nil, false, err
@@ -253,8 +257,9 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceProject(
 		return probe, false, nil
 	}
 
-	project := managedProjectChild(name, ks.Namespace, account.Project.Name, domainRef, managedCredRef)
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, ks, project, apply.FieldManager); err != nil {
+	project := managedProjectChild(name, keystoneServiceChildNamespace(cp),
+		account.Project.Name, domainRef, managedCredRef)
+	if err := r.ensureKeystoneServiceChild(ctx, ks, project); err != nil {
 		return nil, false, fmt.Errorf("registration managed Project %q: %w", name, err)
 	}
 	return project, true, nil
@@ -271,16 +276,18 @@ func (r *KeystoneServiceReconciler) keystoneServiceUserCollisionGate(
 	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
 	credRef orcv1alpha1.CloudCredentialsReference, userName, domainRef string,
 ) (bool, error) {
-	probe := unmanagedUserImport(keystoneServiceUserProbeRef(ks), ks.Namespace, userName, domainRef, credRef)
+	probe := unmanagedUserImport(keystoneServiceUserProbeRef(ks), keystoneServiceChildNamespace(cp),
+		userName, domainRef, credRef)
 	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, ks, managedChildProbeInput{
 		kind:             "User",
 		managed:          &orcv1alpha1.User{},
 		managedName:      keystoneServiceUserRef(ks),
-		namespace:        ks.Namespace,
+		namespace:        keystoneServiceChildNamespace(cp),
 		adopt:            ks.Spec.Account.Adopt,
 		probe:            probe,
 		dropProbeOnOwned: true,
 		errPrefix:        "registration",
+		ensure:           r.keystoneServiceEnsure(ks),
 	})
 	if err != nil || proceed {
 		return proceed, err
@@ -314,12 +321,12 @@ func (r *KeystoneServiceReconciler) keystoneServiceUserCollisionGate(
 // reads the LIVE User's CreationTimestamp and annotation to decide whether to
 // re-stamp the generation, which no pure projection of the spec can express.
 func (r *KeystoneServiceReconciler) ensureKeystoneServiceUser(
-	ctx context.Context, ks *c5c3v1alpha1.KeystoneService,
+	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
 	managedCredRef orcv1alpha1.CloudCredentialsReference, domainRef string,
 ) (*orcv1alpha1.User, int64, bool, *metav1.Time, error) {
 	return ensureManagedAccountUser(ctx, r.Client, r.Scheme, ks, managedAccountUserInput{
 		name:           keystoneServiceUserRef(ks),
-		namespace:      ks.Namespace,
+		namespace:      keystoneServiceChildNamespace(cp),
 		userName:       keystoneServiceUserName(ks),
 		domainRef:      domainRef,
 		projectRef:     keystoneServiceProjectRef(ks),
@@ -328,11 +335,14 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceUser(
 			return keystoneServicePasswordSecretName(ks, gen)
 		},
 		ensurePasswordSecret: func(ctx context.Context, gen int64) error {
-			return r.ensureKeystoneServicePasswordSecret(ctx, ks, gen)
+			return r.ensureKeystoneServicePasswordSecret(ctx, ks, cp, gen)
 		},
 		passwordSecretPrefix: keystoneServiceChildPrefix(ks) + "password-v",
 		ownsChild:            func(obj client.Object) bool { return ownsKeystoneServiceChild(ks, obj) },
 		errPrefix:            "registration",
+		claim: func(obj client.Object) error {
+			return claimKeystoneServiceChild(ks, obj, r.Scheme)
+		},
 	})
 }
 
@@ -341,10 +351,11 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceUser(
 // preserved: a new generation is a new Secret name, never an in-place edit, which
 // is what lets K-ORC detect the rotation at all.
 func (r *KeystoneServiceReconciler) ensureKeystoneServicePasswordSecret(
-	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, gen int64,
+	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane, gen int64,
 ) error {
 	name := keystoneServicePasswordSecretName(ks, gen)
-	if err := r.ensureKeystoneServiceSecret(ctx, ks, name, generatedPasswordMutator); err != nil {
+	if err := r.ensureKeystoneServiceSecret(ctx, ks, name,
+		keystoneServiceChildNamespace(cp), generatedPasswordMutator); err != nil {
 		return fmt.Errorf("ensuring registration password Secret %q: %w", name, err)
 	}
 	return nil
@@ -370,8 +381,10 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceRoles(
 
 	for _, role := range ks.Spec.Account.Roles {
 		out, err := applyAccountRole(ctx, r.Client, r.Scheme, ks,
-			keystoneServiceRoleImportRef(ks, role), keystoneServiceRoleAssignmentRef(ks, role), ks.Namespace, role,
-			credRef, managedCredRef, keystoneServiceUserRef(ks), keystoneServiceProjectRef(ks), "registration")
+			keystoneServiceRoleImportRef(ks, role), keystoneServiceRoleAssignmentRef(ks, role),
+			keystoneServiceChildNamespace(cp), role,
+			credRef, managedCredRef, keystoneServiceUserRef(ks), keystoneServiceProjectRef(ks), "registration",
+			r.keystoneServiceEnsure(ks))
 		if err != nil {
 			return false, err
 		}
@@ -422,7 +435,7 @@ func (r *KeystoneServiceReconciler) publishKeystoneServiceAccount(
 	return publishAccountCredentials(ctx, cp, accountPublication{
 		management:         r.Client,
 		delivery:           r.Client,
-		childNamespace:     ks.Namespace,
+		childNamespace:     keystoneServiceChildNamespace(cp),
 		deliveryNamespace:  ks.Namespace,
 		passwordSecretName: keystoneServicePasswordSecretName(ks, gen),
 
@@ -439,7 +452,7 @@ func (r *KeystoneServiceReconciler) publishKeystoneServiceAccount(
 		pushHashAnnotation:    keystoneServicePushContentHashAnnotation,
 
 		ensureSourceSecret: func(ctx context.Context, mutate func(*corev1.Secret) error) error {
-			return r.ensureKeystoneServiceSecret(ctx, ks, sourceName, mutate)
+			return r.ensureKeystoneServiceSecret(ctx, ks, sourceName, ks.Namespace, mutate)
 		},
 		ensurePushSecret: func(ctx context.Context, ps *esov1alpha1.PushSecret) error {
 			return secrets.EnsurePushSecret(ctx, r.Client, r.Scheme, ks, ps)

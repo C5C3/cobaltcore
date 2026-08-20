@@ -139,6 +139,26 @@ func pendingServiceAccountObjs(objs ...orcv1alpha1.ObjectWithConditions) []orcv1
 	return pending
 }
 
+// registrationEnsure applies a projected child, and registrationClaim marks one
+// the caller builds itself. They are the seam the two ownership strategies enter
+// through: the ControlPlane's inline accounts keep every child in the plane's own
+// namespace and owner-reference it, while a KeystoneService projects into that
+// namespace from another one, where an owner reference is illegal and ownership
+// is carried by labels instead. A nil seam means the owner-referenced default, so
+// the inline path passes nothing.
+type (
+	registrationEnsure func(ctx context.Context, obj client.Object) error
+	registrationClaim  func(obj client.Object) error
+)
+
+// ownerEnsure is the default registrationEnsure: a Server-Side Apply that
+// controller-references owner.
+func ownerEnsure(c client.Client, scheme *runtime.Scheme, owner client.Object) registrationEnsure {
+	return func(ctx context.Context, obj client.Object) error {
+		return apply.EnsureObject(ctx, c, scheme, owner, obj, apply.FieldManager)
+	}
+}
+
 // deleteRegistrationChild issues an idempotent Delete on one named child in
 // namespace, tolerating NotFound. It drops resolved collision probes and
 // superseded password Secrets — neither of which either mechanism's prune sweep
@@ -497,6 +517,8 @@ type managedChildProbeInput struct {
 	// matching what each kind does today.
 	dropProbeOnOwned bool
 	errPrefix        string
+	// ensure applies the probe; nil takes the owner-referenced default.
+	ensure registrationEnsure
 }
 
 // managedChildProbeGate reports whether a managed child may be created without
@@ -538,7 +560,11 @@ func managedChildProbeGate(
 		return true, probeAbsent, dropProbe()
 	}
 
-	if err := apply.EnsureObject(ctx, c, scheme, owner, in.probe, apply.FieldManager); err != nil {
+	ensure := in.ensure
+	if ensure == nil {
+		ensure = ownerEnsure(c, scheme, owner)
+	}
+	if err := ensure(ctx, in.probe); err != nil {
 		return false, probePending, fmt.Errorf("%s %s probe %q: %w", in.errPrefix, in.kind, in.probe.GetName(), err)
 	}
 	switch verdict := interpretProbe(in.probe); verdict {
@@ -567,6 +593,10 @@ type managedAccountUserInput struct {
 	passwordSecretPrefix string
 	ownsChild            func(obj client.Object) bool
 	errPrefix            string
+	// claim marks the managed User. The User is read-modify-written rather than
+	// applied (the mutation reads live state), so the seam is a claim on the
+	// object rather than a full apply. nil takes the owner-referenced default.
+	claim registrationClaim
 }
 
 // ensureManagedAccountUser create-or-updates the managed K-ORC User with the
@@ -644,6 +674,9 @@ func ensureManagedAccountUser(
 		if _, present := user.Annotations[serviceAccountPasswordGenerationAnnotation]; user.CreationTimestamp.IsZero() || rotating || !present {
 			user.Annotations[serviceAccountPasswordGenerationAnnotation] = strconv.FormatInt(desiredGen, 10)
 		}
+		if in.claim != nil {
+			return in.claim(user)
+		}
 		return controllerutil.SetControllerReference(owner, user, scheme)
 	})
 	if err != nil {
@@ -692,8 +725,12 @@ func ensureManagedAccountUser(
 func ensureAccountDomainImport(
 	ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object,
 	name, namespace, domainName string, credRef orcv1alpha1.CloudCredentialsReference,
+	ensure registrationEnsure,
 ) error {
-	return apply.EnsureObject(ctx, c, scheme, owner, unmanagedDomainImport(name, namespace, domainName, credRef), apply.FieldManager)
+	if ensure == nil {
+		ensure = ownerEnsure(c, scheme, owner)
+	}
+	return ensure(ctx, unmanagedDomainImport(name, namespace, domainName, credRef))
 }
 
 // accountRoleOutcome is what one (account, role) pair resolved to. The caller
@@ -730,17 +767,20 @@ func applyAccountRole(
 	ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object,
 	importName, assignmentName, namespace, role string,
 	credRef, managedCredRef orcv1alpha1.CloudCredentialsReference,
-	userRef, projectRef, errPrefix string,
+	userRef, projectRef, errPrefix string, ensure registrationEnsure,
 ) (accountRoleOutcome, error) {
 	var out accountRoleOutcome
+	if ensure == nil {
+		ensure = ownerEnsure(c, scheme, owner)
+	}
 
 	out.roleObj = unmanagedRoleImport(importName, namespace, role, credRef)
-	if err := apply.EnsureObject(ctx, c, scheme, owner, out.roleObj, apply.FieldManager); err != nil {
+	if err := ensure(ctx, out.roleObj); err != nil {
 		return out, fmt.Errorf("%s Role import %q: %w", errPrefix, importName, err)
 	}
 
 	out.assignment = managedRoleAssignmentChild(assignmentName, namespace, importName, userRef, projectRef, managedCredRef)
-	if err := apply.EnsureObject(ctx, c, scheme, owner, out.assignment, apply.FieldManager); err != nil {
+	if err := ensure(ctx, out.assignment); err != nil {
 		return out, fmt.Errorf("%s RoleAssignment %q: %w", errPrefix, assignmentName, err)
 	}
 
