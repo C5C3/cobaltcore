@@ -250,9 +250,9 @@ type serviceAccountState struct {
 // reconcileServiceAccounts returns BEFORE its status projection on every error
 // path, so without this the last converged slice — Ready=true entries included —
 // survives a pass that could not verify a single account. That stale slice is a
-// live gate, not just cosmetic status: reconcileGlance runs in the same
-// RunSequentialGroup tail and gates on it via glanceServiceAccountReady, so a
-// stale True would keep Glance projecting — and keep its dynamic DB-credential
+// live gate, not just cosmetic status: reconcilePlacement runs in the same
+// RunSequentialGroup tail and gates on it via placementServiceAccountReady, so a
+// stale True would keep Placement projecting — and keep its dynamic DB-credential
 // generator minting MySQL users — for a service whose Keystone identity this pass
 // could not confirm. A persistent error would hold that gate open indefinitely.
 //
@@ -260,8 +260,8 @@ type serviceAccountState struct {
 // the pass returns early, so the accounts ordered after the failing one were never
 // attempted either, and a failing pass has no basis to vouch for any of them. This
 // restores exactly the reachability the short-circuiting RunPipeline used to give
-// (an erroring ServiceAccounts meant Glance never ran at all); recovery is one
-// successful pass away.
+// (an erroring ServiceAccounts meant the service projections never ran at all);
+// recovery is one successful pass away.
 func invalidateServiceAccountReadiness(cp *c5c3v1alpha1.ControlPlane) {
 	for i := range cp.Status.ServiceAccounts {
 		cp.Status.ServiceAccounts[i].Ready = false

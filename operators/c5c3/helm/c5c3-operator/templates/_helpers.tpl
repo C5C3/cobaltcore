@@ -65,9 +65,11 @@ coordination.k8s.io/leases rule required for leader election.
     - update
     - patch
 # c5c3.io - keystoneservices
-# The KeystoneService reconciler reads the CRs and updates them only to
-# install and release its teardown finalizer; it never creates or deletes
-# them, so the rule carries no create/delete.
+# The KeystoneService reconciler reads the CRs and updates them to install and
+# release its teardown finalizer. The create/update/patch/delete verbs belong
+# to the ControlPlane reconciler, which projects one registration per built-in
+# service, resets foreign spec fields on one, and sweeps it on the deletion
+# opt-in.
 - apiGroups:
     - c5c3.io
   resources:
@@ -76,7 +78,10 @@ coordination.k8s.io/leases rule required for leader election.
     - get
     - list
     - watch
+    - create
     - update
+    - patch
+    - delete
 # c5c3.io - keystoneservices/status
 - apiGroups:
     - c5c3.io

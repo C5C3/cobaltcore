@@ -739,10 +739,21 @@ const glanceChildNameOverhead = len("-glance")
 // gates on it.
 const GlanceServiceAccountName = "glance"
 
+// GlanceServiceProjectName is the Keystone project the KeystoneService child
+// projected for Glance creates and owns its service user in. One project per
+// service, named after it, so a service's role assignments and its project's
+// lifecycle belong to exactly that service.
+const GlanceServiceProjectName = "service-glance"
+
 // PlacementServiceAccountName is the spec.korc.serviceAccounts entry the
 // Placement projection consumes; the defaulting webhook injects it and the
 // reconciler gates on it.
 const PlacementServiceAccountName = "placement"
+
+// PlacementServiceProjectName is the Keystone project the KeystoneService child
+// projected for Placement creates and owns its service user in, following the
+// per-service convention GlanceServiceProjectName describes.
+const PlacementServiceProjectName = "service-placement"
 
 // placementChildNameOverhead is the fixed part of the projected Placement child
 // CR name, "{cp}-placement". The budget it eats into is neither the apiserver's
@@ -756,6 +767,11 @@ const placementChildNameOverhead = len("-placement")
 // projection consumes; the defaulting webhook injects it and the reconciler
 // gates on it.
 const BarbicanServiceAccountName = "barbican"
+
+// BarbicanServiceProjectName is the Keystone project the KeystoneService child
+// projected for Barbican creates and owns its service user in, following the
+// per-service convention GlanceServiceProjectName describes.
+const BarbicanServiceProjectName = "service-barbican"
 
 // barbicanChildNameOverhead is the fixed part of the projected Barbican child CR
 // name, "{cp}-barbican". Like its Glance sibling the budget it eats into is not
