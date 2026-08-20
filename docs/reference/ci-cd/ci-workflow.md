@@ -809,6 +809,16 @@ projected Keystone CR, the minted restricted K-ORC application credential, the
 OpenBao → ESO credential round-trip, the identity catalog, and finally a live
 `openstack token issue` / `catalog list` against the Keystone `/v3` endpoint.
 
+A second chainsaw step on the same cluster runs
+`tests/e2e/c5c3/keystone-service-foreign-namespace/`, the cross-namespace
+`KeystoneService` suite: it brings up a Keystone-only ControlPlane of its own,
+seeds that plane's per-CR OpenBao paths itself, and proves an allowlisted
+namespace can register and authenticate while an unlisted one is refused. The two
+suites are separate steps because the shared chainsaw config sets `failFast`, so
+one invocation over both directories would let either abort the other; the second
+step writes its JUnit XML under a distinct report name so both survive in the
+uploaded artifact.
+
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-controlplane == 'true'`, the upstream
 `build-e2e-images` job succeeded, and no dependency failed or was cancelled.
