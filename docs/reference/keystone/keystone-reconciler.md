@@ -1158,13 +1158,21 @@ The deletion handler proceeds as follows:
      fire on all of them in parallel rather than in a serialised
      Delete→Get loop that would double the worst-case deletion window.
    - **Pass-2 — wait-for-gone.** Re-`Get` each name; `done=true` only
-     when **every** PushSecret returns `NotFound`. On the first still-
-     present PushSecret (typically Terminating behind ESO's cleanup
-     finalizer) the handler sets `done=false` and records
+     when **every** PushSecret returns `NotFound`. On a still-present
+     PushSecret (typically Terminating behind ESO's cleanup finalizer)
+     the handler sets `done=false` and records
      `SecretsReady=False / OpenBaoFinalizerBlocked` via
      `setOpenBaoFinalizerBlockedCondition`, so the stuck object's name
      surfaces on `kubectl get keystone` rather than being returned by
      the function (the signature is `(done bool, err error)` only).
+     The wait is bounded by `OpenBaoCleanupStallTimeout` (5m): past it
+     the handler force-removes the stuck PushSecrets' finalizers after
+     an `OpenBaoCleanupStalled` Warning naming the kv-v2 paths that
+     keep their data, and reports `done=true` — a purge whose
+     SecretStore died with the surrounding teardown (a namespace
+     deletion reaps the store and its auth unsequenced) can never
+     succeed, and an unbounded wait would hold the CR, and the
+     namespace containing it, in Terminating forever.
 4. **Requeue while blocked.** If `done=false`, the handler records the
    `SecretsReady=False / OpenBaoFinalizerBlocked` condition (see
    [SecretsReady=False / OpenBaoFinalizerBlocked](#secretsreadyfalse--openbaofinalizerblocked)),
@@ -1242,7 +1250,7 @@ reading controller logs:
 | Reason | Pass | When Emitted | Typical Remediation |
 | --- | --- | --- | --- |
 | `WaitingForESOAdoption` | Pre-Delete adoption wait (Pass-0) | A backup PushSecret exists, is not Terminating, and does **not** yet carry ESO's adoption finalizer (`pushsecret.externalsecrets.io/finalizer`). | Resolves itself on ESO workqueue drain. Check `kubectl -n external-secrets logs deploy/external-secrets` for backlog or errors. The wait is bounded by `OpenBaoAdoptionWaitTimeout` (10m); past that the handler emits an `ESOAdoptionTimedOut` Warning and force-deletes so CR deletion never hangs. |
-| `OpenBaoFinalizerBlocked` | Post-Delete wait-for-gone (Pass-2) | A backup PushSecret is still present in the API server after `Delete` was issued, typically in Terminating state behind ESO's cleanup finalizer. | ESO is running `DeletionPolicy=Delete` against OpenBao. A persistent block here may indicate OpenBao unreachable or ClusterSecretStore auth revoked. |
+| `OpenBaoFinalizerBlocked` | Post-Delete wait-for-gone (Pass-2) | A backup PushSecret is still present in the API server after `Delete` was issued, typically in Terminating state behind ESO's cleanup finalizer. | ESO is running `DeletionPolicy=Delete` against OpenBao. A persistent block here may indicate OpenBao unreachable or the selected secret store's auth revoked. The wait is bounded by `OpenBaoCleanupStallTimeout` (5m); past that the handler emits an `OpenBaoCleanupStalled` Warning naming the kv-v2 paths that keep their data, force-removes the PushSecret finalizers, and releases — so a namespace deletion never wedges on an unpurgeable PushSecret. |
 
 The three passes execute in strict order:
 
@@ -1264,9 +1272,12 @@ The three passes execute in strict order:
    issues `Delete` on every name in a single pass so the cleanup
    finalizers fire in parallel.
 3. **Pass-2 — wait-for-gone.** The handler re-`Get`s each name and, on
-   the first still-present PushSecret, records `OpenBaoFinalizerBlocked`
+   a still-present PushSecret, records `OpenBaoFinalizerBlocked`
    and returns `(done=false, nil)`. Release of the openbao-finalizer
-   requires **all** PushSecrets to return `NotFound`.
+   requires **all** PushSecrets to return `NotFound` — or the bounded
+   `OpenBaoCleanupStallTimeout` to elapse, after which the handler
+   force-removes the stuck PushSecrets' finalizers behind an
+   `OpenBaoCleanupStalled` Warning instead of wedging the CR forever.
 
 #### Motivating race
 

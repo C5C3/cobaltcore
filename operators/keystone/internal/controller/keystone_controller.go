@@ -802,7 +802,9 @@ func (r *KeystoneReconciler) hasLiveMariaDBResources(ctx context.Context, childr
 // releases the finalizer. A PushSecret held Terminating by ESO's cleanup
 // finalizer surfaces as
 // ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling} so the
-// Keystone CR stays live until ESO has purged the kv-v2 path.
+// Keystone CR stays live until ESO has purged the kv-v2 path — bounded by
+// OpenBaoCleanupStallTimeout, past which finalizeOpenBaoSecrets force-releases
+// the stuck PushSecrets (see its doc) rather than wedging the CR forever.
 func (r *KeystoneReconciler) reconcileDeleteOpenBao(ctx context.Context, children client.Client, keystone *keystonev1alpha1.Keystone) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(keystone, keystoneOpenBaoFinalizer) {
 		return ctrl.Result{}, nil
