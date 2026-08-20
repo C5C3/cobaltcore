@@ -2485,7 +2485,7 @@ func TestValidateCreate_RejectsServiceAccountDuplicateManagedProject(t *testing.
 	cp := saControlPlane()
 	cp.Spec.KORC.ServiceAccounts[0].Project = ServiceAccountProjectSpec{Name: "service", Create: true}
 	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
-		Name:    "glance",
+		Name:    "swift",
 		Project: ServiceAccountProjectSpec{Name: "service", Create: true},
 	})
 
@@ -2501,7 +2501,7 @@ func TestValidateCreate_AcceptsTwoReferencedAccountsSharingAProject(t *testing.T
 	// Both reference (create: false) the same project — that is legal; only two
 	// create:true entries naming one project collide.
 	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
-		Name:    "glance",
+		Name:    "swift",
 		Project: ServiceAccountProjectSpec{Name: "service"},
 	})
 
@@ -3635,17 +3635,32 @@ func validGlanceSpec() *ServiceGlanceSpec {
 	}
 }
 
+// The inline service-account names the three per-service fixture helpers below
+// carry. See glanceControlPlane for why none of them is the service's own.
+const (
+	glanceInlineAccountName    = "nova"
+	placementInlineAccountName = "neutron"
+	barbicanInlineAccountName  = "cinder"
+)
+
 // glanceControlPlane returns a managed ControlPlane with a minimal valid glance
-// block AND the glance service account the defaulting webhook injects, so the
-// validation tests start from an admissible baseline (the validating webhook's
-// defense-in-depth check requires that account). The shared infrastructure stays
-// brownfield (the validControlPlane baseline).
+// block AND one inline service account, the entry the delivery-namespace tests
+// below vary. The shared infrastructure stays brownfield (the validControlPlane
+// baseline).
+//
+// The entry is NOT named after the service: an inline account managing a
+// built-in's own Keystone user is rejected outright
+// (validateBuiltinServiceAccountCollision), because the projected KeystoneService
+// child already owns that user. These fixtures exercise the orthogonal rules —
+// delivery namespace, project, roles — on an account that merely coexists with
+// the service, so each helper carries a distinct unrelated name and the tests
+// that combine two of them stay free of duplicates.
 func glanceControlPlane() *ControlPlane {
 	cp := validControlPlane()
 	cp.Name = "cp"
 	cp.Spec.Services.Glance = validGlanceSpec()
 	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-		Name:    "glance",
+		Name:    glanceInlineAccountName,
 		Project: ServiceAccountProjectSpec{Name: "service", Create: true},
 		Roles:   []string{"service"},
 	}}
@@ -3732,110 +3747,19 @@ func TestDefault_GlanceBrownfieldDedicatedNotCoercedIntoManaged(t *testing.T) {
 	g.Expect(db.CredentialsMode).To(BeEmpty(), "Static is only materialized for a MANAGED dedicated database")
 }
 
-// TestDefault_InjectsGlanceServiceAccount verifies the defaulting webhook injects
-// the glance service account when services.glance is declared: name, project,
-// role "service" (SRBAC identity:validate_token, NOT member), empty
-// targetNamespace when co-located, and UserName defaulted (the injection precedes
-// the userName loop).
-func TestDefault_InjectsGlanceServiceAccount(t *testing.T) {
+// TestDefault_LeavesServiceAccountsUnsetForGlance verifies a declared
+// services.glance grows no spec.korc.serviceAccounts entry: the Glance service
+// user is provisioned by the projected KeystoneService child, so an inline entry
+// would have no consumer.
+func TestDefault_LeavesServiceAccountsUnsetForGlance(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 	cp := validControlPlane()
 	cp.Spec.Services.Glance = validGlanceSpec()
 
 	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-
-	glance := findServiceAccount(cp, "glance")
-	g.Expect(glance).NotTo(BeNil(), "the defaulting webhook must inject a glance service account")
-	g.Expect(glance.Project.Name).To(Equal("service"))
-	g.Expect(glance.Project.Create).To(BeTrue())
-	g.Expect(glance.Roles).To(Equal([]string{"service"}),
-		`the role must be "service" (SRBAC identity:validate_token), not "member"`)
-	g.Expect(glance.TargetNamespace).To(BeEmpty(),
-		"a co-located Glance leaves the account targetNamespace empty")
-	g.Expect(glance.UserName).To(Equal("glance"),
-		"the injected entry is defaulted before the userName loop, so it gets UserName")
-}
-
-// TestDefault_GlanceServiceAccountInjectionIsIdempotent verifies applying Default
-// twice injects the glance account exactly once.
-func TestDefault_GlanceServiceAccountInjectionIsIdempotent(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-	cp.Spec.Services.Glance = validGlanceSpec()
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-
-	count := 0
-	for _, sa := range cp.Spec.KORC.ServiceAccounts {
-		if sa.Name == "glance" {
-			count++
-		}
-	}
-	g.Expect(count).To(Equal(1), "Default twice must not inject two glance accounts")
-}
-
-// TestDefault_PreservesUserDeclaredGlanceServiceAccount verifies an
-// operator-declared glance account is left untouched — no second injection, and
-// its project and roles are preserved.
-func TestDefault_PreservesUserDeclaredGlanceServiceAccount(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-	cp.Spec.Services.Glance = validGlanceSpec()
-	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-		Name:     "glance",
-		UserName: "glance-svc",
-		Project:  ServiceAccountProjectSpec{Name: "images", Create: false},
-		Roles:    []string{"admin"},
-	}}
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-
-	count := 0
-	for _, sa := range cp.Spec.KORC.ServiceAccounts {
-		if sa.Name == "glance" {
-			count++
-		}
-	}
-	g.Expect(count).To(Equal(1), "an operator-declared glance account must not trigger a second injection")
-	glance := findServiceAccount(cp, "glance")
-	g.Expect(glance.UserName).To(Equal("glance-svc"))
-	g.Expect(glance.Project).To(Equal(ServiceAccountProjectSpec{Name: "images", Create: false}))
-	g.Expect(glance.Roles).To(Equal([]string{"admin"}))
-}
-
-// TestDefault_DoesNotInjectGlanceServiceAccountWhenGlanceUnset verifies a
-// ControlPlane without services.glance grows no glance account.
-func TestDefault_DoesNotInjectGlanceServiceAccountWhenGlanceUnset(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	g.Expect(findServiceAccount(cp, "glance")).To(BeNil())
-}
-
-// TestDefault_GlanceServiceAccountTargetsDedicatedNamespace verifies the injected
-// account targets the namespace Glance is placed in when that differs from the
-// ControlPlane's own, so its consumer credentials Secret rides that namespace's
-// tenant store.
-func TestDefault_GlanceServiceAccountTargetsDedicatedNamespace(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-	cp.Namespace = "openstack"
-	cp.Spec.Services.Glance = validGlanceSpec()
-	cp.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged}
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-
-	glance := findServiceAccount(cp, "glance")
-	g.Expect(glance).NotTo(BeNil())
-	g.Expect(glance.TargetNamespace).To(Equal("images"),
-		"a Glance placed in a dedicated namespace delivers its credentials there")
+	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeNil(),
+		"a declared Glance must leave spec.korc.serviceAccounts as the CR declared it")
 }
 
 // TestValidateCreate_AcceptsGlanceControlPlane pins the admissible baseline.
@@ -3845,6 +3769,207 @@ func TestValidateCreate_AcceptsGlanceControlPlane(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), glanceControlPlane())
 	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateCreate_RejectsInlineAccountCollidingWithABuiltin pins the guard
+// that replaced the injection: an inline spec.korc.serviceAccounts entry
+// managing the Keystone user of a declared built-in service is rejected, for
+// every built-in and whether the name is carried by the entry name or by an
+// explicit userName. Without it the CR admits, both mechanisms provision the one
+// user, and the projected registration reports ServiceAccountCollision for as
+// long as the ControlPlane lives — with nothing in the CR naming the projection
+// the operator would have to reason about.
+func TestValidateCreate_RejectsInlineAccountCollidingWithABuiltin(t *testing.T) {
+	tests := []struct {
+		name    string
+		collide func() *ControlPlane
+		field   string
+		user    string
+	}{
+		{
+			name: "glance by entry name",
+			collide: func() *ControlPlane {
+				cp := glanceControlPlane()
+				cp.Spec.KORC.ServiceAccounts[0].Name = GlanceServiceAccountName
+				return cp
+			},
+			field: "spec.korc.serviceAccounts[0]",
+			user:  GlanceServiceAccountName,
+		},
+		{
+			name: "glance by explicit userName",
+			collide: func() *ControlPlane {
+				cp := glanceControlPlane()
+				cp.Spec.KORC.ServiceAccounts[0].UserName = GlanceServiceAccountName
+				return cp
+			},
+			field: "spec.korc.serviceAccounts[0]",
+			user:  GlanceServiceAccountName,
+		},
+		{
+			name: "placement by entry name",
+			collide: func() *ControlPlane {
+				cp := placementControlPlane()
+				cp.Spec.KORC.ServiceAccounts[0].Name = PlacementServiceAccountName
+				return cp
+			},
+			field: "spec.korc.serviceAccounts[0]",
+			user:  PlacementServiceAccountName,
+		},
+		{
+			name: "barbican by entry name",
+			collide: func() *ControlPlane {
+				cp := barbicanControlPlane()
+				cp.Spec.KORC.ServiceAccounts[0].Name = BarbicanServiceAccountName
+				return cp
+			},
+			field: "spec.korc.serviceAccounts[0]",
+			user:  BarbicanServiceAccountName,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+
+			cp := tc.collide()
+			g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.field))
+			g.Expect(err.Error()).To(ContainSubstring(tc.user))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsInlineAccountNamedAfterAnUndeclaredService pins that
+// the reservation is UNCONDITIONAL. Dropping a services.<svc> block without the
+// deletion opt-in preserves the registration, so a check gated on the block would
+// admit exactly the entry that then collides with a live registration forever —
+// on a spec that no longer names the service at all.
+func TestValidateCreate_RejectsInlineAccountNamedAfterAnUndeclaredService(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := saControlPlane()
+	cp.Name = "cp"
+	cp.Spec.KORC.ServiceAccounts[0].Name = GlanceServiceAccountName
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.korc.serviceAccounts[0]"))
+	g.Expect(err.Error()).To(ContainSubstring(GlanceServiceAccountName))
+}
+
+// TestValidateCreate_AcceptsInlineAccountNamedAfterABuiltinInAnotherDomain is the
+// other side of the guard: Keystone user names are unique per DOMAIN, and the
+// projected registration always lands in the admin domain (it leaves
+// spec.account.domainName unset). An entry managing "glance" in a tenant domain of
+// its own is a different user, so nothing collides and nothing may be rejected.
+func TestValidateCreate_AcceptsInlineAccountNamedAfterABuiltinInAnotherDomain(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := glanceControlPlane()
+	cp.Spec.KORC.ServiceAccounts[0].Name = GlanceServiceAccountName
+	cp.Spec.KORC.ServiceAccounts[0].DomainName = "tenant-a"
+
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// TestValidateUpdate_BuiltinServiceAccountNamesAreNewEntriesOnly pins the update
+// gating. A ControlPlane admitted under an operator version without the rule may
+// already carry a colliding entry; re-running the check on every update would
+// reject the finalizer-removal update that completes its deletion and wedge the CR
+// (and its namespace) in Terminating. Only an entry whose effective identity this
+// update INTRODUCES is checked.
+func TestValidateUpdate_BuiltinServiceAccountNamesAreNewEntriesOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	grandfathered := glanceControlPlane()
+	grandfathered.Spec.KORC.ServiceAccounts[0].Name = GlanceServiceAccountName
+	grandfathered.Finalizers = []string{"c5c3.io/finalizer"}
+	g.Expect(w.Default(context.Background(), grandfathered)).To(Succeed())
+
+	deleting := grandfathered.DeepCopy()
+	deleting.Finalizers = nil
+	_, err := w.ValidateUpdate(context.Background(), grandfathered, deleting)
+	g.Expect(err).NotTo(HaveOccurred(),
+		"a grandfathered colliding ControlPlane must stay updatable, or its deletion never completes")
+
+	// Adding the collision to an already-enabled service is the update the rule
+	// exists for, and it is rejected even though the service block did not change.
+	admitted := glanceControlPlane()
+	g.Expect(w.Default(context.Background(), admitted)).To(Succeed())
+	colliding := admitted.DeepCopy()
+	colliding.Spec.KORC.ServiceAccounts = append(colliding.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
+		Name:     PlacementServiceAccountName,
+		UserName: PlacementServiceAccountName,
+		Project:  ServiceAccountProjectSpec{Name: "service", Create: true},
+		Roles:    []string{"service"},
+	})
+
+	_, err = w.ValidateUpdate(context.Background(), admitted, colliding)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.korc.serviceAccounts[1]"))
+	g.Expect(err.Error()).To(ContainSubstring(PlacementServiceAccountName))
+}
+
+// TestValidateUpdate_RejectsRepointingAnAdmittedAccountAtABuiltin closes the gap
+// the grandfathering could otherwise open: the admitted set is keyed on the
+// RESOLVED (user, domain) identity, so re-pointing an existing entry at a
+// built-in's user is a new identity and is rejected like a fresh entry.
+func TestValidateUpdate_RejectsRepointingAnAdmittedAccountAtABuiltin(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	admitted := glanceControlPlane()
+	g.Expect(w.Default(context.Background(), admitted)).To(Succeed())
+
+	repointed := admitted.DeepCopy()
+	repointed.Spec.KORC.ServiceAccounts[0].UserName = GlanceServiceAccountName
+
+	_, err := w.ValidateUpdate(context.Background(), admitted, repointed)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.korc.serviceAccounts[0]"))
+	g.Expect(err.Error()).To(ContainSubstring(GlanceServiceAccountName))
+}
+
+// TestValidateUpdate_RejectsMovingTheAdminDomainOntoAnAdmittedAccount closes the
+// other half of the grandfathering gap. spec.korc.adminCredential.domainName is
+// mutable, and an entry with an explicit domainName resolves to the SAME identity
+// before and after a move of the admin domain onto it — so an admitted set keyed
+// on the identity alone would wave the entry through exactly as the move makes it
+// collide. The set is keyed on the previous revision's verdict instead.
+func TestValidateUpdate_RejectsMovingTheAdminDomainOntoAnAdmittedAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	// Admitted deliberately: the entry manages "glance" in "Default" while the admin
+	// domain is "tenant-a", which is a different Keystone user than the one the
+	// projected registration provisions.
+	admitted := glanceControlPlane()
+	admitted.Spec.KORC.AdminCredential.DomainName = "tenant-a"
+	admitted.Spec.KORC.ServiceAccounts[0].Name = GlanceServiceAccountName
+	admitted.Spec.KORC.ServiceAccounts[0].DomainName = DefaultAdminDomainName
+	g.Expect(w.Default(context.Background(), admitted)).To(Succeed())
+	_, err := w.ValidateCreate(context.Background(), admitted)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	// Moving the admin domain onto the entry's domain makes the two mechanisms
+	// provision one user, without the entry itself changing at all.
+	moved := admitted.DeepCopy()
+	moved.Spec.KORC.AdminCredential.DomainName = DefaultAdminDomainName
+
+	_, err = w.ValidateUpdate(context.Background(), admitted, moved)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.korc.serviceAccounts[0]"))
+	g.Expect(err.Error()).To(ContainSubstring(GlanceServiceAccountName))
 }
 
 // TestValidateCreate_RejectsGlanceBackendsEmpty mirrors the MinItems floor: a
@@ -4527,44 +4652,14 @@ func TestValidateCreate_RejectsGlanceInExternalMode(t *testing.T) {
 	w := &ControlPlaneWebhook{}
 	cp := externalControlPlane()
 	cp.Spec.Services.Glance = validGlanceSpec()
-	// Mirror the admission sequence: the mutating webhook (which injects the
-	// glance service account) runs before the validating one.
+	// Mirror the admission sequence: the mutating webhook runs before the
+	// validating one.
 	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("services.glance"))
 	g.Expect(err.Error()).To(ContainSubstring("forbidden when services.keystone.mode is External"))
-}
-
-// TestValidateCreate_RejectsGlanceWithoutServiceAccount pins the defense-in-depth
-// for the injection: a webhook-bypassed CR that dropped the glance account is
-// rejected.
-func TestValidateCreate_RejectsGlanceWithoutServiceAccount(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := glanceControlPlane()
-	cp.Spec.KORC.ServiceAccounts = nil
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring(`a service account named "glance" is required`))
-}
-
-// TestValidateCreate_RejectsGlanceServiceAccountTargetNamespaceMismatch pins that
-// a Glance placed in a dedicated namespace requires its account to target that
-// namespace.
-func TestValidateCreate_RejectsGlanceServiceAccountTargetNamespaceMismatch(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := glanceControlPlane()
-	cp.Namespace = "openstack"
-	cp.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged}
-	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "openstack"
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("must equal the namespace Glance is placed in"))
 }
 
 // TestValidateCreate_AcceptsGlanceInDedicatedNamespace pins the accepting side:
@@ -4694,17 +4789,15 @@ func TestValidateUpdate_RejectsGlanceDedicatedPresenceFlip(t *testing.T) {
 // --- services.placement ---
 
 // placementControlPlane returns a managed ControlPlane with a minimal placement
-// block AND the placement service account the defaulting webhook injects, so the
-// tests below start from an admissible baseline (the validating webhook's
-// defense-in-depth check requires that account) and vary only the field (or the
-// INI content) under test. The shared infrastructure stays brownfield (the
-// validControlPlane baseline).
+// block AND one inline service account, so the tests below start from an
+// admissible baseline and vary only the field (or the INI content) under test.
+// The shared infrastructure stays brownfield (the validControlPlane baseline).
 func placementControlPlane() *ControlPlane {
 	cp := validControlPlane()
 	cp.Name = "cp"
 	cp.Spec.Services.Placement = &ServicePlacementSpec{}
 	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-		Name:    "placement",
+		Name:    placementInlineAccountName,
 		Project: ServiceAccountProjectSpec{Name: "service-placement", Create: true},
 		Roles:   []string{"service"},
 	}}
@@ -4762,143 +4855,43 @@ func TestDefault_PlacementDedicatedBackingServicesLeaves(t *testing.T) {
 	g.Expect(cp.Spec.Services).To(Equal(before.Spec.Services))
 }
 
-// TestDefault_InjectsPlacementServiceAccount verifies the defaulting webhook
-// injects the placement service account when services.placement is declared:
-// name, project, role "service" (SRBAC identity:validate_token, NOT member),
-// empty targetNamespace when co-located, and UserName defaulted (the injection
-// precedes the userName loop). The project is "service-placement", the account's
-// own: each create:true entry projects a managed Project, so sharing glance's
-// "service" project would have each adopt the other's Keystone row.
-func TestDefault_InjectsPlacementServiceAccount(t *testing.T) {
+// TestDefault_LeavesServiceAccountsUnsetForPlacement verifies a declared
+// services.placement grows no spec.korc.serviceAccounts entry, for the reason its
+// Glance sibling states.
+func TestDefault_LeavesServiceAccountsUnsetForPlacement(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 	cp := validControlPlane()
 	cp.Spec.Services.Placement = &ServicePlacementSpec{}
 
 	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-
-	placement := findServiceAccount(cp, "placement")
-	g.Expect(placement).NotTo(BeNil(), "the defaulting webhook must inject a placement service account")
-	g.Expect(placement.Project.Name).To(Equal("service-placement"),
-		"the placement account creates a project of its own, not the one the glance account creates")
-	g.Expect(placement.Project.Create).To(BeTrue())
-	g.Expect(placement.Roles).To(Equal([]string{"service"}),
-		`the role must be "service" (SRBAC identity:validate_token), not "member"`)
-	g.Expect(placement.TargetNamespace).To(BeEmpty(),
-		"a co-located Placement leaves the account targetNamespace empty")
-	g.Expect(placement.UserName).To(Equal("placement"),
-		"the injected entry is defaulted before the userName loop, so it gets UserName")
+	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeNil(),
+		"a declared Placement must leave spec.korc.serviceAccounts as the CR declared it")
 }
 
-// TestDefault_PlacementServiceAccountInjectionIsIdempotent verifies applying
-// Default twice injects the placement account exactly once.
-func TestDefault_PlacementServiceAccountInjectionIsIdempotent(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-	cp.Spec.Services.Placement = &ServicePlacementSpec{}
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-
-	count := 0
-	for _, sa := range cp.Spec.KORC.ServiceAccounts {
-		if sa.Name == "placement" {
-			count++
-		}
-	}
-	g.Expect(count).To(Equal(1), "Default twice must not inject two placement accounts")
-}
-
-// TestDefault_PreservesUserDeclaredPlacementServiceAccount verifies an
-// operator-declared placement account is left untouched — no second injection,
-// and its project and roles are preserved.
-func TestDefault_PreservesUserDeclaredPlacementServiceAccount(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-	cp.Spec.Services.Placement = &ServicePlacementSpec{}
-	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-		Name:     "placement",
-		UserName: "placement-svc",
-		Project:  ServiceAccountProjectSpec{Name: "allocations", Create: false},
-		Roles:    []string{"admin"},
-	}}
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-
-	count := 0
-	for _, sa := range cp.Spec.KORC.ServiceAccounts {
-		if sa.Name == "placement" {
-			count++
-		}
-	}
-	g.Expect(count).To(Equal(1), "an operator-declared placement account must not trigger a second injection")
-	placement := findServiceAccount(cp, "placement")
-	g.Expect(placement.UserName).To(Equal("placement-svc"))
-	g.Expect(placement.Project).To(Equal(ServiceAccountProjectSpec{Name: "allocations", Create: false}))
-	g.Expect(placement.Roles).To(Equal([]string{"admin"}))
-}
-
-// TestDefault_DoesNotInjectPlacementServiceAccountWhenPlacementUnset verifies a
-// ControlPlane without services.placement grows no placement account.
-func TestDefault_DoesNotInjectPlacementServiceAccountWhenPlacementUnset(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	g.Expect(findServiceAccount(cp, "placement")).To(BeNil())
-}
-
-// TestDefault_PlacementServiceAccountTargetsDedicatedNamespace verifies the
-// injected account targets the namespace Placement is placed in when that
-// differs from the ControlPlane's own, so its consumer credentials Secret rides
-// that namespace's tenant store.
-func TestDefault_PlacementServiceAccountTargetsDedicatedNamespace(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-	cp.Namespace = "openstack"
-	cp.Spec.Services.Placement = &ServicePlacementSpec{
-		Namespace: &ServiceNamespaceSpec{Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged},
-	}
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-
-	placement := findServiceAccount(cp, "placement")
-	g.Expect(placement).NotTo(BeNil())
-	g.Expect(placement.TargetNamespace).To(Equal("placement"),
-		"a Placement placed in a dedicated namespace delivers its credentials there")
-}
-
-// TestDefault_InjectsGlanceAndPlacementServiceAccounts pins the two injections
-// side by side: glance first, then placement, each creating a project of its
-// own. Two create:true entries naming ONE project are rejected outright (each
-// managed Project would adopt the other's Keystone row), so a ControlPlane
-// running both services has to come out of defaulting admissible.
-func TestDefault_InjectsGlanceAndPlacementServiceAccounts(t *testing.T) {
+// TestDefault_LeavesServiceAccountsUnsetForAllServices covers the case the three
+// per-service tests only reach one at a time: a ControlPlane declaring Glance,
+// Placement and Barbican at once comes out of defaulting with
+// spec.korc.serviceAccounts still unset, and admits — so running every built-in
+// service requires no service account of one's own.
+func TestDefault_LeavesServiceAccountsUnsetForAllServices(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 	cp := validControlPlane()
 	cp.Name = "cp"
 	cp.Spec.Services.Glance = validGlanceSpec()
 	cp.Spec.Services.Placement = &ServicePlacementSpec{}
+	cp.Spec.Services.Barbican = &ServiceBarbicanSpec{
+		SecretStore: ServiceBarbicanSecretStoreSpec{Dedicated: &BarbicanDedicatedSecretStoreSpec{}},
+	}
 
 	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-
-	names := make([]string, 0, len(cp.Spec.KORC.ServiceAccounts))
-	for _, sa := range cp.Spec.KORC.ServiceAccounts {
-		names = append(names, sa.Name)
-	}
-	g.Expect(names).To(Equal([]string{"glance", "placement"}),
-		"the injections run in a fixed order, so the stored spec is deterministic")
-	g.Expect(findServiceAccount(cp, "glance").Project.Name).To(Equal("service"))
-	g.Expect(findServiceAccount(cp, "placement").Project.Name).To(Equal("service-placement"))
+	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeNil(),
+		"defaulting must leave spec.korc.serviceAccounts byte-identical")
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred(),
-		"a defaulted glance+placement ControlPlane must be admissible: the two accounts create different projects")
+		"a ControlPlane running all three services must admit with no service account declared")
 }
 
 // TestValidateCreate_AcceptsPlacementControlPlane pins the admissible baseline.
@@ -4908,56 +4901,6 @@ func TestValidateCreate_AcceptsPlacementControlPlane(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), placementControlPlane())
 	g.Expect(err).NotTo(HaveOccurred())
-}
-
-// TestValidateCreate_RejectsPlacementWithoutServiceAccount pins the
-// defense-in-depth for the injection: a webhook-bypassed CR that dropped the
-// placement account is rejected.
-func TestValidateCreate_RejectsPlacementWithoutServiceAccount(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := placementControlPlane()
-	cp.Spec.KORC.ServiceAccounts = nil
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring(`a service account named "placement" is required`))
-}
-
-// TestValidateCreate_RejectsPlacementServiceAccountTargetNamespaceMismatch pins
-// that a Placement placed in a dedicated namespace requires its account to
-// target that namespace.
-func TestValidateCreate_RejectsPlacementServiceAccountTargetNamespaceMismatch(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := placementControlPlane()
-	cp.Namespace = "openstack"
-	cp.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
-		Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
-	}
-	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "openstack"
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("must equal the namespace Placement is placed in"))
-}
-
-// TestValidateCreate_RejectsPlacementServiceAccountTargetNamespaceWhenColocated
-// covers the other arm of the namespace-claim switch: a co-located Placement has
-// no tenant store anywhere but the ControlPlane's own namespace, so an account
-// targeting a third namespace could never have its consumer credentials Secret
-// delivered.
-func TestValidateCreate_RejectsPlacementServiceAccountTargetNamespaceWhenColocated(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := placementControlPlane()
-	cp.Namespace = "openstack"
-	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "somewhere-else"
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring(
-		"must be empty or the ControlPlane's own namespace when Placement is co-located with the ControlPlane"))
 }
 
 // TestValidateCreate_AcceptsPlacementInDedicatedNamespace pins the accepting
@@ -5720,11 +5663,6 @@ func TestValidateCreate_AcceptsCredentialsModeOverridesOnManagedShared(t *testin
 			cp.Spec.Services.Keystone.DatabaseCredentialsMode = tc.keystoneMode
 			cp.Spec.Services.Glance = validGlanceSpec()
 			cp.Spec.Services.Glance.DatabaseCredentialsMode = tc.glanceMode
-			cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-				Name:    "glance",
-				Project: ServiceAccountProjectSpec{Name: "service", Create: true},
-				Roles:   []string{"service"},
-			}}
 
 			_, err := w.ValidateCreate(context.Background(), cp)
 			g.Expect(err).NotTo(HaveOccurred(),
@@ -6286,12 +6224,6 @@ func TestValidateCreate_FailsOpenOnCatalogLessRelease(t *testing.T) {
 	cp.Spec.Services.Placement = &ServicePlacementSpec{
 		ExtraConfig: map[string]map[string]string{"placement": {"randomize_allocation_candidates": "true"}},
 	}
-	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
-		Name:    "placement",
-		Project: ServiceAccountProjectSpec{Name: "service-placement", Create: true},
-		Roles:   []string{"service"},
-	})
-
 	warnings, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(warnings).To(HaveLen(3))
@@ -6371,11 +6303,6 @@ func TestValidateUpdate_ExtraConfigCatalogGating(t *testing.T) {
 		oldCP := staleInvalid()
 		newCP := staleInvalid()
 		newCP.Spec.Services.Glance = validGlanceSpec()
-		newCP.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-			Name:    "glance",
-			Project: ServiceAccountProjectSpec{Name: "service", Create: true},
-			Roles:   []string{"service"},
-		}}
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).To(HaveOccurred())
@@ -6387,11 +6314,6 @@ func TestValidateUpdate_ExtraConfigCatalogGating(t *testing.T) {
 		oldCP := staleInvalid()
 		newCP := staleInvalid()
 		newCP.Spec.Services.Placement = &ServicePlacementSpec{}
-		newCP.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-			Name:    "placement",
-			Project: ServiceAccountProjectSpec{Name: "service-placement", Create: true},
-			Roles:   []string{"service"},
-		}}
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).To(HaveOccurred())
@@ -6424,10 +6346,9 @@ func TestValidateUpdate_TrustedDashboardRejectedWhenHorizonAppears(t *testing.T)
 // --- services.barbican ---
 
 // barbicanControlPlane returns a managed ControlPlane with a minimal barbican
-// block AND the barbican service account the defaulting webhook injects, so the
-// tests below start from an admissible baseline (the validating webhook's
-// defense-in-depth check requires that account) and vary only the field (or the
-// INI content) under test. The store is the dedicated one, the mode that needs
+// block AND one inline service account, so the tests below start from an
+// admissible baseline and vary only the field (or the INI content) under test.
+// The store is the dedicated one, the mode that needs
 // no references of its own. The shared infrastructure stays brownfield (the
 // validControlPlane baseline).
 func barbicanControlPlane() *ControlPlane {
@@ -6437,7 +6358,7 @@ func barbicanControlPlane() *ControlPlane {
 		SecretStore: ServiceBarbicanSecretStoreSpec{Dedicated: &BarbicanDedicatedSecretStoreSpec{}},
 	}
 	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-		Name:    "barbican",
+		Name:    barbicanInlineAccountName,
 		Project: ServiceAccountProjectSpec{Name: "service-barbican", Create: true},
 		Roles:   []string{"service"},
 	}}
@@ -6525,11 +6446,10 @@ func TestValidateUpdate_ProjectedBarbicanChildNameBoundIsNewlyEnabledOnly(t *tes
 		"an over-long grandfathered ControlPlane must stay updatable, or its deletion never completes")
 }
 
-// TestDefault_InjectsBarbicanServiceAccount verifies the defaulting webhook
-// injects the barbican service account when services.barbican is declared, in
-// its own project: each create:true entry projects a managed Project, so sharing
-// glance's "service" project would have each adopt the other's Keystone row.
-func TestDefault_InjectsBarbicanServiceAccount(t *testing.T) {
+// TestDefault_LeavesServiceAccountsUnsetForBarbican verifies a declared
+// services.barbican grows no spec.korc.serviceAccounts entry, for the reason its
+// Glance sibling states.
+func TestDefault_LeavesServiceAccountsUnsetForBarbican(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 	cp := validControlPlane()
@@ -6538,61 +6458,8 @@ func TestDefault_InjectsBarbicanServiceAccount(t *testing.T) {
 	}
 
 	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-
-	barbican := findServiceAccount(cp, "barbican")
-	g.Expect(barbican).NotTo(BeNil(), "the defaulting webhook must inject a barbican service account")
-	g.Expect(barbican.Project.Name).To(Equal("service-barbican"),
-		"the barbican account creates a project of its own, not the one the glance account creates")
-	g.Expect(barbican.Project.Create).To(BeTrue())
-	g.Expect(barbican.Roles).To(Equal([]string{"service"}),
-		`the role must be "service" (SRBAC identity:validate_token), not "member"`)
-	g.Expect(barbican.TargetNamespace).To(BeEmpty(),
-		"a co-located Barbican leaves the account targetNamespace empty")
-	g.Expect(barbican.UserName).To(Equal("barbican"),
-		"the injected entry is defaulted before the userName loop, so it gets UserName")
-}
-
-// TestDefault_DoesNotInjectBarbicanServiceAccountWhenBarbicanUnset verifies a
-// ControlPlane without services.barbican grows no barbican account.
-func TestDefault_DoesNotInjectBarbicanServiceAccountWhenBarbicanUnset(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	g.Expect(findServiceAccount(cp, "barbican")).To(BeNil())
-}
-
-// TestDefault_PreservesUserDeclaredBarbicanServiceAccount verifies an
-// operator-declared barbican account is left untouched — no second injection,
-// and its project and roles are preserved.
-func TestDefault_PreservesUserDeclaredBarbicanServiceAccount(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-	cp.Spec.Services.Barbican = &ServiceBarbicanSpec{
-		SecretStore: ServiceBarbicanSecretStoreSpec{Dedicated: &BarbicanDedicatedSecretStoreSpec{}},
-	}
-	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-		Name:     "barbican",
-		UserName: "barbican-svc",
-		Project:  ServiceAccountProjectSpec{Name: "secrets", Create: false},
-		Roles:    []string{"admin"},
-	}}
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-
-	count := 0
-	for _, sa := range cp.Spec.KORC.ServiceAccounts {
-		if sa.Name == "barbican" {
-			count++
-		}
-	}
-	g.Expect(count).To(Equal(1), "an operator-declared barbican account must not trigger a second injection")
-	barbican := findServiceAccount(cp, "barbican")
-	g.Expect(barbican.UserName).To(Equal("barbican-svc"))
-	g.Expect(barbican.Project).To(Equal(ServiceAccountProjectSpec{Name: "secrets", Create: false}))
-	g.Expect(barbican.Roles).To(Equal([]string{"admin"}))
+	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeNil(),
+		"a declared Barbican must leave spec.korc.serviceAccounts as the CR declared it")
 }
 
 // TestDefault_BarbicanExternalStoreKVMountpoint verifies the webhook mirror of
@@ -7135,20 +7002,6 @@ func TestValidateCreate_RejectsBarbicanCredentialsModeOverrideDynamicOnDedicated
 	))
 }
 
-// TestValidateCreate_RejectsBarbicanWithoutServiceAccount pins the
-// defense-in-depth for the injection: a webhook-bypassed CR that dropped the
-// barbican account is rejected.
-func TestValidateCreate_RejectsBarbicanWithoutServiceAccount(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := barbicanControlPlane()
-	cp.Spec.KORC.ServiceAccounts = nil
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring(`a service account named "barbican" is required`))
-}
-
 // TestValidateUpdate_FreezesBarbicanSecretStoreAddressing is the regression guard
 // for a store change that STRANDS the secret material behind it. The
 // BarbicanSecretStore CRD freezes its own kvMountpoint and its instanceRef/server
@@ -7414,7 +7267,7 @@ func placedServices() []placedService {
 					Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged,
 				}
 				cp.Spec.Services.Glance.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
-				findServiceAccount(cp, GlanceServiceAccountName).TargetNamespace = "images"
+				findServiceAccount(cp, glanceInlineAccountName).TargetNamespace = "images"
 				publishKeystone(cp)
 				return cp
 			},
@@ -7422,7 +7275,7 @@ func placedServices() []placedService {
 			// so it follows the namespace back to the ControlPlane's own.
 			dropNamespace: func(cp *ControlPlane) {
 				cp.Spec.Services.Glance.Namespace = nil
-				findServiceAccount(cp, GlanceServiceAccountName).TargetNamespace = ""
+				findServiceAccount(cp, glanceInlineAccountName).TargetNamespace = ""
 			},
 			publish: func(cp *ControlPlane) {
 				cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
@@ -7440,13 +7293,13 @@ func placedServices() []placedService {
 					Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
 				}
 				cp.Spec.Services.Placement.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
-				findServiceAccount(cp, PlacementServiceAccountName).TargetNamespace = "placement"
+				findServiceAccount(cp, placementInlineAccountName).TargetNamespace = "placement"
 				publishKeystone(cp)
 				return cp
 			},
 			dropNamespace: func(cp *ControlPlane) {
 				cp.Spec.Services.Placement.Namespace = nil
-				findServiceAccount(cp, PlacementServiceAccountName).TargetNamespace = ""
+				findServiceAccount(cp, placementInlineAccountName).TargetNamespace = ""
 			},
 			publish: func(cp *ControlPlane) {
 				cp.Spec.Services.Placement.PublicEndpoint = "https://placement.example.com"
@@ -7464,13 +7317,13 @@ func placedServices() []placedService {
 					Name: "keymanager", Lifecycle: ServiceNamespaceLifecycleManaged,
 				}
 				cp.Spec.Services.Barbican.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
-				findServiceAccount(cp, BarbicanServiceAccountName).TargetNamespace = "keymanager"
+				findServiceAccount(cp, barbicanInlineAccountName).TargetNamespace = "keymanager"
 				publishKeystone(cp)
 				return cp
 			},
 			dropNamespace: func(cp *ControlPlane) {
 				cp.Spec.Services.Barbican.Namespace = nil
-				findServiceAccount(cp, BarbicanServiceAccountName).TargetNamespace = ""
+				findServiceAccount(cp, barbicanInlineAccountName).TargetNamespace = ""
 			},
 			publish: func(cp *ControlPlane) {
 				cp.Spec.Services.Barbican.PublicEndpoint = "https://barbican.example.com"
@@ -7751,7 +7604,7 @@ func TestValidateCreate_RejectsAPlaintextPlacedKeystoneEndpoint(t *testing.T) {
 		}
 		cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
 		cp.Spec.Services.Glance.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
-		findServiceAccount(cp, GlanceServiceAccountName).TargetNamespace = "images"
+		findServiceAccount(cp, glanceInlineAccountName).TargetNamespace = "images"
 		return cp
 	}
 
@@ -8031,7 +7884,7 @@ func TestValidateUpdate_FreezesServiceTargetClusterRefs(t *testing.T) {
 		newCP.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
 		newCP.Spec.Services.Glance.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
 		newCP.Spec.KORC.ServiceAccounts = gl.Spec.KORC.ServiceAccounts
-		findServiceAccount(newCP, GlanceServiceAccountName).TargetNamespace = "images"
+		findServiceAccount(newCP, glanceInlineAccountName).TargetNamespace = "images"
 		publishKeystone(newCP)
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
