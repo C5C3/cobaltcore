@@ -29,43 +29,47 @@
 #                        (: the control-plane-namespace k-orc-clouds-yaml ExternalSecret is now OPERATOR-CREATED — per-CR, controller-owned — and the bootstrap clouds.yaml is operator-seeded; this test WAITS FOR, never pre-creates, them.)
 #   5. Catalog         — owned K-ORC Service ("…-identity-service") + Endpoint
 #                        ("…-identity-endpoint"); CatalogReady=True.
-#   5b. Service accts  — the INJECTED "glance" and "placement" accounts (the CR
-#                        declares none; the defaulting webhook adds both, glance
-#                        first) each project a managed User/Project, an unmanaged
-#                        K-ORC Role import, and a managed RoleAssignment
-#                        ("…-service-account-{glance,placement}-assign-service-…");
-#                        ServiceAccountsReady=True and status.serviceAccounts[0] /
-#                        [1] .ready.
+#   5b. Registrations  — one KeystoneService child per built-in service
+#                        ("…-glance", "…-placement", "…-barbican"), each carrying
+#                        that service's catalog entry and its service account. The
+#                        stored ControlPlane declares no serviceAccounts and none
+#                        are injected; every child reports Ready=True (AllReady)
+#                        over CatalogReady=CatalogRegistered and
+#                        AccountReady=AccountProvisioned, and the K-ORC
+#                        RoleAssignment it label-owns is Available.
 #   5c. Glance child   — owned Glance CR ("…-glance") with database/cache clusterRefs,
 #                        an engine-issued (Dynamic) DB credential drawn from the
 #                        OpenBao database engine, the derived Keystone endpoint, the
-#                        injected service user, and its GlanceBackend ("…-glance-default")
-#                        against the Garage S3 bucket; GlanceReady=True.
-#   5d. Image catalog  — owned K-ORC image Service ("…-image-service") + internal/public
-#                        Endpoints ("…-image-endpoint-{internal,public}"), both URLs the
-#                        in-cluster Glance API (no gateway in this fixture).
+#                        service user its registration provisions, and its
+#                        GlanceBackend ("…-glance-default") against the Garage S3
+#                        bucket; GlanceReady=True.
+#   5d. Image catalog  — the image registration's K-ORC Service + internal/public
+#                        Endpoints, resolved through its ownership labels, both URLs
+#                        the in-cluster Glance API (no gateway in this fixture).
 #   5e. Placement child — owned Placement CR ("…-placement") on the same terms as the
 #                        Glance child: database/cache clusterRefs, an engine-issued
 #                        (Dynamic) DB credential, the derived Keystone endpoint, and
-#                        the injected service user; PlacementReady=True.
-#   5f. Placement cat. — owned K-ORC placement Service ("…-placement-service") +
-#                        internal/public Endpoints
-#                        ("…-placement-endpoint-{internal,public}"), both URLs the
-#                        in-cluster Placement API (no gateway in this fixture).
+#                        the service user its registration provisions;
+#                        PlacementReady=True.
+#   5f. Placement cat. — the placement registration's K-ORC Service +
+#                        internal/public Endpoints, resolved through its ownership
+#                        labels, both URLs the in-cluster Placement API (no gateway
+#                        in this fixture).
 #   5g. Barbican child — owned Barbican CR ("…-barbican") on the Placement child's
 #                        terms (database/cache clusterRefs, an engine-issued
 #                        (Dynamic) DB credential, the derived Keystone endpoint, the
-#                        injected service user) PLUS the dedicated secret store the
-#                        fixture asks for: an OpenBaoCluster ("…-barbican-bao")
-#                        reporting Available=True, a BarbicanSecretStore
+#                        service user its registration provisions) PLUS the
+#                        dedicated secret store the fixture asks for: an
+#                        OpenBaoCluster ("…-barbican-bao") reporting
+#                        Available=True, a BarbicanSecretStore
 #                        ("…-barbican-store") reporting Ready=True, the AppRole
 #                        Secret ("…-barbican-store-approle") the barbican-operator
 #                        mints against it, and SecretStoresReady=AllStoresProjected
 #                        on the child; BarbicanReady=True.
-#   5h. Key-mgr cat.   — owned K-ORC key-manager Service ("…-key-manager-service") +
-#                        internal/public Endpoints
-#                        ("…-key-manager-endpoint-{internal,public}"), both URLs the
-#                        in-cluster Barbican API (no gateway in this fixture).
+#   5h. Key-mgr cat.   — the key-manager registration's K-ORC Service +
+#                        internal/public Endpoints, resolved through its ownership
+#                        labels, both URLs the in-cluster Barbican API (no gateway
+#                        in this fixture).
 #   6. Aggregate       — ControlPlane Ready=True (reason AllReady).
 #   7. API reachable   — Keystone /v3 returns HTTP 200; `openstack token issue`,
 #                        `openstack catalog list` (identity, image, placement, AND
@@ -165,20 +169,28 @@ spec:
           SVC_CR="${CP_NAME}-identity-service"
           EP_CR="${CP_NAME}-identity-endpoint"
           GLANCE_CR="${CP_NAME}-glance"
-          IMG_SVC_CR="${CP_NAME}-image-service"
-          IMG_EP_INT="${CP_NAME}-image-endpoint-internal"
-          IMG_EP_PUB="${CP_NAME}-image-endpoint-public"
           PLACEMENT_CR="${CP_NAME}-placement"
-          PLACEMENT_SVC_CR="${CP_NAME}-placement-service"
-          PLACEMENT_EP_INT="${CP_NAME}-placement-endpoint-internal"
-          PLACEMENT_EP_PUB="${CP_NAME}-placement-endpoint-public"
           BARBICAN_CR="${CP_NAME}-barbican"
           BARBICAN_STORE="${BARBICAN_CR}-store"
           BARBICAN_BAO="${BARBICAN_CR}-bao"
-          KM_SVC_CR="${CP_NAME}-key-manager-service"
-          KM_EP_INT="${CP_NAME}-key-manager-endpoint-internal"
-          KM_EP_PUB="${CP_NAME}-key-manager-endpoint-public"
           CLOUDS_SECRET=k-orc-clouds-yaml
+
+          # Each built-in service registers through a KeystoneService child of its
+          # own, named like the service child it registers (both are the
+          # ControlPlane name plus the service suffix).
+          GLANCE_KS="${GLANCE_CR}"
+          PLACEMENT_KS="${PLACEMENT_CR}"
+          BARBICAN_KS="${BARBICAN_CR}"
+          # A registration's K-ORC children live in the ControlPlane's namespace and
+          # carry a name-hash prefix, so nothing here can address them by name: they
+          # are resolved through the ownership labels the registration stamps. The
+          # namespace half of the selector is the registration's own, which in this
+          # suite is the ControlPlane's, since every service is co-located with it.
+          # The identity row above keeps its ControlPlane-derived name: it belongs to
+          # the plane itself, not to a registration.
+          GLANCE_SELECTOR="c5c3.io/keystoneservice-name=${GLANCE_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
+          PLACEMENT_SELECTOR="c5c3.io/keystoneservice-name=${PLACEMENT_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
+          BARBICAN_SELECTOR="c5c3.io/keystoneservice-name=${BARBICAN_KS},c5c3.io/keystoneservice-namespace=${CP_NS}"
 
           # ── Presence guard ──────────────────────────────
           # Probe for every CRD the chain spans plus the OpenBao
@@ -211,6 +223,7 @@ spec:
           missing=""
           for crd in \
             controlplanes.c5c3.io \
+            keystoneservices.c5c3.io \
             keystones.keystone.openstack.c5c3.io \
             horizons.horizon.openstack.c5c3.io \
             glances.glance.openstack.c5c3.io \
@@ -343,6 +356,13 @@ spec:
               exit 1
             fi
             echo "OK: $1 ('$3')"
+          }
+
+          # How many objects of the given kinds a label selector resolves to.
+          # `grep -c .` counts lines and returns 1 on an empty listing, which the
+          # trailing `|| true` turns back into a printed "0".
+          count_of() { # <kinds> <namespace> <selector>
+            kubectl get "$1" -n "$2" -l "$3" --no-headers 2>/dev/null | grep -c . || true
           }
 
           owner_of() { # <resource> <name>  → controller ControlPlane name
@@ -547,64 +567,60 @@ spec:
           assert_eq "K-ORC identity Endpoint owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of endpoints.openstack.k-orc.cloud "${EP_CR}")"
 
-          # ── Link 5b: injected glance + placement + barbican accounts ────────
-          # The CR fixture declares NO serviceAccounts — whenever services.glance
-          # is set the defaulting webhook INJECTS the glance account (name glance,
-          # project service (create), role "service"), services.placement adds the
-          # placement account right after it (project service-placement, a
-          # per-service project of its own), and services.barbican the barbican
-          # account (project service-barbican, likewise its own). Asserting the
-          # entries landed on spec.korc.serviceAccounts[0], [1] and [2] proves the
-          # injection ran — in that order — on this live cluster. Each injected
-          # account projects a managed User/Project, an unmanaged K-ORC Role import,
-          # and a managed RoleAssignment whose name embeds the deterministic role
-          # slug for "service" (base "service" + "-" + the first 8 hex of
-          # sha256("service")), so all three assignment names carry the SAME slug
-          # and differ only in the account segment. ServiceAccountsReady gates on
-          # all of them Available AND the OpenBao password round-trip, and
-          # status.serviceAccounts[i].ready mirrors that per-account convergence.
-          assert_eq "webhook injected the glance service account (spec.korc.serviceAccounts[0].name)" "glance" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[0].name}')"
-          assert_eq "injected glance account bound to the \"service\" role" "service" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[0].roles[0]}')"
-          assert_eq "webhook injected the placement service account (spec.korc.serviceAccounts[1].name)" "placement" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[1].name}')"
-          assert_eq "injected placement account bound to the \"service\" role" "service" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[1].roles[0]}')"
-          assert_eq "webhook injected the barbican service account (spec.korc.serviceAccounts[2].name)" "barbican" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[2].name}')"
-          assert_eq "injected barbican account bound to the \"service\" role" "service" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts[2].roles[0]}')"
-          SA_ASSIGN="${CP_NAME}-service-account-glance-assign-service-9df6b026"
-          PLACEMENT_SA_ASSIGN="${CP_NAME}-service-account-placement-assign-service-9df6b026"
-          BARBICAN_SA_ASSIGN="${CP_NAME}-service-account-barbican-assign-service-9df6b026"
-          wait_cp_condition ServiceAccountsReady 600
-          assert_eq "status.serviceAccounts[0].ready" "true" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.serviceAccounts[0].ready}')"
-          assert_eq "status.serviceAccounts[1].ready" "true" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.serviceAccounts[1].ready}')"
-          assert_eq "status.serviceAccounts[2].ready" "true" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.status.serviceAccounts[2].ready}')"
-          kubectl get roleassignments.openstack.k-orc.cloud "${SA_ASSIGN}" -n "${CP_NS}" >/dev/null
-          assert_eq "RoleAssignment ${SA_ASSIGN} Available" "True" \
-            "$(kubectl get roleassignments.openstack.k-orc.cloud "${SA_ASSIGN}" -n "${CP_NS}" \
-              -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
-          assert_eq "RoleAssignment owned by ControlPlane" "${CP_NAME}" \
-            "$(owner_of roleassignments.openstack.k-orc.cloud "${SA_ASSIGN}")"
-          kubectl get roleassignments.openstack.k-orc.cloud "${PLACEMENT_SA_ASSIGN}" -n "${CP_NS}" >/dev/null
-          assert_eq "RoleAssignment ${PLACEMENT_SA_ASSIGN} Available" "True" \
-            "$(kubectl get roleassignments.openstack.k-orc.cloud "${PLACEMENT_SA_ASSIGN}" -n "${CP_NS}" \
-              -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
-          assert_eq "placement RoleAssignment owned by ControlPlane" "${CP_NAME}" \
-            "$(owner_of roleassignments.openstack.k-orc.cloud "${PLACEMENT_SA_ASSIGN}")"
-          kubectl get roleassignments.openstack.k-orc.cloud "${BARBICAN_SA_ASSIGN}" -n "${CP_NS}" >/dev/null
-          assert_eq "RoleAssignment ${BARBICAN_SA_ASSIGN} Available" "True" \
-            "$(kubectl get roleassignments.openstack.k-orc.cloud "${BARBICAN_SA_ASSIGN}" -n "${CP_NS}" \
-              -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
-          assert_eq "barbican RoleAssignment owned by ControlPlane" "${CP_NAME}" \
-            "$(owner_of roleassignments.openstack.k-orc.cloud "${BARBICAN_SA_ASSIGN}")"
+          # ── Link 5b: the glance + placement + barbican registrations ────────
+          # The CR fixture declares NO serviceAccounts and nothing injects any:
+          # each built-in service registers through a KeystoneService child the
+          # ControlPlane projects, carrying both the catalog entry and the service
+          # account (user glance/placement/barbican in project
+          # service-{glance,placement,barbican}, role "service", which Keystone's
+          # SRBAC default for identity:validate_token requires). The empty spec is
+          # asserted first: an entry there would mean the retired defaulting still
+          # runs on this live cluster, and the inline surface would provision a
+          # second, colliding Keystone user beside the registration's.
+          #
+          # Each child then has to converge on its own conditions. Ready=AllReady
+          # aggregates CatalogReady and AccountReady, so a child that reports it
+          # holds both its catalog rows in Keystone and a user whose password
+          # round-tripped through OpenBao. The wait is the widest of the chain's
+          # K-ORC legs because each registration creates a project, a user and a
+          # role import before it touches the catalog at all.
+          assert_eq "no service account is injected into the stored ControlPlane" "" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts}')"
+          assert_eq "the inline service-account surface stays unused" "NoServiceAccountsDeclared" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='ServiceAccountsReady')].reason}")"
 
-          # ── Link 5c: Glance child (gated on KeystoneReady + service account) ─
+          # assert_registration drives one registration to Ready and checks the role
+          # binding behind its account. The RoleAssignment is looked up through the
+          # ownership labels rather than by name: a registration's K-ORC children
+          # carry a prefix hashed over its namespace and name, which nothing outside
+          # the operator can compute.
+          assert_registration() { # <keystoneservice name> <label selector>
+            local ks="$1" sel="$2" ra
+            wait_ready_condition keystoneservice "${ks}" "${CP_NS}" 900
+            assert_eq "registration ${ks} aggregates to AllReady" "AllReady" \
+              "$(kubectl get keystoneservice "${ks}" -n "${CP_NS}" \
+                -o "jsonpath={.status.conditions[?(@.type=='Ready')].reason}")"
+            assert_eq "registration ${ks} registered its catalog entry" "CatalogRegistered" \
+              "$(kubectl get keystoneservice "${ks}" -n "${CP_NS}" \
+                -o "jsonpath={.status.conditions[?(@.type=='CatalogReady')].reason}")"
+            assert_eq "registration ${ks} provisioned its account" "AccountProvisioned" \
+              "$(kubectl get keystoneservice "${ks}" -n "${CP_NS}" \
+                -o "jsonpath={.status.conditions[?(@.type=='AccountReady')].reason}")"
+            assert_eq "registration ${ks} projected exactly one RoleAssignment" "1" \
+              "$(count_of roleassignments.openstack.k-orc.cloud "${CP_NS}" "${sel}")"
+            for ra in $(kubectl get roleassignments.openstack.k-orc.cloud -n "${CP_NS}" -l "${sel}" \
+              -o jsonpath='{.items[*].metadata.name}'); do
+              assert_eq "RoleAssignment ${ra} Available" "True" \
+                "$(kubectl get roleassignments.openstack.k-orc.cloud "${ra}" -n "${CP_NS}" \
+                  -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
+            done
+          }
+          assert_registration "${GLANCE_KS}" "${GLANCE_SELECTOR}"
+          assert_registration "${PLACEMENT_KS}" "${PLACEMENT_SELECTOR}"
+          assert_registration "${BARBICAN_KS}" "${BARBICAN_SELECTOR}"
+
+          # ── Link 5c: Glance child (gated on KeystoneReady + registration) ───
           # GlanceReady mirrors the child's Ready, which requires the real
           # glance-api Deployment + db-sync against MariaDB and the S3 backend —
           # this is the live end-to-end proof the envtest chain simulates.
@@ -656,11 +672,13 @@ spec:
           assert_eq "Glance keystoneEndpoint derived from the naming convention" \
             "http://${KEYSTONE_CR}.${CP_NS}.svc:5000/v3" \
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.keystoneEndpoint}')"
-          assert_eq "Glance service user derived from the injected account (username)" "glance" \
+          assert_eq "Glance service user derived from its registration (username)" "glance" \
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.username}')"
-          assert_eq "Glance service user project" "service" \
+          # Every built-in takes a per-service project of its own.
+          assert_eq "Glance service user project" "service-glance" \
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.projectName}')"
-          assert_eq "Glance service user secretRef" "${CP_NAME}-service-account-glance-credentials" \
+          # The consumer Secret contract of the registration: <registration>-credentials.
+          assert_eq "Glance service user secretRef" "${GLANCE_KS}-credentials" \
             "$(kubectl get glances.glance.openstack.c5c3.io "${GLANCE_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.secretRef.name}')"
           assert_eq "Glance CR owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of glances.glance.openstack.c5c3.io "${GLANCE_CR}")"
@@ -677,32 +695,54 @@ spec:
           assert_eq "GlanceBackend owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of glancebackends.glance.openstack.c5c3.io "${GLANCE_BACKEND}")"
 
-          # ── Link 5d: image catalog (K-ORC Service + both Endpoints, owned) ──
+          # ── Link 5d: image catalog (the registration's Service + Endpoints) ─
           # Per design decision D6 the image service registers BOTH an internal and
           # a public Endpoint at birth; with no gateway in this fixture both URLs
           # advertise the in-cluster Glance API Service.
-          kubectl get services.openstack.k-orc.cloud "${IMG_SVC_CR}" -n "${CP_NS}" >/dev/null
-          kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_INT}" -n "${CP_NS}" >/dev/null
-          kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_PUB}" -n "${CP_NS}" >/dev/null
-          assert_eq "K-ORC image Service owned by ControlPlane" "${CP_NAME}" \
-            "$(owner_of services.openstack.k-orc.cloud "${IMG_SVC_CR}")"
-          assert_eq "K-ORC image Service type" "image" \
-            "$(kubectl get services.openstack.k-orc.cloud "${IMG_SVC_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.type}')"
+          #
+          # assert_catalog_rows checks the catalog half of one registration, and the
+          # placement and key-manager links below reuse it. Every row is resolved
+          # through the registration's ownership labels (its children carry a name
+          # prefix hashed over its identity, which nothing outside the operator can
+          # compute), and the counts are what prove these are the only rows it holds:
+          # a leftover row would put a second endpoint of the same interface into the
+          # Keystone catalog.
+          assert_catalog_rows() { # <keystoneservice name> <label selector> <serviceType> <url>
+            local ks="$1" sel="$2" want_type="$3" want_url="$4" svc ep ifaces
+            assert_eq "registration ${ks} projected exactly one catalog Service" "1" \
+              "$(count_of services.openstack.k-orc.cloud "${CP_NS}" "${sel}")"
+            svc="$(kubectl get services.openstack.k-orc.cloud -n "${CP_NS}" -l "${sel}" \
+              -o jsonpath='{.items[0].metadata.name}')"
+            assert_eq "K-ORC ${want_type} Service ${svc} Available" "True" \
+              "$(kubectl get services.openstack.k-orc.cloud "${svc}" -n "${CP_NS}" \
+                -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
+            assert_eq "K-ORC Service ${svc} type" "${want_type}" \
+              "$(kubectl get services.openstack.k-orc.cloud "${svc}" -n "${CP_NS}" \
+                -o 'jsonpath={.spec.resource.type}')"
+            assert_eq "registration ${ks} projected exactly two catalog Endpoints" "2" \
+              "$(count_of endpoints.openstack.k-orc.cloud "${CP_NS}" "${sel}")"
+            # The rows are told apart by their interfaces, not by their names, and
+            # the pair is sorted so the assertion does not depend on the order the
+            # API server lists them in.
+            ifaces="$(kubectl get endpoints.openstack.k-orc.cloud -n "${CP_NS}" -l "${sel}" \
+              -o 'jsonpath={.items[*].spec.resource.interface}' | tr ' ' '\n' | sort | xargs)"
+            assert_eq "registration ${ks} advertises an internal and a public row" "internal public" "${ifaces}"
+            for ep in $(kubectl get endpoints.openstack.k-orc.cloud -n "${CP_NS}" -l "${sel}" \
+              -o jsonpath='{.items[*].metadata.name}'); do
+              assert_eq "${want_type} Endpoint ${ep} Available" "True" \
+                "$(kubectl get endpoints.openstack.k-orc.cloud "${ep}" -n "${CP_NS}" \
+                  -o "jsonpath={.status.conditions[?(@.type=='Available')].status}")"
+              # Both rows carry the same URL: with no gateway in this fixture the
+              # public interface advertises the same in-cluster API Service.
+              assert_eq "${want_type} Endpoint ${ep} URL" "${want_url}" \
+                "$(kubectl get endpoints.openstack.k-orc.cloud "${ep}" -n "${CP_NS}" \
+                  -o 'jsonpath={.spec.resource.url}')"
+            done
+          }
           IMG_URL="http://${GLANCE_CR}.${CP_NS}.svc:9292"
-          assert_eq "K-ORC image internal Endpoint owned by ControlPlane" "${CP_NAME}" \
-            "$(owner_of endpoints.openstack.k-orc.cloud "${IMG_EP_INT}")"
-          assert_eq "image internal Endpoint interface" "internal" \
-            "$(kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_INT}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.interface}')"
-          assert_eq "image internal Endpoint URL is the in-cluster Glance API" "${IMG_URL}" \
-            "$(kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_INT}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
-          assert_eq "K-ORC image public Endpoint owned by ControlPlane" "${CP_NAME}" \
-            "$(owner_of endpoints.openstack.k-orc.cloud "${IMG_EP_PUB}")"
-          assert_eq "image public Endpoint interface" "public" \
-            "$(kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.interface}')"
-          assert_eq "image public Endpoint URL is the in-cluster Glance API" "${IMG_URL}" \
-            "$(kubectl get endpoints.openstack.k-orc.cloud "${IMG_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
+          assert_catalog_rows "${GLANCE_KS}" "${GLANCE_SELECTOR}" image "${IMG_URL}"
 
-          # ── Link 5e: Placement child (gated on KeystoneReady + service acct) ─
+          # ── Link 5e: Placement child (gated on KeystoneReady + registration) ─
           # PlacementReady mirrors the child's Ready, which requires the real
           # placement-api Deployment + db-sync against MariaDB — this is the live
           # end-to-end proof the envtest chain simulates.
@@ -753,41 +793,21 @@ spec:
           assert_eq "Placement keystoneEndpoint derived from the naming convention" \
             "http://${KEYSTONE_CR}.${CP_NS}.svc:5000/v3" \
             "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.keystoneEndpoint}')"
-          assert_eq "Placement service user derived from the injected account (username)" "placement" \
+          assert_eq "Placement service user derived from its registration (username)" "placement" \
             "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.username}')"
-          # The placement account creates a project of its OWN rather than sharing
-          # the "service" project the glance account creates.
           assert_eq "Placement service user project" "service-placement" \
             "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.projectName}')"
-          assert_eq "Placement service user secretRef" "${CP_NAME}-service-account-placement-credentials" \
+          assert_eq "Placement service user secretRef" "${PLACEMENT_KS}-credentials" \
             "$(kubectl get placements.placement.openstack.c5c3.io "${PLACEMENT_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.secretRef.name}')"
           assert_eq "Placement CR owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of placements.placement.openstack.c5c3.io "${PLACEMENT_CR}")"
 
-          # ── Link 5f: placement catalog (Service + both Endpoints, owned) ────
+          # ── Link 5f: placement catalog (the registration's rows) ────────────
           # The placement service registers an internal AND a public Endpoint at
           # birth like the image one; with no gateway in this fixture both URLs
           # advertise the in-cluster Placement API Service.
-          kubectl get services.openstack.k-orc.cloud "${PLACEMENT_SVC_CR}" -n "${CP_NS}" >/dev/null
-          kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_INT}" -n "${CP_NS}" >/dev/null
-          kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_PUB}" -n "${CP_NS}" >/dev/null
-          assert_eq "K-ORC placement Service owned by ControlPlane" "${CP_NAME}" \
-            "$(owner_of services.openstack.k-orc.cloud "${PLACEMENT_SVC_CR}")"
-          assert_eq "K-ORC placement Service type" "placement" \
-            "$(kubectl get services.openstack.k-orc.cloud "${PLACEMENT_SVC_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.type}')"
           PLACEMENT_URL="http://${PLACEMENT_CR}.${CP_NS}.svc:8778"
-          assert_eq "K-ORC placement internal Endpoint owned by ControlPlane" "${CP_NAME}" \
-            "$(owner_of endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_INT}")"
-          assert_eq "placement internal Endpoint interface" "internal" \
-            "$(kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_INT}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.interface}')"
-          assert_eq "placement internal Endpoint URL is the in-cluster Placement API" "${PLACEMENT_URL}" \
-            "$(kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_INT}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
-          assert_eq "K-ORC placement public Endpoint owned by ControlPlane" "${CP_NAME}" \
-            "$(owner_of endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_PUB}")"
-          assert_eq "placement public Endpoint interface" "public" \
-            "$(kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.interface}')"
-          assert_eq "placement public Endpoint URL is the in-cluster Placement API" "${PLACEMENT_URL}" \
-            "$(kubectl get endpoints.openstack.k-orc.cloud "${PLACEMENT_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
+          assert_catalog_rows "${PLACEMENT_KS}" "${PLACEMENT_SELECTOR}" placement "${PLACEMENT_URL}"
 
           # ── Link 5g: Barbican child + its dedicated OpenBao secret store ────
           # BarbicanReady mirrors the child's Ready, which needs the real
@@ -921,40 +941,21 @@ spec:
           assert_eq "Barbican keystoneEndpoint derived from the naming convention" \
             "http://${KEYSTONE_CR}.${CP_NS}.svc:5000/v3" \
             "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.keystoneEndpoint}')"
-          assert_eq "Barbican service user derived from the injected account (username)" "barbican" \
+          assert_eq "Barbican service user derived from its registration (username)" "barbican" \
             "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.username}')"
-          # Like placement, the barbican account creates a project of its OWN.
           assert_eq "Barbican service user project" "service-barbican" \
             "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.projectName}')"
-          assert_eq "Barbican service user secretRef" "${CP_NAME}-service-account-barbican-credentials" \
+          assert_eq "Barbican service user secretRef" "${BARBICAN_KS}-credentials" \
             "$(kubectl get barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.serviceUser.secretRef.name}')"
           assert_eq "Barbican CR owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of barbicans.barbican.openstack.c5c3.io "${BARBICAN_CR}")"
 
-          # ── Link 5h: key-manager catalog (Service + both Endpoints, owned) ──
+          # ── Link 5h: key-manager catalog (the registration's rows) ──────────
           # The key-manager service registers an internal AND a public Endpoint at
           # birth like the image and placement ones; with no gateway in this fixture
           # both URLs advertise the in-cluster Barbican API Service.
-          kubectl get services.openstack.k-orc.cloud "${KM_SVC_CR}" -n "${CP_NS}" >/dev/null
-          kubectl get endpoints.openstack.k-orc.cloud "${KM_EP_INT}" -n "${CP_NS}" >/dev/null
-          kubectl get endpoints.openstack.k-orc.cloud "${KM_EP_PUB}" -n "${CP_NS}" >/dev/null
-          assert_eq "K-ORC key-manager Service owned by ControlPlane" "${CP_NAME}" \
-            "$(owner_of services.openstack.k-orc.cloud "${KM_SVC_CR}")"
-          assert_eq "K-ORC key-manager Service type" "key-manager" \
-            "$(kubectl get services.openstack.k-orc.cloud "${KM_SVC_CR}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.type}')"
           BARBICAN_URL="http://${BARBICAN_CR}.${CP_NS}.svc:9311"
-          assert_eq "K-ORC key-manager internal Endpoint owned by ControlPlane" "${CP_NAME}" \
-            "$(owner_of endpoints.openstack.k-orc.cloud "${KM_EP_INT}")"
-          assert_eq "key-manager internal Endpoint interface" "internal" \
-            "$(kubectl get endpoints.openstack.k-orc.cloud "${KM_EP_INT}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.interface}')"
-          assert_eq "key-manager internal Endpoint URL is the in-cluster Barbican API" "${BARBICAN_URL}" \
-            "$(kubectl get endpoints.openstack.k-orc.cloud "${KM_EP_INT}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
-          assert_eq "K-ORC key-manager public Endpoint owned by ControlPlane" "${CP_NAME}" \
-            "$(owner_of endpoints.openstack.k-orc.cloud "${KM_EP_PUB}")"
-          assert_eq "key-manager public Endpoint interface" "public" \
-            "$(kubectl get endpoints.openstack.k-orc.cloud "${KM_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.interface}')"
-          assert_eq "key-manager public Endpoint URL is the in-cluster Barbican API" "${BARBICAN_URL}" \
-            "$(kubectl get endpoints.openstack.k-orc.cloud "${KM_EP_PUB}" -n "${CP_NS}" -o 'jsonpath={.spec.resource.url}')"
+          assert_catalog_rows "${BARBICAN_KS}" "${BARBICAN_SELECTOR}" key-manager "${BARBICAN_URL}"
 
           # ── Link 6: aggregate Ready=True ───────────────────────────────────
           wait_cp_condition Ready 300
@@ -1135,6 +1136,11 @@ spec:
           echo "=== Projected child CRs ==="
           kubectl get mariadb,memcacheds.memcached.c5c3.io,keystone -n openstack 2>&1 || true
           kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud -n openstack 2>&1 || true
+          echo "=== Service registrations (KeystoneService children) ==="
+          kubectl get keystoneservice -n openstack -o yaml 2>&1 || true
+          echo "=== K-ORC children the registrations own ==="
+          kubectl get users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud \
+            -n openstack -L c5c3.io/keystoneservice-name -o wide 2>&1 || true
           echo "=== Credential chain (PushSecret / ExternalSecret) ==="
           kubectl describe pushsecret controlplane-keystone-admin-app-credential-backup -n openstack 2>&1 || true
           kubectl describe externalsecret k-orc-clouds-yaml -n openstack 2>&1 || true
