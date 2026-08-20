@@ -28,6 +28,12 @@ Pages in this section are explicitly **not**:
   running it is documented in
   [Adopt an External Keystone](../guides/keystone/adopt-external-keystone.md). The page
   keeps the later phases (infrastructure attach, service takeover) as sketches.
+- [Service Accounts on Application Credentials](./service-account-application-credentials.md) —
+  switch the per-service accounts (glance, placement, barbican) from passwords
+  to Keystone application credentials, repeating the admin-credential pattern:
+  password demoted to a bootstrap credential, overlapping rotation without an
+  outage window. Grounded in an upstream analysis; the K-ORC mint as a
+  non-admin user is the open spike.
 - [Hypervisor Cluster](./hypervisor-cluster.md) — the dedicated bare-metal
   compute cluster from the original architecture document: Hypervisor
   Operator, node agents, and the LibVirt virtualization layer. Raw form, not

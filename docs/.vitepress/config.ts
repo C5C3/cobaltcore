@@ -231,6 +231,7 @@ export default defineConfig({
         items: [
           { text: 'Overview', link: '/future/' },
           { text: 'Brownfield Keystone Adoption', link: '/future/brownfield-keystone-adoption' },
+          { text: 'Service Accounts on Application Credentials', link: '/future/service-account-application-credentials' },
           { text: 'Hypervisor Cluster', link: '/future/hypervisor-cluster' },
           { text: 'Storage Cluster', link: '/future/storage-cluster' },
           { text: 'Management Cluster', link: '/future/management-cluster' },
