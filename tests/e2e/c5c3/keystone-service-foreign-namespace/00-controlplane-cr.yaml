@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane fixture for the foreign-namespace registration E2E test.
+#
+# A Keystone-only managed plane: the suite needs a live identity plane to
+# register against and nothing else, so no Horizon, Glance, Placement or
+# Barbican. Backing services are kind-sized (single replica, small volume) so the
+# whole thing schedules on one node beside the full-chain suite's stack.
+#
+# The CR carries NO metadata.namespace. Chainsaw runs the suite in its own
+# ephemeral namespace and the test applies this CR into it, which is what gives
+# the suite a ControlPlane identity of its own: the webhook admits one
+# ControlPlane per namespace, and the canonical openstack/controlplane-keystone
+# belongs to the full-chain suite.
+#
+# @TENANT_NS@ is substituted by the test with a namespace derived from the
+# ephemeral one. Listing it is the whole point of the fixture: without the
+# allowlist entry a registration from that namespace is refused, which is the
+# suite's own negative leg.
+#
+# Two things this fixture deliberately does NOT set:
+#   - spec.services.keystone.gateway — the openstack-gw Gateway lives in the
+#     openstack namespace and allows routes from its own namespace only.
+#   - spec.secretStoreRef — the shared openbao-cluster-store is allow-listed to
+#     openstack and shared-services, so an ephemeral namespace must stay on the
+#     operator-provisioned per-tenant store.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp
+spec:
+  openStackRelease: "2025.2"
+  region: RegionOne
+  infrastructure:
+    database:
+      clusterRef:
+        name: openstack-db
+      database: keystone
+      secretRef:
+        name: keystone-db
+      replicas: 1
+      storageSize: 512Mi
+    cache:
+      clusterRef:
+        name: openstack-memcached
+      backend: dogpile.cache.pymemcache
+      replicas: 1
+  services:
+    keystone:
+      replicas: 1
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+        secretName: k-orc-clouds-yaml
+      passwordSecretRef:
+        name: keystone-admin
+        key: password
+      applicationCredential:
+        restricted: true
+        rotation:
+          mode: PasswordDriven
+    serviceRegistrations:
+      allowedNamespaces:
+      - "@TENANT_NS@"
