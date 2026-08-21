@@ -198,7 +198,7 @@ spec:
   # The static seal needs OpenBao >= 2.4.0; the Barbican onboarding targets 2.6.
   # The image resolves to docker.io/openbao/openbao:<version>. Renovate tracks
   # this pin (github-releases openbao/openbao).
-  version: "2.6.1"
+  version: "2.6.2"
   replicas: 1
   storage:
     # No storageClassName: the cluster default carries the raft storage, the
