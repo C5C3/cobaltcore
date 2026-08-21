@@ -18,8 +18,10 @@
 #   - No pollution       : the external catalog has exactly as many identity
 #                         services/endpoints as before — compared against a
 #                         pre-recorded inventory, not just "no error".
-#   - Service accounts   : a declared account is usable against the external
-#                         Keystone; the password rotation round-trips.
+#   - Service accounts   : the declared inline account is usable against the
+#                         external Keystone; the password rotation round-trips
+#                         against a suite-created KeystoneService registration
+#                         (rotation-probe).
 #   - Drift surfaced     : the external admin password changes without the Secret
 #                         following; a forced re-mint fails loudly (documented
 #                         actionable reason) and the operator does NOT remediate.
@@ -65,13 +67,17 @@ spec:
   # that namespace. The fixture and the three negative ControlPlanes live in their
   # own namespaces, created and torn down inside the script.
   namespace: brownfield
+  # The step budget carries the four ControlPlanes plus the Block 6 rotation
+  # probe, which adds three waits of its own: its registration must converge,
+  # the rotation poll runs for up to 300s, and its finalizer teardown is
+  # awaited before Block 7 starts.
   timeouts:
     assert: 5m
-    exec: 30m
+    exec: 40m
   steps:
   - try:
     - script:
-        timeout: 30m
+        timeout: 40m
         # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every c5c3
         # e2e script pins bash for the same reason.
         shell: bash
@@ -86,6 +92,7 @@ spec:
           SA_SECRET="${CP}-service-account-nova-credentials"
           ADMIN_AC_KV="openstack/keystone/${CP_NS}/${CP}/admin/app-credential"
           SA_NOVA_KV="openstack/keystone/${CP_NS}/${CP}/service-accounts/nova"
+          ROTATION_PROBE_KV="openstack/keystone/${CP_NS}/rotation-probe/service-accounts/credentials"
           IMG=ghcr.io/c5c3/tempest:2025.2
           WORK="$(mktemp -d)"
 
@@ -107,6 +114,7 @@ spec:
           missing=""
           for crd in \
             controlplanes.c5c3.io \
+            keystoneservices.c5c3.io \
             credentialrotations.c5c3.io \
             applicationcredentials.openstack.k-orc.cloud \
             services.openstack.k-orc.cloud \
@@ -135,7 +143,7 @@ spec:
           # deploying the sibling operators. External mode never projects a
           # Keystone child, but a running keystone-operator is still the
           # discriminator between that CRDs-only leg and the full-stack jobs
-          # this 30-minute, service-image-pulling suite is scoped to (its own
+          # this 40-minute, service-image-pulling suite is scoped to (its own
           # e2e-external-keystone job deploys the operator even though External
           # mode leaves it idle).
           if ! kubectl get pods -A -l app.kubernetes.io/name=keystone-operator --no-headers 2>/dev/null | grep -q .; then
@@ -490,39 +498,95 @@ spec:
           osc_user nova heimdall "${OLD_SA_PW}" token issue >/dev/null
           echo "OK: service account nova issues an unscoped token against the external Keystone."
 
-          # Rotation round-trip: force a re-mint, wait for a new password, prove the
-          # new one works and the old is rejected.
+          # Rotation round-trip. A CredentialRotation with target
+          # serviceAccountPassword names a KeystoneService, so the round-trip runs
+          # against an account-only registration this suite creates for it in the
+          # ControlPlane's own namespace. The inline nova account above stays
+          # un-rotated here; rewriting its fixture onto a registration is #873.
+          kubectl apply -f - <<EOF
+          apiVersion: c5c3.io/v1alpha1
+          kind: KeystoneService
+          metadata:
+            name: rotation-probe
+            namespace: ${CP_NS}
+          spec:
+            controlPlaneRef:
+              name: ${CP}
+            account:
+              project:
+                name: service-rotation-probe
+                create: true
+          EOF
+          kubectl wait --for=condition=Ready "keystoneservice/rotation-probe" -n "${CP_NS}" --timeout=300s
+          # `kubectl wait` cannot express "this Secret carries a non-empty key",
+          # so the materialised password is polled for.
+          deadline=$(( $(date +%s) + 120 )); OLD_PROBE_PW=""
+          while true; do
+            OLD_PROBE_PW="$(kubectl get secret rotation-probe-credentials -n "${CP_NS}" \
+              -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
+            if [ -n "${OLD_PROBE_PW}" ]; then
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "ERROR: Secret rotation-probe-credentials in ${CP_NS} carries no password within 120s"; exit 1
+            fi
+            sleep 5
+          done
+          osc_user rotation-probe heimdall "${OLD_PROBE_PW}" token issue >/dev/null
+          echo "OK: the rotation-probe registration issues an unscoped token against the external Keystone."
+
           kubectl apply -f - <<EOF
           apiVersion: c5c3.io/v1alpha1
           kind: CredentialRotation
           metadata:
-            name: rotate-nova
+            name: rotate-probe
             namespace: ${CP_NS}
           spec:
             target: serviceAccountPassword
-            serviceAccount: nova
+            keystoneService: rotation-probe
             reMint: true
           EOF
-          deadline=$(( $(date +%s) + 300 )); NEW_SA_PW=""
+          deadline=$(( $(date +%s) + 300 )); NEW_PROBE_PW=""
           while true; do
-            NEW_SA_PW="$(kubectl get secret "${SA_SECRET}" -n "${CP_NS}" -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
-            rotated="$(kubectl get controlplane "${CP}" -n "${CP_NS}" -o json \
-              | jq -r '.status.serviceAccounts[] | select(.name=="nova") | .lastPasswordRotation // ""')"
-            if [ -n "${NEW_SA_PW}" ] && [ "${NEW_SA_PW}" != "${OLD_SA_PW}" ] && [ -n "${rotated}" ]; then
+            NEW_PROBE_PW="$(kubectl get secret rotation-probe-credentials -n "${CP_NS}" \
+              -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
+            pw_changed=no
+            if [ -n "${NEW_PROBE_PW}" ] && [ "${NEW_PROBE_PW}" != "${OLD_PROBE_PW}" ]; then
+              pw_changed=yes
+            fi
+            # Guarded like the password read above: under `set -e` a single API
+            # hiccup on this assignment would kill the whole suite instead of
+            # retrying on the next tick. An empty object polls as not-yet-rotated.
+            probe_json="$(kubectl get keystoneservice rotation-probe -n "${CP_NS}" -o json 2>/dev/null || echo '{}')"
+            rotated="$(printf '%s' "$probe_json" | jq -r '.status.account.lastPasswordRotation // ""')"
+            pw_gen="$(printf '%s' "$probe_json" | jq -r '.status.account.passwordGeneration // 0')"
+            if [ "${pw_changed}" = "yes" ] && [ -n "${rotated}" ] && [ "${pw_gen}" -ge 2 ]; then
               break
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "ERROR: service account nova password did not rotate within 300s"; exit 1
+              echo "ERROR: rotation-probe did not rotate within 300s (password changed: ${pw_changed}, lastPasswordRotation: '${rotated:-<none>}', passwordGeneration: ${pw_gen})"; exit 1
             fi
             sleep 5
           done
-          echo "OK: service account nova password rotated (lastPasswordRotation set)."
-          osc_user nova heimdall "${NEW_SA_PW}" token issue >/dev/null
-          echo "OK: the rotated service account password issues a token."
-          if osc_user nova heimdall "${OLD_SA_PW}" token issue >/dev/null 2>&1; then
-            echo "ERROR: the pre-rotation service account password still authenticates"; exit 1
+          echo "OK: the rotation-probe password rotated (lastPasswordRotation set, passwordGeneration=${pw_gen})."
+          osc_user rotation-probe heimdall "${NEW_PROBE_PW}" token issue >/dev/null
+          echo "OK: the rotated registration password issues a token."
+          if osc_user rotation-probe heimdall "${OLD_PROBE_PW}" token issue >/dev/null 2>&1; then
+            echo "ERROR: the pre-rotation registration password still authenticates"; exit 1
           fi
-          echo "OK: the pre-rotation service account password is rejected."
+          echo "OK: the pre-rotation registration password is rejected."
+
+          # The probe is torn down here rather than in the finally block: its
+          # finalizer removes the probe's user and project from the external
+          # Keystone through the ControlPlane's admin credential, which Block 9
+          # revokes when it deletes the ControlPlane. A probe still alive at that
+          # point strands both rows in Keystone, failing Block 9's inventory diff,
+          # and its own teardown never completes.
+          kubectl delete credentialrotation rotate-probe -n "${CP_NS}"
+          kubectl delete keystoneservice rotation-probe -n "${CP_NS}" --wait=false
+          wait_gone keystoneservice rotation-probe "${CP_NS}" 300
+          wait_gone secret rotation-probe-credentials "${CP_NS}" 120
+          echo "OK: the rotation-probe registration and its credentials Secret are torn down."
 
           # ── Block 7: negative ControlPlanes (clocks already elapsed) ─────────
           # 7a: wrong password -> distinct authentication-failure condition.
@@ -665,7 +729,7 @@ spec:
           wait_gone secret "${CLOUDS_SECRET}" "${CP_NS}" 120
           wait_gone secret "${SA_SECRET}" "${CP_NS}" 120
           # OpenBao paths purged (tolerate ESO soft-delete: data:null counts as purged).
-          for kv in "${ADMIN_AC_KV}" "${SA_NOVA_KV}"; do
+          for kv in "${ADMIN_AC_KV}" "${SA_NOVA_KV}" "${ROTATION_PROBE_KV}"; do
             if json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${kv}" 2>/dev/null)"; then
               if ! printf '%s' "$json" | jq -e '.data.data == null' >/dev/null 2>&1; then
                 echo "ERROR: ${kv} still holds a live value after ControlPlane deletion"; exit 1
