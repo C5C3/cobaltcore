@@ -357,9 +357,24 @@ The nudge is one-shot per spec generation, so a `reMint: true` left in the spec
 fires once per edit rather than on every resync.
 
 A service-account password rotates the same way, with
-`target: serviceAccountPassword` and `serviceAccount: nova` — and there `reMint`
-is not merely advisable but **required**: that path has no password-hash
+`target: serviceAccountPassword` and `keystoneService: <name>` naming the
+`KeystoneService` registration in the CredentialRotation's namespace — and there
+`reMint` is not merely advisable but **required**: that path has no password-hash
 auto-detect at all, so without it the request is a guaranteed no-op.
+
+::: warning `spec.serviceAccount` was replaced by `spec.keystoneService`
+The field named an inline account (`spec.korc.serviceAccounts[].name`); it now
+names a `KeystoneService` CR. `CredentialRotation` is `v1alpha1`, so the rename is
+applied in place and there is no conversion: an existing CR carrying
+`serviceAccount` loses the value on the next write and reports `Ready=False`
+reason `MissingKeystoneService`. **Re-create it** against a `KeystoneService`
+registration.
+
+An inline `spec.korc.serviceAccounts[]` account has no rotation trigger while this
+holds — it is still projected and still delivers its credentials, but nothing
+addresses its password. Declare accounts that need rotating as `KeystoneService`
+CRs.
+:::
 
 ::: warning The minted credential must never be copied
 A re-mint is **delete + recreate**, and the previous credential is revoked at the

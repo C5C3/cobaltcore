@@ -182,8 +182,10 @@ its catalog with a non-default admin identity (domain `heimdall`, project
 4. **No pollution** — the external services, endpoints, and domains are byte-for-byte
    identical to a pre-recorded baseline; users and projects gained exactly the one
    declared service account.
-5. **Service accounts** — the declared account issues an unscoped token, and a
-   `CredentialRotation` round-trips its password (new works, old is rejected).
+5. **Service accounts** — the declared inline account issues an unscoped token, and
+   a `CredentialRotation` round-trips the password of `rotation-probe`, a
+   suite-created account-only `KeystoneService` registration (new works, old is
+   rejected).
 6. **Drift + rotation** — changing the external admin password without updating the
    Secret makes a forced re-mint fail loudly (a documented drift reason, no
    remediation); updating the Secret then drives a hash-driven re-mint to a fresh

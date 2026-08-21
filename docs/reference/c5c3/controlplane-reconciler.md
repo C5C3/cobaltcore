@@ -2380,24 +2380,49 @@ emits a one-shot `ScheduledRotationDeferred` event so the deferral is not silent
 | Requeue | `credentialRotationWaitInterval` = **10s** while waiting for the ControlPlane reconciler or for a dependency to appear |
 
 The `CredentialRotationReconciler` drives one-shot rotations of a control-plane
-credential by **nudging** the ControlPlane reconciler rather than duplicating any
+credential by **nudging** the owning reconciler rather than duplicating any
 mint logic. It **dispatches on `spec.target`**: `adminApplicationCredential`
 nudges the admin AC (clearing the AC's password-hash annotation), and
-`serviceAccountPassword` nudges the named service account (clearing the managed
-`User`'s `cobaltcore.c5c3.io/password-generation` annotation so
-`reconcileServiceAccounts` flips its `passwordRef` on the next pass). Its model:
+`serviceAccountPassword` nudges the managed account of the referenced
+`KeystoneService` (clearing the managed `User`'s
+`cobaltcore.c5c3.io/password-generation` annotation, which the KeystoneService
+controller's `ensureManagedAccountUser` consumes by bumping the password
+generation on its next pass). Its model:
 
 - **Nudge, never mint or delete.** For the admin target it **clears** (zeroes)
   the `cobaltcore.c5c3.io/admin-password-hash` annotation on the owned AC CR via
   `clearPasswordHashAnnotation` (a no-op `Update` when already empty). On its next
   pass `reconcileKORC` observes the mismatch and performs the delete+recreate
   re-mint, re-stamping the fresh hash. The `serviceAccountPassword` target is the
-  same discipline against the managed `User`: it requires the named account on the
-  ControlPlane (`UnknownServiceAccount` otherwise), and — because there is **no
-  external password source to observe** — has no auto-detect path, so a rotation
-  fires only on an explicit `reMint` (latched to the spec generation). Keeping the
-  resource lifecycle owned solely by the ControlPlane reconciler avoids two
-  controllers racing on the same object.
+  same discipline against the managed `User`: it resolves the `KeystoneService`
+  named by `spec.keystoneService` in the CredentialRotation's **own** namespace
+  (`KeystoneServiceNotFound` when it is absent), requires that CR's `spec.account`
+  block (`NoAccountDeclared` otherwise), and resolves the ControlPlane through the
+  registration's `controlPlaneRef` (`ControlPlaneNotFound` when that dangles).
+  Each of the three is a `Ready=False` wait with the 10s requeue. Because that
+  reference crosses namespaces and the caller controls it, the path then repeats
+  **all three** pre-write gates the KeystoneService reconciler applies before it
+  touches the account: the plane's registration consent for the CR's namespace
+  (`NamespaceNotAllowed` — de-listing a namespace *freezes* its registrations, so
+  the `User` is still there to nudge while the reconciler that would act on the
+  nudge no longer runs), the plane's `AdminCredentialReady` condition
+  (`WaitingForAdminCredential` — K-ORC cannot reach Keystone before the admin
+  credential is minted, which freezes the registration the same way), and the
+  ownership labels on the `User` itself (`ForeignServiceAccount` — a
+  cross-namespace child carries no owner reference, so the derived name is the
+  only thing tying it to the registration). Each is refused **before** the nudge,
+  so the generation stays unlatched and the rotation still fires once the gate
+  opens. A
+  `CredentialRotation` that predates `spec.keystoneService` decodes with an empty
+  name and finishes `Ready=False` reason `MissingKeystoneService` with **no**
+  requeue, naming the removed `spec.serviceAccount` field rather than reporting a
+  dangling reference to a `KeystoneService` nobody wrote. Because there is
+  **no external password source to observe**, the target has no auto-detect path,
+  so a rotation fires only on an explicit `reMint` (latched to the spec
+  generation). Keeping the resource lifecycle owned solely by the reconciler that
+  owns the object (the ControlPlane reconciler for the admin AC, the
+  KeystoneService reconciler for the managed account) avoids two controllers
+  racing on the same object.
 - **`reMint` is one-shot per spec generation.** An explicit `spec.reMint` is
   **latched** on `status.lastTriggeredGeneration`: the reconciler nudges only while
   it differs from `metadata.generation`, then records the generation. A `reMint:
@@ -2408,16 +2433,19 @@ nudges the admin AC (clearing the AC's password-hash annotation), and
   reports `NoRotationNeeded`. The auto-detect (password-hash change) path is **not**
   latched: it is self-limiting (it stops once the hash matches) and relies on resync
   to observe an out-of-band password rotation.
-- **ControlPlane resolution (one-per-namespace).** A `CredentialRotation`
-  carries no explicit ControlPlane reference, so `resolveControlPlane` lists
-  ControlPlanes in the CredentialRotation's **own** namespace and requires
-  exactly one. Zero → `Ready=False` reason `NoControlPlane` with a short requeue;
+- **ControlPlane resolution (one-per-namespace).** On the
+  `adminApplicationCredential` target a `CredentialRotation` carries no explicit
+  ControlPlane reference, so `resolveControlPlane` lists ControlPlanes in the
+  CredentialRotation's **own** namespace and requires exactly one. Zero →
+  `Ready=False` reason `NoControlPlane` with a short requeue;
   multiple → `Ready=False` reason `AmbiguousControlPlane` with **no** requeue (an
   arbitrary pick could rotate the wrong credential). The one-ControlPlane-per-namespace
   contract is now enforced at admission by the ControlPlane validating webhook
   (`validateUniqueInNamespace`), so the `AmbiguousControlPlane` branch is
   **defense-in-depth**: it is retained as a safety fallback but is unreachable while
-  the webhook is active.
+  the webhook is active. The `serviceAccountPassword` target does not use this
+  lookup. It reaches its ControlPlane through the referenced KeystoneService's
+  `controlPlaneRef`, so it works from a namespace that holds no ControlPlane.
 - **Bootstrap is idempotent.** With `spec.bootstrap`, an already-existing AC is a
   no-op success (`BootstrapComplete`); a missing AC waits (`WaitingForBootstrap`)
   for the ControlPlane reconciler to mint it.
