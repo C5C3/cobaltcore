@@ -11,10 +11,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
-	"github.com/c5c3/forge/internal/common/secrets"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	"github.com/c5c3/forge/internal/common/watch"
-	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/watch"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
 // secretToHorizonMapper returns a MapFunc that maps Secret events to

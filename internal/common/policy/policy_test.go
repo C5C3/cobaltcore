@@ -16,7 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 func TestRenderPolicyYAML(t *testing.T) {

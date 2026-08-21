@@ -14,8 +14,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 
-	"github.com/c5c3/forge/internal/common/apply"
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/apply"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // adminUserName / adminProjectName / adminDomainName resolve the three OpenStack

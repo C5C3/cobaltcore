@@ -10,7 +10,7 @@ import (
 	"github.com/onsi/gomega"
 	"k8s.io/utils/ptr"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // indexOf returns the position of tok in cmd, or -1 when it is absent.

@@ -12,9 +12,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/healthcheck"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 )
 
 // Condition type and reason constants for BarbicanAPIReady.

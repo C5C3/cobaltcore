@@ -25,7 +25,7 @@ import (
 // ("db-sync", "db-expand", …); each phase keeps an independent dedupe
 // annotation so terminal emission for one phase never silently suppresses
 // another.
-const JobUIDAnnotationFormat = "forge.c5c3.io/last-%s-job-uid"
+const JobUIDAnnotationFormat = "cobaltcore.c5c3.io/last-%s-job-uid"
 
 // JobUIDAnnotationKey returns the dedupe annotation key for the Job identified
 // by the given phase suffix.

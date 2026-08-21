@@ -19,10 +19,10 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/job"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/job"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 )
 
 // dbConfigSecretName is the rendered config Secret the database step mounts in

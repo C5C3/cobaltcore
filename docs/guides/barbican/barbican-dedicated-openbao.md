@@ -225,7 +225,7 @@ Then store a secret, read its payload back, and delete it:
 
 ```bash
 HREF=$(openstack --insecure secret store --name roundtrip \
-  --payload 'forge-barbican-payload' -f value -c 'Secret href')
+  --payload 'cobaltcore-barbican-payload' -f value -c 'Secret href')
 openstack --insecure secret get -p "$HREF" -f value -c Payload
 openstack --insecure secret delete "$HREF"
 ```
@@ -236,7 +236,7 @@ and the payload travels through castellan's vault plugin into the dedicated
 OpenBao instance and out again. A catalogue-only check misses every step after
 the first.
 
-`forge-barbican-payload` is a throwaway. Real key material does not belong behind
+`cobaltcore-barbican-payload` is a throwaway. Real key material does not belong behind
 `--payload`, which leaves it readable in the process argument vector and in your
 shell history; feed it in from a file or from standard input instead. `--insecure`
 is here because the kind gateway presents a self-signed certificate. It disables

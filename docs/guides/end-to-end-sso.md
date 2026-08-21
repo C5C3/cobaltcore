@@ -160,16 +160,16 @@ spec:
     # blocks .well-known discovery against the in-cluster Keycloak — see
     # [Attach an OIDC Federation Backend](./keystone/oidc-federation.md) Step 4 for the
     # full worked example (mappings, groups, and why introspection is https).
-    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/forge
+    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore
     clientID: keystone
     clientSecretRef:
-      name: keycloak-forge-client
+      name: keycloak-cobaltcore-client
     endpoints:
-      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/auth
-      tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/token
-      jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/certs
-      userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/userinfo
-      introspectionEndpoint: https://keycloak.openstack.svc.cluster.local:8443/realms/forge/protocol/openid-connect/token/introspect
+      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/auth
+      tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/token
+      jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/certs
+      userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/userinfo
+      introspectionEndpoint: https://keycloak.openstack.svc.cluster.local:8443/realms/cobaltcore/protocol/openid-connect/token/introspect
     oauth2Introspection:
       enabled: true
       tlsVerify: false

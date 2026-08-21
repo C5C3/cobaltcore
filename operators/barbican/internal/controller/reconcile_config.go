@@ -14,13 +14,13 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/cache"
-	"github.com/c5c3/forge/internal/common/config"
-	"github.com/c5c3/forge/internal/common/keystoneauth"
-	"github.com/c5c3/forge/internal/common/plugins"
-	"github.com/c5c3/forge/internal/common/policy"
-	"github.com/c5c3/forge/internal/common/release"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/cache"
+	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
+	"github.com/c5c3/cobaltcore/internal/common/plugins"
+	"github.com/c5c3/cobaltcore/internal/common/policy"
+	"github.com/c5c3/cobaltcore/internal/common/release"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 )
 
 // defaultConfigRetainCount is the number of historical immutable config Secrets

@@ -11,7 +11,7 @@ import (
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // ensureCatalog projects the declared catalog block: one managed K-ORC Service

@@ -14,9 +14,9 @@ import (
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 
-	"github.com/c5c3/forge/internal/common/bootstrap"
-	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
-	"github.com/c5c3/forge/operators/horizon/internal/controller"
+	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/horizon/internal/controller"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# KeystoneIdentityBackend fixture attaching the Keycloak "forge-saml" realm to
+# KeystoneIdentityBackend fixture attaching the Keycloak "cobaltcore-saml" realm to
 # keystone-saml via SAML. deletionPolicy Delete exercises the
 # disable-then-delete domain teardown in-cluster. The IdP metadata is supplied
 # by SecretRef (keycloak-saml-idp-metadata), created by the chainsaw step from
@@ -25,13 +25,13 @@ spec:
   keystoneRef:
     name: keystone-saml
   domain:
-    name: forge-saml
+    name: cobaltcore-saml
     mode: Manage
     deletionPolicy: Delete
-    description: Keycloak forge-saml realm
+    description: Keycloak cobaltcore-saml realm
   type: SAML
   saml:
-    idpEntityID: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml
+    idpEntityID: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml
     identityProviderName: keycloak-saml
     idpMetadata:
       secretRef:
@@ -42,7 +42,7 @@ spec:
   - remote:
     - type: HTTP_MELLON_IDP
       anyOneOf:
-      - http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml
+      - http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml
     - type: HTTP_MELLON_USERNAME
     local:
     # {0} is the first value-producing remote: the HTTP_MELLON_IDP rule carries
@@ -54,10 +54,10 @@ spec:
       group:
         name: federated-users
         domain:
-          name: forge-saml
+          name: cobaltcore-saml
   groups:
   - name: federated-users
-    description: Federated Keycloak forge-saml users
+    description: Federated Keycloak cobaltcore-saml users
     roleAssignments:
     - role: member
       domain: true

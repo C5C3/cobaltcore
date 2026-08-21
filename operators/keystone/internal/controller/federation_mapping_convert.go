@@ -7,7 +7,7 @@ package controller
 import (
 	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/federation"
 
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // toGophercloudMappingRules converts the typed spec.mappings rules into

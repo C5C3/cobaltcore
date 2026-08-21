@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // A zero-valued replica count (webhook-bypassed spec) must normalize to the

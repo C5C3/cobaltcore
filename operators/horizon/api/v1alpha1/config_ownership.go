@@ -4,7 +4,7 @@
 
 package v1alpha1
 
-import "github.com/c5c3/forge/internal/common/config"
+import "github.com/c5c3/cobaltcore/internal/common/config"
 
 // The owned-config-key registry below records the flat Django settings the
 // operator computes and renders into local_settings.py, so the post-merge

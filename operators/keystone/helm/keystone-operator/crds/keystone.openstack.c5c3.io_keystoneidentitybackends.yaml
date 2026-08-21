@@ -726,7 +726,7 @@ spec:
                   issuer:
                     description: |-
                       Issuer is the OIDC issuer URL exactly as the IdP asserts it (the `iss`
-                      claim), e.g. "https://keycloak.example.com/realms/forge". It names the
+                      claim), e.g. "https://keycloak.example.com/realms/cobaltcore". It names the
                       identity provider in the metadata directory (the scheme-stripped,
                       URL-encoded issuer is the metadata file basename) and is registered as
                       the keystone identity provider's remote ID.

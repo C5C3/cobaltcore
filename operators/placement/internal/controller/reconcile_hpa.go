@@ -11,8 +11,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/deployment"
-	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
 // reconcileHPA ensures the HorizontalPodAutoscaler for the Placement API

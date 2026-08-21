@@ -8,8 +8,8 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/c5c3/forge/internal/common/deployment"
-	"github.com/c5c3/forge/internal/common/job"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/job"
 )
 
 // Backoff limits for the steady-state migration Jobs. db-sync retries a handful

@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 
-	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
 )
 
 // OwnedKey identifies a single operator-owned configuration key and how the

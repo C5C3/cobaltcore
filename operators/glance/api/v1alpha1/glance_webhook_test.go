@@ -22,7 +22,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // validGlance returns a minimal Glance CR that passes every validation rule.

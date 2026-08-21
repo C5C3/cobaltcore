@@ -19,9 +19,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	"github.com/c5c3/forge/internal/common/config"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/config"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
 // placementForConfig returns a Placement carrying what the defaulting webhook

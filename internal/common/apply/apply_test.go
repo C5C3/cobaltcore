@@ -23,8 +23,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	"github.com/c5c3/forge/internal/common/multicluster"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 func newScheme() *runtime.Scheme {

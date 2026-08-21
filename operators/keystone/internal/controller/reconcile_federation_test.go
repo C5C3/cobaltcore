@@ -20,11 +20,11 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	commonconditions "github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/config"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	commonconditions "github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/config"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // testFederationKeystone returns testKeystone() with the federation proxy
@@ -42,9 +42,9 @@ func testFederationKeystone() *keystonev1alpha1.Keystone {
 func testProjectableOIDCBackend(name string) *keystonev1alpha1.KeystoneIdentityBackend {
 	b := testOIDCBackend(name, name+"-domain")
 	b.Spec.OIDC.Endpoints = &keystonev1alpha1.OIDCEndpointsSpec{
-		AuthorizationEndpoint: "https://idp.example.com/realms/forge/protocol/openid-connect/auth",
-		TokenEndpoint:         "https://idp.example.com/realms/forge/protocol/openid-connect/token",
-		JWKSURI:               "https://idp.example.com/realms/forge/protocol/openid-connect/certs",
+		AuthorizationEndpoint: "https://idp.example.com/realms/cobaltcore/protocol/openid-connect/auth",
+		TokenEndpoint:         "https://idp.example.com/realms/cobaltcore/protocol/openid-connect/token",
+		JWKSURI:               "https://idp.example.com/realms/cobaltcore/protocol/openid-connect/certs",
 	}
 	b.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{
 		Conditions: []metav1.Condition{{
@@ -71,10 +71,10 @@ func TestIssuerToMetadataBasename(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cases := map[string]string{
 		// The D7 filename contract: scheme-stripped, RFC3986-escaped issuer.
-		"http://keycloak.openstack.svc.cluster.local:8080/realms/forge": "keycloak.openstack.svc.cluster.local%3A8080%2Frealms%2Fforge",
-		"https://idp.example.com/realms/forge":                          "idp.example.com%2Frealms%2Fforge",
+		"http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore": "keycloak.openstack.svc.cluster.local%3A8080%2Frealms%2Fcobaltcore",
+		"https://idp.example.com/realms/cobaltcore":                          "idp.example.com%2Frealms%2Fcobaltcore",
 		// A trailing slash is not part of the issuer identity.
-		"https://idp.example.com/realms/forge/": "idp.example.com%2Frealms%2Fforge",
+		"https://idp.example.com/realms/cobaltcore/": "idp.example.com%2Frealms%2Fcobaltcore",
 		// No path segment at all.
 		"https://accounts.example.com": "accounts.example.com",
 	}
@@ -111,10 +111,10 @@ func TestRenderProxyConf_DirectivesAndLocations(t *testing.T) {
 	renders := []oidcRender{
 		{
 			backendName: "corp-oidc", idpName: "corp-oidc", protocolID: "openid",
-			issuer:            "https://idp.example.com/realms/forge",
-			metadataBasename:  issuerToMetadataBasename("https://idp.example.com/realms/forge"),
+			issuer:            "https://idp.example.com/realms/cobaltcore",
+			metadataBasename:  issuerToMetadataBasename("https://idp.example.com/realms/cobaltcore"),
 			introspection:     true,
-			introspectionEP:   "https://idp.example.com/realms/forge/introspect",
+			introspectionEP:   "https://idp.example.com/realms/cobaltcore/introspect",
 			introspectionTLS:  true,
 			clientID:          "keystone",
 			clientSecret:      "rp-secret",
@@ -124,8 +124,8 @@ func TestRenderProxyConf_DirectivesAndLocations(t *testing.T) {
 		},
 		{
 			backendName: "corp-oidc2", idpName: "corp-oidc2", protocolID: "openid",
-			issuer:            "https://idp.example.com/realms/forge2",
-			metadataBasename:  issuerToMetadataBasename("https://idp.example.com/realms/forge2"),
+			issuer:            "https://idp.example.com/realms/cobaltcore2",
+			metadataBasename:  issuerToMetadataBasename("https://idp.example.com/realms/cobaltcore2"),
 			sessionType:       "client-cookie",
 			stateInputHeaders: "none",
 			stripHeaders:      []string{"OIDC-EMAIL", "OIDC_EMAIL"},
@@ -153,7 +153,7 @@ func TestRenderProxyConf_DirectivesAndLocations(t *testing.T) {
 	// Introspection directives only for the single introspection backend. The
 	// endpoint and client ID are quoted so a value with an embedded space
 	// stays a single Apache directive argument.
-	g.Expect(conf).To(ContainSubstring(`OIDCOAuthIntrospectionEndpoint "https://idp.example.com/realms/forge/introspect"`))
+	g.Expect(conf).To(ContainSubstring(`OIDCOAuthIntrospectionEndpoint "https://idp.example.com/realms/cobaltcore/introspect"`))
 	g.Expect(conf).To(ContainSubstring(`OIDCOAuthClientID "keystone"`))
 	g.Expect(strings.Count(conf, "OIDCOAuthIntrospectionEndpoint")).To(Equal(1))
 	g.Expect(conf).NotTo(ContainSubstring("OIDCOAuthSSLValidateServer"),
@@ -170,8 +170,8 @@ func TestRenderProxyConf_DirectivesAndLocations(t *testing.T) {
 	// Per-IdP protected Locations with OICDiscoverURL ?iss= pinning.
 	g.Expect(conf).To(ContainSubstring(`<Location "/v3/auth/OS-FEDERATION/identity_providers/corp-oidc/protocols/openid/websso">`))
 	g.Expect(conf).To(ContainSubstring(`<Location "/v3/auth/OS-FEDERATION/identity_providers/corp-oidc2/protocols/openid/websso">`))
-	g.Expect(conf).To(ContainSubstring("?iss=" + "https%3A%2F%2Fidp.example.com%2Frealms%2Fforge"))
-	g.Expect(conf).To(ContainSubstring("?iss=" + "https%3A%2F%2Fidp.example.com%2Frealms%2Fforge2"))
+	g.Expect(conf).To(ContainSubstring("?iss=" + "https%3A%2F%2Fidp.example.com%2Frealms%2Fcobaltcore"))
+	g.Expect(conf).To(ContainSubstring("?iss=" + "https%3A%2F%2Fidp.example.com%2Frealms%2Fcobaltcore2"))
 
 	// The introspection backend's auth path accepts bearer tokens.
 	g.Expect(conf).To(ContainSubstring(`<Location "/v3/OS-FEDERATION/identity_providers/corp-oidc/protocols/openid/auth">`))
@@ -194,10 +194,10 @@ func TestRenderProxyConf_QuotesIntrospectionClientIDWithSpace(t *testing.T) {
 	// allows spaces, so a value like "my client" reaches the renderer verbatim.
 	renders := []oidcRender{{
 		backendName: "corp-oidc", idpName: "corp-oidc", protocolID: "openid",
-		issuer:            "https://idp.example.com/realms/forge",
-		metadataBasename:  issuerToMetadataBasename("https://idp.example.com/realms/forge"),
+		issuer:            "https://idp.example.com/realms/cobaltcore",
+		metadataBasename:  issuerToMetadataBasename("https://idp.example.com/realms/cobaltcore"),
 		introspection:     true,
-		introspectionEP:   "https://idp.example.com/realms/forge/introspect",
+		introspectionEP:   "https://idp.example.com/realms/cobaltcore/introspect",
 		introspectionTLS:  true,
 		clientID:          "my client",
 		clientSecret:      "rp-secret",
@@ -213,7 +213,7 @@ func TestRenderProxyConf_QuotesIntrospectionClientIDWithSpace(t *testing.T) {
 	// Keystone API down cluster-wide.
 	g.Expect(conf).To(ContainSubstring(`OIDCOAuthClientID "my client"`))
 	g.Expect(conf).NotTo(ContainSubstring("OIDCOAuthClientID my client"))
-	g.Expect(conf).To(ContainSubstring(`OIDCOAuthIntrospectionEndpoint "https://idp.example.com/realms/forge/introspect"`))
+	g.Expect(conf).To(ContainSubstring(`OIDCOAuthIntrospectionEndpoint "https://idp.example.com/realms/cobaltcore/introspect"`))
 }
 
 // TestRenderProxyConf_XForwardedHeadersGatedOnGateway pins the redirect-URI
@@ -225,8 +225,8 @@ func TestRenderProxyConf_XForwardedHeadersGatedOnGateway(t *testing.T) {
 	g := NewGomegaWithT(t)
 	renders := []oidcRender{{
 		backendName: "corp-oidc", idpName: "corp-oidc", protocolID: "openid",
-		issuer:            "https://idp.example.com/realms/forge",
-		metadataBasename:  issuerToMetadataBasename("https://idp.example.com/realms/forge"),
+		issuer:            "https://idp.example.com/realms/cobaltcore",
+		metadataBasename:  issuerToMetadataBasename("https://idp.example.com/realms/cobaltcore"),
 		sessionType:       "client-cookie",
 		stateInputHeaders: "none",
 	}}
@@ -264,7 +264,7 @@ func TestValidateOIDCRenderInputs_RejectsDoubleQuoteAllowsSpace(t *testing.T) {
 func TestRenderExplicitProviderMetadata_OptionalEndpoints(t *testing.T) {
 	g := NewGomegaWithT(t)
 	o := &keystonev1alpha1.OIDCBackendSpec{
-		Issuer: "https://idp.example.com/realms/forge",
+		Issuer: "https://idp.example.com/realms/cobaltcore",
 		Endpoints: &keystonev1alpha1.OIDCEndpointsSpec{
 			AuthorizationEndpoint: "https://idp.example.com/auth",
 			TokenEndpoint:         "https://idp.example.com/token",
@@ -274,7 +274,7 @@ func TestRenderExplicitProviderMetadata_OptionalEndpoints(t *testing.T) {
 
 	doc, err := renderExplicitProviderMetadata(o)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(string(doc)).To(ContainSubstring(`"issuer": "https://idp.example.com/realms/forge"`))
+	g.Expect(string(doc)).To(ContainSubstring(`"issuer": "https://idp.example.com/realms/cobaltcore"`))
 	g.Expect(string(doc)).NotTo(ContainSubstring("introspection_endpoint"))
 
 	o.Endpoints.IntrospectionEndpoint = "https://idp.example.com/introspect"
@@ -307,9 +307,9 @@ func TestFetchProviderMetadata_ValidatesIssuerAndCaches(t *testing.T) {
 	g := NewGomegaWithT(t)
 	backend := testProjectableOIDCBackend("corp-oidc")
 	backend.Spec.OIDC.Endpoints = nil
-	backend.Spec.OIDC.ProviderMetadataURL = "https://idp.example.com/realms/forge/.well-known/openid-configuration"
+	backend.Spec.OIDC.ProviderMetadataURL = "https://idp.example.com/realms/cobaltcore/.well-known/openid-configuration"
 
-	doer := &metadataDoer{body: `{"issuer":"https://idp.example.com/realms/forge","token_endpoint":"https://idp.example.com/token"}`}
+	doer := &metadataDoer{body: `{"issuer":"https://idp.example.com/realms/cobaltcore","token_endpoint":"https://idp.example.com/token"}`}
 	r := newTestReconciler()
 	r.HTTPClient = doer
 
@@ -336,7 +336,7 @@ func TestFetchProviderMetadata_RejectsIssuerMismatch(t *testing.T) {
 	backend.Spec.OIDC.Endpoints = nil
 
 	r := newTestReconciler()
-	r.HTTPClient = &metadataDoer{body: `{"issuer":"https://evil.example.com/realms/forge"}`}
+	r.HTTPClient = &metadataDoer{body: `{"issuer":"https://evil.example.com/realms/cobaltcore"}`}
 
 	_, err := r.fetchProviderMetadata(context.Background(), backend)
 	g.Expect(err).To(MatchError(errProviderMetadataUnavailable))
@@ -370,7 +370,7 @@ func (p *probeDoer) Do(*http.Request) (*http.Response, error) {
 // would enumerate the in-cluster services reachable from the operator pod.
 func TestFetchProviderMetadata_DoesNotEchoProbeDetail(t *testing.T) {
 	g := NewGomegaWithT(t)
-	const metadataURL = "https://idp.example.com/realms/forge/.well-known/openid-configuration"
+	const metadataURL = "https://idp.example.com/realms/cobaltcore/.well-known/openid-configuration"
 
 	probes := []struct {
 		name string
@@ -445,9 +445,9 @@ func TestFetchProviderMetadata_BoundsRequestContext(t *testing.T) {
 	g := NewGomegaWithT(t)
 	backend := testProjectableOIDCBackend("corp-oidc")
 	backend.Spec.OIDC.Endpoints = nil
-	backend.Spec.OIDC.ProviderMetadataURL = "https://idp.example.com/realms/forge/.well-known/openid-configuration"
+	backend.Spec.OIDC.ProviderMetadataURL = "https://idp.example.com/realms/cobaltcore/.well-known/openid-configuration"
 
-	doer := &ctxDeadlineDoer{body: `{"issuer":"https://idp.example.com/realms/forge"}`}
+	doer := &ctxDeadlineDoer{body: `{"issuer":"https://idp.example.com/realms/cobaltcore"}`}
 	r := newTestReconciler()
 	r.HTTPClient = doer
 
@@ -605,12 +605,12 @@ func TestRenderOIDCBackend_DiscoveryModeEgressPortsFromDocument(t *testing.T) {
 	g := NewGomegaWithT(t)
 	backend := testProjectableOIDCBackend("corp-oidc")
 	backend.Spec.OIDC.Endpoints = nil // discovery mode
-	backend.Spec.OIDC.Issuer = "https://idp.example.com/realms/forge"
+	backend.Spec.OIDC.Issuer = "https://idp.example.com/realms/cobaltcore"
 
 	r := newTestReconciler(testOIDCClientSecret("corp-oidc"))
 	r.HTTPClient = &metadataDoer{body: `{` +
-		`"issuer":"https://idp.example.com/realms/forge",` +
-		`"authorization_endpoint":"https://idp.example.com/realms/forge/auth",` +
+		`"issuer":"https://idp.example.com/realms/cobaltcore",` +
+		`"authorization_endpoint":"https://idp.example.com/realms/cobaltcore/auth",` +
 		`"token_endpoint":"https://tokens.example.com:9443/token",` +
 		`"jwks_uri":"https://keys.example.com:7443/certs"}`}
 
@@ -723,7 +723,7 @@ func TestReconcileIdentityBackends_OIDCRendersFederationSecret(t *testing.T) {
 	g.Expect(string(secret.Data["corp-oidc.client"])).To(ContainSubstring(`"client_secret":"rp-secret"`))
 	g.Expect(string(secret.Data["corp-oidc.conf"])).To(ContainSubstring(`"scope":"openid email profile"`))
 
-	basename := issuerToMetadataBasename("https://idp.example.com/realms/forge")
+	basename := issuerToMetadataBasename("https://idp.example.com/realms/cobaltcore")
 	g.Expect(projection.Federation.MetadataItems).To(ContainElement(corev1.KeyToPath{
 		Key: "corp-oidc.provider", Path: basename + ".provider",
 	}))
@@ -790,8 +790,8 @@ func TestReconcileIdentityBackends_MetadataOutageReusesLastKnownGood(t *testing.
 	ks := testFederationKeystone()
 	backend := testProjectableOIDCBackend("corp-oidc")
 	backend.Spec.OIDC.Endpoints = nil // force metadata discovery
-	backend.Spec.OIDC.ProviderMetadataURL = "https://idp.example.com/realms/forge/.well-known/openid-configuration"
-	doer := &metadataDoer{body: `{"issuer":"https://idp.example.com/realms/forge","token_endpoint":"https://idp.example.com/token"}`}
+	backend.Spec.OIDC.ProviderMetadataURL = "https://idp.example.com/realms/cobaltcore/.well-known/openid-configuration"
+	doer := &metadataDoer{body: `{"issuer":"https://idp.example.com/realms/cobaltcore","token_endpoint":"https://idp.example.com/token"}`}
 	r := newTestReconciler(ks, backend, testOIDCClientSecret("corp-oidc"))
 	r.HTTPClient = doer
 
@@ -909,11 +909,11 @@ func TestRenderOIDCBackend_HTTPIntrospectionEndpointSkips(t *testing.T) {
 	g := NewGomegaWithT(t)
 	backend := testProjectableOIDCBackend("corp-oidc")
 	backend.Spec.OIDC.Endpoints = nil
-	backend.Spec.OIDC.Issuer = "http://idp.example.com/realms/forge"
+	backend.Spec.OIDC.Issuer = "http://idp.example.com/realms/cobaltcore"
 	backend.Spec.OIDC.OAuth2Introspection = &keystonev1alpha1.OIDCIntrospectionSpec{Enabled: true}
 
 	r := newTestReconciler(testOIDCClientSecret("corp-oidc"))
-	r.HTTPClient = &metadataDoer{body: `{"issuer":"http://idp.example.com/realms/forge","introspection_endpoint":"http://idp.example.com/realms/forge/introspect"}`}
+	r.HTTPClient = &metadataDoer{body: `{"issuer":"http://idp.example.com/realms/cobaltcore","introspection_endpoint":"http://idp.example.com/realms/cobaltcore/introspect"}`}
 
 	ks := testFederationKeystone()
 	_, err := r.renderOIDCBackend(context.Background(), r.Client, ks, backend)

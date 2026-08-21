@@ -12,7 +12,7 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/utils/ptr"
 
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 func TestToGophercloudMappingRules_EmptyAndNil(t *testing.T) {
@@ -56,7 +56,7 @@ func TestToGophercloudMappingRules_FullShape(t *testing.T) {
 			{
 				Type:     "HTTP_OIDC_ISS",
 				Regex:    ptr.To(false),
-				AnyOneOf: []string{"https://idp.example.com/realms/forge"},
+				AnyOneOf: []string{"https://idp.example.com/realms/cobaltcore"},
 			},
 		},
 	}}
@@ -92,6 +92,6 @@ func TestToGophercloudMappingRules_FullShape(t *testing.T) {
 	g.Expect(remote).To(HaveLen(3))
 	iss := remote[2].(map[string]any)
 	g.Expect(iss["type"]).To(Equal("HTTP_OIDC_ISS"))
-	g.Expect(iss["any_one_of"]).To(ConsistOf("https://idp.example.com/realms/forge"))
+	g.Expect(iss["any_one_of"]).To(ConsistOf("https://idp.example.com/realms/cobaltcore"))
 	g.Expect(iss["regex"]).To(Equal(false))
 }

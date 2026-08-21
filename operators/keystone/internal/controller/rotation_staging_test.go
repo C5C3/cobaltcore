@@ -13,7 +13,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // TestRotationCompletedAt covers the pure annotation parser threaded through

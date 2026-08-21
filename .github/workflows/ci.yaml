@@ -21,7 +21,7 @@ env:
   # Kind cluster name — single source of truth for every e2e job's
   # helm/kind-action cluster_name and `kind load --name`. Mirrors the
   # CLUSTER_NAME default in hack/deploy-infra.sh.
-  KIND_CLUSTER: forge
+  KIND_CLUSTER: cobaltcore
   # kind binary version for every e2e job. helm/kind-action defaults to v0.31.0,
   # whose kindnetd does not yet enforce egress against the post-DNAT destination —
   # the posture under which the OpenBao instances' NetworkPolicy needs an explicit
@@ -1985,8 +1985,8 @@ jobs:
     env:
       # The registration name the suite's fixtures reference, and the kind
       # cluster it belongs to.
-      TARGET_CLUSTER: forge-target
-      MGMT_CLUSTER: forge-mgmt
+      TARGET_CLUSTER: cobaltcore-target
+      MGMT_CLUSTER: cobaltcore-mgmt
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The target cluster takes the workload config (host ports, containerd
@@ -2099,7 +2099,7 @@ jobs:
       - name: Write the chainsaw kubeconfig for the target cluster
         run: |
           mkdir -p _output
-          kind get kubeconfig --name "$TARGET_CLUSTER" > _output/forge-target.kubeconfig
+          kind get kubeconfig --name "$TARGET_CLUSTER" > _output/cobaltcore-target.kubeconfig
       - name: Run the two-cluster E2E suite
         run: |
           mkdir -p _output/reports

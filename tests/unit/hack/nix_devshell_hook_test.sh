@@ -232,7 +232,7 @@ test_flake_sources_hook() {
   assert_file_contains "flake.nix references the hook script" \
     "$FLAKE" "hack/nix-devshell-hook.sh"
   assert_file_contains "flake.nix sources the hook" \
-    "$FLAKE" "source \"\$_forge_root/hack/nix-devshell-hook.sh\""
+    "$FLAKE" "source \"\$_cobaltcore_root/hack/nix-devshell-hook.sh\""
 }
 
 test_print_pins_exit_zero

@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
+	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
 )
 
 // korcOpenStackNameCommaMessage is the rejection every field cast to K-ORC's

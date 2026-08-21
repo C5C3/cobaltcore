@@ -13,7 +13,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	barbicanmetrics "github.com/c5c3/forge/operators/barbican/internal/metrics"
+	barbicanmetrics "github.com/c5c3/cobaltcore/operators/barbican/internal/metrics"
 )
 
 // counterValueForLabels returns the value of the counter series in famName whose

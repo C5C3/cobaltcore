@@ -12,8 +12,8 @@ import (
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/yaml"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // --- managed-mode golden output ---

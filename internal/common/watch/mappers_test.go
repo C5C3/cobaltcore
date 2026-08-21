@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // The mapper tests use corev1.ConfigMap as the stand-in CR type: the mapper

@@ -68,7 +68,7 @@ The admin password is not stored on the Keystone CR. It flows through three hops
 
 On every reconcile the operator reads the `password` key of the admin Secret,
 computes `hex(SHA-256(password))`, and stamps it onto the bootstrap Job's pod
-template as the `forge.c5c3.io/admin-password-hash` annotation. It passes that
+template as the `cobaltcore.c5c3.io/admin-password-hash` annotation. It passes that
 same digest to `job.RunJobWithRerunKey` as the bootstrap Job's **re-run key** —
 so the Job re-runs when, and only when, the admin password changes. The re-run
 gate is keyed on the password digest *alone*, not on the full
@@ -142,7 +142,7 @@ in step 3 — keep it handy to confirm the match.
 ## 3. Observe the recreated bootstrap Job
 
 The operator detects that the live `controlplane-keystone-bootstrap` Job's
-`forge.c5c3.io/admin-password-hash` no longer matches the Secret, deletes the
+`cobaltcore.c5c3.io/admin-password-hash` no longer matches the Secret, deletes the
 stale Job, and recreates one carrying the new hash:
 
 ```bash
@@ -154,7 +154,7 @@ the digest from step 2:
 
 ```bash
 kubectl -n openstack get job controlplane-keystone-bootstrap \
-  -o jsonpath="{.spec.template.metadata.annotations['forge\.c5c3\.io/admin-password-hash']}{\"\n\"}"
+  -o jsonpath="{.spec.template.metadata.annotations['cobaltcore\.c5c3\.io/admin-password-hash']}{\"\n\"}"
 ```
 
 Expected output (the hex SHA-256 of the new password):
@@ -355,7 +355,7 @@ so write to whatever path it reads.
 ## Related reference
 
 - [reconcileBootstrap](../../reference/keystone/keystone-reconciler.md#reconcilebootstrap) — the authoritative contract for the bootstrap sub-reconciler and the admin-password-hash re-run gate.
-- [Labels and Annotations](../../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys, including `forge.c5c3.io/admin-password-hash` and `forge.c5c3.io/pod-spec-hash`.
+- [Labels and Annotations](../../reference/keystone/keystone-reconciler.md#labels-and-annotations) — stable metadata keys, including `cobaltcore.c5c3.io/admin-password-hash` and `cobaltcore.c5c3.io/pod-spec-hash`.
 - See also [Schedule Keystone Admin Password Rotation](keystone-admin-password-scheduled-rotation.md) — the Model B scheduled flow, where a CronJob mints the password instead of an operator writing OpenBao by hand.
 - See also [Rotate Keystone Fernet and Credential Keys](keystone-key-rotation.md) — the key-rotation counterpart to this admin-password rotation.
 

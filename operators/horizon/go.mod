@@ -1,9 +1,9 @@
-module github.com/c5c3/forge/operators/horizon
+module github.com/c5c3/cobaltcore/operators/horizon
 
 go 1.26.6
 
 require (
-	github.com/c5c3/forge/internal/common v0.0.0
+	github.com/c5c3/cobaltcore/internal/common v0.0.0
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/onsi/gomega v1.42.1
 	github.com/prometheus/client_golang v1.24.1
@@ -87,4 +87,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
 
-replace github.com/c5c3/forge/internal/common => ../../internal/common
+replace github.com/c5c3/cobaltcore/internal/common => ../../internal/common

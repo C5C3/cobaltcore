@@ -25,9 +25,9 @@ metadata:
   name: keycloak-realms
   namespace: openstack
 data:
-  forge-realm.json: |
+  cobaltcore-realm.json: |
     {
-      "realm": "forge",
+      "realm": "cobaltcore",
       "enabled": true,
       "sslRequired": "none",
       "groups": [{"name": "engineers", "path": "/engineers"}],
@@ -49,7 +49,7 @@ data:
           "enabled": true,
           "protocol": "openid-connect",
           "publicClient": false,
-          "secret": "keystone-forge-secret",
+          "secret": "keystone-cobaltcore-secret",
           "redirectUris": ["http://controlplane-sso-keystone.openstack.svc.cluster.local:5000/*", "https://keystone.127-0-0-1.nip.io/*", "http://keystone.127-0-0-1.nip.io/*"],
           "webOrigins": ["*"],
           "standardFlowEnabled": true,
@@ -84,9 +84,9 @@ data:
         }
       ]
     }
-  forge2-realm.json: |
+  cobaltcore2-realm.json: |
     {
-      "realm": "forge2",
+      "realm": "cobaltcore2",
       "enabled": true,
       "sslRequired": "none",
       "groups": [{"name": "captains", "path": "/captains"}],
@@ -108,7 +108,7 @@ data:
           "enabled": true,
           "protocol": "openid-connect",
           "publicClient": false,
-          "secret": "keystone-forge2-secret",
+          "secret": "keystone-cobaltcore2-secret",
           "redirectUris": ["http://controlplane-sso-keystone.openstack.svc.cluster.local:5000/*", "https://keystone.127-0-0-1.nip.io/*", "http://keystone.127-0-0-1.nip.io/*"],
           "webOrigins": ["*"],
           "standardFlowEnabled": true,
@@ -262,17 +262,17 @@ spec:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: keycloak-forge-client
+  name: keycloak-cobaltcore-client
   namespace: openstack
 type: Opaque
 stringData:
-  clientSecret: keystone-forge-secret
+  clientSecret: keystone-cobaltcore-secret
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: keycloak-forge2-client
+  name: keycloak-cobaltcore2-client
   namespace: openstack
 type: Opaque
 stringData:
-  clientSecret: keystone-forge2-secret
+  clientSecret: keystone-cobaltcore2-secret

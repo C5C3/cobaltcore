@@ -19,8 +19,8 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 )
 
 // openBaoHosts is the server URL set the secret-store projection reports for the

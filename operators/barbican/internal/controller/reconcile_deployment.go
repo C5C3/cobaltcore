@@ -20,14 +20,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/deployment"
-	"github.com/c5c3/forge/internal/common/keystoneauth"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	"github.com/c5c3/forge/internal/common/naming"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 )
 
 // barbicanAppName is the app.kubernetes.io/name label value applied to every

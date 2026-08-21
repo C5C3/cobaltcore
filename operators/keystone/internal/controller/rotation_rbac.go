@@ -9,8 +9,8 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/rotation"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/rotation"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // ensureRotationRBAC creates the ServiceAccount, Role, and RoleBinding shared by

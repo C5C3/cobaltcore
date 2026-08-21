@@ -15,9 +15,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // webSSOAuthWebssoPath is the path Horizon POSTs a returned WebSSO token to.

@@ -61,7 +61,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-CLUSTER_NAME="${CLUSTER_NAME:-forge}"
+CLUSTER_NAME="${CLUSTER_NAME:-cobaltcore}"
 HELMRELEASE_TIMEOUT="${HELMRELEASE_TIMEOUT:-600}"
 POD_TIMEOUT="${POD_TIMEOUT:-300}"
 EXTERNALSECRET_TIMEOUT="${EXTERNALSECRET_TIMEOUT:-120}"
@@ -1847,7 +1847,7 @@ wait_for_node_ready() {
 # Idempotent and reused across cluster recreates: a proxy that is already running
 # is left untouched (only re-attached to the network if needed); a stale/exited
 # one is removed and recreated. The containers and volumes carry the
-# `forge.registry-cache=true` label so teardown-infra.sh's PURGE_REGISTRY_CACHE
+# `cobaltcore.registry-cache=true` label so teardown-infra.sh's PURGE_REGISTRY_CACHE
 # path can find and remove them without knowing the upstream set. Names are NOT
 # scoped by CLUSTER_NAME so a single warm cache serves every kind cluster.
 #
@@ -1881,7 +1881,7 @@ start_registry_cache() {
 
     # Persistent storage volume (survives kind delete / recreate).
     if ! docker volume inspect "${volume}" >/dev/null 2>&1; then
-      docker volume create --label forge.registry-cache=true "${volume}" >/dev/null 2>&1 \
+      docker volume create --label cobaltcore.registry-cache=true "${volume}" >/dev/null 2>&1 \
         || log "  WARNING: failed to create volume ${volume}."
     fi
 
@@ -1899,7 +1899,7 @@ start_registry_cache() {
     if docker run -d \
       --name "${container}" \
       --restart unless-stopped \
-      --label forge.registry-cache=true \
+      --label cobaltcore.registry-cache=true \
       --network "${KIND_DOCKER_NETWORK}" \
       -e "REGISTRY_PROXY_REMOTEURL=${url}" \
       -v "${volume}:/var/lib/registry" \
@@ -2040,7 +2040,7 @@ main() {
     # bytes and `/tmp` is volume-cleared at reboot, so explicit deletion
     # post-success is sufficient.
     local kind_cfg
-    kind_cfg="$(mktemp -t forge-kind-config.XXXXXX.yaml)"
+    kind_cfg="$(mktemp -t cobaltcore-kind-config.XXXXXX.yaml)"
     render_kind_config "${kind_cfg}"
     kind create cluster \
       --name "${CLUSTER_NAME}" \

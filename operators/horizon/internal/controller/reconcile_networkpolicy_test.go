@@ -14,8 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
 func networkPolicySpec() *horizonv1alpha1.NetworkPolicySpec {

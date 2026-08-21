@@ -17,5 +17,5 @@ spec:
     name: saml-zero
   type: SAML
   saml:
-    idpEntityID: https://idp.example.com/realms/forge
+    idpEntityID: https://idp.example.com/realms/cobaltcore
     idpMetadata: {}

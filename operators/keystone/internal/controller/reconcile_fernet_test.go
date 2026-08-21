@@ -31,13 +31,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/deployment"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	"github.com/c5c3/forge/internal/common/naming"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // fernetTestScheme returns a runtime.Scheme with all types needed for Fernet tests.

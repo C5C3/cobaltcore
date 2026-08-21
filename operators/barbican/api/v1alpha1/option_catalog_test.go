@@ -9,7 +9,7 @@ import (
 
 	"github.com/onsi/gomega"
 
-	"github.com/c5c3/forge/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/config"
 )
 
 // TestBarbicanOptionCatalogs_EmbeddedReleasesParse pins the exact set of

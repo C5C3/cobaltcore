@@ -18,8 +18,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	"github.com/c5c3/forge/operators/horizon/internal/testutil"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	"github.com/c5c3/cobaltcore/operators/horizon/internal/testutil"
 )
 
 // --- Helpers ---

@@ -36,7 +36,7 @@ Use GitHub's Private Vulnerability Reporting:
 3. Fill in the report form with as much detail as you can (see below).
 
 Direct link:
-<https://github.com/C5C3/forge/security/advisories/new>
+<https://github.com/C5C3/cobaltcore/security/advisories/new>
 
 A good report includes:
 

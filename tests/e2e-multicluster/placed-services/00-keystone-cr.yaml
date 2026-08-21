@@ -26,7 +26,7 @@ metadata:
   namespace: openstack
 spec:
   targetClusterRef:
-    name: forge-target
+    name: cobaltcore-target
   secretStoreRef:
     kind: SecretStore
     name: openbao-tenant-store

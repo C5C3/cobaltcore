@@ -24,7 +24,7 @@ spec:
     users:
       treeDN: ou=people,dc=example,dc=com
   oidc:
-    issuer: https://idp.example.com/realms/forge
+    issuer: https://idp.example.com/realms/cobaltcore
     clientID: keystone
     clientSecretRef:
       name: corp-oidc-client

@@ -18,10 +18,10 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/healthcheck"
-	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // internalEndpoint is the cluster-local URL the health check probes for the
@@ -264,7 +264,7 @@ func TestReconcileHealthCheck_PlacedCR_ProxyFailureReachesTheCondition(t *testin
 		{
 			name:   "the registered kubeconfig may not proxy",
 			status: http.StatusForbidden,
-			body: `services "test-placement" is forbidden: User "system:serviceaccount:forge:placement-operator" ` +
+			body: `services "test-placement" is forbidden: User "system:serviceaccount:cobaltcore:placement-operator" ` +
 				`cannot get resource "services/proxy" in API group "" in the namespace "default"`,
 		},
 	}

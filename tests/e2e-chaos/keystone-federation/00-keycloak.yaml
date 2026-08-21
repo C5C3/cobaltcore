@@ -13,9 +13,9 @@ metadata:
   name: keycloak-chaos-realms
   namespace: openstack
 data:
-  forge-realm.json: |
+  cobaltcore-realm.json: |
     {
-      "realm": "forge",
+      "realm": "cobaltcore",
       "enabled": true,
       "sslRequired": "none",
       "groups": [{"name": "engineers", "path": "/engineers"}],
@@ -37,7 +37,7 @@ data:
           "enabled": true,
           "protocol": "openid-connect",
           "publicClient": false,
-          "secret": "keystone-forge-secret",
+          "secret": "keystone-cobaltcore-secret",
           "redirectUris": ["http://keystone-chaos-fed.openstack.svc.cluster.local:5000/*"],
           "webOrigins": ["*"],
           "standardFlowEnabled": true,
@@ -204,4 +204,4 @@ metadata:
   namespace: openstack
 type: Opaque
 stringData:
-  clientSecret: keystone-forge-secret
+  clientSecret: keystone-cobaltcore-secret

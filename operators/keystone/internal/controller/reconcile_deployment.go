@@ -20,14 +20,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/deployment"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	"github.com/c5c3/forge/internal/common/naming"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // buildDBConnectionEnvVar returns the EnvVar that overrides

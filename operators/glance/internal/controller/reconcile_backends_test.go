@@ -15,8 +15,8 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
 
 // collectEvents drains the FakeRecorder channel non-blocking.

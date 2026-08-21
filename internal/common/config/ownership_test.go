@@ -12,7 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 
-	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
 )
 
 // drainEvents returns every event currently buffered on a FakeRecorder channel

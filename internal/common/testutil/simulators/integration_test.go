@@ -18,7 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	envtestutil "github.com/c5c3/forge/internal/common/testutil/envtest"
+	envtestutil "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
 )
 
 // newUnstructuredCR creates a minimal unstructured custom resource with the

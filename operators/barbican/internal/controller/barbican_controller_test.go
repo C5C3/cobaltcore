@@ -26,11 +26,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 )
 
 func TestBarbicanSecretNameExtractor(t *testing.T) {

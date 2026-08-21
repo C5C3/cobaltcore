@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
 
 // namedSecret returns a bare Secret object for a watch event (no data needed —

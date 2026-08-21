@@ -10,9 +10,9 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 
-	"github.com/c5c3/forge/internal/common/job"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
-	"github.com/c5c3/forge/operators/glance/internal/metrics"
+	"github.com/c5c3/cobaltcore/internal/common/job"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/glance/internal/metrics"
 )
 
 // dbJobUIDAnnotationKey returns the dedupe annotation key for the DB-related Job

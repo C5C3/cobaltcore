@@ -50,14 +50,14 @@ import (
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	"github.com/c5c3/forge/internal/common/bootstrap"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	commonenvtest "github.com/c5c3/forge/internal/common/testutil/envtest"
-	"github.com/c5c3/forge/internal/common/testutil/simulators"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
-	"github.com/c5c3/forge/operators/c5c3/internal/testutil"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonenvtest "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
+	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/c5c3/internal/testutil"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // TestIntegration_Multicluster_ControlPlanePlacement runs the ControlPlane

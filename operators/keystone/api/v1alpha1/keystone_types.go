@@ -7,8 +7,8 @@ package v1alpha1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/c5c3/forge/internal/common/naming"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // Selector label keys and values used by the Deployment pod selector, webhook

@@ -96,7 +96,7 @@ delegate the areas to parallel sub-agents for a large corpus.
   installs it in the documented order.
 - **Cross-cluster reference** — `docs/reference/target-clusters.md`
   spans every operator: confirm the documented ownership-label set,
-  teardown order, registration-Secret contract (`forge-target` in
+  teardown order, registration-Secret contract (`cobaltcore-target` in
   `c5c3-clusters`), and per-service placement notes still match
   `internal/common/multicluster/` and the operators' placement code.
   Its condition-type mentions are cross-checked mechanically by

@@ -16,8 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	"github.com/c5c3/forge/internal/common/secrets"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
 )
 
 // TestReconcileSecrets_StoreGate covers both shapes of an unusable secret store:

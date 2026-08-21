@@ -9,9 +9,9 @@ Reference catalogue for every Prometheus collector the Keystone operator
 exposes on the controller-runtime metrics endpoint. Every metric name,
 label set, and histogram bucket list below is authoritative. The
 sub-reconciler duration and error metrics are verified by the tests in
-[`internal/common/instrumentation`](https://github.com/c5c3/forge/blob/main/internal/common/instrumentation/instrumentation_test.go);
+[`internal/common/instrumentation`](https://github.com/c5c3/cobaltcore/blob/main/internal/common/instrumentation/instrumentation_test.go);
 the per-CR collectors by
-[`collectors_test.go`](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/metrics/collectors_test.go);
+[`collectors_test.go`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/internal/metrics/collectors_test.go);
 and `dashboards/dashboard_test.go` fails the build if the bundled Grafana
 dashboard references a metric the operator does not register.
 
@@ -19,7 +19,7 @@ The sub-reconciler duration/error pair
 (`keystone_operator_reconcile_duration_seconds` and
 `keystone_operator_reconcile_errors_total`) is shared with the other
 CobaltCore operators. It lives in the
-[`internal/common/instrumentation`](https://github.com/c5c3/forge/blob/main/internal/common/instrumentation/instrumentation.go)
+[`internal/common/instrumentation`](https://github.com/c5c3/cobaltcore/blob/main/internal/common/instrumentation/instrumentation.go)
 package and is exposed as the instrumenter declared beside the glue in
 `internal/controller/instrumentation.go`. Both the sub-reconciler vectors and
 the per-CR collectors (rotation age and `db_sync`) register on the
@@ -27,7 +27,7 @@ controller-runtime registry once at operator startup through `RegisterMetrics()`
 which `main.go` calls before wiring the controllers. Registration returns an
 error rather than panicking mid-reconcile, so a duplicate-registration fails
 startup cleanly. The per-CR collectors live in
-[`operators/keystone/internal/metrics/collectors.go`](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/metrics/collectors.go)
+[`operators/keystone/internal/metrics/collectors.go`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/internal/metrics/collectors.go)
 and are registered by `RegisterMetrics()` via their `Register()` function.
 All collectors attach to the controller-runtime registry
 (`sigs.k8s.io/controller-runtime/pkg/metrics`) and are served on the
@@ -143,7 +143,7 @@ therefore under-reports time-since-live for `admin-password` relative to
 the keys Secret.
 
 **Annotation source.** The gauge reads the
-`forge.c5c3.io/rotation-completed-at` annotation from the **production**
+`cobaltcore.c5c3.io/rotation-completed-at` annotation from the **production**
 keys Secret first; `applyRotationOutput` stamps that annotation on the
 production Secret on every successful apply, so the timestamp is durable
 across the inter-rotation steady state and the gauge value (recomputed
@@ -154,7 +154,7 @@ has not been applied — the lookup falls back to the staging Secret to
 cover the post-CronJob-PATCH/pre-apply window.
 
 **When the gauge is NOT set.** Both lookups skip the gauge on absent or
-malformed `forge.c5c3.io/rotation-completed-at` annotations: a missing
+malformed `cobaltcore.c5c3.io/rotation-completed-at` annotations: a missing
 annotation on both Secrets means rotation has never completed (alert via
 PromQL `absent(...)`); a malformed annotation is a script bug surfaced
 via the `RotationAnnotationInvalid` event. Validation rejections of a
@@ -208,7 +208,7 @@ phase.
 
 **Single-emit guarantee.** Each phase is guarded by an independent
 transition predicate keyed on the Job UID and persisted via the
-`forge.c5c3.io/last-<phase>-job-uid` annotation on the Keystone CR;
+`cobaltcore.c5c3.io/last-<phase>-job-uid` annotation on the Keystone CR;
 repeated reconciles observing the same terminated Job contribute at
 most one increment, so polling does not inflate the counter. The
 annotation patch is committed BEFORE the metric is recorded so a

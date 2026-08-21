@@ -17,7 +17,7 @@ import (
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/yaml"
 
-	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
 const pinHorizonDeploymentDefaultGolden = `metadata:

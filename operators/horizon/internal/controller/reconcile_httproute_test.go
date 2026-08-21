@@ -16,10 +16,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
-	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
 func gatewaySpec() *horizonv1alpha1.GatewaySpec {

@@ -66,4 +66,4 @@ c5c3-operator ties the services together into a single ControlPlane resource.
   environment.
 
 For an AI-assisted tour of the codebase, browse the repository on
-[DeepWiki](https://deepwiki.com/C5C3/forge).
+[DeepWiki](https://deepwiki.com/C5C3/cobaltcore).

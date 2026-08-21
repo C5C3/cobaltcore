@@ -96,12 +96,12 @@ spec:
 
           body = urllib.parse.urlencode({
               "grant_type": "password", "client_id": "keystone",
-              "client_secret": "keystone-forge-secret",
+              "client_secret": "keystone-cobaltcore-secret",
               "username": "fry", "password": "fry-password",
               "scope": "openid",
           })
           conn = http.client.HTTPConnection("keycloak-chaos.openstack.svc.cluster.local", 8080, timeout=30)
-          conn.request("POST", "/realms/forge/protocol/openid-connect/token", body=body,
+          conn.request("POST", "/realms/cobaltcore/protocol/openid-connect/token", body=body,
                        headers={"Content-Type": "application/x-www-form-urlencoded"})
           resp = conn.getresponse()
           data = resp.read()
@@ -252,12 +252,12 @@ spec:
 
           body = urllib.parse.urlencode({
               "grant_type": "password", "client_id": "keystone",
-              "client_secret": "keystone-forge-secret",
+              "client_secret": "keystone-cobaltcore-secret",
               "username": "fry", "password": "fry-password",
               "scope": "openid",
           })
           conn = http.client.HTTPConnection("keycloak-chaos.openstack.svc.cluster.local", 8080, timeout=30)
-          conn.request("POST", "/realms/forge/protocol/openid-connect/token", body=body,
+          conn.request("POST", "/realms/cobaltcore/protocol/openid-connect/token", body=body,
                        headers={"Content-Type": "application/x-www-form-urlencoded"})
           resp = conn.getresponse()
           data = resp.read()
@@ -308,12 +308,12 @@ spec:
           import http.client, json, urllib.parse
           body = urllib.parse.urlencode({
               "grant_type": "password", "client_id": "keystone",
-              "client_secret": "keystone-forge-secret",
+              "client_secret": "keystone-cobaltcore-secret",
               "username": "fry", "password": "fry-password",
               "scope": "openid",
           })
           conn = http.client.HTTPConnection("keycloak-chaos.openstack.svc.cluster.local", 8080, timeout=30)
-          conn.request("POST", "/realms/forge/protocol/openid-connect/token", body=body,
+          conn.request("POST", "/realms/cobaltcore/protocol/openid-connect/token", body=body,
                        headers={"Content-Type": "application/x-www-form-urlencoded"})
           resp = conn.getresponse()
           data = resp.read()
@@ -417,12 +417,12 @@ spec:
           def attempt():
               body = urllib.parse.urlencode({
                   "grant_type": "password", "client_id": "keystone",
-                  "client_secret": "keystone-forge-secret",
+                  "client_secret": "keystone-cobaltcore-secret",
                   "username": "fry", "password": "fry-password",
                   "scope": "openid",
               })
               conn = http.client.HTTPConnection("keycloak-chaos.openstack.svc.cluster.local", 8080, timeout=15)
-              conn.request("POST", "/realms/forge/protocol/openid-connect/token", body=body,
+              conn.request("POST", "/realms/cobaltcore/protocol/openid-connect/token", body=body,
                            headers={"Content-Type": "application/x-www-form-urlencoded"})
               resp = conn.getresponse()
               data = resp.read()

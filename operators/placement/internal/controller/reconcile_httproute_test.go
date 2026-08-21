@@ -13,10 +13,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
-	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
+	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
 // placementGatewaySpec returns the external-exposure block the route tests and

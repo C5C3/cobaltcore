@@ -213,7 +213,7 @@ the install form of the guide's namespace-scoped-rbac chainsaw suite (a local
 
 ```bash
 make docker-build OPERATOR=keystone IMG=ghcr.io/c5c3/keystone-operator:dev
-kind load docker-image ghcr.io/c5c3/keystone-operator:dev --name forge
+kind load docker-image ghcr.io/c5c3/keystone-operator:dev --name cobaltcore
 ```
 
 ```bash

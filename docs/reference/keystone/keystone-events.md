@@ -112,10 +112,10 @@ payload onto the production Secret and reports the outcome as events:
 | --- | --- | --- | --- |
 | `FernetKeysRotated` | Normal | Staged Fernet rotation validated and applied to the main keys Secret | `rotation applied from staging secret keystone-fernet-keys-rotation (3 active keys)` |
 | `CredentialKeysRotated` | Normal | Staged credential-key rotation validated and applied to the main keys Secret | `rotation applied from staging secret keystone-credential-keys-rotation (2 active keys)` |
-| `RotationAnnotationInvalid` | Warning | Staging Secret's `forge.c5c3.io/rotation-completed-at` annotation is not valid RFC3339 (Fernet/credential) | `staging secret <name> has malformed forge.c5c3.io/rotation-completed-at annotation: <error>` |
+| `RotationAnnotationInvalid` | Warning | Staging Secret's `cobaltcore.c5c3.io/rotation-completed-at` annotation is not valid RFC3339 (Fernet/credential) | `staging secret <name> has malformed cobaltcore.c5c3.io/rotation-completed-at annotation: <error>` |
 | `RotationRejected` | Warning | Staged Fernet/credential key set fails validation (key count outside `[min, max]`); the staged data is cleared | `staging secret <name> rejected: <error>` |
 | `AdminPasswordRotated` | Normal | Staged admin-password rotation validated and applied to the push-source Secret | `admin password rotation applied from staging secret <name>` |
-| `AdminPasswordRotationAnnotationInvalid` | Warning | Admin-password staging Secret's completion annotation is malformed | `staging secret <name> has malformed forge.c5c3.io/rotation-completed-at annotation: <error>` |
+| `AdminPasswordRotationAnnotationInvalid` | Warning | Admin-password staging Secret's completion annotation is malformed | `staging secret <name> has malformed cobaltcore.c5c3.io/rotation-completed-at annotation: <error>` |
 | `AdminPasswordRotationRejected` | Warning | Staged admin password fails validation (e.g. below minimum length); the rejected password is retained for inspection | `staging secret <name> rejected: <error>` |
 
 **Source:** shared `commitStagedRotation` in `rotation_staging.go`, invoked from
@@ -142,16 +142,16 @@ its dedicated controller; the projection warning is emitted on the
 | `DomainDisabled` | Normal | deletionPolicy Delete disables the domain before deleting it (keystone forbids deleting an enabled domain) | `Disabled domain "corp" before deletion` |
 | `DomainDeleted` | Normal | deletionPolicy Delete removed the domain | `Deleted domain "corp" (id <id>)` |
 | `DomainDeleteFailed` | Warning | Disabling/deleting the domain failed (retried on a bounded poll), or the admin credential vanished mid-teardown (fail-open: the domain is retained and the finalizer released) | `Deleting domain "corp" failed: <error>` |
-| `IdentityProviderCreated` | Normal | An OIDC backend's keystone identity provider is registered | `Created identity provider "keycloak-forge" (remote ID <issuer>)` |
-| `MappingCreated` | Normal | The federation mapping is created from the typed rules | `Created federation mapping "keycloak-forge-mapping" (2 rules)` |
-| `MappingUpdated` | Normal | Rules drift converged back with a single update | `Updated federation mapping "keycloak-forge-mapping" (2 rules)` |
-| `ProtocolCreated` | Normal | The federation protocol is bound to the mapping | `Created protocol "openid" on identity provider "keycloak-forge" (mapping keycloak-forge-mapping)` |
+| `IdentityProviderCreated` | Normal | An OIDC backend's keystone identity provider is registered | `Created identity provider "keycloak-cobaltcore" (remote ID <issuer>)` |
+| `MappingCreated` | Normal | The federation mapping is created from the typed rules | `Created federation mapping "keycloak-cobaltcore-mapping" (2 rules)` |
+| `MappingUpdated` | Normal | Rules drift converged back with a single update | `Updated federation mapping "keycloak-cobaltcore-mapping" (2 rules)` |
+| `ProtocolCreated` | Normal | The federation protocol is bound to the mapping | `Created protocol "openid" on identity provider "keycloak-cobaltcore" (mapping keycloak-cobaltcore-mapping)` |
 | `FederationGroupCreated` | Normal | A declarative target group is created in the backend's domain | `Created group "federated-users" in domain <id>` |
-| `FederationObjectsDeleted` | Normal | Finalizer teardown removed protocol, mapping, and identity provider (reverse dependency order) | `Deleted protocol "openid", mapping "keycloak-forge-mapping", and identity provider "keycloak-forge"` |
-| `FederationTeardownFailed` | Warning | A federation-object delete failed (retried on a bounded poll), or the admin credential vanished mid-teardown (fail-open) | `Deleting mapping "keycloak-forge-mapping" failed: <error>` |
+| `FederationObjectsDeleted` | Normal | Finalizer teardown removed protocol, mapping, and identity provider (reverse dependency order) | `Deleted protocol "openid", mapping "keycloak-cobaltcore-mapping", and identity provider "keycloak-cobaltcore"` |
+| `FederationTeardownFailed` | Warning | A federation-object delete failed (retried on a bounded poll), or the admin credential vanished mid-teardown (fail-open) | `Deleting mapping "keycloak-cobaltcore-mapping" failed: <error>` |
 | `IdentityBackendSkipped` | Warning | A backend's bind/client Secret is missing or lacks its fixed data key, the provider metadata is unreachable or issuer-mismatched, or a rendered value carries a control character; the backend is skipped while healthy siblings keep projecting (emitted on the Keystone CR) | `Skipping identity backend corp-ldap: <error>` |
-| `FederationProxyImageMissing` | Warning | At least one OIDC backend is attached but `spec.federation.proxyImage` is unset; every OIDC backend stays pending (emitted on the Keystone CR, once per transition) | `Identity backend keycloak-forge is pending: spec.federation.proxyImage is not set — configure the mod_auth_openidc sidecar image before attaching OIDC backends` |
-| `FederationMetadataStale` | Warning | A discovery-based backend's provider metadata endpoint was unreachable on a cache miss (e.g. an operator restart); the operator reused the last-known-good discovery document so federation stays up until the IdP recovers (emitted on the Keystone CR) | `Identity backend keycloak-forge: provider metadata unavailable (<error>); reusing the last-known-good discovery document so federation stays up` |
+| `FederationProxyImageMissing` | Warning | At least one OIDC backend is attached but `spec.federation.proxyImage` is unset; every OIDC backend stays pending (emitted on the Keystone CR, once per transition) | `Identity backend keycloak-cobaltcore is pending: spec.federation.proxyImage is not set — configure the mod_auth_openidc sidecar image before attaching OIDC backends` |
+| `FederationMetadataStale` | Warning | A discovery-based backend's provider metadata endpoint was unreachable on a cache miss (e.g. an operator restart); the operator reused the last-known-good discovery document so federation stays up until the IdP recovers (emitted on the Keystone CR) | `Identity backend keycloak-cobaltcore: provider metadata unavailable (<error>); reusing the last-known-good discovery document so federation stays up` |
 
 **Source:** `keystoneidentitybackend_controller.go` (domain lifecycle);
 `reconcile_federation_objects.go` (federation objects);

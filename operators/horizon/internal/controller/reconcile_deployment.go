@@ -17,12 +17,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/deployment"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	"github.com/c5c3/forge/internal/common/naming"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
 // horizonAPIPort is the container/Service port the dashboard listens on.

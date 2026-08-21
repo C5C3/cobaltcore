@@ -76,10 +76,10 @@ This provides, all in the `openstack` namespace:
 
 | What | Value |
 | --- | --- |
-| Realm | `forge` |
-| Issuer | `http://keycloak.openstack.svc.cluster.local:8080/realms/forge` |
+| Realm | `cobaltcore` |
+| Issuer | `http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore` |
 | Confidential client | `keystone` (direct access grants + standard flow enabled) |
-| Client secret | `keystone-forge-secret` (also shipped as Secret `keycloak-forge-client`) |
+| Client secret | `keystone-cobaltcore-secret` (also shipped as Secret `keycloak-cobaltcore-client`) |
 | Test user | `fry` / `fry-password` (group `/engineers`) |
 | Keycloak admin | `admin` / `admin-password` |
 
@@ -101,7 +101,7 @@ issuer, endpoints, and client secret for the fixture values below.
 The projection reads one fixed data key, `clientSecret`:
 
 ```bash
-kubectl create secret generic keycloak-forge-client -n openstack \
+kubectl create secret generic keycloak-cobaltcore-client -n openstack \
   --from-literal=clientSecret='<the client secret from Keycloak>'
 ```
 
@@ -109,8 +109,8 @@ Rotating this Secret later re-renders the federation configuration
 automatically — the operator watches it.
 
 ::: tip On the kind devstack
-Step 1's fixture already ships the `keycloak-forge-client` Secret with the
-fixed `clientSecret: keystone-forge-secret` key, so you can skip this
+Step 1's fixture already ships the `keycloak-cobaltcore-client` Secret with the
+fixed `clientSecret: keystone-cobaltcore-secret` key, so you can skip this
 `kubectl create` — the backend CR in Step 4 references it as-is.
 :::
 
@@ -152,21 +152,21 @@ The projected image is inert until an OIDC backend attaches.
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: KeystoneIdentityBackend
 metadata:
-  name: keycloak-forge
+  name: keycloak-cobaltcore
   namespace: openstack
 spec:
   keystoneRef:
     name: controlplane-keystone
   domain:
-    name: forge
+    name: cobaltcore
     mode: Manage           # the operator creates the domain
     deletionPolicy: Retain # keep the domain when this CR is deleted
   type: OIDC
   oidc:
-    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/forge
+    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore
     clientID: keystone
     clientSecretRef:
-      name: keycloak-forge-client
+      name: keycloak-cobaltcore-client
     # Explicit endpoints are required against the fixture: the operator's
     # metadata-fetch SSRF guard blocks discovery against the in-cluster
     # Keycloak's private ClusterIP, so the .well-known auto-discovery
@@ -176,11 +176,11 @@ spec:
     # listener, and tlsVerify opts out of verifying that throwaway cert.
     # A publicly resolvable IdP can drop this block and rely on discovery.
     endpoints:
-      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/auth
-      tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/token
-      jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/certs
-      userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/userinfo
-      introspectionEndpoint: https://keycloak.openstack.svc.cluster.local:8443/realms/forge/protocol/openid-connect/token/introspect
+      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/auth
+      tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/token
+      jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/certs
+      userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/userinfo
+      introspectionEndpoint: https://keycloak.openstack.svc.cluster.local:8443/realms/cobaltcore/protocol/openid-connect/token/introspect
     oauth2Introspection:
       enabled: true        # CLI clients may present IdP-issued bearer tokens
       tlsVerify: false     # the fixture's :8443 cert is a throwaway self-signed cert
@@ -188,7 +188,7 @@ spec:
   - remote:
     - type: HTTP_OIDC_ISS
       anyOneOf:
-      - http://keycloak.openstack.svc.cluster.local:8080/realms/forge
+      - http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
     - user:
@@ -196,7 +196,7 @@ spec:
       group:
         name: federated-users
         domain:
-          name: forge
+          name: cobaltcore
   groups:
   - name: federated-users
     description: Federated Keycloak users
@@ -208,8 +208,8 @@ spec:
 What the operator does with this:
 
 - The dedicated backend controller provisions the domain, then the three
-  keystone federation API objects: the identity provider `keycloak-forge`
-  (remote ID = the issuer), the mapping `keycloak-forge-mapping` (your typed
+  keystone federation API objects: the identity provider `keycloak-cobaltcore`
+  (remote ID = the issuer), the mapping `keycloak-cobaltcore-mapping` (your typed
   rules, drift-corrected on every change), and the protocol `openid` binding
   the two. It also creates the `federated-users` group and grants it
   `member` on the domain.
@@ -239,7 +239,7 @@ value (e.g. `{1}` here) makes keystone reject the assertion with a
 ```bash
 kubectl get keystoneidentitybackends -n openstack
 NAME             READY   DOMAIN   KEYSTONE               AGE
-keycloak-forge   True    forge    controlplane-keystone  1m
+keycloak-cobaltcore   True    cobaltcore    controlplane-keystone  1m
 ```
 
 `kubectl describe` shows the progression: `DomainReady=True`, then
@@ -265,15 +265,15 @@ required. Port-forward Keycloak and obtain an access token:
 ```bash
 kubectl -n openstack port-forward svc/keycloak 8080:8080 &
 
-TOKEN=$(curl -s http://localhost:8080/realms/forge/protocol/openid-connect/token \
+TOKEN=$(curl -s http://localhost:8080/realms/cobaltcore/protocol/openid-connect/token \
   -d grant_type=password -d client_id=keystone \
-  -d client_secret=keystone-forge-secret \
+  -d client_secret=keystone-cobaltcore-secret \
   -d username=fry -d password=fry-password \
   -d scope=openid | jq -r .access_token)
 ```
 
 `KC_HOSTNAME` pins the realm issuer to
-`http://keycloak.openstack.svc.cluster.local:8080/realms/forge`, so a token
+`http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore`, so a token
 minted through the port-forward still carries the cluster-internal `iss` the
 in-cluster proxy expects. Exchange the bearer for an unscoped Keystone token
 against the devstack's published Keystone endpoint (`-k` for the devstack's
@@ -283,7 +283,7 @@ self-signed gateway cert, matching the Quick Start):
 # The proxy introspects the bearer (in-cluster, over :8443) and keystone maps
 # it to an unscoped token:
 curl -sik -H "Authorization: Bearer $TOKEN" \
-  "https://keystone.127-0-0-1.nip.io:8443/v3/OS-FEDERATION/identity_providers/keycloak-forge/protocols/openid/auth" \
+  "https://keystone.127-0-0-1.nip.io:8443/v3/OS-FEDERATION/identity_providers/keycloak-cobaltcore/protocols/openid/auth" \
   | grep -i x-subject-token
 ```
 
@@ -296,7 +296,7 @@ carries.
 Navigate to
 
 ```
-<keystone endpoint base>/v3/auth/OS-FEDERATION/identity_providers/keycloak-forge/protocols/openid/websso?origin=<dashboard origin>
+<keystone endpoint base>/v3/auth/OS-FEDERATION/identity_providers/keycloak-cobaltcore/protocols/openid/websso?origin=<dashboard origin>
 ```
 
 You are redirected to the Keycloak login form; after authenticating,
@@ -332,7 +332,7 @@ provider; use the per-IdP paths.
 
 ## Deleting a backend
 
-`kubectl delete keystoneidentitybackend keycloak-forge` de-projects the
+`kubectl delete keystoneidentitybackend keycloak-cobaltcore` de-projects the
 configuration first (with the last OIDC backend the sidecar disappears and
 the Service returns to uWSGI), then removes the protocol, mapping, and
 identity provider — always — and finally applies

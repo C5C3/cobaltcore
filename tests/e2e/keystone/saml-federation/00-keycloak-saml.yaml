@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # In-suite Keycloak fixture for the saml-federation E2E test: a single
-# start-dev pod importing two realms from this ConfigMap. forge-saml ships the
+# start-dev pod importing two realms from this ConfigMap. cobaltcore-saml ships the
 # SAML client (the service provider), one test user, and one group. A second
-# realm forge-saml-oidc ships the OIDC confidential client for the coexistence
+# realm cobaltcore-saml-oidc ships the OIDC confidential client for the coexistence
 # step. The two protocols must live in separate realms because Keystone rejects
 # two identity providers that share a remote_id, and within one Keycloak realm
 # the SAML entityID and the OIDC issuer are the same URL (the realm URL) — so a
@@ -28,9 +28,9 @@ metadata:
   name: keycloak-saml-realms
   namespace: openstack
 data:
-  forge-saml-realm.json: |
+  cobaltcore-saml-realm.json: |
     {
-      "realm": "forge-saml",
+      "realm": "cobaltcore-saml",
       "enabled": true,
       "sslRequired": "none",
       "groups": [{"name": "engineers", "path": "/engineers"}],
@@ -75,9 +75,9 @@ data:
         }
       ]
     }
-  forge-saml-oidc-realm.json: |
+  cobaltcore-saml-oidc-realm.json: |
     {
-      "realm": "forge-saml-oidc",
+      "realm": "cobaltcore-saml-oidc",
       "enabled": true,
       "sslRequired": "none",
       "groups": [{"name": "engineers", "path": "/engineers"}],

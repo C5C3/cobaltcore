@@ -23,7 +23,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	"github.com/c5c3/forge/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/multicluster"
 )
 
 // ManagerConfig holds per-operator configuration for the shared manager

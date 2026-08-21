@@ -192,7 +192,7 @@ Keystone's:
 
 ```bash
 docker pull ghcr.io/c5c3/placement:2025.2
-kind load docker-image ghcr.io/c5c3/placement:2025.2 --name forge
+kind load docker-image ghcr.io/c5c3/placement:2025.2 --name cobaltcore
 ```
 
 ```bash

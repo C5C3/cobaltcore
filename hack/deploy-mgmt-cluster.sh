@@ -9,7 +9,7 @@
 # The management cluster runs the CobaltCore operators and nothing else: the
 # Keystone, Barbican and ControlPlane CRs live here, while every child they
 # project lands on a registered target cluster. The target half is a second kind
-# cluster brought up with `INFRA_ONLY=true CLUSTER_NAME=forge-target
+# cluster brought up with `INFRA_ONLY=true CLUSTER_NAME=cobaltcore-target
 # hack/deploy-infra.sh`, which installs the third-party infrastructure (MariaDB,
 # Memcached, OpenBao, ESO) and no CobaltCore operator.
 #
@@ -49,7 +49,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-CLUSTER_NAME="${CLUSTER_NAME:-forge-mgmt}"
+CLUSTER_NAME="${CLUSTER_NAME:-cobaltcore-mgmt}"
 HELMRELEASE_TIMEOUT="${HELMRELEASE_TIMEOUT:-600}"
 
 # flux-operator release applied before the FluxInstance CR is created, pinned as

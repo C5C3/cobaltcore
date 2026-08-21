@@ -23,13 +23,13 @@ import (
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/deployment"
-	"github.com/c5c3/forge/internal/common/keystoneauth"
-	"github.com/c5c3/forge/internal/common/naming"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
 
 // deployGlance returns a Glance for the deployment tests at the given release,

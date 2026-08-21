@@ -25,8 +25,8 @@ The KeystoneReconciler is registered with the controller manager in
 
 ```go
 import (
-    keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
-    "github.com/c5c3/forge/operators/keystone/internal/controller"
+    keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+    "github.com/c5c3/cobaltcore/operators/keystone/internal/controller"
 )
 
 // In init():
@@ -279,21 +279,21 @@ chainsaw tests, dashboards) may rely on them:
 
 | Key | Kind | Applied to | Value | Purpose |
 | --- | --- | --- | --- | --- |
-| `forge.c5c3.io/rotation-target` | Label | Staging Secrets (`{name}-fernet-keys-rotation`, `{name}-credential-keys-rotation`, `{name}-admin-password-rotation`) | `fernet-keys`, `credential-keys`, `admin-password` | Distinguishes rotation staging Secrets from production key Secrets so the operator's Secret→Keystone mapper can enqueue the owning Keystone on staging PATCHes. |
-| `forge.c5c3.io/rotation-completed-at` | Annotation | Staging Secrets (written by the rotation CronJob) | RFC3339 UTC timestamp (e.g. `2026-04-18T12:34:56Z`) | Single-shot commit marker. The operator only applies a staging Secret's data to the production Secret when this annotation is present and parses cleanly; the annotation is removed implicitly when the staging Secret is deleted at the end of a successful apply. |
-| `forge.c5c3.io/admin-password-hash` | Annotation | Bootstrap Job pod template (`{name}-bootstrap`) | `hex(SHA-256(password))` of the `password` key of the admin Secret | Carries the admin-password digest into the pod template so a rotated password changes the pod-spec hash and re-runs the idempotent bootstrap Job. See [`reconcileBootstrap`](#reconcilebootstrap). |
-| `forge.c5c3.io/pod-spec-hash` | Annotation | Operator-managed Jobs (`{name}-bootstrap`, migration Jobs) | `hex(SHA-256(PodTemplateSpec))` stamped at creation time | Change-detection gate for completed Jobs. `job.RunJob` compares the desired hash against this annotation and recreates the Job (so it re-runs) when they differ, without normalizing API-server defaults. |
+| `cobaltcore.c5c3.io/rotation-target` | Label | Staging Secrets (`{name}-fernet-keys-rotation`, `{name}-credential-keys-rotation`, `{name}-admin-password-rotation`) | `fernet-keys`, `credential-keys`, `admin-password` | Distinguishes rotation staging Secrets from production key Secrets so the operator's Secret→Keystone mapper can enqueue the owning Keystone on staging PATCHes. |
+| `cobaltcore.c5c3.io/rotation-completed-at` | Annotation | Staging Secrets (written by the rotation CronJob) | RFC3339 UTC timestamp (e.g. `2026-04-18T12:34:56Z`) | Single-shot commit marker. The operator only applies a staging Secret's data to the production Secret when this annotation is present and parses cleanly; the annotation is removed implicitly when the staging Secret is deleted at the end of a successful apply. |
+| `cobaltcore.c5c3.io/admin-password-hash` | Annotation | Bootstrap Job pod template (`{name}-bootstrap`) | `hex(SHA-256(password))` of the `password` key of the admin Secret | Carries the admin-password digest into the pod template so a rotated password changes the pod-spec hash and re-runs the idempotent bootstrap Job. See [`reconcileBootstrap`](#reconcilebootstrap). |
+| `cobaltcore.c5c3.io/pod-spec-hash` | Annotation | Operator-managed Jobs (`{name}-bootstrap`, migration Jobs) | `hex(SHA-256(PodTemplateSpec))` stamped at creation time | Change-detection gate for completed Jobs. `job.RunJob` compares the desired hash against this annotation and recreates the Job (so it re-runs) when they differ, without normalizing API-server defaults. |
 
 The Go constants backing the rotation keys are exported from
 `operators/keystone/internal/controller/rotation_staging.go`:
 
 ```go
-const StagingSecretLabelKey       = "forge.c5c3.io/rotation-target"
-const RotationCompletedAnnotation = "forge.c5c3.io/rotation-completed-at"
+const StagingSecretLabelKey       = "cobaltcore.c5c3.io/rotation-target"
+const RotationCompletedAnnotation = "cobaltcore.c5c3.io/rotation-completed-at"
 ```
 
-`forge.c5c3.io/pod-spec-hash` is backed by `job.PodSpecHashAnnotation` in
-`internal/common/job/job.go`; `forge.c5c3.io/admin-password-hash` by the
+`cobaltcore.c5c3.io/pod-spec-hash` is backed by `job.PodSpecHashAnnotation` in
+`internal/common/job/job.go`; `cobaltcore.c5c3.io/admin-password-hash` by the
 unexported `adminPasswordHashAnnotation` const in
 `operators/keystone/internal/controller/reconcile_bootstrap.go`.
 
@@ -1735,12 +1735,12 @@ is `{keystone.Name}-fernet-keys-rotation`. It is created and owned by the
 operator via `ensureFernetStagingSecret`:
 
 - Empty `Data` on creation; the CronJob PATCHes `Data` on rotation.
-- Labels: `commonLabels(keystone)` + `forge.c5c3.io/rotation-target=fernet-keys`.
+- Labels: `commonLabels(keystone)` + `cobaltcore.c5c3.io/rotation-target=fernet-keys`.
 - Owner reference: the Keystone CR (garbage-collected with the CR).
 
 **Completion annotation contract.** The CronJob's `fernet_rotate.sh` PATCH
 writes **both** the new `data` map and the
-`forge.c5c3.io/rotation-completed-at` annotation in a single atomic
+`cobaltcore.c5c3.io/rotation-completed-at` annotation in a single atomic
 strategic-merge PATCH. Format: `datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00","Z")`
 — an RFC3339 UTC timestamp such as `2026-04-18T12:34:56Z`. The operator
 treats the annotation as the **single-shot commit marker**: it never rewrites
@@ -1908,14 +1908,14 @@ Secret is `{keystone.Name}-credential-keys-rotation`. It is created and
 owned by the operator via `ensureCredentialStagingSecret`:
 
 - Empty `Data` on creation; the CronJob PATCHes `Data` on rotation.
-- Labels: `commonLabels(keystone)` + `forge.c5c3.io/rotation-target=credential-keys`.
+- Labels: `commonLabels(keystone)` + `cobaltcore.c5c3.io/rotation-target=credential-keys`.
 - Owner reference: the Keystone CR (garbage-collected with the CR).
 
 **Completion annotation contract.** `credential_rotate.sh` runs
 `keystone-manage credential_rotate` and then `keystone-manage credential_migrate`
 (in that order — migrate re-encrypts existing stored credentials with the new
 primary key) before emitting a single atomic PATCH that sets both `data`
-and the `forge.c5c3.io/rotation-completed-at` annotation (RFC3339 UTC, `Z`
+and the `cobaltcore.c5c3.io/rotation-completed-at` annotation (RFC3339 UTC, `Z`
 suffix). As with Fernet, the annotation is the single-shot commit marker;
 absence or malformed format blocks the operator's apply path.
 
@@ -2871,9 +2871,9 @@ project, roles, and service catalog entries.
 the reconciler reads the `password` key of the admin Secret named by
 `spec.bootstrap.adminPasswordSecretRef.Name` and stamps its digest —
 `hex(SHA-256(password))` — onto the bootstrap Job's pod template as the
-`forge.c5c3.io/admin-password-hash` annotation. Because `job.PodSpecHash` hashes
+`cobaltcore.c5c3.io/admin-password-hash` annotation. Because `job.PodSpecHash` hashes
 the **full** `PodTemplateSpec` (metadata included), a rotated password changes
-this annotation and therefore the `forge.c5c3.io/pod-spec-hash` gate. On the next
+this annotation and therefore the `cobaltcore.c5c3.io/pod-spec-hash` gate. On the next
 reconcile `job.RunJob` sees the desired hash diverge from the completed
 `{name}-bootstrap` Job's stored hash, deletes the stale Job, and recreates it so
 `keystone-manage bootstrap` re-runs against the new admin credentials. A missing
@@ -2882,7 +2882,7 @@ precondition failure: the reconciler sets `BootstrapReady=False` with reason
 `AdminSecretInvalid`, emits a `Warning` event, and returns the error (requeue
 with backoff) rather than building a Job with empty credentials.
 
-**Pod-template annotation:** `forge.c5c3.io/admin-password-hash` is written to the
+**Pod-template annotation:** `cobaltcore.c5c3.io/admin-password-hash` is written to the
 Job's `Spec.Template.ObjectMeta.Annotations` (the pod template), not the Job's own
 metadata, so it participates in `job.PodSpecHash`. See the
 [Labels and Annotations](#labels-and-annotations) table for the cross-reconciler
@@ -3054,7 +3054,7 @@ Two lifecycle paths:
    passwords into.
 3. **Refresh rotation-age gauge** — `observeRotationAge(..., key_type
    "admin-password")` refreshes the rotation-age gauge from the push-source
-   Secret's `forge.c5c3.io/rotation-completed-at` annotation, falling back to the
+   Secret's `cobaltcore.c5c3.io/rotation-completed-at` annotation, falling back to the
    staging Secret during the pre-first-apply window. Called before the apply so
    the next reconcile picks up the freshest timestamp once the apply re-stamps
    the push-source annotation.
@@ -3162,7 +3162,7 @@ Secret is `{keystone.Name}-admin-password-rotation`. It is created and owned by
 the operator via `ensureStagingSecret`:
 
 - Empty `Data` on creation; the CronJob PATCHes `Data` on rotation.
-- Labels: `commonLabels(keystone)` + `forge.c5c3.io/rotation-target=admin-password`
+- Labels: `commonLabels(keystone)` + `cobaltcore.c5c3.io/rotation-target=admin-password`
   (see [Labels and Annotations](#labels-and-annotations)).
 - Owner reference: the Keystone CR (garbage-collected with the CR).
 
@@ -3192,14 +3192,14 @@ with strictly disjoint capabilities:
 minLength is the normalized `PasswordLength` (webhook default 32, defense-in-depth
 floor 24 via `adminPasswordMinLength`). On rejection the operator emits a Warning
 event `AdminPasswordRotationRejected` and **retains the staging Secret** for
-inspection. A malformed `forge.c5c3.io/rotation-completed-at` value emits a
+inspection. A malformed `cobaltcore.c5c3.io/rotation-completed-at` value emits a
 Warning event `AdminPasswordRotationAnnotationInvalid` and likewise retains
 staging. The password value is never logged or echoed in events.
 
 **Apply algorithm.** On a valid staging Secret, `applyAdminPasswordRotation`:
 
 1. GETs the staging Secret (absent ⇒ no-op).
-2. Requires `forge.c5c3.io/rotation-completed-at` to be present and RFC3339-parseable.
+2. Requires `cobaltcore.c5c3.io/rotation-completed-at` to be present and RFC3339-parseable.
 3. Validates the staged password.
 4. GETs the push-source Secret, replaces its `.data` verbatim, stamps the
    `rotation-completed-at` annotation, and issues an `Update` under the
@@ -3214,10 +3214,10 @@ rotation-age gauge can refresh on every reconcile.
 **Downstream consumer.** [`reconcileBootstrap`](#reconcilebootstrap) is the
 consumer of the rotated password: once ESO syncs the new value from
 `bootstrap/{keystone.Namespace}/{keystone.Name}/admin` into the admin Secret, the bootstrap reconciler's
-`forge.c5c3.io/admin-password-hash` gate re-runs the idempotent bootstrap Job to
+`cobaltcore.c5c3.io/admin-password-hash` gate re-runs the idempotent bootstrap Job to
 apply it. See the [Labels and Annotations](#labels-and-annotations) entries for
-`forge.c5c3.io/rotation-target` (value `admin-password` for the staging Secret),
-`forge.c5c3.io/rotation-completed-at`, and `forge.c5c3.io/admin-password-hash`.
+`cobaltcore.c5c3.io/rotation-target` (value `admin-password` for the staging Secret),
+`cobaltcore.c5c3.io/rotation-completed-at`, and `cobaltcore.c5c3.io/admin-password-hash`.
 
 ---
 

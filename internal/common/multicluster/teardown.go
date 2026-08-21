@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // teardownPageSize bounds one LIST the sweep issues. The sweep cannot narrow its

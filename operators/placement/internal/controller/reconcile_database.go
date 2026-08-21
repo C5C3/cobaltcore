@@ -14,10 +14,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/release"
-	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/release"
+	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
 // conditionReasonImageReleaseMismatch flags the operator error where the

@@ -10,9 +10,9 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 
-	"github.com/c5c3/forge/internal/common/job"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
-	barbicanmetrics "github.com/c5c3/forge/operators/barbican/internal/metrics"
+	"github.com/c5c3/cobaltcore/internal/common/job"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	barbicanmetrics "github.com/c5c3/cobaltcore/operators/barbican/internal/metrics"
 )
 
 // dbJobUIDAnnotationKey returns the dedupe annotation key for the DB-related Job

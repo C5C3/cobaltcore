@@ -11,7 +11,7 @@ import (
 	"io/fs"
 	"sort"
 
-	"github.com/c5c3/forge/internal/common/release"
+	"github.com/c5c3/cobaltcore/internal/common/release"
 )
 
 // CatalogSection is one INI section of a per-release option catalog. Opts lists

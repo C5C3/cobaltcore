@@ -25,10 +25,10 @@ import (
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	"github.com/c5c3/forge/internal/common/apply"
-	"github.com/c5c3/forge/internal/common/conditions"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/apply"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // The ownership labels are the cross-namespace substitute for a controller owner

@@ -16,10 +16,10 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	"github.com/c5c3/forge/internal/common/secrets"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
-	"github.com/c5c3/forge/operators/keystone/internal/identity"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/identity"
 )
 
 // Per-backend condition types and reasons for the OIDC federation objects.

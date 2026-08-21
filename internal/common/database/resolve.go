@@ -7,7 +7,7 @@ package database
 import (
 	"fmt"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // ResolveHost returns the database host:port for the shared DatabaseSpec.

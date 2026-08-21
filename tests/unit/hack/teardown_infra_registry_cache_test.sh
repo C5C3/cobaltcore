@@ -106,9 +106,9 @@ test_purge_removes_by_label() {
   log="$(cat "$tmp/docker.log")"
 
   assert_contains "containers are looked up by the purge label" \
-    "$log" "docker ps -aq --filter label=forge.registry-cache=true"
+    "$log" "docker ps -aq --filter label=cobaltcore.registry-cache=true"
   assert_contains "volumes are looked up by the purge label" \
-    "$log" "docker volume ls -q --filter label=forge.registry-cache=true"
+    "$log" "docker volume ls -q --filter label=cobaltcore.registry-cache=true"
   assert_contains "labelled containers are force-removed" \
     "$log" "docker rm -f cid-dockerio cid-ghcr"
   assert_contains "labelled volumes are removed" \
@@ -125,8 +125,8 @@ test_purge_is_label_scoped() {
   # by label so it never drifts from deploy-infra.sh's upstream set.
   assert_file_not_contains "teardown does not hard-code registry-1.docker.io" \
     "$TEARDOWN_SH" "registry-1.docker.io"
-  assert_file_contains "teardown filters on the forge.registry-cache label" \
-    "$TEARDOWN_SH" "label=forge.registry-cache=true"
+  assert_file_contains "teardown filters on the cobaltcore.registry-cache label" \
+    "$TEARDOWN_SH" "label=cobaltcore.registry-cache=true"
 }
 
 # ---------------------------------------------------------------------------

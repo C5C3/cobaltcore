@@ -17,8 +17,8 @@ spec:
     name: saml-twometa
   type: SAML
   saml:
-    idpEntityID: https://idp.example.com/realms/forge
+    idpEntityID: https://idp.example.com/realms/cobaltcore
     idpMetadata:
       secretRef:
         name: corp-saml-idp-metadata
-      url: https://idp.example.com/realms/forge/descriptor
+      url: https://idp.example.com/realms/cobaltcore/descriptor

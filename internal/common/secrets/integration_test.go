@@ -11,7 +11,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	envtestutil "github.com/c5c3/forge/internal/common/testutil/envtest"
+	envtestutil "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	corev1 "k8s.io/api/core/v1"

@@ -12,7 +12,7 @@ import (
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // EffectiveStoreRef resolves an optional per-CR SecretStoreRefSpec to the

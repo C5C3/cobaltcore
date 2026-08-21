@@ -22,17 +22,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/c5c3/forge/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/multicluster"
 )
 
 // StagingSecretLabelKey labels staging Secrets so operator watches and
 // consumers can distinguish them from the production key Secrets.
-const StagingSecretLabelKey = "forge.c5c3.io/rotation-target" //nolint:gosec // label key, not a credential
+const StagingSecretLabelKey = "cobaltcore.c5c3.io/rotation-target" //nolint:gosec // label key, not a credential
 
 // CompletedAnnotation is the RFC3339 UTC timestamp the rotation CronJob writes
 // atomically with its staging Secret PATCH. Its presence is the single-shot
 // commit marker gating the operator's apply path.
-const CompletedAnnotation = "forge.c5c3.io/rotation-completed-at" //nolint:gosec // annotation key, not a credential
+const CompletedAnnotation = "cobaltcore.c5c3.io/rotation-completed-at" //nolint:gosec // annotation key, not a credential
 
 // CompletedAt parses the CompletedAnnotation off the given Secret. It returns
 // (zero, false) when the Secret is nil, the annotation is missing, or the

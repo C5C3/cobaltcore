@@ -9,7 +9,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 func TestRenderPastePipeline(t *testing.T) {

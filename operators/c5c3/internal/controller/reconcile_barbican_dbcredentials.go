@@ -5,7 +5,7 @@
 package controller
 
 import (
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // The Barbican DB-credential concern mirrors the Keystone one in

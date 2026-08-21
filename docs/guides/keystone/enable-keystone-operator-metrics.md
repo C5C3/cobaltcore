@@ -128,7 +128,7 @@ keystone-operator   3s
 ### 2. Import the reference Grafana dashboard
 
 The repository ships a reference dashboard in
-[`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/forge/blob/main/operators/keystone/dashboards/keystone-operator.json)
+[`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/dashboards/keystone-operator.json)
 covering the four core SLIs: reconcile p95 per sub-reconciler, error
 rate per condition type, rotation age per key, and `db_sync` duration
 p95 with failure count.
@@ -221,7 +221,7 @@ mismatch is in the `serviceMonitorSelector` (see Prerequisites).
 
 The operator's metrics endpoint is bound via the `--metrics-bind-address` flag
 (default `:8080`), wired in
-[`internal/common/bootstrap/manager.go`](https://github.com/c5c3/forge/blob/main/internal/common/bootstrap/manager.go)
+[`internal/common/bootstrap/manager.go`](https://github.com/c5c3/cobaltcore/blob/main/internal/common/bootstrap/manager.go)
 as `metricsserver.Options{BindAddress: metricsAddr}`. The chart passes the flag from
 the `metrics.port` value (rendered as `--metrics-bind-address=:<metrics.port>`), so the
 *port* is configurable without a code change. What is **not** configurable from the chart is the
@@ -287,7 +287,7 @@ ServiceMonitor (and therefore the Prometheus scrape) is removed.
 - [Keystone Operator Prometheus Metrics](../../reference/keystone-operator-metrics.md) — authoritative metric catalogue.
 - [Keystone Reconciler — Metrics Instrumentation](../../reference/keystone/keystone-reconciler.md#metrics-instrumentation) — how sub-reconcilers are instrumented.
 - [Observability & Diagnostics](../observability.md) — conditions, events, and logs.
-- [`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/forge/blob/main/operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard.
+- [`operators/keystone/dashboards/keystone-operator.json`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/dashboards/keystone-operator.json) — reference Grafana dashboard.
 
 ## Tested by
 

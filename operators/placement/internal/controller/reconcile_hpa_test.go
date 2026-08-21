@@ -14,8 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
 func placementAutoscalingSpec(minR, maxR int32) *placementv1alpha1.AutoscalingSpec {

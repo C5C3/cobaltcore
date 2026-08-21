@@ -14,10 +14,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
 
 func glanceGatewaySpec() *glancev1alpha1.GatewaySpec {

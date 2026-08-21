@@ -779,7 +779,7 @@ the OpenStack DB trust domain:
   `serverCertIssuerRef`).
 - The Keystone DB-client keypair issued by the keystone-operator's
   `reconcileDatabaseTLS` sub-reconciler — the constant
-  [`dbCAIssuerName`](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/controller/reconcile_databasetls.go)
+  [`dbCAIssuerName`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/internal/controller/reconcile_databasetls.go)
   hard-codes the same string (`"openstack-db-ca-issuer"`), so a rename here MUST be
   matched in the operator.
 
@@ -845,7 +845,7 @@ The MariaDB CR enables TLS in `spec.tls` and the MaxScale sub-spec inherits it:
 | `spec.tls.enabled` | `true` | Turn on TLS for the MariaDB cluster |
 | `spec.tls.required` | `true` | Reject any non-TLS connection at the transport layer (verified by the chainsaw plaintext-rejection probe in `tests/e2e/keystone/database-tls/chainsaw-test.yaml`) |
 | `spec.tls.serverCertIssuerRef` | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Issue server certs for Galera + MaxScale from the shared DB CA |
-| `spec.tls.clientCertIssuerRef` | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Trust client certs minted by the same DB CA (the Keystone operator issues its DB-client keypair from this issuer; see [reconcile_databasetls.go](https://github.com/c5c3/forge/blob/main/operators/keystone/internal/controller/reconcile_databasetls.go)) |
+| `spec.tls.clientCertIssuerRef` | `openstack-db-ca-issuer` (ClusterIssuer, `cert-manager.io`) | Trust client certs minted by the same DB CA (the Keystone operator issues its DB-client keypair from this issuer; see [reconcile_databasetls.go](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/internal/controller/reconcile_databasetls.go)) |
 | `spec.maxScale.tls.enabled` | `true` | MaxScale terminates TLS on its client listener (proxy-side); explicit block documents intent even where the proxy would otherwise inherit `spec.tls` |
 
 The rendered YAML in `deploy/flux-system/infrastructure/mariadb.yaml` is:
@@ -875,7 +875,7 @@ referenced issuer, so explicit `serverCASecretRef` / `clientCASecretRef` entries
 intentionally omitted — see the inline `DECISION` comment in `mariadb.yaml` for the
 trade-off against the cross-namespace `*CASecretRef` form. End-to-end verification
 that the live connection is encrypted lives in
-[`tests/e2e/keystone/database-tls/chainsaw-test.yaml`](https://github.com/c5c3/forge/blob/main/tests/e2e/keystone/database-tls/chainsaw-test.yaml)
+[`tests/e2e/keystone/database-tls/chainsaw-test.yaml`](https://github.com/c5c3/cobaltcore/blob/main/tests/e2e/keystone/database-tls/chainsaw-test.yaml)
 (asserts `SHOW STATUS LIKE 'Ssl_cipher'` reports a non-empty cipher).
 
 To turn the path on for a `Keystone` CR, follow the
@@ -978,7 +978,7 @@ self-initialized AppRole with no consumer into every production deployment. Only
 instance a ControlPlane projects for a managed Barbican secret store carries the same
 proving-grade `Development` profile; a `Hardened` production-shaped instance is still
 future work.
-[`tests/unit/deploy/openbao_instance_overlay_test.sh`](https://github.com/c5c3/forge/blob/main/tests/unit/deploy/openbao_instance_overlay_test.sh)
+[`tests/unit/deploy/openbao_instance_overlay_test.sh`](https://github.com/c5c3/cobaltcore/blob/main/tests/unit/deploy/openbao_instance_overlay_test.sh)
 asserts both directions of that split.
 
 **Two Certificates, one trust domain.** The operator's External TLS contract reads two
@@ -1100,7 +1100,7 @@ itself sets `automountServiceAccountToken: false`, since every consumer mints ex
 > work (minting AppRole secret IDs, writing secrets) goes through the `provisioner` role
 > instead. Because that failure is silent — the CR reconciles, `Available` stays `True`,
 > and the new request is simply never applied —
-> [`tests/unit/deploy/openbao_instance_overlay_test.sh`](https://github.com/c5c3/forge/blob/main/tests/unit/deploy/openbao_instance_overlay_test.sh)
+> [`tests/unit/deploy/openbao_instance_overlay_test.sh`](https://github.com/c5c3/cobaltcore/blob/main/tests/unit/deploy/openbao_instance_overlay_test.sh)
 > pins the request names, so an edit cannot land without confronting it.
 
 **Shared names with the brownfield leg.** The mount, policy, and role names (`barbican/`,
@@ -1112,7 +1112,7 @@ shared management OpenBao (`enable_barbican_kv` in `setup-secret-engines.sh`,
 deployment that attaches Barbican to the shared instance instead of a dedicated one
 therefore differs only in which instance it points at.
 
-[`tests/e2e/infrastructure/openbao-instance/chainsaw-test.yaml`](https://github.com/c5c3/forge/blob/main/tests/e2e/infrastructure/openbao-instance/chainsaw-test.yaml)
+[`tests/e2e/infrastructure/openbao-instance/chainsaw-test.yaml`](https://github.com/c5c3/cobaltcore/blob/main/tests/e2e/infrastructure/openbao-instance/chainsaw-test.yaml)
 locks the whole path: the operator Deployment and its HelmRelease, the unseal-key
 ExternalSecret reporting `SecretSynced` **and** the instance's `ownerReference` adoption of
 the Secret it materialized, the CR reporting `Available`, a Kubernetes-auth login that reads
@@ -1650,7 +1650,7 @@ above: the production omission is explicit, the opt-in flag has a single
 documented name (`WITH_PROMETHEUS`), and the kind overlay is self-contained
 under `deploy/kind/prometheus/` so the production kustomization root is
 untouched. The
-[`document-intentional-environment-divergence-in-overlays`](https://github.com/c5c3/forge/blob/main/.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md)
+[`document-intentional-environment-divergence-in-overlays`](https://github.com/c5c3/cobaltcore/blob/main/.planwerk/review_patterns/document-intentional-environment-divergence-in-overlays.md)
 review pattern catalogues the full surface area.
 
 ### metrics-server (kind-only opt-in)

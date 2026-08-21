@@ -38,14 +38,14 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	"github.com/c5c3/forge/internal/common/bootstrap"
-	"github.com/c5c3/forge/internal/common/gateway"
-	"github.com/c5c3/forge/internal/common/healthcheck"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	"github.com/c5c3/forge/internal/common/watch"
-	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/gateway"
+	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/watch"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
 )
 
 // HorizonSecretNameIndexKey is the field-indexer key under which Horizon CRs

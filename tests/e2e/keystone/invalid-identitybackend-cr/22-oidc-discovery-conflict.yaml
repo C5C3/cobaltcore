@@ -17,8 +17,8 @@ spec:
     name: sso-discovery
   type: OIDC
   oidc:
-    issuer: https://idp.example.com/realms/forge
-    providerMetadataURL: https://idp.example.com/realms/forge/.well-known/openid-configuration
+    issuer: https://idp.example.com/realms/cobaltcore
+    providerMetadataURL: https://idp.example.com/realms/cobaltcore/.well-known/openid-configuration
     endpoints:
       authorizationEndpoint: https://idp.example.com/auth
       tokenEndpoint: https://idp.example.com/token

@@ -10,7 +10,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/c5c3/forge/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"

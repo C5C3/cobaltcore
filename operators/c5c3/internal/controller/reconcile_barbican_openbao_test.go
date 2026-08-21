@@ -26,8 +26,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // barbicanOpenBaoTestNamespace is the Barbican service namespace the fixtures

@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/c5c3/forge/internal/common/config"
-	"github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // PipelineSpec defines the input for rendering an api-paste.ini pipeline.

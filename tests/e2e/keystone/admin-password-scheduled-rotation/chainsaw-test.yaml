@@ -8,7 +8,7 @@
 #     (keystone-adminpw-sched-admin-password-rotate) carrying the spec schedule
 #    .
 #   - A CronJob run PATCHes a fresh password + the
-#     forge.c5c3.io/rotation-completed-at annotation onto the staging Secret
+#     cobaltcore.c5c3.io/rotation-completed-at annotation onto the staging Secret
 #     (<cr>-admin-password-rotation); the operator validates it, commits it onto
 #     the push-source Secret (<cr>-admin-password-next), deletes staging, and
 #     emits AdminPasswordRotated.
@@ -17,7 +17,7 @@
 # ESO (refreshInterval: 10s) projects it back
 #     into the admin Secret (<cr>-admin-password); the operator's
 #     secretToKeystoneMapper observes the change and re-runs the idempotent
-#     bootstrap Job with the new forge.c5c3.io/admin-password-hash; BootstrapReady
+#     bootstrap Job with the new cobaltcore.c5c3.io/admin-password-hash; BootstrapReady
 #     returns to True and the new password authenticates (201) while the old one
 #     is rejected (401).
 #   - Disabling rotation tears down every Model B resource and reports
@@ -343,7 +343,7 @@ spec:
           echo "OK: ESO synced rotated password into $ADMIN_SECRET"
 
           # The operator's secretToKeystoneMapper observes the admin Secret change:
-          # the stale bootstrap Job's forge.c5c3.io/admin-password-hash no longer
+          # the stale bootstrap Job's cobaltcore.c5c3.io/admin-password-hash no longer
           # matches, so the operator deletes it and recreates one carrying the new
           # SHA-256 digest with a fresh UID.
           CUR_UID=""
@@ -352,7 +352,7 @@ spec:
             CUR_UID=$(kubectl get job "$BOOTSTRAP_JOB" -n "$NS" \
               -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
             CUR_HASH=$(kubectl get job "$BOOTSTRAP_JOB" -n "$NS" \
-              -o jsonpath="{.spec.template.metadata.annotations['forge\.c5c3\.io/admin-password-hash']}" 2>/dev/null || true)
+              -o jsonpath="{.spec.template.metadata.annotations['cobaltcore\.c5c3\.io/admin-password-hash']}" 2>/dev/null || true)
             if [ -n "$CUR_UID" ] && [ "$CUR_UID" != "$OLD_JOB_UID" ] && [ "$CUR_HASH" = "$NEW_HASH" ]; then
               break
             fi

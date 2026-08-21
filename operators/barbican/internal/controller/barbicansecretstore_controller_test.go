@@ -39,14 +39,14 @@ import (
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	commonconditions "github.com/c5c3/forge/internal/common/conditions"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
-	"github.com/c5c3/forge/operators/barbican/internal/metrics"
-	"github.com/c5c3/forge/operators/barbican/internal/openbao"
+	commonconditions "github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/barbican/internal/metrics"
+	"github.com/c5c3/cobaltcore/operators/barbican/internal/openbao"
 )
 
 const (

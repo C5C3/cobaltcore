@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	"github.com/c5c3/forge/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/multicluster"
 )
 
 func newScheme() *runtime.Scheme {
@@ -716,14 +716,14 @@ func TestRunJob_existingComplete_specChanged_alreadyExists(t *testing.T) {
 // templates with byte-identical PodSpecs but differing pod-template
 // annotations hash to different digests. This is the property relies
 // on: a content-derived pod-template annotation must change the stored
-// forge.c5c3.io/pod-spec-hash so RunJob re-runs a completed Job even when the
+// cobaltcore.c5c3.io/pod-spec-hash so RunJob re-runs a completed Job even when the
 // PodSpec itself is unchanged.
 func TestPodSpecHash_TemplateAnnotationParticipates(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	base := testJob().Spec.Template
 	annotated := testJob().Spec.Template
-	annotated.Annotations = map[string]string{"forge.c5c3.io/trigger": "rotated"}
+	annotated.Annotations = map[string]string{"cobaltcore.c5c3.io/trigger": "rotated"}
 
 	g.Expect(PodSpecHash(&base)).To(Equal(PodSpecHash(&base)), "hash must be deterministic")
 	g.Expect(PodSpecHash(&annotated)).NotTo(Equal(PodSpecHash(&base)),
@@ -762,7 +762,7 @@ func TestRunJob_RecreatesOnTemplateAnnotationChange(t *testing.T) {
 	// Desired Job differs only by a pod-template annotation; the PodSpec is
 	// byte-identical.
 	newJob := testJob()
-	newJob.Spec.Template.Annotations = map[string]string{"forge.c5c3.io/trigger": "rotated"}
+	newJob.Spec.Template.Annotations = map[string]string{"cobaltcore.c5c3.io/trigger": "rotated"}
 
 	ready, _, err := RunJob(context.Background(), c, s, owner, newJob)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -774,7 +774,7 @@ func TestRunJob_RecreatesOnTemplateAnnotationChange(t *testing.T) {
 		"replacement Job should carry the hash of the new template")
 	g.Expect(fetched.Annotations[PodSpecHashAnnotation]).NotTo(Equal(oldJob.Annotations[PodSpecHashAnnotation]),
 		"new hash must differ from the old template's hash")
-	g.Expect(fetched.Spec.Template.Annotations).To(HaveKeyWithValue("forge.c5c3.io/trigger", "rotated"))
+	g.Expect(fetched.Spec.Template.Annotations).To(HaveKeyWithValue("cobaltcore.c5c3.io/trigger", "rotated"))
 }
 
 // TestRunJob_NoRecreateWhenTemplateUnchanged verifies that a completed Job
@@ -787,7 +787,7 @@ func TestRunJob_NoRecreateWhenTemplateUnchanged(t *testing.T) {
 	owner := testOwner()
 
 	desired := testJob()
-	desired.Spec.Template.Annotations = map[string]string{"forge.c5c3.io/trigger": "v1"}
+	desired.Spec.Template.Annotations = map[string]string{"cobaltcore.c5c3.io/trigger": "v1"}
 
 	// Completed Job whose stored hash already matches the desired template.
 	existing := desired.DeepCopy()

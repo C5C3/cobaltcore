@@ -21,7 +21,7 @@
 #
 # The target cluster is registered with chainsaw under the name `target`, from a
 # kubeconfig the CI job (or `make e2e-multicluster`) writes to
-# _output/forge-target.kubeconfig. Chainsaw joins that path onto the test's own
+# _output/cobaltcore-target.kubeconfig. Chainsaw joins that path onto the test's own
 # directory, hence the three levels up. It is chainsaw's own credential for
 # reading the target; the operators never see it — they read the registration
 # Secret in c5c3-clusters, which carries the target-cluster-access chart's
@@ -34,7 +34,7 @@ spec:
   namespace: openstack
   clusters:
     target:
-      kubeconfig: ../../../_output/forge-target.kubeconfig
+      kubeconfig: ../../../_output/cobaltcore-target.kubeconfig
   timeouts:
     assert: 5m
   steps:

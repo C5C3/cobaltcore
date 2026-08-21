@@ -34,10 +34,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/c5c3/forge/internal/common/testutil/simulators"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
-	"github.com/c5c3/forge/operators/horizon/internal/testutil"
+	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/horizon/internal/testutil"
 )
 
 // Test timeout constants for CI tuning.

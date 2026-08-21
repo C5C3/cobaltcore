@@ -15,7 +15,7 @@ base images, and GitHub Actions current. Renovate runs continuously and opens
 grouped PRs; this guide is the human-side rulebook for what Renovate does on
 its own, what needs a reviewer, and what is better handled in a dedicated PR.
 
-The authoritative configuration lives in [`renovate.json`](https://github.com/c5c3/forge/blob/main/renovate.json)
+The authoritative configuration lives in [`renovate.json`](https://github.com/c5c3/cobaltcore/blob/main/renovate.json)
 at the repository root.
 
 ---
@@ -384,7 +384,7 @@ same bar and treats such a job as unverified, not as passed.
 
 ## See also
 
-- [`renovate.json`](https://github.com/c5c3/forge/blob/main/renovate.json) — the
+- [`renovate.json`](https://github.com/c5c3/cobaltcore/blob/main/renovate.json) — the
   authoritative Renovate configuration with all custom managers and rules.
 - [Renovate documentation](https://docs.renovatebot.com/) — for general
   Renovate concepts referenced in `renovate.json`.

@@ -22,7 +22,7 @@ Chainsaw E2E).
 
 ## Roadmap
 
-Outstanding work is tracked in [GitHub Issues](https://github.com/c5c3/forge/issues) — the issue
+Outstanding work is tracked in [GitHub Issues](https://github.com/c5c3/cobaltcore/issues) — the issue
 tracker is the single source of truth for planned features (`CC-NNNN` labels), production-hardening
 gaps, and release milestones.
 

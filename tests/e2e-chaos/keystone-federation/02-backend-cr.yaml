@@ -14,13 +14,13 @@ spec:
   keystoneRef:
     name: keystone-chaos-fed
   domain:
-    name: forge-chaos
+    name: cobaltcore-chaos
     mode: Manage
     deletionPolicy: Delete
     description: Keycloak chaos realm
   type: OIDC
   oidc:
-    issuer: http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/forge
+    issuer: http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/cobaltcore
     clientID: keystone
     clientSecretRef:
       name: keycloak-chaos-client
@@ -29,10 +29,10 @@ spec:
     # be https — the fixture serves it on the self-signed 8443 listener, and
     # tlsVerify opts out of verifying that throwaway certificate.
     endpoints:
-      authorizationEndpoint: http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/auth
-      tokenEndpoint: http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/token
-      jwksURI: http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/certs
-      introspectionEndpoint: https://keycloak-chaos.openstack.svc.cluster.local:8443/realms/forge/protocol/openid-connect/token/introspect
+      authorizationEndpoint: http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/auth
+      tokenEndpoint: http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/token
+      jwksURI: http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/certs
+      introspectionEndpoint: https://keycloak-chaos.openstack.svc.cluster.local:8443/realms/cobaltcore/protocol/openid-connect/token/introspect
     oauth2Introspection:
       enabled: true
       tlsVerify: false
@@ -40,7 +40,7 @@ spec:
   - remote:
     - type: HTTP_OIDC_ISS
       anyOneOf:
-      - http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/forge
+      - http://keycloak-chaos.openstack.svc.cluster.local:8080/realms/cobaltcore
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
     # {0}, not {1}: the HTTP_OIDC_ISS anyOneOf rule is a condition and is not
@@ -51,7 +51,7 @@ spec:
       group:
         name: federated-users
         domain:
-          name: forge-chaos
+          name: cobaltcore-chaos
   groups:
   - name: federated-users
     description: Federated Keycloak chaos users

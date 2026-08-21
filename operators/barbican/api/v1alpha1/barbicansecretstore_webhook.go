@@ -19,8 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	"github.com/c5c3/forge/internal/common/validation"
-	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
+	"github.com/c5c3/cobaltcore/internal/common/validation"
+	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
 )
 
 // DefaultKVMountpoint is the KV v2 mount barbican's secret material lives under.

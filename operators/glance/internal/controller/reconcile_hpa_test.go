@@ -14,8 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
 
 func glanceAutoscalingSpec(minR, maxR int32) *glancev1alpha1.AutoscalingSpec {

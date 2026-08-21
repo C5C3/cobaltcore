@@ -10,8 +10,8 @@ import (
 
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/c5c3/forge/internal/common/instrumentation"
-	glancemetrics "github.com/c5c3/forge/operators/glance/internal/metrics"
+	"github.com/c5c3/cobaltcore/internal/common/instrumentation"
+	glancemetrics "github.com/c5c3/cobaltcore/operators/glance/internal/metrics"
 )
 
 // subReconcilerConditionTypes maps a sub_reconciler label value to the

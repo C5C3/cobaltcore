@@ -18,9 +18,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/multicluster"
-	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/multicluster"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 )
 
 func flowScheme(t *testing.T) *runtime.Scheme {

@@ -21,14 +21,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/deployment"
-	"github.com/c5c3/forge/internal/common/job"
-	"github.com/c5c3/forge/internal/common/naming"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
-	barbicanmetrics "github.com/c5c3/forge/operators/barbican/internal/metrics"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/job"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	barbicanmetrics "github.com/c5c3/cobaltcore/operators/barbican/internal/metrics"
 )
 
 // dbCleanConfigSecretName is the rendered-config Secret the clean-up CronJob

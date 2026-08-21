@@ -37,8 +37,8 @@ the local-build path, the production HelmRelease, E2E and Tempest, see
 ## Step 1 — Clone
 
 ```bash
-git clone https://github.com/c5c3/forge.git
-cd forge
+git clone https://github.com/c5c3/cobaltcore.git
+cd cobaltcore
 ```
 
 ## Step 2 — Cluster + infrastructure stack
@@ -54,7 +54,7 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
 KIND_HOST_PORT=8443 make deploy-infra
 ```
 
-Creates the `forge` kind cluster with `host:8443 → nodePort 31443`,
+Creates the `cobaltcore` kind cluster with `host:8443 → nodePort 31443`,
 then installs Flux, cert-manager, the Gateway API CRDs,
 prometheus-operator-crds, OpenBao (initialised, unsealed and bootstrapped),
 MariaDB operator + `openstack-db`, External Secrets, Memcached operator +
@@ -91,7 +91,7 @@ kubectl wait helmrelease/keystone-operator -n keystone-system \
 ```bash
 RELEASE=2025.2
 docker pull ghcr.io/c5c3/keystone:${RELEASE}
-kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name forge
+kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name cobaltcore
 ```
 
 With Podman, keep `KIND_EXPERIMENTAL_PROVIDER=podman` exported from the
@@ -101,7 +101,7 @@ the same kind provider:
 ```bash
 RELEASE=2025.2
 podman pull ghcr.io/c5c3/keystone:${RELEASE}
-kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name forge
+kind load docker-image ghcr.io/c5c3/keystone:${RELEASE} --name cobaltcore
 ```
 
 ## Step 5 — Keystone CR

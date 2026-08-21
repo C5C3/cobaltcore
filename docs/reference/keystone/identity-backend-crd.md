@@ -102,28 +102,28 @@ An OIDC federation backend:
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: KeystoneIdentityBackend
 metadata:
-  name: keycloak-forge
+  name: keycloak-cobaltcore
   namespace: openstack
 spec:
   keystoneRef:
     name: keystone
   domain:
-    name: forge
+    name: cobaltcore
     mode: Manage
     deletionPolicy: Delete
   type: OIDC
   oidc:
-    issuer: https://keycloak.example.com/realms/forge
+    issuer: https://keycloak.example.com/realms/cobaltcore
     clientID: keystone
     clientSecretRef:
-      name: keycloak-forge-client
+      name: keycloak-cobaltcore-client
     oauth2Introspection:
       enabled: true
   mappings:
   - remote:
     - type: HTTP_OIDC_ISS
       anyOneOf:
-      - https://keycloak.example.com/realms/forge
+      - https://keycloak.example.com/realms/cobaltcore
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
     - user:
@@ -131,7 +131,7 @@ spec:
       group:
         name: federated-users
         domain:
-          name: forge
+          name: cobaltcore
   groups:
   - name: federated-users
     roleAssignments:

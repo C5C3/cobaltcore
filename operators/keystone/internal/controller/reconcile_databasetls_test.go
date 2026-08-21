@@ -25,11 +25,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // dbTLSTestScheme registers core, Keystone, and cert-manager types so the

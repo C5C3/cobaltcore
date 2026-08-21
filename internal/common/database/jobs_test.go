@@ -11,7 +11,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/c5c3/forge/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 )
 
 // keystoneJobSet returns a JobSetParams shaped like the keystone operator's

@@ -20,10 +20,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	"github.com/c5c3/forge/internal/common/secrets"
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // adminAppCredentialNameSuffix is appended to the ControlPlane name to derive
@@ -35,7 +35,7 @@ const adminAppCredentialNameSuffix = "-admin-app-credential" //nolint:gosec // G
 // adminPasswordHashAnnotation stamps the SHA-256 of the admin password the
 // application credential was last minted against onto the owned AC CR. Mirrors the hash+annotation pattern in the keystone operator's
 // password-rotation reconciler. A mismatch on a later pass drives a re-mint.
-const adminPasswordHashAnnotation = "forge.c5c3.io/admin-password-hash" //nolint:gosec // G101 false positive: annotation key, not a credential.
+const adminPasswordHashAnnotation = "cobaltcore.c5c3.io/admin-password-hash" //nolint:gosec // G101 false positive: annotation key, not a credential.
 
 // adminAppCredentialName returns the deterministic name of the owned K-ORC
 // ApplicationCredential CR for the given ControlPlane.

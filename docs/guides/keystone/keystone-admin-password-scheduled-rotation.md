@@ -187,7 +187,7 @@ chain of resources. A rotation flows left to right:
 ```
 CronJob keystone-admin-password-rotate
   │  (mounts only /scripts/admin_password_rotate.sh; never runs keystone-manage)
-  │  PATCH password + forge.c5c3.io/rotation-completed-at
+  │  PATCH password + cobaltcore.c5c3.io/rotation-completed-at
   ▼
 staging Secret keystone-admin-password-rotation
   │  operator validates (non-empty, >= min length) and COMMITS
@@ -283,7 +283,7 @@ three:
 ```bash
 # Push-source Secret now carries a non-empty password and the completion stamp.
 kubectl -n openstack get secret keystone-admin-password-next \
-  -o jsonpath="{.metadata.annotations['forge\.c5c3\.io/rotation-completed-at']}{\"\n\"}"
+  -o jsonpath="{.metadata.annotations['cobaltcore\.c5c3\.io/rotation-completed-at']}{\"\n\"}"
 
 # Staging Secret has been deleted (NotFound is the success signal here).
 kubectl -n openstack get secret keystone-admin-password-rotation
@@ -341,7 +341,7 @@ authoritative walkthrough.
 
 - [Step 3 — Observe the recreated bootstrap Job](keystone-admin-password-rotation.md#3-observe-the-recreated-bootstrap-job)
   (the `keystone-bootstrap` Job is delete+recreated with a fresh UID and the new
-  `forge.c5c3.io/admin-password-hash`).
+  `cobaltcore.c5c3.io/admin-password-hash`).
 - [Step 4 — Watch the `BootstrapReady` transitions](keystone-admin-password-rotation.md#4-watch-the-bootstrapready-transitions)
   (`False`/`BootstrapInProgress` → `True`/`BootstrapComplete`).
 - [Step 5 — Observe the event stream](keystone-admin-password-rotation.md#5-observe-the-event-stream).

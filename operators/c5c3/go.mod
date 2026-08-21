@@ -1,14 +1,14 @@
-module github.com/c5c3/forge/operators/c5c3
+module github.com/c5c3/cobaltcore/operators/c5c3
 
 go 1.26.6
 
 require (
-	github.com/c5c3/forge/internal/common v0.0.0
-	github.com/c5c3/forge/operators/barbican v0.0.0-00010101000000-000000000000
-	github.com/c5c3/forge/operators/glance v0.0.0-00010101000000-000000000000
-	github.com/c5c3/forge/operators/horizon v0.0.0-00010101000000-000000000000
-	github.com/c5c3/forge/operators/keystone v0.0.0-00010101000000-000000000000
-	github.com/c5c3/forge/operators/placement v0.0.0-00010101000000-000000000000
+	github.com/c5c3/cobaltcore/internal/common v0.0.0
+	github.com/c5c3/cobaltcore/operators/barbican v0.0.0-00010101000000-000000000000
+	github.com/c5c3/cobaltcore/operators/glance v0.0.0-00010101000000-000000000000
+	github.com/c5c3/cobaltcore/operators/horizon v0.0.0-00010101000000-000000000000
+	github.com/c5c3/cobaltcore/operators/keystone v0.0.0-00010101000000-000000000000
+	github.com/c5c3/cobaltcore/operators/placement v0.0.0-00010101000000-000000000000
 	github.com/dc-tec/openbao-operator v0.0.0-20260809153555-40bc6cd5a2c2
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/k-orc/openstack-resource-controller/v2 v2.5.1-0.20260803003919-c22784ca3ff5
@@ -93,14 +93,14 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
 
-replace github.com/c5c3/forge/internal/common => ../../internal/common
+replace github.com/c5c3/cobaltcore/internal/common => ../../internal/common
 
-replace github.com/c5c3/forge/operators/barbican => ../barbican
+replace github.com/c5c3/cobaltcore/operators/barbican => ../barbican
 
-replace github.com/c5c3/forge/operators/glance => ../glance
+replace github.com/c5c3/cobaltcore/operators/glance => ../glance
 
-replace github.com/c5c3/forge/operators/horizon => ../horizon
+replace github.com/c5c3/cobaltcore/operators/horizon => ../horizon
 
-replace github.com/c5c3/forge/operators/keystone => ../keystone
+replace github.com/c5c3/cobaltcore/operators/keystone => ../keystone
 
-replace github.com/c5c3/forge/operators/placement => ../placement
+replace github.com/c5c3/cobaltcore/operators/placement => ../placement

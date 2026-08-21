@@ -31,13 +31,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/c5c3/forge/internal/common/apply"
-	"github.com/c5c3/forge/internal/common/bootstrap"
-	"github.com/c5c3/forge/internal/common/conditions"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	"github.com/c5c3/forge/internal/common/secrets"
-	"github.com/c5c3/forge/internal/common/watch"
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/apply"
+	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
+	"github.com/c5c3/cobaltcore/internal/common/watch"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // The per-block condition types a KeystoneService carries, plus the aggregate

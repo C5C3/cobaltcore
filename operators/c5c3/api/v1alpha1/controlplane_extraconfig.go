@@ -12,13 +12,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	"github.com/c5c3/forge/internal/common/config"
-	"github.com/c5c3/forge/internal/common/release"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
-	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
-	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/release"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
 // MergedExtraConfig merges the ControlPlane-wide globalExtraConfig with one

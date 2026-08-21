@@ -19,12 +19,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/job"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
-	placementmetrics "github.com/c5c3/forge/operators/placement/internal/metrics"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/job"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
+	placementmetrics "github.com/c5c3/cobaltcore/operators/placement/internal/metrics"
 )
 
 // dbConfigMapName is the rendered config ConfigMap the database step mounts in

@@ -14,7 +14,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	envtestutil "github.com/c5c3/forge/internal/common/testutil/envtest"
+	envtestutil "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"

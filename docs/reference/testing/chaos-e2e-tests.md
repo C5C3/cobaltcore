@@ -594,7 +594,7 @@ Chaos Mesh CR, so it needs no Chaos Mesh installation.
 | --- | --- | --- | --- |
 | 1 | Apply Keystone CR | `apply` | Applies `00-keystone-cr.yaml` — Keystone CR `keystone-chaos-stuck` with database `keystone_chaos_stuck` |
 | 2 | Assert baseline Ready=True | `assert` (5m) | Ready=True with reason AllReady — confirms healthy state before scaling the controller down |
-| 3 | Scale mariadb-operator controller to 0 | `script` (90s) | Stashes `.spec.replicas` on the Deployment via a `chaos.forge.c5c3.io/orig-replicas` annotation, scales `deployment/mariadb-operator` in `mariadb-system` to 0, and waits for `readyReplicas=0` (only the controller — the `mariadb-operator-webhook` Deployment stays up so DELETE is still admitted) |
+| 3 | Scale mariadb-operator controller to 0 | `script` (90s) | Stashes `.spec.replicas` on the Deployment via a `chaos.cobaltcore.c5c3.io/orig-replicas` annotation, scales `deployment/mariadb-operator` in `mariadb-system` to 0, and waits for `readyReplicas=0` (only the controller — the `mariadb-operator-webhook` Deployment stays up so DELETE is still admitted) |
 | 4 | Delete the Keystone CR | `delete` (2m) | The single-pass finalizer must remove the CR even with the controller down; a regression that waited for the MariaDB CRs would wedge here |
 | 5 | Assert stuck-finalizer state | `error` + `script` + `assert` (5m) | Keystone CR gone; `FinalizingDatabase` and `DatabaseFinalized` events present; MariaDB `Database`/`User`/`Grant` (all `keystone-chaos-stuck`) still present with `deletionTimestamp` set |
 | 6 | Scale mariadb-operator controller back up | `script` (120s) | Restores the controller to the stashed replica count, clears the annotation, and waits for the rollout to complete |

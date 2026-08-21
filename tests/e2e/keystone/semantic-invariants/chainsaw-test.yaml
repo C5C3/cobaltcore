@@ -112,7 +112,7 @@ spec:
   # reconcile_*.go reorganization from silently dropping it on one kind.
   #
   # ConfigMap families (config-, fernet-rotate-script-, credential-rotate-
-  # script-) are resolved via labelSelector forge.c5c3.io/config-base=<base>
+  # script-) are resolved via labelSelector cobaltcore.c5c3.io/config-base=<base>
   # — never by hash suffix — so a content-hash change cannot regress the
   # assertion.
   #
@@ -142,7 +142,7 @@ spec:
   #     → Secret <name>-db-connection
   #   - operators/keystone/internal/controller/reconcile_config.go +
   #     internal/common/config/config.go (CreateImmutableConfigMap)
-  #     → ConfigMap family <name>-config (forge.c5c3.io/config-base label)
+  #     → ConfigMap family <name>-config (cobaltcore.c5c3.io/config-base label)
   #   - operators/keystone/internal/controller/reconcile_httproute.go
   #     → HTTPRoute (only when spec.gateway is set — out of scope here)
   #   - operators/keystone/internal/controller/reconcile_networkpolicy.go
@@ -223,13 +223,13 @@ spec:
 
           # ConfigMap families — resolved by label, never by hash suffix
           check_owner_by_label cm \
-            "forge.c5c3.io/config-base=${NAME}-config" \
+            "cobaltcore.c5c3.io/config-base=${NAME}-config" \
             "keystone config CM"
           check_owner_by_label cm \
-            "forge.c5c3.io/config-base=${NAME}-fernet-rotate-script" \
+            "cobaltcore.c5c3.io/config-base=${NAME}-fernet-rotate-script" \
             "fernet-rotate script CM"
           check_owner_by_label cm \
-            "forge.c5c3.io/config-base=${NAME}-credential-rotate-script" \
+            "cobaltcore.c5c3.io/config-base=${NAME}-credential-rotate-script" \
             "credential-rotate script CM"
 
           # Per-CR Secrets (reconcile_dbconnection_secret.go,
@@ -528,7 +528,7 @@ spec:
           BASE="${NAME}-config"
 
           CM=$(kubectl get cm -n "$NAMESPACE" \
-            -l "forge.c5c3.io/config-base=$BASE" -o name | head -n1)
+            -l "cobaltcore.c5c3.io/config-base=$BASE" -o name | head -n1)
           if [ -z "$CM" ]; then
             echo "FAIL: no immutable ConfigMap found for $BASE" >&2
             kubectl get cm -n "$NAMESPACE" --show-labels >&2 || true
@@ -579,7 +579,7 @@ spec:
           # The custom-columns path `.immutable` is therefore correct;
           # `.metadata.immutable` would silently render `<none>`.
           kubectl get cm -n $NAMESPACE \
-            -l "forge.c5c3.io/config-base=keystone-invariants-config" \
+            -l "cobaltcore.c5c3.io/config-base=keystone-invariants-config" \
             -o custom-columns=NAME:.metadata.name,IMMUTABLE:.immutable,LABELS:.metadata.labels 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

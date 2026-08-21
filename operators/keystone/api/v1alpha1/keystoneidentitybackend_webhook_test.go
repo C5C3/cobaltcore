@@ -14,7 +14,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // validIdentityBackend returns a minimal valid KeystoneIdentityBackend the
@@ -419,7 +419,7 @@ func validOIDCBackend() *KeystoneIdentityBackend {
 			},
 			Type: IdentityBackendTypeOIDC,
 			OIDC: &OIDCBackendSpec{
-				Issuer:          "https://idp.example.com/realms/forge",
+				Issuer:          "https://idp.example.com/realms/cobaltcore",
 				ClientID:        "keystone",
 				ClientSecretRef: commonv1.SecretRefSpec{Name: "corp-oidc-client"},
 			},
@@ -442,7 +442,7 @@ func TestIdentityBackendDefault_MaterializesOIDCDefaults(t *testing.T) {
 	g.Expect(b.Spec.OIDC.SessionType).To(Equal(OIDCSessionTypeClientCookie))
 	g.Expect(b.Spec.OIDC.StateInputHeaders).To(Equal(OIDCStateInputHeadersNone))
 	g.Expect(b.Spec.OIDC.ProviderMetadataURL).To(
-		Equal("https://idp.example.com/realms/forge/.well-known/openid-configuration"),
+		Equal("https://idp.example.com/realms/cobaltcore/.well-known/openid-configuration"),
 	)
 }
 
@@ -454,10 +454,10 @@ func TestIdentityBackendDefault_MetadataURLDerivationEdgeCases(t *testing.T) {
 	w := &KeystoneIdentityBackendWebhook{}
 
 	trailing := validOIDCBackend()
-	trailing.Spec.OIDC.Issuer = "https://idp.example.com/realms/forge/"
+	trailing.Spec.OIDC.Issuer = "https://idp.example.com/realms/cobaltcore/"
 	g.Expect(w.Default(context.Background(), trailing)).To(Succeed())
 	g.Expect(trailing.Spec.OIDC.ProviderMetadataURL).To(
-		Equal("https://idp.example.com/realms/forge/.well-known/openid-configuration"),
+		Equal("https://idp.example.com/realms/cobaltcore/.well-known/openid-configuration"),
 	)
 
 	explicit := validOIDCBackend()
@@ -790,7 +790,7 @@ func TestIdentityBackendValidateCreate_RunsAllOIDCValidations(t *testing.T) {
 
 // samlInlineMetadata is a minimal valid single EntityDescriptor whose entityID
 // matches validSAMLBackend()'s idpEntityID.
-const samlInlineMetadata = `<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.example.com/realms/forge">` +
+const samlInlineMetadata = `<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.example.com/realms/cobaltcore">` +
 	`<IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"/></EntityDescriptor>`
 
 func validSAMLBackend() *KeystoneIdentityBackend {
@@ -805,7 +805,7 @@ func validSAMLBackend() *KeystoneIdentityBackend {
 			},
 			Type: IdentityBackendTypeSAML,
 			SAML: &SAMLBackendSpec{
-				IdPEntityID: "https://idp.example.com/realms/forge",
+				IdPEntityID: "https://idp.example.com/realms/cobaltcore",
 				IdPMetadata: SAMLIdPMetadataSpec{
 					SecretRef: &commonv1.SecretRefSpec{Name: "corp-saml-idp-metadata"},
 				},

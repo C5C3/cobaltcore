@@ -28,8 +28,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // TargetFake builds a target cluster's client from builder — the operator's own

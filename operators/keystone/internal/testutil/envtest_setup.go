@@ -15,7 +15,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	commonenvtest "github.com/c5c3/forge/internal/common/testutil/envtest"
+	commonenvtest "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
 )
 
 // SkipIfEnvTestUnavailable re-exports the common skip guard for envtest-based

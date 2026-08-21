@@ -297,7 +297,7 @@ spec:
           echo "waiting for the operator to observe the run..."
           for _ in $(seq 1 30); do
             UID_ANN=$(kubectl get glance glance-basic-2026 -n openstack \
-              -o jsonpath='{.metadata.annotations.forge\.c5c3\.io/last-db-purge-job-uid}')
+              -o jsonpath='{.metadata.annotations.cobaltcore\.c5c3\.io/last-db-purge-job-uid}')
             [ -n "$UID_ANN" ] && break
             sleep 5
           done

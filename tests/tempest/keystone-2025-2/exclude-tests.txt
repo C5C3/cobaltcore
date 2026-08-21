@@ -23,11 +23,11 @@ keystone_tempest_plugin\.tests\..*oauth2
 # do not silently outlive their cause: re-check the group on every plugin bump
 # and drop the patterns upstream has fixed.
 #
-# tracked-by: https://github.com/C5C3/forge/issues/480
+# tracked-by: https://github.com/C5C3/cobaltcore/issues/480
 # re-evaluate-on: keystone-tempest-plugin > 0.19.0
 # test_identity_update_domain: all 11 persona classes fail (unexpected status codes)
 keystone_tempest_plugin\.tests\.rbac\.v3\.test_domain\..*\.test_identity_update_domain
-# tracked-by: https://github.com/C5C3/forge/issues/480
+# tracked-by: https://github.com/C5C3/cobaltcore/issues/480
 # re-evaluate-on: keystone-tempest-plugin > 0.19.0
 # test_endpoint: delete/get/update fail for domain-scoped and non-admin personas
 keystone_tempest_plugin\.tests\.rbac\.v3\.test_endpoint\..*\.test_identity_delete_endpoint

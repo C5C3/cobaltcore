@@ -13,9 +13,9 @@ import (
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/c5c3/forge/internal/common/apply"
-	"github.com/c5c3/forge/internal/common/secrets"
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/apply"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // korcCloudsYamlSecretName is the conventional name of the admin clouds.yaml

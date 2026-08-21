@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"strings"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // TLSPaths carries the in-pod file paths of the projected DB-TLS material —

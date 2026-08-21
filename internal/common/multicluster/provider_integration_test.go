@@ -39,7 +39,7 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	commonenvtest "github.com/c5c3/forge/internal/common/testutil/envtest"
+	commonenvtest "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
 )
 
 // TestIntegration_KubeconfigProvider_ScopedCaches runs the provider against a

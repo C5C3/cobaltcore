@@ -64,7 +64,7 @@ Environment overrides:
   DIZZY_CP_NAMESPACE     Namespace of the admin Secret (default openstack).
   DIZZY_AUTH_URL         Keystone auth URL override.
   DIZZY_ARGS             Extra args appended to the dizzy invocation.
-  KIND_CLUSTER           kind cluster name (default forge).
+  KIND_CLUSTER           kind cluster name (default cobaltcore).
 EOF
 }
 
@@ -184,7 +184,7 @@ generate_clouds_yaml() {
     # first line's host port (the part after the last colon). Guarded so an
     # unavailable docker / non-kind cluster falls back to :443 instead of
     # aborting under set -e/pipefail.
-    if port_out="$(docker port "${KIND_CLUSTER:-forge}-control-plane" 31443/tcp 2>/dev/null)" \
+    if port_out="$(docker port "${KIND_CLUSTER:-cobaltcore}-control-plane" 31443/tcp 2>/dev/null)" \
         && [[ -n "${port_out}" ]]; then
       local first_line="${port_out%%$'\n'*}"
       hostport="${first_line##*:}"
@@ -219,9 +219,9 @@ EOF
 # ---------------------------------------------------------------------------
 probe_ingest() {
   local metrics_port
-  if ! metrics_port="$(docker port "${KIND_CLUSTER:-forge}-control-plane" 30428/tcp 2>/dev/null)" \
+  if ! metrics_port="$(docker port "${KIND_CLUSTER:-cobaltcore}-control-plane" 30428/tcp 2>/dev/null)" \
       || [[ -z "${metrics_port}" ]]; then
-    log "WARNING: kind cluster '${KIND_CLUSTER:-forge}' has no 30428 host-port mapping;"
+    log "WARNING: kind cluster '${KIND_CLUSTER:-cobaltcore}' has no 30428 host-port mapping;"
     log "         OTLP ingest will not reach VictoriaMetrics. Recreate the cluster with"
     log "         the metrics port: make teardown-infra && WITH_DIZZY=true make deploy-infra"
   fi

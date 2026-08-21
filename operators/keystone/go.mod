@@ -1,9 +1,9 @@
-module github.com/c5c3/forge/operators/keystone
+module github.com/c5c3/cobaltcore/operators/keystone
 
 go 1.26.6
 
 require (
-	github.com/c5c3/forge/internal/common v0.0.0
+	github.com/c5c3/cobaltcore/internal/common v0.0.0
 	github.com/cert-manager/cert-manager v1.20.2
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/go-logr/logr v1.4.4
@@ -88,4 +88,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.2 // indirect
 )
 
-replace github.com/c5c3/forge/internal/common => ../../internal/common
+replace github.com/c5c3/cobaltcore/internal/common => ../../internal/common

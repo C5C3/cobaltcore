@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/c5c3/forge/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/multicluster"
 )
 
 func TestRenderINI(t *testing.T) {

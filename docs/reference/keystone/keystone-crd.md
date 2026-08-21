@@ -23,7 +23,7 @@ be replicated for Nova, Neutron, Glance, and other OpenStack service operators.
 **Import path:**
 
 ```go
-import keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+import keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 ```
 
 **Scheme registration:**
@@ -1104,7 +1104,7 @@ are rejected by the reconciler.
 ## Shared Types (from `internal/common/types`)
 
 The following types are imported as `commonv1` from
-`github.com/c5c3/forge/internal/common/types`. They are shared across all CobaltCore
+`github.com/c5c3/cobaltcore/internal/common/types`. They are shared across all CobaltCore
 operator CRDs.
 
 ### ImageSpec

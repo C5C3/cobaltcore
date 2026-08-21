@@ -21,9 +21,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/c5c3/forge/internal/common/secrets"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
 // openBaoClusterStoreName is the default effective ClusterSecretStore a

@@ -32,12 +32,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/deployment"
-	"github.com/c5c3/forge/internal/common/naming"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 func deployTestScheme() *runtime.Scheme {
@@ -2469,9 +2469,9 @@ func testDeployFederationProjection() *federationProjection {
 	return &federationProjection{
 		SecretName: "test-keystone-federation-abcd1234",
 		MetadataItems: []corev1.KeyToPath{
-			{Key: "corp-oidc.provider", Path: "idp.example.com%2Frealms%2Fforge.provider"},
-			{Key: "corp-oidc.client", Path: "idp.example.com%2Frealms%2Fforge.client"},
-			{Key: "corp-oidc.conf", Path: "idp.example.com%2Frealms%2Fforge.conf"},
+			{Key: "corp-oidc.provider", Path: "idp.example.com%2Frealms%2Fcobaltcore.provider"},
+			{Key: "corp-oidc.client", Path: "idp.example.com%2Frealms%2Fcobaltcore.client"},
+			{Key: "corp-oidc.conf", Path: "idp.example.com%2Frealms%2Fcobaltcore.conf"},
 		},
 		RemoteIDAttribute: "HTTP_OIDC_ISS",
 		ProxyImage:        commonv1.ImageSpec{Repository: "ghcr.io/c5c3/keystone-federation-proxy", Tag: "latest"},

@@ -23,13 +23,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	"github.com/c5c3/forge/internal/common/policy"
-	"github.com/c5c3/forge/internal/common/release"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	"github.com/c5c3/forge/internal/common/validation"
-	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/policy"
+	"github.com/c5c3/cobaltcore/internal/common/release"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/validation"
+	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
 
 // ControlPlane defaulting constants. These are the single source of

@@ -19,7 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // fakeResolver stands in for the multicluster manager. It records what it was

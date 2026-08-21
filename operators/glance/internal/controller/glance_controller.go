@@ -31,16 +31,16 @@ import (
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
-	"github.com/c5c3/forge/internal/common/bootstrap"
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/gateway"
-	"github.com/c5c3/forge/internal/common/healthcheck"
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	"github.com/c5c3/forge/internal/common/watch"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
-	glancemetrics "github.com/c5c3/forge/operators/glance/internal/metrics"
+	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/gateway"
+	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/watch"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	glancemetrics "github.com/c5c3/cobaltcore/operators/glance/internal/metrics"
 )
 
 // This file carries the field-index plumbing shared by the Glance and

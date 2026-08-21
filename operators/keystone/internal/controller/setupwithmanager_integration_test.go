@@ -28,8 +28,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
-	"github.com/c5c3/forge/operators/keystone/internal/testutil"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/testutil"
 )
 
 // TestSetupWithManager_StartsManagerWithAllWatches registers the production

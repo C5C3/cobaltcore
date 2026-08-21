@@ -103,7 +103,7 @@ func TestBuildMigrationJob_ExtrasAppendedAndOverrides(t *testing.T) {
 
 func TestJobUIDAnnotationKey(t *testing.T) {
 	g := gomega.NewWithT(t)
-	g.Expect(JobUIDAnnotationKey("db-sync")).To(gomega.Equal("forge.c5c3.io/last-db-sync-job-uid"))
+	g.Expect(JobUIDAnnotationKey("db-sync")).To(gomega.Equal("cobaltcore.c5c3.io/last-db-sync-job-uid"))
 	g.Expect(JobUIDAnnotationKey("db-expand")).NotTo(gomega.Equal(JobUIDAnnotationKey("db-sync")))
 }
 

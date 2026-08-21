@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/c5c3/forge/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/multicluster"
 )
 
 // RenderINI renders a map of INI sections into an INI format string.
@@ -190,7 +190,7 @@ func RenderLoggingConf(level string) string {
 // by CreateImmutableConfigMap, identifying the base name that generated them.
 // PruneImmutableConfigMaps uses this label as a server-side selector to avoid
 // listing all ConfigMaps in the namespace.
-const ConfigBaseLabelKey = "forge.c5c3.io/config-base"
+const ConfigBaseLabelKey = "cobaltcore.c5c3.io/config-base"
 
 // hashTruncateLen is the number of hex characters kept from the SHA-256
 // content hash when building immutable ConfigMap name suffixes. 8 hex chars

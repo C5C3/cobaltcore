@@ -93,10 +93,10 @@ pull:
 
 ```bash
 docker pull ghcr.io/c5c3/keystone:2026.1
-kind load docker-image ghcr.io/c5c3/keystone:2026.1 --name forge
+kind load docker-image ghcr.io/c5c3/keystone:2026.1 --name cobaltcore
 
 docker pull ghcr.io/c5c3/horizon:2026.1
-kind load docker-image ghcr.io/c5c3/horizon:2026.1 --name forge
+kind load docker-image ghcr.io/c5c3/horizon:2026.1 --name cobaltcore
 ```
 
 ```bash
@@ -263,7 +263,7 @@ upgrade stalls at its first phase that needs it — `Expanding`, which runs
 
 ```bash
 docker pull ghcr.io/c5c3/keystone:2026.1
-kind load docker-image ghcr.io/c5c3/keystone:2026.1 --name forge
+kind load docker-image ghcr.io/c5c3/keystone:2026.1 --name cobaltcore
 ```
 
 On the [Quick Start (Extended)](../quick-start-extended.md) local-build path,

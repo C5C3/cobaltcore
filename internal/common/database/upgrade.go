@@ -20,10 +20,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/job"
-	"github.com/c5c3/forge/internal/common/release"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/job"
+	"github.com/c5c3/cobaltcore/internal/common/release"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // Condition and event reason constants for the expand-migrate-contract upgrade

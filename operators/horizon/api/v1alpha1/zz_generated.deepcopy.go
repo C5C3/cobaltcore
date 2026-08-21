@@ -9,7 +9,7 @@
 package v1alpha1
 
 import (
-	"github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/types"
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"

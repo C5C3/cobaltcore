@@ -22,12 +22,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	commonenvtest "github.com/c5c3/forge/internal/common/testutil/envtest"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
-	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
-	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	commonenvtest "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
 // SkipIfEnvTestUnavailable re-exports the common skip guard for envtest-based

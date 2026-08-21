@@ -21,7 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/c5c3/forge/internal/common/naming"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
 )
 
 func newScheme() *runtime.Scheme {

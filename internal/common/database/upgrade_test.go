@@ -23,8 +23,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	"github.com/c5c3/forge/internal/common/job"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/job"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // upgradeOwner is an owner CR named after flowInstance so the phase Jobs the

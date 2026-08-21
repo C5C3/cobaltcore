@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"strings"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // ResolveServers returns the memcache server list for the shared CacheSpec.

@@ -15,7 +15,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/c5c3/forge/internal/common/instrumentation"
+	"github.com/c5c3/cobaltcore/internal/common/instrumentation"
 )
 
 const (

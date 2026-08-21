@@ -15,7 +15,7 @@ import (
 	"k8s.io/client-go/rest"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // HTTPDoer is the client seam an operator's HTTP calls run through. It is

@@ -9,9 +9,9 @@
 package v1alpha1
 
 import (
-	"github.com/c5c3/forge/internal/common/types"
-	barbicanapiv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
-	apiv1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/types"
+	barbicanapiv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	apiv1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"

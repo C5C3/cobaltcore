@@ -28,10 +28,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	"github.com/c5c3/forge/internal/common/apply"
-	"github.com/c5c3/forge/internal/common/secrets"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/apply"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // This file is the ONE projection layer both registration mechanisms run on:
@@ -59,7 +59,7 @@ import (
 // marker: the CredentialRotation reconciler CLEARS it to "" to request a rotation
 // (mirroring adminPasswordHashAnnotation), and an empty value drives a generation
 // bump on the next pass.
-const serviceAccountPasswordGenerationAnnotation = "forge.c5c3.io/password-generation" //nolint:gosec // G101 false positive: annotation key, not a credential.
+const serviceAccountPasswordGenerationAnnotation = "cobaltcore.c5c3.io/password-generation" //nolint:gosec // G101 false positive: annotation key, not a credential.
 
 // serviceAccountPasswordKey is the Secret data key the generated password is
 // stored under. K-ORC's passwordRef reads exactly this key; it is also the key

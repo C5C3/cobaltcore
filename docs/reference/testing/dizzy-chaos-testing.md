@@ -78,7 +78,7 @@ in `hack/dizzy.sh`.
 | `DIZZY_AUTH_URL` | Keystone auth URL override, skipping the host-port probe. |
 | `DIZZY_SECRET` | Name of the ControlPlane admin Secret (default `controlplane-keystone-admin-credentials`). |
 | `DIZZY_CP_NAMESPACE` | Namespace of the admin Secret (default `openstack`). |
-| `KIND_CLUSTER` | Cluster name for the `docker port` probes (default `forge`). Note that `make deploy-infra` itself keys off `CLUSTER_NAME`. |
+| `KIND_CLUSTER` | Cluster name for the `docker port` probes (default `cobaltcore`). Note that `make deploy-infra` itself keys off `CLUSTER_NAME`. |
 
 ## Watching the run
 

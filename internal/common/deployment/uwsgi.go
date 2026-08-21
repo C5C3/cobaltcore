@@ -7,7 +7,7 @@ package deployment
 import (
 	"strconv"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // UWSGILogFormat is the uWSGI --log-format literal every operator's API

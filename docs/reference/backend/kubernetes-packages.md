@@ -14,7 +14,7 @@ All packages share these conventions:
 
 - **Idempotent create-or-update via Server-Side Apply** — `Ensure*` functions apply the
   desired object through the generic `apply.EnsureObject` helper, which uses Server-Side
-  Apply under the fixed field manager `forge-operator`. The field manager owns only the
+  Apply under the fixed field manager `cobaltcore-operator`. The field manager owns only the
   fields the builder sets, so server-defaulted fields the builder omits are never claimed
   or overwritten and a converged object is applied without a write. The apply is wrapped
   in `retry.RetryOnConflict`, so a benign field-manager conflict is absorbed as an internal
@@ -31,14 +31,14 @@ All packages share these conventions:
 
 | Package | Import Path |
 | --- | --- |
-| `apply` | `github.com/c5c3/forge/internal/common/apply` |
-| `config` | `github.com/c5c3/forge/internal/common/config` |
-| `database` | `github.com/c5c3/forge/internal/common/database` |
-| `deployment` | `github.com/c5c3/forge/internal/common/deployment` |
-| `job` | `github.com/c5c3/forge/internal/common/job` |
-| `policy` | `github.com/c5c3/forge/internal/common/policy` |
-| `secrets` | `github.com/c5c3/forge/internal/common/secrets` |
-| `tls` | `github.com/c5c3/forge/internal/common/tls` |
+| `apply` | `github.com/c5c3/cobaltcore/internal/common/apply` |
+| `config` | `github.com/c5c3/cobaltcore/internal/common/config` |
+| `database` | `github.com/c5c3/cobaltcore/internal/common/database` |
+| `deployment` | `github.com/c5c3/cobaltcore/internal/common/deployment` |
+| `job` | `github.com/c5c3/cobaltcore/internal/common/job` |
+| `policy` | `github.com/c5c3/cobaltcore/internal/common/policy` |
+| `secrets` | `github.com/c5c3/cobaltcore/internal/common/secrets` |
+| `tls` | `github.com/c5c3/cobaltcore/internal/common/tls` |
 
 ## External CRD Dependencies
 
@@ -88,7 +88,7 @@ the controller reference.
 - Decodes the server response back into `obj`, so callers may read fresh status (e.g.
   readiness) without an extra `Get`.
 
-**Field manager:** the package exports `apply.FieldManager` (`"forge-operator"`), the
+**Field manager:** the package exports `apply.FieldManager` (`"cobaltcore-operator"`), the
 stable field-manager name shared by all `Ensure*` helpers.
 
 ---
@@ -194,7 +194,7 @@ cycles.
 
 **Algorithm:**
 
-1. Lists ConfigMaps matching the `forge.c5c3.io/config-base` label in the namespace.
+1. Lists ConfigMaps matching the `cobaltcore.c5c3.io/config-base` label in the namespace.
 2. Filters to ConfigMaps matching the `baseName + "-"` prefix.
 3. Excludes the ConfigMap named `currentName` (the active one).
 4. Excludes ConfigMaps without a controller owner reference matching `owner.GetUID()`.
@@ -230,7 +230,7 @@ cycles.
 | `retain=0` | All historical ConfigMaps deleted, only `currentName` survives |
 | ConfigMap deleted between list and delete | `NotFound` silently ignored |
 | Overlapping prefix (e.g., `test-config-` vs `test-config-extra-`) | Strict `baseName + "-"` prefix prevents false matches |
-| Pre-existing ConfigMaps without `forge.c5c3.io/config-base` label | Not pruned — invisible to server-side selector. Bounded in number and GC'd on CR deletion via owner reference. |
+| Pre-existing ConfigMaps without `cobaltcore.c5c3.io/config-base` label | Not pruned — invisible to server-side selector. Bounded in number and GC'd on CR deletion via owner reference. |
 
 **Example:**
 
@@ -410,7 +410,7 @@ exceeded backoffLimit) and its re-run key is unchanged;
 - If the Job already exists: checks completion via the package-internal
   `isJobComplete` helper and permanent failure via `isJobFailed`. A completed
   **or permanently failed** Job whose stored re-run key (the
-  `forge.c5c3.io/pod-spec-hash` annotation) no longer matches the desired pod
+  `cobaltcore.c5c3.io/pod-spec-hash` annotation) no longer matches the desired pod
   template is deleted (background propagation) and re-created — so a Job that
   failed under a since-fixed spec (new container image, corrected ConfigMap,
   rotated password) re-runs instead of wedging. A permanently failed Job whose

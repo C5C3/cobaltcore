@@ -11,7 +11,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	envtestutil "github.com/c5c3/forge/internal/common/testutil/envtest"
+	envtestutil "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	cmmeta "github.com/cert-manager/cert-manager/pkg/apis/meta/v1"
 	corev1 "k8s.io/api/core/v1"

@@ -27,8 +27,8 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	"github.com/c5c3/forge/operators/keystone/internal/testutil"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/testutil"
 )
 
 // --- Helpers ---

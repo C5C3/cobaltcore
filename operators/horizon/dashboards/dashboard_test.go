@@ -23,7 +23,7 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/c5c3/forge/internal/common/instrumentation"
+	"github.com/c5c3/cobaltcore/internal/common/instrumentation"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 

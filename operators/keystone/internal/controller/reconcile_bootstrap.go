@@ -16,11 +16,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/deployment"
-	"github.com/c5c3/forge/internal/common/job"
-	"github.com/c5c3/forge/internal/common/secrets"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/job"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // bootstrapDBSeedScript is the standalone Python program that pre-inserts the
@@ -61,9 +61,9 @@ exec keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ bootstrap \
 // adminPasswordHashAnnotation stamps a SHA-256 digest of the admin password
 // (the `password` key of the admin Secret) onto the bootstrap Job's pod
 // template. Because job.PodSpecHash hashes the full PodTemplateSpec, a rotated
-// admin password changes this annotation and therefore the forge.c5c3.io/pod-spec-hash
+// admin password changes this annotation and therefore the cobaltcore.c5c3.io/pod-spec-hash
 // gate, forcing the idempotent bootstrap Job to re-run.
-const adminPasswordHashAnnotation = "forge.c5c3.io/admin-password-hash" //nolint:gosec // annotation key, not a credential
+const adminPasswordHashAnnotation = "cobaltcore.c5c3.io/admin-password-hash" //nolint:gosec // annotation key, not a credential
 
 // reconcileBootstrap ensures the Keystone bootstrap Job runs with
 // keystone-manage bootstrap and admin credentials.

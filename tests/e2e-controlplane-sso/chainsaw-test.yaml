@@ -179,7 +179,7 @@ spec:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1
           kind: KeystoneIdentityBackend
           metadata:
-            name: keycloak-forge
+            name: keycloak-cobaltcore
             namespace: openstack
           status:
             (conditions[?type == 'Ready']):
@@ -244,11 +244,11 @@ spec:
               choices:
               - id: credentials
                 label: Keystone Credentials
-              - id: keycloak-forge_openid
-                label: keycloak-forge
+              - id: keycloak-cobaltcore_openid
+                label: keycloak-cobaltcore
               idpMapping:
-                keycloak-forge_openid:
-                  identityProvider: keycloak-forge
+                keycloak-cobaltcore_openid:
+                  identityProvider: keycloak-cobaltcore
                   protocol: openid
             # A Ready LDAP backend turns the login form's domain field on, but
             # the projection never pins domainChoices: the operator only sees
@@ -355,7 +355,7 @@ spec:
           echo "=== Horizon deployment ==="
           kubectl get deployment controlplane-sso-horizon -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== rendered ConfigMaps ==="
-          kubectl get configmap -n $NAMESPACE -l forge.c5c3.io/config-base=controlplane-sso-horizon-config -o yaml 2>&1 || true
+          kubectl get configmap -n $NAMESPACE -l cobaltcore.c5c3.io/config-base=controlplane-sso-horizon-config -o yaml 2>&1 || true
           echo "=== horizon-operator logs ==="
           kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=80 2>&1 || true
           kubectl logs -n horizon-system -l app.kubernetes.io/name=horizon-operator --all-containers --tail=80 --previous 2>&1 || true
@@ -573,7 +573,7 @@ spec:
               try:
                   _, resp, data = follow(f"https://{HORIZON}/auth/login/")
                   html = data.decode(errors="replace")
-                  if resp.status == 200 and "keycloak-forge_openid" in html:
+                  if resp.status == 200 and "keycloak-cobaltcore_openid" in html:
                       break
                   last = f"status {resp.status}, SSO choice absent"
               except OSError as exc:
@@ -597,7 +597,7 @@ spec:
           #    which is why the whole flow has to traverse Envoy.
           origin = urllib.parse.quote(f"https://{HORIZON}/auth/websso/", safe="")
           websso = (f"https://{KEYSTONE}/v3/auth/OS-FEDERATION/identity_providers/"
-                    f"keycloak-forge/protocols/openid/websso?origin={origin}")
+                    f"keycloak-cobaltcore/protocols/openid/websso?origin={origin}")
           # Same xDS lag as 5a, on the keystone route: the rollout has landed
           # (asserted above), but Envoy can still dispatch the first request to
           # the endpoint that just went away, which surfaces as a bare 502/503.
@@ -614,7 +614,7 @@ spec:
                       f"websso endpoint still answers {resp.status} through the gateway")
               time.sleep(3)
           assert resp.status == 200, f"expected the Keycloak login page, got {resp.status} at {url}"
-          assert "/realms/forge/" in url, f"websso must pin the forge realm, landed at {url}"
+          assert "/realms/cobaltcore/" in url, f"websso must pin the cobaltcore realm, landed at {url}"
           m = re.search(r"action=\"([^\"]+)\"", data.decode(errors="replace"))
           assert m, "no login form action on the Keycloak page"
           form_url = m.group(1).replace("&amp;", "&")
@@ -736,7 +736,7 @@ spec:
         ref:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1
           kind: KeystoneIdentityBackend
-          name: keycloak-forge
+          name: keycloak-cobaltcore
           namespace: openstack
     - delete:
         ref:

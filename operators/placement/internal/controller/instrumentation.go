@@ -10,8 +10,8 @@ import (
 
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/c5c3/forge/internal/common/instrumentation"
-	placementmetrics "github.com/c5c3/forge/operators/placement/internal/metrics"
+	"github.com/c5c3/cobaltcore/internal/common/instrumentation"
+	placementmetrics "github.com/c5c3/cobaltcore/operators/placement/internal/metrics"
 )
 
 // subReconcilerConditionTypes maps a sub_reconciler label value to the

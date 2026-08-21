@@ -67,7 +67,7 @@ The three devstacks and the names each produces:
 | Devstack | Verbatim bring-up | Names the examples may use |
 | --- | --- | --- |
 | [Quick Start](../quick-start.md) | `KIND_HOST_PORT=8443 make deploy-infra` (then the operator, image, and CR steps) | Keystone CR `keystone` in `openstack`; admin Secret `keystone-admin`; DB Secret `keystone-db`; gateway `openstack-gw`; endpoint `https://keystone.127-0-0-1.nip.io:8443/v3` |
-| [Quick Start (Extended)](../quick-start-extended.md) | `kind create cluster --name forge --config hack/kind-config.yaml` then `make deploy-infra` (then the operator, image, and CR steps) | Same standalone names as the base Quick Start (`keystone`, `keystone-admin`, `keystone-db`) |
+| [Quick Start (Extended)](../quick-start-extended.md) | `kind create cluster --name cobaltcore --config hack/kind-config.yaml` then `make deploy-infra` (then the operator, image, and CR steps) | Same standalone names as the base Quick Start (`keystone`, `keystone-admin`, `keystone-db`) |
 | [Quick Start (ControlPlane)](../quick-start-controlplane.md) | `KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra` | ControlPlane CR `controlplane` in `openstack`; projected children `controlplane-keystone` / `controlplane-horizon`; admin Secret and ExternalSecret `controlplane-keystone-admin-credentials`; DB ExternalSecret `controlplane-keystone-db-credentials`; shared `openstack-db` / `openstack-memcached` / `openstack-gw` |
 
 Opt-in flags compose, so a guide that needs both a ControlPlane and Prometheus

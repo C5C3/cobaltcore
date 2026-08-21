@@ -3,19 +3,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # In-suite Keycloak fixture for the oidc-federation E2E test: a single
-# start-dev pod importing TWO realms (forge and forge2 — the multi-realm
+# start-dev pod importing TWO realms (cobaltcore and cobaltcore2 — the multi-realm
 # proof) from this ConfigMap. Each realm ships a confidential "keystone"
 # client (direct access grants enabled for the ROPC/bearer flow), one test
 # user, and one group with a groups protocol mapper. The image pin is
 # tag+digest and Renovate-tracked via the docker-digest customManager in
 # renovate.json.
 #
-# The forge client additionally carries an oidc-audience-mapper adding
+# The cobaltcore client additionally carries an oidc-audience-mapper adding
 # "keystone" to the access token's aud: Keycloak (>= 25) rejects RFC 7662
 # introspection when the introspecting client is absent from the token
 # audience ("Client 'keystone' is not in the token audience" -> active:false),
-# and a keystone-client ROPC token otherwise carries no aud. Only the forge
-# realm needs it — forge2 exercises websso only, never the introspection path.
+# and a keystone-client ROPC token otherwise carries no aud. Only the cobaltcore
+# realm needs it — cobaltcore2 exercises websso only, never the introspection path.
 #
 # The container deliberately carries no restricted securityContext and a
 # ~1Gi memory limit: start-dev bootstraps an embedded H2 plus the JVM — this
@@ -26,9 +26,9 @@ metadata:
   name: keycloak-realms
   namespace: openstack
 data:
-  forge-realm.json: |
+  cobaltcore-realm.json: |
     {
-      "realm": "forge",
+      "realm": "cobaltcore",
       "enabled": true,
       "sslRequired": "none",
       "groups": [{"name": "engineers", "path": "/engineers"}],
@@ -50,7 +50,7 @@ data:
           "enabled": true,
           "protocol": "openid-connect",
           "publicClient": false,
-          "secret": "keystone-forge-secret",
+          "secret": "keystone-cobaltcore-secret",
           "redirectUris": ["http://keystone-oidc.openstack.svc.cluster.local:5000/*"],
           "webOrigins": ["*"],
           "standardFlowEnabled": true,
@@ -85,9 +85,9 @@ data:
         }
       ]
     }
-  forge2-realm.json: |
+  cobaltcore2-realm.json: |
     {
-      "realm": "forge2",
+      "realm": "cobaltcore2",
       "enabled": true,
       "sslRequired": "none",
       "groups": [{"name": "captains", "path": "/captains"}],
@@ -109,7 +109,7 @@ data:
           "enabled": true,
           "protocol": "openid-connect",
           "publicClient": false,
-          "secret": "keystone-forge2-secret",
+          "secret": "keystone-cobaltcore2-secret",
           "redirectUris": ["http://keystone-oidc.openstack.svc.cluster.local:5000/*"],
           "webOrigins": ["*"],
           "standardFlowEnabled": true,
@@ -263,17 +263,17 @@ spec:
 apiVersion: v1
 kind: Secret
 metadata:
-  name: keycloak-forge-client
+  name: keycloak-cobaltcore-client
   namespace: openstack
 type: Opaque
 stringData:
-  clientSecret: keystone-forge-secret
+  clientSecret: keystone-cobaltcore-secret
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: keycloak-forge2-client
+  name: keycloak-cobaltcore2-client
   namespace: openstack
 type: Opaque
 stringData:
-  clientSecret: keystone-forge2-secret
+  clientSecret: keystone-cobaltcore2-secret

@@ -17,8 +17,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/managedfields"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 func npScheme(t *testing.T) *runtime.Scheme {

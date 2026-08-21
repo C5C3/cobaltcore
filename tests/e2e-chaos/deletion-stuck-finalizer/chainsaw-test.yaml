@@ -73,7 +73,7 @@ spec:
           ORIG="${ORIG:-1}"
           echo "mariadb-operator controller original replicas: ${ORIG}"
           kubectl annotate deploy "$DEPLOY" -n "$NS" \
-            chaos.forge.c5c3.io/orig-replicas="${ORIG}" --overwrite
+            chaos.cobaltcore.c5c3.io/orig-replicas="${ORIG}" --overwrite
           kubectl scale deploy "$DEPLOY" -n "$NS" --replicas=0
           echo "Waiting for mariadb-operator controller to reach 0 ready replicas..."
           for _ in $(seq 1 30); do
@@ -96,7 +96,7 @@ spec:
           NS=mariadb-system
           DEPLOY=mariadb-operator
           ORIG=$(kubectl get deploy "$DEPLOY" -n "$NS" \
-            -o jsonpath='{.metadata.annotations.chaos\.forge\.c5c3\.io/orig-replicas}' 2>/dev/null || echo "")
+            -o jsonpath='{.metadata.annotations.chaos\.cobaltcore\.c5c3\.io/orig-replicas}' 2>/dev/null || echo "")
           kubectl scale deploy "$DEPLOY" -n "$NS" --replicas="${ORIG:-1}" 2>&1 || true
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-stuck --dep-label=app.kubernetes.io/name=mariadb-operator --dep-ns=mariadb-system --log-label=app.kubernetes.io/name=keystone-operator
@@ -120,7 +120,7 @@ spec:
           NS=mariadb-system
           DEPLOY=mariadb-operator
           ORIG=$(kubectl get deploy "$DEPLOY" -n "$NS" \
-            -o jsonpath='{.metadata.annotations.chaos\.forge\.c5c3\.io/orig-replicas}' 2>/dev/null || echo "")
+            -o jsonpath='{.metadata.annotations.chaos\.cobaltcore\.c5c3\.io/orig-replicas}' 2>/dev/null || echo "")
           kubectl scale deploy "$DEPLOY" -n "$NS" --replicas="${ORIG:-1}" 2>&1 || true
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-stuck --dep-label=app.kubernetes.io/name=mariadb-operator --dep-ns=mariadb-system --log-label=app.kubernetes.io/name=keystone-operator
@@ -199,7 +199,7 @@ spec:
           NS=mariadb-system
           DEPLOY=mariadb-operator
           ORIG=$(kubectl get deploy "$DEPLOY" -n "$NS" \
-            -o jsonpath='{.metadata.annotations.chaos\.forge\.c5c3\.io/orig-replicas}' 2>/dev/null || echo "")
+            -o jsonpath='{.metadata.annotations.chaos\.cobaltcore\.c5c3\.io/orig-replicas}' 2>/dev/null || echo "")
           kubectl scale deploy "$DEPLOY" -n "$NS" --replicas="${ORIG:-1}" 2>&1 || true
     - script:
         content: ../diagnostics.sh chaos keystone-chaos-stuck --dep-label=app.kubernetes.io/name=mariadb-operator --dep-ns=mariadb-system --log-label=app.kubernetes.io/name=keystone-operator
@@ -214,11 +214,11 @@ spec:
           NS=mariadb-system
           DEPLOY=mariadb-operator
           ORIG=$(kubectl get deploy "$DEPLOY" -n "$NS" \
-            -o jsonpath='{.metadata.annotations.chaos\.forge\.c5c3\.io/orig-replicas}' 2>/dev/null || echo "")
+            -o jsonpath='{.metadata.annotations.chaos\.cobaltcore\.c5c3\.io/orig-replicas}' 2>/dev/null || echo "")
           ORIG="${ORIG:-1}"
           echo "Restoring mariadb-operator controller to ${ORIG} replicas..."
           kubectl scale deploy "$DEPLOY" -n "$NS" --replicas="${ORIG}"
-          kubectl annotate deploy "$DEPLOY" -n "$NS" chaos.forge.c5c3.io/orig-replicas- 2>&1 || true
+          kubectl annotate deploy "$DEPLOY" -n "$NS" chaos.cobaltcore.c5c3.io/orig-replicas- 2>&1 || true
           kubectl -n "$NS" rollout status deploy "$DEPLOY" --timeout=90s
   # ── Step 7: Assert deletion completes once the controller is back ──────
   # With the controller processing finalizers again, the three MariaDB CRs

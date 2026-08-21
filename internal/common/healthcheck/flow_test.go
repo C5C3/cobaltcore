@@ -17,7 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
 )
 
 // mockDoer returns a fixed response or error and counts invocations. The zero
@@ -136,8 +136,8 @@ func TestReconcileProbe_NonSuccessBodyReachesTheMessage(t *testing.T) {
 		{
 			name:        "a forbidden proxy call names the subresource",
 			status:      403,
-			body:        `services/proxy is forbidden: User "system:serviceaccount:forge:keystone" cannot get resource "services/proxy"`,
-			wantMessage: `Test API returned HTTP 403: services/proxy is forbidden: User "system:serviceaccount:forge:keystone" cannot get resource "services/proxy"`,
+			body:        `services/proxy is forbidden: User "system:serviceaccount:cobaltcore:keystone" cannot get resource "services/proxy"`,
+			wantMessage: `Test API returned HTTP 403: services/proxy is forbidden: User "system:serviceaccount:cobaltcore:keystone" cannot get resource "services/proxy"`,
 		},
 		{
 			name:        "a multi-line body collapses onto one line",

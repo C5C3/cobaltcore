@@ -21,9 +21,9 @@ import (
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 
-	"github.com/c5c3/forge/internal/common/bootstrap"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
-	"github.com/c5c3/forge/operators/keystone/internal/controller"
+	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/controller"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"

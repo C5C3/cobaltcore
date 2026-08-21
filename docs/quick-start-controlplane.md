@@ -63,8 +63,8 @@ export PATH="${HOME}/.local/bin:${PATH}"
 ## Step 1 — Clone
 
 ```bash
-git clone https://github.com/c5c3/forge.git
-cd forge
+git clone https://github.com/c5c3/cobaltcore.git
+cd cobaltcore
 ```
 
 ## Step 2 — Cluster + ControlPlane stack
@@ -656,7 +656,7 @@ from Step 3. Store a secret through that public endpoint, read the payload back,
 and delete it again:
 
 ```bash
-PAYLOAD='forge-quick-start-payload'
+PAYLOAD='cobaltcore-quick-start-payload'
 HREF=$(openstack --insecure secret store --name first-secret \
   --payload "$PAYLOAD" -f value -c 'Secret href')
 test "$(openstack --insecure secret get -p "$HREF" -f value -c Payload)" = "$PAYLOAD" \

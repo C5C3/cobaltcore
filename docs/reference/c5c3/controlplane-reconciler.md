@@ -39,16 +39,16 @@ Keystone/infrastructure teardown on deletion — see
 
 The c5c3 operator registers **two** reconcilers and an optional webhook with the
 controller manager in `operators/c5c3/main.go` via the shared bootstrap package
-(`github.com/c5c3/forge/internal/common/bootstrap`). The bootstrap helper builds
+(`github.com/c5c3/cobaltcore/internal/common/bootstrap`). The bootstrap helper builds
 the manager, wires leader election, and invokes the operator's `SetupFunc`; the
 same pattern is documented in detail under
 [Keystone Reconciler — Controller Registration](../keystone/keystone-reconciler.md#controller-registration).
 
 ```go
 import (
-    "github.com/c5c3/forge/internal/common/bootstrap"
-    c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
-    "github.com/c5c3/forge/operators/c5c3/internal/controller"
+    "github.com/c5c3/cobaltcore/internal/common/bootstrap"
+    c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
+    "github.com/c5c3/cobaltcore/operators/c5c3/internal/controller"
 )
 
 const leaderElectionID = "c5c3.openstack.c5c3.io"
@@ -99,9 +99,9 @@ can interact with the typed child CRDs:
 | Module | Scheme | Types Used |
 | --- | --- | --- |
 | `k8s.io/client-go/kubernetes/scheme` | `clientgoscheme.AddToScheme` | core Kubernetes types (`Secret`, `Event`) |
-| `github.com/c5c3/forge/operators/c5c3/api/v1alpha1` | `c5c3v1alpha1.AddToScheme` | `ControlPlane`, `CredentialRotation`, `SecretAggregate` (own API) |
-| `github.com/c5c3/forge/operators/keystone/api/v1alpha1` | `keystonev1alpha1.AddToScheme` | `Keystone` (projected and owned child) |
-| `github.com/c5c3/forge/operators/placement/api/v1alpha1` | `placementv1alpha1.AddToScheme` | `Placement` (projected and owned child) |
+| `github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1` | `c5c3v1alpha1.AddToScheme` | `ControlPlane`, `CredentialRotation`, `SecretAggregate` (own API) |
+| `github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1` | `keystonev1alpha1.AddToScheme` | `Keystone` (projected and owned child) |
+| `github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1` | `placementv1alpha1.AddToScheme` | `Placement` (projected and owned child) |
 | `github.com/mariadb-operator/mariadb-operator` | `mariadbv1alpha1.AddToScheme` | `MariaDB` (projected and owned child) |
 | `github.com/external-secrets/external-secrets` | `esov1alpha1.SchemeBuilder` | `PushSecret` (admin-credential mirror) |
 | `github.com/external-secrets/external-secrets` | `esov1.SchemeBuilder` | `ExternalSecret`, `ClusterSecretStore`, `SecretStore` (K-ORC clouds.yaml gate + per-ControlPlane store selection) |
@@ -1063,7 +1063,7 @@ mirrors `reconcileDBCredentials`'s wait/condition handling. The database is
   colliding on the cluster-global OpenBao backend. The builder
   `adminPasswordExternalSecret(cp)` sets **no** owner reference; the reconciler
   applies the ExternalSecret via Server-Side Apply under the shared field manager
-  (`forge-operator`), which stamps the ControlPlane controller reference for GC.
+  (`cobaltcore-operator`), which stamps the ControlPlane controller reference for GC.
   In a dedicated Keystone namespace, and on a
   [target cluster](../target-clusters.md), no owner reference is possible: the
   ExternalSecret carries the ControlPlane's ownership labels instead and the
@@ -1821,7 +1821,7 @@ that instructs K-ORC to mint the admin application credential, and drives re-min
 - **Re-mint trigger (delete + recreate).** K-ORC's AC actuator implements only
   Create + Delete, so a rotated admin password cannot re-mint in place. The SHA-256
   of the admin password is stamped onto the AC CR under the
-  `forge.c5c3.io/admin-password-hash` annotation (`adminPasswordHashAnnotation`);
+  `cobaltcore.c5c3.io/admin-password-hash` annotation (`adminPasswordHashAnnotation`);
   on a later pass a mismatch (the hash moved, or the CredentialRotation reconciler
   zeroed the annotation to nudge) drives `reconcileKORC` to **delete** the AC — the
   finalizer revokes the old Keystone credential, authenticating via the
@@ -2103,7 +2103,7 @@ no `/v3` path suffix — the Glance API is served at the root. The image row fol
 the generic `{controlplane.Name}-image-service` / `{controlplane.Name}-image-endpoint-{interface}`
 naming convention rather than identity's legacy CR names. Every child is projected
 idempotently via Server-Side Apply under the shared field manager
-(`forge-operator`).
+(`cobaltcore-operator`).
 
 `spec.services.placement` adds a further row on the same terms: a `placement`-type
 `Service` named `placement`, again with both Endpoints. The `internal` one
@@ -2284,7 +2284,7 @@ Per declared entry it, in order:
    points at a `{cp}-service-account-{name}-password-v{N}` Secret. K-ORC's user
    actuator re-applies the password **only when the passwordRef name changes**, so
    a rotation is a Secret-name flip, driven by the CredentialRotation reconciler
-   clearing the `forge.c5c3.io/password-generation` annotation. The superseded
+   clearing the `cobaltcore.c5c3.io/password-generation` annotation. The superseded
    generation Secret is deleted once K-ORC confirms the new one is applied
    (`status.resource.appliedPasswordRef`).
 5. **Role assignments** — for each declared `roles[]` entry, project one
@@ -2384,11 +2384,11 @@ credential by **nudging** the ControlPlane reconciler rather than duplicating an
 mint logic. It **dispatches on `spec.target`**: `adminApplicationCredential`
 nudges the admin AC (clearing the AC's password-hash annotation), and
 `serviceAccountPassword` nudges the named service account (clearing the managed
-`User`'s `forge.c5c3.io/password-generation` annotation so
+`User`'s `cobaltcore.c5c3.io/password-generation` annotation so
 `reconcileServiceAccounts` flips its `passwordRef` on the next pass). Its model:
 
 - **Nudge, never mint or delete.** For the admin target it **clears** (zeroes)
-  the `forge.c5c3.io/admin-password-hash` annotation on the owned AC CR via
+  the `cobaltcore.c5c3.io/admin-password-hash` annotation on the owned AC CR via
   `clearPasswordHashAnnotation` (a no-op `Update` when already empty). On its next
   pass `reconcileKORC` observes the mismatch and performs the delete+recreate
   re-mint, re-stamping the fresh hash. The `serviceAccountPassword` target is the
@@ -2460,7 +2460,7 @@ ExternalSecret  →  {control-plane ns}/{controlplane.Name}-keystone-admin-crede
         │            (ESO owns the materialised Secret; CreationPolicy: Owner)
         ▼
 admin-password Secret (the effective admin-password ref; read by c5c3-operator)
-        │  SHA-256 → forge.c5c3.io/admin-password-hash annotation
+        │  SHA-256 → cobaltcore.c5c3.io/admin-password-hash annotation
         ▼
 c5c3-operator mints a RESTRICTED ApplicationCredential        (reconcileKORC)
    restricted:true  ⇒  K-ORC spec.resource.unrestricted=false  (INVERSION)
@@ -2487,7 +2487,7 @@ K-ORC controller authenticates with the admin clouds.yaml and reconciles
 ```
 
 **Re-mint trigger.** A rotation is signalled by comparing
-`SHA-256(admin password)` against the `forge.c5c3.io/admin-password-hash`
+`SHA-256(admin password)` against the `cobaltcore.c5c3.io/admin-password-hash`
 annotation last stamped on the AC CR. `reconcileKORC` re-stamps and re-mints when
 they differ; the CredentialRotation reconciler forces the same path by clearing
 the annotation (which guarantees a mismatch). The admin-password Secret watch
@@ -2793,7 +2793,7 @@ it.
 | `ExternalSecret` (DB credential) | `{name}-keystone-db-credentials` | ControlPlane CR | managed mode only; ESO owns the materialised Secret of the same name |
 | `ExternalSecret` (admin password) | `{name}-keystone-admin-credentials` | ControlPlane CR | managed mode only; ESO owns the materialised Secret of the same name |
 | `Keystone` | `{name}-keystone` | ControlPlane CR | managed mode only |
-| `ApplicationCredential` | `{name}-admin-app-credential` | ControlPlane CR | both modes; carries `forge.c5c3.io/admin-password-hash` |
+| `ApplicationCredential` | `{name}-admin-app-credential` | ControlPlane CR | both modes; carries `cobaltcore.c5c3.io/admin-password-hash` |
 | `Secret` | `{name}-admin-app-credential` | ControlPlane CR | both modes; data written by K-ORC, not the operator |
 | `PushSecret` | `{name}-admin-app-credential-backup` | ControlPlane CR | both modes; `DeletionPolicy: None` |
 | `User` (K-ORC) | `{name}-user-admin` | ControlPlane CR | both modes; unmanaged import |

@@ -20,7 +20,7 @@ operators surface the same channels on their own CRs.
 This guide is written against the **[Quick Start (Extended)](../quick-start-extended.md)** devstack. Stand it up first:
 
 ```bash
-kind create cluster --name forge --config hack/kind-config.yaml
+kind create cluster --name cobaltcore --config hack/kind-config.yaml
 make deploy-infra
 ```
 

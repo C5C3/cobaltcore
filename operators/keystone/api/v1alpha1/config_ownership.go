@@ -4,7 +4,7 @@
 
 package v1alpha1
 
-import "github.com/c5c3/forge/internal/common/config"
+import "github.com/c5c3/cobaltcore/internal/common/config"
 
 // The owned-config-key registry below records the keystone.conf keys the
 // operator computes and renders, so the post-merge health guard and the

@@ -125,7 +125,7 @@ LDAP_CTRL_SUFFIX = """\
 # must be added below AND verified against every fixture.
 OIDC_DEFAULT = """\
   oidc:
-    issuer: https://idp.example.com/realms/forge
+    issuer: https://idp.example.com/realms/cobaltcore
     clientID: keystone
     clientSecretRef:
       name: corp-oidc-client
@@ -145,8 +145,8 @@ OIDC_BAD_ISSUER = """\
 # OIDCBackendSpec (providerMetadataURL and endpoints are mutually exclusive).
 OIDC_DISCOVERY_CONFLICT = """\
   oidc:
-    issuer: https://idp.example.com/realms/forge
-    providerMetadataURL: https://idp.example.com/realms/forge/.well-known/openid-configuration
+    issuer: https://idp.example.com/realms/cobaltcore
+    providerMetadataURL: https://idp.example.com/realms/cobaltcore/.well-known/openid-configuration
     endpoints:
       authorizationEndpoint: https://idp.example.com/auth
       tokenEndpoint: https://idp.example.com/token
@@ -160,7 +160,7 @@ OIDC_DISCOVERY_CONFLICT = """\
 # webhook (the client Secret's data key is fixed by contract).
 OIDC_CLIENTREF_KEY = """\
   oidc:
-    issuer: https://idp.example.com/realms/forge
+    issuer: https://idp.example.com/realms/cobaltcore
     clientID: keystone
     clientSecretRef:
       name: corp-oidc-client
@@ -172,7 +172,7 @@ OIDC_CLIENTREF_KEY = """\
 # fixture.
 SAML_DEFAULT = """\
   saml:
-    idpEntityID: https://idp.example.com/realms/forge
+    idpEntityID: https://idp.example.com/realms/cobaltcore
     idpMetadata:
       secretRef:
         name: corp-saml-idp-metadata
@@ -182,7 +182,7 @@ SAML_DEFAULT = """\
 # exactly-one rule on SAMLIdPMetadataSpec.
 SAML_ZERO_METADATA = """\
   saml:
-    idpEntityID: https://idp.example.com/realms/forge
+    idpEntityID: https://idp.example.com/realms/cobaltcore
     idpMetadata: {}
 """
 
@@ -190,18 +190,18 @@ SAML_ZERO_METADATA = """\
 # the CEL exactly-one rule.
 SAML_TWO_METADATA = """\
   saml:
-    idpEntityID: https://idp.example.com/realms/forge
+    idpEntityID: https://idp.example.com/realms/cobaltcore
     idpMetadata:
       secretRef:
         name: corp-saml-idp-metadata
-      url: https://idp.example.com/realms/forge/descriptor
+      url: https://idp.example.com/realms/cobaltcore/descriptor
 """
 
 # SAML block whose idpMetadata.url uses a non-http(s) scheme — rejected by the
 # Pattern marker (^https?://) and webhook defense-in-depth.
 SAML_BAD_METADATA_URL = """\
   saml:
-    idpEntityID: https://idp.example.com/realms/forge
+    idpEntityID: https://idp.example.com/realms/cobaltcore
     idpMetadata:
       url: ldap://not-a-metadata-url
 """
@@ -210,7 +210,7 @@ SAML_BAD_METADATA_URL = """\
 # webhook (the metadata Secret's data key is fixed by contract).
 SAML_METADATAREF_KEY = """\
   saml:
-    idpEntityID: https://idp.example.com/realms/forge
+    idpEntityID: https://idp.example.com/realms/cobaltcore
     idpMetadata:
       secretRef:
         name: corp-saml-idp-metadata
@@ -221,7 +221,7 @@ SAML_METADATAREF_KEY = """\
 # webhook (the SP certificate Secret's data keys are fixed by contract).
 SAML_CERTREF_KEY = """\
   saml:
-    idpEntityID: https://idp.example.com/realms/forge
+    idpEntityID: https://idp.example.com/realms/cobaltcore
     idpMetadata:
       secretRef:
         name: corp-saml-idp-metadata
@@ -235,7 +235,7 @@ SAML_CERTREF_KEY = """\
 # validating webhook (it must be header-conveyable across the sidecar hop).
 SAML_REMOTE_ID_NO_HTTP = """\
   saml:
-    idpEntityID: https://idp.example.com/realms/forge
+    idpEntityID: https://idp.example.com/realms/cobaltcore
     idpMetadata:
       secretRef:
         name: corp-saml-idp-metadata
@@ -246,7 +246,7 @@ SAML_REMOTE_ID_NO_HTTP = """\
 # rejected by the items Pattern marker and webhook defense-in-depth.
 SAML_FORWARD_ATTR_INVALID = """\
   saml:
-    idpEntityID: https://idp.example.com/realms/forge
+    idpEntityID: https://idp.example.com/realms/cobaltcore
     idpMetadata:
       secretRef:
         name: corp-saml-idp-metadata
@@ -720,7 +720,7 @@ FIXTURES: list[Fixture] = [
         ldap=None,
         trailing="""\
   oidc:
-    issuer: https://idp.example.com/realms/forge-five
+    issuer: https://idp.example.com/realms/cobaltcore-five
     clientID: keystone
     clientSecretRef:
       name: corp-oidc-client

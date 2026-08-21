@@ -39,12 +39,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/c5c3/forge/internal/common/testutil/simulators"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	"github.com/c5c3/forge/internal/common/watch"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
-	"github.com/c5c3/forge/operators/barbican/internal/openbao"
-	"github.com/c5c3/forge/operators/barbican/internal/testutil"
+	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/watch"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/barbican/internal/openbao"
+	"github.com/c5c3/cobaltcore/operators/barbican/internal/testutil"
 )
 
 // Test timeout constants for CI tuning.

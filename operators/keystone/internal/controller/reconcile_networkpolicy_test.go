@@ -26,8 +26,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 func npTestScheme() *runtime.Scheme {
@@ -1172,18 +1172,18 @@ func TestOIDCBackendEgressPorts(t *testing.T) {
 	g := NewGomegaWithT(t)
 
 	o := &keystonev1alpha1.OIDCBackendSpec{
-		Issuer: "http://keycloak.openstack.svc.cluster.local:8080/realms/forge",
+		Issuer: "http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore",
 	}
 	g.Expect(oidcBackendEgressPorts(o)).To(Equal([]int32{8080}))
 
 	o = &keystonev1alpha1.OIDCBackendSpec{
-		Issuer:              "https://idp.example.com/realms/forge",
-		ProviderMetadataURL: "https://idp.example.com/realms/forge/.well-known/openid-configuration",
+		Issuer:              "https://idp.example.com/realms/cobaltcore",
+		ProviderMetadataURL: "https://idp.example.com/realms/cobaltcore/.well-known/openid-configuration",
 	}
 	g.Expect(oidcBackendEgressPorts(o)).To(Equal([]int32{443}), "shared default ports are deduplicated")
 
 	o = &keystonev1alpha1.OIDCBackendSpec{
-		Issuer: "https://idp.example.com/realms/forge",
+		Issuer: "https://idp.example.com/realms/cobaltcore",
 		Endpoints: &keystonev1alpha1.OIDCEndpointsSpec{
 			TokenEndpoint: "https://tokens.example.com:8443/token",
 			JWKSURI:       "http://keys.example.com/certs",

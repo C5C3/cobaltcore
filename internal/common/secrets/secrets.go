@@ -18,7 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/apply"
+	"github.com/c5c3/cobaltcore/internal/common/apply"
 )
 
 // ErrKeyNotFound is returned (wrapped) by GetSecretValue when the requested
@@ -39,7 +39,7 @@ func IsMissingSecretOrKey(err error) bool {
 // AdminPasswordDigest returns the SHA-256 of the admin password as a lowercase
 // hex string. This is the single source of truth for the cross-operator
 // admin-password digest contract: the keystone operator gates the bootstrap
-// Job re-run on it (forge.c5c3.io/admin-password-hash), while the c5c3 operator
+// Job re-run on it (cobaltcore.c5c3.io/admin-password-hash), while the c5c3 operator
 // stamps the same digest onto the application-credential CR annotation. Both
 // must compute it identically — a drift between the two would break the
 // bootstrap re-run / re-mint gate, so the derivation lives here rather than

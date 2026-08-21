@@ -20,8 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	"github.com/c5c3/forge/internal/common/config"
-	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
+	"github.com/c5c3/cobaltcore/internal/common/config"
+	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
 )
 
 // KeystoneIdentityBackendWebhook implements defaulting and validation

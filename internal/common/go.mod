@@ -1,4 +1,4 @@
-module github.com/c5c3/forge/internal/common
+module github.com/c5c3/cobaltcore/internal/common
 
 go 1.26.6
 

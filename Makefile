@@ -573,7 +573,7 @@ e2e-controlplane-sso:
 # .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
 # developers can reproduce the e2e-operator-upgrade CI job locally. Requires
 # `helm registry login ghcr.io` for the baseline chart/image pull; KIND_CLUSTER
-# (default forge) selects the kind cluster to load the baseline image into.
+# (default cobaltcore) selects the kind cluster to load the baseline image into.
 e2e-operator-upgrade:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
 	@if helm status keystone-operator -n keystone-system >/dev/null 2>&1; then \
@@ -590,7 +590,7 @@ e2e-operator-upgrade:
 # management cluster this target's kubectl context points at (brought up by
 # hack/deploy-mgmt-cluster.sh, running keystone-operator and barbican-operator)
 # and the target cluster registered on it (brought up by
-# `INFRA_ONLY=true CLUSTER_NAME=forge-target hack/deploy-infra.sh`, running the
+# `INFRA_ONLY=true CLUSTER_NAME=cobaltcore-target hack/deploy-infra.sh`, running the
 # infrastructure). The suite lives OUTSIDE tests/e2e/ because every suite there
 # runs against one cluster and `make e2e` sweeps that tree.
 #
@@ -604,14 +604,14 @@ e2e-operator-upgrade:
 #
 # The registration Secret carries the credentials the OPERATORS use, minted from
 # the target-cluster-access chart's ServiceAccount.
-# _output/forge-target.kubeconfig is chainsaw's own credential for asserting on
+# _output/cobaltcore-target.kubeconfig is chainsaw's own credential for asserting on
 # the target and is not what the operators read; write it with
-# `kind get kubeconfig --name forge-target > _output/forge-target.kubeconfig`.
+# `kind get kubeconfig --name cobaltcore-target > _output/cobaltcore-target.kubeconfig`.
 # See docs/reference/target-clusters.md for the registration Secret's contract.
 e2e-multicluster:
-	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable; point the context at the management cluster (`kubectl config use-context kind-forge-mgmt`, created by hack/deploy-mgmt-cluster.sh)' >&2; exit 1; }
-	@kubectl get secret forge-target -n c5c3-clusters >/dev/null 2>&1 || { echo 'no target cluster is registered; install deploy/target-cluster/target-cluster-access on the target and create the registration Secret `forge-target` in c5c3-clusters (see docs/guides/deploy-to-a-target-cluster.md)' >&2; exit 1; }
-	@test -f _output/forge-target.kubeconfig || { echo 'chainsaw has no kubeconfig for the target cluster; run `kind get kubeconfig --name forge-target > _output/forge-target.kubeconfig`' >&2; exit 1; }
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable; point the context at the management cluster (`kubectl config use-context kind-cobaltcore-mgmt`, created by hack/deploy-mgmt-cluster.sh)' >&2; exit 1; }
+	@kubectl get secret cobaltcore-target -n c5c3-clusters >/dev/null 2>&1 || { echo 'no target cluster is registered; install deploy/target-cluster/target-cluster-access on the target and create the registration Secret `cobaltcore-target` in c5c3-clusters (see docs/guides/deploy-to-a-target-cluster.md)' >&2; exit 1; }
+	@test -f _output/cobaltcore-target.kubeconfig || { echo 'chainsaw has no kubeconfig for the target cluster; run `kind get kubeconfig --name cobaltcore-target > _output/cobaltcore-target.kubeconfig`' >&2; exit 1; }
 	chainsaw test --config tests/e2e-multicluster/chainsaw-config.yaml tests/e2e-multicluster/
 
 .PHONY: tempest-test

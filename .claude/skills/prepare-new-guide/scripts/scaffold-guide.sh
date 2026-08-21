@@ -150,7 +150,7 @@ case "${DEVSTACK}" in
     ;;
   quick-start-extended)
     DEVSTACK_LABEL="Quick Start (Extended)"
-    BRING_UP="kind create cluster --name forge --config hack/kind-config.yaml
+    BRING_UP="kind create cluster --name cobaltcore --config hack/kind-config.yaml
 ${OPT_SUFFIX}make deploy-infra"
     ;;
   quick-start-controlplane)

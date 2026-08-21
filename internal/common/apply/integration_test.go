@@ -11,8 +11,8 @@ import (
 
 	. "github.com/onsi/gomega"
 
-	"github.com/c5c3/forge/internal/common/multicluster"
-	envtestutil "github.com/c5c3/forge/internal/common/testutil/envtest"
+	"github.com/c5c3/cobaltcore/internal/common/multicluster"
+	envtestutil "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

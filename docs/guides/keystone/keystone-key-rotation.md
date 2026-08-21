@@ -58,7 +58,7 @@ Earlier the rotation CronJob wrote directly to the production
 | Operator (controller-manager ServiceAccount) | Production Secret `controlplane-keystone-fernet-keys` (via `patch`) | Staging Secret `controlplane-keystone-fernet-keys-rotation` (validates, then deletes) |
 
 The staging Secret carries one controller-observable marker — the
-`forge.c5c3.io/rotation-completed-at` annotation — that tells the operator
+`cobaltcore.c5c3.io/rotation-completed-at` annotation — that tells the operator
 "the CronJob finished; please apply". Until that annotation is present
 and parseable as RFC3339 UTC, the operator will not touch the production
 Secret.
@@ -99,14 +99,14 @@ At this point the CronJob has PATCHed the staging Secret with both the new
 
 ## 2. Verify the staging Secret's completion annotation
 
-The `forge.c5c3.io/rotation-completed-at` annotation is transient — it
+The `cobaltcore.c5c3.io/rotation-completed-at` annotation is transient — it
 appears on the staging Secret only between the CronJob's PATCH and the
 operator's next reconcile, which typically closes the window in seconds.
 To catch it, watch the staging Secret during a rotation:
 
 ```bash
 kubectl -n openstack get secret controlplane-keystone-fernet-keys-rotation \
-  -o jsonpath='{.metadata.annotations.forge\.c5c3\.io/rotation-completed-at}{"\n"}'
+  -o jsonpath='{.metadata.annotations.cobaltcore\.c5c3\.io/rotation-completed-at}{"\n"}'
 ```
 
 A successful rotation shows the annotation briefly before the Secret is
@@ -187,7 +187,7 @@ subsequent rotations.
 The operator validates every staged rotation before copying it onto the
 production Secret. On failure it emits a Warning event and **clears the
 staged payload** — the staging Secret object is kept, but its `.data` and
-the `forge.c5c3.io/rotation-completed-at` annotation are removed so the
+the `cobaltcore.c5c3.io/rotation-completed-at` annotation are removed so the
 next CronJob run starts from an empty base rather than merging over a
 rejected payload. The Warning event message, not the staging Secret
 contents, is the record of what was rejected.

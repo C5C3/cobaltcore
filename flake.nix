@@ -13,7 +13,7 @@
 # Deliberately NOT provided: Docker (a daemon cannot be nix-provisioned; kind
 # needs a running Docker — see docs/contributing/nix-dev-environment.md).
 {
-  description = "forge development environment mirroring the CI toolchain";
+  description = "cobaltcore development environment mirroring the CI toolchain";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -41,7 +41,7 @@
           # xargs). go_1_26 / nodejs_24 fall back to the unversioned attrs if a
           # future nixpkgs revision renames them.
           default = pkgs.mkShell {
-            name = "forge-devshell";
+            name = "cobaltcore-devshell";
 
             packages = [
               (pkgs.go_1_26 or pkgs.go)
@@ -64,14 +64,14 @@
             # Source the hook from the working tree (not a ${./…} store path) so
             # it reads the live pins and resolves the repo root via git.
             shellHook = ''
-              _forge_root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-              if [ -f "$_forge_root/hack/nix-devshell-hook.sh" ]; then
+              _cobaltcore_root="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+              if [ -f "$_cobaltcore_root/hack/nix-devshell-hook.sh" ]; then
                 # shellcheck source=/dev/null
-                source "$_forge_root/hack/nix-devshell-hook.sh"
+                source "$_cobaltcore_root/hack/nix-devshell-hook.sh"
               else
-                echo "forge: hack/nix-devshell-hook.sh not found under $_forge_root — run 'nix develop' from within the forge checkout." >&2
+                echo "cobaltcore: hack/nix-devshell-hook.sh not found under $_cobaltcore_root — run 'nix develop' from within the cobaltcore checkout." >&2
               fi
-              unset _forge_root
+              unset _cobaltcore_root
             '';
           };
         }

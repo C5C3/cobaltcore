@@ -6,7 +6,7 @@
 # type: SAML KeystoneIdentityBackend end-to-end against a SAML-enabled realm on
 # the same Keycloak fixture Phase 2 introduces (#570 D8):
 #
-#   - Step 1 deploys Keycloak (forge-saml realm) and the keystone-saml CR; both
+#   - Step 1 deploys Keycloak (cobaltcore-saml realm) and the keystone-saml CR; both
 #     become Ready with no backend attached.
 #   - Step 2 creates the IdP-metadata Secret from the live Keycloak SAML
 #     descriptor, attaches the SAML backend, and asserts every backend
@@ -112,7 +112,7 @@ spec:
           POD=$(kubectl get pod -n $NAMESPACE -l app.kubernetes.io/instance=keystone-saml -o jsonpath='{.items[0].metadata.name}')
           kubectl exec -n $NAMESPACE "$POD" -c keystone -- python3 -c '
           import urllib.request
-          url = "http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml/protocol/saml/descriptor"
+          url = "http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml/protocol/saml/descriptor"
           print(urllib.request.urlopen(url, timeout=30).read().decode())
           ' > /tmp/keycloak-saml-idp-metadata.xml
           grep -q "EntityDescriptor" /tmp/keycloak-saml-idp-metadata.xml
@@ -263,7 +263,7 @@ spec:
           echo "=== sidecar logs ==="
           kubectl logs -n $NAMESPACE -l app.kubernetes.io/instance=keystone-saml -c federation-proxy --tail=100 2>&1 || true
           echo "=== rendered proxy.conf ==="
-          kubectl get secret -n $NAMESPACE -l forge.c5c3.io/config-base=keystone-saml-federation -o jsonpath='{.items[0].data.proxy\.conf}' 2>&1 | base64 -d 2>&1 || true
+          kubectl get secret -n $NAMESPACE -l cobaltcore.c5c3.io/config-base=keystone-saml-federation -o jsonpath='{.items[0].data.proxy\.conf}' 2>&1 | base64 -d 2>&1 || true
   # ── Step 5: Coexistence — attach an OIDC backend alongside the SAML one ──
   - try:
     - apply:

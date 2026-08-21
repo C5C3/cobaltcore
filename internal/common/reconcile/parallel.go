@@ -12,7 +12,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
 )
 
 // ParallelStep describes a sub-reconciler that runs in a parallel group. Each

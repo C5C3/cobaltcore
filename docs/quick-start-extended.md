@@ -69,8 +69,8 @@ still has to be installed separately (kind needs a running daemon).
 ## Step 1 — Clone the repository
 
 ```bash
-git clone https://github.com/c5c3/forge.git
-cd forge
+git clone https://github.com/c5c3/cobaltcore.git
+cd cobaltcore
 ```
 
 For Podman, ensure the Podman machine is already running and make kind use the
@@ -109,7 +109,7 @@ The project provides a `hack/kind-config.yaml` with a single control-plane node 
 
 ```bash
 kind create cluster \
-  --name forge \
+  --name cobaltcore \
   --config hack/kind-config.yaml \
   --wait 60s
 ```
@@ -117,7 +117,7 @@ kind create cluster \
 Verify the cluster is ready:
 
 ```bash
-kubectl cluster-info --context kind-forge
+kubectl cluster-info --context kind-cobaltcore
 ```
 
 ::: warning Host port 443 binding requirement
@@ -657,7 +657,7 @@ Build the operator image, load it into kind, and install the chart directly from
 make docker-build OPERATOR=keystone IMG=ghcr.io/c5c3/keystone-operator:dev
 
 # 2. Load the image into the kind cluster (no registry needed)
-kind load docker-image ghcr.io/c5c3/keystone-operator:dev --name forge
+kind load docker-image ghcr.io/c5c3/keystone-operator:dev --name cobaltcore
 
 # 3. Pre-install CRDs so the API server watch cache is ready before the
 #    operator starts (avoids missing initial watch events)
@@ -694,7 +694,7 @@ keystone-operator-6d7f9f4d5b-xyz99   1/1     Running   0          30s
 
 The `Keystone` CR references a service image that runs the actual OpenStack Keystone API. Either
 pull the pre-built image from GHCR or build it locally. Run **one option only**; both options
-produce the same image reference and load it into the `forge` kind cluster.
+produce the same image reference and load it into the `cobaltcore` kind cluster.
 
 Set the release you want to work with. The default is the most recent release; update this variable
 whenever a new release is available:
@@ -707,7 +707,7 @@ RELEASE=2025.2   # update to the target release
 
 ```bash
 docker pull ghcr.io/c5c3/keystone:"${RELEASE}"
-kind load docker-image ghcr.io/c5c3/keystone:"${RELEASE}" --name forge
+kind load docker-image ghcr.io/c5c3/keystone:"${RELEASE}" --name cobaltcore
 ```
 
 With Podman, keep `KIND_EXPERIMENTAL_PROVIDER=podman` exported from the
@@ -715,7 +715,7 @@ Prerequisites step:
 
 ```bash
 podman pull ghcr.io/c5c3/keystone:"${RELEASE}"
-kind load docker-image ghcr.io/c5c3/keystone:"${RELEASE}" --name forge
+kind load docker-image ghcr.io/c5c3/keystone:"${RELEASE}" --name cobaltcore
 ```
 
 ### Option B — Build locally
@@ -746,7 +746,7 @@ docker build -t "ghcr.io/c5c3/keystone:${RELEASE}" \
   images/keystone/
 
 # Load into kind
-kind load docker-image "ghcr.io/c5c3/keystone:${RELEASE}" --name forge
+kind load docker-image "ghcr.io/c5c3/keystone:${RELEASE}" --name cobaltcore
 ```
 
 ---
@@ -1156,4 +1156,4 @@ Delete the kind cluster and all its resources:
 make teardown-infra
 ```
 
-This runs `kind delete cluster --name forge` and removes all local state.
+This runs `kind delete cluster --name cobaltcore` and removes all local state.

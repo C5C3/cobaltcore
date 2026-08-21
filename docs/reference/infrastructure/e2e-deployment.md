@@ -25,7 +25,7 @@ ExternalSecrets) into a local kind cluster and validate it with Chainsaw E2E tes
                                │
                                ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│  Kind Cluster (forge)                                               │
+│  Kind Cluster (cobaltcore)                                               │
 │                                                                         │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                   │
 │  │ cert-manager │  │   OpenBao    │  │     ESO      │                   │
@@ -254,7 +254,7 @@ The deployment script supports configurable timeouts via environment variables:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `CLUSTER_NAME` | `forge` | Kind cluster name |
+| `CLUSTER_NAME` | `cobaltcore` | Kind cluster name |
 | `FLUX_OPERATOR_VERSION` | _pinned in script_ | Tag of the flux-operator `install.yaml` release applied in Step 2; kept in sync by Renovate via a `customManager` on `hack/deploy-infra.sh` |
 | `HELMRELEASE_TIMEOUT` | `600` | Seconds to wait for HelmReleases Ready (also bounds the `wait_for_fluxinstance` poll in Step 2) |
 | `POD_TIMEOUT` | `300` | Seconds to wait for OpenBao pods Ready |
@@ -266,7 +266,7 @@ The deployment script supports configurable timeouts via environment variables:
 | `CONTROLPLANE_OPERATORS` | `flux` | How the ControlPlane operator stack is provided (only when `WITH_CONTROLPLANE=true`). `flux` deploys the published c5c3-operator chart + K-ORC Flux source, un-suspends the keystone-, horizon-, glance-, and placement-operator releases, and pins the self-built operators' `:latest` images to their current digests via `hack/refresh-operator-image-digests.sh` (per-operator image-digest ConfigMaps consumed via `valuesFrom`; re-run with `make refresh-operator-digests` after a merge); `external` suspends the Flux stack and expects the operators to be deployed out of band (as the `e2e-controlplane` CI job does with local dev images + `hack/ci-deploy-korc.sh`) |
 | `CONTROLPLANE_NAME` | `controlplane` | Name of the ControlPlane CR under `WITH_CONTROLPLANE=true`; the per-CR OpenBao admin-password bootstrap path derives from it, so it must match the applied CR (the `e2e-controlplane` job sets `controlplane-keystone`) |
 | `WITH_REGISTRY_CACHE` | `false` | Local-dev only. When `true`, bring up one distribution-registry (`registry:2`) pull-through proxy per upstream registry (`docker.io`, `ghcr.io`, `registry.k8s.io`, `quay.io`, plus the vanity fronts `oci.external-secrets.io` and `docker-registry3.mariadb.com`) on the `kind` Docker network and wire every node's containerd at them via a `certs.d/<host>/hosts.toml` mirror, so unmodified image refs are served from a persistent local cache that survives `kind delete`. The proxy streams and caches inline (fast even on a cold pull). The containerd mirror patch is injected only into the deploy-time kind config, never the checked-in `hack/kind-config.yaml`, so CI is unaffected. Requires `yq`. See the [Extended Quick Start](../../quick-start-extended.md) |
-| `PURGE_REGISTRY_CACHE` | `false` | Consumed by `make teardown-infra`. When `true`, also remove the registry pull-through cache containers and their volumes (identified by the `forge.registry-cache=true` label). The default leaves them running so the warm cache is reused on the next deploy |
+| `PURGE_REGISTRY_CACHE` | `false` | Consumed by `make teardown-infra`. When `true`, also remove the registry pull-through cache containers and their volumes (identified by the `cobaltcore.registry-cache=true` label). The default leaves them running so the warm cache is reused on the next deploy |
 
 **Example: override HelmRelease timeout:**
 

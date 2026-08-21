@@ -18,9 +18,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/rotation"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
-	"github.com/c5c3/forge/operators/keystone/internal/metrics"
+	"github.com/c5c3/cobaltcore/internal/common/rotation"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/metrics"
 )
 
 // StagingSecretLabelKey labels staging Secrets so operator watches and

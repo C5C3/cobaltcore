@@ -12,9 +12,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	"github.com/c5c3/forge/internal/common/secrets"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/secrets"
 )
 
 func TestReconcileSecrets_StoreNotReady(t *testing.T) {

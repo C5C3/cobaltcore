@@ -20,7 +20,7 @@ metadata:
   namespace: openstack
 spec:
   targetClusterRef:
-    name: forge-target
+    name: cobaltcore-target
   openStackRelease: "2025.2"
   deployment:
     replicas: 1

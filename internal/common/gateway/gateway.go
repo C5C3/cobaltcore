@@ -23,8 +23,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/c5c3/forge/internal/common/apply"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/apply"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // defaultHTTPRoutePath is the URL path prefix applied when spec.gateway.path

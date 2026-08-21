@@ -29,10 +29,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	"github.com/c5c3/forge/internal/common/naming"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // pwRotationTestScheme returns a runtime.Scheme with all types needed for
@@ -218,7 +218,7 @@ func TestEnsureAdminPasswordPushSourceSecret_RemoteRebuildKeepsOwnershipLabels(t
 		UID:       "live-uid",
 		Labels:    pwRotationOwnerLabels(),
 	}}
-	live.Labels["forge.c5c3.io/retired"] = "yes"
+	live.Labels["cobaltcore.c5c3.io/retired"] = "yes"
 	children := commonmulticluster.Remote(fake.NewClientBuilder().WithScheme(s).WithObjects(ks, live).Build())
 	r := &KeystoneReconciler{Client: children, Scheme: s, Recorder: record.NewFakeRecorder(20)}
 
@@ -234,7 +234,7 @@ func TestEnsureAdminPasswordPushSourceSecret_RemoteRebuildKeepsOwnershipLabels(t
 		g.Expect(sec.Labels).To(HaveKeyWithValue(key, value))
 	}
 	g.Expect(sec.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
-	g.Expect(sec.Labels).NotTo(HaveKey("forge.c5c3.io/retired"), "the operator's label set stays authoritative")
+	g.Expect(sec.Labels).NotTo(HaveKey("cobaltcore.c5c3.io/retired"), "the operator's label set stays authoritative")
 }
 
 // TestEnsureAdminPasswordPushSourceSecret_RemoteRefusesForeignSecret covers the

@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/utils/ptr"
 
-	"github.com/c5c3/forge/operators/keystone/internal/identity"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/identity"
 )
 
 func TestIdentityProvider_CreateGetUpdateDelete(t *testing.T) {
@@ -25,7 +25,7 @@ func TestIdentityProvider_CreateGetUpdateDelete(t *testing.T) {
 		ID:        "keycloak",
 		DomainID:  "domain-0001",
 		Enabled:   ptr.To(true),
-		RemoteIDs: []string{"https://idp.example.com/realms/forge"},
+		RemoteIDs: []string{"https://idp.example.com/realms/cobaltcore"},
 	})
 	g.Expect(err).NotTo(HaveOccurred())
 
@@ -33,15 +33,15 @@ func TestIdentityProvider_CreateGetUpdateDelete(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(got.ID).To(Equal("keycloak"))
 	g.Expect(got.DomainID).To(Equal("domain-0001"))
-	g.Expect(got.RemoteIDs).To(ConsistOf("https://idp.example.com/realms/forge"))
+	g.Expect(got.RemoteIDs).To(ConsistOf("https://idp.example.com/realms/cobaltcore"))
 
 	err = c.UpdateIdentityProvider(ctx, "keycloak", ptr.To(false), ptr.To("federated corp IdP"),
-		[]string{"https://idp.example.com/realms/forge2"})
+		[]string{"https://idp.example.com/realms/cobaltcore2"})
 	g.Expect(err).NotTo(HaveOccurred())
 	rec := srv.IdentityProvider("keycloak")
 	g.Expect(rec.Enabled).To(BeFalse())
 	g.Expect(rec.Description).To(Equal("federated corp IdP"))
-	g.Expect(rec.RemoteIDs).To(ConsistOf("https://idp.example.com/realms/forge2"))
+	g.Expect(rec.RemoteIDs).To(ConsistOf("https://idp.example.com/realms/cobaltcore2"))
 
 	g.Expect(c.DeleteIdentityProvider(ctx, "keycloak")).To(Succeed())
 	g.Expect(srv.IdentityProvider("keycloak")).To(BeNil())
@@ -108,7 +108,7 @@ func TestMapping_RoundTripViaGophercloud(t *testing.T) {
 		}},
 		Remote: []federation.RuleRemote{
 			{Type: "HTTP_OIDC_PREFERRED_USERNAME"},
-			{Type: "HTTP_OIDC_ISS", AnyOneOf: []string{"https://idp.example.com/realms/forge"}},
+			{Type: "HTTP_OIDC_ISS", AnyOneOf: []string{"https://idp.example.com/realms/cobaltcore"}},
 		},
 	}}
 
@@ -119,13 +119,13 @@ func TestMapping_RoundTripViaGophercloud(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(got.Rules).To(HaveLen(1))
 	g.Expect(got.Rules[0].Remote).To(HaveLen(2))
-	g.Expect(got.Rules[0].Remote[1].AnyOneOf).To(ConsistOf("https://idp.example.com/realms/forge"))
+	g.Expect(got.Rules[0].Remote[1].AnyOneOf).To(ConsistOf("https://idp.example.com/realms/cobaltcore"))
 
-	rules[0].Remote[1].AnyOneOf = []string{"https://idp.example.com/realms/forge2"}
+	rules[0].Remote[1].AnyOneOf = []string{"https://idp.example.com/realms/cobaltcore2"}
 	g.Expect(c.UpdateMapping(ctx, "keycloak-mapping", rules)).To(Succeed())
 	got, err = c.GetMapping(ctx, "keycloak-mapping")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(got.Rules[0].Remote[1].AnyOneOf).To(ConsistOf("https://idp.example.com/realms/forge2"))
+	g.Expect(got.Rules[0].Remote[1].AnyOneOf).To(ConsistOf("https://idp.example.com/realms/cobaltcore2"))
 
 	g.Expect(c.DeleteMapping(ctx, "keycloak-mapping")).To(Succeed())
 	_, err = c.GetMapping(ctx, "keycloak-mapping")

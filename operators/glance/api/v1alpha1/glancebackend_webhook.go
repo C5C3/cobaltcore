@@ -19,7 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
+	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
 )
 
 // GlanceBackendWebhook implements defaulting and validation webhooks for the

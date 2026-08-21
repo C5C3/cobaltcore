@@ -19,9 +19,9 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
 // newNetworkPolicyTestReconciler builds a reconciler whose fake client can apply

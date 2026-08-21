@@ -15,7 +15,7 @@ distinct from the per-CR NetworkPolicy emitted by
 - **Chart:** `operators/keystone/helm/keystone-operator`.
 - **Template:** `templates/networkpolicy.yaml`.
 - **Values schema:** the authoritative contract for all tunables is
-  [`values.schema.json`](https://github.com/c5c3/forge/blob/main/operators/keystone/helm/keystone-operator/values.schema.json).
+  [`values.schema.json`](https://github.com/c5c3/cobaltcore/blob/main/operators/keystone/helm/keystone-operator/values.schema.json).
 
 ## Overview
 

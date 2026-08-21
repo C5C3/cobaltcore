@@ -19,11 +19,11 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	commonconditions "github.com/c5c3/forge/internal/common/conditions"
-	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
-	identityfake "github.com/c5c3/forge/operators/keystone/internal/identity/fake"
+	commonconditions "github.com/c5c3/cobaltcore/internal/common/conditions"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+	identityfake "github.com/c5c3/cobaltcore/operators/keystone/internal/identity/fake"
 )
 
 // expectBackendEventContaining drains the reconciler's FakeRecorder and
@@ -51,7 +51,7 @@ func testOIDCBackend(name, domain string) *keystonev1alpha1.KeystoneIdentityBack
 	b.Spec.Type = keystonev1alpha1.IdentityBackendTypeOIDC
 	b.Spec.LDAP = nil
 	b.Spec.OIDC = &keystonev1alpha1.OIDCBackendSpec{
-		Issuer:               "https://idp.example.com/realms/forge",
+		Issuer:               "https://idp.example.com/realms/cobaltcore",
 		ClientID:             "keystone",
 		ClientSecretRef:      commonv1.SecretRefSpec{Name: name + "-client"},
 		ProtocolID:           keystonev1alpha1.DefaultOIDCProtocolID,
@@ -65,7 +65,7 @@ func testOIDCBackend(name, domain string) *keystonev1alpha1.KeystoneIdentityBack
 		}},
 		Remote: []keystonev1alpha1.MappingRemoteRuleSpec{
 			{Type: "HTTP_OIDC_PREFERRED_USERNAME"},
-			{Type: "HTTP_OIDC_ISS", AnyOneOf: []string{"https://idp.example.com/realms/forge"}},
+			{Type: "HTTP_OIDC_ISS", AnyOneOf: []string{"https://idp.example.com/realms/cobaltcore"}},
 		},
 	}}
 	b.Spec.Groups = []keystonev1alpha1.FederationGroupSpec{{
@@ -97,7 +97,7 @@ func TestOIDCBackend_ProvisionsFederationObjects(t *testing.T) {
 	idp := srv.IdentityProvider("corp-oidc")
 	g.Expect(idp).NotTo(BeNil())
 	g.Expect(idp.DomainID).To(Equal(updated.Status.DomainID))
-	g.Expect(idp.RemoteIDs).To(ConsistOf("https://idp.example.com/realms/forge"))
+	g.Expect(idp.RemoteIDs).To(ConsistOf("https://idp.example.com/realms/cobaltcore"))
 	g.Expect(idp.Enabled).To(BeTrue())
 
 	g.Expect(srv.Mapping("corp-oidc-mapping")).NotTo(BeNil())
@@ -445,7 +445,7 @@ func testSAMLBackend(name, domain string) *keystonev1alpha1.KeystoneIdentityBack
 	b.Spec.Type = keystonev1alpha1.IdentityBackendTypeSAML
 	b.Spec.LDAP = nil
 	b.Spec.SAML = &keystonev1alpha1.SAMLBackendSpec{
-		IdPEntityID:          "https://idp.example.com/realms/forge",
+		IdPEntityID:          "https://idp.example.com/realms/cobaltcore",
 		IdPMetadata:          keystonev1alpha1.SAMLIdPMetadataSpec{SecretRef: &commonv1.SecretRefSpec{Name: name + "-idp-metadata"}},
 		ProtocolID:           keystonev1alpha1.DefaultSAMLProtocolID,
 		IdentityProviderName: name,
@@ -459,7 +459,7 @@ func testSAMLBackend(name, domain string) *keystonev1alpha1.KeystoneIdentityBack
 		}},
 		Remote: []keystonev1alpha1.MappingRemoteRuleSpec{
 			{Type: "HTTP_MELLON_USERNAME"},
-			{Type: "HTTP_MELLON_IDP", AnyOneOf: []string{"https://idp.example.com/realms/forge"}},
+			{Type: "HTTP_MELLON_IDP", AnyOneOf: []string{"https://idp.example.com/realms/cobaltcore"}},
 		},
 	}}
 	b.Spec.Groups = []keystonev1alpha1.FederationGroupSpec{{
@@ -493,7 +493,7 @@ func TestSAMLBackend_ProvisionsFederationObjects(t *testing.T) {
 	g.Expect(idp.DomainID).To(Equal(updated.Status.DomainID))
 	// The identity provider's remote ID is the SAML IdP entityID (not an OIDC
 	// issuer), proving FederationRemoteID resolves the right source.
-	g.Expect(idp.RemoteIDs).To(ConsistOf("https://idp.example.com/realms/forge"))
+	g.Expect(idp.RemoteIDs).To(ConsistOf("https://idp.example.com/realms/cobaltcore"))
 	g.Expect(idp.Enabled).To(BeTrue())
 
 	g.Expect(srv.Mapping("corp-saml-mapping")).NotTo(BeNil())

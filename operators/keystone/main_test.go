@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/operators/keystone/internal/controller"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/controller"
 )
 
 // The remote child kinds drive two things at once: SetupWithManager builds a

@@ -80,7 +80,7 @@ spec:
           kubectl logs -n keystone-system -l app.kubernetes.io/name=keystone-operator --all-containers --tail=60 --previous 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
-  # ── Step 2: Late-attach the forge backend; every condition converges ────
+  # ── Step 2: Late-attach the cobaltcore backend; every condition converges ────
   - try:
     - apply:
         file: 02-backend-cr.yaml
@@ -89,7 +89,7 @@ spec:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1
           kind: KeystoneIdentityBackend
           metadata:
-            name: keycloak-forge
+            name: keycloak-cobaltcore
             namespace: openstack
           status:
             (conditions[?type == 'DomainReady']):
@@ -124,7 +124,7 @@ spec:
     - script:
         content: |
           echo "=== Backend CR ==="
-          kubectl get keystoneidentitybackend keycloak-forge -n $NAMESPACE -o yaml 2>&1 || true
+          kubectl get keystoneidentitybackend keycloak-cobaltcore -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Keystone CR ==="
           kubectl get keystone keystone-oidc -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Keystone pods ==="
@@ -229,11 +229,11 @@ spec:
           #    the client already holds an IdP-issued access token).
           body = urllib.parse.urlencode({
               "grant_type": "password", "client_id": "keystone",
-              "client_secret": "keystone-forge-secret",
+              "client_secret": "keystone-cobaltcore-secret",
               "username": "fry", "password": "fry-password",
               "scope": "openid",
           })
-          resp, data = fetch(f"http://{KEYCLOAK_HOST}/realms/forge/protocol/openid-connect/token",
+          resp, data = fetch(f"http://{KEYCLOAK_HOST}/realms/cobaltcore/protocol/openid-connect/token",
                              method="POST", body=body,
                              headers={"Content-Type": "application/x-www-form-urlencoded"})
           assert resp.status == 200, f"Keycloak token endpoint returned {resp.status}: {data[:400]}"
@@ -243,7 +243,7 @@ spec:
           # 2. Federated auth THROUGH the proxy: the introspection path
           #    validates the bearer, the claim headers reach keystone, and
           #    the mapping mints an unscoped token.
-          resp, data = fetch(f"http://{SERVICE_HOST}/v3/OS-FEDERATION/identity_providers/keycloak-forge/protocols/openid/auth",
+          resp, data = fetch(f"http://{SERVICE_HOST}/v3/OS-FEDERATION/identity_providers/keycloak-cobaltcore/protocols/openid/auth",
                              headers={"Authorization": "Bearer " + access_token})
           assert resp.status == 201, f"federated auth returned {resp.status}: {data[:400]}"
           unscoped = resp.getheader("X-Subject-Token")
@@ -254,10 +254,10 @@ spec:
 
           # 3. Mapping-driven group membership: the domain-scoped exchange
           #    succeeds ONLY because the mapped federated-users group holds
-          #    the member role on the forge domain.
+          #    the member role on the cobaltcore domain.
           body = json.dumps({"auth": {
               "identity": {"methods": ["token"], "token": {"id": unscoped}},
-              "scope": {"domain": {"name": "forge"}}}})
+              "scope": {"domain": {"name": "cobaltcore"}}}})
           resp, data = fetch(f"http://{SERVICE_HOST}/v3/auth/tokens",
                              method="POST", body=body,
                              headers={"Content-Type": "application/json"})
@@ -271,7 +271,7 @@ spec:
     - script:
         content: |
           echo "=== Backend CR ==="
-          kubectl get keystoneidentitybackend keycloak-forge -n $NAMESPACE -o yaml 2>&1 || true
+          kubectl get keystoneidentitybackend keycloak-cobaltcore -n $NAMESPACE -o yaml 2>&1 || true
           echo "=== Keystone pods ==="
           kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=keystone-oidc -o wide 2>&1 || true
           echo "=== keystone container logs ==="
@@ -342,18 +342,18 @@ spec:
 
           origin = urllib.parse.quote("http://localhost/dummy", safe="")
           websso = (f"http://{SERVICE_HOST}/v3/auth/OS-FEDERATION/identity_providers/"
-                    f"keycloak-forge/protocols/openid/websso?origin={origin}")
+                    f"keycloak-cobaltcore/protocols/openid/websso?origin={origin}")
 
           # The protected Location redirects through the module discovery
           # hand-off into the pinned realm login page.
           url, resp, data = follow(websso)
           assert resp.status == 200, f"expected the Keycloak login page, got {resp.status} at {url}: {data[:400]}"
-          assert "/realms/forge/" in url, f"login flow must pin the forge realm, landed at {url}"
+          assert "/realms/cobaltcore/" in url, f"login flow must pin the cobaltcore realm, landed at {url}"
           html = data.decode(errors="replace")
           m = re.search(r"action=\"([^\"]+)\"", html)
           assert m, f"no login form action on the Keycloak page: {html[:400]}"
           form_url = m.group(1).replace("&amp;", "&")
-          print("OK: websso pinned the forge realm and served the login form")
+          print("OK: websso pinned the cobaltcore realm and served the login form")
 
           # Submit credentials; Keycloak redirects back to the module
           # redirect_uri, the code is exchanged server-side, and the final
@@ -386,7 +386,7 @@ spec:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1
           kind: KeystoneIdentityBackend
           metadata:
-            name: keycloak-forge2
+            name: keycloak-cobaltcore2
             namespace: openstack
           status:
             (conditions[?type == 'Ready']):
@@ -446,10 +446,10 @@ spec:
                       return url
               raise AssertionError(f"{idp}: never reached an authorize endpoint")
 
-          forge = authorize_realm("keycloak-forge")
-          forge2 = authorize_realm("keycloak-forge2")
-          assert "/realms/forge/" in forge, f"keycloak-forge pinned the wrong issuer: {forge}"
-          assert "/realms/forge2/" in forge2, f"keycloak-forge2 pinned the wrong issuer: {forge2}"
+          cobaltcore = authorize_realm("keycloak-cobaltcore")
+          cobaltcore2 = authorize_realm("keycloak-cobaltcore2")
+          assert "/realms/cobaltcore/" in cobaltcore, f"keycloak-cobaltcore pinned the wrong issuer: {cobaltcore}"
+          assert "/realms/cobaltcore2/" in cobaltcore2, f"keycloak-cobaltcore2 pinned the wrong issuer: {cobaltcore2}"
           print("OK: both realms pin distinct issuers off the shared sidecar")
           '
     catch:
@@ -472,13 +472,13 @@ spec:
         ref:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1
           kind: KeystoneIdentityBackend
-          name: keycloak-forge
+          name: keycloak-cobaltcore
           namespace: openstack
     - delete:
         ref:
           apiVersion: keystone.openstack.c5c3.io/v1alpha1
           kind: KeystoneIdentityBackend
-          name: keycloak-forge2
+          name: keycloak-cobaltcore2
           namespace: openstack
     # The sidecar is de-projected and the rollout completes.
     - assert:
@@ -559,12 +559,12 @@ spec:
           print("OK: admin auth still works after detach")
 
           # The identity provider is gone from the federation API.
-          resp = request("http://localhost:5000/v3/OS-FEDERATION/identity_providers/keycloak-forge", headers={"X-Auth-Token": admin_token})
+          resp = request("http://localhost:5000/v3/OS-FEDERATION/identity_providers/keycloak-cobaltcore", headers={"X-Auth-Token": admin_token})
           assert getattr(resp, "code", resp.status) == 404, "identity provider must be deleted on detach"
-          print("OK: identity provider keycloak-forge deleted")
+          print("OK: identity provider keycloak-cobaltcore deleted")
 
           # Both domains are gone (deletionPolicy Delete).
-          for domain in ("forge", "forge2"):
+          for domain in ("cobaltcore", "cobaltcore2"):
               resp = request(f"http://localhost:5000/v3/domains?name={domain}", headers={"X-Auth-Token": admin_token})
               domains = json.load(resp)["domains"]
               assert domains == [], f"deletionPolicy Delete must remove domain {domain}, got {domains}"

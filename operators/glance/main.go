@@ -15,9 +15,9 @@ import (
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 
-	"github.com/c5c3/forge/internal/common/bootstrap"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
-	"github.com/c5c3/forge/operators/glance/internal/controller"
+	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/glance/internal/controller"
 
 	ctrl "sigs.k8s.io/controller-runtime"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"

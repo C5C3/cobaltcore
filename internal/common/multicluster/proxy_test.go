@@ -15,7 +15,7 @@ import (
 	"k8s.io/client-go/rest"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // recordedRequest is what the stub API server saw.

@@ -15,8 +15,8 @@ import (
 	. "github.com/onsi/gomega"
 	"k8s.io/utils/ptr"
 
-	"github.com/c5c3/forge/operators/keystone/internal/identity"
-	"github.com/c5c3/forge/operators/keystone/internal/identity/fake"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/identity"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/identity/fake"
 )
 
 const adminPassword = "s3cret"

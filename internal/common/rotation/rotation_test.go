@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/c5c3/forge/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/multicluster"
 )
 
 func rotationScheme(t *testing.T) *runtime.Scheme {
@@ -138,7 +138,7 @@ func TestEnsureStagingSecret_remoteRebuildKeepsOwnershipLabels(t *testing.T) {
 		Labels:    rotationOwnerLabels(),
 	}}
 	live.Labels[StagingSecretLabelKey] = "fernet-keys"
-	live.Labels["forge.c5c3.io/retired"] = "yes"
+	live.Labels["cobaltcore.c5c3.io/retired"] = "yes"
 	c := multicluster.Remote(fake.NewClientBuilder().WithScheme(s).WithObjects(owner, live).Build())
 
 	_, err := EnsureStagingSecret(context.Background(), c, s, owner, "keystone-fernet-keys-rotation",
@@ -151,7 +151,7 @@ func TestEnsureStagingSecret_remoteRebuildKeepsOwnershipLabels(t *testing.T) {
 	for key, value := range rotationOwnerLabels() {
 		g.Expect(fetched.Labels).To(gomega.HaveKeyWithValue(key, value))
 	}
-	g.Expect(fetched.Labels).NotTo(gomega.HaveKey("forge.c5c3.io/retired"), "the caller's set stays authoritative")
+	g.Expect(fetched.Labels).NotTo(gomega.HaveKey("cobaltcore.c5c3.io/retired"), "the caller's set stays authoritative")
 	g.Expect(fetched.OwnerReferences).To(gomega.BeEmpty())
 }
 

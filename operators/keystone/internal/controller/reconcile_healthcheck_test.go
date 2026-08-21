@@ -28,11 +28,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/healthcheck"
-	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // scriptedDoer drives the health-probe cache tests. fn maps the 1-based call
@@ -798,7 +798,7 @@ func TestReconcileHealthCheck_PlacedCR_ProxyFailureReachesTheCondition(t *testin
 		{
 			name:   "the registered kubeconfig may not proxy",
 			status: http.StatusForbidden,
-			body: `services "test-keystone" is forbidden: User "system:serviceaccount:forge:keystone-operator" ` +
+			body: `services "test-keystone" is forbidden: User "system:serviceaccount:cobaltcore:keystone-operator" ` +
 				`cannot get resource "services/proxy" in API group "" in the namespace "default"`,
 		},
 	}

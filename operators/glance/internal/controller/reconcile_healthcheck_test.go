@@ -18,10 +18,10 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/healthcheck"
-	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // stubDoer implements HTTPDoer, returning a canned response or error and
@@ -221,7 +221,7 @@ func TestReconcileHealthCheck_PlacedCR_ProxyFailureReachesTheCondition(t *testin
 		{
 			name:   "the registered kubeconfig may not proxy",
 			status: http.StatusForbidden,
-			body: `services "test-glance" is forbidden: User "system:serviceaccount:forge:glance-operator" ` +
+			body: `services "test-glance" is forbidden: User "system:serviceaccount:cobaltcore:glance-operator" ` +
 				`cannot get resource "services/proxy" in API group "" in the namespace "default"`,
 		},
 	}

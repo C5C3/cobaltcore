@@ -6,7 +6,7 @@
 # Verifies
 #   - A Ready Keystone re-bootstraps when its admin-password Secret changes: the
 #     operator deletes the stale bootstrap Job (whose
-#     forge.c5c3.io/admin-password-hash no longer matches the Secret) and
+#     cobaltcore.c5c3.io/admin-password-hash no longer matches the Secret) and
 #     recreates one carrying the new SHA-256 digest, then BootstrapReady cuts
 #     back to True.
 #   - After cutover the OLD password is rejected (401) and the NEW password is
@@ -234,7 +234,7 @@ spec:
           echo "OK: ESO synced rotated password into $ADMIN_SECRET"
 
           # The operator must detect the stale bootstrap Job (its
-          # forge.c5c3.io/admin-password-hash no longer matches), delete it, and
+          # cobaltcore.c5c3.io/admin-password-hash no longer matches), delete it, and
           # recreate one carrying the new hash with a fresh UID.
           CUR_UID=""
           CUR_HASH=""
@@ -242,7 +242,7 @@ spec:
             CUR_UID=$(kubectl get job "$BOOTSTRAP_JOB" -n "$NS" \
               -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
             CUR_HASH=$(kubectl get job "$BOOTSTRAP_JOB" -n "$NS" \
-              -o jsonpath="{.spec.template.metadata.annotations['forge\.c5c3\.io/admin-password-hash']}" 2>/dev/null || true)
+              -o jsonpath="{.spec.template.metadata.annotations['cobaltcore\.c5c3\.io/admin-password-hash']}" 2>/dev/null || true)
             if [ -n "$CUR_UID" ] && [ "$CUR_UID" != "$OLD_JOB_UID" ] && [ "$CUR_HASH" = "$NEW_HASH" ]; then
               break
             fi

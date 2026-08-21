@@ -19,6 +19,6 @@ spec:
     name: saml-badurl
   type: SAML
   saml:
-    idpEntityID: https://idp.example.com/realms/forge
+    idpEntityID: https://idp.example.com/realms/cobaltcore
     idpMetadata:
       url: ldap://not-a-metadata-url

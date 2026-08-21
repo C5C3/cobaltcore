@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# OIDC KeystoneIdentityBackend attaching the forge-saml-oidc realm's OIDC client
+# OIDC KeystoneIdentityBackend attaching the cobaltcore-saml-oidc realm's OIDC client
 # to keystone-saml, alongside the SAML backend. This proves the headline claim
 # of #573: mod_auth_mellon (SAML) and mod_auth_openidc (OIDC) coexist in one
 # rendered proxy.conf on one sidecar. It uses a SEPARATE realm from the SAML
@@ -21,26 +21,26 @@ spec:
   keystoneRef:
     name: keystone-saml
   domain:
-    name: forge-oidc
+    name: cobaltcore-oidc
     mode: Manage
     deletionPolicy: Delete
-    description: Keycloak forge-saml-oidc realm
+    description: Keycloak cobaltcore-saml-oidc realm
   type: OIDC
   oidc:
-    issuer: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml-oidc
+    issuer: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml-oidc
     clientID: keystone
     clientSecretRef:
       name: keycloak-saml-oidc-client
     endpoints:
-      authorizationEndpoint: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml-oidc/protocol/openid-connect/auth
-      tokenEndpoint: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml-oidc/protocol/openid-connect/token
-      jwksURI: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml-oidc/protocol/openid-connect/certs
-      userinfoEndpoint: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml-oidc/protocol/openid-connect/userinfo
+      authorizationEndpoint: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml-oidc/protocol/openid-connect/auth
+      tokenEndpoint: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml-oidc/protocol/openid-connect/token
+      jwksURI: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml-oidc/protocol/openid-connect/certs
+      userinfoEndpoint: http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml-oidc/protocol/openid-connect/userinfo
   mappings:
   - remote:
     - type: HTTP_OIDC_ISS
       anyOneOf:
-      - http://keycloak-saml.openstack.svc.cluster.local:8080/realms/forge-saml-oidc
+      - http://keycloak-saml.openstack.svc.cluster.local:8080/realms/cobaltcore-saml-oidc
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
     - user:
@@ -48,10 +48,10 @@ spec:
       group:
         name: federated-users-oidc
         domain:
-          name: forge-oidc
+          name: cobaltcore-oidc
   groups:
   - name: federated-users-oidc
-    description: Federated Keycloak forge-saml-oidc users
+    description: Federated Keycloak cobaltcore-saml-oidc users
     roleAssignments:
     - role: member
       domain: true

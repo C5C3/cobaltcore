@@ -18,7 +18,7 @@
 # runs with imagePullPolicy=Never.
 #
 # Optional env vars:
-#   KIND_CLUSTER  — kind cluster name to load the image into (default: forge).
+#   KIND_CLUSTER  — kind cluster name to load the image into (default: cobaltcore).
 #   REGISTRY      — OCI registry host (default: ghcr.io).
 #
 # Emits `chart_dir=<path>` to $GITHUB_OUTPUT (when set) so the workflow can pass
@@ -32,7 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-KIND_CLUSTER="${KIND_CLUSTER:-forge}"
+KIND_CLUSTER="${KIND_CLUSTER:-cobaltcore}"
 REGISTRY="${REGISTRY:-ghcr.io}"
 
 CHART_REF="oci://${REGISTRY}/c5c3/charts/keystone-operator"

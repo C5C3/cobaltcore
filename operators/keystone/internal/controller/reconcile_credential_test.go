@@ -31,12 +31,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/deployment"
-	"github.com/c5c3/forge/internal/common/naming"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
 // credentialTestScheme returns a runtime.Scheme with all types needed for credential tests.
@@ -1231,7 +1231,7 @@ func TestReconcileCredentialKeys_CreatesEmptyStagingSecret(t *testing.T) {
 	g.Expect(staging.Data).To(BeEmpty())
 
 	// Labels include the rotation-target marker plus all three commonLabels.
-	g.Expect(staging.Labels).To(HaveKeyWithValue("forge.c5c3.io/rotation-target", "credential-keys"))
+	g.Expect(staging.Labels).To(HaveKeyWithValue("cobaltcore.c5c3.io/rotation-target", "credential-keys"))
 	g.Expect(staging.Labels).To(HaveKeyWithValue("app.kubernetes.io/name", "keystone"))
 	g.Expect(staging.Labels).To(HaveKeyWithValue("app.kubernetes.io/instance", "test-keystone"))
 	g.Expect(staging.Labels).To(HaveKeyWithValue("app.kubernetes.io/managed-by", "keystone-operator"))

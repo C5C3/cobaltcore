@@ -18,9 +18,9 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/healthcheck"
-	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // probeEndpoint is the cluster-local URL the health check probes for the shared
@@ -267,7 +267,7 @@ func TestReconcileHealthCheck_PlacedCR_ProxyFailureReachesTheCondition(t *testin
 		{
 			name:   "the registered kubeconfig may not proxy",
 			status: http.StatusForbidden,
-			body: `services "test-barbican" is forbidden: User "system:serviceaccount:forge:barbican-operator" ` +
+			body: `services "test-barbican" is forbidden: User "system:serviceaccount:cobaltcore:barbican-operator" ` +
 				`cannot get resource "services/proxy" in API group "" in the namespace "openstack"`,
 		},
 	}

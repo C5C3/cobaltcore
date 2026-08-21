@@ -21,11 +21,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	commonconditions "github.com/c5c3/forge/internal/common/conditions"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
-	"github.com/c5c3/forge/operators/keystone/internal/identity"
-	identityfake "github.com/c5c3/forge/operators/keystone/internal/identity/fake"
+	commonconditions "github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/identity"
+	identityfake "github.com/c5c3/cobaltcore/operators/keystone/internal/identity/fake"
 )
 
 const testAdminPassword = "admin-pw"
@@ -619,14 +619,14 @@ func TestBackendReconcile_ManageReconcilesDescriptionDrift(t *testing.T) {
 
 	ks := testKeystoneWithReadyAPI()
 	backend := testIdentityBackend("corp-ldap", "corp")
-	backend.Spec.Domain.Description = "managed by forge"
+	backend.Spec.Domain.Description = "managed by cobaltcore"
 	backend.Status = keystonev1alpha1.KeystoneIdentityBackendStatus{}
 	r := newBackendTestReconciler(srv, ks, backend, testAdminSecret())
 
 	_, err := reconcileBackendTwice(t, r, backend)
 	g.Expect(err).NotTo(HaveOccurred())
 	created := srv.GetDomainByName("corp")
-	g.Expect(created.Description).To(Equal("managed by forge"))
+	g.Expect(created.Description).To(Equal("managed by cobaltcore"))
 
 	// Out-of-band drift: description changed and domain disabled.
 	g.Expect(r.Get(context.Background(), client.ObjectKey{Namespace: "default", Name: "corp-ldap"}, backend)).To(Succeed())
@@ -640,7 +640,7 @@ func TestBackendReconcile_ManageReconcilesDescriptionDrift(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	repaired := srv.GetDomain(created.ID)
-	g.Expect(repaired.Description).To(Equal("managed by forge"))
+	g.Expect(repaired.Description).To(Equal("managed by cobaltcore"))
 	g.Expect(repaired.Enabled).To(BeTrue(), "Manage mode re-enables its own domain")
 }
 

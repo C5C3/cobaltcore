@@ -7,7 +7,7 @@ package v1alpha1
 import (
 	"embed"
 
-	"github.com/c5c3/forge/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/config"
 )
 
 // catalogFS holds the generated per-release barbican option catalogs embedded

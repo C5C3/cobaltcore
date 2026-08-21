@@ -19,7 +19,7 @@ ctx = ssl.create_default_context(cafile="/var/run/secrets/kubernetes.io/servicea
 conn = http.client.HTTPSConnection("kubernetes.default.svc", context=ctx)
 completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 body = {
-    "metadata": {"annotations": {"forge.c5c3.io/rotation-completed-at": completed_at}},
+    "metadata": {"annotations": {"cobaltcore.c5c3.io/rotation-completed-at": completed_at}},
     "data": data,
 }
 conn.request("PATCH",

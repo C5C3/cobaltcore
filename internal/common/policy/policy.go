@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	"github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // PolicyConfigMapKey is the ConfigMap data key that holds oslo.policy rules.

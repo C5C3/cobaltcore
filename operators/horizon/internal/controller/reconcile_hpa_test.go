@@ -13,7 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/c5c3/forge/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
 )
 
 func TestReconcileHPA_DisabledDeletesAndNotRequired(t *testing.T) {

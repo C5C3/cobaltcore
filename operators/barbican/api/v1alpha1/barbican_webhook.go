@@ -20,13 +20,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	"github.com/c5c3/forge/internal/common/config"
-	"github.com/c5c3/forge/internal/common/naming"
-	"github.com/c5c3/forge/internal/common/policy"
-	"github.com/c5c3/forge/internal/common/release"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	"github.com/c5c3/forge/internal/common/validation"
-	commonwebhook "github.com/c5c3/forge/internal/common/webhook"
+	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
+	"github.com/c5c3/cobaltcore/internal/common/policy"
+	"github.com/c5c3/cobaltcore/internal/common/release"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/validation"
+	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
 )
 
 // DefaultDBCleanRetentionDays is how long a soft-deleted row survives before the

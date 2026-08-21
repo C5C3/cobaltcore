@@ -116,7 +116,7 @@ test_default_limit_applied() {
   trap 'rm -rf "$tmp"' RETURN
   make_recording_stubs "$tmp/bin"
 
-  export KIND_NODES="forge-control-plane"
+  export KIND_NODES="cobaltcore-control-plane"
   export DOCKER_LOG="$tmp/docker.log"
   export DOCKER_EXIT=0
   : >"$DOCKER_LOG"
@@ -130,7 +130,7 @@ test_default_limit_applied() {
   local docker_log
   docker_log="$(cat "$DOCKER_LOG")"
 
-  assert_contains "docker exec targets the node" "$docker_log" "docker exec forge-control-plane"
+  assert_contains "docker exec targets the node" "$docker_log" "docker exec cobaltcore-control-plane"
   assert_contains "drop-in sets the default LimitNOFILE" "$docker_log" "LimitNOFILE=1048576"
   assert_contains "drop-in path is the containerd service dir" "$docker_log" "/etc/systemd/system/containerd.service.d/nofile.conf"
   assert_contains "containerd is restarted" "$docker_log" "systemctl restart containerd"
@@ -148,7 +148,7 @@ test_override_limit() {
   trap 'rm -rf "$tmp"' RETURN
   make_recording_stubs "$tmp/bin"
 
-  export KIND_NODES="forge-control-plane"
+  export KIND_NODES="cobaltcore-control-plane"
   export DOCKER_LOG="$tmp/docker.log"
   export DOCKER_EXIT=0
   : >"$DOCKER_LOG"
@@ -175,7 +175,7 @@ test_empty_limit_skips() {
   trap 'rm -rf "$tmp"' RETURN
   make_recording_stubs "$tmp/bin"
 
-  export KIND_NODES="forge-control-plane"
+  export KIND_NODES="cobaltcore-control-plane"
   export DOCKER_LOG="$tmp/docker.log"
   export DOCKER_EXIT=0
   : >"$DOCKER_LOG"
@@ -223,7 +223,7 @@ test_multi_node() {
   trap 'rm -rf "$tmp"' RETURN
   make_recording_stubs "$tmp/bin"
 
-  export KIND_NODES=$'forge-control-plane\nforge-worker'
+  export KIND_NODES=$'cobaltcore-control-plane\ncobaltcore-worker'
   export DOCKER_LOG="$tmp/docker.log"
   export DOCKER_EXIT=0
   : >"$DOCKER_LOG"
@@ -235,8 +235,8 @@ test_multi_node() {
 
   local docker_log
   docker_log="$(cat "$DOCKER_LOG")"
-  assert_contains "control-plane node is patched" "$docker_log" "docker exec forge-control-plane"
-  assert_contains "worker node is patched" "$docker_log" "docker exec forge-worker"
+  assert_contains "control-plane node is patched" "$docker_log" "docker exec cobaltcore-control-plane"
+  assert_contains "worker node is patched" "$docker_log" "docker exec cobaltcore-worker"
 }
 
 # ---------------------------------------------------------------------------
@@ -250,7 +250,7 @@ test_docker_failure_is_best_effort() {
   trap 'rm -rf "$tmp"' RETURN
   make_recording_stubs "$tmp/bin"
 
-  export KIND_NODES="forge-control-plane"
+  export KIND_NODES="cobaltcore-control-plane"
   export DOCKER_LOG="$tmp/docker.log"
   export DOCKER_EXIT=1          # docker exec fails
   : >"$DOCKER_LOG"
@@ -263,7 +263,7 @@ test_docker_failure_is_best_effort() {
   exit_code=$?
 
   assert_eq "cap_node_nofile returns 0 despite the failure" "0" "$exit_code"
-  assert_contains "log warns about the failed node" "$output" "failed to cap RLIMIT_NOFILE on forge-control-plane"
+  assert_contains "log warns about the failed node" "$output" "failed to cap RLIMIT_NOFILE on cobaltcore-control-plane"
 }
 
 # ---------------------------------------------------------------------------
@@ -277,7 +277,7 @@ test_matching_dropin_skips_restart() {
   trap 'rm -rf "$tmp"' RETURN
   make_recording_stubs "$tmp/bin"
 
-  export KIND_NODES="forge-control-plane"
+  export KIND_NODES="cobaltcore-control-plane"
   export DOCKER_LOG="$tmp/docker.log"
   export DOCKER_EXIT=0
   : >"$DOCKER_LOG"
@@ -323,7 +323,7 @@ test_stale_dropin_without_restart_is_retried() {
   trap 'rm -rf "$tmp"' RETURN
   make_recording_stubs "$tmp/bin"
 
-  export KIND_NODES="forge-control-plane"
+  export KIND_NODES="cobaltcore-control-plane"
   export DOCKER_LOG="$tmp/docker.log"
   export DOCKER_EXIT=0
   : >"$DOCKER_LOG"

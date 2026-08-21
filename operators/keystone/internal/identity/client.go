@@ -26,7 +26,7 @@ import (
 
 	"github.com/gophercloud/gophercloud/v2/openstack/identity/v3/federation"
 
-	"github.com/c5c3/forge/internal/common/healthcheck"
+	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
 )
 
 // Sentinel errors mapped from the identity API's HTTP status codes. Callers

@@ -10,7 +10,7 @@
 # websso choice (OIDC) or multi-domain support (LDAP) onto the Horizon child
 # and the trusted dashboard origin onto the Keystone child.
 #
-# The OIDC backend provisions its own "forge" domain: the CRD forbids backing
+# The OIDC backend provisions its own "cobaltcore" domain: the CRD forbids backing
 # the Default domain — which hosts the SQL-backed service users and the
 # bootstrap admin — with an external identity backend.
 # region backends
@@ -18,36 +18,36 @@
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: KeystoneIdentityBackend
 metadata:
-  name: keycloak-forge
+  name: keycloak-cobaltcore
   namespace: openstack
 spec:
   keystoneRef:
     name: controlplane-sso-keystone
   domain:
-    name: forge
+    name: cobaltcore
     mode: Manage
     deletionPolicy: Delete
-    description: Keycloak forge realm
+    description: Keycloak cobaltcore realm
   type: OIDC
   oidc:
-    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/forge
+    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore
     clientID: keystone
     clientSecretRef:
-      name: keycloak-forge-client
+      name: keycloak-cobaltcore-client
     # Explicit endpoints: the operator's metadata-fetch SSRF guard blocks
     # discovery against the in-cluster Keycloak's private ClusterIP. This suite
     # exercises the browser websso flow only, so — unlike the keystone
     # oidc-federation suite — no oauth2Introspection block is needed.
     endpoints:
-      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/auth
-      tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/token
-      jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/certs
-      userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/forge/protocol/openid-connect/userinfo
+      authorizationEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/auth
+      tokenEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/token
+      jwksURI: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/certs
+      userinfoEndpoint: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore/protocol/openid-connect/userinfo
   mappings:
   - remote:
     - type: HTTP_OIDC_ISS
       anyOneOf:
-      - http://keycloak.openstack.svc.cluster.local:8080/realms/forge
+      - http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
     # {0} is the first value-producing remote: the HTTP_OIDC_ISS rule carries
@@ -59,10 +59,10 @@ spec:
       group:
         name: federated-users
         domain:
-          name: forge
+          name: cobaltcore
   groups:
   - name: federated-users
-    description: Federated Keycloak forge users
+    description: Federated Keycloak cobaltcore users
     roleAssignments:
     - role: member
       domain: true

@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-CLUSTER_NAME="${CLUSTER_NAME:-forge}"
+CLUSTER_NAME="${CLUSTER_NAME:-cobaltcore}"
 
 # When true, also remove the opt-in registry pull-through caches (#564) — the
 # proxy containers AND their persistent volumes. Defaults to false: deleting the
@@ -26,7 +26,7 @@ log() {
 
 # ---------------------------------------------------------------------------
 # purge_registry_cache — Remove every registry pull-through cache container and
-# volume, identified by the forge.registry-cache=true label that
+# volume, identified by the cobaltcore.registry-cache=true label that
 # start_registry_cache stamps on them. Decoupled from the upstream set (no need
 # to know the registry list here) and best-effort throughout. No-op unless
 # PURGE_REGISTRY_CACHE=true.
@@ -45,14 +45,14 @@ purge_registry_cache() {
   log "Purging registry pull-through caches (PURGE_REGISTRY_CACHE=true)..."
 
   local containers volumes
-  containers=$(docker ps -aq --filter label=forge.registry-cache=true 2>/dev/null) || true
+  containers=$(docker ps -aq --filter label=cobaltcore.registry-cache=true 2>/dev/null) || true
   if [[ -n "${containers}" ]]; then
     # shellcheck disable=SC2086
     docker rm -f ${containers} >/dev/null 2>&1 || true
     log "  Removed registry-cache container(s)."
   fi
 
-  volumes=$(docker volume ls -q --filter label=forge.registry-cache=true 2>/dev/null) || true
+  volumes=$(docker volume ls -q --filter label=cobaltcore.registry-cache=true 2>/dev/null) || true
   if [[ -n "${volumes}" ]]; then
     # shellcheck disable=SC2086
     docker volume rm ${volumes} >/dev/null 2>&1 || true

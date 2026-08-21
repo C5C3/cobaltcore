@@ -19,12 +19,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/deployment"
-	"github.com/c5c3/forge/internal/common/job"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
-	"github.com/c5c3/forge/operators/glance/internal/metrics"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/job"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/glance/internal/metrics"
 )
 
 // Condition type and reasons for the recurring database purge. The condition is

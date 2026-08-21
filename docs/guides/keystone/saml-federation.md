@@ -60,7 +60,7 @@ Pick exactly one of the three sources for `spec.saml.idpMetadata`:
   fixed data key `idp-metadata.xml`:
 
   ```bash
-  curl -s https://idp.example.com/realms/forge/protocol/saml/descriptor \
+  curl -s https://idp.example.com/realms/cobaltcore/protocol/saml/descriptor \
     -o idp-metadata.xml
   kubectl create secret generic corp-saml-idp-metadata \
     --from-file=idp-metadata.xml=idp-metadata.xml
@@ -132,12 +132,12 @@ spec:
   keystoneRef:
     name: keystone
   domain:
-    name: forge-saml
+    name: cobaltcore-saml
     mode: Manage
     deletionPolicy: Delete
   type: SAML
   saml:
-    idpEntityID: https://idp.example.com/realms/forge
+    idpEntityID: https://idp.example.com/realms/cobaltcore
     identityProviderName: corp-saml
     idpMetadata:
       secretRef:
@@ -148,7 +148,7 @@ spec:
   - remote:
     - type: HTTP_MELLON_IDP
       anyOneOf:
-      - https://idp.example.com/realms/forge
+      - https://idp.example.com/realms/cobaltcore
     - type: HTTP_MELLON_USERNAME
     local:
     - user:
@@ -156,7 +156,7 @@ spec:
       group:
         name: federated-users
         domain:
-          name: forge-saml
+          name: cobaltcore-saml
   groups:
   - name: federated-users
     roleAssignments:

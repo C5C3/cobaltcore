@@ -19,8 +19,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/apply"
-	"github.com/c5c3/forge/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/apply"
+	"github.com/c5c3/cobaltcore/internal/common/multicluster"
 )
 
 // PodSpecHashAnnotation stores a Job's re-run gate value at creation time. By
@@ -30,7 +30,7 @@ import (
 // instead supply an explicit key via RunJobWithRerunKey; the annotation then
 // holds that key. Either way the value is compared on subsequent passes without
 // relying on normalization of API-server defaults.
-const PodSpecHashAnnotation = "forge.c5c3.io/pod-spec-hash"
+const PodSpecHashAnnotation = "cobaltcore.c5c3.io/pod-spec-hash"
 
 // PodSpecHash computes a deterministic SHA-256 hash of the given pod template.
 // It hashes the full corev1.PodTemplateSpec (metadata + spec), so pod-template

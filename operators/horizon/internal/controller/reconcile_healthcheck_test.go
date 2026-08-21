@@ -17,10 +17,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/healthcheck"
-	mctestutil "github.com/c5c3/forge/internal/common/testutil/multicluster"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
+	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // stubDoer implements HTTPDoer, returning a canned response or error and
@@ -216,7 +216,7 @@ func TestReconcileHealthCheck_PlacedCR_ProxyFailureReachesTheCondition(t *testin
 		{
 			name:   "the registered kubeconfig may not proxy",
 			status: http.StatusForbidden,
-			body: `services "test-horizon" is forbidden: User "system:serviceaccount:forge:horizon-operator" ` +
+			body: `services "test-horizon" is forbidden: User "system:serviceaccount:cobaltcore:horizon-operator" ` +
 				`cannot get resource "services/proxy" in API group "" in the namespace "default"`,
 		},
 	}

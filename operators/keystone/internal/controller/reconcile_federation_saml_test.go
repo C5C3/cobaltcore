@@ -15,12 +15,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	commonconditions "github.com/c5c3/forge/internal/common/conditions"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
+	commonconditions "github.com/c5c3/cobaltcore/internal/common/conditions"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
 
-const testSAMLIdPEntityID = "https://idp.example.com/realms/forge"
+const testSAMLIdPEntityID = "https://idp.example.com/realms/cobaltcore"
 
 func testSAMLIdPMetadataXML(entityID string) string {
 	return `<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="` + entityID +
@@ -126,7 +126,7 @@ func TestRenderSAMLBackend_URLSource(t *testing.T) {
 	ks := testFederationKeystone()
 	backend := testProjectableSAMLBackend("corp-saml")
 	backend.Spec.SAML.IdPMetadata = keystonev1alpha1.SAMLIdPMetadataSpec{
-		URL: "https://idp.example.com/realms/forge/descriptor",
+		URL: "https://idp.example.com/realms/cobaltcore/descriptor",
 	}
 	r := newTestReconciler(ks, backend)
 	r.HTTPClient = &metadataDoer{body: testSAMLIdPMetadataXML(testSAMLIdPEntityID)}
@@ -145,7 +145,7 @@ func TestRenderSAMLBackend_EntityIDMismatchSkips(t *testing.T) {
 	ks := testFederationKeystone()
 	backend := testProjectableSAMLBackend("corp-saml")
 	backend.Spec.SAML.IdPMetadata = keystonev1alpha1.SAMLIdPMetadataSpec{
-		URL: "https://idp.example.com/realms/forge/descriptor",
+		URL: "https://idp.example.com/realms/cobaltcore/descriptor",
 	}
 	r := newTestReconciler(ks, backend)
 	r.HTTPClient = &metadataDoer{body: testSAMLIdPMetadataXML("https://evil.example.com/idp")}
@@ -406,8 +406,8 @@ func TestRenderProxyConf_OIDCAndSAMLCoexist(t *testing.T) {
 	ks := testFederationKeystone()
 	oidc := []oidcRender{{
 		backendName: "corp-oidc", idpName: "corp-oidc", protocolID: "openid",
-		issuer:            "https://idp.example.com/realms/forge",
-		metadataBasename:  issuerToMetadataBasename("https://idp.example.com/realms/forge"),
+		issuer:            "https://idp.example.com/realms/cobaltcore",
+		metadataBasename:  issuerToMetadataBasename("https://idp.example.com/realms/cobaltcore"),
 		sessionType:       "client-cookie",
 		stateInputHeaders: "none",
 		stripHeaders:      []string{"OIDC-ISS", "OIDC_ISS"},

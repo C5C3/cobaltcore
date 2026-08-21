@@ -11,9 +11,9 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	commonmulticluster "github.com/c5c3/forge/internal/common/multicluster"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // The effective-* resolvers below answer the one question every consumer of a

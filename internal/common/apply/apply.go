@@ -17,14 +17,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	"github.com/c5c3/forge/internal/common/multicluster"
+	"github.com/c5c3/cobaltcore/internal/common/multicluster"
 )
 
 // FieldManager is the Server-Side Apply field manager used by EnsureObject. It
 // is a stable, descriptive name so the operator's field ownership is tracked
 // consistently and conflicts (between two managers of the same field) surface
 // reliably.
-const FieldManager = "forge-operator"
+const FieldManager = "cobaltcore-operator"
 
 // EnsureObject creates or updates obj using Server-Side Apply under fieldManager
 // and sets owner as the controller reference so obj is garbage-collected when

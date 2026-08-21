@@ -42,7 +42,7 @@ re-exposing every service field through the aggregate.
 **Import path:**
 
 ```go
-import c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
+import c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 ```
 
 **Scheme registration:**
@@ -1428,7 +1428,7 @@ this level.
 ## Shared Types (from `internal/common/types`)
 
 The `ControlPlane` reuses the canonical `commonv1` shapes imported from
-`github.com/c5c3/forge/internal/common/types`. These are shared across all
+`github.com/c5c3/cobaltcore/internal/common/types`. These are shared across all
 CobaltCore operator CRDs and are documented in full in the Keystone reference;
 this section links rather than re-documents them to keep a single source of
 truth.

@@ -15,7 +15,7 @@ package controller
 import (
 	"net/url"
 
-	"github.com/c5c3/forge/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/database"
 )
 
 // dbTLSPaths holds the in-pod mount file paths of the client certificate

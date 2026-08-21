@@ -16,7 +16,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/c5c3/forge/internal/common/instrumentation"
+	"github.com/c5c3/cobaltcore/internal/common/instrumentation"
 )
 
 // findMetricByLabels searches the gather output for a MetricFamily with the

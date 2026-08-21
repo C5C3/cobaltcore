@@ -10,7 +10,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	commonv1 "github.com/c5c3/forge/internal/common/types"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
 // +kubebuilder:object:root=true
@@ -436,7 +436,7 @@ const OIDCStateInputHeadersNone OIDCStateInputHeaders = "none"
 // +kubebuilder:validation:XValidation:rule="!(has(self.providerMetadataURL) && has(self.endpoints))",message="providerMetadataURL and endpoints are mutually exclusive"
 type OIDCBackendSpec struct {
 	// Issuer is the OIDC issuer URL exactly as the IdP asserts it (the `iss`
-	// claim), e.g. "https://keycloak.example.com/realms/forge". It names the
+	// claim), e.g. "https://keycloak.example.com/realms/cobaltcore". It names the
 	// identity provider in the metadata directory (the scheme-stripped,
 	// URL-encoded issuer is the metadata file basename) and is registered as
 	// the keystone identity provider's remote ID.

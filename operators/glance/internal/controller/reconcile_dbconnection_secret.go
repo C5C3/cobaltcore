@@ -21,9 +21,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/database"
-	commonreconcile "github.com/c5c3/forge/internal/common/reconcile"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
 
 // dbTLSMountPath is the in-pod directory where the db-tls Secret (the client

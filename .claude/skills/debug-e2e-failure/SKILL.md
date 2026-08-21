@@ -34,7 +34,7 @@ log and uploads a JUnit report artifact from `_output/reports/`.
 | `e2e-chaos` (`pod` / `network`) | explicit `test_dirs` matrix over `tests/e2e-chaos/`, chaos config (`parallel: 1`, `assert: 300s`); `network` leg is `continue-on-error` (kernel-module dependency stays flaky); the `pod` leg runs on `blacksmith-4vcpu-ubuntu-2404`, the `network` leg on `self-hosted` | diag dump + `e2e-chaos-junit-report-<suite>` |
 | `e2e-prometheus` | `tests/e2e/keystone/prometheus-stack/` with `WITH_PROMETHEUS=true` | diag dump + `e2e-prometheus-junit-report` |
 | `e2e-controlplane` | two chainsaw steps on one cluster: `tests/e2e/c5c3/full-controlplane-keystone/` — full chain (c5c3-operator + K-ORC + keystone-operator) — then `tests/e2e/c5c3/keystone-service-foreign-namespace/` (cross-namespace registration, its own Keystone-only ControlPlane, JUnit under `chainsaw-report-keystone-service`); `E2E_REQUIRE_CONTROLPLANE_STACK=true` flips presence-guard SKIPs into failures on both | diag dump (`OPERATOR=c5c3`, dumps the `openstack` namespace only — the registration suite emits its own evidence in its catch block) + `e2e-controlplane-junit-report` |
-| `e2e-multicluster` | `tests/e2e-multicluster/` (own `chainsaw-config.yaml`) across **two** kind clusters: `forge-target` runs the infrastructure (`INFRA_ONLY=true` bring-up + the `deploy/target-cluster/target-cluster-access` chart), `forge-mgmt` runs keystone-operator + barbican-operator and holds the placed CRs; the operators reach the target through the `forge-target` registration Secret in `c5c3-clusters` | **two** diag dumps — management (`OPERATOR=keystone`) and target (no `OPERATOR`; the infrastructure section is the whole dump) — + `e2e-multicluster-junit-report` |
+| `e2e-multicluster` | `tests/e2e-multicluster/` (own `chainsaw-config.yaml`) across **two** kind clusters: `cobaltcore-target` runs the infrastructure (`INFRA_ONLY=true` bring-up + the `deploy/target-cluster/target-cluster-access` chart), `cobaltcore-mgmt` runs keystone-operator + barbican-operator and holds the placed CRs; the operators reach the target through the `cobaltcore-target` registration Secret in `c5c3-clusters` | **two** diag dumps — management (`OPERATOR=keystone`) and target (no `OPERATOR`; the infrastructure section is the whole dump) — + `e2e-multicluster-junit-report` |
 | `tempest (<release>)` | `hack/ci-run-tempest.sh` against a Ready Keystone CR from `tests/tempest/<svc>-<slug>/` | `tempest-<release>-results` artifact (JUnit + logs; `tempest.conf` excluded — carries the admin password) |
 
 Two gating facts worth knowing before reading results: the happy-path
@@ -111,14 +111,14 @@ Family-specific constraints:
   pre-deployed keystone-operator (the suite installs the released
   baseline itself).
 - `e2e-multicluster` needs the two-cluster stack first:
-  `INFRA_ONLY=true CLUSTER_NAME=forge-target make deploy-infra` for the
+  `INFRA_ONLY=true CLUSTER_NAME=cobaltcore-target make deploy-infra` for the
   target, `hack/deploy-mgmt-cluster.sh` for the management cluster
   (leaves the kubectl context there), the two operators via
   `hack/ci-deploy-operator.sh`, and the target registration from
   `docs/guides/deploy-to-a-target-cluster.md`. `make e2e-multicluster`
   preflights each prerequisite separately — the reachable management
-  context, the `forge-target` registration Secret in `c5c3-clusters`,
-  and chainsaw's own `_output/forge-target.kubeconfig` — trust their
+  context, the `cobaltcore-target` registration Secret in `c5c3-clusters`,
+  and chainsaw's own `_output/cobaltcore-target.kubeconfig` — trust their
   remediation hints; the guide is the full walkthrough.
 - After an OpenBao pod kill, run `tests/e2e-chaos/unseal-openbao.sh` —
   the single-replica kind topology has no auto-unseal.

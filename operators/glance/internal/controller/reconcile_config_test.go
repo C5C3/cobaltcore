@@ -20,9 +20,9 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/c5c3/forge/internal/common/config"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/config"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
 
 // validProjection is a rendered projection over a single default store.

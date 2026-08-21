@@ -46,14 +46,14 @@ EXPECTED_PAIRS=(
 )
 
 # ---------------------------------------------------------------------------
-# Test 1: the cluster name defaults to forge-mgmt and honours an override
+# Test 1: the cluster name defaults to cobaltcore-mgmt and honours an override
 # ---------------------------------------------------------------------------
 test_cluster_name_default() {
-  echo "Test: CLUSTER_NAME defaults to forge-mgmt"
+  echo "Test: CLUSTER_NAME defaults to cobaltcore-mgmt"
 
   local resolved
   resolved="$(unset CLUSTER_NAME; bash -c 'source "$1"; printf "%s" "$CLUSTER_NAME"' _ "$MGMT_SH")"
-  assert_eq "CLUSTER_NAME defaults to forge-mgmt" "forge-mgmt" "$resolved"
+  assert_eq "CLUSTER_NAME defaults to cobaltcore-mgmt" "cobaltcore-mgmt" "$resolved"
 
   resolved="$(CLUSTER_NAME=other bash -c 'source "$1"; printf "%s" "$CLUSTER_NAME"' _ "$MGMT_SH")"
   assert_eq "an explicit CLUSTER_NAME is preserved" "other" "$resolved"

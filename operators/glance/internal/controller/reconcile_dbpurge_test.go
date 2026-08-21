@@ -22,14 +22,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/deployment"
-	"github.com/c5c3/forge/internal/common/job"
-	"github.com/c5c3/forge/internal/common/naming"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
-	"github.com/c5c3/forge/operators/glance/internal/metrics"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
+	"github.com/c5c3/cobaltcore/internal/common/job"
+	"github.com/c5c3/cobaltcore/internal/common/naming"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/glance/internal/metrics"
 )
 
 // dbPurgeConfigMapName is the rendered-config ConfigMap the purge CronJob mounts,

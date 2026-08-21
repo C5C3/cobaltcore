@@ -221,7 +221,7 @@ test_start_registry_cache() {
   assert_contains "mariadb vanity proxy is created" "$log" "--name registry-cache-mariadb"
 
   assert_contains "containers join the kind network" "$log" "--network kind"
-  assert_contains "containers carry the purge label" "$log" "--label forge.registry-cache=true"
+  assert_contains "containers carry the purge label" "$log" "--label cobaltcore.registry-cache=true"
   assert_contains "containers use the pinned registry image" "$log" "registry:"
   assert_contains "containers restart unless stopped" "$log" "--restart unless-stopped"
   assert_contains "storage volume is mounted at the registry data dir" "$log" "registry-cache-dockerio-data:/var/lib/registry"
@@ -238,7 +238,7 @@ test_start_registry_cache() {
   assert_not_contains "no Zot config is mounted anymore" "$log" "/etc/zot/config.json"
 
   # Persistent volumes are created with the same label so teardown can find them.
-  assert_contains "a labelled volume is created" "$log" "docker volume create --label forge.registry-cache=true registry-cache-ghcr-data"
+  assert_contains "a labelled volume is created" "$log" "docker volume create --label cobaltcore.registry-cache=true registry-cache-ghcr-data"
 }
 
 # ---------------------------------------------------------------------------
@@ -305,7 +305,7 @@ test_wire_node_registry_mirror() {
   (
     PATH="$tmp/bin:$PATH"; export PATH
     export DOCKER_LOG="$tmp/docker.log"; : >"$DOCKER_LOG"
-    export KIND_NODES=$'forge-control-plane\nforge-worker'
+    export KIND_NODES=$'cobaltcore-control-plane\ncobaltcore-worker'
     # shellcheck source=/dev/null
     source "$DEPLOY_INFRA_SH"
     WITH_REGISTRY_CACHE=true wire_node_registry_mirror
@@ -355,7 +355,7 @@ test_wire_warns_without_config_path() {
   output="$(
     PATH="$tmp/bin:$PATH"; export PATH
     export DOCKER_LOG="$tmp/docker.log"; : >"$DOCKER_LOG"
-    export KIND_NODES="forge-control-plane"
+    export KIND_NODES="cobaltcore-control-plane"
     export NODE_CONFIG_PATH_EXISTS=1        # cluster created WITHOUT the flag
     # shellcheck source=/dev/null
     source "$DEPLOY_INFRA_SH"
@@ -386,7 +386,7 @@ test_wire_no_warning_with_config_path() {
   output="$(
     PATH="$tmp/bin:$PATH"; export PATH
     export DOCKER_LOG="$tmp/docker.log"; : >"$DOCKER_LOG"
-    export KIND_NODES="forge-control-plane"
+    export KIND_NODES="cobaltcore-control-plane"
     export NODE_CONFIG_PATH_EXISTS=0        # cluster created WITH the flag
     # shellcheck source=/dev/null
     source "$DEPLOY_INFRA_SH"

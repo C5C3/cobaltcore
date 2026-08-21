@@ -47,14 +47,14 @@ import (
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/c5c3/forge/internal/common/database"
-	"github.com/c5c3/forge/internal/common/testutil/simulators"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	"github.com/c5c3/forge/internal/common/watch"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
-	"github.com/c5c3/forge/operators/keystone/internal/identity"
-	identityfake "github.com/c5c3/forge/operators/keystone/internal/identity/fake"
-	"github.com/c5c3/forge/operators/keystone/internal/testutil"
+	"github.com/c5c3/cobaltcore/internal/common/database"
+	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	"github.com/c5c3/cobaltcore/internal/common/watch"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/identity"
+	identityfake "github.com/c5c3/cobaltcore/operators/keystone/internal/identity/fake"
+	"github.com/c5c3/cobaltcore/operators/keystone/internal/testutil"
 )
 
 // integrationAdminPassword mirrors the password createPrerequisites seeds
@@ -3021,7 +3021,7 @@ func TestRotationApplyRejectsMalformedKeys_EnvTest(t *testing.T) {
 
 // cronJobStrategicMergePatch emits the exact strategic-merge PATCH shape the
 // fernet_rotate.sh / credential_rotate.sh CronJob scripts send to the staging
-// Secret — `{"metadata":{"annotations":{"forge.c5c3.io/rotation-completed-at":"..."}}, "data":{...}}`
+// Secret — `{"metadata":{"annotations":{"cobaltcore.c5c3.io/rotation-completed-at":"..."}}, "data":{...}}`
 // — and writes it via the controller-runtime client. Using this in envtest
 // (rather than c.Update) exercises the real write path so the operator's
 // apply semantics are covered end-to-end (TE2).
@@ -4581,7 +4581,7 @@ func TestIntegration_DatabaseTLS_CertificateLifecycle(t *testing.T) {
 // TestIntegration_AdminPasswordRotationCutover verifies the end-to-end rotation
 // cutover under envtest once a Keystone CR is Ready, rotating
 // the keystone-admin Secret's `password` makes the operator detect the stale
-// bootstrap Job (its forge.c5c3.io/admin-password-hash no longer matches), delete
+// bootstrap Job (its cobaltcore.c5c3.io/admin-password-hash no longer matches), delete
 // it, and recreate a bootstrap Job carrying the new SHA-256 digest. Completing the
 // recreated Job drives BootstrapReady and Ready back to True.
 func TestIntegration_AdminPasswordRotationCutover(t *testing.T) {
@@ -5291,13 +5291,13 @@ func integrationOIDCBackend(name, namespace, keystoneName, domain string) *keyst
 			},
 			Type: keystonev1alpha1.IdentityBackendTypeOIDC,
 			OIDC: &keystonev1alpha1.OIDCBackendSpec{
-				Issuer:          "https://idp.example.com/realms/forge",
+				Issuer:          "https://idp.example.com/realms/cobaltcore",
 				ClientID:        "keystone",
 				ClientSecretRef: commonv1.SecretRefSpec{Name: name + "-client"},
 				Endpoints: &keystonev1alpha1.OIDCEndpointsSpec{
-					AuthorizationEndpoint: "https://idp.example.com/realms/forge/protocol/openid-connect/auth",
-					TokenEndpoint:         "https://idp.example.com/realms/forge/protocol/openid-connect/token",
-					JWKSURI:               "https://idp.example.com/realms/forge/protocol/openid-connect/certs",
+					AuthorizationEndpoint: "https://idp.example.com/realms/cobaltcore/protocol/openid-connect/auth",
+					TokenEndpoint:         "https://idp.example.com/realms/cobaltcore/protocol/openid-connect/token",
+					JWKSURI:               "https://idp.example.com/realms/cobaltcore/protocol/openid-connect/certs",
 				},
 			},
 			Mappings: []keystonev1alpha1.MappingRuleSpec{{
@@ -5307,7 +5307,7 @@ func integrationOIDCBackend(name, namespace, keystoneName, domain string) *keyst
 				}},
 				Remote: []keystonev1alpha1.MappingRemoteRuleSpec{
 					{Type: "HTTP_OIDC_PREFERRED_USERNAME"},
-					{Type: "HTTP_OIDC_ISS", AnyOneOf: []string{"https://idp.example.com/realms/forge"}},
+					{Type: "HTTP_OIDC_ISS", AnyOneOf: []string{"https://idp.example.com/realms/cobaltcore"}},
 				},
 			}},
 			Groups: []keystonev1alpha1.FederationGroupSpec{{
@@ -5359,7 +5359,7 @@ func TestIntegrationOIDCBackend_FullAttachAndDeleteFlow(t *testing.T) {
 	// The federation objects exist on the identity API with the spec shape.
 	idp := identityServer.IdentityProvider("corp-oidc")
 	g.Expect(idp).NotTo(BeNil())
-	g.Expect(idp.RemoteIDs).To(ConsistOf("https://idp.example.com/realms/forge"))
+	g.Expect(idp.RemoteIDs).To(ConsistOf("https://idp.example.com/realms/cobaltcore"))
 	g.Expect(identityServer.Mapping("corp-oidc-mapping")).NotTo(BeNil())
 	g.Expect(identityServer.Protocol("corp-oidc", "openid")).NotTo(BeNil())
 

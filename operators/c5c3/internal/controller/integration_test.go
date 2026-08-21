@@ -43,16 +43,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
-	"github.com/c5c3/forge/internal/common/conditions"
-	"github.com/c5c3/forge/internal/common/testutil/simulators"
-	commonv1 "github.com/c5c3/forge/internal/common/types"
-	barbicanv1alpha1 "github.com/c5c3/forge/operators/barbican/api/v1alpha1"
-	c5c3v1alpha1 "github.com/c5c3/forge/operators/c5c3/api/v1alpha1"
-	"github.com/c5c3/forge/operators/c5c3/internal/testutil"
-	glancev1alpha1 "github.com/c5c3/forge/operators/glance/api/v1alpha1"
-	horizonv1alpha1 "github.com/c5c3/forge/operators/horizon/api/v1alpha1"
-	keystonev1alpha1 "github.com/c5c3/forge/operators/keystone/api/v1alpha1"
-	placementv1alpha1 "github.com/c5c3/forge/operators/placement/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
+	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
+	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
+	"github.com/c5c3/cobaltcore/operators/c5c3/internal/testutil"
+	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
+	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
+	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
+	placementv1alpha1 "github.com/c5c3/cobaltcore/operators/placement/api/v1alpha1"
 )
 
 // Integration test timing constants. Polling is generous because every step
@@ -4790,7 +4790,7 @@ func TestIntegration_FederationBackendWakesReconcileAndProjectsWebSSO(t *testing
 			Domain: keystonev1alpha1.DomainSpec{Name: "federated"},
 			Type:   keystonev1alpha1.IdentityBackendTypeOIDC,
 			OIDC: &keystonev1alpha1.OIDCBackendSpec{
-				Issuer:          "https://keycloak.example.com/realms/forge",
+				Issuer:          "https://keycloak.example.com/realms/cobaltcore",
 				ClientID:        "keystone",
 				ClientSecretRef: commonv1.SecretRefSpec{Name: "keycloak-client", Key: "client-secret"},
 			},

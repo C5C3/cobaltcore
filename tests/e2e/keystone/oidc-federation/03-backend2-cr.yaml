@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Second KeystoneIdentityBackend attaching the Keycloak "forge2" realm — the
+# Second KeystoneIdentityBackend attaching the Keycloak "cobaltcore2" realm — the
 # multi-realm proof: the shared sidecar serves both realms' metadata from
 # one OIDCMetadataDir and each per-IdP websso Location pins its own issuer.
 # No oauth2Introspection here: the OIDCOAuth* directives are server-scoped,
@@ -20,41 +20,41 @@
 apiVersion: keystone.openstack.c5c3.io/v1alpha1
 kind: KeystoneIdentityBackend
 metadata:
-  name: keycloak-forge2
+  name: keycloak-cobaltcore2
   namespace: openstack
 spec:
   keystoneRef:
     name: keystone-oidc
   domain:
-    name: forge2
+    name: cobaltcore2
     mode: Manage
     deletionPolicy: Delete
-    description: Keycloak forge2 realm
+    description: Keycloak cobaltcore2 realm
   type: OIDC
   oidc:
-    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/forge2
+    issuer: http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore2
     clientID: keystone
     clientSecretRef:
-      name: keycloak-forge2-client
+      name: keycloak-cobaltcore2-client
   mappings:
   - remote:
     - type: HTTP_OIDC_ISS
       anyOneOf:
-      - http://keycloak.openstack.svc.cluster.local:8080/realms/forge2
+      - http://keycloak.openstack.svc.cluster.local:8080/realms/cobaltcore2
     - type: HTTP_OIDC_PREFERRED_USERNAME
     local:
     # {0}, not {1}: the HTTP_OIDC_ISS anyOneOf rule is a condition and is not
     # added to the positional direct-map tuple, so HTTP_OIDC_PREFERRED_USERNAME
-    # is index 0 (see the keycloak-forge backend for the full rationale).
+    # is index 0 (see the keycloak-cobaltcore backend for the full rationale).
     - user:
         name: "{0}"
       group:
         name: federated-captains
         domain:
-          name: forge2
+          name: cobaltcore2
   groups:
   - name: federated-captains
-    description: Federated Keycloak forge2 users
+    description: Federated Keycloak cobaltcore2 users
     roleAssignments:
     - role: member
       domain: true
