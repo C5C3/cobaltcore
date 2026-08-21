@@ -14,10 +14,10 @@ import (
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// CredentialRotation requests a one-shot rotation of a control-plane credential
-// Today the only supported target is the K-ORC admin application
-// credential. The reconciler (L2) re-mints the target credential and reports
-// progress via status conditions.
+// CredentialRotation requests a one-shot rotation of a control-plane credential:
+// either the K-ORC admin application credential, or the password of a service
+// account registered through a KeystoneService. The reconciler (L2) re-mints the
+// target credential and reports progress via status conditions.
 type CredentialRotation struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -43,33 +43,32 @@ const (
 	// RotationTargetAdminApplicationCredential rotates the K-ORC admin
 	// application credential.
 	RotationTargetAdminApplicationCredential RotationTarget = "adminApplicationCredential"
-	// RotationTargetServiceAccountPassword rotates the password of one declared
-	// service account (spec.korc.serviceAccounts). The account is named by
-	// spec.serviceAccount.
+	// RotationTargetServiceAccountPassword rotates the password of the managed
+	// account of the KeystoneService named by spec.keystoneService.
 	RotationTargetServiceAccountPassword RotationTarget = "serviceAccountPassword"
 )
 
 // CredentialRotationSpec defines the desired state of a CredentialRotation
 //
-// serviceAccount is required exactly when target is serviceAccountPassword, and
+// keystoneService is required exactly when target is serviceAccountPassword, and
 // forbidden otherwise. There is no CredentialRotation webhook, so the CEL rules
 // are the only admission gate (mirroring the rest of this CR's declarative
 // validation).
-// +kubebuilder:validation:XValidation:rule="self.target != 'serviceAccountPassword' || has(self.serviceAccount)",message="serviceAccount is required when target is serviceAccountPassword"
-// +kubebuilder:validation:XValidation:rule="self.target == 'serviceAccountPassword' || !has(self.serviceAccount)",message="serviceAccount may only be set when target is serviceAccountPassword"
+// +kubebuilder:validation:XValidation:rule="self.target != 'serviceAccountPassword' || has(self.keystoneService)",message="keystoneService is required when target is serviceAccountPassword"
+// +kubebuilder:validation:XValidation:rule="self.target == 'serviceAccountPassword' || !has(self.keystoneService)",message="keystoneService may only be set when target is serviceAccountPassword"
 type CredentialRotationSpec struct {
 	// Target selects which credential to rotate.
 	Target RotationTarget `json:"target"`
 
-	// ServiceAccount names the declared service account
-	// (spec.korc.serviceAccounts[].name) whose password is rotated. Required when
-	// target is serviceAccountPassword, forbidden otherwise. The DNS-1123 label
-	// shape mirrors ServiceAccountSpec.Name.
+	// KeystoneService names the KeystoneService CR, in the CredentialRotation's
+	// own namespace, whose managed account's password is rotated. Required when
+	// target is serviceAccountPassword, forbidden otherwise. The shape is a
+	// Kubernetes object name (DNS-1123 subdomain).
 	// +optional
 	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
-	ServiceAccount string `json:"serviceAccount,omitempty"`
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	KeystoneService string `json:"keystoneService,omitempty"`
 
 	// Bootstrap, when true, requests an initial mint of the credential rather
 	// than a rotation of an existing one. The reconciler treats a bootstrap as

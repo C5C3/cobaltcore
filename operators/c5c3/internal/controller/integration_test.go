@@ -3376,9 +3376,10 @@ func TestIntegration_BarbicanServiceAccountNotInjected(t *testing.T) {
 }
 
 // TestIntegration_CredentialRotation_ServiceAccountValidation pins the two CEL
-// rules on the CredentialRotation CRD (serviceAccount required exactly when the
-// target is serviceAccountPassword) against the real envtest API server. There is
-// no CredentialRotation webhook, so the CEL rules are the only admission gate.
+// rules on the CredentialRotation CRD (keystoneService required exactly when the
+// target is serviceAccountPassword) plus the field's object-name pattern against
+// the real envtest API server. There is no CredentialRotation webhook, so the
+// declarative validation is the only admission gate.
 func TestIntegration_CredentialRotation_ServiceAccountValidation(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 
@@ -3390,28 +3391,35 @@ func TestIntegration_CredentialRotation_ServiceAccountValidation(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "admin target without serviceAccount is accepted",
+			name:    "admin target without keystoneService is accepted",
 			spec:    c5c3v1alpha1.CredentialRotationSpec{Target: c5c3v1alpha1.RotationTargetAdminApplicationCredential},
 			wantErr: false,
 		},
 		{
-			name: "admin target with serviceAccount is rejected",
+			name: "admin target with keystoneService is rejected",
 			spec: c5c3v1alpha1.CredentialRotationSpec{
-				Target: c5c3v1alpha1.RotationTargetAdminApplicationCredential, ServiceAccount: "nova",
+				Target: c5c3v1alpha1.RotationTargetAdminApplicationCredential, KeystoneService: "nova",
 			},
 			wantErr: true,
 		},
 		{
-			name:    "service-account target without serviceAccount is rejected",
+			name:    "service-account target without keystoneService is rejected",
 			spec:    c5c3v1alpha1.CredentialRotationSpec{Target: c5c3v1alpha1.RotationTargetServiceAccountPassword},
 			wantErr: true,
 		},
 		{
-			name: "service-account target with serviceAccount is accepted",
+			name: "service-account target with keystoneService is accepted",
 			spec: c5c3v1alpha1.CredentialRotationSpec{
-				Target: c5c3v1alpha1.RotationTargetServiceAccountPassword, ServiceAccount: "nova",
+				Target: c5c3v1alpha1.RotationTargetServiceAccountPassword, KeystoneService: "nova",
 			},
 			wantErr: false,
+		},
+		{
+			name: "service-account target with a non-object-name keystoneService is rejected",
+			spec: c5c3v1alpha1.CredentialRotationSpec{
+				Target: c5c3v1alpha1.RotationTargetServiceAccountPassword, KeystoneService: "Not_A_Name",
+			},
+			wantErr: true,
 		},
 	}
 
