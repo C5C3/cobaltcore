@@ -1722,7 +1722,13 @@ type ServiceAccountSpec struct {
 	Roles []string `json:"roles,omitempty"`
 
 	// Rotation tunes how the account's password is rotated. When nil the mode
-	// defaults to Manual (on-demand rotation via a CredentialRotation CR).
+	// defaults to Manual.
+	//
+	// Manual is currently INERT for an inline account: a CredentialRotation with
+	// target serviceAccountPassword names a KeystoneService CR, and no
+	// KeystoneService owns an inline account's User, so nothing addresses this
+	// account's password. The account is still projected and still delivers its
+	// credentials; declare it as a KeystoneService CR to make it rotatable.
 	// +optional
 	Rotation *ServiceAccountRotationSpec `json:"rotation,omitempty"`
 
