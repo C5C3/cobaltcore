@@ -1212,7 +1212,7 @@ or created), and the roles bound to it. Projected by
 | `adopt` | `bool` | No | `false` | Explicit consent that a pre-existing Keystone user of this name may be taken over. Fail-loudly by default: a declared user that already exists surfaces `ServiceAccountsReady=False/ServiceAccountCollision` and is never touched. `adopt: true` opts into a **password takeover** AND into operator ownership — an adopted user is a managed `User`, so it is **deleted from Keystone at teardown**, exactly like one the operator created. |
 | `project` | [`ServiceAccountProjectSpec`](#serviceaccountprojectspec) | Yes | — | The project the service user is associated with, referenced (default) or created. |
 | `roles` | `[]string` | No | `nil` | OpenStack role names assigned to the user on the project. Each role projects one **unmanaged** K-ORC `Role` import (referenced by name, never created or deleted — Keystone roles are global) plus one **managed** `RoleAssignment` binding it to the user on the project (one per user × project × role). Their readiness folds into the per-account `ServiceAccountsReady` gate; removing a role prunes both child CRs; at teardown the managed assignment is deleted from Keystone while the `Role` import is released untouched. Item pattern `^[^,]+$`, ≤ 255, max 32. |
-| `rotation` | [`*ServiceAccountRotationSpec`](#serviceaccountrotationspec) | No | mode `Manual` | Per-account password-rotation policy. |
+| `rotation` | [`*ServiceAccountRotationSpec`](#serviceaccountrotationspec) | No | mode `Manual` | Per-account password-rotation policy. `Manual` is currently **inert here**: a `CredentialRotation` with target `serviceAccountPassword` names a `KeystoneService` CR, and no `KeystoneService` owns an inline account's `User`. The account is still projected and still delivers its credentials; declare it as a `KeystoneService` CR to make it rotatable. |
 | `targetNamespace` | `string` | No | ControlPlane's own namespace | The namespace the consumer credentials Secret — and the source Secret, PushSecret, and ExternalSecret behind it — materializes in, through that namespace's `openbao-tenant-store`. When set it must be **either the ControlPlane's own namespace or one of its dedicated service namespaces** (declared via the services' `namespace` blocks); the webhook rejects any other namespace, since delivery rides that namespace's tenant store and none is provisioned elsewhere. **Immutable per entry** (matched by `name`): moving delivery would strand the credentials already delivered to the old namespace. DNS-1123 label, `[a-z0-9]([-a-z0-9]*[a-z0-9])?`, ≤ 63. |
 
 ### ServiceAccountProjectSpec
@@ -1226,7 +1226,7 @@ or created), and the roles bound to it. Projected by
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `mode` | `ServiceAccountRotationMode` | No | `Manual` | `Manual` rotates only on a [`CredentialRotation`](#credentialrotationspec) request. `Scheduled` is **reserved** (surfaced in the enum now, deferred non-silently via a `ScheduledRotationDeferred` event). Deliberately not the admin `RotationMode`: there is no external password source, so `PasswordDriven` does not apply. |
+| `mode` | `ServiceAccountRotationMode` | No | `Manual` | `Manual` rotates only on a [`CredentialRotation`](#credentialrotationspec) request — which names a `KeystoneService`, so `Manual` is inert on an **inline** `spec.korc.serviceAccounts[]` account. `Scheduled` is **reserved** (surfaced in the enum now, deferred non-silently via a `ScheduledRotationDeferred` event). Deliberately not the admin `RotationMode`: there is no external password source, so `PasswordDriven` does not apply. |
 
 **Consumption contract.** Each account's credentials are materialized into a
 Secret named `{controlplane.Name}-service-account-{name}-credentials` (keys
@@ -1361,7 +1361,7 @@ credential and reports progress via status conditions.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `target` | [`RotationTarget`](#rotationtarget) | Yes | — | Which credential to rotate. |
-| `serviceAccount` | `string` | Conditional | — | Names the declared service account (`spec.korc.serviceAccounts[].name`) whose password is rotated. **Required** exactly when `target` is `serviceAccountPassword`, **forbidden** otherwise (two CEL rules; there is no CredentialRotation webhook, so CEL is the only gate). DNS-1123 label, ≤ 63. |
+| `keystoneService` | `string` | Conditional | — | Names the `KeystoneService` CR, in the CredentialRotation's own namespace, whose managed account's password is rotated. **Required** exactly when `target` is `serviceAccountPassword`, **forbidden** otherwise (two CEL rules; there is no CredentialRotation webhook, so CEL is the only gate). DNS-1123 subdomain, ≤ 253. |
 | `bootstrap` | `bool` | No | `false` | When `true`, requests an initial **mint** of the credential rather than a rotation of an existing one. Idempotent: if the credential already exists it is a no-op. |
 | `reMint` | `bool` | No | `false` | When `true`, forces the reconciler to discard the current credential and mint a fresh one even if the existing credential is still valid. The nudge is **one-shot per spec generation** (latched on `status.lastTriggeredGeneration`), so a `reMint: true` left in the spec does not re-rotate on every resync. |
 | `intervalDays` | `*int32` | No | `nil` | **Deferred** — accepted by the schema but ignored by the L1 reconciler. Rotation cadence in days for scheduled rotation. Minimum: 1. |
@@ -1384,7 +1384,7 @@ credential and reports progress via status conditions.
 | Value | Meaning |
 | --- | --- |
 | `adminApplicationCredential` | Rotates the K-ORC admin application credential. |
-| `serviceAccountPassword` | Rotates the password of the declared service account named by `spec.serviceAccount`. On demand only (no auto-detect: there is no external password source); fires on an explicit `reMint`, latched to the spec generation. |
+| `serviceAccountPassword` | Rotates the password of the managed account of the `KeystoneService` named by `spec.keystoneService`. On demand only (no auto-detect: there is no external password source); fires on an explicit `reMint`, latched to the spec generation. |
 
 ## CredentialRotationStatus
 
@@ -1504,9 +1504,9 @@ Keystone discipline:
 | `spec.infrastructure.database.replicas` | Minimum: 1, schema default `3`. The webhook additionally rejects exactly `2` (Galera quorum — see below). |
 | `spec.infrastructure.cache.replicas` | Minimum: 1, schema default `3` |
 | `CredentialRotation spec.target` | Enum: `adminApplicationCredential`, `serviceAccountPassword` |
-| `CredentialRotation spec.serviceAccount` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`; MaxLength 63 |
-| `CredentialRotation` (CEL) | `target == 'serviceAccountPassword'` ⇒ `has(self.serviceAccount)` → "serviceAccount is required when target is serviceAccountPassword" |
-| `CredentialRotation` (CEL) | `has(self.serviceAccount)` ⇒ `target == 'serviceAccountPassword'` → "serviceAccount may only be set when target is serviceAccountPassword" |
+| `CredentialRotation spec.keystoneService` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`; MinLength 1; MaxLength 253 |
+| `CredentialRotation` (CEL) | `target == 'serviceAccountPassword'` ⇒ `has(self.keystoneService)` → "keystoneService is required when target is serviceAccountPassword" |
+| `CredentialRotation` (CEL) | `has(self.keystoneService)` ⇒ `target == 'serviceAccountPassword'` → "keystoneService may only be set when target is serviceAccountPassword" |
 | `CredentialRotation spec.intervalDays` | Minimum: 1 |
 | `CredentialRotation spec.preRotationDays` | Minimum: 0 |
 | `CredentialRotation spec.gracePeriodDays` | Minimum: 0 |
