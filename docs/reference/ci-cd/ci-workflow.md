@@ -981,19 +981,32 @@ Timeout: 68 minutes.
 
 GH-310. Prunes the run-scoped GHCR tags pushed by `build-e2e-images`
 (`e2e-${run_id}-*`) so they don't accumulate on the package page. Runs as a
-matrix over each E2E target package (`keystone-operator`, `keystone`,
-`c5c3-operator`, `tempest`) after every consumer that might still pull the images
-has finished. The
-`always() && needs.build-e2e-images.result == 'success'` condition means the
-cleanup runs on success, failure, cancelled, or skipped consumer outcomes — but
-only when `build-e2e-images` actually pushed something.
+matrix over the E2E target packages after every consumer that might still pull
+the images has finished. The `always() && needs.build-e2e-images.result ==
+'success'` condition means the cleanup runs on success, failure, cancelled, or
+skipped consumer outcomes — but only when `build-e2e-images` actually pushed
+something.
 
-**Dependencies:** `needs: [build-e2e-images, e2e-operator, e2e-chaos, tempest]`
+The package list is the `cleanup-e2e-packages` output of the `changes` job,
+derived by `hack/ci-generate-cleanup-matrix.sh` from `images/` and `operators/`.
+It was a hardcoded list until `keystone-federation-proxy` was left out of it and
+accumulated 352 stale tags.
+
+Deletion runs through `hack/ghcr-prune-stale-versions.py` in
+`--only-tag-pattern` mode, scoped to `^e2e-${run_id}-`. That mode only considers
+versions whose tags all match the pattern, so untagged versions are out of scope
+by construction — the job runs in parallel with `build-and-push`, which uploads
+per-platform manifests untagged via `push-by-digest` and needs those digests
+intact for `merge-operator-images` (GH-312).
+
+**Dependencies:** `needs: [changes, build-e2e-images, e2e-operator,
+e2e-operator-upgrade, e2e-chaos, tempest]`
 **Permissions:** `contents: read`, `packages: write`
 
-The nightly `cleanup-e2e-stale-tags` job in `cleanup-images.yaml` is the safety
-net: if a workflow is cancelled before `cleanup-e2e-tags` fires, that job
-deletes any `e2e-*` tag older than one day across the same package set.
+The job is `continue-on-error`: pruning is housekeeping, and a package whose only
+tagged version is the run-scoped one cannot be pruned at all (GHCR refuses to
+delete a package's last version). The nightly `cleanup-e2e-stale-tags` job in
+`cleanup-images.yaml` is the safety net for anything a cancelled run leaks.
 
 Timeout: 15 minutes.
 
@@ -1571,7 +1584,8 @@ The CI workflow depends on the following artifacts:
 | `.github/actions/setup-test-deps/` | `chainsaw-lint` job, `setup-e2e-infra` composite action | Composite action for testdeps cache + `make install-test-deps` |
 | `.github/actions/setup-e2e-infra/` | `e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest` jobs | Composite action for infra setup |
 | `.github/actions/load-e2e-images/` | `e2e-operator`, `e2e-chaos`, `tempest` jobs | Composite action that pulls run-scoped GHCR tags and re-tags them to canonical local refs (GH-310) |
-| `.github/actions/cleanup-ghcr-package/` | `cleanup-e2e-tags` job, `cleanup-images.yaml` | Wraps `dataaxiom/ghcr-cleanup-action` for delete-by-pattern and delete-by-exclusion modes |
+| `hack/ghcr-prune-stale-versions.py` | `cleanup-e2e-tags` job, `cleanup-images.yaml` | Deletes GHCR package versions that carry no keeper tag; resolves multi-arch children and cosign referrers first |
+| `hack/ci-generate-cleanup-matrix.sh` | `changes` job, `cleanup-images.yaml` | Derives the GHCR package lists from `images/` and `operators/` |
 | `tests/e2e-chaos/chainsaw-config.yaml` | `e2e-chaos` job | Chaos-specific Chainsaw configuration |
 
 :::

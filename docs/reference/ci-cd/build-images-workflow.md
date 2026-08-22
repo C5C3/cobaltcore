@@ -695,6 +695,39 @@ The composite tag uniquely identifies the exact build: upstream version, patch l
 branch, and commit. The version and SHA tags provide convenient shortcuts for deployment
 systems.
 
+## Retention
+
+The nightly `cleanup-images.yaml` workflow decides retention from each package
+version's whole tag set, not from a "keep the newest N" counter. A version
+survives while it carries a **keeper** tag:
+
+| Kept | Example | Why |
+| --- | --- | --- |
+| `latest` | `python-base:latest` | Current base image |
+| Version | `keystone:28.0.0` | Names an upstream release |
+| Release | `keystone:2025.2` | Names an OpenStack release |
+| Semver prerelease | `keystone-operator:1.2.0-rc1` | Tagged operator build |
+
+Everything else is a build artifact with a successor and is deleted once it is
+older than 24 hours: composite tags, SHA tags in all four shapes
+(`<sha>`, `<sha40>`, `sha-<sha40>`, `<release>-<sha40>`), run-scoped
+`e2e-<run_id>-*` tags, `dev`, and untagged leftovers.
+
+The rule works per manifest, so the *current* main build is untouched: its
+composite and SHA tags sit on the same manifest as `28.0.0` and `2025.2`, and
+that release tag keeps the whole thing. Only once a later build moves `28.0.0`
+and `2025.2` onto a new manifest does the old one — now holding nothing but its
+composite and SHA tags — become deletable.
+
+Two things survive without a tag of their own. A multi-arch image is an OCI
+index whose per-platform and buildx attestation manifests are separate untagged
+package versions; those are kept for as long as an index that references them is
+kept. Cosign and SBOM artifacts attach as a `sha256-<digest>` tag naming their
+subject and follow that subject.
+
+`hack/ghcr-prune-stale-versions.py` implements this; run it with `--dry-run` to
+see a plan without deleting anything.
+
 ## PR vs Push Behavior
 
 The workflow behaves differently depending on the trigger event:

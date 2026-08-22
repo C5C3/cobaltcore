@@ -29,7 +29,6 @@ SKIP=0
 source "$SCRIPT_DIR/../lib/assertions.sh"
 
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
-CLEANUP_YAML="$PROJECT_ROOT/.github/workflows/cleanup-images.yaml"
 CODECOV_YML="$PROJECT_ROOT/.codecov.yml"
 RESOLVE_SCRIPT="$PROJECT_ROOT/hack/ci-resolve-changes.sh"
 TEMPEST_MATRIX_SCRIPT="$PROJECT_ROOT/hack/ci-generate-tempest-matrix.sh"
@@ -189,29 +188,36 @@ test_barbican_helm_validate_loops() {
 }
 
 test_cleanup_matrices_include_barbican() {
-  echo "Test: cleanup matrices include barbican-operator and barbican"
+  echo "Test: the derived cleanup package lists cover barbican"
 
-  local cleanup_section
-  cleanup_section=$(extract_yaml_job_section "$CI_YAML" "cleanup-e2e-tags")
-
-  assert_contains \
-    "cleanup-e2e-tags package matrix lists barbican-operator and the barbican service image" \
-    "$cleanup_section" \
-    "barbican-operator, barbican,"
-
-  local operator_images_section stale_tags_section
-  operator_images_section=$(extract_yaml_job_section "$CLEANUP_YAML" "cleanup-operator-images")
-  stale_tags_section=$(extract_yaml_job_section "$CLEANUP_YAML" "cleanup-e2e-stale-tags")
+  # Both cleanup-images.yaml and ci.yaml's cleanup-e2e-tags build their package
+  # matrix from this script, so coverage is a property of its output rather than
+  # of a list someone has to remember to extend.
+  local matrix all_packages e2e_packages
+  matrix=$(cd "$PROJECT_ROOT" && bash hack/ci-generate-cleanup-matrix.sh)
+  all_packages=$(echo "$matrix" | sed -n 's/^cleanup-packages=//p')
+  e2e_packages=$(echo "$matrix" | sed -n 's/^cleanup-e2e-packages=//p')
 
   assert_contains \
-    "cleanup-operator-images matrix lists barbican-operator" \
-    "$operator_images_section" \
-    "barbican-operator"
+    "the nightly cleanup covers barbican-operator" \
+    "$all_packages" \
+    '"barbican-operator"'
 
   assert_contains \
-    "cleanup-e2e-stale-tags matrix lists barbican-operator and the barbican service image" \
-    "$stale_tags_section" \
-    "barbican-operator, barbican,"
+    "the per-run e2e cleanup covers barbican-operator" \
+    "$e2e_packages" \
+    '"barbican-operator"'
+
+  assert_contains \
+    "the nightly cleanup covers barbican" \
+    "$all_packages" \
+    '"barbican"'
+
+  assert_contains \
+    "the per-run e2e cleanup covers barbican" \
+    "$e2e_packages" \
+    '"barbican"'
+
 }
 
 test_barbican_codecov_flags() {

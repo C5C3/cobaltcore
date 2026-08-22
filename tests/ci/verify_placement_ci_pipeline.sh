@@ -27,7 +27,6 @@ SKIP=0
 source "$SCRIPT_DIR/../lib/assertions.sh"
 
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
-CLEANUP_YAML="$PROJECT_ROOT/.github/workflows/cleanup-images.yaml"
 RESOLVE_SCRIPT="$PROJECT_ROOT/hack/ci-resolve-changes.sh"
 
 echo "=== placement operator CI pipeline verification ==="
@@ -172,34 +171,36 @@ test_placement_helm_validate_loops() {
 }
 
 test_cleanup_matrices_include_placement() {
-  echo "Test: cleanup matrices include placement-operator and placement"
+  echo "Test: the derived cleanup package lists cover placement"
 
-  local cleanup_section
-  cleanup_section=$(extract_yaml_job_section "$CI_YAML" "cleanup-e2e-tags")
-
-  assert_contains \
-    "cleanup-e2e-tags package matrix lists placement-operator" \
-    "$cleanup_section" \
-    "placement-operator"
-
-  assert_contains \
-    "cleanup-e2e-tags package matrix lists the placement service image" \
-    "$cleanup_section" \
-    "placement-operator, placement,"
-
-  local operator_images_section stale_tags_section
-  operator_images_section=$(extract_yaml_job_section "$CLEANUP_YAML" "cleanup-operator-images")
-  stale_tags_section=$(extract_yaml_job_section "$CLEANUP_YAML" "cleanup-e2e-stale-tags")
+  # Both cleanup-images.yaml and ci.yaml's cleanup-e2e-tags build their package
+  # matrix from this script, so coverage is a property of its output rather than
+  # of a list someone has to remember to extend.
+  local matrix all_packages e2e_packages
+  matrix=$(cd "$PROJECT_ROOT" && bash hack/ci-generate-cleanup-matrix.sh)
+  all_packages=$(echo "$matrix" | sed -n 's/^cleanup-packages=//p')
+  e2e_packages=$(echo "$matrix" | sed -n 's/^cleanup-e2e-packages=//p')
 
   assert_contains \
-    "cleanup-operator-images matrix lists placement-operator" \
-    "$operator_images_section" \
-    "placement-operator"
+    "the nightly cleanup covers placement-operator" \
+    "$all_packages" \
+    '"placement-operator"'
 
   assert_contains \
-    "cleanup-e2e-stale-tags matrix lists placement-operator and the placement service image" \
-    "$stale_tags_section" \
-    "placement-operator, placement,"
+    "the per-run e2e cleanup covers placement-operator" \
+    "$e2e_packages" \
+    '"placement-operator"'
+
+  assert_contains \
+    "the nightly cleanup covers placement" \
+    "$all_packages" \
+    '"placement"'
+
+  assert_contains \
+    "the per-run e2e cleanup covers placement" \
+    "$e2e_packages" \
+    '"placement"'
+
 }
 
 # ── e2e-chaos wiring ────────────────────────────────────────────────────────

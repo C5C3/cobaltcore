@@ -91,12 +91,12 @@ bottom when scaffolding `operators/<op>/`:
 - **`.github/workflows/build-images.yaml`** — nothing to do for the operator
   image (the shared `operators/Dockerfile` is already wired); only new service
   images under `images/` need matrix entries.
-- **`.github/workflows/cleanup-images.yaml`** — add `<op>-operator` to the
-  `cleanup-operator-images` matrix, and both `<op>-operator` and `<op>` to
-  the `cleanup-e2e-stale-tags` matrix. Only the `cleanup-service-images`
-  matrix is guarded by a test
-  (`tests/container-images/verify_release_config.sh`); the other two are
-  checked by the service-parity audit alone.
+- **`.github/workflows/cleanup-images.yaml`** — nothing to do. The GHCR
+  cleanup jobs build their matrix from `hack/ci-generate-cleanup-matrix.sh`,
+  which reads `images/` and `operators/`, so a new operator picks up its
+  retention coverage from the directory you already created. The
+  service-parity audit asserts the generator emits `<op>-operator` and
+  `<op>`.
 - **`.codecov.yml`** — add the per-operator `unit-<op>`/`integration-<op>`
   flag blocks; the components section auto-scales via `operators/*` globs.
 - **Dashboards** — ship `operators/<op>/dashboards/<op>-operator.json` with a

@@ -130,20 +130,36 @@ test_glance_helm_validate_loops() {
 }
 
 test_cleanup_matrix_includes_glance() {
-  echo "Test: cleanup-e2e-tags matrix includes glance-operator and glance"
+  echo "Test: the derived cleanup package lists cover glance"
 
-  local cleanup_section
-  cleanup_section=$(extract_yaml_job_section "$CI_YAML" "cleanup-e2e-tags")
+  # Both cleanup-images.yaml and ci.yaml's cleanup-e2e-tags build their package
+  # matrix from this script, so coverage is a property of its output rather than
+  # of a list someone has to remember to extend.
+  local matrix all_packages e2e_packages
+  matrix=$(cd "$PROJECT_ROOT" && bash hack/ci-generate-cleanup-matrix.sh)
+  all_packages=$(echo "$matrix" | sed -n 's/^cleanup-packages=//p')
+  e2e_packages=$(echo "$matrix" | sed -n 's/^cleanup-e2e-packages=//p')
 
   assert_contains \
-    "cleanup-e2e-tags package matrix lists glance-operator" \
-    "$cleanup_section" \
-    "glance-operator"
+    "the nightly cleanup covers glance-operator" \
+    "$all_packages" \
+    '"glance-operator"'
 
   assert_contains \
-    "cleanup-e2e-tags package matrix lists the glance service image" \
-    "$cleanup_section" \
-    "glance-operator, glance,"
+    "the per-run e2e cleanup covers glance-operator" \
+    "$e2e_packages" \
+    '"glance-operator"'
+
+  assert_contains \
+    "the nightly cleanup covers glance" \
+    "$all_packages" \
+    '"glance"'
+
+  assert_contains \
+    "the per-run e2e cleanup covers glance" \
+    "$e2e_packages" \
+    '"glance"'
+
 }
 
 # ── e2e-chaos wiring ────────────────────────────────────────────────────────
