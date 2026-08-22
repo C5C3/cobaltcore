@@ -19,6 +19,13 @@ FAIL=0
 # extra-packages.yaml, each with a matching images/<service>/Dockerfile.
 SERVICES="keystone horizon glance placement barbican"
 
+# ovn is deliberately absent from this list. The image is release-independent:
+# it has no source-refs.yaml key, no extra-packages.yaml entry and no PIP_* or
+# EXTRA_APT_PACKAGES build args, so the checks below have nothing to read for
+# it. Its contract is tests/container-images/verify_ovn.sh together with the
+# build-ovn job in build-images.yaml. An 'ovn:' key added to a source-refs.yaml
+# by accident is still caught by the converse check in test 1.
+
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
 
