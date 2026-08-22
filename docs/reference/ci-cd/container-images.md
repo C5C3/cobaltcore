@@ -11,8 +11,9 @@ named build context patterns, constraint override tooling, and local build instr
 
 ## Dockerfile Hierarchy
 
-Container images follow a three-layer hierarchy. Each layer builds on the previous one,
-separating concerns between runtime base, build tooling, and service-specific code:
+The OpenStack service images follow a three-layer hierarchy. Each layer builds on the
+previous one, separating concerns between runtime base, build tooling, and
+service-specific code:
 
 ```text
 ubuntu:noble
@@ -34,6 +35,18 @@ The `venv-builder` image is used only as a build stage — it never runs in prod
 Service images (e.g., `keystone`) use a multi-stage build: stage 1 extends `venv-builder`
 to install the service, then stage 2 extends `python-base` and copies only the virtualenv
 from stage 1. This ensures the final image contains no build tools.
+
+Two images sit outside that lineage. They carry no OpenStack code and build
+straight on `ubuntu:noble`:
+
+```text
+ubuntu:noble
+├── ovn                        Stage 1 (build): compile OVS + OVN from pinned upstream git
+├── ovn                        Stage 2 (runtime): copy binaries, schemas and ctl scripts, add runtime apt packages
+└── keystone-federation-proxy  Single stage: distro apache2 + mod_auth_openidc + mod_auth_mellon
+```
+
+Both are described under [Release-independent images](#release-independent-images).
 
 ## Base Images
 
@@ -419,6 +432,140 @@ and a binding in a nested scope is a different symbol. A module whose only
 module-level binding is that sentinel is rejected; otherwise uWSGI binds
 `application` to `None` and every request fails.
 
+## Release-independent images
+
+These images ship software from outside the OpenStack release matrix. They have
+no key in `releases/*/source-refs.yaml`, take no `PIP_EXTRAS` or
+`EXTRA_APT_PACKAGES` build args, and are built once per upstream version
+instead of once per release.
+
+### ovn
+
+**Location:** `images/ovn/Dockerfile`
+
+OVN and Open vSwitch daemons and client tools, compiled from upstream git in a
+two-stage build. Both stages start from the same digest-pinned `ubuntu:noble`.
+
+| Property | Value |
+| --- | --- |
+| Base image | `ubuntu:noble` (Ubuntu 24.04 LTS), both stages, pinned by digest |
+| Version pin | `ARG OVN_VERSION=v26.03.2`, the only version input, content-pinned by `ARG OVN_COMMIT` |
+| Open vSwitch | The commit the `ovs` submodule gitlink names at that OVN commit, pinned by `ARG OVS_COMMIT` |
+| User | `openstack` (UID 42424, GID 42424), created in this Dockerfile |
+| Entrypoint | None; every workload names the daemon it runs |
+
+**Stage 1 (`build`):**
+
+- Installs the build requirements from OVN's
+  `Documentation/intro/install/general.rst`: `autoconf`, `automake`,
+  `build-essential`, `libtool`, `libssl-dev`, `libunbound-dev`,
+  `libcap-ng-dev` and `pkg-config`, plus `git`, `ca-certificates` and the
+  `python3` that the OVS code generation needs
+- Fetches `$OVN_COMMIT` from `https://github.com/ovn-org/ovn.git` — the
+  commit, not the tag — reads the OVS commit out of that checkout with
+  `git -C /src/ovn rev-parse HEAD:ovs`, aborts the build when it differs from
+  `$OVS_COMMIT`, and fetches that commit from
+  `https://github.com/openvswitch/ovs.git`
+- Builds OVS, then OVN against the OVS source tree
+  (`--with-ovs-source=/src/ovs`). Both configure with
+  `--prefix=/usr --localstatedir=/var --sysconfdir=/etc` and stage their
+  install into `/out` via `make install DESTDIR=/out`
+
+**Stage 2 (runtime):**
+
+- Installs the runtime packages listed below
+- Creates the `openstack` user and group
+- Copies `/out/usr/bin`, `/out/usr/sbin`, `/out/usr/share/openvswitch` and
+  `/out/usr/share/ovn`. Headers, static libraries and man pages stay in the
+  build stage
+- Creates `/var/run/openvswitch`, `/var/run/ovn`, `/var/lib/openvswitch`,
+  `/var/lib/ovn`, `/var/log/openvswitch`, `/var/log/ovn`, `/etc/openvswitch`
+  and `/etc/ovn`, all owned by `openstack`
+- Sets the OCI labels (title `ovn`, description "OVN and Open vSwitch daemons
+  and client tools built from pinned upstream sources", licenses `Apache-2.0`,
+  vendor `SAP SE`) and `USER openstack`
+
+**Installed paths:**
+
+| Path | Contents |
+| --- | --- |
+| `/usr/bin` | `ovn-northd`, `ovn-controller`, `ovn-nbctl`, `ovn-sbctl`, `ovn-appctl`, `ovsdb-tool`, `ovsdb-client`, `ovs-vsctl`, `ovs-appctl`, `ovs-ofctl` |
+| `/usr/sbin` | `ovs-vswitchd`, `ovsdb-server` |
+| `/usr/share/ovn` | OVN's OVSDB schemas and `scripts/ovn-ctl` |
+| `/usr/share/openvswitch` | The OVS OVSDB schemas and `scripts/ovs-ctl` |
+
+**Runtime packages:**
+
+| Package | Purpose |
+| --- | --- |
+| `ca-certificates` | TLS trust store |
+| `iproute2` | `ip`, which the chassis DaemonSets of issue #903 use to inspect interfaces |
+| `kmod` | `modprobe`, which those DaemonSets use to load host kernel modules |
+| `libcap-ng0` | Privilege-drop library the daemons link against |
+| `libssl3t64` | OpenSSL 3 runtime for the TLS-protected OVSDB connections |
+| `libunbound8` | DNS resolution |
+
+**Version output:** OVN programs print `<prog> 26.03.2` on `--version`,
+followed by `Open vSwitch Library 3.7.0`, the OVS revision they were built
+against. OVS programs print `<prog> (Open vSwitch) 3.7.0`. Those two numbers
+agreeing is what the single pin buys, and
+`tests/container-images/verify_ovn.sh` compares them.
+
+**Non-root by default:** `ovsdb-server`, `ovn-northd` and the client tools need
+no privileges, so the image runs as `openstack`. The chassis pods of issue #903
+set `runAsUser: 0` and the capabilities they need in their own pod spec.
+
+**Version pin:** Open vSwitch has no version of its own to choose. It follows
+the `ovs` submodule gitlink (decision D1 of issue #898): one version line to
+bump, one Renovate rule. OVN's `Documentation/intro/install/general.rst` notes
+under Build Requirements that the submodule is "not recommended to be used as a
+source for OVS build"; ovn-kubernetes builds its OVS from that gitlink in
+`dist/images/Dockerfile.fedora`, and this image does the same.
+
+`ARG OVN_VERSION` names a git tag, which is a mutable ref: upstream can move or
+delete it, and no check on the built image would notice. So each half of the
+source tree carries a content pin next to it, standing to `OVN_VERSION` as the
+`sha256` digest stands to `ubuntu:noble` — `ARG OVN_COMMIT` for the commit the
+tag resolves to, `ARG OVS_COMMIT` for the SHA the `ovs` gitlink names at that
+commit. Like a digest, both are what the build fetches: it never resolves the
+tag, and it fails when the gitlink at `$OVN_COMMIT` disagrees with
+`$OVS_COMMIT`. Neither a moved OVN tag nor a changed gitlink can alter the image
+without a change in this repository. Bump both together with `OVN_VERSION`; an
+`OVN_COMMIT` left behind by a tag bump surfaces in the version
+`tests/container-images/verify_ovn.sh` reads off the binaries, and a stale
+`OVS_COMMIT` in the build error.
+
+A Renovate `customManager` tracks `ovn-org/ovn` github-tags on the
+`ARG OVN_VERSION` line. Major and minor bumps are disabled to hold the image on
+the 26.03 LTS line; patch bumps wait a three-day cooldown and are **not**
+automerged, because no datasource can rewrite the two content pins and the
+reviewer of the Renovate PR carries them across. See
+[Dependency Management](../../contributing/dependency-management.md).
+
+**Image contract check:** `tests/container-images/verify_ovn.sh` runs nine
+tests against a built image. Five cover the software: the pinned OVN version on
+`ovn-northd`, `ovn-controller`, `ovn-nbctl` and `ovn-sbctl`, the OVS daemons
+and clients, the shipped OVS matching the revision OVN links against,
+`ovn-ctl` and `ovs-ctl` running under the image's shell, and `ovsdb-tool
+create` building a database from each of `ovn-nb.ovsschema`, `ovn-sb.ovsschema`
+and `vswitch.ovsschema` — the schemas are the runtime artifact this image
+exists to serve, and no other assertion here reads them. The other four cover
+the packaging: `ldd` free of unresolved libraries with `libssl.so.3` linked
+into the TLS-speaking daemons, no build toolchain and no development headers,
+UID 42424 with writable state directories, and `modprobe` and `ip` on `PATH`.
+
+### keystone-federation-proxy
+
+**Location:** `images/keystone-federation-proxy/Dockerfile`
+
+The Apache reverse proxy that terminates OIDC and SAML in front of Keystone: a
+single stage on `ubuntu:noble` with the distro `apache2`,
+`libapache2-mod-auth-openidc` and `libapache2-mod-auth-mellon`. Every component
+comes from the Ubuntu archive, so the image has no version pin of its own and
+follows the `noble` package set. Its build, verification and tag scheme are
+described in
+[build-keystone-federation-proxy / merge-keystone-federation-proxy-image](./build-images-workflow.md#build-keystone-federation-proxy-merge-keystone-federation-proxy-image).
+
 ## Named Build Contexts
 
 Service Dockerfiles use Docker's named build context feature (`--build-context`) to inject
@@ -691,6 +838,30 @@ docker build images/horizon \
 bash tests/container-images/verify_horizon.sh c5c3/horizon:25.5.1
 ```
 
+### Building ovn locally
+
+The ovn build needs no source checkout and no build args: the Dockerfile clones
+OVN at the pinned tag itself and derives Open vSwitch from that tag. One script
+covers it.
+
+```bash
+# Builds c5c3/ovn:<pinned version>
+hack/ci-build-ovn-image.sh
+
+# Same build under a different name
+OVN_IMAGE=ghcr.io/c5c3/ovn:dev hack/ci-build-ovn-image.sh
+
+# Print the pin the build used (26.03.2, without the leading v)
+hack/ci-resolve-ovn-version.sh
+
+# Run the full image contract check
+bash tests/container-images/verify_ovn.sh c5c3/ovn:$(hack/ci-resolve-ovn-version.sh)
+```
+
+Both projects are compiled from source, so the first build takes a while. The
+Dockerfile's BuildKit cache mounts keep the apt steps of a rebuild short, but
+the two `make -j"$(nproc)"` runs dominate either way.
+
 ## Design Deviations
 
 The implementation deviates from the original design document in one area,
@@ -709,3 +880,9 @@ user is created) and in every service Dockerfile that uses it instead of a
 per-service user (`images/keystone/Dockerfile`, `images/horizon/Dockerfile`,
 `images/glance/Dockerfile`, `images/placement/Dockerfile`,
 `images/barbican/Dockerfile`).
+
+`images/ovn/Dockerfile` carries the comment for the other half of the same
+decision. That image does not derive from `python-base`, so it creates the
+`openstack` user and group itself. The distro packages would install separate
+`openvswitch` and `ovn` users, and the source build carries no such packaging;
+one identity across all images keeps the pod security contexts uniform.

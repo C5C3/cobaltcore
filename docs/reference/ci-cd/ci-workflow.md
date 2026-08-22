@@ -1231,6 +1231,59 @@ hack/ci-build-tempest-image.sh
 RELEASE=2025.2 TEMPEST_IMAGE=c5c3/tempest:local hack/ci-build-tempest-image.sh
 ```
 
+### hack/ci-resolve-ovn-version.sh
+
+Prints the OVN version pinned in `images/ovn/Dockerfile`. It reads the single
+`ARG OVN_VERSION=` line and writes the tag without its leading `v` to stdout,
+so `v26.03.2` becomes `26.03.2`. The script is the only parser of that line:
+the `build-ovn` and `merge-ovn-image` jobs in `build-images.yaml`,
+`hack/ci-build-ovn-image.sh` and `tests/container-images/verify_ovn.sh` all
+call it.
+
+| Environment Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `OVN_DOCKERFILE` | No | `images/ovn/Dockerfile` | Dockerfile whose `ARG OVN_VERSION` line is parsed |
+
+Three cases make the script print an `::error::` annotation on stderr and exit
+1: the Dockerfile does not exist, it holds no `ARG OVN_VERSION=` line, or the
+value is not a `vX.Y.Z` tag (a second `ARG OVN_VERSION=` line fails that
+anchored match too). Annotations go to stderr, so stdout carries the version
+and nothing else.
+
+Usage:
+
+```bash
+hack/ci-resolve-ovn-version.sh
+OVN_DOCKERFILE=path/to/Dockerfile hack/ci-resolve-ovn-version.sh
+```
+
+### hack/ci-build-ovn-image.sh
+
+Builds the OVN container image. It resolves the pin with
+`hack/ci-resolve-ovn-version.sh`, then runs `docker build` on
+`images/ovn/Dockerfile` with `images/ovn/` as the build context. The Dockerfile
+clones OVN at the pinned tag and takes Open vSwitch from that tag's `ovs`
+submodule gitlink, so the build needs no host checkout and no `--build-arg`.
+`OVN_DOCKERFILE` moves both halves at once — the resolver reads the pin from
+that file and `docker build` builds it, with its directory as the context — so
+the tag can never claim a version the image was not built from.
+
+| Environment Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `OVN_IMAGE` | No | `c5c3/ovn:<version>` | Target image name:tag |
+| `OVN_DOCKERFILE` | No | `images/ovn/Dockerfile` | Dockerfile to resolve the pin from and to build; its directory is the build context |
+| `DOCKER_BUILD_CACHE_FROM` | No | (unset) | buildx `--cache-from` spec |
+| `DOCKER_BUILD_CACHE_TO` | No | (unset) | buildx `--cache-to` spec |
+
+Usage:
+
+```bash
+hack/ci-build-ovn-image.sh
+OVN_IMAGE=ghcr.io/c5c3/ovn:$(hack/ci-resolve-ovn-version.sh) hack/ci-build-ovn-image.sh
+```
+
+Issue #905 wires the script into the `build-e2e-images` job.
+
 ### hack/ci-run-tempest.sh
 
 CI-specific Tempest execution wrapper that handles port-forwarding, config generation, and
