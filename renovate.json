@@ -374,6 +374,19 @@
       "datasourceTemplate": "npm",
       "packageNameTemplate": "renovate",
       "versioningTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/images/ovn/Dockerfile$/"
+      ],
+      "matchStrings": [
+        "(?m)^ARG OVN_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)\\s*$"
+      ],
+      "depNameTemplate": "ovn-org/ovn",
+      "datasourceTemplate": "github-tags",
+      "packageNameTemplate": "ovn-org/ovn",
+      "versioningTemplate": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
     }
   ],
   "packageRules": [
@@ -719,6 +732,22 @@
       "automerge": false,
       "minimumReleaseAge": "3 days",
       "groupName": "renovate-config-validator"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/ovn/Dockerfile"],
+      "matchPackageNames": ["ovn-org/ovn"],
+      "matchUpdateTypes": ["major", "minor"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["images/ovn/Dockerfile"],
+      "matchPackageNames": ["ovn-org/ovn"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "OVN LTS patch releases"
     }
   ]
 }
