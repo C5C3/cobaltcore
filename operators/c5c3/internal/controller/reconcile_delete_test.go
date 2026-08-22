@@ -10,6 +10,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -32,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -833,6 +835,833 @@ func TestDeleteProjectedRegistrations_EnumeratesAPreservedRegistration(t *testin
 	err = c.Get(ctx, client.ObjectKeyFromObject(preserved), &c5c3v1alpha1.KeystoneService{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
 		"a registration preserved past its service block must still be torn down with the ControlPlane")
+}
+
+// TestReconcileDelete_StallEscapeReleasesTheStalledRegistrationsChildren pins the
+// stall path past orcTeardownDeadline. A registration the whole window was spent
+// on keeps children nothing else can collect: they carry its ownership labels
+// rather than an owner reference, so no GC cascade reaches them, and its own
+// controller strips no K-ORC and no ESO finalizer on either of its paths. The
+// release strips those finalizers, deletes the children, and names in one Warning
+// what the managed ones leave behind in Keystone and what the PushSecret leaves in
+// OpenBao. The unmanaged Role import is released too but never named: deleting an
+// import is CR-only, so it orphans nothing.
+func TestReconcileDelete_StallEscapeReleasesTheStalledRegistrationsChildren(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := deletingControlPlane(orcTeardownDeadline + time.Minute)
+	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+
+	// The registration wedged behind the finalizer its own controller cannot
+	// release, with the children it projected still live: no KeystoneService
+	// controller runs on the fake client, so nothing has begun their teardown.
+	ks := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       glanceName(cp),
+			Namespace:  cp.Namespace,
+			Labels:     controlPlaneChildLabels(cp),
+			Finalizers: []string{keystoneServiceFinalizerName},
+		},
+	}
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       keystoneServiceUserRef(ks),
+			Namespace:  childNamespace(cp),
+			Labels:     keystoneServiceChildLabels(ks),
+			Finalizers: []string{"openstack.k-orc.cloud/user"},
+		},
+	}
+	catalog := &orcv1alpha1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       keystoneServiceCatalogServiceRef(ks),
+			Namespace:  childNamespace(cp),
+			Labels:     keystoneServiceChildLabels(ks),
+			Finalizers: []string{"openstack.k-orc.cloud/service"},
+		},
+	}
+	roleImport := &orcv1alpha1.Role{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       keystoneServiceRoleImportRef(ks, "service"),
+			Namespace:  childNamespace(cp),
+			Labels:     keystoneServiceChildLabels(ks),
+			Finalizers: []string{"openstack.k-orc.cloud/role"},
+		},
+		Spec: orcv1alpha1.RoleSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyUnmanaged},
+	}
+	const remoteKey = "c5c3/cp/glance/backup"
+	push := &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       keystoneServicePushSecretName(ks),
+			Namespace:  cp.Namespace,
+			Labels:     keystoneServiceChildLabels(ks),
+			Finalizers: []string{"pushsecret.externalsecrets.io/finalizer"},
+		},
+		Spec: esov1alpha1.PushSecretSpec{
+			Data: []esov1alpha1.PushSecretData{{
+				Match: esov1alpha1.PushSecretMatch{
+					RemoteRef: esov1alpha1.PushSecretRemoteRef{RemoteKey: remoteKey},
+				},
+			}},
+		},
+	}
+	// The ControlPlane's own stuck child, so the pass takes the stall escape
+	// rather than the release path.
+	ac := &orcv1alpha1.ApplicationCredential{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       adminAppCredentialName(cp),
+			Namespace:  childNamespace(cp),
+			Finalizers: []string{"openstack.k-orc.cloud/applicationcredential"},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, ks, user, catalog, roleImport, push, ac).Build()
+	rec := record.NewFakeRecorder(20)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(ctx, key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "the stall escape must release without requeue")
+
+	err = c.Get(ctx, key, &c5c3v1alpha1.ControlPlane{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"the ControlPlane finalizer must be released after the stall escape")
+
+	released := []struct {
+		key client.ObjectKey
+		obj client.Object
+	}{
+		{client.ObjectKeyFromObject(user), &orcv1alpha1.User{}},
+		{client.ObjectKeyFromObject(catalog), &orcv1alpha1.Service{}},
+		{client.ObjectKeyFromObject(roleImport), &orcv1alpha1.Role{}},
+		{client.ObjectKeyFromObject(push), &esov1alpha1.PushSecret{}},
+	}
+	for _, child := range released {
+		err = c.Get(ctx, child.key, child.obj)
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+			"the stalled registration's child %q must be released and deleted, not left standing", child.key.Name)
+	}
+
+	events := drainEvents(rec)
+	g.Expect(strings.Join(events, "\n")).To(ContainSubstring("ORCTeardownStalled"),
+		"the fixture must take the stall escape, not the normal release path")
+
+	var orphanWarnings []string
+	for _, e := range events {
+		if strings.Contains(e, "ServiceRegistrationResourcesOrphaned") {
+			orphanWarnings = append(orphanWarnings, e)
+		}
+	}
+	g.Expect(orphanWarnings).To(HaveLen(1),
+		"the force-release must report every registration in ONE Warning, not one per child")
+	g.Expect(orphanWarnings[0]).To(SatisfyAll(
+		ContainSubstring("Warning"),
+		ContainSubstring(user.Name),
+		ContainSubstring(catalog.Name),
+		ContainSubstring(remoteKey),
+	), "the Warning must name the managed K-ORC CRs and the OpenBao path left behind")
+	g.Expect(orphanWarnings[0]).NotTo(ContainSubstring(roleImport.Name),
+		"an unmanaged import orphans nothing, so naming it would send the operator after a resource that is fine")
+
+	gotKS := &c5c3v1alpha1.KeystoneService{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(ks), gotKS)).To(Succeed(),
+		"the registration itself must survive the release of its children")
+	g.Expect(gotKS.Finalizers).To(ContainElement(keystoneServiceFinalizerName),
+		"the registration's own finalizer is its controller's to release, not the ControlPlane's")
+}
+
+// TestReconcileDelete_ReleasePathReleasesAGivenUpRegistration pins the second
+// release point. Past registrationTeardownStallTimeout the teardown gives up on a
+// registration and carries on, and with nothing of the ControlPlane's own left to
+// revoke it reaches the NORMAL release in the same pass. The children of the
+// given-up registration must be force-released there too, before the finalizer
+// goes, and the three events must arrive in the order that reads as one story:
+// gave up, orphaned, released.
+func TestReconcileDelete_ReleasePathReleasesAGivenUpRegistration(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := deletingControlPlane(registrationTeardownStallTimeout + time.Minute)
+	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+
+	ks := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       glanceName(cp),
+			Namespace:  cp.Namespace,
+			Labels:     controlPlaneChildLabels(cp),
+			Finalizers: []string{keystoneServiceFinalizerName},
+		},
+	}
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       keystoneServiceUserRef(ks),
+			Namespace:  childNamespace(cp),
+			Labels:     keystoneServiceChildLabels(ks),
+			Finalizers: []string{"openstack.k-orc.cloud/user"},
+		},
+	}
+	// No ApplicationCredential and no PushSecret of the ControlPlane's own, so
+	// its K-ORC sweep finds nothing and the release path is reached in one pass.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ks, user).Build()
+	rec := record.NewFakeRecorder(20)
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(ctx, key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{}), "the release must return a zero result")
+
+	events := drainEvents(rec)
+	index := func(reason string) int {
+		return slices.IndexFunc(events, func(e string) bool { return strings.Contains(e, reason) })
+	}
+	stalled := index("ServiceRegistrationTeardownStalled")
+	orphaned := index("ServiceRegistrationResourcesOrphaned")
+	complete := index("ORCTeardownComplete")
+	g.Expect(stalled).To(BeNumerically(">=", 0), "the registration must be given up on, not waited for")
+	g.Expect(orphaned).To(BeNumerically(">", stalled),
+		"the children are released only after the registration is given up on")
+	g.Expect(events[orphaned]).To(ContainSubstring(user.Name),
+		"the Warning must name the managed User whose Keystone identity is left behind")
+	g.Expect(complete).To(BeNumerically(">", orphaned),
+		"the release must come last: after it the finalizer is gone and nothing can reach the children")
+
+	err = c.Get(ctx, client.ObjectKeyFromObject(user), &orcv1alpha1.User{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"the given-up registration's User must be released and deleted on the normal release path too")
+
+	err = c.Get(ctx, key, &c5c3v1alpha1.ControlPlane{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"the ControlPlane finalizer must be released once the children are gone")
+}
+
+// TestReconcileDelete_ReleasePathNamesTheESOPurgeWait guards the one wait on this
+// path that used to requeue silently. It is reachable only once no K-ORC CR and no
+// owned PushSecret remain, so the last KORCReady the sweep wrote says "0 K-ORC
+// CR(s) and 0 PushSecret(s)" — an operator watching a ControlPlane sit in
+// Terminating for the rest of orcTeardownDeadline would read a condition asserting
+// nothing is outstanding, and no event names the registration PushSecret either.
+func TestReconcileDelete_ReleasePathNamesTheESOPurgeWait(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := deletingControlPlane(registrationTeardownStallTimeout + time.Minute)
+	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+
+	ks := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       glanceName(cp),
+			Namespace:  cp.Namespace,
+			Labels:     controlPlaneChildLabels(cp),
+			Finalizers: []string{keystoneServiceFinalizerName},
+		},
+	}
+	// The registration's PushSecret, still held by ESO, and the co-located tenant
+	// store its DeletionPolicy=Delete purge authenticates through.
+	push := &esov1alpha1.PushSecret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       keystoneServicePushSecretName(ks),
+			Namespace:  cp.Namespace,
+			Labels:     keystoneServiceChildLabels(ks),
+			Finalizers: []string{"pushsecret.externalsecrets.io/finalizer"},
+		},
+		Spec: esov1alpha1.PushSecretSpec{DeletionPolicy: esov1alpha1.PushSecretDeletionPolicyDelete},
+	}
+	store := &esov1.SecretStore{
+		ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: cp.Namespace},
+	}
+	// No ApplicationCredential and no PushSecret of the ControlPlane's own, so its
+	// K-ORC sweep finds nothing and the release path is reached in one pass.
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ks, push, store).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(20)}
+
+	key := types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace}
+	g.Expect(c.Get(ctx, key, cp)).To(Succeed())
+
+	res, err := r.reconcileDelete(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter),
+		"a PushSecret still owed its OpenBao purge must hold the release for another pass")
+	g.Expect(controllerutil.ContainsFinalizer(cp, controlPlaneORCFinalizer)).To(BeTrue(),
+		"the ControlPlane must keep its finalizer while it waits")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeKORCReady)
+	g.Expect(cond).NotTo(BeNil(),
+		"a requeue with no condition leaves an operator no way to tell what the teardown is waiting for")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("FinalizingORC"))
+	g.Expect(cond.Message).To(SatisfyAll(
+		ContainSubstring("ESO"),
+		ContainSubstring("KeystoneService"),
+		ContainSubstring("PushSecret"),
+	), "the condition must name the registration PushSecret purge the pass is waiting on")
+	g.Expect(cond.Message).NotTo(ContainSubstring("0 K-ORC CR(s)"),
+		"the sweep's own message asserts nothing is outstanding, which is exactly what misleads here")
+}
+
+// TestReleaseStalledRegistrationChildren_TouchesOnlyOwnedRegistrationsChildren
+// pins the blast radius of the force-release. It strips finalizers that exist to
+// revoke against Keystone, so every object it reaches has to be one THIS
+// ControlPlane projected: a child of another registration, a same-named
+// KeystoneService with no claim on it, and a namespace with no projected
+// registration at all must all come through untouched and unreported.
+func TestReleaseStalledRegistrationChildren_TouchesOnlyOwnedRegistrationsChildren(t *testing.T) {
+	ctx := context.Background()
+
+	// The labels of a registration this ControlPlane did not project, used to seed
+	// a child that must survive every subtest.
+	otherLabels := keystoneServiceChildLabels(&c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "default"},
+	})
+	otherUser := func(cp *c5c3v1alpha1.ControlPlane) *orcv1alpha1.User {
+		return &orcv1alpha1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       "other-user",
+				Namespace:  childNamespace(cp),
+				Labels:     otherLabels,
+				Finalizers: []string{"openstack.k-orc.cloud/user"},
+			},
+		}
+	}
+	ownedUser := func(ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane) *orcv1alpha1.User {
+		return &orcv1alpha1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       keystoneServiceUserRef(ks),
+				Namespace:  childNamespace(cp),
+				Labels:     keystoneServiceChildLabels(ks),
+				Finalizers: []string{"openstack.k-orc.cloud/user"},
+			},
+		}
+	}
+
+	// The label selector is the only thing separating two registrations' children
+	// in one namespace, so a miss here revokes a live service account.
+	t.Run("a child labelled for another registration keeps its finalizer", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		s := korcTestScheme(t)
+		cp := deletingControlPlane(orcTeardownDeadline)
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+		ks := &c5c3v1alpha1.KeystoneService{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       glanceName(cp),
+				Namespace:  cp.Namespace,
+				Labels:     controlPlaneChildLabels(cp),
+				Finalizers: []string{keystoneServiceFinalizerName},
+			},
+		}
+		ours, theirs := ownedUser(ks, cp), otherUser(cp)
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ks, ours, theirs).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+		done, err := r.releaseStalledRegistrationChildren(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(done).To(BeTrue(), "no PushSecret is owed a purge, so the release must not ask for another pass")
+
+		err = c.Get(ctx, client.ObjectKeyFromObject(ours), &orcv1alpha1.User{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the registration's own User must be released")
+
+		got := &orcv1alpha1.User{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(theirs), got)).To(Succeed(),
+			"a User labelled for another registration must be left standing")
+		g.Expect(got.Finalizers).To(ContainElement("openstack.k-orc.cloud/user"),
+			"another registration's User must keep the finalizer that revokes its identity")
+	})
+
+	// The registration name is derived from the ControlPlane's, so a foreign
+	// KeystoneService in the same namespace can carry exactly the name this
+	// ControlPlane projects. Ownership, not the name, decides.
+	t.Run("a same-named registration without this ControlPlane's ownership is skipped", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		s := korcTestScheme(t)
+		cp := deletingControlPlane(orcTeardownDeadline)
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+		foreign := &c5c3v1alpha1.KeystoneService{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       glanceName(cp),
+				Namespace:  cp.Namespace,
+				Finalizers: []string{keystoneServiceFinalizerName},
+			},
+		}
+		child := ownedUser(foreign, cp)
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign, child).Build()
+		rec := record.NewFakeRecorder(10)
+		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+		done, err := r.releaseStalledRegistrationChildren(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(done).To(BeTrue(), "no PushSecret is owed a purge, so the release must not ask for another pass")
+
+		got := &orcv1alpha1.User{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(child), got)).To(Succeed(),
+			"the child of a registration this ControlPlane did not project must be left standing")
+		g.Expect(got.Finalizers).To(ContainElement("openstack.k-orc.cloud/user"))
+		g.Expect(drainEvents(rec)).To(BeEmpty(),
+			"nothing was released, so nothing must be reported as orphaned")
+	})
+
+	// The common teardown: every registration finished on its own, so the release
+	// point has nothing to do and must stay silent about it.
+	t.Run("no projected registration present", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		s := korcTestScheme(t)
+		cp := deletingControlPlane(orcTeardownDeadline)
+		theirs := otherUser(cp)
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, theirs).Build()
+		rec := record.NewFakeRecorder(10)
+		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+		done, err := r.releaseStalledRegistrationChildren(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(done).To(BeTrue(), "no PushSecret is owed a purge, so the release must not ask for another pass")
+
+		got := &orcv1alpha1.User{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(theirs), got)).To(Succeed())
+		g.Expect(got.Finalizers).To(ContainElement("openstack.k-orc.cloud/user"),
+			"a labelled child of a foreign registration must not be swept when no registration is present")
+		g.Expect(drainEvents(rec)).To(BeEmpty(), "a teardown with nothing to release must emit no Warning")
+	})
+
+	// The ownership labels are plain labels whose values are published CR names, so
+	// anything in the namespace can end up carrying them — a Kustomize `labels:`
+	// block applied one directory too wide, a hand-copied import manifest. The name
+	// test is the second half of the invariant sweepChildren enforces, and without
+	// it a foreign object is force-stripped and deleted, its OpenStack resource left
+	// behind with no Kubernetes object naming it.
+	t.Run("a labelled object outside the registration's name prefix keeps its finalizer", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		s := korcTestScheme(t)
+		cp := deletingControlPlane(orcTeardownDeadline)
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+		ks := &c5c3v1alpha1.KeystoneService{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       glanceName(cp),
+				Namespace:  cp.Namespace,
+				Labels:     controlPlaneChildLabels(cp),
+				Finalizers: []string{keystoneServiceFinalizerName},
+			},
+		}
+		// Correctly labelled for THIS registration, but named by neither
+		// keystoneServiceChildPrefix nor the consumer-credentials name.
+		strayUser := &orcv1alpha1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       "imported-by-hand",
+				Namespace:  childNamespace(cp),
+				Labels:     keystoneServiceChildLabels(ks),
+				Finalizers: []string{"openstack.k-orc.cloud/user"},
+			},
+		}
+		strayPush := &esov1alpha1.PushSecret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       "pushed-by-hand",
+				Namespace:  cp.Namespace,
+				Labels:     keystoneServiceChildLabels(ks),
+				Finalizers: []string{"pushsecret.externalsecrets.io/finalizer"},
+			},
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ks, strayUser, strayPush).Build()
+		rec := record.NewFakeRecorder(10)
+		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+		done, err := r.releaseStalledRegistrationChildren(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(done).To(BeTrue())
+
+		gotUser := &orcv1alpha1.User{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(strayUser), gotUser)).To(Succeed(),
+			"an object outside the registration's name prefix must be left standing")
+		g.Expect(gotUser.Finalizers).To(ContainElement("openstack.k-orc.cloud/user"),
+			"a foreign User must keep the finalizer that revokes its Keystone identity")
+		gotPush := &esov1alpha1.PushSecret{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(strayPush), gotPush)).To(Succeed(),
+			"the name guard must cover the PushSecrets too, not only the K-ORC CRs")
+		g.Expect(gotPush.Finalizers).To(ContainElement("pushsecret.externalsecrets.io/finalizer"))
+		g.Expect(drainEvents(rec)).To(BeEmpty(),
+			"nothing was released, so nothing must be reported as orphaned")
+	})
+	// A read that fails is not a registration that is gone. Returning the error
+	// keeps the ControlPlane's finalizer on for another pass, rather than
+	// releasing it over children the release never got to look at.
+	t.Run("a KeystoneService Get error is returned wrapped", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		s := korcTestScheme(t)
+		cp := deletingControlPlane(orcTeardownDeadline)
+		cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+		sentinel := errors.New("boom")
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey,
+					obj client.Object, opts ...client.GetOption,
+				) error {
+					if _, ok := obj.(*c5c3v1alpha1.KeystoneService); ok {
+						return sentinel
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+			}).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+		_, err := r.releaseStalledRegistrationChildren(ctx, cp)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(strings.HasPrefix(err.Error(), "getting KeystoneService ")).To(BeTrue(),
+			"the wrapped error must name the read that failed, got %q", err.Error())
+		g.Expect(errors.Is(err, sentinel)).To(BeTrue(), "the cause must stay unwrappable")
+	})
+}
+
+// stalledRegistrationFixture returns a ControlPlane past the registration stall
+// window (deletionAge measured from its deletion timestamp) together with the
+// projected Glance registration whose children the release reaches.
+func stalledRegistrationFixture(
+	deletionAge time.Duration,
+) (*c5c3v1alpha1.ControlPlane, *c5c3v1alpha1.KeystoneService) {
+	cp := deletingControlPlane(deletionAge)
+	cp.Spec.Services.Glance = &c5c3v1alpha1.ServiceGlanceSpec{}
+	ks := &c5c3v1alpha1.KeystoneService{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       glanceName(cp),
+			Namespace:  cp.Namespace,
+			Labels:     controlPlaneChildLabels(cp),
+			Finalizers: []string{keystoneServiceFinalizerName},
+		},
+	}
+	return cp, ks
+}
+
+// TestReleaseStalledRegistrationChildren_DeletesBeforeStripping pins the order of
+// the two writes the release makes against a LIVE child — one whose controller
+// never reached its own teardown, which is the case this function exists for.
+// Stripping first is a write K-ORC sees as an ordinary update, so it re-adds its
+// finalizer and the Delete behind it wedges the CR Terminating against a
+// credential this teardown already revoked. The Delete has to land first: no
+// controller adds a finalizer back to an object that already carries a
+// deletionTimestamp.
+func TestReleaseStalledRegistrationChildren_DeletesBeforeStripping(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp, ks := stalledRegistrationFixture(registrationTeardownStallTimeout + time.Minute)
+	user := &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       keystoneServiceUserRef(ks),
+			Namespace:  childNamespace(cp),
+			Labels:     keystoneServiceChildLabels(ks),
+			Finalizers: []string{"openstack.k-orc.cloud/user"},
+		},
+	}
+
+	var ops []string
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ks, user).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object,
+				opts ...client.DeleteOption,
+			) error {
+				if _, ok := obj.(*orcv1alpha1.User); ok {
+					ops = append(ops, "delete")
+				}
+				return c.Delete(ctx, obj, opts...)
+			},
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object,
+				patch client.Patch, opts ...client.PatchOption,
+			) error {
+				if _, ok := obj.(*orcv1alpha1.User); ok {
+					ops = append(ops, "strip")
+				}
+				return c.Patch(ctx, obj, patch, opts...)
+			},
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object,
+				opts ...client.UpdateOption,
+			) error {
+				if _, ok := obj.(*orcv1alpha1.User); ok {
+					ops = append(ops, "strip")
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	done, err := r.releaseStalledRegistrationChildren(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(done).To(BeTrue())
+
+	g.Expect(ops).To(Equal([]string{"delete", "strip"}),
+		"the Delete must land before the finalizer strip, or the owning controller re-adds it")
+	err = c.Get(ctx, client.ObjectKeyFromObject(user), &orcv1alpha1.User{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"the live child must be gone once its K-ORC finalizer is stripped")
+}
+
+// TestReleaseStalledRegistrationChildren_GivesESOItsPurgeWindow pins the posture
+// the ControlPlane's own deleteOwnedPushSecrets takes, for the registration's
+// PushSecret. It carries DeletionPolicy=Delete, so ESO purges the mirrored
+// OpenBao data while processing the deletion — and the budget that brought the
+// release here bounds the REGISTRATION's teardown, not ESO's. Within
+// orcTeardownDeadline the PushSecret is deleted and left to ESO; past it the
+// give-up posture applies and the finalizer goes. The wait is gated on the tenant
+// store the purge authenticates through, so the fixture stands one up: co-located
+// — the default — it lives in the ControlPlane's own namespace, which no sweep
+// touches before the release.
+func TestReleaseStalledRegistrationChildren_GivesESOItsPurgeWindow(t *testing.T) {
+	ctx := context.Background()
+
+	const remoteKey = "openstack/keystone/openstack/glance/service-accounts/credentials"
+	fixture := func(deletionAge time.Duration, ifs interceptor.Funcs) (
+		*c5c3v1alpha1.ControlPlane, *esov1alpha1.PushSecret, client.Client, *record.FakeRecorder,
+		*ControlPlaneReconciler,
+	) {
+		s := korcTestScheme(t)
+		cp, ks := stalledRegistrationFixture(deletionAge)
+		store := &esov1.SecretStore{
+			ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: cp.Namespace},
+		}
+		push := &esov1alpha1.PushSecret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       keystoneServicePushSecretName(ks),
+				Namespace:  cp.Namespace,
+				Labels:     keystoneServiceChildLabels(ks),
+				Finalizers: []string{"pushsecret.externalsecrets.io/finalizer"},
+			},
+			Spec: esov1alpha1.PushSecretSpec{
+				DeletionPolicy: esov1alpha1.PushSecretDeletionPolicyDelete,
+				Data: []esov1alpha1.PushSecretData{{
+					Match: esov1alpha1.PushSecretMatch{
+						RemoteRef: esov1alpha1.PushSecretRemoteRef{RemoteKey: remoteKey},
+					},
+				}},
+			},
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ks, push, store).
+			WithInterceptorFuncs(ifs).Build()
+		rec := record.NewFakeRecorder(10)
+		return cp, push, c, rec, &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+	}
+
+	// The registration's controller never reached its teardown, so the PushSecret
+	// is still LIVE. Stripping it here would forfeit the purge outright.
+	t.Run("a live PushSecret is deleted and left to ESO", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		cp, push, c, rec, r := fixture(registrationTeardownStallTimeout+time.Minute, interceptor.Funcs{})
+
+		done, err := r.releaseStalledRegistrationChildren(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(done).To(BeFalse(),
+			"a PushSecret still owed its OpenBao purge must hold the release for another pass")
+
+		got := &esov1alpha1.PushSecret{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(push), got)).To(Succeed())
+		g.Expect(got.DeletionTimestamp.IsZero()).To(BeFalse(),
+			"the PushSecret must be deleted so ESO starts the DeletionPolicy=Delete purge")
+		g.Expect(got.Finalizers).To(ContainElement("pushsecret.externalsecrets.io/finalizer"),
+			"ESO must keep the finalizer it needs to finish the purge")
+		g.Expect(drainEvents(rec)).To(BeEmpty(),
+			"nothing is abandoned yet, so the release must not report an orphan")
+	})
+
+	// Past the shared deadline the trade every stall escape in this teardown makes
+	// applies: a repairable leak beats a ControlPlane nobody can delete.
+	t.Run("past orcTeardownDeadline the finalizer is stripped and the path named", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		cp, push, c, rec, r := fixture(orcTeardownDeadline+time.Minute, interceptor.Funcs{})
+
+		done, err := r.releaseStalledRegistrationChildren(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(done).To(BeTrue(), "past the deadline the release must not ask for another pass")
+
+		err = c.Get(ctx, client.ObjectKeyFromObject(push), &esov1alpha1.PushSecret{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+			"the PushSecret must be released rather than left Terminating behind ESO")
+		g.Expect(strings.Join(drainEvents(rec), "\n")).To(SatisfyAll(
+			ContainSubstring("Warning"),
+			ContainSubstring("ServiceRegistrationResourcesOrphaned"),
+			ContainSubstring(remoteKey),
+		), "the Warning must name the OpenBao path that keeps the data")
+	})
+
+	// A registration in a DEDICATED namespace reaches this release point only after
+	// sweepNamespacesBeforeRelease deleted the tenant store the purge rides on
+	// (Managed: the whole namespace, which the PushSecret's own finalizer then holds
+	// Terminating). Waiting out the rest of orcTeardownDeadline there produces the
+	// identical give-up outcome minutes later, so the wait must not be entered at
+	// all.
+	t.Run("a swept tenant store is not waited on", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		cp, push, c, rec, r := fixture(registrationTeardownStallTimeout+time.Minute, interceptor.Funcs{})
+		g.Expect(c.Delete(ctx, &esov1.SecretStore{
+			ObjectMeta: metav1.ObjectMeta{Name: esoTenantStoreName, Namespace: cp.Namespace},
+		})).To(Succeed(), "the namespace sweep deletes the tenant store before the release point")
+
+		done, err := r.releaseStalledRegistrationChildren(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(done).To(BeTrue(),
+			"ESO cannot authenticate through a store that is gone, so the release must not wait for the purge")
+
+		err = c.Get(ctx, client.ObjectKeyFromObject(push), &esov1alpha1.PushSecret{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+			"the PushSecret must be released rather than left holding its namespace Terminating")
+		g.Expect(strings.Join(drainEvents(rec), "\n")).To(SatisfyAll(
+			ContainSubstring("Warning"),
+			ContainSubstring("ServiceRegistrationResourcesOrphaned"),
+			ContainSubstring(remoteKey),
+		), "the Warning must name the OpenBao path that keeps the data")
+	})
+
+	// The probe is a decision about whether to keep WAITING, and this release point
+	// sits in the one branch of reconcileDelete with no deadline escape of its own.
+	// A store read that cannot answer — Forbidden after a Helm upgrade narrowed the
+	// ClusterRole, a SecretStore conversion webhook down while the ESO stack is
+	// being upgraded — must therefore not become the pass's error: that would abort
+	// the release for every other registration too and push the give-up out past
+	// orcTeardownDeadline on reconcile backoff. It reads as alive instead, which is
+	// exactly what this path did before the probe existed.
+	t.Run("an unreadable tenant store is waited on rather than erroring the pass", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		cp, push, c, rec, r := fixture(registrationTeardownStallTimeout+time.Minute, interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey,
+				obj client.Object, opts ...client.GetOption,
+			) error {
+				if _, ok := obj.(*esov1.SecretStore); ok {
+					return apierrors.NewForbidden(
+						schema.GroupResource{Group: "external-secrets.io", Resource: "secretstores"},
+						key.Name, errors.New("RBAC: access denied"))
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		})
+
+		done, err := r.releaseStalledRegistrationChildren(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred(),
+			"a probe that cannot answer must not error the give-up path, which has no deadline escape")
+		g.Expect(done).To(BeFalse(),
+			"an unreadable store must read as standing, so the purge keeps its window")
+
+		got := &esov1alpha1.PushSecret{}
+		g.Expect(c.Get(ctx, client.ObjectKeyFromObject(push), got)).To(Succeed())
+		g.Expect(got.Finalizers).To(ContainElement("pushsecret.externalsecrets.io/finalizer"),
+			"failing open must keep waiting, not give up early on a store it could not read")
+		g.Expect(drainEvents(rec)).To(BeEmpty(),
+			"nothing is abandoned yet, so the release must not report an orphan")
+	})
+}
+
+// TestReleaseStalledRegistrationChildren_ReportsWhatItReleased pins the report
+// against the two ways it used to mislead: it stayed silent about a release that
+// only ever met children K-ORC had not finalized yet, and it named the hashed CR
+// names of the ones it did strip — strings that appear nowhere in Keystone, on
+// CRs deleted in the same pass.
+func TestReleaseStalledRegistrationChildren_ReportsWhatItReleased(t *testing.T) {
+	ctx := context.Background()
+
+	// The 'controller never ran its own teardown' case in full: live children, no
+	// K-ORC finalizer on any of them. Every object is deleted, so the release is
+	// not a no-op and has to leave a record — but it abandons nothing, so naming
+	// two empty sets in a Warning would send an operator after a leak that is not
+	// there.
+	t.Run("a release that abandons nothing reports it as Normal", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		s := korcTestScheme(t)
+		cp, ks := stalledRegistrationFixture(registrationTeardownStallTimeout + time.Minute)
+		user := &orcv1alpha1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      keystoneServiceUserRef(ks),
+				Namespace: childNamespace(cp),
+				Labels:    keystoneServiceChildLabels(ks),
+			},
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ks, user).Build()
+		rec := record.NewFakeRecorder(10)
+		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+		done, err := r.releaseStalledRegistrationChildren(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(done).To(BeTrue())
+
+		err = c.Get(ctx, client.ObjectKeyFromObject(user), &orcv1alpha1.User{})
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "a live child must still be deleted")
+
+		events := drainEvents(rec)
+		g.Expect(events).To(HaveLen(1),
+			"a release that deleted a child must leave a record of it, not return silently")
+		g.Expect(events[0]).To(SatisfyAll(
+			ContainSubstring("Normal"),
+			ContainSubstring("ServiceRegistrationChildrenReleased"),
+			ContainSubstring(client.ObjectKeyFromObject(ks).String()),
+		))
+		g.Expect(events[0]).NotTo(ContainSubstring("[]"),
+			"nothing was abandoned, so the message must carry no empty list")
+	})
+
+	// The CR names are keystoneServiceChildPrefix-derived, so the sha256 segment in
+	// them matches nothing in Keystone; the OpenStack names are what an operator
+	// has to search for, and the CRs carrying them are gone a few lines later.
+	t.Run("the Warning names the OpenStack resources, not the CRs", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		s := korcTestScheme(t)
+		cp, ks := stalledRegistrationFixture(registrationTeardownStallTimeout + time.Minute)
+		user := &orcv1alpha1.User{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       keystoneServiceUserRef(ks),
+				Namespace:  childNamespace(cp),
+				Labels:     keystoneServiceChildLabels(ks),
+				Finalizers: []string{"openstack.k-orc.cloud/user"},
+			},
+			Spec: orcv1alpha1.UserSpec{
+				Resource: &orcv1alpha1.UserResourceSpec{Name: ptr.To(orcv1alpha1.OpenStackName("glance"))},
+			},
+		}
+		catalog := &orcv1alpha1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       keystoneServiceCatalogServiceRef(ks),
+				Namespace:  childNamespace(cp),
+				Labels:     keystoneServiceChildLabels(ks),
+				Finalizers: []string{"openstack.k-orc.cloud/service"},
+			},
+			Spec: orcv1alpha1.ServiceSpec{
+				Resource: &orcv1alpha1.ServiceResourceSpec{
+					Type: "image",
+					Name: ptr.To(orcv1alpha1.OpenStackName("glance-catalog")),
+				},
+			},
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, ks, user, catalog).Build()
+		rec := record.NewFakeRecorder(10)
+		r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}
+
+		done, err := r.releaseStalledRegistrationChildren(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(done).To(BeTrue())
+
+		events := drainEvents(rec)
+		g.Expect(events).To(HaveLen(1))
+		g.Expect(events[0]).To(SatisfyAll(
+			ContainSubstring("Warning"),
+			ContainSubstring("ServiceRegistrationResourcesOrphaned"),
+			ContainSubstring("user glance"),
+			ContainSubstring("catalog service glance-catalog"),
+		), "the Warning must name what to repair in Keystone")
+		g.Expect(events[0]).NotTo(ContainSubstring(user.Name),
+			"the hashed CR name matches nothing in Keystone, and the CR is deleted in this pass")
+		g.Expect(events[0]).NotTo(ContainSubstring("OpenBao path"),
+			"no PushSecret was released, so the OpenBao clause must be left out entirely")
+	})
 }
 
 // TestReconcileDelete_MixedRemainderStillWaitsForManaged asserts the release
