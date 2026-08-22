@@ -15,7 +15,9 @@ PASS=0
 FAIL=0
 
 # Service images that inherit the generic user instead of creating their own.
-# python-base is checked separately: it is where the user is created.
+# python-base is checked separately: it is where the user is created. ovn
+# creates the user itself because it does not derive from python-base, so it
+# has its own function below.
 SERVICES="keystone horizon glance placement barbican"
 
 # shellcheck source=tests/lib/assertions.sh
@@ -53,6 +55,19 @@ test_service_deviation_comment() {
     "$(deviation_block "$dockerfile")" "openstack"
 }
 
+# --- Test 3: the ovn image creates the generic user itself ---
+test_ovn_deviation_comment() {
+  echo "Test: ovn Dockerfile has DEVIATION comment (user created locally)"
+
+  local dockerfile="$PROJECT_ROOT/images/ovn/Dockerfile"
+
+  assert_file_contains "ovn/Dockerfile contains DEVIATION comment" "$dockerfile" "# DEVIATION"
+  assert_contains "DEVIATION comment references the generic openstack user" \
+    "$(deviation_block "$dockerfile")" "openstack"
+  assert_file_contains "ovn/Dockerfile creates the user itself (not inherited from python-base)" \
+    "$dockerfile" "useradd -u 42424"
+}
+
 # --- Run all tests ---
 echo "=== DEVIATION comment verification tests ==="
 echo ""
@@ -61,6 +76,8 @@ for service in $SERVICES; do
   echo ""
   test_service_deviation_comment "$service"
 done
+echo ""
+test_ovn_deviation_comment
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 
