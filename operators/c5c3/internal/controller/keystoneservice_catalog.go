@@ -142,7 +142,7 @@ func (r *KeystoneServiceReconciler) keystoneServiceCatalogCollisionGate(
 	// question K-ORC's own adoption asks — it matches a row on exactly that pair.
 	probe := unmanagedServiceImport(keystoneServiceCatalogServiceProbeRef(ks), keystoneServiceChildNamespace(cp),
 		ks.Spec.Catalog.ServiceType, serviceName, credRef)
-	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, ks, managedChildProbeInput{
+	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, managedChildProbeInput{
 		kind:             "Service",
 		managed:          &orcv1alpha1.Service{},
 		managedName:      keystoneServiceCatalogServiceRef(ks),
@@ -150,7 +150,6 @@ func (r *KeystoneServiceReconciler) keystoneServiceCatalogCollisionGate(
 		adopt:            ks.Spec.Catalog.Adopt,
 		probe:            probe,
 		dropProbeOnOwned: true,
-		errPrefix:        "registration",
 		ensure:           r.keystoneServiceEnsure(ks),
 	})
 	if err != nil || proceed {

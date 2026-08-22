@@ -372,26 +372,28 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// converged would fail or wedge.
 	//
 	// The tail is a RunSequentialGroup of nine independent projections (Horizon,
-	// KORC, AdminCredential, Catalog, ServiceAccounts, Glance, Placement, Barbican,
+	// KORC, AdminCredential, Catalog, Glance, Placement, Barbican, ServiceAccounts,
 	// RegistrationTenantStores). Running every member on every pass is safe: every
 	// member runs each pass, its condition always persists, the members' requeues
 	// aggregate to the shortest member interval, and one member's failure no longer
 	// suppresses its peers (member errors are joined). A still-converging Horizon
-	// therefore no longer parks KORC, the AdminCredential/Catalog/ServiceAccounts
-	// identity bootstrap, Glance, Placement, or Barbican.
+	// therefore no longer parks KORC, the AdminCredential/Catalog identity
+	// bootstrap, Glance, Placement, or Barbican.
 	//
 	// Correctness rests on each member gating itself on the conditions it
 	// consumes rather than on its position in the chain — the prefix's
 	// short-circuit is gone, so a member that assumed an unreachable peer had
 	// blocked it would now run against unverified state. Every member except
-	// KORC and RegistrationTenantStores opens with an in-memory conditions.AllTrue
-	// gate and returns before touching the API; those two have no condition gate
-	// and run their full body every pass, which is what dominates the group's
-	// steady-state API cost.
+	// KORC, ServiceAccounts and RegistrationTenantStores opens with an in-memory
+	// conditions.AllTrue gate and returns before touching the API; those three have
+	// no condition gate and run their full body every pass, which is what dominates
+	// the group's steady-state API cost. ServiceAccounts is ungated because it only
+	// reads the KeystoneService children the service legs applied earlier in the
+	// same pass, so there is no projection it could defer.
 	//
 	// Onboarding rule: a future service whose projection is independent of the
 	// others joins the tail group rather than the blocking prefix — and MUST
-	// carry its own condition gate, following the seven gated members rather than
+	// carry its own condition gate, following the six gated members rather than
 	// KORC. RegistrationTenantStores is ungated for the same reason KORC is, not
 	// as an exemption from that rule: it consumes no condition this chain
 	// produces, because the tenant-store trio depends on cert-manager and OpenBao
@@ -455,12 +457,6 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				{Name: "Catalog", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcileCatalog(ctx, &cp)
 				}},
-				// ServiceAccounts projects managed K-ORC User/Project CRs and
-				// is gated on AdminCredentialReady, exactly like Catalog, so
-				// K-ORC can already authenticate against Keystone.
-				{Name: "ServiceAccounts", Fn: func(ctx context.Context) (ctrl.Result, error) {
-					return r.reconcileServiceAccounts(ctx, &cp)
-				}},
 				// Glance is gated on KeystoneReady (Glance validates tokens
 				// against the Keystone child) and on the KeystoneService child
 				// it projects for itself, whose AccountReady reports the
@@ -485,6 +481,14 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 				// until the OpenBao instance it provisions serves requests.
 				{Name: "Barbican", Fn: func(ctx context.Context) (ctrl.Result, error) {
 					return r.reconcileBarbican(ctx, &cp)
+				}},
+				// ServiceAccounts aggregates the readiness of the
+				// KeystoneService children the Glance/Placement/Barbican legs
+				// applied earlier in this same pass into
+				// ServiceAccountsReady. It reads only, so it carries no
+				// condition gate.
+				{Name: "ServiceAccounts", Fn: func(ctx context.Context) (ctrl.Result, error) {
+					return r.reconcileServiceAccounts(ctx, &cp)
 				}},
 				// RegistrationTenantStores provisions the per-tenant store in the
 				// allowlisted namespaces standalone KeystoneService CRs register
@@ -1074,13 +1078,12 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		Owns(&mariadbv1alpha1.MariaDB{}, engageLocal, engageNoProviders).
 		// The eight K-ORC kinds are a HARD dependency of every reconcile pass:
 		// reconcileKORC unconditionally mints the admin ApplicationCredential and
-		// projects the catalog/identity resources (and reconcileServiceAccounts the
-		// RoleAssignments), reading them through the cached client with no spec or
-		// condition gate. A missing K-ORC CRD would surface there as a no-match
-		// hard error, not a slimmable start-up state, so — like MariaDB, Memcached
-		// and the ESO kinds — these Owns legs stay unconditional rather than sitting
-		// behind the discovery guard below. The manager must fail fast at start if
-		// K-ORC is absent.
+		// projects the catalog/identity resources, reading them through the cached
+		// client with no spec or condition gate. A missing K-ORC CRD would surface
+		// there as a no-match hard error, not a slimmable start-up state, so — like
+		// MariaDB, Memcached and the ESO kinds — these Owns legs stay unconditional
+		// rather than sitting behind the discovery guard below. The manager must
+		// fail fast at start if K-ORC is absent.
 		Owns(&orcv1alpha1.ApplicationCredential{}, engageLocal, engageNoProviders).
 		Owns(&orcv1alpha1.Service{}, engageLocal, engageNoProviders).
 		Owns(&orcv1alpha1.Endpoint{}, engageLocal, engageNoProviders).

@@ -187,7 +187,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceDomain(
 	if name == adminDomainRef(cp) {
 		return name, nil
 	}
-	if err := ensureAccountDomainImport(ctx, r.Client, r.Scheme, ks,
+	if err := ensureAccountDomainImport(ctx,
 		name, keystoneServiceChildNamespace(cp), keystoneServiceDomainName(cp, ks), credRef,
 		r.keystoneServiceEnsure(ks)); err != nil {
 		return "", fmt.Errorf("registration Domain import %q: %w", name, err)
@@ -225,13 +225,12 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceProject(
 	// takeover is expressed as account.project.create=false.
 	probe := unmanagedProjectImport(keystoneServiceProjectProbeRef(ks), keystoneServiceChildNamespace(cp),
 		account.Project.Name, domainRef, credRef)
-	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, ks, managedChildProbeInput{
+	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, managedChildProbeInput{
 		kind:        "Project",
 		managed:     &orcv1alpha1.Project{},
 		managedName: name,
 		namespace:   keystoneServiceChildNamespace(cp),
 		probe:       probe,
-		errPrefix:   "registration",
 		ensure:      r.keystoneServiceEnsure(ks),
 	})
 	if err != nil {
@@ -278,7 +277,7 @@ func (r *KeystoneServiceReconciler) keystoneServiceUserCollisionGate(
 ) (bool, error) {
 	probe := unmanagedUserImport(keystoneServiceUserProbeRef(ks), keystoneServiceChildNamespace(cp),
 		userName, domainRef, credRef)
-	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, ks, managedChildProbeInput{
+	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, managedChildProbeInput{
 		kind:             "User",
 		managed:          &orcv1alpha1.User{},
 		managedName:      keystoneServiceUserRef(ks),
@@ -286,7 +285,6 @@ func (r *KeystoneServiceReconciler) keystoneServiceUserCollisionGate(
 		adopt:            ks.Spec.Account.Adopt,
 		probe:            probe,
 		dropProbeOnOwned: true,
-		errPrefix:        "registration",
 		ensure:           r.keystoneServiceEnsure(ks),
 	})
 	if err != nil || proceed {
@@ -324,7 +322,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceUser(
 	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
 	managedCredRef orcv1alpha1.CloudCredentialsReference, domainRef string,
 ) (*orcv1alpha1.User, int64, bool, *metav1.Time, error) {
-	return ensureManagedAccountUser(ctx, r.Client, r.Scheme, ks, managedAccountUserInput{
+	return ensureManagedAccountUser(ctx, r.Client, managedAccountUserInput{
 		name:           keystoneServiceUserRef(ks),
 		namespace:      keystoneServiceChildNamespace(cp),
 		userName:       keystoneServiceUserName(ks),
@@ -339,7 +337,6 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceUser(
 		},
 		passwordSecretPrefix: keystoneServiceChildPrefix(ks) + "password-v",
 		ownsChild:            func(obj client.Object) bool { return ownsKeystoneServiceChild(ks, obj) },
-		errPrefix:            "registration",
 		claim: func(obj client.Object) error {
 			return claimKeystoneServiceChild(ks, obj, r.Scheme)
 		},
@@ -380,10 +377,10 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServiceRoles(
 	waitMessage := ""
 
 	for _, role := range ks.Spec.Account.Roles {
-		out, err := applyAccountRole(ctx, r.Client, r.Scheme, ks,
+		out, err := applyAccountRole(ctx,
 			keystoneServiceRoleImportRef(ks, role), keystoneServiceRoleAssignmentRef(ks, role),
 			keystoneServiceChildNamespace(cp), role,
-			credRef, managedCredRef, keystoneServiceUserRef(ks), keystoneServiceProjectRef(ks), "registration",
+			credRef, managedCredRef, keystoneServiceUserRef(ks), keystoneServiceProjectRef(ks),
 			r.keystoneServiceEnsure(ks))
 		if err != nil {
 			return false, err
@@ -460,8 +457,6 @@ func (r *KeystoneServiceReconciler) publishKeystoneServiceAccount(
 		ensureExternalSecret: func(ctx context.Context) error {
 			return r.ensureKeystoneServiceExternalSecret(ctx, ks, cp)
 		},
-
-		errPrefix: "registration",
 	})
 }
 

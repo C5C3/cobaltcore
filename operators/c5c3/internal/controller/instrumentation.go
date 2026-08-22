@@ -42,8 +42,8 @@ var subReconcilerConditionTypes = map[string]string{
 	"RegistrationTenantStores": conditionTypeRegistrationTenantStoresReady,
 	// The KeystoneService controller's two block legs. The names carry the CR
 	// kind as a prefix because "Catalog" and "ServiceAccounts" already label the
-	// ControlPlane's inline legs, and the two mechanisms must stay
-	// distinguishable per metric series while they coexist.
+	// ControlPlane's own legs (the identity row and the registration
+	// aggregation), and the two must stay distinguishable per metric series.
 	"KeystoneServiceCatalog": conditionTypeKeystoneServiceCatalogReady,
 	"KeystoneServiceAccount": conditionTypeKeystoneServiceAccountReady,
 }

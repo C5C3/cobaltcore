@@ -5,38 +5,32 @@
 package controller
 
 import (
-	"cmp"
 	"context"
 	"fmt"
-	"slices"
-	"strings"
 
-	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
-	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
-	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
-	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	"github.com/c5c3/cobaltcore/internal/common/apply"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
-	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
-	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
 )
 
 // ServiceAccountsReady reasons. Like the other condition-reason blocks these are
 // the single source of truth for the status contract; call sites MUST reference
-// the constants so a rename is caught by the compiler.
+// the constants so a rename is caught by the compiler. Most of them are written
+// by the KeystoneService controller onto a registration child, and relayed
+// verbatim onto the ControlPlane's conditions from here and from the service
+// legs.
 const (
-	// reasonNoServiceAccountsDeclared is the True reason when the spec declares no
-	// service accounts. It is still True (not simply omitted) so the condition
-	// schema is identical whether or not accounts are declared.
-	reasonNoServiceAccountsDeclared = "NoServiceAccountsDeclared"
-	// reasonServiceAccountsProvisioned is the True reason when every declared
-	// account is fully provisioned.
+	// reasonNoServiceRegistrationsProjected is the True reason when no built-in
+	// service block is declared, which is every External-mode ControlPlane. It is
+	// still set True rather than omitted, so the condition schema is identical
+	// either way.
+	reasonNoServiceRegistrationsProjected = "NoServiceRegistrationsProjected"
+	// reasonServiceAccountsProvisioned is the True reason when every projected
+	// built-in registration is Ready.
 	reasonServiceAccountsProvisioned = "ServiceAccountsProvisioned"
 	// reasonWaitingForServiceAccountAdmin defers projection until the admin
 	// credential is minted (K-ORC cannot talk to Keystone before then).
@@ -61,1019 +55,93 @@ const (
 	reasonServiceAccountError = "ServiceAccountError"
 )
 
-// serviceAccountPushContentHashAnnotation stamps the assembled clouds.yaml
-// content hash onto a service-account PushSecret, forcing an immediate re-push on
-// a rotation (ESO's PushSecret controller does not watch the source Secret).
-const serviceAccountPushContentHashAnnotation = "c5c3.io/service-account-push-hash" //nolint:gosec // G101 false positive: annotation key, not a credential.
-
-// --- naming helpers ---
-
-// serviceAccountChildPrefix scopes the prune sweep: only CRs carrying this prefix
-// AND controlled by this ControlPlane are candidates for removal, so the admin
-// imports (and any foreign CR) can never be caught by it.
-func serviceAccountChildPrefix(cp *c5c3v1alpha1.ControlPlane) string {
-	return cp.Name + "-service-account-"
+// projectedBuiltinRegistration names one KeystoneService child a built-in
+// service leg projects: the display name used in messages and the desired child
+// whose name/namespace the aggregation reads.
+type projectedBuiltinRegistration struct {
+	display string
+	desired *c5c3v1alpha1.KeystoneService
 }
 
-// serviceAccountUserName resolves the OpenStack user name for an entry (defaults
-// to the account name). It mirrors the webhook's effectiveServiceAccountUserName.
-func serviceAccountUserName(sa c5c3v1alpha1.ServiceAccountSpec) string {
-	return cmp.Or(sa.UserName, sa.Name)
-}
-
-// serviceAccountDomainName resolves the OpenStack domain for an entry, defaulting
-// to the effective admin domain. It mirrors the webhook's
-// effectiveServiceAccountDomain.
-func serviceAccountDomainName(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
-	return cmp.Or(sa.DomainName, adminDomainName(cp))
-}
-
-// The child CR / Secret names embed the account NAME (a stable handle), never the
-// mutable OpenStack identity, and each discriminator sits in a fixed position so
-// one account's name can never alias another's CR.
-func serviceAccountUserRef(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
-	return serviceAccountChildPrefix(cp) + "user-" + sa.Name
-}
-
-func serviceAccountUserProbeRef(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
-	return serviceAccountChildPrefix(cp) + "user-probe-" + sa.Name
-}
-
-func serviceAccountProjectRef(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
-	return serviceAccountChildPrefix(cp) + "project-" + sa.Name
-}
-
-func serviceAccountProjectProbeRef(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
-	return serviceAccountChildPrefix(cp) + "project-probe-" + sa.Name
-}
-
-// serviceAccountDomainRef returns the Domain import CR the account's user/project
-// resolve their domain against. When the effective domain equals the admin domain
-// it REUSES the admin Domain import (reconcileKORC already created it before this
-// sub-reconciler runs); otherwise a per-account unmanaged Domain import is used.
-func serviceAccountDomainRef(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
-	if serviceAccountDomainName(cp, sa) == adminDomainName(cp) {
-		return adminDomainRef(cp)
+// projectedBuiltinRegistrations returns one entry per enabled built-in service (a
+// non-nil spec.services.glance / .placement / .barbican), in that order.
+func projectedBuiltinRegistrations(cp *c5c3v1alpha1.ControlPlane) []projectedBuiltinRegistration {
+	var entries []projectedBuiltinRegistration
+	if cp.Spec.Services.Glance != nil {
+		entries = append(entries, projectedBuiltinRegistration{
+			display: "glance", desired: desiredGlanceRegistration(cp),
+		})
 	}
-	return serviceAccountChildPrefix(cp) + "domain-" + sa.Name
-}
-
-// serviceAccountRoleImportRef names the unmanaged Role import for one role. It is
-// NOT keyed on the account: the import filters on the role name alone (Keystone
-// roles are global by default, so it carries no DomainRef) and rides the one
-// credRef reconcileServiceAccounts computes for every account, so a per-account
-// name would only mint byte-identical duplicates — N accounts declaring the same
-// role would have K-ORC polling N identical Keystone lookups and waking the
-// ControlPlane N times per status write. Every account declaring a role therefore
-// resolves the SAME import (the same reuse serviceAccountDomainRef applies to a
-// shared domain). The slug sits in a fixed position after a per-kind discriminator
-// so one role can never alias another's CR.
-func serviceAccountRoleImportRef(cp *c5c3v1alpha1.ControlPlane, role string) string {
-	return serviceAccountChildPrefix(cp) + "role-" + serviceAccountRoleSlug(role)
-}
-
-// serviceAccountRoleAssignmentRef names the managed RoleAssignment CR projected for
-// one (account, role) — unlike the Role import it IS per-account, since it binds
-// that account's user to its project.
-func serviceAccountRoleAssignmentRef(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec, role string) string {
-	return serviceAccountChildPrefix(cp) + sa.Name + "-assign-" + serviceAccountRoleSlug(role)
-}
-
-func serviceAccountPasswordSecretName(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec, gen int64) string {
-	return fmt.Sprintf("%s%s-password-v%d", serviceAccountChildPrefix(cp), sa.Name, gen)
-}
-
-func serviceAccountSourceSecretName(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
-	return serviceAccountChildPrefix(cp) + sa.Name + "-source"
-}
-
-func serviceAccountPushSecretName(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
-	return serviceAccountChildPrefix(cp) + sa.Name + "-backup"
-}
-
-func serviceAccountCredentialsSecretName(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
-	return serviceAccountChildPrefix(cp) + sa.Name + "-credentials"
-}
-
-// serviceAccountDeliveryNamespace resolves the namespace an account's consumer
-// credentials — the source Secret, PushSecret, ExternalSecret, and materialized
-// Secret behind them — are delivered into: the account's spec targetNamespace
-// when set, the ControlPlane's own namespace otherwise. It is the service-account
-// twin of the KeystoneNamespace scoping the admin password rides (cf.
-// adminPasswordRemoteKeyFor): the delivery leg follows the consumer, and the
-// OpenBao path segment follows the delivery namespace so it stays inside that
-// namespace's templated eso-tenant policy.
-//
-// The webhook constrains targetNamespace to the ControlPlane's own namespace or
-// one of its dedicated service namespaces. That rule is RE-ENFORCED here rather
-// than assumed — the same reasoning as DedicatedServiceNamespaces(): admission can
-// be absent, not merely unavailable (the ValidatingWebhookConfiguration not yet
-// registered during install, a GitOps/etcd restore replaying stored objects), and
-// failurePolicy: Fail does not cover that. An out-of-scope target falls back to the
-// ControlPlane's own namespace, so a webhook-bypassed CR cannot plant an account's
-// plaintext password and clouds.yaml in a namespace no sweep reaches:
-// pruneServiceAccounts and sweepExternalNamespaceResidue both walk
-// controlPlaneNamespaces(cp), so a Secret outside it would survive teardown of the
-// ControlPlane that minted it.
-func serviceAccountDeliveryNamespace(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
-	if sa.TargetNamespace != "" && !slices.Contains(controlPlaneNamespaces(cp), sa.TargetNamespace) {
-		return childNamespace(cp)
+	if cp.Spec.Services.Placement != nil {
+		entries = append(entries, projectedBuiltinRegistration{
+			display: "placement", desired: desiredPlacementRegistration(cp),
+		})
 	}
-	return cmp.Or(sa.TargetNamespace, childNamespace(cp))
-}
-
-// serviceAccountDeliveryNamespaces returns the DISTINCT delivery namespaces across
-// the declared accounts, always including the child namespace (the default target
-// and the K-ORC children's home) and in a stable order (child namespace first).
-// It is the deduplicated set the per-namespace store gate walks.
-func serviceAccountDeliveryNamespaces(cp *c5c3v1alpha1.ControlPlane, sas []c5c3v1alpha1.ServiceAccountSpec) []string {
-	namespaces := []string{childNamespace(cp)}
-	seen := map[string]struct{}{childNamespace(cp): {}}
-	for i := range sas {
-		ns := serviceAccountDeliveryNamespace(cp, sas[i])
-		if _, dup := seen[ns]; dup {
-			continue
-		}
-		seen[ns] = struct{}{}
-		namespaces = append(namespaces, ns)
+	if cp.Spec.Services.Barbican != nil {
+		entries = append(entries, projectedBuiltinRegistration{
+			display: "barbican", desired: desiredBarbicanRegistration(cp),
+		})
 	}
-	return namespaces
+	return entries
 }
 
-// serviceAccountRemoteKeyFor returns the per-CR, namespace-scoped OpenBao path a
-// service account's credentials are mirrored to, following the established
-// per-CR + namespace-scoped convention (cf. adminAppCredentialRemoteKeyFor).
+// reconcileServiceAccounts aggregates the readiness of the KeystoneService
+// children the Glance, Placement and Barbican legs applied earlier in the same
+// pass into the ServiceAccountsReady condition.
 //
-// The namespace segment is the account's DELIVERY namespace, not the
-// ControlPlane's own: delivery rides that namespace's openbao-tenant-store, whose
-// templated eso-tenant policy only admits paths whose namespace segment is its own
-// (openstack/keystone/{caller-namespace}/+/service-accounts/+). It is bit-for-bit
-// unchanged for the default (no targetNamespace), where the delivery namespace IS
-// the ControlPlane's own — the same rationale as adminPasswordRemoteKeyFor keying
-// on the KeystoneNamespace.
-func serviceAccountRemoteKeyFor(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) string {
-	return "openstack/keystone/" + serviceAccountDeliveryNamespace(cp, sa) + "/" + cp.Name + "/service-accounts/" + sa.Name
-}
-
-// ownsServiceAccountChild reports whether obj is a child this ControlPlane created
-// for a declared service account. BOTH the ownership test and the
-// "-service-account-" name prefix must match, so the admin imports (and any
-// foreign object sharing a namespace) can never be caught by the prune or teardown
-// sweep. Ownership is isControlPlaneChild, not a bare controller reference, so it
-// recognises a delivery child placed in a dedicated service namespace by its
-// ownership LABELS too (a cross-namespace child carries no owner reference). Shared
-// by pruneServiceAccounts and the deletion sweep.
-func (r *ControlPlaneReconciler) ownsServiceAccountChild(cp *c5c3v1alpha1.ControlPlane, obj client.Object) bool {
-	return isControlPlaneChild(obj, cp) && strings.HasPrefix(obj.GetName(), serviceAccountChildPrefix(cp))
-}
-
-// serviceAccountState carries one account's ensure outcome: the projected status
-// (whose Ready field reports full convergence), and — if not ready — the single
-// blocking condition, in precedence order (collision, terminal, probing, bounded
-// wait). pendingObjs are the not-yet-resolved K-ORC objects the External-mode
-// classifier inspects.
-type serviceAccountState struct {
-	status      c5c3v1alpha1.ServiceAccountStatus
-	created     bool // the managed User was created this pass (one-shot deferral events)
-	scheduled   bool // rotation.mode Scheduled (deferred)
-	collision   string
-	terminalMsg string
-	probingMsg  string
-	waitMsg     string
-	pendingObjs []orcv1alpha1.ObjectWithConditions
-}
-
-// invalidateServiceAccountReadiness clears Ready on every projected per-account
-// status entry, leaving the remaining fields (notably LastPasswordRotation)
-// intact.
+// The double reporting is intended: a failing child already fails its own
+// service condition, and the aggregate names the same cause under the condition
+// type operators alert on.
 //
-// reconcileServiceAccounts returns BEFORE its status projection on every error
-// path, so without this the last converged slice — Ready=true entries included —
-// survives a pass that could not verify a single account. Those per-account ready
-// flags are the entire status surface of the user-declared inline entries in
-// spec.korc.serviceAccounts: the built-in services take their Keystone identity
-// from a projected KeystoneService child and read nothing here, so a flag left
-// reading True vouches for an identity this pass could not confirm, and nothing
-// else contradicts it. A persistent error would leave that reading standing
-// indefinitely.
-//
-// Clearing ALL entries rather than only the account that errored is deliberate:
-// the pass returns early, so the accounts ordered after the failing one were never
-// attempted either, and a failing pass has no basis to vouch for any of them. This
-// restores exactly the reachability the short-circuiting RunPipeline used to give
-// (an erroring ServiceAccounts meant the service projections never ran at all);
-// recovery is one successful pass away.
-func invalidateServiceAccountReadiness(cp *c5c3v1alpha1.ControlPlane) {
-	for i := range cp.Status.ServiceAccounts {
-		cp.Status.ServiceAccounts[i].Ready = false
-	}
-}
-
-// reconcileServiceAccounts projects spec.korc.serviceAccounts onto managed K-ORC
-// User / Project CRs with operator-generated, OpenBao-backed, rotatable passwords,
-// driving the ServiceAccountsReady condition. It is mode-independent: the same
-// declaration works against a managed in-cluster Keystone and an external one.
-//
-// It is GATED on AdminCredentialReady (the admin credential must be minted before
-// K-ORC can talk to Keystone) and on the OpenBao-backed ClusterSecretStore. The
-// fail-loudly collision posture is operator-implemented: K-ORC's managed create
-// SILENTLY adopts a same-name resource, so a short-lived unmanaged probe import
-// decides exists/absent before any managed User/Project is created; a hit fails
-// loud unless the entry opts into adoption.
-func (r *ControlPlaneReconciler) reconcileServiceAccounts(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
+// The member carries no condition gate, because it only reads the children the
+// service legs wrote: there is no projection it could defer.
+func (r *ControlPlaneReconciler) reconcileServiceAccounts(
+	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
+) (ctrl.Result, error) {
 	fail := conditionFailer(cp, conditionTypeServiceAccountsReady)
-	sas := cp.Spec.KORC.ServiceAccounts
 
-	// Gate on AdminCredentialReady.
-	if !conditions.AllTrue(cp.Status.Conditions, conditionTypeAdminCredentialReady) {
-		logger.Info("AdminCredential not ready, deferring service-account projection")
-		fail(reasonWaitingForServiceAccountAdmin, "AdminCredentialReady is not True; service-account projection deferred")
-		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-	}
-
-	// Gate on the store the ControlPlane selected via spec.secretStoreRef
-	// (default: the operator-provisioned per-tenant store) so an ESO/OpenBao
-	// outage surfaces promptly rather than at the next hourly refresh (#476). A
-	// namespaced store is resolved per namespace, so gate on every DISTINCT
-	// delivery namespace across the declared accounts — always including the child
-	// namespace (the default delivery target and the K-ORC children's home) — and
-	// name the one that is not ready. An account with a dedicated targetNamespace
-	// rides that namespace's own openbao-tenant-store, so a store ready at home is
-	// not enough to deliver into a service namespace whose store is still coming up.
-	//
-	// Each delivery namespace's store is read from the cluster that namespace lives
-	// on, and so is the delivery leg gated on it: an account delivered beside a
-	// placed service rides the ESO on THAT cluster. Every cluster is resolved
-	// before the first gate read, so one that does not resolve stops the pass with
-	// nothing written.
-	delivery, err := r.childrenClientsFor(ctx, cp, serviceAccountDeliveryNamespaces(cp, sas)...)
-	if err != nil {
-		fail(commonmulticluster.TargetClusterUnavailable, err.Error())
-		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-	}
-
-	storeRef := effectiveControlPlaneStoreRef(cp)
-	for _, deliveryNS := range serviceAccountDeliveryNamespaces(cp, sas) {
-		storeReady, err := secrets.IsStoreRefReady(ctx, delivery[deliveryNS], storeRef, deliveryNS)
-		if err != nil {
-			invalidateServiceAccountReadiness(cp)
-			fail(reasonServiceAccountError, fmt.Sprintf(
-				"checking %s %q in namespace %q: %v", storeRef.Kind, storeRef.Name, deliveryNS, err,
-			))
-			return ctrl.Result{}, err
-		}
-		if !storeReady {
-			logger.Info("secret store not ready, deferring service-account round-trip", "namespace", deliveryNS)
-			fail(reasonServiceAccountStoreNotReady, fmt.Sprintf(
-				"%s %q in namespace %q is not ready; upstream secret backend unreachable",
-				storeRef.Kind, storeRef.Name, deliveryNS,
-			))
-			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
-	}
-
-	secretName := cmp.Or(cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName, korcCloudsYamlSecretName)
-	credRef := orcv1alpha1.CloudCredentialsReference{
-		SecretName: secretName,
-		CloudName:  cp.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName,
-	}
-	// Managed User/Project authenticate via the admin PASSWORD cloud, not the
-	// spec's app-credential clouds.yaml, so a teardown Delete survives the AC
-	// revoke (the same rationale as the opt-in catalog entries).
-	managedCredRef := entryCredentialsRef(cp, credRef)
-
-	// Preserve the previously-recorded per-account status so LastPasswordRotation
-	// survives a steady-state pass (it is only refreshed on an actual rotation).
-	prior := make(map[string]c5c3v1alpha1.ServiceAccountStatus, len(cp.Status.ServiceAccounts))
-	for _, s := range cp.Status.ServiceAccounts {
-		prior[s.Name] = s
-	}
-
-	states := make([]serviceAccountState, 0, len(sas))
-	for i := range sas {
-		st, err := r.ensureServiceAccount(ctx, delivery[serviceAccountDeliveryNamespace(cp, sas[i])], cp, sas[i],
-			credRef, managedCredRef, prior[sas[i].Name])
-		if err != nil {
-			invalidateServiceAccountReadiness(cp)
-			fail(reasonServiceAccountError, fmt.Sprintf("reconciling service account %q: %v", sas[i].Name, err))
-			return ctrl.Result{}, err
-		}
-		states = append(states, st)
-	}
-
-	// Prune undeclared children (always — even with zero declared accounts a
-	// previously-declared account must be swept).
-	pruning, err := r.pruneServiceAccounts(ctx, cp, sas)
-	if err != nil {
-		invalidateServiceAccountReadiness(cp)
-		fail(reasonServiceAccountError, fmt.Sprintf("pruning undeclared service accounts: %v", err))
-		return ctrl.Result{}, err
-	}
-
-	// Project status before any early return.
-	statuses := make([]c5c3v1alpha1.ServiceAccountStatus, 0, len(states))
-	for _, st := range states {
-		statuses = append(statuses, st.status)
-	}
-	cp.Status.ServiceAccounts = statuses
-
-	// One-shot deferral events, on the account-creation pass only.
-	for i := range states {
-		if !states[i].created {
-			continue
-		}
-		if states[i].scheduled {
-			r.Recorder.Event(cp, "Normal", "ScheduledRotationDeferred", fmt.Sprintf(
-				"rotation.mode Scheduled on service account %q is accepted but not yet implemented; rotate on "+
-					"demand via a CredentialRotation CR", sas[i].Name,
-			))
-		}
-	}
-
-	// Failure precedence, most specific cause first.
-	// 1. A classifiable External-mode K-ORC message on any pending object.
-	if cp.IsExternalKeystone() {
-		var pending []orcv1alpha1.ObjectWithConditions
-		for _, st := range states {
-			pending = append(pending, st.pendingObjs...)
-		}
-		if reason, raw := classifyExternalKORCFailure(pending...); reason != "" {
-			message := fmt.Sprintf("external Keystone at %s: %s", externalKeystoneAuthURL(cp), raw)
-			if reason == conditionReasonCatalogEndpointMismatch {
-				message += "; " + catalogEndpointMismatchHint(cp)
-			}
-			fail(reason, message)
-			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
-	}
-	// 2. A fail-loudly collision.
-	for _, st := range states {
-		if st.collision != "" {
-			fail(reasonServiceAccountCollision, st.collision)
-			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
-	}
-	// 3. A terminal K-ORC error.
-	for _, st := range states {
-		if st.terminalMsg != "" {
-			fail(reasonServiceAccountsFailed, st.terminalMsg)
-			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
-	}
-	// 4. A collision probe still resolving.
-	for _, st := range states {
-		if st.probingMsg != "" {
-			fail(reasonProbingForCollision, st.probingMsg)
-			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
-	}
-	// 5. Bounded waits.
-	for _, st := range states {
-		if !st.status.Ready {
-			fail(reasonWaitingForServiceAccounts, st.waitMsg)
-			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
-	}
-	// 6. Undeclared children still being removed.
-	if len(pruning) > 0 {
-		fail(reasonWaitingForServiceAccounts, fmt.Sprintf(
-			"%d undeclared service-account child CR(s) are still being removed", len(pruning),
-		))
-		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-	}
-
-	if len(sas) == 0 {
+	entries := projectedBuiltinRegistrations(cp)
+	if len(entries) == 0 {
 		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeServiceAccountsReady,
 			Status:             metav1.ConditionTrue,
 			ObservedGeneration: cp.Generation,
-			Reason:             reasonNoServiceAccountsDeclared,
-			Message:            "no service accounts are declared",
+			Reason:             reasonNoServiceRegistrationsProjected,
+			Message:            "no built-in service registrations are projected",
 		})
 		return ctrl.Result{}, nil
 	}
+
+	for _, entry := range entries {
+		// Read through the LOCAL client: a KeystoneService is reconciled on the
+		// management cluster beside the ControlPlane it registers through, whatever
+		// cluster its service runs on.
+		child := &c5c3v1alpha1.KeystoneService{}
+		err := r.Get(ctx, client.ObjectKeyFromObject(entry.desired), child)
+		switch {
+		case apierrors.IsNotFound(err):
+			// The service leg is gated on something upstream of its own apply, so the
+			// child it projects is not there yet. That is a bounded wait, not a failure.
+			fail(reasonWaitingForServiceRegistration, fmt.Sprintf(
+				"KeystoneService child %q has not been projected yet", entry.desired.Name))
+			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+		case err != nil:
+			err = fmt.Errorf("reading the %s KeystoneService child: %w", entry.display, err)
+			fail(reasonServiceRegistrationError, err.Error())
+			return ctrl.Result{}, err
+		}
+
+		if res, halt := foldBuiltinRegistrationReady(cp, child, conditionTypeServiceAccountsReady); halt {
+			return res, nil
+		}
+	}
+
 	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeServiceAccountsReady,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: cp.Generation,
 		Reason:             reasonServiceAccountsProvisioned,
-		Message:            fmt.Sprintf("%d service account(s) provisioned and materialized", len(sas)),
+		Message:            fmt.Sprintf("%d built-in service registration(s) ready", len(entries)),
 	})
 	return ctrl.Result{}, nil
-}
-
-// ensureServiceAccount projects one declared account. It gates the managed
-// User/Project creation behind the fail-loudly collision probe, generates and
-// round-trips the password, and returns the account's readiness plus the single
-// blocking condition (if any).
-//
-// delivery is the client the account's DELIVERY namespace is written with, which
-// only the publish leg uses: the K-ORC children and the generation-scoped
-// password Secret behind them stay in the ControlPlane's own namespace, on the
-// management cluster, wherever the credentials are delivered.
-func (r *ControlPlaneReconciler) ensureServiceAccount(
-	ctx context.Context, delivery client.Client, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
-	credRef, managedCredRef orcv1alpha1.CloudCredentialsReference, prior c5c3v1alpha1.ServiceAccountStatus,
-) (serviceAccountState, error) {
-	userName := serviceAccountUserName(sa)
-	domain := serviceAccountDomainName(cp, sa)
-	st := serviceAccountState{
-		status: c5c3v1alpha1.ServiceAccountStatus{
-			Name:                 sa.Name,
-			SecretName:           serviceAccountCredentialsSecretName(cp, sa),
-			SecretNamespace:      serviceAccountDeliveryNamespace(cp, sa),
-			LastPasswordRotation: prior.LastPasswordRotation,
-		},
-		scheduled: sa.Rotation != nil && sa.Rotation.Mode == c5c3v1alpha1.ServiceAccountRotationModeScheduled,
-	}
-
-	// (a) Domain handle.
-	domainRef, err := r.ensureServiceAccountDomain(ctx, cp, sa, credRef)
-	if err != nil {
-		return st, fmt.Errorf("ensuring domain import: %w", err)
-	}
-
-	// (b) Project.
-	projObj, projReady, err := r.ensureServiceAccountProject(ctx, cp, sa, credRef, managedCredRef, domainRef, &st)
-	if err != nil {
-		return st, err
-	}
-	if st.collision != "" || st.probingMsg != "" {
-		return st, nil
-	}
-	if projObj != nil && projObj.Status.ID != nil {
-		st.status.ProjectID = *projObj.Status.ID
-	}
-
-	// (c) User collision gate.
-	proceed, err := r.serviceAccountUserCollisionGate(ctx, cp, sa, credRef, userName, domainRef, &st)
-	if err != nil {
-		return st, err
-	}
-	if !proceed {
-		return st, nil
-	}
-
-	// (d)/(e) Managed User with generation-scoped password (and rotation flip).
-	user, gen, created, rotatedAt, err := r.ensureServiceAccountUser(ctx, cp, sa, managedCredRef, domainRef,
-		serviceAccountProjectRef(cp, sa))
-	if err != nil {
-		return st, err
-	}
-	st.created = created
-	st.status.PasswordGeneration = gen
-	if user.Status.ID != nil {
-		st.status.UserID = *user.Status.ID
-	}
-	if rotatedAt != nil {
-		st.status.LastPasswordRotation = rotatedAt
-	}
-
-	// A terminal K-ORC error on the user or project fails loud.
-	for _, obj := range []orcv1alpha1.ObjectWithConditions{projObj, user} {
-		if termErr := orcv1alpha1.GetTerminalError(obj); termErr != nil {
-			st.terminalMsg = fmt.Sprintf("K-ORC reported a terminal error on service account %q: %v", sa.Name, termErr)
-			return st, nil
-		}
-	}
-
-	passwordRefName := serviceAccountPasswordSecretName(cp, sa, gen)
-	appliedCurrent := user.Status.Resource != nil && user.Status.Resource.AppliedPasswordRef == passwordRefName
-	if !projReady || !orcv1alpha1.IsAvailable(user) || !appliedCurrent {
-		st.waitMsg = serviceAccountWaitMessage(sa.Name, projObj, user)
-		st.pendingObjs = pendingServiceAccountObjs(projObj, user)
-		return st, nil
-	}
-
-	// (e.5) Role assignments: project one unmanaged Role import plus one managed
-	// RoleAssignment per declared role and fold their readiness into the per-account
-	// gate, so st.status.Ready stays true only once the roles are assigned too. The
-	// user and project handles the assignments reference are Available by here.
-	rolesReady, err := r.ensureServiceAccountRoles(ctx, cp, sa, credRef, managedCredRef,
-		serviceAccountUserRef(cp, sa), serviceAccountProjectRef(cp, sa), &st)
-	if err != nil {
-		return st, err
-	}
-	if !rolesReady {
-		return st, nil
-	}
-
-	// (f) Publish: assemble the source Secret, push to OpenBao, materialize the
-	// consumer Secret, and gate readiness on the materialized password matching.
-	published, err := r.publishServiceAccount(ctx, delivery, cp, sa, userName, sa.Project.Name, domain, gen)
-	if err != nil {
-		return st, err
-	}
-	if !published {
-		st.waitMsg = fmt.Sprintf("service account %q is provisioned in Keystone; awaiting the OpenBao round-trip and materialized Secret", sa.Name)
-		return st, nil
-	}
-	st.status.Ready = true
-	return st, nil
-}
-
-// ensureServiceAccountDomain ensures the Domain handle the account's user/project
-// resolve against. When the effective domain matches the admin domain it reuses
-// the admin Domain import (created by reconcileKORC) and creates nothing.
-func (r *ControlPlaneReconciler) ensureServiceAccountDomain(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
-	credRef orcv1alpha1.CloudCredentialsReference,
-) (string, error) {
-	name := serviceAccountDomainRef(cp, sa)
-	if name == adminDomainRef(cp) {
-		return name, nil
-	}
-	if err := ensureAccountDomainImport(ctx, r.Client, r.Scheme, cp,
-		name, childNamespace(cp), serviceAccountDomainName(cp, sa), credRef, nil); err != nil {
-		return "", fmt.Errorf("service-account Domain import %q: %w", name, err)
-	}
-	return name, nil
-}
-
-// ensureServiceAccountProject ensures the project handle. For create:false it is
-// an unmanaged import (referenced, never created or deleted by the operator). For
-// create:true it is a probe-gated managed Project. It writes any collision /
-// probing verdict onto st and returns the project object plus whether it is ready.
-func (r *ControlPlaneReconciler) ensureServiceAccountProject(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
-	credRef, managedCredRef orcv1alpha1.CloudCredentialsReference, domainRef string, st *serviceAccountState,
-) (*orcv1alpha1.Project, bool, error) {
-	ns := childNamespace(cp)
-	name := serviceAccountProjectRef(cp, sa)
-
-	if !sa.Project.Create {
-		project := unmanagedProjectImport(name, ns, sa.Project.Name, domainRef, credRef)
-		if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, project, apply.FieldManager); err != nil {
-			return nil, false, fmt.Errorf("service-account referenced Project import %q: %w", name, err)
-		}
-		return project, korcAvailableUpToDate(project), nil
-	}
-
-	// create:true — probe for a pre-existing project before creating a managed one
-	// (K-ORC would silently adopt it). adopt is never set here: project takeover is
-	// expressed as project.create=false, so sa.Adopt gates the user only.
-	probe := unmanagedProjectImport(serviceAccountProjectProbeRef(cp, sa), ns, sa.Project.Name, domainRef, credRef)
-	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, cp, managedChildProbeInput{
-		kind:        "Project",
-		managed:     &orcv1alpha1.Project{},
-		managedName: name,
-		namespace:   ns,
-		probe:       probe,
-		errPrefix:   "service-account",
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	if !proceed {
-		switch verdict {
-		case probeResolved:
-			st.collision = fmt.Sprintf(
-				"service account %q wants to CREATE project %q in domain %q, but a project of that name already "+
-					"exists in Keystone; the operator will not silently adopt it — set project.create=false to "+
-					"reference the existing project instead",
-				sa.Name, sa.Project.Name, serviceAccountDomainName(cp, sa),
-			)
-		case probePending:
-			st.probingMsg = fmt.Sprintf("probing whether project %q already exists in Keystone before creating it for service account %q",
-				sa.Project.Name, sa.Name)
-			st.pendingObjs = pendingServiceAccountObjs(probe)
-		case probeAbsent:
-			// Unreachable: an absent probe proceeds.
-		}
-		return probe, false, nil
-	}
-
-	project := managedProjectChild(name, ns, sa.Project.Name, domainRef, managedCredRef)
-	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, project, apply.FieldManager); err != nil {
-		return nil, false, fmt.Errorf("service-account managed Project %q: %w", name, err)
-	}
-	return project, korcAvailableUpToDate(project), nil
-}
-
-// serviceAccountUserCollisionGate implements the fail-loudly default for
-// pre-existing users. It returns proceed=true when the managed User may be
-// created (the operator already owns it, adoption was requested, or a probe
-// confirmed the user is absent) and writes a collision / probing verdict onto st
-// otherwise.
-func (r *ControlPlaneReconciler) serviceAccountUserCollisionGate(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
-	credRef orcv1alpha1.CloudCredentialsReference, userName, domainRef string, st *serviceAccountState,
-) (bool, error) {
-	ns := childNamespace(cp)
-
-	probe := unmanagedUserImport(serviceAccountUserProbeRef(cp, sa), ns, userName, domainRef, credRef)
-	proceed, verdict, err := managedChildProbeGate(ctx, r.Client, r.Scheme, cp, managedChildProbeInput{
-		kind:             "User",
-		managed:          &orcv1alpha1.User{},
-		managedName:      serviceAccountUserRef(cp, sa),
-		namespace:        ns,
-		adopt:            sa.Adopt,
-		probe:            probe,
-		dropProbeOnOwned: true,
-		errPrefix:        "service-account",
-	})
-	if err != nil || proceed {
-		return proceed, err
-	}
-	switch verdict {
-	case probeResolved:
-		st.collision = fmt.Sprintf(
-			"service account %q resolves to Keystone user %q in domain %q, which already exists; the operator "+
-				"fails loudly rather than take over an account it did not create — set adopt=true to take over "+
-				"the account (and rotate its password), or remove the entry",
-			sa.Name, userName, serviceAccountDomainName(cp, sa),
-		)
-	case probePending:
-		st.probingMsg = fmt.Sprintf("probing whether Keystone user %q already exists before creating service account %q",
-			userName, sa.Name)
-		st.pendingObjs = pendingServiceAccountObjs(probe)
-	case probeAbsent:
-		// Unreachable: an absent probe proceeds.
-	}
-	return false, nil
-}
-
-// ensureServiceAccountUser create-or-updates the managed K-ORC User with the
-// current-generation password, and flips the passwordRef to a fresh generation
-// when the CredentialRotation reconciler has cleared the generation annotation.
-// K-ORC's user actuator re-applies the password only when the passwordRef NAME
-// changes, so a rotation is a Secret-name flip, not a content edit.
-func (r *ControlPlaneReconciler) ensureServiceAccountUser(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
-	managedCredRef orcv1alpha1.CloudCredentialsReference, domainRef, projectRef string,
-) (*orcv1alpha1.User, int64, bool, *metav1.Time, error) {
-	return ensureManagedAccountUser(ctx, r.Client, r.Scheme, cp, managedAccountUserInput{
-		name:           serviceAccountUserRef(cp, sa),
-		namespace:      childNamespace(cp),
-		userName:       serviceAccountUserName(sa),
-		domainRef:      domainRef,
-		projectRef:     projectRef,
-		managedCredRef: managedCredRef,
-		passwordSecretNameFor: func(gen int64) string {
-			return serviceAccountPasswordSecretName(cp, sa, gen)
-		},
-		ensurePasswordSecret: func(ctx context.Context, gen int64) error {
-			return r.ensureServiceAccountPasswordSecret(ctx, cp, sa, gen)
-		},
-		passwordSecretPrefix: serviceAccountChildPrefix(cp) + sa.Name + "-password-v",
-		ownsChild:            func(obj client.Object) bool { return r.ownsServiceAccountChild(cp, obj) },
-		errPrefix:            "service-account",
-	})
-}
-
-// ensureServiceAccountRoles projects the declared roles onto K-ORC CRs and reports
-// whether every projected object is Available. Per role, in dependency order, it
-// applies:
-//
-//   - an UNMANAGED Role import filtered by the role NAME (no DomainRef — Keystone
-//     roles are global by default), riding the spec clouds.yaml (credRef) like the
-//     Domain/Project imports: reading a role never mutates it; and
-//   - a MANAGED RoleAssignment binding that Role to the account's user on its
-//     project. It authenticates via the admin PASSWORD cloud (managedCredRef), not
-//     the spec's app-credential clouds.yaml, so a teardown Delete survives the AC
-//     revoke — the same rationale as the managed User.
-//
-// The names are deterministic per (account, role), so both applies are pure
-// projections. A terminal K-ORC error on either object writes st.terminalMsg and
-// returns; a not-yet-Available object is recorded on st.pendingObjs and, on the
-// first blocker, named in st.waitMsg (with a hint that the role may be missing from
-// Keystone once its import stalls past the grace window).
-func (r *ControlPlaneReconciler) ensureServiceAccountRoles(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
-	credRef, managedCredRef orcv1alpha1.CloudCredentialsReference, userRef, projectRef string, st *serviceAccountState,
-) (bool, error) {
-	ns := childNamespace(cp)
-	ready := true
-	for _, role := range sa.Roles {
-		out, err := applyAccountRole(ctx, r.Client, r.Scheme, cp,
-			serviceAccountRoleImportRef(cp, role), serviceAccountRoleAssignmentRef(cp, sa, role), ns, role,
-			credRef, managedCredRef, userRef, projectRef, "service-account", nil)
-		if err != nil {
-			return false, err
-		}
-		if termErr := out.terminalErr; termErr != nil {
-			st.terminalMsg = fmt.Sprintf(
-				"K-ORC reported a terminal error on service account %q role %q: %v", sa.Name, role, termErr,
-			)
-			return false, nil
-		}
-		if out.blocked == nil {
-			continue
-		}
-		ready = false
-		st.pendingObjs = append(st.pendingObjs, out.blocked)
-		if st.waitMsg != "" {
-			continue
-		}
-		if _, isImport := out.blocked.(*orcv1alpha1.Role); isImport {
-			st.waitMsg = fmt.Sprintf(
-				"service account %q: Role import for role %q is registered but not yet Available", sa.Name, role,
-			)
-			if out.stalled {
-				st.waitMsg += fmt.Sprintf(
-					"; role %q may not exist in Keystone — create it there or fix the spelling", role,
-				)
-			}
-			continue
-		}
-		st.waitMsg = fmt.Sprintf(
-			"service account %q: RoleAssignment for role %q is registered but not yet Available", sa.Name, role,
-		)
-	}
-	return ready, nil
-}
-
-// ensureServiceAccountPasswordSecret ensures the generation-scoped, operator-owned
-// Secret holding the K-ORC-facing password exists with a generated value. The
-// value is generated once and preserved (a new generation is a new Secret name,
-// never an in-place edit).
-//
-// It stays in the ControlPlane's own namespace on the management cluster even
-// when the account is delivered elsewhere: K-ORC resolves the managed User's
-// passwordRef in the User's own namespace, and that CR never moves.
-func (r *ControlPlaneReconciler) ensureServiceAccountPasswordSecret(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec, gen int64,
-) error {
-	name := serviceAccountPasswordSecretName(cp, sa, gen)
-	if err := r.ensureOwnedSecret(ctx, r.Client, cp, name, childNamespace(cp), generatedPasswordMutator); err != nil {
-		return fmt.Errorf("ensuring service-account password Secret %q: %w", name, err)
-	}
-	return nil
-}
-
-// publishServiceAccount assembles the source Secret, mirrors it to the per-CR
-// OpenBao path, materializes the consumer Secret, and reports whether the
-// materialized "password" matches the current generation (a rotated-away password
-// never reads ready). It is only called once K-ORC confirms the current password
-// is applied to the user.
-//
-// The publish leg — source Secret, PushSecret, consumer ExternalSecret, and the
-// materialized Secret it reads back — lands in the account's DELIVERY namespace
-// (serviceAccountDeliveryNamespace), on the cluster that namespace lives on and
-// through the delivery client, riding that namespace's own tenant store. It
-// therefore carries the ownership LABELS rather than a controller reference
-// whenever that is not the ControlPlane's own namespace at home (Kubernetes
-// forbids a cross-namespace owner reference, and a target cluster cannot resolve
-// the owner's UID). The K-ORC-facing password Secret is read from the child
-// namespace at home: that source is owned by ensureServiceAccountUser and never
-// moves.
-func (r *ControlPlaneReconciler) publishServiceAccount(
-	ctx context.Context, delivery client.Client, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
-	userName, projectName, domain string, gen int64,
-) (bool, error) {
-	deliveryNS := serviceAccountDeliveryNamespace(cp, sa)
-	sourceName := serviceAccountSourceSecretName(cp, sa)
-	return publishAccountCredentials(ctx, cp, accountPublication{
-		management:         r.Client,
-		delivery:           delivery,
-		childNamespace:     childNamespace(cp),
-		deliveryNamespace:  deliveryNS,
-		passwordSecretName: serviceAccountPasswordSecretName(cp, sa, gen),
-
-		userName:    userName,
-		projectName: projectName,
-		domain:      domain,
-		deliveryRef: targetClusterRefForNamespace(cp, deliveryNS),
-
-		sourceSecretName:      sourceName,
-		credentialsSecretName: serviceAccountCredentialsSecretName(cp, sa),
-		pushSecret:            serviceAccountPushSecret(cp, sa),
-		pushHashAnnotation:    serviceAccountPushContentHashAnnotation,
-
-		ensureSourceSecret: func(ctx context.Context, mutate func(*corev1.Secret) error) error {
-			return r.ensureOwnedSecret(ctx, delivery, cp, sourceName, deliveryNS, mutate)
-		},
-		// The PushSecret carries a controller reference at home and the ownership
-		// labels in a dedicated service namespace, so it goes through
-		// ensureUnownedOrOwned rather than secrets.EnsurePushSecret (whose controller
-		// reference is illegal cross-namespace).
-		ensurePushSecret: func(ctx context.Context, ps *esov1alpha1.PushSecret) error {
-			return r.ensureUnownedOrOwned(ctx, delivery, cp, ps)
-		},
-		ensureExternalSecret: func(ctx context.Context) error {
-			return r.ensureServiceAccountExternalSecret(ctx, delivery, cp, sa)
-		},
-
-		errPrefix: "service-account",
-	})
-}
-
-// serviceAccountPushSecret builds the PushSecret mirroring the source Secret to
-// the per-CR OpenBao path, in the account's delivery namespace. DeletionPolicy
-// Delete: the credential dies with the account that owns it (the same rationale as
-// adminAppCredentialPushSecret).
-func serviceAccountPushSecret(cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec) *esov1alpha1.PushSecret {
-	return accountPushSecretSpec(
-		serviceAccountPushSecretName(cp, sa), serviceAccountDeliveryNamespace(cp, sa),
-		serviceAccountSourceSecretName(cp, sa), serviceAccountRemoteKeyFor(cp, sa),
-		effectiveControlPlaneStoreRef(cp),
-	)
-}
-
-// ensureServiceAccountExternalSecret create-or-updates the operator-owned
-// ExternalSecret that materializes the consumer Secret from the per-CR OpenBao
-// path, in the account's delivery namespace. It reads back the "password" and
-// "clouds.yaml" properties — the documented consumption contract. It rides
-// ensureUnownedOrOwned so the ExternalSecret is owner-referenced at home and
-// label-owned (refusing foreign adoption) in a dedicated service namespace. It
-// is written through delivery, so it lands on the cluster the account's
-// credentials are delivered on.
-func (r *ControlPlaneReconciler) ensureServiceAccountExternalSecret(
-	ctx context.Context, delivery client.Client, cp *c5c3v1alpha1.ControlPlane, sa c5c3v1alpha1.ServiceAccountSpec,
-) error {
-	name := serviceAccountCredentialsSecretName(cp, sa)
-	es := accountExternalSecretSpec(name, serviceAccountDeliveryNamespace(cp, sa),
-		serviceAccountRemoteKeyFor(cp, sa), effectiveControlPlaneStoreRef(cp))
-	if err := r.ensureUnownedOrOwned(ctx, delivery, cp, es); err != nil {
-		return fmt.Errorf("ensuring service-account ExternalSecret %q: %w", name, err)
-	}
-	return nil
-}
-
-// serviceAccountWaitMessage names the stuck dependency (Project before User, the
-// dependency order) so a bounded wait points at the real blocker.
-func serviceAccountWaitMessage(name string, project *orcv1alpha1.Project, user *orcv1alpha1.User) string {
-	switch {
-	case project != nil && !korcAvailableUpToDate(project):
-		return fmt.Sprintf("service account %q: project is registered but not yet Available", name)
-	case !orcv1alpha1.IsAvailable(user):
-		return fmt.Sprintf("service account %q: user is registered but not yet Available", name)
-	default:
-		return fmt.Sprintf("service account %q: awaiting K-ORC to apply the current password to the user", name)
-	}
-}
-
-// pruneServiceAccounts deletes the service-account child CRs this ControlPlane
-// owns which the spec no longer declares, scoped by controller ownership AND the
-// "-service-account-" name prefix, so the admin imports and any foreign CR can
-// never be caught by it. It returns the names of the still-present K-ORC child
-// removals (Terminating behind a K-ORC finalizer) so the caller gates readiness
-// on them; finalizer-less children (Secrets, ESO CRs) delete instantly and do not
-// gate.
-//
-// Password Secrets are NOT swept for declared accounts: their generation lifecycle
-// is owned by ensureServiceAccountUser (create v(N), delete superseded v(<N) once
-// K-ORC applies the new one), and the sweep must not race it into deleting the
-// current-generation Secret the managed User references.
-func (r *ControlPlaneReconciler) pruneServiceAccounts(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, declared []c5c3v1alpha1.ServiceAccountSpec,
-) ([]string, error) {
-	logger := log.FromContext(ctx)
-	ns := childNamespace(cp)
-	prefix := serviceAccountChildPrefix(cp)
-
-	keep := serviceAccountDeclaredChildNames(cp, declared)
-	declaredPrefixes := make([]string, 0, len(declared))
-	for i := range declared {
-		declaredPrefixes = append(declaredPrefixes, prefix+declared[i].Name+"-")
-	}
-	declaredPasswordSecret := func(name string) bool {
-		for _, p := range declaredPrefixes {
-			if strings.HasPrefix(name, p) {
-				return true
-			}
-		}
-		return false
-	}
-
-	var pruning []string
-	// sweep deletes obj when it is owned, prefixed, and undeclared; gate reports
-	// whether a still-present removal should block readiness.
-	sweep := func(obj client.Object, gate bool) error {
-		name := obj.GetName()
-		if !r.ownsServiceAccountChild(cp, obj) {
-			return nil
-		}
-		if strings.Contains(name, "-password-v") {
-			if declaredPasswordSecret(name) {
-				return nil
-			}
-		} else if keep[name] {
-			return nil
-		}
-		logger.Info("removing an undeclared service-account child", "name", name)
-		if err := client.IgnoreNotFound(r.Delete(ctx, obj)); err != nil {
-			return fmt.Errorf("deleting service-account child %q: %w", name, err)
-		}
-		if gate {
-			pruning = append(pruning, name)
-		}
-		return nil
-	}
-
-	// RoleAssignments (managed) before Roles (unmanaged imports) before the
-	// User/Project they reference: K-ORC orders its own deletion guards via
-	// finalizers, but sweeping the dependent assignment first keeps the intent clear.
-	var roleAssignments orcv1alpha1.RoleAssignmentList
-	if err := r.List(ctx, &roleAssignments, client.InNamespace(ns)); err != nil {
-		return nil, fmt.Errorf("listing service-account RoleAssignments: %w", err)
-	}
-	for i := range roleAssignments.Items {
-		if err := sweep(&roleAssignments.Items[i], true); err != nil {
-			return nil, err
-		}
-	}
-	var roles orcv1alpha1.RoleList
-	if err := r.List(ctx, &roles, client.InNamespace(ns)); err != nil {
-		return nil, fmt.Errorf("listing service-account Roles: %w", err)
-	}
-	for i := range roles.Items {
-		if err := sweep(&roles.Items[i], true); err != nil {
-			return nil, err
-		}
-	}
-	var users orcv1alpha1.UserList
-	if err := r.List(ctx, &users, client.InNamespace(ns)); err != nil {
-		return nil, fmt.Errorf("listing service-account Users: %w", err)
-	}
-	for i := range users.Items {
-		if err := sweep(&users.Items[i], true); err != nil {
-			return nil, err
-		}
-	}
-	var projects orcv1alpha1.ProjectList
-	if err := r.List(ctx, &projects, client.InNamespace(ns)); err != nil {
-		return nil, fmt.Errorf("listing service-account Projects: %w", err)
-	}
-	for i := range projects.Items {
-		if err := sweep(&projects.Items[i], true); err != nil {
-			return nil, err
-		}
-	}
-	var domains orcv1alpha1.DomainList
-	if err := r.List(ctx, &domains, client.InNamespace(ns)); err != nil {
-		return nil, fmt.Errorf("listing service-account Domains: %w", err)
-	}
-	for i := range domains.Items {
-		if err := sweep(&domains.Items[i], true); err != nil {
-			return nil, err
-		}
-	}
-	// The delivery objects — PushSecret, ExternalSecret, and the source + password
-	// Secrets — can land in a dedicated service namespace (an account's
-	// targetNamespace), so sweep every namespace the ControlPlane occupies, not just
-	// the child namespace, and removing an entry reaps its delivery objects wherever
-	// they landed. The K-ORC sweeps above stay child-namespace-only: those children
-	// never move.
-	for _, sweepNS := range controlPlaneNamespaces(cp) {
-		var pushSecrets esov1alpha1.PushSecretList
-		if err := r.List(ctx, &pushSecrets, client.InNamespace(sweepNS)); err != nil {
-			return nil, fmt.Errorf("listing service-account PushSecrets in namespace %q: %w", sweepNS, err)
-		}
-		for i := range pushSecrets.Items {
-			if err := sweep(&pushSecrets.Items[i], false); err != nil {
-				return nil, err
-			}
-		}
-		var externalSecrets esov1.ExternalSecretList
-		if err := r.List(ctx, &externalSecrets, client.InNamespace(sweepNS)); err != nil {
-			return nil, fmt.Errorf("listing service-account ExternalSecrets in namespace %q: %w", sweepNS, err)
-		}
-		for i := range externalSecrets.Items {
-			if err := sweep(&externalSecrets.Items[i], false); err != nil {
-				return nil, err
-			}
-		}
-		// Secrets: password (generation-scoped, child namespace) + source (delivery
-		// namespace). The materialized credentials Secret is ESO-owned (CreationPolicy
-		// Owner) and garbage-collected with its ExternalSecret, so it carries no
-		// ControlPlane ownership and the guard correctly leaves it to the ExternalSecret
-		// deletion above.
-		var kubeSecrets corev1.SecretList
-		if err := r.List(ctx, &kubeSecrets, client.InNamespace(sweepNS)); err != nil {
-			return nil, fmt.Errorf("listing service-account Secrets in namespace %q: %w", sweepNS, err)
-		}
-		for i := range kubeSecrets.Items {
-			if err := sweep(&kubeSecrets.Items[i], false); err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	return pruning, nil
-}
-
-// serviceAccountDeclaredChildNames returns the set of NON-password child names the
-// declared accounts legitimately own, so the prune sweep keeps them. Password
-// Secrets are excluded here and handled by the prefix guard in pruneServiceAccounts
-// (their generation lifecycle is owned by ensureServiceAccountUser).
-func serviceAccountDeclaredChildNames(cp *c5c3v1alpha1.ControlPlane, declared []c5c3v1alpha1.ServiceAccountSpec) map[string]bool {
-	keep := map[string]bool{}
-	for i := range declared {
-		sa := declared[i]
-		keep[serviceAccountUserRef(cp, sa)] = true
-		keep[serviceAccountUserProbeRef(cp, sa)] = true
-		keep[serviceAccountProjectRef(cp, sa)] = true
-		keep[serviceAccountProjectProbeRef(cp, sa)] = true
-		keep[serviceAccountDomainRef(cp, sa)] = true
-		keep[serviceAccountSourceSecretName(cp, sa)] = true
-		keep[serviceAccountPushSecretName(cp, sa)] = true
-		keep[serviceAccountCredentialsSecretName(cp, sa)] = true
-		for _, role := range sa.Roles {
-			keep[serviceAccountRoleImportRef(cp, role)] = true
-			keep[serviceAccountRoleAssignmentRef(cp, sa, role)] = true
-		}
-	}
-	return keep
 }
