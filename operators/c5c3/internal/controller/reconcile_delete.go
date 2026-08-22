@@ -54,24 +54,9 @@ type orcChildObject struct {
 	name   string
 }
 
-// key identifies a child within one teardown sweep, so the spec-derived and the
-// ownership-derived lists can be merged without naming a CR twice (a duplicate
-// would make forceRemoveKORCFinalizers Update the same object off two stale
-// reads). The kind is part of the key because a Service and an Endpoint may share
-// a name: an entry of type "image-public" and the "public" endpoint of entry
-// "image" both render to "{cp}-catalog-image-public".
-func (c orcChildObject) key() string {
-	return fmt.Sprintf("%T/%s", c.newObj(), c.name)
-}
-
 // orcChildObjects is the spec-derived set of K-ORC CRs the ControlPlane owns.
 // All the CRs live in childNamespace(cp). A name that never existed in the
 // current mode is simply NotFound and is tolerated as already-gone.
-//
-// It is not the whole teardown set: an opt-in catalog entry whose declaration the
-// spec dropped no longer appears here, yet its CRs may still exist. The sweep
-// therefore drives orcTeardownChildren, which folds in whatever entry CRs the
-// ControlPlane still owns.
 //
 // DELETION BLAST RADIUS. The sweep is correct for BOTH keystone modes, because
 // what a Delete does to the external OpenStack installation is decided by each
@@ -91,22 +76,11 @@ func (c orcChildObject) key() string {
 //     imported resource through an authenticated actuator before releasing any
 //     finalizer), which is why reconcileDelete force-releases an unmanaged-only
 //     remainder instead of waiting for K-ORC.
-//   - Service, Endpoint — in Managed mode these are the managed catalog entries, so
+//   - Service, Endpoint — in Managed mode these are the managed catalog rows, so
 //     the sweep deletes them from Keystone's catalog. In External mode the identity
 //     Service and its per-interface Endpoints are ManagementPolicyUnmanaged imports
 //     (see ensureExternalCatalogImports), so deleting them is a CR-only delete and
 //     the external catalog is left bit-for-bit intact.
-//   - The opt-in managed catalog entries (External mode only) are the ONE thing this
-//     ControlPlane created in an external catalog, so they are the one thing it
-//     removes from it — exactly mirroring the ApplicationCredential.
-//   - The declarative service accounts (both modes): a managed User/Project (one the
-//     operator CREATED, or one it ADOPTED — adoption makes it operator-owned) is
-//     ManagementPolicyManaged, so its K-ORC finalizer DELETES it from Keystone at
-//     teardown. This is the declared-ownership mirror of the opt-in catalog entries:
-//     the operator destroys exactly what it owns. The collision-probe imports, the
-//     per-account domain imports, and a create:false REFERENCED project are all
-//     ManagementPolicyUnmanaged, so deleting their CRs is a CR-only delete that
-//     leaves the external resource untouched.
 //
 // That holds for a teardown K-ORC can complete. The stall escape in reconcileDelete
 // is the deliberate exception: it strips the very finalizer that would have revoked
@@ -123,10 +97,7 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 	newService := func() client.Object { return &orcv1alpha1.Service{} }
 	newEndpoint := func() client.Object { return &orcv1alpha1.Endpoint{} }
 	newUser := func() client.Object { return &orcv1alpha1.User{} }
-	newProject := func() client.Object { return &orcv1alpha1.Project{} }
 	newDomain := func() client.Object { return &orcv1alpha1.Domain{} }
-	newRole := func() client.Object { return &orcv1alpha1.Role{} }
-	newRoleAssignment := func() client.Object { return &orcv1alpha1.RoleAssignment{} }
 
 	objs := []orcChildObject{
 		{func() client.Object { return &orcv1alpha1.ApplicationCredential{} }, adminAppCredentialName(cp)},
@@ -151,37 +122,6 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 		orcChildObject{newDomain, adminDomainRef(cp)},
 	)
 
-	// Declarative service accounts are mode-independent, so their children are torn
-	// down in BOTH keystone modes (before the External-only catalog additions). Each
-	// declared entry projects a managed User and Project (whose K-ORC finalizers
-	// delete them from Keystone), one managed RoleAssignment per declared role (also
-	// deleted from Keystone), plus the collision-probe, per-account domain, and
-	// per-role Role imports (CR-only deletes). The password Secrets / PushSecret /
-	// ExternalSecret are owner-reference-GC'd, not K-ORC CRs, so they are not part of
-	// this sweep.
-	for i := range cp.Spec.KORC.ServiceAccounts {
-		sa := cp.Spec.KORC.ServiceAccounts[i]
-		objs = append(
-			objs,
-			orcChildObject{newUser, serviceAccountUserRef(cp, sa)},
-			orcChildObject{newUser, serviceAccountUserProbeRef(cp, sa)},
-			orcChildObject{newProject, serviceAccountProjectRef(cp, sa)},
-			orcChildObject{newProject, serviceAccountProjectProbeRef(cp, sa)},
-		)
-		// RoleAssignment (managed) before its Role import (unmanaged), matching the
-		// dependency direction K-ORC's own deletion guards enforce.
-		for _, role := range sa.Roles {
-			objs = append(
-				objs,
-				orcChildObject{newRoleAssignment, serviceAccountRoleAssignmentRef(cp, sa, role)},
-				orcChildObject{newRole, serviceAccountRoleImportRef(cp, role)},
-			)
-		}
-		if domainRef := serviceAccountDomainRef(cp, sa); domainRef != adminDomainRef(cp) {
-			objs = append(objs, orcChildObject{newDomain, domainRef})
-		}
-	}
-
 	if !cp.IsExternalKeystone() {
 		return objs
 	}
@@ -189,187 +129,7 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 	for _, iface := range externalCatalogInterfaces {
 		objs = append(objs, orcChildObject{newEndpoint, keystoneEndpointImportName(cp, iface)})
 	}
-	for _, entry := range externalManagedCatalogEntries(cp) {
-		objs = append(objs, orcChildObject{newService, catalogEntryServiceName(cp, entry.Type)})
-		for _, ep := range entry.Endpoints {
-			objs = append(objs, orcChildObject{newEndpoint, catalogEntryEndpointName(cp, entry.Type, ep.Interface)})
-		}
-	}
 	return objs
-}
-
-// orcTeardownChildren is the set the sweep actually drives: the spec-derived
-// children plus every opt-in catalog-entry CR the ControlPlane still OWNS.
-//
-// The two differ whenever the spec stopped declaring an entry whose CRs the
-// reconcile-time prune never removed. The prune lives in reconcileCatalogExternal,
-// which reconcileCatalog gates on AdminCredentialReady and which never runs once
-// DeletionTimestamp is set — so a spec edit made while the admin password is
-// drifted, or made moments before the delete, leaves entry CRs nobody names. Those
-// CRs would then be released by the finalizer, garbage-collected behind K-ORC's
-// openstack.k-orc.cloud/* finalizers, and left Terminating forever with no
-// credentials Secret to authenticate against: the namespace wedge reconcileDelete
-// exists to prevent, and one the stall escape can never repair because it only
-// iterates what the sweep named.
-func (r *ControlPlaneReconciler) orcTeardownChildren(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
-) ([]orcChildObject, error) {
-	declared := orcChildObjects(cp)
-	var children []orcChildObject
-	seen := make(map[string]struct{}, len(declared))
-	merge := func(extra []orcChildObject) {
-		for _, child := range extra {
-			if _, dup := seen[child.key()]; dup {
-				continue
-			}
-			seen[child.key()] = struct{}{}
-			children = append(children, child)
-		}
-	}
-	// The spec-derived list is itself merged, not taken verbatim: it walks the
-	// declared accounts, and accounts sharing a role name the SAME Role import
-	// (serviceAccountRoleImportRef is not keyed on the account), so it can name one
-	// CR twice — the duplicate key() exists to prevent.
-	merge(declared)
-
-	// Service accounts are mode-independent, so their owned-but-undeclared children
-	// are folded in for both modes (a spec edit made moments before the delete can
-	// leave a User/Project the reconcile-time prune never removed).
-	saOwned, err := r.ownedServiceAccountChildren(ctx, cp)
-	if err != nil {
-		return nil, err
-	}
-	merge(saOwned)
-
-	if cp.IsExternalKeystone() {
-		catOwned, err := r.ownedCatalogEntryChildren(ctx, cp)
-		if err != nil {
-			return nil, err
-		}
-		merge(catOwned)
-	}
-	return children, nil
-}
-
-// ownedServiceAccountChildren lists the service-account User/Project CRs this
-// ControlPlane owns, whether or not the spec still declares them, so a spec edit
-// made while the reconcile-time prune could not run (admin credential drifted, or
-// the edit landed moments before the delete) cannot leave a K-ORC CR nobody names
-// to wedge the namespace. Ownership is decided by ownsServiceAccountChild (the
-// controller reference AND the "-service-account-" name prefix). An absent K-ORC
-// CRD (meta.IsNoMatchError) reads as "nothing to sweep", matching
-// deleteORCResources.
-func (r *ControlPlaneReconciler) ownedServiceAccountChildren(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
-) ([]orcChildObject, error) {
-	ns := childNamespace(cp)
-	var out []orcChildObject
-
-	var users orcv1alpha1.UserList
-	switch err := r.List(ctx, &users, client.InNamespace(ns)); {
-	case err == nil:
-		for i := range users.Items {
-			if r.ownsServiceAccountChild(cp, &users.Items[i]) {
-				out = append(out, orcChildObject{func() client.Object { return &orcv1alpha1.User{} }, users.Items[i].Name})
-			}
-		}
-	case meta.IsNoMatchError(err):
-	default:
-		return nil, fmt.Errorf("listing service-account Users for teardown: %w", err)
-	}
-
-	var projects orcv1alpha1.ProjectList
-	switch err := r.List(ctx, &projects, client.InNamespace(ns)); {
-	case err == nil:
-		for i := range projects.Items {
-			if r.ownsServiceAccountChild(cp, &projects.Items[i]) {
-				out = append(out, orcChildObject{func() client.Object { return &orcv1alpha1.Project{} }, projects.Items[i].Name})
-			}
-		}
-	case meta.IsNoMatchError(err):
-	default:
-		return nil, fmt.Errorf("listing service-account Projects for teardown: %w", err)
-	}
-
-	var roleAssignments orcv1alpha1.RoleAssignmentList
-	switch err := r.List(ctx, &roleAssignments, client.InNamespace(ns)); {
-	case err == nil:
-		for i := range roleAssignments.Items {
-			if r.ownsServiceAccountChild(cp, &roleAssignments.Items[i]) {
-				out = append(out, orcChildObject{
-					func() client.Object { return &orcv1alpha1.RoleAssignment{} }, roleAssignments.Items[i].Name,
-				})
-			}
-		}
-	case meta.IsNoMatchError(err):
-	default:
-		return nil, fmt.Errorf("listing service-account RoleAssignments for teardown: %w", err)
-	}
-
-	var roles orcv1alpha1.RoleList
-	switch err := r.List(ctx, &roles, client.InNamespace(ns)); {
-	case err == nil:
-		for i := range roles.Items {
-			if r.ownsServiceAccountChild(cp, &roles.Items[i]) {
-				out = append(out, orcChildObject{func() client.Object { return &orcv1alpha1.Role{} }, roles.Items[i].Name})
-			}
-		}
-	case meta.IsNoMatchError(err):
-	default:
-		return nil, fmt.Errorf("listing service-account Roles for teardown: %w", err)
-	}
-
-	return out, nil
-}
-
-// ownedCatalogEntryChildren lists the opt-in catalog-entry CRs this ControlPlane
-// owns, whether or not the spec still declares them. Ownership is decided by
-// ownsCatalogEntry — the controller reference AND the "{cp}-catalog-" name prefix,
-// exactly as the reconcile-time prune scopes itself — so the unmanaged identity
-// imports and any foreign CR sharing the namespace can never be caught by it.
-//
-// An absent K-ORC CRD (meta.IsNoMatchError) reads as "nothing to sweep", matching
-// deleteORCResources, so the finalizer can still release when the K-ORC stack is
-// gone.
-func (r *ControlPlaneReconciler) ownedCatalogEntryChildren(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane,
-) ([]orcChildObject, error) {
-	ns := childNamespace(cp)
-	var out []orcChildObject
-
-	var endpoints orcv1alpha1.EndpointList
-	switch err := r.List(ctx, &endpoints, client.InNamespace(ns)); {
-	case err == nil:
-		for i := range endpoints.Items {
-			if r.ownsCatalogEntry(cp, &endpoints.Items[i]) {
-				out = append(out, orcChildObject{
-					func() client.Object { return &orcv1alpha1.Endpoint{} }, endpoints.Items[i].Name,
-				})
-			}
-		}
-	case meta.IsNoMatchError(err):
-		// The Endpoint CRD is gone: nothing to sweep, and nothing that could wedge.
-	default:
-		return nil, fmt.Errorf("listing catalog entry Endpoints for teardown: %w", err)
-	}
-
-	var services orcv1alpha1.ServiceList
-	switch err := r.List(ctx, &services, client.InNamespace(ns)); {
-	case err == nil:
-		for i := range services.Items {
-			if r.ownsCatalogEntry(cp, &services.Items[i]) {
-				out = append(out, orcChildObject{
-					func() client.Object { return &orcv1alpha1.Service{} }, services.Items[i].Name,
-				})
-			}
-		}
-	case meta.IsNoMatchError(err):
-		// The Service CRD is gone: nothing to sweep, and nothing that could wedge.
-	default:
-		return nil, fmt.Errorf("listing catalog entry Services for teardown: %w", err)
-	}
-
-	return out, nil
 }
 
 // reconcileDelete drives the ORC-teardown finalizer when the ControlPlane CR is
@@ -553,10 +313,10 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 	// Classify BEFORE stripping. Releasing an Unmanaged import has zero blast radius:
 	// deleting its CR never called OpenStack in the first place. A Managed CR is the
 	// opposite — its K-ORC finalizer is what revokes the ApplicationCredential, or
-	// takes an opt-in catalog row back out of a catalog this ControlPlane does not
-	// own. Stripping it abandons that OpenStack resource, and once GC reclaims the CR
-	// nothing in Kubernetes names it. A flat list of CR names reads as "K-ORC was
-	// slow"; the operator has to be told which resources leaked, and where.
+	// takes a managed catalog row back out of Keystone's catalog. Stripping it
+	// abandons that OpenStack resource, and once GC reclaims the CR nothing in
+	// Kubernetes names it. A flat list of CR names reads as "K-ORC was slow"; the
+	// operator has to be told which resources leaked, and where.
 	names := make([]string, 0, len(remaining))
 	var orphaned []string
 	for _, obj := range remaining {
@@ -1401,27 +1161,6 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 			}},
 		)
 	}
-	// Any service-account credential delivered into this namespace: its source
-	// Secret and consumer ExternalSecret, both operator-owned by label here. The
-	// PushSecret was already deleted by deleteOwnedPushSecrets (before this ran, so
-	// its OpenBao purge finished while the tenant store was still alive), and the
-	// materialized credentials Secret is ESO-owned and dies with the ExternalSecret,
-	// so neither is named here.
-	for i := range cp.Spec.KORC.ServiceAccounts {
-		sa := cp.Spec.KORC.ServiceAccounts[i]
-		if serviceAccountDeliveryNamespace(cp, sa) != namespace {
-			continue
-		}
-		objs = append(
-			objs,
-			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-				Name: serviceAccountSourceSecretName(cp, sa), Namespace: namespace,
-			}},
-			&esov1.ExternalSecret{ObjectMeta: metav1.ObjectMeta{
-				Name: serviceAccountCredentialsSecretName(cp, sa), Namespace: namespace,
-			}},
-		)
-	}
 	// The tenant store LAST: everything above authenticated through it.
 	objs = append(
 		objs,
@@ -1662,7 +1401,7 @@ func (r *ControlPlaneReconciler) deleteOwnedPushSecretsIn(
 }
 
 // deleteORCResources issues an idempotent Delete on every owned K-ORC CR
-// (orcTeardownChildren) and returns those still present after the sweep.
+// (orcChildObjects) and returns those still present after the sweep.
 // hasLiveWork reports whether any CR was observed live (present,
 // DeletionTimestamp unset) — that is the one-shot signal for the FinalizingORC
 // event. NotFound and "CRD not installed" (meta.IsNoMatchError) are tolerated as
@@ -1672,10 +1411,7 @@ func (r *ControlPlaneReconciler) deleteORCResources(
 ) (remaining []client.Object, hasLiveWork bool, err error) {
 	logger := log.FromContext(ctx)
 	ns := childNamespace(cp)
-	children, err := r.orcTeardownChildren(ctx, cp)
-	if err != nil {
-		return nil, false, err
-	}
+	children := orcChildObjects(cp)
 
 	// Pass 1: classify and delete. A present CR with no DeletionTimestamp is the
 	// live work whose Delete starts the teardown.
