@@ -129,19 +129,18 @@ spec:
         restricted: true
         rotation:
           mode: PasswordDriven
-    # NOTE: no serviceAccounts are declared here on purpose, and nothing injects
-    # any: the field carries USER-declared accounts only. Each declared service
-    # registers through a KeystoneService child the c5c3-operator projects for it
-    # (controlplane-keystone-glance, -placement and -barbican, one per service, in
-    # that service's namespace), carrying both the service's catalog entry and
-    # its service account. The account is the user glance / placement / barbican
-    # in a Keystone project of its own (service-glance, service-placement,
-    # service-barbican, created by the registration) bound to the "service" role,
-    # which Keystone's SRBAC default for identity:validate_token requires. The
-    # registration delivers the account's credentials as the Secret
-    # <child>-credentials beside the service, and the service child reads its
-    # service-user password from there. Exercising that projection on a live
-    # cluster is the point: each role projects as one unmanaged K-ORC Role import
-    # plus one managed RoleAssignment; the chainsaw link asserts the three children
-    # reach Ready and that the K-ORC rows they label-own are Available, and the
-    # verify Job asserts the role is listed against each user in Keystone.
+    # NOTE: Each declared service registers through a KeystoneService child the
+    # c5c3-operator projects for it (controlplane-keystone-glance, -placement and
+    # -barbican, one per service, in that service's namespace), carrying both the
+    # service's catalog entry and its service account. The account is the user
+    # glance / placement / barbican in a Keystone project of its own
+    # (service-glance, service-placement, service-barbican, created by the
+    # registration) bound to the "service" role, which Keystone's SRBAC default
+    # for identity:validate_token requires. The registration delivers the
+    # account's credentials as the Secret <child>-credentials beside the service,
+    # and the service child reads its service-user password from there. Exercising
+    # that projection on a live cluster is the point: each role projects as one
+    # unmanaged K-ORC Role import plus one managed RoleAssignment; the chainsaw
+    # link asserts the three children reach Ready and that the K-ORC rows they
+    # label-own are Available, and the verify Job asserts the role is listed
+    # against each user in Keystone.

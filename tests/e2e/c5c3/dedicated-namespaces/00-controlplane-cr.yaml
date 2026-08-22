@@ -13,15 +13,9 @@
 #     uses a pre-existing namespace (the test creates it) and never touches its
 #     lifecycle.
 #   - Glance lands in @GLANCE_NS@ under a SECOND Managed lifecycle, exercising the
-#     operator creating and later deleting a second owned namespace. Whenever
-#     services.glance is set the defaulting webhook additionally injects the glance
-#     service account with its targetNamespace pinned to the Glance namespace
-#     (@GLANCE_NS@) — the webhook accepts targetNamespace only when it names the
-#     ControlPlane's own or one of its dedicated service namespaces, so it must
-#     equal the dedicated glance namespace.
+#     operator creating and later deleting a second owned namespace.
 #   - Placement lands in @PLACEMENT_NS@ under a THIRD Managed lifecycle, on the same
-#     terms as Glance: services.placement likewise makes the webhook inject the
-#     placement service account with its targetNamespace pinned to @PLACEMENT_NS@.
+#     terms as Glance.
 #
 # The @KEYSTONE_NS@ / @HORIZON_NS@ / @GLANCE_NS@ / @PLACEMENT_NS@ tokens are
 # substituted by the test script from the ephemeral test namespace, so each run gets
@@ -97,15 +91,4 @@ spec:
       passwordSecretRef:
         name: keystone-admin
         key: password
-    # A service account delivering its credentials into the dedicated Keystone
-    # namespace: its source Secret, PushSecret, consumer ExternalSecret, and the
-    # materialized credentials Secret all land in @KEYSTONE_NS@ (carrying the
-    # ownership labels), reading the OpenBao path keyed on that namespace. The
-    # webhook accepts targetNamespace only when it names the ControlPlane's own or
-    # one of its dedicated service namespaces, so admitting this CR proves the rule.
-    serviceAccounts:
-    - name: nova
-      project:
-        name: service
-      targetNamespace: "@KEYSTONE_NS@"
 # endregion controlplane

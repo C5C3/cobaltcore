@@ -32,9 +32,9 @@
 #   5b. Registrations  — one KeystoneService child per built-in service
 #                        ("…-glance", "…-placement", "…-barbican"), each carrying
 #                        that service's catalog entry and its service account. The
-#                        stored ControlPlane declares no serviceAccounts and none
-#                        are injected; every child reports Ready=True (AllReady)
-#                        over CatalogReady=CatalogRegistered and
+#                        stored ControlPlane carries no inline account surface;
+#                        every child reports Ready=True (AllReady) over
+#                        CatalogReady=CatalogRegistered and
 #                        AccountReady=AccountProvisioned, and the K-ORC
 #                        RoleAssignment it label-owns is Available.
 #   5c. Glance child   — owned Glance CR ("…-glance") with database/cache clusterRefs,
@@ -568,15 +568,11 @@ spec:
             "$(owner_of endpoints.openstack.k-orc.cloud "${EP_CR}")"
 
           # ── Link 5b: the glance + placement + barbican registrations ────────
-          # The CR fixture declares NO serviceAccounts and nothing injects any:
-          # each built-in service registers through a KeystoneService child the
+          # Each built-in service registers through a KeystoneService child the
           # ControlPlane projects, carrying both the catalog entry and the service
           # account (user glance/placement/barbican in project
           # service-{glance,placement,barbican}, role "service", which Keystone's
-          # SRBAC default for identity:validate_token requires). The empty spec is
-          # asserted first: an entry there would mean the retired defaulting still
-          # runs on this live cluster, and the inline surface would provision a
-          # second, colliding Keystone user beside the registration's.
+          # SRBAC default for identity:validate_token requires).
           #
           # Each child then has to converge on its own conditions. Ready=AllReady
           # aggregates CatalogReady and AccountReady, so a child that reports it
@@ -584,11 +580,6 @@ spec:
           # round-tripped through OpenBao. The wait is the widest of the chain's
           # K-ORC legs because each registration creates a project, a user and a
           # role import before it touches the catalog at all.
-          assert_eq "no service account is injected into the stored ControlPlane" "" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" -o 'jsonpath={.spec.korc.serviceAccounts}')"
-          assert_eq "the inline service-account surface stays unused" "NoServiceAccountsDeclared" \
-            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
-              -o "jsonpath={.status.conditions[?(@.type=='ServiceAccountsReady')].reason}")"
 
           # assert_registration drives one registration to Ready and checks the role
           # binding behind its account. The RoleAssignment is looked up through the
@@ -619,6 +610,13 @@ spec:
           assert_registration "${GLANCE_KS}" "${GLANCE_SELECTOR}"
           assert_registration "${PLACEMENT_KS}" "${PLACEMENT_SELECTOR}"
           assert_registration "${BARBICAN_KS}" "${BARBICAN_SELECTOR}"
+
+          # ServiceAccountsReady on the ControlPlane aggregates those three
+          # registrations, so it turns True only once all of them are Ready.
+          wait_cp_condition ServiceAccountsReady 600
+          assert_eq "ServiceAccountsReady aggregates the projected registrations" "ServiceAccountsProvisioned" \
+            "$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='ServiceAccountsReady')].reason}")"
 
           # ── Link 5c: Glance child (gated on KeystoneReady + registration) ───
           # GlanceReady mirrors the child's Ready, which requires the real
