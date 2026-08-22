@@ -33,6 +33,11 @@
 #      cascade reaches a cluster-scoped object from a namespaced owner, and a
 #      retained PVC would meet the next ControlPlane of the same name with raft
 #      storage sealed under a key that no longer exists.
+#   7. Assert the projected Barbican registration leaves no residue: the
+#      KeystoneService deletion-orch-barbican and every K-ORC CR carrying its
+#      c5c3.io/keystoneservice-name label are gone. The teardown force-releases
+#      those children here, and the registration's own controller then releases
+#      the CR.
 #
 # Whether step 3 wins the race against an in-flight revoke or not, the regression
 # guard is identical: deletion must COMPLETE (the happy path emits
@@ -85,6 +90,16 @@ spec:
           BARBICAN_CR="${CP_NAME}-barbican"
           BARBICAN_STORE="${BARBICAN_CR}-store"
           BARBICAN_BAO="${BARBICAN_CR}-bao"
+          # The Barbican service registration the ControlPlane projects, and the
+          # label its K-ORC children carry. BARBICAN_REG repeats BARBICAN_CR's
+          # value but names a different object: the registration is a
+          # keystoneservices.c5c3.io CR, while BARBICAN_CR names the
+          # barbicans.barbican.openstack.c5c3.io child. The kinds are the seven
+          # the KeystoneService controller projects, and they live in the
+          # ControlPlane's namespace rather than in the registration's.
+          BARBICAN_REG="${CP_NAME}-barbican"
+          REG_LABEL="c5c3.io/keystoneservice-name=${BARBICAN_REG}"
+          REG_KORC_KINDS="services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,domains.openstack.k-orc.cloud"
           # The raft volume the openbao-operator's StatefulSet claims for the
           # single instance replica.
           BARBICAN_BAO_PVC="data-${BARBICAN_BAO}-0"
@@ -101,6 +116,7 @@ spec:
           missing=""
           for crd in \
             controlplanes.c5c3.io \
+            keystoneservices.c5c3.io \
             keystones.keystone.openstack.c5c3.io \
             barbicans.barbican.openstack.c5c3.io \
             barbicansecretstores.barbican.openstack.c5c3.io \
@@ -110,6 +126,9 @@ spec:
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \
             users.openstack.k-orc.cloud \
+            projects.openstack.k-orc.cloud \
+            roles.openstack.k-orc.cloud \
+            roleassignments.openstack.k-orc.cloud \
             domains.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io; do
             if ! kubectl get crd "$crd" >/dev/null 2>&1; then
@@ -199,6 +218,34 @@ spec:
             echo "OK: ${res}/${name} is gone"
           }
 
+          # The label twin of wait_gone: a registration's K-ORC children are
+          # found by their ownership label, not by name. Gone means a kubectl
+          # that SUCCEEDED and printed nothing — this is the only assertion
+          # covering the force-release, and a query that errors (an API server
+          # restarting mid-teardown, one kind in the list momentarily
+          # unservable) prints nothing either, so treating that as gone would
+          # pass a regression that leaves every child Terminating. stderr stays
+          # suppressed: a matchless `kubectl get -l` writes "No resources found"
+          # there and exits 0.
+          wait_label_gone() { # <kinds> <label> <timeoutSeconds>
+            local kinds="$1" label="$2" timeout="$3" deadline out
+            deadline=$(( $(date +%s) + timeout ))
+            while :; do
+              # The assignment is the left operand of && so `set -e` does not fire
+              # on a failing kubectl, and its output is only trusted on exit 0.
+              if out="$(kubectl get "${kinds}" -n "${CP_NS}" -l "${label}" --no-headers 2>/dev/null)" \
+                 && [ -z "${out}" ]; then
+                break
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${kinds} carrying ${label} still present or unqueryable after ${timeout}s: ${out}"
+                return 1
+              fi
+              sleep 5
+            done
+            echo "OK: no ${kinds} carrying ${label} is left"
+          }
+
           # The cluster-scoped twin of wait_gone. It exists for the auth-delegator
           # ClusterRoleBinding: `kubectl get -n` on a cluster-scoped object ignores
           # the namespace, so the check would still work, but naming it separately
@@ -266,6 +313,16 @@ spec:
           esac
           echo "OK: Barbican child, secret store, dedicated OpenBao instance, its PVC, and the auth-delegator binding are present."
 
+          # The projected Barbican registration and at least one of its
+          # label-owned K-ORC children must be STANDING too, or the residue
+          # checks below are vacuous.
+          kubectl get keystoneservices.c5c3.io "${BARBICAN_REG}" -n "${CP_NS}" >/dev/null \
+            || { echo "ERROR: expected projected KeystoneService ${BARBICAN_REG} missing before teardown"; exit 1; }
+          if [ -z "$(kubectl get "${REG_KORC_KINDS}" -n "${CP_NS}" -l "${REG_LABEL}" --no-headers 2>/dev/null)" ]; then
+            echo "ERROR: expected at least one K-ORC CR carrying ${REG_LABEL} before teardown"; exit 1
+          fi
+          echo "OK: projected KeystoneService ${BARBICAN_REG} and its label-owned K-ORC CRs are present."
+
           # ── Simulate "Keystone already gone" during teardown ───────────────
           # Initiate deletion first (async) so the operator enters its deletion
           # branch and stops re-projecting the Keystone child, THEN delete the
@@ -305,6 +362,14 @@ spec:
           wait_gone persistentvolumeclaim "${BARBICAN_BAO_PVC}" 300
           wait_gone_cluster_scoped clusterrolebinding "${BARBICAN_BAO_CRB}" 300
 
+          # ── The projected registration must leave no residue ───────────────
+          # On this Keystone-gone path the ControlPlane gives up on the
+          # registration and force-releases its K-ORC CRs and PushSecrets before
+          # it lets go; the registration CR itself follows through its own
+          # controller. So nothing of it may be left Terminating.
+          wait_gone keystoneservices.c5c3.io "${BARBICAN_REG}" 300
+          wait_label_gone "${REG_KORC_KINDS}" "${REG_LABEL}" 300
+
           # ── The ORC-teardown finalizer must have run ───────────────────────
           # Either ORCTeardownComplete (revoke won the race) or ORCTeardownStalled
           # (Keystone gone first → force-remove) proves the finalizer drove the
@@ -333,6 +398,10 @@ spec:
           kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,domains.openstack.k-orc.cloud -n openstack 2>&1 || true
           echo "=== Projected child CRs ==="
           kubectl get mariadb,memcacheds.memcached.c5c3.io,keystone -n openstack 2>&1 || true
+          echo "=== Projected KeystoneService registrations (may be Terminating) ==="
+          kubectl get keystoneservices.c5c3.io -n openstack 2>&1 || true
+          echo "=== Registration-owned K-ORC CRs (may be Terminating) ==="
+          kubectl get services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,domains.openstack.k-orc.cloud -n openstack -l c5c3.io/keystoneservice-name=deletion-orch-barbican 2>&1 || true
           echo "=== Barbican ensemble (may be Terminating or gone) ==="
           kubectl get barbicans.barbican.openstack.c5c3.io,barbicansecretstores.barbican.openstack.c5c3.io -n openstack 2>&1 || true
           kubectl get openbaoclusters.openbao.org,pvc -n openstack 2>&1 || true
