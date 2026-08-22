@@ -66,6 +66,7 @@ jobs:
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
       tempest-releases: ${{ steps.tempest-matrix.outputs.tempest-releases }}
+      cleanup-e2e-packages: ${{ steps.cleanup-matrix.outputs.cleanup-e2e-packages }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
@@ -249,6 +250,13 @@ jobs:
       - name: Generate Tempest release matrix
         id: tempest-matrix
         run: hack/ci-generate-tempest-matrix.sh
+
+      # Derive the GHCR package list from images/ and operators/ for the same
+      # reason: onboarding a service must not require remembering to add it to
+      # a cleanup matrix by hand.
+      - name: Generate cleanup package matrix
+        id: cleanup-matrix
+        run: hack/ci-generate-cleanup-matrix.sh
 
   lint:
     needs: [changes]
@@ -2341,7 +2349,7 @@ jobs:
   # nightly cleanup-images workflow has a safety-net job that catches
   # tags that survive a cancelled run before this one fires.
   cleanup-e2e-tags:
-    needs: [build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, tempest]
+    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, tempest]
     if: |
       always() &&
       needs.build-e2e-images.result == 'success'
@@ -2351,8 +2359,8 @@ jobs:
     # fail the PR. A brand-new package (e.g. c5c3-operator before it is first
     # published to main) has only the run-scoped e2e tag, and GHCR refuses to
     # delete the last tagged version of a package ("You must delete the package
-    # instead"), so this leg errors until a persistent tag exists. The nightly
-    # cleanup-images workflow is the safety net for any leaked e2e-* tags.
+    # instead"). The nightly cleanup-images workflow is the safety net for any
+    # leaked e2e-* tags.
     continue-on-error: true
     permissions:
       contents: read
@@ -2360,23 +2368,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [keystone-operator, keystone, c5c3-operator, horizon-operator, horizon, glance-operator, glance, placement-operator, placement, barbican-operator, barbican, tempest]
+        package: ${{ fromJson(needs.changes.outputs.cleanup-e2e-packages) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      # GH-312: do NOT pass delete-untagged here. This job runs in
-      # parallel with build-and-push, which uploads per-platform
-      # manifests via push-by-digest=true (i.e. untagged) and relies on
-      # merge-operator-images to assemble them into a tagged manifest
-      # list. Pruning untagged images mid-flight removes those digests
-      # and breaks the merge step.
+      # GH-312: this job runs in parallel with build-and-push, which uploads
+      # per-platform manifests via push-by-digest=true (i.e. untagged) and
+      # relies on merge-operator-images to assemble them into a tagged manifest
+      # list. Pruning untagged images mid-flight removes those digests and
+      # breaks the merge step — so the prune runs in --only-tag-pattern mode,
+      # where untagged versions are out of scope by construction.
       - name: Delete run-scoped tags for ${{ matrix.package }}
-        uses: ./.github/actions/cleanup-ghcr-package
-        with:
-          package: ${{ matrix.package }}
-          delete-tags: "e2e-${{ github.run_id }}-*"
-          keep-n-tagged: "0"
-          older-than: "0 seconds"
-          token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 hack/ghcr-prune-stale-versions.py \
+            --org "${{ github.repository_owner }}" \
+            --package "${{ matrix.package }}" \
+            --only-tag-pattern "^e2e-${{ github.run_id }}-" \
+            --min-age-hours 0 \
+            --max-deletions 0
 
   # Build operator container images per platform on native runners.
   # Each platform is pushed by digest; merge-operator-images assembles the manifest list.

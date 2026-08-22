@@ -30,12 +30,6 @@ echo ""
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
-# Extract a YAML job section from a workflow file by job name.
-extract_yaml_job_section() {
-  local file="$1" job_name="$2"
-  sed -n "/^  ${job_name}:/,/^  [a-zA-Z]/p" "$file"
-}
-
 # Run ci-resolve-changes.sh with the supplied env and echo the GITHUB_OUTPUT
 # contents. ALL_OPERATORS deliberately mirrors the ci.yaml value ("keystone
 # c5c3 horizon glance") so the behavioural assertions exercise the real
@@ -130,20 +124,36 @@ test_horizon_helm_validate_loops() {
 }
 
 test_cleanup_matrix_includes_horizon() {
-  echo "Test: cleanup-e2e-tags matrix includes horizon-operator and horizon"
+  echo "Test: the derived cleanup package lists cover horizon"
 
-  local cleanup_section
-  cleanup_section=$(extract_yaml_job_section "$CI_YAML" "cleanup-e2e-tags")
+  # Both cleanup-images.yaml and ci.yaml's cleanup-e2e-tags build their package
+  # matrix from this script, so coverage is a property of its output rather than
+  # of a list someone has to remember to extend.
+  local matrix all_packages e2e_packages
+  matrix=$(cd "$PROJECT_ROOT" && bash hack/ci-generate-cleanup-matrix.sh)
+  all_packages=$(echo "$matrix" | sed -n 's/^cleanup-packages=//p')
+  e2e_packages=$(echo "$matrix" | sed -n 's/^cleanup-e2e-packages=//p')
 
   assert_contains \
-    "cleanup-e2e-tags package matrix lists horizon-operator" \
-    "$cleanup_section" \
-    "horizon-operator"
+    "the nightly cleanup covers horizon-operator" \
+    "$all_packages" \
+    '"horizon-operator"'
 
   assert_contains \
-    "cleanup-e2e-tags package matrix lists the horizon service image" \
-    "$cleanup_section" \
-    "horizon-operator, horizon,"
+    "the per-run e2e cleanup covers horizon-operator" \
+    "$e2e_packages" \
+    '"horizon-operator"'
+
+  assert_contains \
+    "the nightly cleanup covers horizon" \
+    "$all_packages" \
+    '"horizon"'
+
+  assert_contains \
+    "the per-run e2e cleanup covers horizon" \
+    "$e2e_packages" \
+    '"horizon"'
+
 }
 
 # ── ci-resolve-changes.sh documentation ─────────────────────────────────────

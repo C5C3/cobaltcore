@@ -16,8 +16,8 @@
 #       parity with the keystone reference chart
 #   P4  observability: dashboards/<svc>-operator.json + dashboard_test.go
 #   P5  CI wiring: paths-filter, ALL_OPERATORS, FILTER_<svc>, unit-test
-#       matrices, helm-validate chart loop, build-images coverage, and each
-#       of the three cleanup-images matrices individually (exact item match)
+#       matrices, helm-validate chart loop, build-images coverage, and the
+#       derived GHCR cleanup package lists (exact item match)
 #   P6  e2e coverage: canonical chainsaw suite set under tests/e2e/<svc>/
 #       (incl. latest-release variant) plus at least one chaos suite
 #   P7  deploy stack: flux HelmRelease, namespace entry, kustomization entry,
@@ -71,17 +71,18 @@ allowed() { # allowed <svc> <check> <item>
   printf '%s\n' "${ALLOWED_DEVIATIONS}" | grep -qx "${1}:${2}:${3}"
 }
 
-# cleanup_matrix <job> — the `package: [...]` line of one cleanup-images.yaml
-# job, so membership is judged per matrix rather than across the whole file.
+# cleanup_matrix <output> — one list emitted by ci-generate-cleanup-matrix.sh.
+# Both cleanup-images.yaml and ci.yaml's cleanup-e2e-tags build their matrix
+# from it, so coverage is a property of the generator, not of a hand-kept list.
 cleanup_matrix() {
-  sed -n "/^  ${1}:/,/^  [a-z]/p" .github/workflows/cleanup-images.yaml \
-    | grep -E 'package: \[' || true
+  bash hack/ci-generate-cleanup-matrix.sh 2>/dev/null | sed -n "s/^${1}=//p" || true
 }
 
-# matrix_has <matrix-line> <item> — exact list-item match. grep -w would let
-# a bare service name match its <svc>-operator sibling across the hyphen.
+# matrix_has <json-array> <item> — exact list-item match against the generator's
+# JSON output. grep -w would let a bare service name match its <svc>-operator
+# sibling across the hyphen; the surrounding quotes rule that out.
 matrix_has() {
-  grep -Eq "(\[|, )${2}(,|\])" <<<"${1}"
+  grep -Fq "\"${2}\"" <<<"${1}"
 }
 
 # check <svc> <check-id> <item> <condition-exit-code> <fail-message>
@@ -246,25 +247,21 @@ for svc in ${SERVICES}; do
   check "${svc}" P5 "build-images" "${t}" \
     "build-images.yaml lints/builds images/${svc}/Dockerfile"
 
-  # Each cleanup matrix is checked on its own, with exact list-item matches.
-  # A file-wide (or word-boundary) grep hides two gap classes: a package
-  # present in one matrix but missing from another, and a bare service name
-  # "matching" its <svc>-operator sibling across the hyphen.
-  op_matrix=$(cleanup_matrix cleanup-operator-images)
-  t=0; matrix_has "${op_matrix}" "${svc}-operator" || t=1
-  check "${svc}" P5 "cleanup-operator" "${t}" \
-    "cleanup-images.yaml cleanup-operator-images matrix lists ${svc}-operator"
+  # Both lists are checked on their own, with exact list-item matches: a bare
+  # service name must not "match" its <svc>-operator sibling across the hyphen.
+  # The generator derives them from images/ and operators/, so a miss here means
+  # the directory is absent, not that someone forgot a matrix entry.
+  all_packages=$(cleanup_matrix cleanup-packages)
+  t=0; matrix_has "${all_packages}" "${svc}-operator" \
+    && matrix_has "${all_packages}" "${svc}" || t=1
+  check "${svc}" P5 "cleanup-packages" "${t}" \
+    "ci-generate-cleanup-matrix.sh emits ${svc}-operator and ${svc}"
 
-  svc_matrix=$(cleanup_matrix cleanup-service-images)
-  t=0; matrix_has "${svc_matrix}" "${svc}" || t=1
-  check "${svc}" P5 "cleanup-service" "${t}" \
-    "cleanup-images.yaml cleanup-service-images matrix lists ${svc}"
-
-  stale_matrix=$(cleanup_matrix cleanup-e2e-stale-tags)
-  t=0; matrix_has "${stale_matrix}" "${svc}-operator" \
-    && matrix_has "${stale_matrix}" "${svc}" || t=1
-  check "${svc}" P5 "cleanup-e2e-stale" "${t}" \
-    "cleanup-images.yaml cleanup-e2e-stale-tags matrix lists ${svc}-operator and ${svc}"
+  e2e_packages=$(cleanup_matrix cleanup-e2e-packages)
+  t=0; matrix_has "${e2e_packages}" "${svc}-operator" \
+    && matrix_has "${e2e_packages}" "${svc}" || t=1
+  check "${svc}" P5 "cleanup-e2e-packages" "${t}" \
+    "ci-generate-cleanup-matrix.sh emits ${svc}-operator and ${svc} for the e2e sweep"
 done
 
 # ---------------------------------------------------------------------------

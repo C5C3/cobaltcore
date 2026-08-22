@@ -89,12 +89,14 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   to a registered one.
 - **P5** — CI wiring: the paths-filter block, `ALL_OPERATORS`,
   `FILTER_<svc>`, the unit/integration test matrices, the
-  helm-validate chart loop, the build-images coverage, and each of the
-  three cleanup-images matrices on its own (`cleanup-operator-images`,
-  `cleanup-service-images`, and `cleanup-e2e-stale-tags`, the last
-  needing both `<svc>-operator` and `<svc>`), with exact list-item
+  helm-validate chart loop, the build-images coverage, and both GHCR
+  cleanup package lists (`cleanup-packages` and `cleanup-e2e-packages`,
+  each needing `<svc>-operator` and `<svc>`), with exact list-item
   matches so a bare service name cannot satisfy a check by matching
-  its `<svc>-operator` sibling.
+  its `<svc>-operator` sibling. The cleanup lists come from
+  `hack/ci-generate-cleanup-matrix.sh`, which derives them from
+  `images/` and `operators/`, so a miss there means a missing
+  directory rather than a forgotten matrix entry.
   These are the enumeration points `hack/ci-resolve-changes.sh`
   cannot reach on its own — a missing entry means the service's tests
   never run and CI stays green.

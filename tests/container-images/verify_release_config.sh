@@ -469,26 +469,26 @@ test_option_catalogs_present_and_parse() {
 
 # --- Test 9: nightly GHCR cleanup covers every service image ---
 test_cleanup_matrix_covers_services() {
-  echo "Test: cleanup-images.yaml service matrix covers every service"
+  echo "Test: the derived cleanup package list covers every service"
 
-  local workflow="$PROJECT_ROOT/.github/workflows/cleanup-images.yaml"
+  local generator="$PROJECT_ROOT/hack/ci-generate-cleanup-matrix.sh"
 
-  if [ ! -f "$workflow" ]; then
-    echo "  FAIL: .github/workflows/cleanup-images.yaml not found"
+  if [ ! -f "$generator" ]; then
+    echo "  FAIL: hack/ci-generate-cleanup-matrix.sh not found"
     FAIL=$((FAIL + 1))
     return
   fi
 
   # build-service-images derives its matrix from source-refs.yaml, so a newly
   # registered service starts pushing composite tags and untagged per-platform
-  # digests to GHCR immediately. The cleanup matrix is hand-maintained, so an
-  # unlisted service accumulates both forever. Compare against the same YAML
-  # keys the build matrix reads, not the hand-maintained $SERVICES list, or a
-  # service onboarded without touching this file slips through unnoticed.
-  # Both sides go through the same quote strip as every other yq read here —
-  # normalizing only one side would report every service missing at once.
-  local matrix
-  matrix=$(yq '.jobs.cleanup-service-images.strategy.matrix.package[]' "$workflow" | tr -d '"')
+  # digests to GHCR immediately. The cleanup jobs derive their package list from
+  # images/, which is a different source — a service registered in
+  # source-refs.yaml without an images/<svc>/ directory would build nothing to
+  # clean up, and one with a directory but no source-ref would never be built.
+  # Comparing the two catches either half going missing.
+  local packages
+  packages=$(cd "$PROJECT_ROOT" && bash hack/ci-generate-cleanup-matrix.sh \
+    | sed -n 's/^cleanup-packages=//p')
 
   local registered
   registered=$(for source_refs in "$PROJECT_ROOT"/releases/*/source-refs.yaml; do
@@ -504,11 +504,11 @@ test_cleanup_matrix_covers_services() {
 
   local service
   while IFS= read -r service; do
-    if grep -qxF "$service" <<< "$matrix"; then
-      echo "  PASS: [$service] listed in the cleanup-service-images matrix"
+    if grep -qF "\"$service\"" <<< "$packages"; then
+      echo "  PASS: [$service] covered by the nightly GHCR cleanup"
       PASS=$((PASS + 1))
     else
-      echo "  FAIL: [$service] missing from the cleanup-service-images matrix"
+      echo "  FAIL: [$service] missing from the derived cleanup package list"
       FAIL=$((FAIL + 1))
     fi
   done <<< "$registered"
