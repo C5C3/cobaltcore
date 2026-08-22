@@ -7,17 +7,13 @@ package controller
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/cobaltcore/internal/common/apply"
@@ -36,10 +32,6 @@ const (
 	// conditionReasonImportError reports a Kubernetes-level failure reconciling one
 	// of the unmanaged import CRs (not a K-ORC/OpenStack failure).
 	conditionReasonImportError = "ImportError"
-
-	// conditionReasonCatalogEntryError reports a Kubernetes-level failure
-	// reconciling (or garbage-collecting) an opt-in managed catalog entry.
-	conditionReasonCatalogEntryError = "CatalogEntryError"
 )
 
 // externalCatalogInterfaces are the catalog interfaces imported in External mode.
@@ -85,37 +77,12 @@ func externalIdentityServiceName(cp *c5c3v1alpha1.ControlPlane) string {
 	return ""
 }
 
-// externalManagedCatalogEntries returns the explicitly opted-in catalog entries,
-// or nil — the default — in which case External mode creates nothing.
-func externalManagedCatalogEntries(cp *c5c3v1alpha1.ControlPlane) []c5c3v1alpha1.ExternalCatalogEntrySpec {
-	if catalog := externalCatalogSpec(cp); catalog != nil {
-		return catalog.ManagedEntries
-	}
-	return nil
-}
-
 // keystoneEndpointImportName is the deterministic name of the unmanaged Endpoint
 // import CR for one catalog interface. It extends the managed-mode Endpoint name
 // with the interface, so the two never collide (modes cannot transition, but the
 // deletion sweep enumerates both).
 func keystoneEndpointImportName(cp *c5c3v1alpha1.ControlPlane, iface c5c3v1alpha1.ExternalEndpointType) string {
 	return keystoneEndpointName(cp) + "-" + string(iface)
-}
-
-// catalogEntryNamePrefix is the name prefix of every CR belonging to an opt-in
-// managed catalog entry. Together with the controller reference it scopes the
-// removal sweep: only CRs this ControlPlane created for a declared entry are
-// candidates for deletion. It cannot collide with the "-identity-" import names.
-func catalogEntryNamePrefix(cp *c5c3v1alpha1.ControlPlane) string {
-	return cp.Name + "-catalog-"
-}
-
-func catalogEntryServiceName(cp *c5c3v1alpha1.ControlPlane, entryType string) string {
-	return catalogEntryNamePrefix(cp) + entryType
-}
-
-func catalogEntryEndpointName(cp *c5c3v1alpha1.ControlPlane, entryType string, iface c5c3v1alpha1.ExternalEndpointType) string {
-	return catalogEntryServiceName(cp, entryType) + "-" + string(iface)
 }
 
 // catalogImport is one unmanaged import CR carrying its live status, plus the
@@ -153,25 +120,8 @@ func korcTerminalReason(obj orcv1alpha1.ObjectWithConditions) string {
 	return cond.Reason
 }
 
-// korcStatusMessage returns the message K-ORC last stamped on obj — the Progressing
-// condition's, else the Available condition's — or "" when neither carries one.
-//
-// It is the only place a hard failure classifyKORCMessage has no arm for survives. A
-// domain-admin account adopting a brownfield cloud gets HTTP 403 on POST /v3/services;
-// K-ORC reports that as a non-terminal TransientError, so a bounded wait that dropped
-// the message would say "registered but not yet Available" forever with nothing in the
-// condition naming the 403.
-func korcStatusMessage(obj orcv1alpha1.ObjectWithConditions) string {
-	for _, condType := range []string{orcv1alpha1.ConditionProgressing, orcv1alpha1.ConditionAvailable} {
-		if cond := apimeta.FindStatusCondition(obj.GetConditions(), condType); cond != nil && cond.Message != "" {
-			return cond.Message
-		}
-	}
-	return ""
-}
-
-// reconcileCatalogExternal is the import-first catalog branch. It NEVER creates a
-// catalog entry unless the spec explicitly declares one.
+// reconcileCatalogExternal is the import-first catalog branch. It creates no
+// catalog entry.
 //
 // Pointed at a populated catalog, a managed registration would duplicate rows —
 // Keystone enforces no uniqueness on service names — so the default posture is to
@@ -190,8 +140,8 @@ func korcStatusMessage(obj orcv1alpha1.ObjectWithConditions) string {
 //
 // Precedence, most specific cause first:
 //
-//  1. a classifiable K-ORC message on an unresolved import, entry or removal (auth,
-//     TLS, reachability, catalog mismatch) — relayed verbatim, the failure class is
+//  1. a classifiable K-ORC message on an unresolved import (auth, TLS,
+//     reachability, catalog mismatch) — relayed verbatim, the failure class is
 //     only recoverable from the message text
 //  2. a terminal K-ORC error on an import, Service before Endpoints so the ROOT is
 //     reported. Unlike the waits below this covers every import, required or not:
@@ -201,9 +151,7 @@ func korcStatusMessage(obj orcv1alpha1.ObjectWithConditions) string {
 //     see the rationale at the loop
 //  3. a REQUIRED import stalled past externalImportStallGrace — the silent-empty
 //     hazard
-//  4. a terminal K-ORC error on an opt-in managed entry, or on one being removed
-//  5. a REQUIRED import, any declared entry, or any removal not yet complete — a
-//     legitimate, bounded wait
+//  4. a REQUIRED import not yet resolved — a legitimate, bounded wait
 func (r *ControlPlaneReconciler) reconcileCatalogExternal(
 	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference,
 ) (ctrl.Result, error) {
@@ -219,12 +167,6 @@ func (r *ControlPlaneReconciler) reconcileCatalogExternal(
 	// which rows resolved even while the condition reports a failure.
 	cp.Status.Catalog = &c5c3v1alpha1.CatalogStatus{Imports: catalogImportStatus(imports)}
 
-	entries, pruning, err := r.ensureManagedCatalogEntries(ctx, cp, entryCredentialsRef(cp, credRef))
-	if err != nil {
-		fail(conditionReasonCatalogEntryError, fmt.Sprintf("reconciling the managed catalog entries: %v", err))
-		return ctrl.Result{}, err
-	}
-
 	// 1. A classifiable message on an UNRESOLVED import. A resolved import is never
 	// re-classified: K-ORC leaves the last transient attempt's message on the
 	// Progressing condition, and classifying that would flip a converged catalog to
@@ -234,22 +176,6 @@ func (r *ControlPlaneReconciler) reconcileCatalogExternal(
 		if !imp.resolved() {
 			pending = append(pending, imp.obj)
 		}
-	}
-	// The WRITE path is classified alongside the imports. Nothing K-ORC reports on a
-	// managed entry is terminal (classifyKORCMessage documents why: a 401, a dial
-	// error, a TLS failure and a catalog mismatch all collapse into the same
-	// non-terminal TransientError), so without this every realistic entry failure
-	// would fall through to the unbounded step-5 wait and read as "not yet Available"
-	// — the silent-empty hazard the import branch exists to eliminate, reintroduced.
-	for _, entry := range entries {
-		if !korcAvailableUpToDate(entry.obj) {
-			pending = append(pending, entry.obj)
-		}
-	}
-	// A removal is in flight by construction, so its message always describes the
-	// DELETE K-ORC is retrying against the external catalog.
-	for _, entry := range pruning {
-		pending = append(pending, entry.obj)
 	}
 	if reason, rawMessage := classifyExternalKORCFailure(pending...); reason != "" {
 		message := fmt.Sprintf("external Keystone at %s: %s", externalKeystoneAuthURL(cp), rawMessage)
@@ -311,25 +237,7 @@ func (r *ControlPlaneReconciler) reconcileCatalogExternal(
 		}
 	}
 
-	// 4. Terminal K-ORC errors on the entries this ControlPlane itself created — and
-	// on the ones it is removing. A removal K-ORC gave up on leaves the row live in a
-	// catalog this ControlPlane does not own, so it can never be fire-and-forget.
-	for _, entry := range entries {
-		if termErr := orcv1alpha1.GetTerminalError(entry.obj); termErr != nil {
-			return r.catalogTerminalError(cp, entry.kind, entry.name, termErr), nil
-		}
-	}
-	for _, entry := range pruning {
-		if termErr := orcv1alpha1.GetTerminalError(entry.obj); termErr != nil {
-			fail(conditionReasonCatalogFailed, fmt.Sprintf(
-				"K-ORC reported a terminal error removing the %s %q from the external catalog: %v",
-				entry.kind, entry.name, termErr,
-			))
-			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
-	}
-
-	// 5. Bounded waits.
+	// 4. Bounded waits.
 	for _, imp := range imports {
 		if imp.required && !imp.resolved() {
 			logger.Info("external catalog import not yet resolved, requeuing", "import", imp.name)
@@ -339,39 +247,6 @@ func (r *ControlPlaneReconciler) reconcileCatalogExternal(
 			))
 			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 		}
-	}
-	for _, entry := range entries {
-		// An entry re-declared while its earlier removal is still in flight is NOT
-		// Available, whatever its conditions say. controllerutil.CreateOrUpdate finds
-		// the Terminating CR, projects a byte-identical spec and updates nothing, so
-		// no generation bump invalidates the Available=True K-ORC left on it — while
-		// K-ORC is deleting that exact row. korcAvailableUpToDate is generation-aware,
-		// not deletion-aware, so the guard belongs here.
-		if entry.obj.GetDeletionTimestamp() != nil {
-			fail(conditionReasonWaitingForCatalog, fmt.Sprintf(
-				"the declared catalog entry %s %q is still being removed from the external catalog by an "+
-					"earlier deletion; it is re-registered once K-ORC releases it", entry.kind, entry.name,
-			))
-			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
-		if !korcAvailableUpToDate(entry.obj) {
-			fail(conditionReasonWaitingForCatalog, entryWaitMessage(entry, fmt.Sprintf(
-				"the declared catalog entry %s %q is registered but not yet Available", entry.kind, entry.name,
-			)))
-			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
-		}
-	}
-	// Removal gates readiness exactly as registration does. Until K-ORC's finalizer
-	// has taken the row out of the external catalog the ControlPlane still owns it,
-	// and reporting CatalogReady=True meanwhile would make a removal that never
-	// completes (a 403 on DELETE /v3/endpoints, a flapping WAN link) invisible — and
-	// its CR a candidate for the teardown stall escape, which orphans the row.
-	for _, entry := range pruning {
-		fail(conditionReasonWaitingForCatalog, entryWaitMessage(entry, fmt.Sprintf(
-			"the undeclared catalog entry %s %q is still being removed from the external catalog",
-			entry.kind, entry.name,
-		)))
-		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
 	// The count is of RESOLVED endpoint interfaces, not of imported CRs: an
@@ -391,8 +266,8 @@ func (r *ControlPlaneReconciler) reconcileCatalogExternal(
 		Reason:             conditionReasonCatalogImported,
 		Message: fmt.Sprintf(
 			"imported the external identity Service and %d of %d Endpoint interface(s) as unmanaged K-ORC CRs "+
-				"(see status.catalog.imports); %d declared catalog entry/entries registered",
-			resolvedInterfaces, len(externalCatalogInterfaces), len(externalManagedCatalogEntries(cp)),
+				"(see status.catalog.imports)",
+			resolvedInterfaces, len(externalCatalogInterfaces),
 		),
 	})
 	return ctrl.Result{}, nil
@@ -531,17 +406,19 @@ func (r *ControlPlaneReconciler) ensureExternalCatalogImports(
 	return imports, nil
 }
 
-// entryCredentialsRef returns the credentials the opt-in catalog entries
-// authenticate with: the operator-owned password cloud, NOT the spec's
-// clouds.yaml (which carries the minted application credential).
+// entryCredentialsRef returns the credentials the MANAGED K-ORC children
+// authenticate with (the KeystoneService catalog rows, the service-account users
+// and their role assignments): the operator-owned password cloud, NOT the spec's
+// clouds.yaml (which carries the minted application credential). It resolves the
+// cloud name the same way the identity imports do, only against another Secret.
 //
-// The entries are ManagementPolicyManaged, so K-ORC must reach the external
-// Keystone to DELETE them — and the teardown sweep (deleteORCResources) issues
+// Those children are ManagementPolicyManaged, so K-ORC must reach the external
+// Keystone to DELETE them, and the teardown sweep (deleteORCResources) issues
 // every Delete in one unsequenced pass. The ApplicationCredential's K-ORC
-// finalizer REVOKES the credential at the Keystone level, so an entry still
+// finalizer REVOKES the credential at the Keystone level, so a child still
 // authenticating through it would get a 404 and stay Terminating until the stall
-// escape strips its finalizer, orphaning the row in a third-party catalog. The
-// admin password outlives the revocation, so pointing the entries at the same
+// escape strips its finalizer, orphaning the resource behind it. The admin
+// password outlives the revocation, so pointing the managed children at the same
 // document the ApplicationCredential itself mints with removes the dependency the
 // sweep cannot order. The read-only identity imports keep credRef: deleting an
 // unmanaged CR never calls OpenStack.
@@ -552,197 +429,4 @@ func entryCredentialsRef(
 		SecretName: adminPasswordCloudSecretName(cp),
 		CloudName:  credRef.CloudName,
 	}
-}
-
-// managedCatalogEntry is one MANAGED K-ORC CR backing a declared catalog entry, or
-// one being removed because the spec stopped declaring it.
-type managedCatalogEntry struct {
-	kind string
-	name string
-	obj  orcv1alpha1.ObjectWithConditions
-}
-
-// entryWaitMessage appends K-ORC's own message to a bounded-wait message, so the
-// failure class the wait is actually blocked on is visible in `kubectl describe`
-// even when classifyKORCMessage cannot name it. See korcStatusMessage.
-func entryWaitMessage(entry managedCatalogEntry, message string) string {
-	if korcMessage := korcStatusMessage(entry.obj); korcMessage != "" {
-		return message + "; K-ORC reports: " + korcMessage
-	}
-	return message
-}
-
-// ensureManagedCatalogEntries projects spec.services.keystone.external.catalog.
-// managedEntries onto managed K-ORC Service/Endpoint CRs and then garbage-collects
-// the entry CRs this ControlPlane owns that the spec no longer declares. It returns
-// the projected entries and, separately, the removals K-ORC has not completed yet.
-//
-// The sweep is what makes "removing the opt-in deletes only that managed entry"
-// true: it considers only CRs that are BOTH controller-owned by this ControlPlane
-// AND carry the catalog-entry name prefix, so the unmanaged identity imports (and
-// any foreign CR sharing the namespace) can never be caught by it. With no
-// declared entries the desired set is empty and every previously-declared entry is
-// removed — the default posture creates nothing and leaves nothing behind.
-func (r *ControlPlaneReconciler) ensureManagedCatalogEntries(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference,
-) (reconciled, pruning []managedCatalogEntry, err error) {
-	ns := childNamespace(cp)
-
-	for _, entry := range externalManagedCatalogEntries(cp) {
-		// The managed catalog entries stay read-modify-write (not Server-Side Apply):
-		// they participate in a remove/re-add lifecycle where reconcileCatalogExternal
-		// gates CatalogReady on the LIVE Terminating CR returned by the write.
-		// CreateOrUpdate's no-op-on-identical-spec returns the still-Terminating object
-		// without a generation bump, which the deletion guard reads; re-applying a spec
-		// to a K-ORC-finalized Terminating entry is not a pure projection.
-		service := &orcv1alpha1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: catalogEntryServiceName(cp, entry.Type), Namespace: ns},
-		}
-		if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
-			service.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyManaged
-			service.Spec.CloudCredentialsRef = credRef
-			service.Spec.Import = nil
-			if service.Spec.Resource == nil {
-				service.Spec.Resource = &orcv1alpha1.ServiceResourceSpec{}
-			}
-			service.Spec.Resource.Type = entry.Type
-			service.Spec.Resource.Name = nil
-			if entry.Name != "" {
-				service.Spec.Resource.Name = ptr.To(orcv1alpha1.OpenStackName(entry.Name))
-			}
-			service.Spec.Resource.Enabled = ptr.To(true)
-			return controllerutil.SetControllerReference(cp, service, r.Scheme)
-		}); err != nil {
-			return nil, nil, fmt.Errorf("catalog entry Service %q: %w", service.Name, err)
-		}
-		reconciled = append(reconciled, managedCatalogEntry{kind: "Service", name: service.Name, obj: service})
-
-		for _, ep := range entry.Endpoints {
-			// Read-modify-write for the same remove/re-add deletion-race reason as the
-			// managed catalog entry Service above.
-			endpoint := &orcv1alpha1.Endpoint{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      catalogEntryEndpointName(cp, entry.Type, ep.Interface),
-					Namespace: ns,
-				},
-			}
-			if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, endpoint, func() error {
-				endpoint.Spec.ManagementPolicy = orcv1alpha1.ManagementPolicyManaged
-				endpoint.Spec.CloudCredentialsRef = credRef
-				endpoint.Spec.Import = nil
-				if endpoint.Spec.Resource == nil {
-					endpoint.Spec.Resource = &orcv1alpha1.EndpointResourceSpec{}
-				}
-				endpoint.Spec.Resource.Interface = string(ep.Interface)
-				endpoint.Spec.Resource.URL = ep.URL
-				endpoint.Spec.Resource.ServiceRef = orcv1alpha1.KubernetesNameRef(service.Name)
-				endpoint.Spec.Resource.Enabled = ptr.To(true)
-				return controllerutil.SetControllerReference(cp, endpoint, r.Scheme)
-			}); err != nil {
-				return nil, nil, fmt.Errorf("catalog entry Endpoint %q: %w", endpoint.Name, err)
-			}
-			reconciled = append(reconciled, managedCatalogEntry{kind: "Endpoint", name: endpoint.Name, obj: endpoint})
-		}
-	}
-
-	pruning, err = r.pruneManagedCatalogEntries(ctx, cp, reconciled)
-	if err != nil {
-		return nil, nil, err
-	}
-	return reconciled, pruning, nil
-}
-
-// pruneManagedCatalogEntries deletes the opt-in catalog-entry CRs this
-// ControlPlane owns which the spec no longer declares. reconciled is the set the
-// caller just projected, so an owned, prefixed CR absent from it is undeclared.
-// Endpoints go before Services: K-ORC's deletion guard refuses to remove a
-// Service an Endpoint still references.
-//
-// It returns the CRs whose removal has NOT completed — still present after the
-// Delete, Terminating behind K-ORC's finalizer while it takes the row out of the
-// external catalog. The caller gates CatalogReady on them, symmetrically with
-// registration: until the finalizer clears, the row is still live in a catalog this
-// ControlPlane does not own, and a removal K-ORC can never complete (a 403 on
-// DELETE /v3/endpoints, an endpoint already deleted by hand) must not be reported as
-// success.
-func (r *ControlPlaneReconciler) pruneManagedCatalogEntries(
-	ctx context.Context, cp *c5c3v1alpha1.ControlPlane, reconciled []managedCatalogEntry,
-) ([]managedCatalogEntry, error) {
-	logger := log.FromContext(ctx)
-	ns := childNamespace(cp)
-
-	// The kind is compared alongside the name: a Service and an Endpoint can share
-	// a name (an entry of type "image-public" and the "public" endpoint of entry
-	// "image" both render to "<cp>-catalog-image-public").
-	declared := func(kind, name string) bool {
-		return slices.ContainsFunc(reconciled, func(e managedCatalogEntry) bool {
-			return e.kind == kind && e.name == name
-		})
-	}
-
-	var pruning []managedCatalogEntry
-
-	var endpoints orcv1alpha1.EndpointList
-	if err := r.List(ctx, &endpoints, client.InNamespace(ns)); err != nil {
-		return nil, fmt.Errorf("listing catalog entry Endpoints: %w", err)
-	}
-	for i := range endpoints.Items {
-		endpoint := &endpoints.Items[i]
-		if !r.ownsCatalogEntry(cp, endpoint) {
-			continue
-		}
-		if declared("Endpoint", endpoint.Name) {
-			continue
-		}
-		logger.Info("removing an undeclared managed catalog Endpoint", "name", endpoint.Name)
-		if err := client.IgnoreNotFound(r.Delete(ctx, endpoint)); err != nil {
-			return nil, fmt.Errorf("deleting catalog entry Endpoint %q: %w", endpoint.Name, err)
-		}
-		// Re-Get so the returned object carries the deletion's live status: K-ORC
-		// stamps the failed DELETE onto its conditions.
-		fresh := &orcv1alpha1.Endpoint{}
-		switch err := r.Get(ctx, client.ObjectKeyFromObject(endpoint), fresh); {
-		case apierrors.IsNotFound(err):
-		case err != nil:
-			return nil, fmt.Errorf("re-checking removed catalog entry Endpoint %q: %w", endpoint.Name, err)
-		default:
-			pruning = append(pruning, managedCatalogEntry{kind: "Endpoint", name: fresh.Name, obj: fresh})
-		}
-	}
-
-	var services orcv1alpha1.ServiceList
-	if err := r.List(ctx, &services, client.InNamespace(ns)); err != nil {
-		return nil, fmt.Errorf("listing catalog entry Services: %w", err)
-	}
-	for i := range services.Items {
-		service := &services.Items[i]
-		if !r.ownsCatalogEntry(cp, service) {
-			continue
-		}
-		if declared("Service", service.Name) {
-			continue
-		}
-		logger.Info("removing an undeclared managed catalog Service", "name", service.Name)
-		if err := client.IgnoreNotFound(r.Delete(ctx, service)); err != nil {
-			return nil, fmt.Errorf("deleting catalog entry Service %q: %w", service.Name, err)
-		}
-		fresh := &orcv1alpha1.Service{}
-		switch err := r.Get(ctx, client.ObjectKeyFromObject(service), fresh); {
-		case apierrors.IsNotFound(err):
-		case err != nil:
-			return nil, fmt.Errorf("re-checking removed catalog entry Service %q: %w", service.Name, err)
-		default:
-			pruning = append(pruning, managedCatalogEntry{kind: "Service", name: fresh.Name, obj: fresh})
-		}
-	}
-
-	return pruning, nil
-}
-
-// ownsCatalogEntry reports whether obj is a CR this ControlPlane created for a
-// declared catalog entry. BOTH the controller reference and the name prefix must
-// match: the reference alone would sweep the identity imports, and the prefix
-// alone would sweep a same-named CR belonging to somebody else.
-func (r *ControlPlaneReconciler) ownsCatalogEntry(cp *c5c3v1alpha1.ControlPlane, obj client.Object) bool {
-	return metav1.IsControlledBy(obj, cp) && strings.HasPrefix(obj.GetName(), catalogEntryNamePrefix(cp))
 }
