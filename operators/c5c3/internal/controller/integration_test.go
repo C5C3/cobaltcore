@@ -2808,6 +2808,12 @@ func TestIntegration_MultiControlPlane_DistinctDBCredentialPaths(t *testing.T) {
 // finalizer would, then removes it to let teardown complete.
 const fakeKORCFinalizer = "openstack.k-orc.cloud/applicationcredential"
 
+// fakeKORCUserFinalizer mimics the finalizer K-ORC adds to a User it manages. It
+// carries korcFinalizerPrefix, so it holds a registration's managed User
+// Terminating the way K-ORC's own finalizer would, and the teardown's
+// force-release strips it the same way.
+const fakeKORCUserFinalizer = "openstack.k-orc.cloud/user"
+
 // fakeOpenBaoFinalizer mimics the finalizer the openbao-operator adds to an
 // OpenBaoCluster it manages. envtest runs no openbao-operator, so the
 // cross-namespace teardown test injects this finalizer to hold the instance
@@ -2928,6 +2934,225 @@ func TestIntegration_ControlPlaneDeletion_SequencesORCTeardown(t *testing.T) {
 		return apierrors.IsNotFound(acErr) && apierrors.IsNotFound(cpErr)
 	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
 		"AC and ControlPlane must be removed once the K-ORC finalizer clears")
+}
+
+// TestIntegration_ControlPlaneDeletion_SweepsProjectedRegistrationsFirst proves
+// the registration-first teardown order with both controllers on one manager:
+// deleting a ControlPlane that projects a Placement registration deletes that
+// registration BEFORE the admin ApplicationCredential, reports
+// KORCReady=False/FinalizingServiceRegistrations on the CR for as long as the
+// registration is held, and starts the K-ORC sweep only once the registration and
+// its children are gone.
+//
+// What holds the registration is its own managed User: a K-ORC-shaped finalizer
+// keeps the User Terminating, the KeystoneService controller keeps its finalizer
+// while that child is still listed, and the ControlPlane waits on both. Removing
+// the finalizer releases the whole chain, so the order is observed rather than
+// inferred from timing. envtest runs no K-ORC controller and no garbage
+// collector, so every deletion here is one an operator issued.
+func TestIntegration_ControlPlaneDeletion_SweepsProjectedRegistrationsFirst(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	// Both controllers run on one manager: the ControlPlane projects the
+	// registration, and the KeystoneService controller is what tears its children
+	// down and holds the registration until they are gone.
+	c, ctx, _ := setupRegisteringControlPlaneEnvTest(t)
+	ensureReadyClusterSecretStore(t, ctx, c)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-registration-deletion-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	// Placement is the lightest built-in (its block carries no sub-spec), so the
+	// registration it projects is the one child this teardown has to sequence.
+	cp := integrationManagedControlPlane("cp", ns.Name)
+	cp.Spec.Services.Placement = integrationPlacementService()
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create ControlPlane CR")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	driveControlPlaneToAdminCredentialReady(t, ctx, c, cp)
+
+	// Drive the registration to Ready, so the catalog rows, the Keystone account
+	// and the delivery objects the teardown collects all exist.
+	reg := simulateBuiltinRegistrationConvergedWhenPresent(t, ctx, c, cp,
+		client.ObjectKey{Name: placementName(cp), Namespace: cp.PlacementNamespace()})
+	cond := waitForControlPlaneCondition(t, ctx, c, cpKey,
+		conditionTypeServiceAccountsReady, metav1.ConditionTrue, itEventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountsProvisioned),
+		"the projected registration must be counted as provisioned before the teardown starts")
+
+	childNS := keystoneServiceChildNamespace(cp)
+	userKey := client.ObjectKey{Name: keystoneServiceUserRef(reg), Namespace: childNS}
+	acKey := client.ObjectKey{Name: adminAppCredentialName(cp), Namespace: ns.Name}
+	regKey := client.ObjectKeyFromObject(reg)
+
+	// Hold the registration's managed User Terminating the way K-ORC's own
+	// finalizer would while it deletes the Keystone user. That is what keeps the
+	// registration itself standing once the ControlPlane deletes it.
+	g.Eventually(func() error {
+		user := &orcv1alpha1.User{}
+		if err := c.Get(ctx, userKey, user); err != nil {
+			return err
+		}
+		if controllerutil.ContainsFinalizer(user, fakeKORCUserFinalizer) {
+			return nil
+		}
+		controllerutil.AddFinalizer(user, fakeKORCUserFinalizer)
+		return c.Update(ctx, user)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"inject the fake K-ORC finalizer on the registration's managed User")
+
+	// Hold the admin ApplicationCredential the same way, so the K-ORC sweep is
+	// observable as a step of its own instead of completing the instant it runs.
+	g.Eventually(func() error {
+		ac := &orcv1alpha1.ApplicationCredential{}
+		if err := c.Get(ctx, acKey, ac); err != nil {
+			return err
+		}
+		if controllerutil.ContainsFinalizer(ac, fakeKORCFinalizer) {
+			return nil
+		}
+		controllerutil.AddFinalizer(ac, fakeKORCFinalizer)
+		return c.Update(ctx, ac)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"inject the fake K-ORC finalizer on the admin ApplicationCredential")
+
+	g.Eventually(func() bool {
+		got := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, got); err != nil {
+			return false
+		}
+		return controllerutil.ContainsFinalizer(got, controlPlaneORCFinalizer)
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the ControlPlane must carry the ORC-teardown finalizer before it is deleted")
+
+	g.Expect(c.Delete(ctx, cp)).To(Succeed(), "delete the ControlPlane")
+
+	// The registration goes first, and the CR says so: the condition is what an
+	// operator watching a teardown that is taking its time reads.
+	g.Eventually(func() bool {
+		gotReg := &c5c3v1alpha1.KeystoneService{}
+		if err := c.Get(ctx, regKey, gotReg); err != nil {
+			return false
+		}
+		if gotReg.DeletionTimestamp.IsZero() {
+			return false
+		}
+		gotCP := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, gotCP); err != nil {
+			return false
+		}
+		korcReady := meta.FindStatusCondition(gotCP.Status.Conditions, conditionTypeKORCReady)
+		return korcReady != nil && korcReady.Status == metav1.ConditionFalse &&
+			korcReady.Reason == "FinalizingServiceRegistrations"
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the registration must be deleted first, under a persisted KORCReady=False/FinalizingServiceRegistrations")
+
+	// Sequencing invariant: while the registration is held, the ControlPlane
+	// finalizer holds with it and the admin ApplicationCredential is untouched: it
+	// is the credential the registration's own children authenticate through. The
+	// window spans a full korcRequeueAfter, so the teardown is observed re-running
+	// against the still-present registration rather than merely not having run
+	// again yet.
+	g.Consistently(func() bool {
+		gotCP := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, gotCP); err != nil {
+			return false
+		}
+		if !controllerutil.ContainsFinalizer(gotCP, controlPlaneORCFinalizer) {
+			return false
+		}
+		ac := &orcv1alpha1.ApplicationCredential{}
+		if err := c.Get(ctx, acKey, ac); err != nil {
+			return false
+		}
+		if !ac.DeletionTimestamp.IsZero() {
+			return false
+		}
+		return c.Get(ctx, regKey, &c5c3v1alpha1.KeystoneService{}) == nil
+	}, korcRequeueAfter+5*time.Second, itPollInterval).Should(BeTrue(),
+		"the admin credential must outlive a registration that is still finishing its teardown")
+
+	// Release the User; the registration's own teardown completes and takes every
+	// child with it.
+	g.Eventually(func() error {
+		user := &orcv1alpha1.User{}
+		err := c.Get(ctx, userKey, user)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		controllerutil.RemoveFinalizer(user, fakeKORCUserFinalizer)
+		return c.Update(ctx, user)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"remove the fake K-ORC finalizer from the registration's managed User")
+
+	// The K-ORC children carry ownership labels rather than owner references, so
+	// nothing collects them: the registration's teardown is what deletes each one.
+	g.Expect(reg.Spec.Catalog.Endpoints).NotTo(BeEmpty(),
+		"the built-in registration must declare catalog endpoints for the loop below to assert anything")
+	g.Eventually(func() bool {
+		if !apierrors.IsNotFound(c.Get(ctx, regKey, &c5c3v1alpha1.KeystoneService{})) {
+			return false
+		}
+		goneInChildNS := func(name string, obj client.Object) bool {
+			return apierrors.IsNotFound(c.Get(ctx, client.ObjectKey{Name: name, Namespace: childNS}, obj))
+		}
+		if !goneInChildNS(keystoneServiceCatalogServiceRef(reg), &orcv1alpha1.Service{}) ||
+			!goneInChildNS(keystoneServiceProjectRef(reg), &orcv1alpha1.Project{}) ||
+			!goneInChildNS(keystoneServiceRoleImportRef(reg, "service"), &orcv1alpha1.Role{}) ||
+			!goneInChildNS(keystoneServiceRoleAssignmentRef(reg, "service"), &orcv1alpha1.RoleAssignment{}) {
+			return false
+		}
+		for _, ep := range reg.Spec.Catalog.Endpoints {
+			if !goneInChildNS(keystoneServiceCatalogEndpointRef(reg, ep.Interface), &orcv1alpha1.Endpoint{}) {
+				return false
+			}
+		}
+		// The delivery objects stay in the registration's own namespace.
+		pushErr := c.Get(ctx, client.ObjectKey{
+			Name: keystoneServicePushSecretName(reg), Namespace: reg.Namespace,
+		}, &esov1alpha1.PushSecret{})
+		sourceErr := c.Get(ctx, client.ObjectKey{
+			Name: keystoneServiceSourceSecretName(reg), Namespace: reg.Namespace,
+		}, &corev1.Secret{})
+		return apierrors.IsNotFound(pushErr) && apierrors.IsNotFound(sourceErr)
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the registration, its K-ORC children and its delivery objects must all be gone")
+
+	// Only now does the K-ORC sweep start: the admin credential is deleted after
+	// the registration that resolved it, never before.
+	g.Eventually(func() bool {
+		ac := &orcv1alpha1.ApplicationCredential{}
+		if err := c.Get(ctx, acKey, ac); err != nil {
+			return false
+		}
+		return !ac.DeletionTimestamp.IsZero()
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the K-ORC sweep must delete the admin credential once no registration remains")
+
+	g.Eventually(func() error {
+		ac := &orcv1alpha1.ApplicationCredential{}
+		err := c.Get(ctx, acKey, ac)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		controllerutil.RemoveFinalizer(ac, fakeKORCFinalizer)
+		return c.Update(ctx, ac)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"remove the fake K-ORC finalizer from the admin ApplicationCredential")
+
+	g.Eventually(func() bool {
+		acErr := c.Get(ctx, acKey, &orcv1alpha1.ApplicationCredential{})
+		cpErr := c.Get(ctx, cpKey, &c5c3v1alpha1.ControlPlane{})
+		return apierrors.IsNotFound(acErr) && apierrors.IsNotFound(cpErr)
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the admin credential and the ControlPlane must be removed once the K-ORC finalizer clears")
 }
 
 // TestIntegration_ControlPlane_ValidationMarkers pins the validation-marker wave
@@ -4817,6 +5042,11 @@ func TestIntegration_DedicatedBackingServices_TransitionRejected(t *testing.T) {
 // this namespace, so the tenant and the namespace must outlive the instance. The
 // test holds the instance Terminating behind a fake finalizer to pin the invariant.
 //
+// Barbican's KeystoneService registration is placed in the same namespace, and it
+// comes down ahead of everything else: its managed User is held Terminating behind
+// a K-ORC-shaped finalizer, and the Keystone child, the instance and the namespace
+// keep a zero DeletionTimestamp until the registration and its children are gone.
+//
 // envtest runs no namespace controller, so a deleted namespace never actually
 // disappears: it is asserted on its DeletionTimestamp, which is what the operator
 // is responsible for setting.
@@ -4990,7 +5220,7 @@ func TestIntegration_DedicatedNamespaces(t *testing.T) {
 	// The Barbican registration splits across the two namespaces: its KeystoneService
 	// child sits in the service namespace and delivers there, while the K-ORC children
 	// it projects stay beside the admin credential in the ControlPlane's namespace.
-	simulateBuiltinRegistrationConvergedWhenPresent(t, ctx, c, cp,
+	barbicanReg := simulateBuiltinRegistrationConvergedWhenPresent(t, ctx, c, cp,
 		client.ObjectKey{Name: barbicanName(cp), Namespace: keystoneNS})
 
 	// --- The Barbican ensemble follows its service into that namespace too. Open the
@@ -5041,9 +5271,118 @@ func TestIntegration_DedicatedNamespaces(t *testing.T) {
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
 		"inject the fake openbao-operator finalizer on the dedicated instance")
 
+	// The registration comes down before any of it, so hold its managed User
+	// Terminating the way K-ORC would while it deletes the Keystone user. Its K-ORC
+	// children stayed in the ControlPlane's namespace whatever namespace the
+	// registration itself was placed in.
+	barbicanRegUserKey := client.ObjectKey{Name: keystoneServiceUserRef(barbicanReg), Namespace: ns.Name}
+	g.Eventually(func() error {
+		user := &orcv1alpha1.User{}
+		if err := c.Get(ctx, barbicanRegUserKey, user); err != nil {
+			return err
+		}
+		if controllerutil.ContainsFinalizer(user, fakeKORCUserFinalizer) {
+			return nil
+		}
+		controllerutil.AddFinalizer(user, fakeKORCUserFinalizer)
+		return c.Update(ctx, user)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"inject the fake K-ORC finalizer on the Barbican registration's managed User")
+
 	live := &c5c3v1alpha1.ControlPlane{}
 	g.Expect(c.Get(ctx, cpKey, live)).To(Succeed())
 	g.Expect(c.Delete(ctx, live)).To(Succeed(), "delete the ControlPlane")
+
+	// The registration in the dedicated namespace goes FIRST, and the ControlPlane
+	// reports the wait it is in on its own status.
+	barbicanRegKey := client.ObjectKey{Name: barbicanName(cp), Namespace: keystoneNS}
+	g.Eventually(func() bool {
+		gotReg := &c5c3v1alpha1.KeystoneService{}
+		if err := c.Get(ctx, barbicanRegKey, gotReg); err != nil {
+			return false
+		}
+		if gotReg.DeletionTimestamp.IsZero() {
+			return false
+		}
+		gotCP := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, gotCP); err != nil {
+			return false
+		}
+		korcReady := meta.FindStatusCondition(gotCP.Status.Conditions, conditionTypeKORCReady)
+		return korcReady != nil && korcReady.Status == metav1.ConditionFalse &&
+			korcReady.Reason == "FinalizingServiceRegistrations"
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the registration must be deleted first, under KORCReady=False/FinalizingServiceRegistrations")
+
+	// Nothing behind it has started while it is held: the Keystone child, the
+	// OpenBao instance and the namespace itself all still carry a zero
+	// DeletionTimestamp. The window spans a full korcRequeueAfter, so the teardown is
+	// observed re-running against the still-present registration.
+	g.Consistently(func() bool {
+		gotCP := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, gotCP); err != nil {
+			return false
+		}
+		if !controllerutil.ContainsFinalizer(gotCP, controlPlaneORCFinalizer) {
+			return false
+		}
+		keystoneChild := &keystonev1alpha1.Keystone{}
+		if err := c.Get(ctx, client.ObjectKey{Name: "cp-keystone", Namespace: keystoneNS}, keystoneChild); err != nil {
+			return false
+		}
+		if !keystoneChild.DeletionTimestamp.IsZero() {
+			return false
+		}
+		instance := &openbaov1alpha1.OpenBaoCluster{}
+		if err := c.Get(ctx, instanceKey, instance); err != nil {
+			return false
+		}
+		if !instance.DeletionTimestamp.IsZero() {
+			return false
+		}
+		namespace := &corev1.Namespace{}
+		if err := c.Get(ctx, client.ObjectKey{Name: keystoneNS}, namespace); err != nil {
+			return false
+		}
+		return namespace.DeletionTimestamp.IsZero()
+	}, korcRequeueAfter+5*time.Second, itPollInterval).Should(BeTrue(),
+		"the Keystone child, the instance and the namespace must not move while a registration is still finishing")
+
+	// Release the User; the registration finishes and takes its children with it.
+	g.Eventually(func() error {
+		user := &orcv1alpha1.User{}
+		err := c.Get(ctx, barbicanRegUserKey, user)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		controllerutil.RemoveFinalizer(user, fakeKORCUserFinalizer)
+		return c.Update(ctx, user)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"remove the fake K-ORC finalizer from the Barbican registration's managed User")
+
+	// The teardown reaches across both namespaces: the delivery objects sat in the
+	// service namespace, the K-ORC children in the ControlPlane's.
+	g.Eventually(func() bool {
+		if !apierrors.IsNotFound(c.Get(ctx, barbicanRegKey, &c5c3v1alpha1.KeystoneService{})) {
+			return false
+		}
+		pushErr := c.Get(ctx, client.ObjectKey{
+			Name: keystoneServicePushSecretName(barbicanReg), Namespace: keystoneNS,
+		}, &esov1alpha1.PushSecret{})
+		sourceErr := c.Get(ctx, client.ObjectKey{
+			Name: keystoneServiceSourceSecretName(barbicanReg), Namespace: keystoneNS,
+		}, &corev1.Secret{})
+		userErr := c.Get(ctx, barbicanRegUserKey, &orcv1alpha1.User{})
+		catalogErr := c.Get(ctx, client.ObjectKey{
+			Name: keystoneServiceCatalogServiceRef(barbicanReg), Namespace: ns.Name,
+		}, &orcv1alpha1.Service{})
+		return apierrors.IsNotFound(pushErr) && apierrors.IsNotFound(sourceErr) &&
+			apierrors.IsNotFound(userErr) && apierrors.IsNotFound(catalogErr)
+	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
+		"the registration must take its delivery objects and its K-ORC children down across both namespaces")
 
 	g.Eventually(func() bool {
 		err := c.Get(ctx, client.ObjectKey{Name: "cp-keystone", Namespace: keystoneNS}, &keystonev1alpha1.Keystone{})
