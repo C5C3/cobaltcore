@@ -365,9 +365,9 @@ func TestProbeOptionalWatches_FetchesEachGroupVersionOnce(t *testing.T) {
 // slimmable watches guarded behind the discovery probe. Listing any K-ORC kind here
 // would let the manager start on a cluster whose K-ORC CRDs are unserved, only for the
 // very next reconcile pass to hard-error with a no-match when reconcileKORC reads the
-// admin ApplicationCredential (or reconcileServiceAccounts applies a RoleAssignment) —
-// wedging the ControlPlane instead of failing fast at startup. The probe never reports
-// K-ORC missing, so nothing else in the suite catches a regression here.
+// admin ApplicationCredential (or a service leg applies a KeystoneService child's
+// K-ORC CR), wedging the ControlPlane instead of failing fast at startup. The probe
+// never reports K-ORC missing, so nothing else in the suite catches a regression here.
 func TestOptionalWatchObjects_ExcludesKORC(t *testing.T) {
 	g := NewGomegaWithT(t)
 

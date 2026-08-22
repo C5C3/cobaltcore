@@ -1577,9 +1577,8 @@ func TestValidateCreate_RejectsPlaintextAuthURLWithCABundleSecretRef(t *testing.
 // error names every field, pinning the no-short-circuit contract for the matrix.
 // --- External-mode catalog stewardship (spec.services.keystone.external.catalog) ---
 
-// TestValidateCreate_AcceptsExternalCatalogSpec proves the whole catalog surface
-// admits with non-default values: a disambiguation filter plus a managed entry
-// carrying two distinct interfaces.
+// TestValidateCreate_AcceptsExternalCatalogSpec proves the catalog surface
+// admits with a non-default value: an explicit disambiguation filter.
 func TestValidateCreate_AcceptsExternalCatalogSpec(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
@@ -1587,271 +1586,23 @@ func TestValidateCreate_AcceptsExternalCatalogSpec(t *testing.T) {
 	cp := externalControlPlane()
 	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
 		IdentityServiceName: "keystone-legacy",
-		ManagedEntries: []ExternalCatalogEntrySpec{{
-			Type: "image",
-			Name: "glance",
-			Endpoints: []ExternalCatalogEndpointSpec{
-				{Interface: ExternalEndpointTypePublic, URL: "https://glance.example.com"},
-				{Interface: ExternalEndpointTypeInternal, URL: "http://glance.svc:9292"},
-			},
-		}},
 	}
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// TestValidateCreate_RejectsIdentityManagedCatalogEntry pins the conservative
-// invariant: the identity entry is import-owned, so declaring it as a managed
-// entry — the one way the opt-in could clobber the external catalog's own
-// identity row — is refused.
-func TestValidateCreate_RejectsIdentityManagedCatalogEntry(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := externalControlPlane()
-	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
-		ManagedEntries: []ExternalCatalogEntrySpec{{Type: "identity"}},
-	}
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("owned by the External-mode imports"))
-}
-
-func TestValidateCreate_RejectsDuplicateCatalogEntryTypes(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := externalControlPlane()
-	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
-		ManagedEntries: []ExternalCatalogEntrySpec{{Type: "image"}, {Type: "image"}},
-	}
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("managedEntries[1].type"))
-	g.Expect(err.Error()).To(ContainSubstring("Duplicate value"))
-}
-
-func TestValidateCreate_RejectsInvalidCatalogEntryType(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := externalControlPlane()
-	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
-		ManagedEntries: []ExternalCatalogEntrySpec{{Type: "Image_Service"}},
-	}
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("DNS-1123 label"))
-}
-
-// TestValidateCreate_RejectsEmptyCatalogEntryType covers the zero-value edge the
-// CRD MinLength marker guards, for a caller that bypassed schema admission.
-func TestValidateCreate_RejectsEmptyCatalogEntryType(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := externalControlPlane()
-	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
-		ManagedEntries: []ExternalCatalogEntrySpec{{Type: ""}},
-	}
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].type"))
-}
-
-func TestValidateCreate_RejectsBadCatalogEndpointURL(t *testing.T) {
-	w := &ControlPlaneWebhook{}
-
-	for _, tc := range []struct {
-		name    string
-		url     string
-		wantMsg string
-	}{
-		{"no scheme", "glance.example.com", "http(s) URL"},
-		{"no host", "https://", "must include a host"},
-		{"empty", "", "http(s) URL"},
-		{"over the K-ORC cap", "https://glance.example.com/" + strings.Repeat("a", 1024), "at most 1024 bytes"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			cp := externalControlPlane()
-			cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
-				ManagedEntries: []ExternalCatalogEntrySpec{{
-					Type:      "image",
-					Endpoints: []ExternalCatalogEndpointSpec{{Interface: ExternalEndpointTypePublic, URL: tc.url}},
-				}},
-			}
-
-			_, err := w.ValidateCreate(context.Background(), cp)
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].endpoints[0].url"))
-			g.Expect(err.Error()).To(ContainSubstring(tc.wantMsg))
-		})
-	}
-}
-
-func TestValidateCreate_RejectsDuplicateCatalogEndpointInterface(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := externalControlPlane()
-	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
-		ManagedEntries: []ExternalCatalogEntrySpec{{
-			Type: "image",
-			Endpoints: []ExternalCatalogEndpointSpec{
-				{Interface: ExternalEndpointTypePublic, URL: "https://a.example.com"},
-				{Interface: ExternalEndpointTypePublic, URL: "https://b.example.com"},
-			},
-		}},
-	}
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].endpoints[1].interface"))
-	g.Expect(err.Error()).To(ContainSubstring("Duplicate value"))
-}
-
-// TestValidateCreate_RejectsEmptyCatalogEndpointInterface covers the zero-value
-// edge: an endpoint with no interface would otherwise be projected onto K-ORC's
-// required Interface field.
-func TestValidateCreate_RejectsEmptyCatalogEndpointInterface(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := externalControlPlane()
-	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
-		ManagedEntries: []ExternalCatalogEntrySpec{{
-			Type:      "image",
-			Endpoints: []ExternalCatalogEndpointSpec{{URL: "https://glance.example.com"}},
-		}},
-	}
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].endpoints[0].interface"))
-}
-
-// TestValidateCreate_RejectsOffEnumCatalogEndpointInterface closes the gap the
-// CRD enum alone leaves for a caller that bypasses schema admission: the
-// interface is embedded verbatim in a child CR name, so an off-enum value like
-// "Public" yields a name that is not a DNS-1123 subdomain and wedges the
-// reconcile in backoff instead of failing at admission.
-func TestValidateCreate_RejectsOffEnumCatalogEndpointInterface(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := externalControlPlane()
-	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
-		ManagedEntries: []ExternalCatalogEntrySpec{{
-			Type:      "image",
-			Endpoints: []ExternalCatalogEndpointSpec{{Interface: "Public", URL: "https://glance.example.com"}},
-		}},
-	}
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].endpoints[0].interface"))
-	g.Expect(err.Error()).To(ContainSubstring("Unsupported value"))
-}
-
-// TestValidateCreate_RejectsCatalogEntryNameWithComma pins the K-ORC parity the
-// entry name previously lacked: it is cast to K-ORC's OpenStackName, whose own
-// CRD Pattern is `^[^,]+$`. A comma admitted here would be rejected by the K-ORC
-// CRD when the child Service CR is submitted, wedging the reconcile.
-func TestValidateCreate_RejectsCatalogEntryNameWithComma(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := externalControlPlane()
-	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
-		ManagedEntries: []ExternalCatalogEntrySpec{{Type: "image", Name: "glance,v2"}},
-	}
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].name"))
-	g.Expect(err.Error()).To(ContainSubstring("must not contain a comma"))
-}
-
-// TestValidateCreate_RejectsTooManyManagedCatalogEntries mirrors the MaxItems
-// marker for a schema-bypassing caller: each entry amplifies into managed K-ORC
-// CRs and therefore into writes against a third-party production Keystone.
-func TestValidateCreate_RejectsTooManyManagedCatalogEntries(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	entries := make([]ExternalCatalogEntrySpec, maxManagedCatalogEntries+1)
-	for i := range entries {
-		entries[i] = ExternalCatalogEntrySpec{Type: fmt.Sprintf("svc-%d", i)}
-	}
-	cp := externalControlPlane()
-	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{ManagedEntries: entries}
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("managedEntries"))
-	g.Expect(err.Error()).To(ContainSubstring("must have at most 32 items"))
-}
-
-// TestValidateCreate_RejectsOverlongCatalogEntryChildName covers the rule no CRD
-// marker can express: metadata.name on the ControlPlane is bounded only by the
-// apiserver's 253 bytes, and the child K-ORC CR name composes it with the entry
-// type. Admitting the pair and discovering the overflow at CreateOrUpdate leaves
-// the ControlPlane wedged in CatalogEntryError backoff.
-func TestValidateCreate_RejectsOverlongCatalogEntryChildName(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := externalControlPlane()
-	cp.Name = strings.Repeat("a", 240)
-	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
-		ManagedEntries: []ExternalCatalogEntrySpec{{Type: "image"}},
-	}
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("managedEntries[0].type"))
-	g.Expect(err.Error()).To(ContainSubstring("253-byte Kubernetes object-name limit"))
-}
-
-// TestValidateCreate_AcceptsCatalogEntryChildNameAtTheLimit is the other side of
-// the bound: a child name of exactly 253 bytes is admissible, so the checks reject
-// only what the apiserver would. BOTH composed names sit exactly on the limit
-// here — the identity Endpoint import, which External mode creates whatever the
-// catalog block says, is the binding constraint on metadata.name, and it leaves
-// the entry type exactly the room the entry-child check permits.
-func TestValidateCreate_AcceptsCatalogEntryChildNameAtTheLimit(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := externalControlPlane()
-	cp.Name = strings.Repeat("a", maxObjectNameBytes-identityImportChildNameOverhead)
-	entryType := strings.Repeat("b", maxObjectNameBytes-catalogEntryChildNameOverhead-len(cp.Name))
-	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
-		ManagedEntries: []ExternalCatalogEntrySpec{{Type: entryType}},
-	}
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).NotTo(HaveOccurred())
-}
-
-// TestValidateCreate_RejectsOverlongIdentityImportChildName pins the guard the
-// entry-child check alone left open: External mode composes
-// "{cp}-identity-endpoint-internal" unconditionally, so a ControlPlane name that
-// fits every declared entry — or one with no managedEntries at all, where the
-// entry check never runs — can still overflow the apiserver's 253-byte
-// metadata.name cap and wedge ensureExternalCatalogImports in ImportError backoff.
+// TestValidateCreate_RejectsOverlongIdentityImportChildName pins the child-name
+// guard External mode needs: it composes "{cp}-identity-endpoint-internal"
+// unconditionally, so a ControlPlane name that overflows the apiserver's
+// 253-byte metadata.name cap wedges ensureExternalCatalogImports in ImportError
+// backoff.
 func TestValidateCreate_RejectsOverlongIdentityImportChildName(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 
-	// One byte past the bound, and no catalog block at all: the entry-child check
-	// cannot fire, so only the mode-level guard stands between this CR and the wedge.
+	// One byte past the bound, and no catalog block at all: the mode-level guard
+	// is the only thing standing between this CR and the wedge.
 	cp := externalControlPlane()
 	cp.Name = strings.Repeat("a", maxObjectNameBytes-identityImportChildNameOverhead+1)
 
@@ -1875,8 +1626,8 @@ func TestValidateCreate_ManagedModeAcceptsLongName(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 }
 
-// TestValidateCreate_RejectsIdentityServiceNameWithComma closes the parity gap
-// managedEntries[].name had already closed: identityServiceName is cast to K-ORC's
+// TestValidateCreate_RejectsIdentityServiceNameWithComma pins the one rule
+// validateExternalCatalog carries: identityServiceName is cast to K-ORC's
 // OpenStackName on the Service import filter, whose own CRD Pattern is `^[^,]+$`.
 // A comma admitted here is rejected by the K-ORC CRD when the import CR is
 // submitted, wedging the reconcile in ImportError backoff instead of failing at
@@ -1904,7 +1655,7 @@ func TestValidateCreate_ExternalCatalogIgnoredOutsideExternalMode(t *testing.T) 
 	cp := managedControlPlane()
 	cp.Spec.Services.Keystone.External = &ExternalKeystoneSpec{
 		AuthURL: "https://keystone.example.com/v3",
-		Catalog: &ExternalCatalogSpec{ManagedEntries: []ExternalCatalogEntrySpec{{Type: "identity"}}},
+		Catalog: &ExternalCatalogSpec{IdentityServiceName: "keystone"},
 	}
 
 	_, err := w.ValidateCreate(context.Background(), cp)
@@ -2258,48 +2009,6 @@ func TestValidateCreate_WarnsOnCleartextHorizonPublicEndpoint(t *testing.T) {
 	})
 }
 
-// TestValidateCreate_AccumulatesAllExternalCatalogErrors is the catalog analogue
-// of the accumulator above, and must stay separate from it: the catalog block
-// hangs off `external`, which that test deliberately nils out to exercise the
-// external-required rule, so no catalog path is reachable there. Every catalog
-// rule is broken at once here, proving validateExternalCatalog accumulates rather
-// than short-circuits on the first offending entry.
-func TestValidateCreate_AccumulatesAllExternalCatalogErrors(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := externalControlPlane()
-	cp.Name = strings.Repeat("a", 240) // every composed child CR name overflows 253 bytes
-	cp.Spec.Services.Keystone.External.Catalog = &ExternalCatalogSpec{
-		IdentityServiceName: "keystone,v3", // comma: not a K-ORC OpenStackName
-		ManagedEntries: []ExternalCatalogEntrySpec{
-			{Type: "identity"},                         // import-owned
-			{Type: "Image_Service", Name: "glance,v2"}, // not a DNS-1123 label; comma in the name
-			{ // duplicate interface, off-enum interface, unusable URL, and a duplicate of entry [0]
-				Type: "identity",
-				Endpoints: []ExternalCatalogEndpointSpec{
-					{Interface: ExternalEndpointTypePublic, URL: "https://ok.example.com"},
-					{Interface: ExternalEndpointTypePublic, URL: "not-a-url"},
-					{Interface: "Public", URL: "https://off-enum.example.com"},
-				},
-			},
-		},
-	}
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	msg := err.Error()
-	g.Expect(msg).To(ContainSubstring("catalog.identityServiceName"), "identityServiceName-comma error must be present")
-	g.Expect(msg).To(ContainSubstring("owned by the External-mode imports"), "identity-entry error must be present")
-	g.Expect(msg).To(ContainSubstring("managedEntries[1].type"), "entry-type-pattern error must be present")
-	g.Expect(msg).To(ContainSubstring("managedEntries[1].name"), "entry-name-comma error must be present")
-	g.Expect(msg).To(ContainSubstring("managedEntries[2].type"), "duplicate-entry-type error must be present")
-	g.Expect(msg).To(ContainSubstring("managedEntries[2].endpoints[1].interface"), "duplicate-interface error must be present")
-	g.Expect(msg).To(ContainSubstring("managedEntries[2].endpoints[1].url"), "endpoint-URL error must be present")
-	g.Expect(msg).To(ContainSubstring("managedEntries[2].endpoints[2].interface"), "off-enum-interface error must be present")
-	g.Expect(msg).To(ContainSubstring("253-byte Kubernetes object-name limit"), "child-CR-name error must be present")
-}
-
 // --- Mode transition gating ---
 
 // TestValidateUpdate_RejectsManagedToExternal verifies flipping a live managed
@@ -2382,367 +2091,6 @@ func TestValidateUpdate_RejectsInfrastructurePresenceFlip(t *testing.T) {
 	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("infrastructure presence is immutable"))
-}
-
-// --- Service-account webhook tests (spec.korc.serviceAccounts) ---
-
-// saControlPlane returns a managed ControlPlane carrying one minimal valid
-// service account so tests can mutate a single aspect to exercise one rule.
-func saControlPlane() *ControlPlane {
-	cp := validControlPlane()
-	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-		Name:    "nova",
-		Project: ServiceAccountProjectSpec{Name: "service"},
-	}}
-	return cp
-}
-
-func TestValidateCreate_AcceptsValidServiceAccount(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	_, err := w.ValidateCreate(context.Background(), saControlPlane())
-	g.Expect(err).NotTo(HaveOccurred())
-}
-
-func TestDefault_MaterializesServiceAccountUserName(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := saControlPlane()
-	cp.Spec.KORC.ServiceAccounts[0].UserName = ""
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	g.Expect(cp.Spec.KORC.ServiceAccounts[0].UserName).To(Equal("nova"),
-		"an empty userName must default to the account name")
-}
-
-func TestDefault_PreservesExplicitServiceAccountUserName(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := saControlPlane()
-	cp.Spec.KORC.ServiceAccounts[0].UserName = "nova-svc"
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	g.Expect(cp.Spec.KORC.ServiceAccounts[0].UserName).To(Equal("nova-svc"))
-}
-
-func TestValidateCreate_RejectsServiceAccountBadName(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := saControlPlane()
-	cp.Spec.KORC.ServiceAccounts[0].Name = "Nova_Service"
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].name"))
-}
-
-func TestValidateCreate_RejectsServiceAccountMissingProjectName(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := saControlPlane()
-	cp.Spec.KORC.ServiceAccounts[0].Project.Name = ""
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].project.name"))
-}
-
-func TestValidateCreate_RejectsServiceAccountAdminIdentityCollision(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := saControlPlane()
-	// The admin identity defaults to user "admin" in domain "Default"; an entry
-	// resolving to the same identity would take over the admin user.
-	cp.Spec.KORC.ServiceAccounts[0].UserName = "admin"
-	cp.Spec.KORC.ServiceAccounts[0].DomainName = "Default"
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("equals the admin identity"))
-}
-
-func TestValidateCreate_RejectsServiceAccountDuplicateIdentity(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := saControlPlane()
-	// Two entries with distinct account names but the same effective user in the
-	// same domain: they would project two managed Users onto one Keystone user.
-	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
-		Name:     "nova-secondary",
-		UserName: "nova",
-		Project:  ServiceAccountProjectSpec{Name: "service"},
-	})
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[1].userName"))
-}
-
-func TestValidateCreate_RejectsServiceAccountDuplicateManagedProject(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := saControlPlane()
-	cp.Spec.KORC.ServiceAccounts[0].Project = ServiceAccountProjectSpec{Name: "service", Create: true}
-	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
-		Name:    "swift",
-		Project: ServiceAccountProjectSpec{Name: "service", Create: true},
-	})
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[1].project.name"))
-}
-
-func TestValidateCreate_AcceptsTwoReferencedAccountsSharingAProject(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := saControlPlane()
-	// Both reference (create: false) the same project — that is legal; only two
-	// create:true entries naming one project collide.
-	cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
-		Name:    "swift",
-		Project: ServiceAccountProjectSpec{Name: "service"},
-	})
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).NotTo(HaveOccurred())
-}
-
-func TestValidateUpdate_RejectsServiceAccountUserNameChange(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	oldCP := saControlPlane()
-	oldCP.Spec.KORC.ServiceAccounts[0].UserName = "nova"
-	newCP := saControlPlane()
-	newCP.Spec.KORC.ServiceAccounts[0].UserName = "nova-renamed"
-
-	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("userName is immutable"))
-}
-
-func TestValidateUpdate_RejectsServiceAccountProjectCreateFlip(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	oldCP := saControlPlane()
-	newCP := saControlPlane()
-	newCP.Spec.KORC.ServiceAccounts[0].Project.Create = true
-
-	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("project.create is immutable"))
-}
-
-func TestValidateUpdate_AcceptsServiceAccountAdoptFlip(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	oldCP := saControlPlane()
-	oldCP.Spec.KORC.ServiceAccounts[0].UserName = "nova"
-	newCP := saControlPlane()
-	newCP.Spec.KORC.ServiceAccounts[0].UserName = "nova"
-	// Flipping adopt to true is the documented collision remediation — it must
-	// stay mutable.
-	newCP.Spec.KORC.ServiceAccounts[0].Adopt = true
-
-	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
-	g.Expect(err).NotTo(HaveOccurred())
-}
-
-// TestValidateCreate_RejectsOverlongServiceAccountChildName pins the child-CR
-// name-length bound the CRD markers cannot express: metadata.name is bounded only
-// by the apiserver's 253 bytes, and the longest child name a roles-less account
-// mints — the password Secret "{cp}-service-account-{name}-password-vN" — composes
-// it with serviceAccountChildNameOverhead and the account name. Admitting an
-// overflowing pair would wedge reconcileServiceAccounts at CreateOrUpdate.
-func TestValidateCreate_RejectsOverlongServiceAccountChildName(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := saControlPlane()
-	// One byte past the bound for the single "nova" account.
-	cp.Name = strings.Repeat("a", maxObjectNameBytes-serviceAccountChildNameOverhead-len("nova")+1)
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].name"))
-	g.Expect(err.Error()).To(ContainSubstring("253-byte Kubernetes object-name limit"))
-}
-
-// TestValidateCreate_AcceptsServiceAccountChildNameAtTheLimit is the other side of
-// the bound: the longest composed child name sitting exactly on 253 bytes is
-// admissible, so the check rejects only what the apiserver would.
-func TestValidateCreate_AcceptsServiceAccountChildNameAtTheLimit(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := saControlPlane()
-	cp.Name = strings.Repeat("a", maxObjectNameBytes-serviceAccountChildNameOverhead-len("nova"))
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).NotTo(HaveOccurred())
-}
-
-// TestValidateCreate_RejectsOverlongServiceAccountRoleAssignmentChildName pins the
-// WIDER bound an account that declares roles pays: it also mints the managed
-// RoleAssignment "{cp}-service-account-{name}-assign-{slug}", 12 bytes longer than
-// the password Secret. A pair the roles-less budget admits must be rejected once
-// roles are declared, or reconcileServiceAccounts wedges minting the assignment.
-func TestValidateCreate_RejectsOverlongServiceAccountRoleAssignmentChildName(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := saControlPlane()
-	cp.Spec.KORC.ServiceAccounts[0].Roles = []string{"member"}
-	// One byte past the roles bound — but comfortably inside the roles-less one.
-	cp.Name = strings.Repeat("a", maxObjectNameBytes-serviceAccountRoleChildNameOverhead-len("nova")+1)
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].name"))
-	g.Expect(err.Error()).To(ContainSubstring("253-byte Kubernetes object-name limit"))
-}
-
-// TestValidateCreate_AcceptsServiceAccountRoleAssignmentChildNameAtTheLimit is the
-// other side of the roles bound: the RoleAssignment sitting exactly on 253 bytes is
-// admissible.
-func TestValidateCreate_AcceptsServiceAccountRoleAssignmentChildNameAtTheLimit(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := saControlPlane()
-	cp.Spec.KORC.ServiceAccounts[0].Roles = []string{"member"}
-	cp.Name = strings.Repeat("a", maxObjectNameBytes-serviceAccountRoleChildNameOverhead-len("nova"))
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).NotTo(HaveOccurred())
-}
-
-// TestValidateUpdate_AcceptsRolelessServiceAccountInTheRoleAssignmentBand guards the
-// upgrade one-way door: projecting roles as RoleAssignments widened the account-keyed
-// child-name overhead, so a ControlPlane an earlier operator level admitted can sit
-// in the band between the two budgets. A roles-less account mints no assignment, so
-// its name must stay admissible — otherwise EVERY later edit to that CR (an
-// openStackRelease bump, an unrelated field) is rejected after the operator upgrade,
-// with no escape hatch that is not itself a spec edit.
-func TestValidateUpdate_AcceptsRolelessServiceAccountInTheRoleAssignmentBand(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	oldCP := saControlPlane()
-	// Inside the roles-less budget, one byte past the roles budget: exactly the band
-	// widening the overhead unconditionally would have made unmaintainable.
-	oldCP.Name = strings.Repeat("a", maxObjectNameBytes-serviceAccountRoleChildNameOverhead-len("nova")+1)
-	g.Expect(len(oldCP.Name)+serviceAccountChildNameOverhead+len("nova")).
-		To(BeNumerically("<=", maxObjectNameBytes), "fixture must sit inside the roles-less budget")
-
-	newCP := oldCP.DeepCopy()
-	newCP.Spec.OpenStackRelease = "2026.1"
-
-	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
-	g.Expect(err).NotTo(HaveOccurred())
-}
-
-// TestValidateCreate_AcceptsServiceAccountTargetNamespaceOwn pins that targeting
-// the ControlPlane's own namespace is admissible: it always has a tenant store,
-// so the own-or-dedicated rule never has to consult the dedicated set.
-func TestValidateCreate_AcceptsServiceAccountTargetNamespaceOwn(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := saControlPlane()
-	cp.Namespace = "openstack"
-	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "openstack"
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).NotTo(HaveOccurred())
-}
-
-// TestValidateCreate_AcceptsServiceAccountTargetNamespaceDedicated pins that a
-// namespace already assigned to a service via spec.services.<svc>.namespace is a
-// valid delivery target: it is provisioned its own openbao-tenant-store.
-func TestValidateCreate_AcceptsServiceAccountTargetNamespaceDedicated(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := saControlPlane()
-	cp.Namespace = "openstack"
-	cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
-		Name: "identity", Lifecycle: ServiceNamespaceLifecycleManaged,
-	}
-	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "identity"
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).NotTo(HaveOccurred())
-}
-
-// TestValidateCreate_RejectsServiceAccountTargetNamespaceUnassigned pins the rule
-// the CRD schema cannot express: a namespace this ControlPlane neither owns nor
-// placed a service in has no tenant store to deliver through, and the error points
-// at the remedy.
-func TestValidateCreate_RejectsServiceAccountTargetNamespaceUnassigned(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := saControlPlane()
-	cp.Namespace = "openstack"
-	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "shared-services"
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].targetNamespace"))
-	g.Expect(err.Error()).To(ContainSubstring("assign the namespace to a service via spec.services.<svc>.namespace first"))
-}
-
-// TestValidateCreate_RejectsServiceAccountTargetNamespaceBadPattern mirrors the
-// RFC-1123 Pattern marker for webhook-bypassed callers: the value names a
-// Kubernetes namespace.
-func TestValidateCreate_RejectsServiceAccountTargetNamespaceBadPattern(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := saControlPlane()
-	cp.Namespace = "openstack"
-	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "Shared_NS"
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].targetNamespace"))
-	g.Expect(err.Error()).To(ContainSubstring("RFC-1123 label"))
-}
-
-// TestValidateUpdate_RejectsServiceAccountTargetNamespaceChange pins the per-entry
-// freeze: flipping targetNamespace on a live entry would strand the delivered
-// Secret, while leaving it unchanged passes.
-func TestValidateUpdate_RejectsServiceAccountTargetNamespaceChange(t *testing.T) {
-	base := func() *ControlPlane {
-		cp := saControlPlane()
-		cp.Namespace = "openstack"
-		cp.Spec.Services.Keystone.Namespace = &ServiceNamespaceSpec{
-			Name: "identity", Lifecycle: ServiceNamespaceLifecycleManaged,
-		}
-		cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "identity"
-		return cp
-	}
-
-	t.Run("flipping targetNamespace on a live entry is rejected", func(t *testing.T) {
-		g := NewGomegaWithT(t)
-		w := &ControlPlaneWebhook{}
-		oldCP := base()
-		newCP := base()
-		newCP.Spec.KORC.ServiceAccounts[0].TargetNamespace = "openstack"
-
-		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
-		g.Expect(err).To(HaveOccurred())
-		g.Expect(err.Error()).To(ContainSubstring("serviceAccounts[0].targetNamespace"))
-		g.Expect(err.Error()).To(ContainSubstring("targetNamespace is immutable"))
-	})
-
-	t.Run("an unchanged targetNamespace passes", func(t *testing.T) {
-		g := NewGomegaWithT(t)
-		w := &ControlPlaneWebhook{}
-		oldCP := base()
-		newCP := base()
-
-		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
-		g.Expect(err).NotTo(HaveOccurred())
-	})
 }
 
 // --- Service-registration allowlist tests (spec.korc.serviceRegistrations) ---
@@ -3637,44 +2985,14 @@ func validGlanceSpec() *ServiceGlanceSpec {
 
 // The inline service-account names the three per-service fixture helpers below
 // carry. See glanceControlPlane for why none of them is the service's own.
-const (
-	glanceInlineAccountName    = "nova"
-	placementInlineAccountName = "neutron"
-	barbicanInlineAccountName  = "cinder"
-)
-
 // glanceControlPlane returns a managed ControlPlane with a minimal valid glance
-// block AND one inline service account, the entry the delivery-namespace tests
-// below vary. The shared infrastructure stays brownfield (the validControlPlane
+// block. The shared infrastructure stays brownfield (the validControlPlane
 // baseline).
-//
-// The entry is NOT named after the service: an inline account managing a
-// built-in's own Keystone user is rejected outright
-// (validateBuiltinServiceAccountCollision), because the projected KeystoneService
-// child already owns that user. These fixtures exercise the orthogonal rules —
-// delivery namespace, project, roles — on an account that merely coexists with
-// the service, so each helper carries a distinct unrelated name and the tests
-// that combine two of them stay free of duplicates.
 func glanceControlPlane() *ControlPlane {
 	cp := validControlPlane()
 	cp.Name = "cp"
 	cp.Spec.Services.Glance = validGlanceSpec()
-	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-		Name:    glanceInlineAccountName,
-		Project: ServiceAccountProjectSpec{Name: "service", Create: true},
-		Roles:   []string{"service"},
-	}}
 	return cp
-}
-
-// findServiceAccount returns a pointer to the named service account entry, or nil.
-func findServiceAccount(cp *ControlPlane, name string) *ServiceAccountSpec {
-	for i := range cp.Spec.KORC.ServiceAccounts {
-		if cp.Spec.KORC.ServiceAccounts[i].Name == name {
-			return &cp.Spec.KORC.ServiceAccounts[i]
-		}
-	}
-	return nil
 }
 
 // TestDefault_GlanceServiceNamespaceLifecycle verifies a declared glance
@@ -3747,21 +3065,6 @@ func TestDefault_GlanceBrownfieldDedicatedNotCoercedIntoManaged(t *testing.T) {
 	g.Expect(db.CredentialsMode).To(BeEmpty(), "Static is only materialized for a MANAGED dedicated database")
 }
 
-// TestDefault_LeavesServiceAccountsUnsetForGlance verifies a declared
-// services.glance grows no spec.korc.serviceAccounts entry: the Glance service
-// user is provisioned by the projected KeystoneService child, so an inline entry
-// would have no consumer.
-func TestDefault_LeavesServiceAccountsUnsetForGlance(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-	cp.Spec.Services.Glance = validGlanceSpec()
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeNil(),
-		"a declared Glance must leave spec.korc.serviceAccounts as the CR declared it")
-}
-
 // TestValidateCreate_AcceptsGlanceControlPlane pins the admissible baseline.
 func TestValidateCreate_AcceptsGlanceControlPlane(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -3769,207 +3072,6 @@ func TestValidateCreate_AcceptsGlanceControlPlane(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), glanceControlPlane())
 	g.Expect(err).NotTo(HaveOccurred())
-}
-
-// TestValidateCreate_RejectsInlineAccountCollidingWithABuiltin pins the guard
-// that replaced the injection: an inline spec.korc.serviceAccounts entry
-// managing the Keystone user of a declared built-in service is rejected, for
-// every built-in and whether the name is carried by the entry name or by an
-// explicit userName. Without it the CR admits, both mechanisms provision the one
-// user, and the projected registration reports ServiceAccountCollision for as
-// long as the ControlPlane lives — with nothing in the CR naming the projection
-// the operator would have to reason about.
-func TestValidateCreate_RejectsInlineAccountCollidingWithABuiltin(t *testing.T) {
-	tests := []struct {
-		name    string
-		collide func() *ControlPlane
-		field   string
-		user    string
-	}{
-		{
-			name: "glance by entry name",
-			collide: func() *ControlPlane {
-				cp := glanceControlPlane()
-				cp.Spec.KORC.ServiceAccounts[0].Name = GlanceServiceAccountName
-				return cp
-			},
-			field: "spec.korc.serviceAccounts[0]",
-			user:  GlanceServiceAccountName,
-		},
-		{
-			name: "glance by explicit userName",
-			collide: func() *ControlPlane {
-				cp := glanceControlPlane()
-				cp.Spec.KORC.ServiceAccounts[0].UserName = GlanceServiceAccountName
-				return cp
-			},
-			field: "spec.korc.serviceAccounts[0]",
-			user:  GlanceServiceAccountName,
-		},
-		{
-			name: "placement by entry name",
-			collide: func() *ControlPlane {
-				cp := placementControlPlane()
-				cp.Spec.KORC.ServiceAccounts[0].Name = PlacementServiceAccountName
-				return cp
-			},
-			field: "spec.korc.serviceAccounts[0]",
-			user:  PlacementServiceAccountName,
-		},
-		{
-			name: "barbican by entry name",
-			collide: func() *ControlPlane {
-				cp := barbicanControlPlane()
-				cp.Spec.KORC.ServiceAccounts[0].Name = BarbicanServiceAccountName
-				return cp
-			},
-			field: "spec.korc.serviceAccounts[0]",
-			user:  BarbicanServiceAccountName,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			w := &ControlPlaneWebhook{}
-
-			cp := tc.collide()
-			g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-
-			_, err := w.ValidateCreate(context.Background(), cp)
-			g.Expect(err).To(HaveOccurred())
-			g.Expect(err.Error()).To(ContainSubstring(tc.field))
-			g.Expect(err.Error()).To(ContainSubstring(tc.user))
-		})
-	}
-}
-
-// TestValidateCreate_RejectsInlineAccountNamedAfterAnUndeclaredService pins that
-// the reservation is UNCONDITIONAL. Dropping a services.<svc> block without the
-// deletion opt-in preserves the registration, so a check gated on the block would
-// admit exactly the entry that then collides with a live registration forever —
-// on a spec that no longer names the service at all.
-func TestValidateCreate_RejectsInlineAccountNamedAfterAnUndeclaredService(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := saControlPlane()
-	cp.Name = "cp"
-	cp.Spec.KORC.ServiceAccounts[0].Name = GlanceServiceAccountName
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("spec.korc.serviceAccounts[0]"))
-	g.Expect(err.Error()).To(ContainSubstring(GlanceServiceAccountName))
-}
-
-// TestValidateCreate_AcceptsInlineAccountNamedAfterABuiltinInAnotherDomain is the
-// other side of the guard: Keystone user names are unique per DOMAIN, and the
-// projected registration always lands in the admin domain (it leaves
-// spec.account.domainName unset). An entry managing "glance" in a tenant domain of
-// its own is a different user, so nothing collides and nothing may be rejected.
-func TestValidateCreate_AcceptsInlineAccountNamedAfterABuiltinInAnotherDomain(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	cp := glanceControlPlane()
-	cp.Spec.KORC.ServiceAccounts[0].Name = GlanceServiceAccountName
-	cp.Spec.KORC.ServiceAccounts[0].DomainName = "tenant-a"
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).NotTo(HaveOccurred())
-}
-
-// TestValidateUpdate_BuiltinServiceAccountNamesAreNewEntriesOnly pins the update
-// gating. A ControlPlane admitted under an operator version without the rule may
-// already carry a colliding entry; re-running the check on every update would
-// reject the finalizer-removal update that completes its deletion and wedge the CR
-// (and its namespace) in Terminating. Only an entry whose effective identity this
-// update INTRODUCES is checked.
-func TestValidateUpdate_BuiltinServiceAccountNamesAreNewEntriesOnly(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	grandfathered := glanceControlPlane()
-	grandfathered.Spec.KORC.ServiceAccounts[0].Name = GlanceServiceAccountName
-	grandfathered.Finalizers = []string{"c5c3.io/finalizer"}
-	g.Expect(w.Default(context.Background(), grandfathered)).To(Succeed())
-
-	deleting := grandfathered.DeepCopy()
-	deleting.Finalizers = nil
-	_, err := w.ValidateUpdate(context.Background(), grandfathered, deleting)
-	g.Expect(err).NotTo(HaveOccurred(),
-		"a grandfathered colliding ControlPlane must stay updatable, or its deletion never completes")
-
-	// Adding the collision to an already-enabled service is the update the rule
-	// exists for, and it is rejected even though the service block did not change.
-	admitted := glanceControlPlane()
-	g.Expect(w.Default(context.Background(), admitted)).To(Succeed())
-	colliding := admitted.DeepCopy()
-	colliding.Spec.KORC.ServiceAccounts = append(colliding.Spec.KORC.ServiceAccounts, ServiceAccountSpec{
-		Name:     PlacementServiceAccountName,
-		UserName: PlacementServiceAccountName,
-		Project:  ServiceAccountProjectSpec{Name: "service", Create: true},
-		Roles:    []string{"service"},
-	})
-
-	_, err = w.ValidateUpdate(context.Background(), admitted, colliding)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("spec.korc.serviceAccounts[1]"))
-	g.Expect(err.Error()).To(ContainSubstring(PlacementServiceAccountName))
-}
-
-// TestValidateUpdate_RejectsRepointingAnAdmittedAccountAtABuiltin closes the gap
-// the grandfathering could otherwise open: the admitted set is keyed on the
-// RESOLVED (user, domain) identity, so re-pointing an existing entry at a
-// built-in's user is a new identity and is rejected like a fresh entry.
-func TestValidateUpdate_RejectsRepointingAnAdmittedAccountAtABuiltin(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	admitted := glanceControlPlane()
-	g.Expect(w.Default(context.Background(), admitted)).To(Succeed())
-
-	repointed := admitted.DeepCopy()
-	repointed.Spec.KORC.ServiceAccounts[0].UserName = GlanceServiceAccountName
-
-	_, err := w.ValidateUpdate(context.Background(), admitted, repointed)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("spec.korc.serviceAccounts[0]"))
-	g.Expect(err.Error()).To(ContainSubstring(GlanceServiceAccountName))
-}
-
-// TestValidateUpdate_RejectsMovingTheAdminDomainOntoAnAdmittedAccount closes the
-// other half of the grandfathering gap. spec.korc.adminCredential.domainName is
-// mutable, and an entry with an explicit domainName resolves to the SAME identity
-// before and after a move of the admin domain onto it — so an admitted set keyed
-// on the identity alone would wave the entry through exactly as the move makes it
-// collide. The set is keyed on the previous revision's verdict instead.
-func TestValidateUpdate_RejectsMovingTheAdminDomainOntoAnAdmittedAccount(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-
-	// Admitted deliberately: the entry manages "glance" in "Default" while the admin
-	// domain is "tenant-a", which is a different Keystone user than the one the
-	// projected registration provisions.
-	admitted := glanceControlPlane()
-	admitted.Spec.KORC.AdminCredential.DomainName = "tenant-a"
-	admitted.Spec.KORC.ServiceAccounts[0].Name = GlanceServiceAccountName
-	admitted.Spec.KORC.ServiceAccounts[0].DomainName = DefaultAdminDomainName
-	g.Expect(w.Default(context.Background(), admitted)).To(Succeed())
-	_, err := w.ValidateCreate(context.Background(), admitted)
-	g.Expect(err).NotTo(HaveOccurred())
-
-	// Moving the admin domain onto the entry's domain makes the two mechanisms
-	// provision one user, without the entry itself changing at all.
-	moved := admitted.DeepCopy()
-	moved.Spec.KORC.AdminCredential.DomainName = DefaultAdminDomainName
-
-	_, err = w.ValidateUpdate(context.Background(), admitted, moved)
-	g.Expect(err).To(HaveOccurred())
-	g.Expect(err.Error()).To(ContainSubstring("spec.korc.serviceAccounts[0]"))
-	g.Expect(err.Error()).To(ContainSubstring(GlanceServiceAccountName))
 }
 
 // TestValidateCreate_RejectsGlanceBackendsEmpty mirrors the MinItems floor: a
@@ -4663,14 +3765,13 @@ func TestValidateCreate_RejectsGlanceInExternalMode(t *testing.T) {
 }
 
 // TestValidateCreate_AcceptsGlanceInDedicatedNamespace pins the accepting side:
-// the account targets the namespace Glance is placed in.
+// a namespace no other ControlPlane claims admits the Glance placement.
 func TestValidateCreate_AcceptsGlanceInDedicatedNamespace(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
 	cp := glanceControlPlane()
 	cp.Namespace = "openstack"
 	cp.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged}
-	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "images"
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -4689,7 +3790,6 @@ func TestValidateCreate_RejectsGlanceNamespaceClaimedByOtherControlPlane(t *test
 	cp := glanceControlPlane()
 	cp.Namespace = "openstack"
 	cp.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged}
-	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "images"
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
@@ -4705,10 +3805,8 @@ func TestValidateUpdate_RejectsGlanceNamespaceChange(t *testing.T) {
 	oldCP := glanceControlPlane()
 	oldCP.Namespace = "openstack"
 	oldCP.Spec.Services.Glance.Namespace = &ServiceNamespaceSpec{Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged}
-	oldCP.Spec.KORC.ServiceAccounts[0].TargetNamespace = "images"
 	newCP := oldCP.DeepCopy()
 	newCP.Spec.Services.Glance.Namespace.Name = "images-2"
-	newCP.Spec.KORC.ServiceAccounts[0].TargetNamespace = "images-2"
 
 	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 	g.Expect(err).To(HaveOccurred())
@@ -4789,18 +3887,13 @@ func TestValidateUpdate_RejectsGlanceDedicatedPresenceFlip(t *testing.T) {
 // --- services.placement ---
 
 // placementControlPlane returns a managed ControlPlane with a minimal placement
-// block AND one inline service account, so the tests below start from an
-// admissible baseline and vary only the field (or the INI content) under test.
-// The shared infrastructure stays brownfield (the validControlPlane baseline).
+// block, so the tests below start from an admissible baseline and vary only the
+// field (or the INI content) under test. The shared infrastructure stays
+// brownfield (the validControlPlane baseline).
 func placementControlPlane() *ControlPlane {
 	cp := validControlPlane()
 	cp.Name = "cp"
 	cp.Spec.Services.Placement = &ServicePlacementSpec{}
-	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-		Name:    placementInlineAccountName,
-		Project: ServiceAccountProjectSpec{Name: "service-placement", Create: true},
-		Roles:   []string{"service"},
-	}}
 	return cp
 }
 
@@ -4855,45 +3948,6 @@ func TestDefault_PlacementDedicatedBackingServicesLeaves(t *testing.T) {
 	g.Expect(cp.Spec.Services).To(Equal(before.Spec.Services))
 }
 
-// TestDefault_LeavesServiceAccountsUnsetForPlacement verifies a declared
-// services.placement grows no spec.korc.serviceAccounts entry, for the reason its
-// Glance sibling states.
-func TestDefault_LeavesServiceAccountsUnsetForPlacement(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-	cp.Spec.Services.Placement = &ServicePlacementSpec{}
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeNil(),
-		"a declared Placement must leave spec.korc.serviceAccounts as the CR declared it")
-}
-
-// TestDefault_LeavesServiceAccountsUnsetForAllServices covers the case the three
-// per-service tests only reach one at a time: a ControlPlane declaring Glance,
-// Placement and Barbican at once comes out of defaulting with
-// spec.korc.serviceAccounts still unset, and admits — so running every built-in
-// service requires no service account of one's own.
-func TestDefault_LeavesServiceAccountsUnsetForAllServices(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-	cp.Name = "cp"
-	cp.Spec.Services.Glance = validGlanceSpec()
-	cp.Spec.Services.Placement = &ServicePlacementSpec{}
-	cp.Spec.Services.Barbican = &ServiceBarbicanSpec{
-		SecretStore: ServiceBarbicanSecretStoreSpec{Dedicated: &BarbicanDedicatedSecretStoreSpec{}},
-	}
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeNil(),
-		"defaulting must leave spec.korc.serviceAccounts byte-identical")
-
-	_, err := w.ValidateCreate(context.Background(), cp)
-	g.Expect(err).NotTo(HaveOccurred(),
-		"a ControlPlane running all three services must admit with no service account declared")
-}
-
 // TestValidateCreate_AcceptsPlacementControlPlane pins the admissible baseline.
 func TestValidateCreate_AcceptsPlacementControlPlane(t *testing.T) {
 	g := NewGomegaWithT(t)
@@ -4904,7 +3958,7 @@ func TestValidateCreate_AcceptsPlacementControlPlane(t *testing.T) {
 }
 
 // TestValidateCreate_AcceptsPlacementInDedicatedNamespace pins the accepting
-// side: the account targets the namespace Placement is placed in.
+// side: a namespace no other ControlPlane claims admits the Placement placement.
 func TestValidateCreate_AcceptsPlacementInDedicatedNamespace(t *testing.T) {
 	g := NewGomegaWithT(t)
 	w := &ControlPlaneWebhook{}
@@ -4913,7 +3967,6 @@ func TestValidateCreate_AcceptsPlacementInDedicatedNamespace(t *testing.T) {
 	cp.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
 		Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
 	}
-	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "placement"
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -4997,7 +4050,8 @@ func TestValidateCreate_PlacementPublicEndpointMustAgreeWithGateway(t *testing.T
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("services.placement.publicEndpoint"))
 		g.Expect(err.Error()).To(ContainSubstring(
-			`must equal services.placement.gateway.hostname "placement.example.com"`))
+			`must equal services.placement.gateway.hostname "placement.example.com"`,
+		))
 	})
 
 	t.Run("http scheme behind a TLS-terminating gateway", func(t *testing.T) {
@@ -5131,7 +4185,6 @@ func TestValidateCreate_RejectsPlacementNamespaceClaimedByOtherControlPlane(t *t
 	cp.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
 		Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
 	}
-	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "placement"
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
@@ -5225,7 +4278,6 @@ func TestValidateUpdate_AcceptsAddingAServiceWithDedicatedBackingServices(t *tes
 						SecretRef:  commonv1.SecretRefSpec{Name: "placement-db"},
 					},
 				}
-				cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, pl.Spec.KORC.ServiceAccounts...)
 			},
 		},
 		{
@@ -5239,7 +4291,6 @@ func TestValidateUpdate_AcceptsAddingAServiceWithDedicatedBackingServices(t *tes
 						Backend:    commonv1.DefaultCacheBackend,
 					},
 				}
-				cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, gl.Spec.KORC.ServiceAccounts...)
 			},
 		},
 	}
@@ -5276,8 +4327,6 @@ func TestValidateUpdate_AcceptsAddingPlacementInADedicatedNamespace(t *testing.T
 	newCP.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
 		Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
 	}
-	newCP.Spec.KORC.ServiceAccounts = append(newCP.Spec.KORC.ServiceAccounts, pl.Spec.KORC.ServiceAccounts...)
-	newCP.Spec.KORC.ServiceAccounts[len(newCP.Spec.KORC.ServiceAccounts)-1].TargetNamespace = "placement"
 
 	_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 	g.Expect(err).NotTo(HaveOccurred())
@@ -5306,8 +4355,6 @@ func TestValidateUpdate_RejectsClaimingANamespaceAnotherControlPlaneOccupies(t *
 		cp.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
 			Name: ns, Lifecycle: ServiceNamespaceLifecycleExternal,
 		}
-		cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, pl.Spec.KORC.ServiceAccounts...)
-		cp.Spec.KORC.ServiceAccounts[len(cp.Spec.KORC.ServiceAccounts)-1].TargetNamespace = ns
 	}
 
 	t.Run("a namespace an incumbent already claims", func(t *testing.T) {
@@ -5375,7 +4422,6 @@ func TestValidateUpdate_RejectsReAddingADroppedService(t *testing.T) {
 	readd := func(cp *ControlPlane) *ServicePlacementSpec {
 		pl := placementControlPlane()
 		cp.Spec.Services.Placement = pl.Spec.Services.Placement
-		cp.Spec.KORC.ServiceAccounts = append(cp.Spec.KORC.ServiceAccounts, pl.Spec.KORC.ServiceAccounts...)
 		return cp.Spec.Services.Placement
 	}
 
@@ -5406,7 +4452,6 @@ func TestValidateUpdate_RejectsReAddingADroppedService(t *testing.T) {
 		readd(newCP).Namespace = &ServiceNamespaceSpec{
 			Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
 		}
-		newCP.Spec.KORC.ServiceAccounts[len(newCP.Spec.KORC.ServiceAccounts)-1].TargetNamespace = "placement"
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).To(HaveOccurred())
@@ -5438,7 +4483,6 @@ func TestValidateUpdate_RejectsDroppingAPlacementNamespaceAssignment(t *testing.
 	oldCP.Spec.Services.Placement.Namespace = &ServiceNamespaceSpec{
 		Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
 	}
-	oldCP.Spec.KORC.ServiceAccounts[0].TargetNamespace = "placement"
 	newCP := oldCP.DeepCopy()
 	newCP.Spec.Services.Placement.Namespace = nil
 
@@ -5741,7 +4785,8 @@ func TestValidateCreate_RejectsUnknownPlacementExtraConfigOption(t *testing.T) {
 		_, err := w.ValidateCreate(context.Background(), cp)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring(
-			"spec.services.placement.extraConfig[placement][randomize_allocation_candidatez]"))
+			"spec.services.placement.extraConfig[placement][randomize_allocation_candidatez]",
+		))
 		g.Expect(err.Error()).To(ContainSubstring("no such option in the placement 2025.2 option catalog"))
 	})
 
@@ -5853,7 +4898,8 @@ func TestValidateCreate_ForbidsPlacementRejectedOwnedKey(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.globalExtraConfig[api][auth_strategy]"))
 		g.Expect(err.Error()).To(ContainSubstring(
-			"auth_strategy is managed via operator-computed and must not be set in extraConfig"))
+			"auth_strategy is managed via operator-computed and must not be set in extraConfig",
+		))
 		g.Expect(err.Error()).To(ContainSubstring("noauth2 disables token validation entirely"))
 	})
 
@@ -6346,22 +5392,16 @@ func TestValidateUpdate_TrustedDashboardRejectedWhenHorizonAppears(t *testing.T)
 // --- services.barbican ---
 
 // barbicanControlPlane returns a managed ControlPlane with a minimal barbican
-// block AND one inline service account, so the tests below start from an
-// admissible baseline and vary only the field (or the INI content) under test.
-// The store is the dedicated one, the mode that needs
-// no references of its own. The shared infrastructure stays brownfield (the
-// validControlPlane baseline).
+// block, so the tests below start from an admissible baseline and vary only the
+// field (or the INI content) under test. The store is the dedicated one, the
+// mode that needs no references of its own. The shared infrastructure stays
+// brownfield (the validControlPlane baseline).
 func barbicanControlPlane() *ControlPlane {
 	cp := validControlPlane()
 	cp.Name = "cp"
 	cp.Spec.Services.Barbican = &ServiceBarbicanSpec{
 		SecretStore: ServiceBarbicanSecretStoreSpec{Dedicated: &BarbicanDedicatedSecretStoreSpec{}},
 	}
-	cp.Spec.KORC.ServiceAccounts = []ServiceAccountSpec{{
-		Name:    barbicanInlineAccountName,
-		Project: ServiceAccountProjectSpec{Name: "service-barbican", Create: true},
-		Roles:   []string{"service"},
-	}}
 	return cp
 }
 
@@ -6444,22 +5484,6 @@ func TestValidateUpdate_ProjectedBarbicanChildNameBoundIsNewlyEnabledOnly(t *tes
 	_, err = w.ValidateUpdate(context.Background(), grandfathered, deleting)
 	g.Expect(err).NotTo(HaveOccurred(),
 		"an over-long grandfathered ControlPlane must stay updatable, or its deletion never completes")
-}
-
-// TestDefault_LeavesServiceAccountsUnsetForBarbican verifies a declared
-// services.barbican grows no spec.korc.serviceAccounts entry, for the reason its
-// Glance sibling states.
-func TestDefault_LeavesServiceAccountsUnsetForBarbican(t *testing.T) {
-	g := NewGomegaWithT(t)
-	w := &ControlPlaneWebhook{}
-	cp := validControlPlane()
-	cp.Spec.Services.Barbican = &ServiceBarbicanSpec{
-		SecretStore: ServiceBarbicanSecretStoreSpec{Dedicated: &BarbicanDedicatedSecretStoreSpec{}},
-	}
-
-	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
-	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeNil(),
-		"a declared Barbican must leave spec.korc.serviceAccounts as the CR declared it")
 }
 
 // TestDefault_BarbicanExternalStoreKVMountpoint verifies the webhook mirror of
@@ -6591,7 +5615,8 @@ func TestValidateCreate_RejectsBarbicanExternalStoreWithoutCredentials(t *testin
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring(
-		"spec.services.barbican.secretStore.external.credentialsSecretRef.name"))
+		"spec.services.barbican.secretStore.external.credentialsSecretRef.name",
+	))
 }
 
 // TestValidateCreate_RejectsBarbicanExternalStoreWithEmptyCABundleName is the
@@ -6609,7 +5634,8 @@ func TestValidateCreate_RejectsBarbicanExternalStoreWithEmptyCABundleName(t *tes
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring(
-		"spec.services.barbican.secretStore.external.caBundleSecretRef.name"))
+		"spec.services.barbican.secretStore.external.caBundleSecretRef.name",
+	))
 }
 
 // TestValidateCreate_RejectsBarbicanExternalStoreInsecureURL covers the shapes
@@ -6713,7 +5739,8 @@ func TestValidateCreate_BarbicanPublicEndpointMustAgreeWithGateway(t *testing.T)
 		_, err := w.ValidateCreate(context.Background(), cp)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring(
-			`must equal services.barbican.gateway.hostname "barbican.example.com"`))
+			`must equal services.barbican.gateway.hostname "barbican.example.com"`,
+		))
 	})
 
 	t.Run("http scheme behind a TLS-terminating gateway", func(t *testing.T) {
@@ -6891,7 +5918,6 @@ func TestValidateCreate_RejectsBarbicanNamespaceClaimedByOtherControlPlane(t *te
 	cp.Spec.Services.Barbican.Namespace = &ServiceNamespaceSpec{
 		Name: "barbican", Lifecycle: ServiceNamespaceLifecycleManaged,
 	}
-	cp.Spec.KORC.ServiceAccounts[0].TargetNamespace = "barbican"
 
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
@@ -6909,7 +5935,6 @@ func TestValidateUpdate_RejectsBarbicanNamespaceChange(t *testing.T) {
 	oldCP.Spec.Services.Barbican.Namespace = &ServiceNamespaceSpec{
 		Name: "barbican", Lifecycle: ServiceNamespaceLifecycleManaged,
 	}
-	oldCP.Spec.KORC.ServiceAccounts[0].TargetNamespace = "barbican"
 	newCP := oldCP.DeepCopy()
 	newCP.Spec.Services.Barbican.Namespace.Name = "barbican-2"
 
@@ -7057,7 +6082,8 @@ func TestValidateUpdate_FreezesBarbicanSecretStoreAddressing(t *testing.T) {
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring(
-			"spec.services.barbican.secretStore.external.kvMountpoint"))
+			"spec.services.barbican.secretStore.external.kvMountpoint",
+		))
 		g.Expect(err.Error()).To(ContainSubstring("immutable"))
 	})
 
@@ -7167,7 +6193,6 @@ func TestValidateUpdate_FreezesBarbicanSecretStoreAddressing(t *testing.T) {
 		g := NewGomegaWithT(t)
 		oldCP := barbicanControlPlane()
 		oldCP.Spec.Services.Barbican = nil
-		oldCP.Spec.KORC.ServiceAccounts = nil
 		newCP := barbicanControlPlane()
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
@@ -7267,15 +6292,11 @@ func placedServices() []placedService {
 					Name: "images", Lifecycle: ServiceNamespaceLifecycleManaged,
 				}
 				cp.Spec.Services.Glance.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
-				findServiceAccount(cp, glanceInlineAccountName).TargetNamespace = "images"
 				publishKeystone(cp)
 				return cp
 			},
-			// The service account is delivered through the namespace's tenant store,
-			// so it follows the namespace back to the ControlPlane's own.
 			dropNamespace: func(cp *ControlPlane) {
 				cp.Spec.Services.Glance.Namespace = nil
-				findServiceAccount(cp, glanceInlineAccountName).TargetNamespace = ""
 			},
 			publish: func(cp *ControlPlane) {
 				cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
@@ -7293,13 +6314,11 @@ func placedServices() []placedService {
 					Name: "placement", Lifecycle: ServiceNamespaceLifecycleManaged,
 				}
 				cp.Spec.Services.Placement.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
-				findServiceAccount(cp, placementInlineAccountName).TargetNamespace = "placement"
 				publishKeystone(cp)
 				return cp
 			},
 			dropNamespace: func(cp *ControlPlane) {
 				cp.Spec.Services.Placement.Namespace = nil
-				findServiceAccount(cp, placementInlineAccountName).TargetNamespace = ""
 			},
 			publish: func(cp *ControlPlane) {
 				cp.Spec.Services.Placement.PublicEndpoint = "https://placement.example.com"
@@ -7317,13 +6336,11 @@ func placedServices() []placedService {
 					Name: "keymanager", Lifecycle: ServiceNamespaceLifecycleManaged,
 				}
 				cp.Spec.Services.Barbican.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
-				findServiceAccount(cp, barbicanInlineAccountName).TargetNamespace = "keymanager"
 				publishKeystone(cp)
 				return cp
 			},
 			dropNamespace: func(cp *ControlPlane) {
 				cp.Spec.Services.Barbican.Namespace = nil
-				findServiceAccount(cp, barbicanInlineAccountName).TargetNamespace = ""
 			},
 			publish: func(cp *ControlPlane) {
 				cp.Spec.Services.Barbican.PublicEndpoint = "https://barbican.example.com"
@@ -7460,7 +6477,8 @@ func TestValidateCreate_RejectsDisagreeingTargetClustersInOneNamespace(t *testin
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("spec.services.horizon.targetClusterRef"))
 		g.Expect(err.Error()).To(ContainSubstring(
-			`services co-located in namespace "shared" must be placed on the same target cluster`))
+			`services co-located in namespace "shared" must be placed on the same target cluster`,
+		))
 	})
 
 	t.Run("placed next to unplaced", func(t *testing.T) {
@@ -7604,7 +6622,6 @@ func TestValidateCreate_RejectsAPlaintextPlacedKeystoneEndpoint(t *testing.T) {
 		}
 		cp.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
 		cp.Spec.Services.Glance.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
-		findServiceAccount(cp, glanceInlineAccountName).TargetNamespace = "images"
 		return cp
 	}
 
@@ -7760,7 +6777,8 @@ func TestKeystoneCABundleSecretRef(t *testing.T) {
 				g.Expect(err).To(HaveOccurred())
 				g.Expect(err.Error()).To(ContainSubstring("spec.services.keystone.caBundleSecretRef"))
 				g.Expect(err.Error()).To(ContainSubstring(
-					"forbidden while a service does not share Keystone's target cluster"))
+					"forbidden while a service does not share Keystone's target cluster",
+				))
 			})
 		}
 	})
@@ -7883,8 +6901,6 @@ func TestValidateUpdate_FreezesServiceTargetClusterRefs(t *testing.T) {
 		}
 		newCP.Spec.Services.Glance.PublicEndpoint = "https://glance.example.com"
 		newCP.Spec.Services.Glance.TargetClusterRef = &commonv1.TargetClusterRefSpec{Name: "edge"}
-		newCP.Spec.KORC.ServiceAccounts = gl.Spec.KORC.ServiceAccounts
-		findServiceAccount(newCP, glanceInlineAccountName).TargetNamespace = "images"
 		publishKeystone(newCP)
 
 		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)

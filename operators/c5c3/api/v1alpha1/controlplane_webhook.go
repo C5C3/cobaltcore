@@ -5,7 +5,6 @@
 package v1alpha1
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"net/url"
@@ -168,7 +167,7 @@ var controlPlaneReleaseRegexp = regexp.MustCompile(`^\d{4}\.[12]$`)
 const maxExternalAuthURLBytes = 2048
 
 // maxCatalogEndpointURLBytes mirrors the MaxLength marker on
-// ExternalCatalogEndpointSpec.URL, which in turn mirrors K-ORC's own
+// KeystoneServiceEndpointSpec.URL, which in turn mirrors K-ORC's own
 // EndpointResourceSpec.URL cap. A URL admitted here can therefore never be
 // rejected downstream by the K-ORC CRD.
 const maxCatalogEndpointURLBytes = 1024
@@ -338,21 +337,14 @@ func validateGatewayHostname(path *field.Path, hostname string) *field.Error {
 }
 
 // catalogEntryTypePattern mirrors the Pattern marker on
-// ExternalCatalogEntrySpec.Type. The type is embedded verbatim in the names of
-// the child K-ORC CRs, so it must be a DNS-1123 label.
+// KeystoneServiceCatalogSpec.ServiceType. The type is embedded verbatim in the
+// names of the child K-ORC CRs, so it must be a DNS-1123 label.
 var catalogEntryTypePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 const (
-	// maxManagedCatalogEntries mirrors the MaxItems marker on
-	// ExternalCatalogSpec.ManagedEntries. It bounds how many K-ORC CRs — and
-	// therefore how many writes against a third-party production Keystone — one
-	// ControlPlane admission can amplify into.
-	maxManagedCatalogEntries = 32
-
-	// maxObjectNameBytes is the apiserver's cap on metadata.name. The entry type is
-	// embedded in the names of the child K-ORC CRs, and nothing bounds the
-	// ControlPlane's own name below 253, so the composed child name can overflow a
-	// CR that admission already accepted.
+	// maxObjectNameBytes is the apiserver's cap on metadata.name. Nothing bounds
+	// the ControlPlane's own name below 253, so a composed child name can overflow
+	// a CR that admission already accepted.
 	maxObjectNameBytes = 253
 
 	// maxServiceNameBytes is the apiserver's cap on a Service name. Unlike most
@@ -361,321 +353,28 @@ const (
 	// its API Service after its CR inherits the tighter bound.
 	maxServiceNameBytes = 63
 
-	// catalogEntryChildNameOverhead is the longest fixed part of a child catalog
-	// Endpoint name, "{cp}-catalog-{type}-{interface}", i.e. everything except the
-	// ControlPlane name and the entry type. "internal" is the longest interface.
-	catalogEntryChildNameOverhead = len("-catalog-") + len("-internal")
-
 	// identityImportChildNameOverhead is the longest fixed part of an identity
-	// Endpoint import name, "{cp}-identity-endpoint-{interface}". It exceeds
-	// catalogEntryChildNameOverhead, and External mode creates those imports
-	// unconditionally — with or without a catalog block — so the guard hangs off the
-	// mode rather than off the managedEntries opt-in.
+	// Endpoint import name, "{cp}-identity-endpoint-{interface}". External mode
+	// creates those imports unconditionally, with or without a catalog block, so
+	// the guard hangs off the mode rather than off the catalog block.
 	identityImportChildNameOverhead = len("-identity-endpoint") + len("-internal")
 )
 
-// validateExternalCatalog mirrors the declarative constraints on
+// validateExternalCatalog mirrors the one declarative constraint on
 // ExternalCatalogSpec as defense-in-depth for callers that bypass CRD schema
-// admission: the CEL rule forbidding an `identity` managed entry, the Pattern /
-// MinLength markers on identityServiceName and on the entry type and name, the
-// MaxItems cap on the entry list, the listType=map uniqueness of entry types and
-// endpoint interfaces, and the enum and URL shape of every endpoint.
-//
-// It also enforces the one rule the CRD schema cannot express: that the child
-// K-ORC CR name composed from cpName and the entry type stays inside the
-// apiserver's 253-byte metadata.name cap. Without it a CR admission accepts wedges
-// the reconcile in an exponential backoff on an Invalid the operator never asked
-// for.
-//
-// Creating catalog entries against a pre-existing installation is the one
-// destructive thing External mode can do, so every rule guarding the opt-in is
-// enforced twice.
-func validateExternalCatalog(path *field.Path, cpName string, catalog *ExternalCatalogSpec) field.ErrorList {
-	var allErrs field.ErrorList
-
-	// K-ORC casts identityServiceName to its OpenStackName on the Service import
-	// filter, whose Pattern rejects a comma — exactly as it does the entry name below.
-	if strings.Contains(catalog.IdentityServiceName, ",") {
-		allErrs = append(allErrs, field.Invalid(path.Child("identityServiceName"), catalog.IdentityServiceName,
-			"must not contain a comma (mirrors K-ORC's OpenStackName pattern ^[^,]+$)"))
-	}
-
-	entriesPath := path.Child("managedEntries")
-	if len(catalog.ManagedEntries) > maxManagedCatalogEntries {
-		allErrs = append(allErrs, field.TooMany(entriesPath, len(catalog.ManagedEntries), maxManagedCatalogEntries))
-	}
-
-	seenTypes := make(map[string]struct{}, len(catalog.ManagedEntries))
-	for i, entry := range catalog.ManagedEntries {
-		entryPath := entriesPath.Index(i)
-		typePath := entryPath.Child("type")
-
-		switch {
-		case entry.Type == "":
-			allErrs = append(allErrs, field.Required(typePath, "must be set"))
-		case entry.Type == IdentityCatalogServiceType:
-			allErrs = append(allErrs, field.Forbidden(typePath,
-				"the identity catalog entry is owned by the External-mode imports and must not be declared as a managed entry"))
-		case !catalogEntryTypePattern.MatchString(entry.Type):
-			allErrs = append(allErrs, field.Invalid(typePath, entry.Type,
-				"must be a lowercase alphanumeric DNS-1123 label (it names the child K-ORC CRs)"))
-		}
-		if _, dup := seenTypes[entry.Type]; dup {
-			allErrs = append(allErrs, field.Duplicate(typePath, entry.Type))
-		}
-		seenTypes[entry.Type] = struct{}{}
-
-		if entry.Type != "" {
-			if n := len(cpName) + catalogEntryChildNameOverhead + len(entry.Type); n > maxObjectNameBytes {
-				allErrs = append(allErrs, field.Invalid(typePath, entry.Type, fmt.Sprintf(
-					"the child K-ORC CR name would be %d bytes; shorten the ControlPlane name or the entry type "+
-						"so the total stays within the %d-byte Kubernetes object-name limit", n, maxObjectNameBytes,
-				)))
-			}
-		}
-
-		// K-ORC casts the name to its OpenStackName, whose Pattern rejects a comma.
-		if strings.Contains(entry.Name, ",") {
-			allErrs = append(allErrs, field.Invalid(entryPath.Child("name"), entry.Name,
-				"must not contain a comma (mirrors K-ORC's OpenStackName pattern ^[^,]+$)"))
-		}
-
-		seenInterfaces := make(map[ExternalEndpointType]struct{}, len(entry.Endpoints))
-		for j, ep := range entry.Endpoints {
-			epPath := entryPath.Child("endpoints").Index(j)
-			switch ep.Interface {
-			case ExternalEndpointTypePublic, ExternalEndpointTypeInternal, ExternalEndpointTypeAdmin:
-			case "":
-				allErrs = append(allErrs, field.Required(epPath.Child("interface"), "must be set"))
-			default:
-				// The interface reaches a child CR name, which must stay a DNS-1123
-				// subdomain: an off-enum value the CRD would have rejected wedges the
-				// reconcile rather than failing at admission.
-				allErrs = append(allErrs, field.NotSupported(epPath.Child("interface"), ep.Interface,
-					[]ExternalEndpointType{
-						ExternalEndpointTypePublic, ExternalEndpointTypeInternal, ExternalEndpointTypeAdmin,
-					}))
-			}
-			if _, dup := seenInterfaces[ep.Interface]; dup {
-				allErrs = append(allErrs, field.Duplicate(epPath.Child("interface"), ep.Interface))
-			}
-			seenInterfaces[ep.Interface] = struct{}{}
-
-			if _, err := validateHTTPURL(epPath.Child("url"), ep.URL); err != nil {
-				allErrs = append(allErrs, err)
-			} else if len(ep.URL) > maxCatalogEndpointURLBytes {
-				allErrs = append(allErrs, field.Invalid(epPath.Child("url"), ep.URL,
-					fmt.Sprintf("must be at most %d bytes", maxCatalogEndpointURLBytes)))
-			}
-		}
-	}
-
-	return allErrs
-}
-
-// serviceAccountNamePattern mirrors the Pattern marker on ServiceAccountSpec.Name.
-// The account name keys the list and is embedded verbatim in the names of the
-// child K-ORC CRs and Secrets, so it must be a DNS-1123 label.
-var serviceAccountNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-
-const (
-	// maxServiceAccounts mirrors the MaxItems marker on KORCSpec.ServiceAccounts.
-	maxServiceAccounts = 32
-
-	// maxServiceRegistrationNamespaces mirrors the MaxItems marker on
-	// ServiceRegistrationsSpec.AllowedNamespaces.
-	maxServiceRegistrationNamespaces = 32
-
-	// serviceAccountChildNameOverhead is the longest fixed part of a child name
-	// EVERY account embeds its own name in — everything except the ControlPlane
-	// name and the account name. That is the password Secret
-	// "{cp}-service-account-{name}-password-vN", whose "vN" generation suffix is
-	// bounded generously at 10 digits.
-	serviceAccountChildNameOverhead = len("-service-account-") + len("-password-v") + 10
-
-	// serviceAccountRoleChildNameOverhead is the same bound for an account that
-	// declares roles: it additionally mints the managed RoleAssignment
-	// "{cp}-service-account-{name}-assign-{slug}", where slug is bounded at 25
-	// bytes by serviceAccountRoleSlug. That is the longest account-keyed child
-	// name, and for any account name it also dominates the un-keyed Role import
-	// "{cp}-service-account-role-{slug}" (47 bytes), so both stay covered.
-	//
-	// Only an account WITH roles is charged it. A roles-less account mints no
-	// assignment, so charging it the wider budget would reject a pair the
-	// reconciler handles fine — and, because this check also runs on update,
-	// would wedge every later edit to a ControlPlane an earlier operator level
-	// already admitted.
-	serviceAccountRoleChildNameOverhead = len("-service-account-") + len("-assign-") + 25
-)
-
-// effectiveServiceAccountUserName resolves the OpenStack user name for an entry:
-// the explicit userName, or the account name (the defaulting webhook materializes
-// this, but the resolver falls back for webhook-bypassed callers). It mirrors the
-// reconciler's serviceAccountUserName so admission and reconcile agree on identity.
-func effectiveServiceAccountUserName(sa ServiceAccountSpec) string {
-	return cmp.Or(sa.UserName, sa.Name)
-}
-
-// effectiveServiceAccountDomain resolves the OpenStack domain for an entry: the
-// explicit domainName, else the effective admin domain. It mirrors the
-// reconciler's serviceAccountDomainName.
-func effectiveServiceAccountDomain(cp *ControlPlane, sa ServiceAccountSpec) string {
-	return cmp.Or(sa.DomainName, effectiveAdminDomain(cp))
-}
-
-// effectiveAdminUserName / effectiveAdminDomain resolve the admin identity with
-// the same fallbacks the reconciler's adminUserName / adminDomainName apply, so
-// the collision check compares against the identity the AC actually mints as.
-func effectiveAdminUserName(cp *ControlPlane) string {
-	return cmp.Or(cp.Spec.KORC.AdminCredential.UserName, DefaultAdminUserName)
-}
-
-func effectiveAdminDomain(cp *ControlPlane) string {
-	return cmp.Or(cp.Spec.KORC.AdminCredential.DomainName, DefaultAdminDomainName)
-}
-
-// validateServiceAccounts mirrors the declarative constraints on
-// KORCSpec.ServiceAccounts as defense-in-depth for callers that bypass CRD schema
-// admission (the account-name / userName / domainName / project.name shapes, the
-// MaxItems cap, the child-CR name-length bound the CRD cannot express) AND adds
-// the cross-item rules CEL cannot carry:
-//
-//   - two entries must not resolve to the same (userName, domainName): they would
-//     project two managed Users onto one Keystone user and race its password;
-//   - no entry's effective identity may equal the effective admin identity: a
-//     managed User would take over the admin user and rotate ITS password;
-//   - two create:true entries must not name the same project in the same domain:
-//     each managed Project would adopt the other's Keystone row.
-func validateServiceAccounts(cp *ControlPlane) field.ErrorList {
-	sas := cp.Spec.KORC.ServiceAccounts
-	if len(sas) == 0 {
+// admission: the Pattern marker on identityServiceName, which K-ORC casts to its
+// OpenStackName on the Service import filter.
+func validateExternalCatalog(path *field.Path, catalog *ExternalCatalogSpec) field.ErrorList {
+	if !strings.Contains(catalog.IdentityServiceName, ",") {
 		return nil
 	}
-	var allErrs field.ErrorList
-	basePath := field.NewPath("spec", "korc", "serviceAccounts")
-
-	if len(sas) > maxServiceAccounts {
-		allErrs = append(allErrs, field.TooMany(basePath, len(sas), maxServiceAccounts))
-	}
-
-	adminUser := effectiveAdminUserName(cp)
-	adminDomain := effectiveAdminDomain(cp)
-
-	// The namespaces a consumer credentials Secret may be delivered to: the
-	// ControlPlane's own namespace or one already assigned to a service via
-	// spec.services.<svc>.namespace. Each is scoped by an openbao-tenant-store,
-	// which delivery rides — none is provisioned for any other namespace.
-	dedicated := cp.DedicatedServiceNamespaces()
-	dedicatedNamespaces := make(map[string]struct{}, len(dedicated))
-	for _, ns := range dedicated {
-		dedicatedNamespaces[ns.Name] = struct{}{}
-	}
-
-	seenNames := make(map[string]struct{}, len(sas))
-	seenIdentities := make(map[string]struct{}, len(sas))
-	seenManagedProjects := make(map[string]struct{}, len(sas))
-	for i := range sas {
-		sa := sas[i]
-		entryPath := basePath.Index(i)
-
-		switch {
-		case sa.Name == "":
-			allErrs = append(allErrs, field.Required(entryPath.Child("name"), "must be set"))
-		case !serviceAccountNamePattern.MatchString(sa.Name):
-			allErrs = append(allErrs, field.Invalid(entryPath.Child("name"), sa.Name,
-				"must be a lowercase alphanumeric DNS-1123 label (it names the child K-ORC CRs and Secrets)"))
-		}
-		if _, dup := seenNames[sa.Name]; dup {
-			allErrs = append(allErrs, field.Duplicate(entryPath.Child("name"), sa.Name))
-		}
-		seenNames[sa.Name] = struct{}{}
-
-		if sa.Name != "" {
-			overhead := serviceAccountChildNameOverhead
-			if len(sa.Roles) > 0 {
-				overhead = serviceAccountRoleChildNameOverhead
-			}
-			if n := len(cp.Name) + overhead + len(sa.Name); n > maxObjectNameBytes {
-				allErrs = append(allErrs, field.Invalid(entryPath.Child("name"), sa.Name, fmt.Sprintf(
-					"the child K-ORC CR name would be %d bytes; shorten the ControlPlane name or the account "+
-						"name (or drop the account's roles) so the total stays within the %d-byte Kubernetes "+
-						"object-name limit", n, maxObjectNameBytes,
-				)))
-			}
-		}
-
-		// K-ORC casts userName/domainName to OpenStackName, whose Pattern rejects a comma.
-		if strings.Contains(sa.UserName, ",") {
-			allErrs = append(allErrs, field.Invalid(entryPath.Child("userName"), sa.UserName,
-				"must not contain a comma (mirrors K-ORC's OpenStackName pattern ^[^,]+$)"))
-		}
-		if strings.Contains(sa.DomainName, ",") {
-			allErrs = append(allErrs, field.Invalid(entryPath.Child("domainName"), sa.DomainName,
-				"must not contain a comma (mirrors K-ORC's OpenStackName pattern ^[^,]+$)"))
-		}
-
-		projPath := entryPath.Child("project")
-		switch {
-		case sa.Project.Name == "":
-			allErrs = append(allErrs, field.Required(projPath.Child("name"), "must be set"))
-		case strings.Contains(sa.Project.Name, ","):
-			allErrs = append(allErrs, field.Invalid(projPath.Child("name"), sa.Project.Name,
-				"must not contain a comma (mirrors K-ORC's KeystoneName pattern ^[^,]+$)"))
-		}
-
-		for j, role := range sa.Roles {
-			if strings.Contains(role, ",") {
-				allErrs = append(allErrs, field.Invalid(entryPath.Child("roles").Index(j), role,
-					"must not contain a comma (mirrors K-ORC's OpenStackName pattern ^[^,]+$)"))
-			}
-		}
-
-		// targetNamespace routes the consumer credentials Secret. The RFC-1123 label
-		// shape mirrors the CRD Pattern marker for webhook-bypassed callers; the
-		// own-or-dedicated rule is the one the CRD schema cannot express — a namespace
-		// this ControlPlane neither owns nor placed a service in has no
-		// openbao-tenant-store to deliver through.
-		if sa.TargetNamespace != "" {
-			tnPath := entryPath.Child("targetNamespace")
-			switch {
-			case !namespaceNamePattern.MatchString(sa.TargetNamespace):
-				allErrs = append(allErrs, field.Invalid(tnPath, sa.TargetNamespace,
-					"must be a lowercase alphanumeric RFC-1123 label (it names a Kubernetes namespace)"))
-			case sa.TargetNamespace != cp.Namespace:
-				if _, ok := dedicatedNamespaces[sa.TargetNamespace]; !ok {
-					allErrs = append(allErrs, field.Invalid(tnPath, sa.TargetNamespace,
-						"must be the ControlPlane's own namespace or one of its dedicated service namespaces; "+
-							"assign the namespace to a service via spec.services.<svc>.namespace first"))
-				}
-			}
-		}
-
-		user := effectiveServiceAccountUserName(sa)
-		domain := effectiveServiceAccountDomain(cp, sa)
-		identity := user + "\x00" + domain
-		if _, dup := seenIdentities[identity]; dup {
-			allErrs = append(allErrs, field.Duplicate(entryPath.Child("userName"), user))
-		}
-		seenIdentities[identity] = struct{}{}
-
-		if user == adminUser && domain == adminDomain {
-			allErrs = append(allErrs, field.Invalid(entryPath.Child("userName"), user, fmt.Sprintf(
-				"the effective service-account identity (user %q in domain %q) equals the admin identity "+
-					"(spec.korc.adminCredential.userName / domainName); a managed User would take over the admin "+
-					"user and rotate its password", user, domain,
-			)))
-		}
-
-		if sa.Project.Create && sa.Project.Name != "" {
-			key := sa.Project.Name + "\x00" + domain
-			if _, dup := seenManagedProjects[key]; dup {
-				allErrs = append(allErrs, field.Duplicate(projPath.Child("name"), sa.Project.Name))
-			}
-			seenManagedProjects[key] = struct{}{}
-		}
-	}
-	return allErrs
+	return field.ErrorList{field.Invalid(path.Child("identityServiceName"), catalog.IdentityServiceName,
+		"must not contain a comma (mirrors K-ORC's OpenStackName pattern ^[^,]+$)")}
 }
+
+// maxServiceRegistrationNamespaces mirrors the MaxItems marker on
+// ServiceRegistrationsSpec.AllowedNamespaces.
+const maxServiceRegistrationNamespaces = 32
 
 // validateServiceRegistrations mirrors the declarative constraints on
 // ServiceRegistrationsSpec.AllowedNamespaces as defense-in-depth for callers that
@@ -888,11 +587,6 @@ func validateBarbicanChildName(cp *ControlPlane) field.ErrorList {
 // endpoint's origin shape and its agreement with the gateway
 // (validateGlancePublicEndpoint) and the composed GlanceBackend child-name
 // length bound.
-//
-// The refusal of an inline service account that would fight the projected
-// registration over the glance Keystone user is NOT here: it holds whether or
-// not the block is declared, so it lives in validateBuiltinServiceAccountName,
-// which the two entry points call directly.
 //
 // The cross-field rule that services.glance is forbidden in External mode lives
 // in validateKeystoneMode with the rest of the External-mode matrix.
@@ -1140,114 +834,12 @@ func validateGlanceBackends(cp *ControlPlane, backendsPath *field.Path) field.Er
 	return allErrs
 }
 
-// builtinServiceAccountNames pairs each built-in service's reserved Keystone user
-// name with the service's display name, in the order the errors are reported.
-var builtinServiceAccountNames = []struct{ userName, displayName string }{
-	{GlanceServiceAccountName, "Glance"},
-	{PlacementServiceAccountName, "Placement"},
-	{BarbicanServiceAccountName, "Barbican"},
-}
-
-// validateBuiltinServiceAccountName rejects an inline spec.korc.serviceAccounts
-// entry that manages the same Keystone user as the KeystoneService child a
-// built-in service is registered through.
-//
-// Both mechanisms would provision that one user, and neither of them yields: the
-// inline entry creates it, and the registration's collision probe then finds a
-// user it does not own and reports ServiceAccountCollision. The service's
-// readiness condition stays False for as long as both declarations stand, which
-// is a state only a spec edit resolves — and the operator has to be told which
-// edit, since the projection is implicit and nothing else in the CR names it.
-//
-// The three names are reserved UNCONDITIONALLY, not only while their
-// services.<svc> block is declared. Dropping the block without the deletion
-// opt-in PRESERVES the registration (reconcileGlance and its siblings), so the
-// registration keeps owning its Keystone user across an update the spec no longer
-// shows — and a check gated on the block would admit exactly the entry that then
-// collides with it forever. A ControlPlane that never runs the service pays a
-// name it cannot use for an unrelated account, which a rename settles.
-//
-// The comparison is on the EFFECTIVE identity — the user name (userName when set,
-// the entry name otherwise) AND the domain (domainName when set, the effective
-// admin domain otherwise), exactly as the reconciler resolves them. Keystone user
-// names are unique per domain, so an entry managing "glance" in a tenant domain
-// of its own is a different user and no collision at all; the registration leaves
-// spec.account.domainName unset and therefore always lands in the admin domain.
-func validateBuiltinServiceAccountName(cp *ControlPlane, index int, sa ServiceAccountSpec) field.ErrorList {
-	if effectiveServiceAccountDomain(cp, sa) != effectiveAdminDomain(cp) {
-		return nil
-	}
-	userName := effectiveServiceAccountUserName(sa)
-	for _, builtin := range builtinServiceAccountNames {
-		if userName != builtin.userName {
-			continue
-		}
-		return field.ErrorList{field.Invalid(
-			field.NewPath("spec", "korc", "serviceAccounts").Index(index), sa.Name, fmt.Sprintf(
-				"manages the Keystone user %q in the admin domain, which the KeystoneService registration this "+
-					"ControlPlane projects for %s owns; two mechanisms provisioning one user leave that "+
-					"registration permanently reporting a collision — rename this entry (or drop it: with %s "+
-					"declared the projected registration already creates the user, its project, and the "+
-					"credentials Secret %s reads)",
-				builtin.userName, builtin.displayName, builtin.displayName, builtin.displayName))}
-	}
-	return nil
-}
-
-// validateBuiltinServiceAccountNames runs validateBuiltinServiceAccountName over
-// every inline entry whose collision this revision introduces.
-//
-// oldObj is the admitted CR on an update and nil on a create. Entries the
-// previous revision ALREADY COLLIDED ON are SKIPPED, because the check would
-// otherwise reject every later update to a ControlPlane admitted under an
-// operator version that had no such rule — including the finalizer-removal update
-// that completes its deletion, which would wedge the CR (and its namespace) in
-// Terminating on a spec only a hand edit could fix. It is the same gating the
-// projected-child-name bounds get in ValidateUpdate, for the same reason.
-func validateBuiltinServiceAccountNames(oldObj, cp *ControlPlane) field.ErrorList {
-	var admitted map[string]struct{}
-	if oldObj != nil {
-		admitted = make(map[string]struct{}, len(oldObj.Spec.KORC.ServiceAccounts))
-		for i, sa := range oldObj.Spec.KORC.ServiceAccounts {
-			// Carried forward on the previous revision's VERDICT, not on its identity
-			// alone: spec.korc.adminCredential.domainName is mutable, so an entry
-			// carrying an explicit domainName keeps one identity across a move of the
-			// admin domain ONTO it while the collision predicate flips. Keyed on the
-			// identity alone, that entry would be waved through as grandfathered — and
-			// the two mechanisms provisioning its user would then leave the service
-			// reporting a collision forever.
-			if len(validateBuiltinServiceAccountName(oldObj, i, sa)) > 0 {
-				admitted[serviceAccountIdentityKey(oldObj, sa)] = struct{}{}
-			}
-		}
-	}
-
-	var allErrs field.ErrorList
-	for i, sa := range cp.Spec.KORC.ServiceAccounts {
-		if _, ok := admitted[serviceAccountIdentityKey(cp, sa)]; ok {
-			continue
-		}
-		allErrs = append(allErrs, validateBuiltinServiceAccountName(cp, i, sa)...)
-	}
-	return allErrs
-}
-
-// serviceAccountIdentityKey renders the (user, domain) pair an entry resolves to
-// into the key the cross-entry rules compare on. Keyed on the resolved identity
-// rather than the entry name so a rename that keeps the identity is not read as a
-// new account — and, above all, so an update that re-points an admitted entry at
-// a new Keystone user IS.
-func serviceAccountIdentityKey(cp *ControlPlane, sa ServiceAccountSpec) string {
-	return effectiveServiceAccountUserName(sa) + "\x00" + effectiveServiceAccountDomain(cp, sa)
-}
-
 // validatePlacement enforces the rules on the services.placement block. It
 // mirrors the declarative constraints as defense-in-depth for callers that
 // bypass CRD schema admission (the gateway hostname shape and the image
 // tag/digest XOR) and adds the rule the CRD schema cannot express: the public
 // endpoint's origin shape and its agreement with the gateway
-// (validatePlacementPublicEndpoint). The inline-service-account refusal lives in
-// validateBuiltinServiceAccountName for the reason validateGlance describes.
+// (validatePlacementPublicEndpoint).
 //
 // The projected-child-name bound lives in validatePlacementChildName, which runs
 // only on create and on the update that newly enables Placement.
@@ -1383,8 +975,7 @@ func warnInsecurePlacementPublicEndpoint(cp *ControlPlane) admission.Warnings {
 // secret-store dedicated/external union and the external store's URL and
 // credentials reference) and adds the rules the CRD schema cannot express: the
 // public endpoint's origin shape and its agreement with the gateway
-// (validateBarbicanPublicEndpoint). The inline-service-account refusal lives in
-// validateBuiltinServiceAccountName for the reason validateGlance describes.
+// (validateBarbicanPublicEndpoint).
 //
 // The projected-child-name bound lives in validateBarbicanChildName, which runs
 // only on create and on the update that newly enables Barbican.
@@ -1868,18 +1459,6 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 		appCred.Rotation.Mode = RotationModePasswordDriven
 	}
 
-	// serviceAccounts[i].userName defaults to serviceAccounts[i].name on every
-	// entry the operator declared: the K-ORC User CR is named after the account,
-	// but the OpenStack user name it manages defaults to the same value unless the
-	// operator overrides it. Mirrors the cloudName/secretName defaulting
-	// discipline. (The domain default is resolved in the reconciler, not here, so
-	// it can follow spec.korc.adminCredential.domainName.)
-	for i := range obj.Spec.KORC.ServiceAccounts {
-		if obj.Spec.KORC.ServiceAccounts[i].UserName == "" {
-			obj.Spec.KORC.ServiceAccounts[i].UserName = obj.Spec.KORC.ServiceAccounts[i].Name
-		}
-	}
-
 	return nil
 }
 
@@ -1913,7 +1492,6 @@ func (w *ControlPlaneWebhook) ValidateCreate(ctx context.Context, obj *ControlPl
 	allErrs = append(allErrs, validateGlanceChildName(obj)...)
 	allErrs = append(allErrs, validatePlacementChildName(obj)...)
 	allErrs = append(allErrs, validateBarbicanChildName(obj)...)
-	allErrs = append(allErrs, validateBuiltinServiceAccountNames(nil, obj)...)
 	if err := newInvalidIfErrs(obj, allErrs); err != nil {
 		return warnings, err
 	}
@@ -1980,13 +1558,6 @@ func (w *ControlPlaneWebhook) ValidateUpdate(ctx context.Context, oldObj, newObj
 	if oldObj.Spec.Services.Barbican == nil {
 		allErrs = append(allErrs, validateBarbicanChildName(newObj)...)
 	}
-
-	// The reserved built-in service-account names re-run only for the entries whose
-	// effective identity this update introduces, for the same reason: a CR admitted
-	// under an operator version without the rule must stay updatable, or the
-	// finalizer-removal update that deletes it is rejected and the CR wedges in
-	// Terminating.
-	allErrs = append(allErrs, validateBuiltinServiceAccountNames(oldObj, newObj)...)
 
 	if err := newInvalidIfErrs(newObj, allErrs); err != nil {
 		return warnings, err
@@ -2174,7 +1745,6 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validatePlacement(cp)...)
 	allErrs = append(allErrs, validateBarbican(cp)...)
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
-	allErrs = append(allErrs, validateServiceAccounts(cp)...)
 	allErrs = append(allErrs, validateServiceRegistrations(cp)...)
 	allErrs = append(allErrs, validateDedicatedBackingServices(cp)...)
 	allErrs = append(allErrs, validateServiceCredentialsModeOverrides(cp)...)
@@ -2915,7 +2485,7 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 			}
 			if ks.External.Catalog != nil {
 				allErrs = append(allErrs,
-					validateExternalCatalog(ksPath.Child("external", "catalog"), cp.Name, ks.External.Catalog)...)
+					validateExternalCatalog(ksPath.Child("external", "catalog"), ks.External.Catalog)...)
 			}
 		}
 
@@ -3157,8 +2727,6 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 			newObj.Spec.Region, "region is immutable",
 		))
 	}
-
-	allErrs = append(allErrs, validateServiceAccountsImmutable(oldObj, newObj)...)
 
 	return allErrs
 }
@@ -3636,50 +3204,6 @@ func validateServiceTargetClustersImmutable(oldObj, newObj *ControlPlane) field.
 		serviceDeclaredBefore(oldObj, oldObj.Spec.Services.Barbican != nil, "barbican"),
 		oldObj.BarbicanTargetClusterRef(), newObj.BarbicanTargetClusterRef())
 
-	return allErrs
-}
-
-// validateServiceAccountsImmutable freezes the per-entry identity and project
-// fields whose in-place edit would rename or re-own live Keystone resources. The
-// entry key is name (the listMapKey), so entries are matched across old/new by it;
-// an added or removed entry is a create/delete the reconciler handles, not a
-// mutation. adopt stays mutable: flipping it to true is the documented collision
-// remediation.
-func validateServiceAccountsImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
-	var allErrs field.ErrorList
-	oldSAs := make(map[string]ServiceAccountSpec, len(oldObj.Spec.KORC.ServiceAccounts))
-	for _, sa := range oldObj.Spec.KORC.ServiceAccounts {
-		oldSAs[sa.Name] = sa
-	}
-	for i, sa := range newObj.Spec.KORC.ServiceAccounts {
-		old, ok := oldSAs[sa.Name]
-		if !ok {
-			continue
-		}
-		saPath := field.NewPath("spec", "korc", "serviceAccounts").Index(i)
-		if old.UserName != sa.UserName {
-			allErrs = append(allErrs, field.Invalid(saPath.Child("userName"), sa.UserName,
-				"userName is immutable; remove and re-add the service account under a new name to rename its user"))
-		}
-		if old.DomainName != sa.DomainName {
-			allErrs = append(allErrs, field.Invalid(saPath.Child("domainName"), sa.DomainName,
-				"domainName is immutable; remove and re-add the service account to move it to another domain"))
-		}
-		if old.Project.Name != sa.Project.Name {
-			allErrs = append(allErrs, field.Invalid(saPath.Child("project", "name"), sa.Project.Name,
-				"project.name is immutable; remove and re-add the service account to re-point its project"))
-		}
-		if old.Project.Create != sa.Project.Create {
-			allErrs = append(allErrs, field.Invalid(saPath.Child("project", "create"), sa.Project.Create,
-				"project.create is immutable; a managed<->referenced flip would orphan or adopt the live project"))
-		}
-		if old.TargetNamespace != sa.TargetNamespace {
-			allErrs = append(allErrs, field.Invalid(saPath.Child("targetNamespace"), sa.TargetNamespace,
-				"targetNamespace is immutable; moving delivery would strand the credentials Secret (and the "+
-					"source Secret / PushSecret behind it) in the old namespace — remove and re-add the service "+
-					"account to deliver it elsewhere"))
-		}
-	}
 	return allErrs
 }
 

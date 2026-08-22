@@ -2,7 +2,7 @@ apiVersion: v2
 name: c5c3-operator
 description: A Helm chart for deploying the c5c3 ControlPlane operator
 type: application
-version: 0.9.1
+version: 0.10.0
 appVersion: "0.1.0"
 # The shared naming/label helpers and the Deployment skeleton live in the
 # operator-library library chart so they are defined once for both operator
@@ -15,6 +15,8 @@ dependencies:
 annotations:
   artifacthub.io/prerelease: "true"
   artifacthub.io/changes: |
+    - kind: removed
+      description: ControlPlane CRD fields spec.korc.serviceAccounts, spec.services.keystone.external.catalog.managedEntries and status.serviceAccounts; declare service accounts and catalog entries with a KeystoneService CR instead
     - kind: added
       description: barbicanOperator value names the namespace and ServiceAccount of the barbican-operator, rendered as BARBICAN_OPERATOR_NAMESPACE and BARBICAN_OPERATOR_SERVICE_ACCOUNT on the manager container
     - kind: added

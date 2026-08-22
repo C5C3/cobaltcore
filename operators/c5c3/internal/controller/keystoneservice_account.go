@@ -7,10 +7,16 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
+	"unicode"
 
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,6 +51,45 @@ func (r *KeystoneServiceReconciler) ensureAccount(
 	account := ks.Spec.Account
 	requeue := ctrl.Result{RequeueAfter: korcRequeueAfter}
 
+	userName := keystoneServiceUserName(ks)
+	domain := keystoneServiceDomainName(cp, ks)
+
+	// A registration may never resolve to the ControlPlane's ADMIN identity. The
+	// managed User would take over the admin account and rotate its password into
+	// a Secret in this CR's namespace, and its K-ORC finalizer would delete the
+	// admin user from Keystone when the CR goes away.
+	//
+	// The comparison goes through keystoneNameKey because Keystone's own does:
+	// it stores user and domain names under a collation that folds case AND
+	// accents, so "Admin" and "admín" are the same user as "admin". A narrower
+	// comparison would wave a variant spelling past the refusal while Keystone
+	// still resolved it onto the admin identity.
+	//
+	// The refusal is ahead of everything else, including the collision probe:
+	// account.adopt=true short-circuits that probe, and adopt is the documented
+	// remediation for every OTHER collision, so a probe-side rule would be opt-out
+	// by design. Admission cannot carry it either — it resolves against the
+	// referenced ControlPlane, which the CRD contract allows to be absent at
+	// admission time (GitOps ordering).
+	//
+	// It is ahead of the status rebuild below as well. The ControlPlane's admin
+	// identity is editable in place, so the match can appear on an ALREADY
+	// PROVISIONED account; a refusing pass must leave status.account naming the
+	// live Keystone resources this CR owns rather than blanking them.
+	//
+	// No requeue: only a spec edit on this CR or on the ControlPlane can clear it,
+	// and both are watched.
+	if keystoneNameKey(userName) == keystoneNameKey(adminUserName(cp)) &&
+		keystoneNameKey(domain) == keystoneNameKey(adminDomainName(cp)) {
+		fail(reasonServiceAccountCollision, fmt.Sprintf(
+			"the registration resolves to Keystone user %q in domain %q, which is the admin identity of "+
+				"ControlPlane %s/%s (spec.korc.adminCredential.userName / domainName); provisioning it would take "+
+				"over the admin account, rotate its password, and delete it from Keystone at teardown — %s",
+			userName, domain, cp.Namespace, cp.Name, r.keystoneServiceAdminIdentityRemedy(ctx, ks, cp),
+		))
+		return ctrl.Result{}, nil
+	}
+
 	// LastPasswordRotation survives a steady-state pass: it is refreshed only on
 	// an actual rotation, so carry the recorded value forward before the status is
 	// re-projected.
@@ -71,9 +116,6 @@ func (r *KeystoneServiceReconciler) ensureAccount(
 		))
 		return requeue, nil
 	}
-
-	userName := keystoneServiceUserName(ks)
-	domain := keystoneServiceDomainName(cp, ks)
 
 	// (a) Domain handle.
 	domainRef, err := r.ensureKeystoneServiceDomain(ctx, ks, cp, credRef)
@@ -173,6 +215,62 @@ func (r *KeystoneServiceReconciler) ensureAccount(
 		fmt.Sprintf("service account %q is provisioned in domain %q and its credentials are materialized in Secret %q",
 			userName, domain, keystoneServiceCredentialsSecretName(ks)))
 	return ctrl.Result{}, nil
+}
+
+// keystoneNameKey renders the key Keystone's own uniqueness check compares on.
+// Its identity tables are provisioned under a *_general_ci collation, which is
+// case-insensitive AND accent-insensitive: "admín", "ádmin" and "ADMIN" are all
+// the same row as "admin". strings.EqualFold folds only the case half of that, so
+// an accented spelling of the admin name would compare unequal here and still
+// resolve onto the admin user in Keystone.
+func keystoneNameKey(s string) string {
+	folded, _, err := transform.String(
+		transform.Chain(norm.NFD, runes.Remove(runes.In(unicode.Mn)), norm.NFC), s)
+	if err != nil {
+		// A partial transform must never widen what gets past the guard, so fall
+		// back to the untransformed name and keep the case-only fold below.
+		folded = s
+	}
+	return strings.ToLower(folded)
+}
+
+// keystoneServiceAdminIdentityRemedy names the remediation that actually clears
+// the admin-identity refusal, which is not the same one in both cases the refusal
+// can arise from. Re-pointing the registration is never among them:
+// account.userName and account.domainName are frozen after creation by the CRD's
+// XValidation rules and by the validating webhook, so an apply that edits either
+// is rejected — and under Flux or Argo that rejection fails the whole sync.
+//
+//   - Nothing provisioned yet: the CR was created onto the admin identity, and
+//     owns nothing that deleting it would take down. Delete and re-create it
+//     under a name of its own.
+//   - Already provisioned: the ControlPlane's admin identity was edited onto a
+//     user this registration owns. Deleting the CR now would fire the managed
+//     User's K-ORC finalizer and take the admin user out of Keystone with it, so
+//     the ControlPlane is the side that has to move back.
+//
+// Ownership is read off the LIVE managed User, not off status.account.userID.
+// The child is created a full pass before status records its ID, and a refusing
+// pass returns ahead of the step that would record it — so a status-only test
+// would keep prescribing "delete the CR" for a CR that owns the admin user. A
+// Get that fails for any reason other than NotFound counts as owned: the
+// destructive advice must never be what a lookup failure falls back to.
+func (r *KeystoneServiceReconciler) keystoneServiceAdminIdentityRemedy(
+	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
+) string {
+	err := r.Get(ctx, client.ObjectKey{
+		Namespace: keystoneServiceChildNamespace(cp),
+		Name:      keystoneServiceUserRef(ks),
+	}, &orcv1alpha1.User{})
+	if err == nil || !apierrors.IsNotFound(err) {
+		return fmt.Sprintf(
+			"this registration already owns that user, so deleting the KeystoneService would delete the admin "+
+				"user from Keystone; point spec.korc.adminCredential of ControlPlane %s/%s back at an identity "+
+				"of its own instead",
+			cp.Namespace, cp.Name)
+	}
+	return "account.userName and account.domainName are both immutable, so delete this KeystoneService and " +
+		"re-create it under a name of its own"
 }
 
 // ensureKeystoneServiceDomain ensures the Domain handle the user and project
