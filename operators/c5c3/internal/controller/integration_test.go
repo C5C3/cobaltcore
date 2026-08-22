@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
@@ -289,9 +290,8 @@ func integrationMinimalControlPlane(name, namespace string) *c5c3v1alpha1.Contro
 // integrationGlanceService returns a valid services.glance block: a single
 // default S3 backend pointed at the in-cluster Garage endpoint. It is shared by
 // the full-chain projection test (whose Phase 6 asserts the projected
-// GlanceBackend's host and default flag), the service-account injection test, and
-// the External-mode rejection case, so the one curated backend shape is defined
-// exactly once.
+// GlanceBackend's host and default flag) and the External-mode rejection case,
+// so the one curated backend shape is defined in a single place.
 func integrationGlanceService() *c5c3v1alpha1.ServiceGlanceSpec {
 	return &c5c3v1alpha1.ServiceGlanceSpec{
 		Backends: []c5c3v1alpha1.GlanceBackendEntry{{
@@ -2995,47 +2995,7 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 			},
 		},
 		{
-			name:    "service account invalid name",
-			wantErr: true,
-			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
-				cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{
-					{Name: "Nova_Service", Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"}},
-				}
-			},
-		},
-		{
-			name:    "service account missing project name",
-			wantErr: true,
-			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
-				cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{
-					{Name: "nova"},
-				}
-			},
-		},
-		{
-			name:    "service account collides with admin identity",
-			wantErr: true,
-			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
-				cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{
-					{
-						Name: "nova", UserName: "admin", DomainName: "Default",
-						Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"},
-					},
-				}
-			},
-		},
-		{
-			name:    "two service accounts with the same identity",
-			wantErr: true,
-			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
-				cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{
-					{Name: "nova", UserName: "svc", Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"}},
-					{Name: "nova2", UserName: "svc", Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service"}},
-				}
-			},
-		},
-		{
-			name:    "valid access rules, bootstrap resources, public endpoint, and service account",
+			name:    "valid access rules, bootstrap resources, and public endpoint",
 			wantErr: false,
 			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
 				cp.Spec.Services.Keystone.PublicEndpoint = "https://keystone.example.com/v3"
@@ -3045,12 +3005,6 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 				cp.Spec.KORC.AdminCredential.BootstrapResources = []c5c3v1alpha1.BootstrapResourceSpec{
 					{Kind: "Project", Name: "service"},
 					{Kind: "Role", Name: "admin"},
-				}
-				cp.Spec.KORC.ServiceAccounts = []c5c3v1alpha1.ServiceAccountSpec{
-					{
-						Name: "nova", Project: c5c3v1alpha1.ServiceAccountProjectSpec{Name: "service", Create: true},
-						Roles: []string{"admin"},
-					},
 				}
 			},
 		},
@@ -3077,101 +3031,88 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 	}
 }
 
-// TestIntegration_GlanceServiceAccountNotInjected proves the admission chain grows
-// no spec.korc.serviceAccounts entry for a declared services.glance: the Glance
-// service user is provisioned by the projected KeystoneService child, so the
-// stored CR carries the field exactly as it was written — unset — on create and
-// across a later UPDATE, which re-runs defaulting.
-func TestIntegration_GlanceServiceAccountNotInjected(t *testing.T) {
+// TestIntegration_RetiredInlineFieldsArePruned proves the structural schema
+// drops the two retired registration stanzas from a stored ControlPlane:
+// spec.korc.serviceAccounts on a Managed CR and
+// spec.services.keystone.external.catalog.managedEntries on an External one.
+// Neither field is in the CRD schema and there is no conversion webhook, so an
+// apply that still carries one is admitted (no admission rule names the retired
+// paths) and comes back from etcd without it.
+func TestIntegration_RetiredInlineFieldsArePruned(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
-	g := NewGomegaWithT(t)
 
 	c, ctx, _ := setupControlPlaneEnvTest(t)
 
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-glance-account-"}}
-	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+	gvk := c5c3v1alpha1.GroupVersion.WithKind("ControlPlane")
+	cases := []struct {
+		name  string
+		build func(name, namespace string) *c5c3v1alpha1.ControlPlane
+		path  []string
+		value []any
+		// sibling is a LIVE field under the retired one's own parent block, set
+		// alongside it and asserted to come back. NestedSlice reports found=false
+		// when ANY intermediate key is missing, so a regenerated CRD that dropped
+		// the whole parent — the hazard on a branch editing exactly this schema —
+		// would otherwise read as "the retired field was pruned".
+		sibling      []string
+		siblingValue string
+	}{
+		{
+			name:  "spec.korc.serviceAccounts",
+			build: integrationMinimalControlPlane,
+			path:  []string{"spec", "korc", "serviceAccounts"},
+			value: []any{map[string]any{
+				"name":    "nova",
+				"project": map[string]any{"name": "service"},
+			}},
+			sibling:      []string{"spec", "korc", "adminCredential", "userName"},
+			siblingValue: "admin",
+		},
+		{
+			name:  "spec.services.keystone.external.catalog.managedEntries",
+			build: integrationExternalControlPlane,
+			path:  []string{"spec", "services", "keystone", "external", "catalog", "managedEntries"},
+			value: []any{map[string]any{"type": "image"}},
+			sibling: []string{
+				"spec", "services", "keystone", "external", "catalog", "identityServiceName",
+			},
+			siblingValue: "keystone",
+		},
+	}
 
-	cp := integrationManagedControlPlane("cp-glance-account", ns.Name)
-	cp.Spec.Services.Glance = integrationGlanceService()
-	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeEmpty(), "the fixture declares no service accounts")
-	g.Expect(c.Create(ctx, cp)).To(Succeed(),
-		"create managed ControlPlane with services.glance and no serviceAccounts")
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-pruned-"}}
+			g.Expect(c.Create(ctx, ns)).To(Succeed())
 
-	fetched := &c5c3v1alpha1.ControlPlane{}
-	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed(), "re-fetch defaulted ControlPlane")
-	g.Expect(fetched.Spec.KORC.ServiceAccounts).To(BeEmpty(),
-		"a declared Glance must leave the stored serviceAccounts unset")
+			raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(
+				tc.build(fmt.Sprintf("cp-pruned-%d", i), ns.Name),
+			)
+			g.Expect(err).NotTo(HaveOccurred(), "convert the fixture to unstructured")
+			obj := &unstructured.Unstructured{Object: raw}
+			obj.SetGroupVersionKind(gvk)
+			g.Expect(unstructured.SetNestedSlice(obj.Object, tc.value, tc.path...)).To(Succeed())
+			g.Expect(unstructured.SetNestedField(obj.Object, tc.siblingValue, tc.sibling...)).To(Succeed())
 
-	// The reconciler writes status (bumping resourceVersion), so drive the update
-	// through an Eventually that re-fetches and retries on the inevitable conflict.
-	g.Eventually(func() error {
-		latest := &c5c3v1alpha1.ControlPlane{}
-		if err := c.Get(ctx, client.ObjectKeyFromObject(cp), latest); err != nil {
-			return err
-		}
-		if latest.Labels == nil {
-			latest.Labels = map[string]string{}
-		}
-		latest.Labels["glance-account-test"] = "touched"
-		return c.Update(ctx, latest)
-	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "update an unrelated field")
+			g.Expect(c.Create(ctx, obj)).To(Succeed(),
+				"admission must not reject a CR that still carries %s", tc.name)
 
-	afterUpdate := &c5c3v1alpha1.ControlPlane{}
-	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), afterUpdate)).To(Succeed(), "re-fetch after the update")
-	g.Expect(afterUpdate.Spec.KORC.ServiceAccounts).To(BeEmpty(),
-		"a re-defaulting UPDATE must not grow a service account either")
-}
+			stored := &unstructured.Unstructured{}
+			stored.SetGroupVersionKind(gvk)
+			g.Expect(c.Get(ctx, client.ObjectKeyFromObject(obj), stored)).To(Succeed())
 
-// TestIntegration_PlacementServiceAccountNotInjected is the Placement twin of
-// TestIntegration_GlanceServiceAccountNotInjected, on a ControlPlane that sets
-// BOTH services: neither declaration grows an entry, so a CR running several
-// services stores spec.korc.serviceAccounts exactly as it wrote it.
-func TestIntegration_PlacementServiceAccountNotInjected(t *testing.T) {
-	testutil.SkipIfEnvTestUnavailable(t)
-	g := NewGomegaWithT(t)
+			_, found, err := unstructured.NestedSlice(stored.Object, tc.path...)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(found).To(BeFalse(), "the structural schema must prune %s", tc.name)
 
-	c, ctx, _ := setupControlPlaneEnvTest(t)
-
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-placement-account-"}}
-	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
-
-	cp := integrationManagedControlPlane("cp-placement-account", ns.Name)
-	cp.Spec.Services.Glance = integrationGlanceService()
-	cp.Spec.Services.Placement = integrationPlacementService()
-	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeEmpty(), "the fixture declares no service accounts")
-	g.Expect(c.Create(ctx, cp)).To(Succeed(),
-		"create managed ControlPlane with services.glance, services.placement and no serviceAccounts")
-
-	fetched := &c5c3v1alpha1.ControlPlane{}
-	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed(), "re-fetch defaulted ControlPlane")
-	g.Expect(fetched.Spec.KORC.ServiceAccounts).To(BeEmpty(),
-		"a declared Glance and Placement must leave the stored serviceAccounts unset")
-}
-
-// TestIntegration_BarbicanServiceAccountNotInjected is the Barbican twin, on a
-// ControlPlane that sets all three services: the edge where every built-in is
-// declared at once and the stored CR still carries no service account.
-func TestIntegration_BarbicanServiceAccountNotInjected(t *testing.T) {
-	testutil.SkipIfEnvTestUnavailable(t)
-	g := NewGomegaWithT(t)
-
-	c, ctx, _ := setupControlPlaneEnvTest(t)
-
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-barbican-account-"}}
-	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
-
-	cp := integrationManagedControlPlane("cp-barbican-account", ns.Name)
-	cp.Spec.Services.Glance = integrationGlanceService()
-	cp.Spec.Services.Placement = integrationPlacementService()
-	cp.Spec.Services.Barbican = integrationBarbicanService()
-	g.Expect(cp.Spec.KORC.ServiceAccounts).To(BeEmpty(), "the fixture declares no service accounts")
-	g.Expect(c.Create(ctx, cp)).To(Succeed(),
-		"create managed ControlPlane with services.glance, services.placement, services.barbican and no serviceAccounts")
-
-	fetched := &c5c3v1alpha1.ControlPlane{}
-	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(cp), fetched)).To(Succeed(), "re-fetch defaulted ControlPlane")
-	g.Expect(fetched.Spec.KORC.ServiceAccounts).To(BeEmpty(),
-		"three declared services must leave the stored serviceAccounts unset")
+			sibling, sibFound, err := unstructured.NestedString(stored.Object, tc.sibling...)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(sibFound).To(BeTrue(),
+				"pruning %s must not take its parent block with it", tc.name)
+			g.Expect(sibling).To(Equal(tc.siblingValue))
+		})
+	}
 }
 
 // TestIntegration_CredentialRotation_ServiceAccountValidation pins the two CEL
@@ -3825,56 +3766,6 @@ func TestIntegration_ExternalMode_Rejections(t *testing.T) {
 			name: "webhook: services.placement set in External mode",
 			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
 				cp.Spec.Services.Placement = integrationPlacementService()
-			},
-		},
-		{
-			// The identity entry is owned by the imports; declaring it as a managed
-			// entry is the one way the creation opt-in could clobber the external
-			// catalog's own identity row.
-			name: "CEL: identity declared as a managed catalog entry",
-			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
-				cp.Spec.Services.Keystone.External.Catalog = &c5c3v1alpha1.ExternalCatalogSpec{
-					ManagedEntries: []c5c3v1alpha1.ExternalCatalogEntrySpec{
-						{Type: c5c3v1alpha1.IdentityCatalogServiceType},
-					},
-				}
-			},
-		},
-		{
-			name: "schema: managed catalog entry type is not a DNS-1123 label",
-			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
-				cp.Spec.Services.Keystone.External.Catalog = &c5c3v1alpha1.ExternalCatalogSpec{
-					ManagedEntries: []c5c3v1alpha1.ExternalCatalogEntrySpec{{Type: "Image_Service"}},
-				}
-			},
-		},
-		{
-			name: "schema: managed catalog endpoint URL is not an http(s) URL",
-			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
-				cp.Spec.Services.Keystone.External.Catalog = &c5c3v1alpha1.ExternalCatalogSpec{
-					ManagedEntries: []c5c3v1alpha1.ExternalCatalogEntrySpec{{
-						Type: "image",
-						Endpoints: []c5c3v1alpha1.ExternalCatalogEndpointSpec{
-							{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "glance.example.com"},
-						},
-					}},
-				}
-			},
-		},
-		{
-			// endpoints is a listType=map keyed on interface, so the apiserver — not
-			// the webhook — refuses the duplicate.
-			name: "schema: two managed catalog endpoints share an interface",
-			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
-				cp.Spec.Services.Keystone.External.Catalog = &c5c3v1alpha1.ExternalCatalogSpec{
-					ManagedEntries: []c5c3v1alpha1.ExternalCatalogEntrySpec{{
-						Type: "image",
-						Endpoints: []c5c3v1alpha1.ExternalCatalogEndpointSpec{
-							{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://a.example.com"},
-							{Interface: c5c3v1alpha1.ExternalEndpointTypePublic, URL: "https://b.example.com"},
-						},
-					}},
-				}
 			},
 		},
 	}

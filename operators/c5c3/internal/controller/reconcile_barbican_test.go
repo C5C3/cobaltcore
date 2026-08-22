@@ -978,10 +978,8 @@ func TestReconcileBarbican_ProjectedChildFields(t *testing.T) {
 
 	g.Expect(b.Spec.Region).To(Equal("RegionOne"))
 
-	// The service user names the account the registration child declares. The user
-	// and project names are what the injected spec.korc.serviceAccounts entry
-	// carried too, so the consumer Secret is the discriminator: it is the one the
-	// registration delivers, not the one reconcileServiceAccounts materialises.
+	// The service user names the account the registration child declares, and reads
+	// its password from the consumer Secret the registration delivers.
 	g.Expect(b.Spec.ServiceUser.Username).To(Equal("barbican"))
 	g.Expect(b.Spec.ServiceUser.ProjectName).To(Equal("service-barbican"))
 	// Both domains resolve to the ControlPlane's effective admin domain, which is

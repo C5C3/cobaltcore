@@ -654,15 +654,15 @@ type ExternalKeystoneSpec struct {
 
 // IdentityCatalogServiceType is the OpenStack service type of the Keystone
 // catalog entry. It is the `type` filter of the External-mode identity Service
-// import, and therefore the one entry type the managed-entry opt-in forbids —
+// import, and the one entry type a KeystoneService catalog block rejects. It is
 // the single source of truth both the validating webhook and the reconciler
-// reference so the rule and the import can never drift apart.
+// reference, so the rule and the import can never drift apart.
 const IdentityCatalogServiceType = "identity"
 
-// ExternalCatalogSpec tunes External-mode catalog stewardship. Both of its
-// fields are optional, and the zero value is the conservative default: import
-// the existing identity service (and its public/internal/admin endpoints),
-// create nothing.
+// ExternalCatalogSpec tunes External-mode catalog stewardship. Its single field
+// is optional, and the zero value is the conservative default: import the
+// existing identity service (and its public/internal/admin endpoints), create
+// nothing.
 type ExternalCatalogSpec struct {
 	// IdentityServiceName disambiguates the identity Service import when the
 	// external catalog carries more than one `identity`-type service. When empty
@@ -680,90 +680,16 @@ type ExternalCatalogSpec struct {
 	// must be repaired.
 	//
 	// The pattern and the caps mirror K-ORC's own OpenStackName, which the name is
-	// cast to on the Service import filter — exactly as managedEntries[].name is on
-	// the child Service CR. A comma is not exotic input here (OpenStack list filters
-	// are comma-separated, which is why OpenStackName forbids it), and admitting one
-	// would only move the rejection to the K-ORC CRD, where it wedges the reconcile
-	// in an exponential backoff no ControlPlane field error explains. The validating
-	// webhook mirrors the pattern.
+	// cast to on the Service import filter. A comma is not exotic input here
+	// (OpenStack list filters are comma-separated, which is why OpenStackName
+	// forbids it), and admitting one would only move the rejection to the K-ORC
+	// CRD, where it wedges the reconcile in an exponential backoff no ControlPlane
+	// field error explains. The validating webhook mirrors the pattern.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
 	// +kubebuilder:validation:Pattern=`^[^,]+$`
 	IdentityServiceName string `json:"identityServiceName,omitempty"`
-
-	// ManagedEntries is the EXPLICIT opt-in for creating genuinely new catalog
-	// entries against the external Keystone. Absent (the default), External mode
-	// creates zero catalog entries — creation is impossible to trigger by
-	// accident. Each declared entry is projected as one managed K-ORC Service and
-	// one managed Endpoint per declared interface; removing an entry deletes
-	// exactly those resources and nothing else.
-	//
-	// The `identity` type is forbidden here: it is owned by the imports above.
-	//
-	// maxItems bounds the child-CR and external-API amplification of one admission:
-	// every entry projects one managed K-ORC Service plus up to one managed Endpoint
-	// per interface, and K-ORC turns each of those into a write against a
-	// third-party production Keystone. Without a cap the only bound is the ~1.5 MiB
-	// etcd object limit.
-	// +optional
-	// +listType=map
-	// +listMapKey=type
-	// +kubebuilder:validation:MaxItems=32
-	ManagedEntries []ExternalCatalogEntrySpec `json:"managedEntries,omitempty"`
-}
-
-// ExternalCatalogEntrySpec declares one genuinely new catalog entry the control
-// plane creates (and owns) in the external Keystone.
-type ExternalCatalogEntrySpec struct {
-	// Type is the OpenStack service type (e.g. "image", "compute"). It keys the
-	// listType=map ManagedEntries list, so the apiserver rejects duplicates. It is
-	// embedded verbatim in the names of the child K-ORC CRs, hence the DNS-1123
-	// label shape. "identity" is rejected: the identity entry is import-owned in
-	// External mode.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
-	// +kubebuilder:validation:XValidation:rule="self != 'identity'",message="the identity catalog entry is owned by the External-mode imports and must not be declared as a managed entry"
-	Type string `json:"type"`
-
-	// Name optionally overrides the catalog service name. When empty K-ORC names
-	// the service after the child CR.
-	//
-	// The pattern and the caps mirror K-ORC's own OpenStackName, which the name is
-	// cast to on the child Service CR: a name admitted here can therefore never be
-	// rejected downstream by the K-ORC CRD, which would wedge the reconcile in an
-	// exponential backoff loop that no ControlPlane field error explains. The
-	// validating webhook mirrors the pattern.
-	// +optional
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=255
-	// +kubebuilder:validation:Pattern=`^[^,]+$`
-	Name string `json:"name,omitempty"`
-
-	// Endpoints declares the endpoint rows registered for this entry, at most one
-	// per interface (apiserver-enforced via listType=map). An entry with no
-	// endpoints registers the service row alone.
-	// +optional
-	// +listType=map
-	// +listMapKey=interface
-	Endpoints []ExternalCatalogEndpointSpec `json:"endpoints,omitempty"`
-}
-
-// ExternalCatalogEndpointSpec declares one endpoint row of a managed catalog
-// entry.
-type ExternalCatalogEndpointSpec struct {
-	// Interface is the catalog interface this endpoint is published under. It
-	// keys the listType=map Endpoints list.
-	Interface ExternalEndpointType `json:"interface"`
-
-	// URL is the endpoint URL registered in the catalog. maxLength mirrors
-	// K-ORC's own EndpointResourceSpec.URL cap, so a URL admitted here can never
-	// be rejected downstream by the K-ORC CRD; the validating webhook mirrors both
-	// the shape and the cap with a full net/url parse.
-	// +kubebuilder:validation:Pattern=`^https?://[^\s/]+`
-	// +kubebuilder:validation:MaxLength=1024
-	URL string `json:"url"`
 }
 
 // ServiceHorizonSpec is a CURATED LOCAL subset of the knobs the ControlPlane
@@ -1593,25 +1519,6 @@ type KORCSpec struct {
 	// reconcile resources, plus the application-credential rotation policy.
 	AdminCredential AdminCredentialSpec `json:"adminCredential"`
 
-	// ServiceAccounts declares the composite OpenStack service accounts the
-	// control plane manages for other OpenStack services (nova, glance, …). Each
-	// entry projects one K-ORC User, one Project, and one RoleAssignment per
-	// declared role (see ServiceAccountSpec.Roles), with an operator-generated
-	// password delivered to Keystone via K-ORC's passwordRef, mirrored to a per-CR
-	// OpenBao path, and materialized as a stable consumer Secret. The field is
-	// mode-independent: the same declaration works on a Managed and an External
-	// ControlPlane.
-	//
-	// maxItems bounds the child-CR and external-API amplification of one
-	// admission, mirroring the managedEntries cap: every entry projects a K-ORC
-	// User and Project (each a write against Keystone) plus the OpenBao
-	// round-trip.
-	// +optional
-	// +listType=map
-	// +listMapKey=name
-	// +kubebuilder:validation:MaxItems=32
-	ServiceAccounts []ServiceAccountSpec `json:"serviceAccounts,omitempty"`
-
 	// ServiceRegistrations declares which namespaces this control plane consents
 	// to standalone KeystoneService registrations from. See
 	// ServiceRegistrationsSpec.
@@ -1642,9 +1549,9 @@ type ServiceRegistrationsSpec struct {
 	// Teardown happens only through deletion of the KeystoneService CR itself, so
 	// an edit here can never destroy credentials a running service depends on.
 	//
-	// listType=set makes the API server reject duplicate entries; the RFC-1123
-	// label shape and the item cap mirror the delivery-namespace field on
-	// ServiceAccountSpec.
+	// listType=set makes the API server reject duplicate entries; the entries
+	// carry the RFC-1123 label shape of a Kubernetes namespace name and the list
+	// is capped.
 	// +optional
 	// +listType=set
 	// +kubebuilder:validation:MaxItems=32
@@ -1652,100 +1559,6 @@ type ServiceRegistrationsSpec struct {
 	// +kubebuilder:validation:items:MaxLength=63
 	// +kubebuilder:validation:items:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	AllowedNamespaces []string `json:"allowedNamespaces,omitempty"`
-}
-
-// ServiceAccountSpec declares one composite OpenStack service account: a K-ORC
-// User with an operator-generated, OpenBao-backed, rotatable password, its
-// project (referenced or created), and the roles assigned to it.
-type ServiceAccountSpec struct {
-	// Name keys the listType=map ServiceAccounts list (the apiserver rejects
-	// duplicates) and is embedded verbatim in the names of every child CR and
-	// Secret the entry projects, hence the DNS-1123 label shape. It is NOT the
-	// OpenStack user name — that is userName, which defaults to this value.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
-	Name string `json:"name"`
-
-	// UserName is the OpenStack user name managed in Keystone. Defaults to Name
-	// via the defaulting webhook. The pattern and caps mirror K-ORC's own
-	// OpenStackName (a comma would only move the rejection to the K-ORC CRD, which
-	// wedges the reconcile in an exponential backoff no ControlPlane field error
-	// explains).
-	// +optional
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=255
-	// +kubebuilder:validation:Pattern=`^[^,]+$`
-	UserName string `json:"userName,omitempty"`
-
-	// DomainName is the OpenStack domain the user and project live in. When empty
-	// the reconciler resolves it to the effective admin domain
-	// (spec.korc.adminCredential.domainName). The pattern and caps mirror K-ORC's
-	// KeystoneName/OpenStackName filters.
-	// +optional
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=255
-	// +kubebuilder:validation:Pattern=`^[^,]+$`
-	DomainName string `json:"domainName,omitempty"`
-
-	// Adopt is the explicit consent that a pre-existing Keystone user of this
-	// name may be taken over. The collision posture is conservative and
-	// fail-loudly by default: a declared account whose user already exists in
-	// Keystone surfaces ServiceAccountsReady=False/ServiceAccountCollision and is
-	// never touched. Setting adopt=true opts into a PASSWORD TAKEOVER of that
-	// account — the operator overwrites its password with a generated one — AND
-	// into operator ownership of its lifecycle: an adopted user is a managed
-	// K-ORC User, so it is DELETED from Keystone when the ControlPlane is torn
-	// down, exactly like one the operator created. Adopt only what the control
-	// plane should own.
-	// +optional
-	Adopt bool `json:"adopt,omitempty"`
-
-	// Project is the OpenStack project the service user is associated with,
-	// either referenced (the default) or created and owned by the control plane.
-	Project ServiceAccountProjectSpec `json:"project"`
-
-	// Roles are the OpenStack role names assigned to the user on the project. Each
-	// declared role is projected as one UNMANAGED K-ORC Role import (the role is
-	// referenced by name, never created or deleted — Keystone roles are global) plus
-	// one MANAGED K-ORC RoleAssignment binding that role to the user on the project,
-	// i.e. one assignment per user x project x role. Their readiness is folded into
-	// the per-account ServiceAccountsReady gate, so an account reads Ready only once
-	// its roles are assigned. Removing a role from the list prunes both its child
-	// CRs; at teardown the managed RoleAssignment is deleted from Keystone while the
-	// Role import is released without touching the global role.
-	// +optional
-	// +kubebuilder:validation:MaxItems=32
-	// +kubebuilder:validation:items:MinLength=1
-	// +kubebuilder:validation:items:MaxLength=255
-	// +kubebuilder:validation:items:Pattern=`^[^,]+$`
-	Roles []string `json:"roles,omitempty"`
-
-	// Rotation tunes how the account's password is rotated. When nil the mode
-	// defaults to Manual.
-	//
-	// Manual is currently INERT for an inline account: a CredentialRotation with
-	// target serviceAccountPassword names a KeystoneService CR, and no
-	// KeystoneService owns an inline account's User, so nothing addresses this
-	// account's password. The account is still projected and still delivers its
-	// credentials; declare it as a KeystoneService CR to make it rotatable.
-	// +optional
-	Rotation *ServiceAccountRotationSpec `json:"rotation,omitempty"`
-
-	// TargetNamespace is the namespace the consumer credentials Secret — and the
-	// source Secret, PushSecret, and ExternalSecret behind it — materializes in,
-	// through that namespace's openbao-tenant-store. Empty (the default) means the
-	// ControlPlane's own namespace. When set it must be either the ControlPlane's
-	// own namespace or one of its dedicated service namespaces (declared via the
-	// services' namespace blocks; see ServiceNamespaceSpec) — the validating
-	// webhook rejects any other namespace, since delivery rides that namespace's
-	// tenant store and none is provisioned elsewhere. Immutable per entry: moving
-	// delivery would strand the credentials already delivered to the old namespace.
-	// +optional
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=63
-	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
-	TargetNamespace string `json:"targetNamespace,omitempty"`
 }
 
 // ServiceAccountProjectSpec declares the OpenStack project a service account is
@@ -1851,10 +1664,9 @@ type AdminCredentialSpec struct {
 	// reconciler (L2) interprets it.
 	//
 	// RESERVED, unreconciled: no controller reads this field today. For service
-	// users of other OpenStack services, declare a composite service account via
-	// spec.korc.serviceAccounts instead — it owns the full user + project +
-	// password lifecycle. This field stays reserved for a later bootstrap use
-	// case.
+	// users of other OpenStack services, declare a KeystoneService CR instead; it
+	// owns the full user + project + password lifecycle. This field stays reserved
+	// for a later bootstrap use case.
 	// +optional
 	BootstrapResources []BootstrapResourceSpec `json:"bootstrapResources,omitempty"`
 }
@@ -2035,61 +1847,6 @@ type ControlPlaneStatus struct {
 	// rather than importing them.
 	// +optional
 	Catalog *CatalogStatus `json:"catalog,omitempty"`
-
-	// ServiceAccounts reports the observed state of the declared service
-	// accounts, keyed by name. It is the discoverability half of the consumption
-	// contract: SecretName names the materialized Secret each account's password
-	// is read from.
-	// +optional
-	// +listType=map
-	// +listMapKey=name
-	ServiceAccounts []ServiceAccountStatus `json:"serviceAccounts,omitempty"`
-}
-
-// ServiceAccountStatus reports the observed state of one declared service
-// account.
-type ServiceAccountStatus struct {
-	// Name is the service account name; it keys the listType=map ServiceAccounts
-	// list.
-	Name string `json:"name"`
-
-	// Ready reports whether the user, project, and materialized password Secret
-	// are all converged for the current password generation.
-	Ready bool `json:"ready"`
-
-	// UserID is the OpenStack user id K-ORC resolved (or created). Empty until the
-	// User is Available.
-	// +optional
-	// +kubebuilder:validation:MaxLength=1024
-	UserID string `json:"userID,omitempty"`
-
-	// ProjectID is the OpenStack project id K-ORC resolved (or created). Empty
-	// until the Project is Available.
-	// +optional
-	// +kubebuilder:validation:MaxLength=1024
-	ProjectID string `json:"projectID,omitempty"`
-
-	// PasswordGeneration is the monotonically increasing generation of the
-	// password currently applied to the user. It increments on every rotation.
-	// +optional
-	PasswordGeneration int64 `json:"passwordGeneration,omitempty"`
-
-	// LastPasswordRotation is the timestamp of the last successful password
-	// rotation.
-	// +optional
-	LastPasswordRotation *metav1.Time `json:"lastPasswordRotation,omitempty"`
-
-	// SecretName is the name of the materialized Secret carrying the account's
-	// credentials (key "password" and a ready-to-use "clouds.yaml"). It is the
-	// documented, stable handle consumers read the credentials from.
-	// +optional
-	SecretName string `json:"secretName,omitempty"`
-
-	// SecretNamespace is the namespace of secretName — the namespace the account's
-	// credentials Secret was materialized in (spec targetNamespace, or the
-	// ControlPlane's own namespace when that is empty).
-	// +optional
-	SecretNamespace string `json:"secretNamespace,omitempty"`
 }
 
 // CatalogStatus reports how the External-mode identity catalog imports resolved.

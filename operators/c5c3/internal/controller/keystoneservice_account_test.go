@@ -10,6 +10,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -258,6 +259,220 @@ func TestKSAccount_UserNameAndDomainDefaults(t *testing.T) {
 	err := c.Get(context.Background(),
 		types.NamespacedName{Name: keystoneServiceChildPrefix(ks) + "domain", Namespace: ks.Namespace}, &orcv1alpha1.Domain{})
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+}
+
+// TestKSAccount_AdminIdentityIsRefused pins the one identity a registration may
+// never resolve to. adopt=true short-circuits the collision probe, so the refusal
+// has to sit ahead of it — otherwise the documented remediation for every other
+// collision doubles as the switch that hands over the cloud admin account.
+func TestKSAccount_AdminIdentityIsRefused(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.UserName = adminUserName(cp)
+	ks.Spec.Account.DomainName = adminDomainName(cp)
+	ks.Spec.Account.Adopt = true
+
+	cond, c := runKSAccount(t, ks, cp)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountCollision))
+	g.Expect(cond.Message).To(ContainSubstring("admin identity"))
+
+	_, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeFalse(), "no managed User may be created over the admin identity")
+	err := c.Get(context.Background(),
+		types.NamespacedName{Name: keystoneServiceProjectRef(ks), Namespace: ks.Namespace}, &orcv1alpha1.Project{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the refusal lands before any child is projected")
+}
+
+// TestKSAccount_AdminIdentityRefusalNamesAWorkingRemedy pins the remediation the
+// refusal prescribes. account.userName and account.domainName are both immutable,
+// so the message must not send the operator at an apply the CRD and the webhook
+// reject — under Flux or Argo that rejection fails the whole kustomization.
+func TestKSAccount_AdminIdentityRefusalNamesAWorkingRemedy(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.UserName = adminUserName(cp)
+	ks.Spec.Account.DomainName = adminDomainName(cp)
+
+	cond, _ := runKSAccount(t, ks, cp)
+
+	g.Expect(cond.Message).To(ContainSubstring("immutable"))
+	g.Expect(cond.Message).To(ContainSubstring("delete this KeystoneService and re-create it"))
+	g.Expect(cond.Message).NotTo(ContainSubstring("rename account.userName"))
+}
+
+// ksLiveManagedUser is the managed K-ORC User a registration owns once
+// ensureKeystoneServiceUser has run: the live child whose K-ORC finalizer deletes
+// the Keystone user when the CR goes away.
+func ksLiveManagedUser(ks *c5c3v1alpha1.KeystoneService) *orcv1alpha1.User {
+	return &orcv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              keystoneServiceUserRef(ks),
+			Namespace:         ks.Namespace,
+			CreationTimestamp: metav1.Now(),
+			OwnerReferences:   ownedByKS(ks),
+		},
+		Spec: orcv1alpha1.UserSpec{ManagementPolicy: orcv1alpha1.ManagementPolicyManaged},
+	}
+}
+
+// TestKSAccount_AdminIdentityRefusalOnAnOwnedAccount covers the other way into the
+// refusal: spec.korc.adminCredential is editable in place, so a ControlPlane edit
+// can move the admin identity ONTO a user this registration already provisioned.
+// Deleting the CR would then take the admin user out of Keystone with it, so the
+// message has to point at the ControlPlane — and the pass must keep status.account
+// naming the live resources the CR owns instead of blanking them.
+func TestKSAccount_AdminIdentityRefusalOnAnOwnedAccount(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.UserName = adminUserName(cp)
+	ks.Spec.Account.DomainName = adminDomainName(cp)
+	ks.Status.Account = &c5c3v1alpha1.KeystoneServiceAccountStatus{
+		SecretName: keystoneServiceCredentialsSecretName(ks),
+		UserID:     "live-user-id",
+		ProjectID:  "live-project-id",
+	}
+
+	cond, _ := runKSAccount(t, ks, cp, ksLiveManagedUser(ks))
+
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountCollision))
+	g.Expect(cond.Message).To(ContainSubstring("spec.korc.adminCredential"))
+	g.Expect(cond.Message).NotTo(ContainSubstring("delete this KeystoneService and re-create it"))
+
+	g.Expect(ks.Status.Account).NotTo(BeNil())
+	g.Expect(ks.Status.Account.UserID).To(Equal("live-user-id"),
+		"a refusing pass must not hide which live Keystone user the CR owns")
+	g.Expect(ks.Status.Account.ProjectID).To(Equal("live-project-id"))
+}
+
+// TestKSAccount_AdminIdentityRefusalReadsOwnershipOffTheLiveUser pins the signal
+// the remedy branches on. The managed User is created a full pass before
+// status.account.userID records its ID, and a refusing pass returns ahead of the
+// step that would record it — so a CR that already owns the live user can sit at
+// userID:"" forever. Reading the status projection instead of the child would
+// prescribe deleting that CR, which takes the admin user out of Keystone with it.
+func TestKSAccount_AdminIdentityRefusalReadsOwnershipOffTheLiveUser(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.UserName = adminUserName(cp)
+	ks.Spec.Account.DomainName = adminDomainName(cp)
+	// The child exists; the status projection has not caught up with it.
+	g.Expect(ks.Status.Account).To(BeNil())
+
+	cond, _ := runKSAccount(t, ks, cp, ksLiveManagedUser(ks))
+
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountCollision))
+	g.Expect(cond.Message).To(ContainSubstring("spec.korc.adminCredential"))
+	g.Expect(cond.Message).NotTo(ContainSubstring("delete this KeystoneService and re-create it"),
+		"the CR owns the live user, so deleting it would delete the admin user from Keystone")
+}
+
+// TestKSAccount_AdminIdentityRefusalFoldsCase keeps the refusal in step with
+// Keystone's own comparison: names live in a case-insensitive collation, so
+// "Admin" in "default" is the very same identity as "admin" in "Default". An
+// exact-bytes guard would let the case-variant spelling through — and with
+// adopt=true there is no probe behind it to catch the takeover.
+func TestKSAccount_AdminIdentityRefusalFoldsCase(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.UserName = strings.ToUpper(adminUserName(cp))
+	ks.Spec.Account.DomainName = strings.ToLower(adminDomainName(cp))
+	ks.Spec.Account.Adopt = true
+
+	cond, c := runKSAccount(t, ks, cp)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountCollision))
+	_, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeFalse(), "a case-variant spelling resolves to the admin identity too")
+}
+
+// TestKSAccount_AdminIdentityRefusalFoldsAccents keeps the refusal in step with
+// the rest of Keystone's collation: its identity tables are *_general_ci, which
+// folds accents as well as case, so "admín" resolves onto the very same row as
+// "admin". strings.EqualFold folds only the case half, so an accented spelling
+// would walk past the refusal — and with adopt=true there is no probe behind it.
+func TestKSAccount_AdminIdentityRefusalFoldsAccents(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.UserName = "admín" // U+00ED, precomposed
+	ks.Spec.Account.DomainName = "Défault"
+	ks.Spec.Account.Adopt = true
+
+	cond, c := runKSAccount(t, ks, cp)
+
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountCollision))
+	_, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeFalse(), "an accented spelling resolves to the admin identity too")
+}
+
+// TestKSAccount_AdminIdentityRefusalFoldsDecomposedAccents covers the same gap
+// spelled with a combining mark rather than a precomposed rune: the two are
+// distinct byte sequences that Keystone stores as the one "admin" row.
+func TestKSAccount_AdminIdentityRefusalFoldsDecomposedAccents(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.UserName = "admi\u0301n" // "i" + COMBINING ACUTE ACCENT
+	ks.Spec.Account.DomainName = adminDomainName(cp)
+	ks.Spec.Account.Adopt = true
+
+	cond, c := runKSAccount(t, ks, cp)
+
+	g.Expect(cond.Reason).To(Equal(reasonServiceAccountCollision))
+	_, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeFalse())
+}
+
+// TestKSAccount_UnaccentedTenantNameIsAdmitted keeps the accent fold from
+// swallowing names that are genuinely a different Keystone row: folding is only
+// ever a reason to REFUSE, never a reason to widen what a registration may own.
+func TestKSAccount_UnaccentedTenantNameIsAdmitted(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.UserName = "glancé"
+	ks.Spec.Account.DomainName = adminDomainName(cp)
+	ks.Spec.Account.Adopt = true
+
+	_, c := runKSAccount(t, ks, cp)
+
+	_, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeTrue(), "an accented name that is not the admin name is a registration like any other")
+}
+
+// TestKSAccount_AdminUserNameInAnotherDomainIsAdmitted keeps the refusal keyed on
+// the (user, domain) PAIR: Keystone user names are unique per domain, so the same
+// name in a domain of its own is a different user and no takeover at all.
+func TestKSAccount_AdminUserNameInAnotherDomainIsAdmitted(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := ksControlPlane()
+	ks := ksWithAccount()
+	ks.Spec.Account.UserName = adminUserName(cp)
+	ks.Spec.Account.DomainName = "services"
+	ks.Spec.Account.Adopt = true
+
+	_, c := runKSAccount(t, ks, cp)
+
+	_, ok := ksGetUser(t, c, keystoneServiceUserRef(ks), ks.Namespace)
+	g.Expect(ok).To(BeTrue(), "the admin user NAME in a tenant domain is a different Keystone user")
 }
 
 func TestKSAccount_ExplicitUserNameAndDomainProjectTheirOwnImport(t *testing.T) {

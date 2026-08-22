@@ -1175,9 +1175,8 @@ func TestReconcileGlance_RegionProjected(t *testing.T) {
 }
 
 // TestReconcileGlance_ServiceUserFromRegistration verifies the Keystone service
-// user names the account the registration child declares — not the inline
-// spec.korc.serviceAccounts entry, whose project this fixture deliberately spells
-// differently — and reads its password from the registration's consumer Secret.
+// user names the account the registration child declares and reads its password
+// from the registration's consumer Secret.
 func TestReconcileGlance_ServiceUserFromRegistration(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := glanceControlPlane()

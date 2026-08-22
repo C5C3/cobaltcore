@@ -809,8 +809,8 @@ func TestControlPlaneNamespaces(t *testing.T) {
 // The typed case is the regression. A *corev1.Secret built in-code carries an
 // empty TypeMeta and the typed client does not populate it on Get, so reading the
 // kind off the object rendered it BLANK — the guard refused correctly, but the
-// resulting ServiceAccountsReady=False message said "refusing to adopt
-// pre-existing  identity/cp-..." and never named what was refused. The
+// resulting False condition message said "refusing to adopt pre-existing
+// identity/cp-..." and never named what was refused. The
 // unstructured Certificate is the control: it carries its own GVK and must keep
 // resolving identically now that the kind comes from the scheme.
 func TestRefuseForeignAdoption_NamesTheKind(t *testing.T) {
