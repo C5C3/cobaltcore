@@ -131,9 +131,9 @@ test_pull_request_trigger() {
   assert_file_contains "pull_request trigger present" "$WORKFLOW" "pull_request"
 }
 
-# --- Seven jobs defined ---
-test_five_jobs_defined() {
-  echo "Test: seven jobs defined"
+# --- All jobs defined ---
+test_all_jobs_defined() {
+  echo "Test: every build-images job is defined"
 
   assert_file_contains "build-base-images job defined" "$WORKFLOW" "build-base-images:"
   assert_file_contains "merge-base-images job defined" "$WORKFLOW" "merge-base-images:"
@@ -144,6 +144,9 @@ test_five_jobs_defined() {
   assert_file_contains "verify-service-images job defined" "$WORKFLOW" "verify-service-images:"
   assert_file_contains "build-keystone-federation-proxy job defined" "$WORKFLOW" "build-keystone-federation-proxy:"
   assert_file_contains "merge-keystone-federation-proxy-image job defined" "$WORKFLOW" "merge-keystone-federation-proxy-image:"
+  assert_file_contains "build-ovn job defined" "$WORKFLOW" "build-ovn:"
+  assert_file_contains "merge-ovn-image job defined" "$WORKFLOW" "merge-ovn-image:"
+  assert_file_contains "verify-ovn-image job defined" "$WORKFLOW" "verify-ovn-image:"
 }
 
 # --- verify-base-images job depends on build-base-images ---
@@ -243,6 +246,74 @@ test_keystone_federation_proxy_jobs() {
   merge_tags=$(yq_raw '.jobs["merge-keystone-federation-proxy-image"]["steps"][] | select(.id == "merge-keystone-federation-proxy") | .with["tags"]' "$WORKFLOW" || echo "null")
   assert_contains "merge tags include :latest" "$merge_tags" "keystone-federation-proxy:latest"
   assert_contains "merge tags include the commit SHA" "$merge_tags" 'keystone-federation-proxy:${{ github.sha }}'
+}
+
+# --- ovn build/merge/verify job structure ---
+test_ovn_jobs() {
+  echo "Test: ovn job structure"
+
+  local needs
+  needs=$(yq_raw '.jobs["build-ovn"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "build-ovn needs lint-dockerfiles" "$needs" "lint-dockerfiles"
+  assert_contains "build-ovn needs prepare" "$needs" "prepare"
+
+  # Release-independent: no release axis, a static multi-arch include matrix.
+  local matrix_platforms
+  matrix_platforms=$(yq_raw '.jobs["build-ovn"]["strategy"]["matrix"]["include"][]["platform"]' "$WORKFLOW" || true)
+  assert_contains "build-ovn matrix includes linux/amd64" "$matrix_platforms" "linux/amd64"
+  assert_contains "build-ovn matrix includes linux/arm64" "$matrix_platforms" "linux/arm64"
+
+  # PR-inline verification wiring (the tempest pattern).
+  local verify_script
+  verify_script=$(yq_raw '.jobs["build-ovn"]["steps"][] | select(.id == "build-ovn") | .with["verify-script"]' "$WORKFLOW" || echo "null")
+  assert_eq "build step wires the verify script" \
+    "tests/container-images/verify_ovn.sh" "$verify_script"
+
+  # The lint matrix covers the new Dockerfile.
+  local lint_matrix
+  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
+  assert_contains "lint-dockerfiles covers the ovn Dockerfile" \
+    "$lint_matrix" "images/ovn/Dockerfile"
+
+  # Merge job: PR-skipped, needs the build.
+  local merge_if
+  merge_if=$(yq_raw '.jobs["merge-ovn-image"]["if"]' "$WORKFLOW" || echo "null")
+  assert_contains "merge job skipped on PRs" "$merge_if" "github.event_name != 'pull_request'"
+
+  local merge_needs
+  merge_needs=$(yq_raw '.jobs["merge-ovn-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "merge job needs the build job" "$merge_needs" "build-ovn"
+
+  # Tags: <ovn-version>-<sha> everywhere, <ovn-version> + latest on main only.
+  local ovn_tags_run
+  ovn_tags_run=$(yq_raw '.jobs["merge-ovn-image"]["steps"][] | select(.id == "ovn-tags") | .run' "$WORKFLOW" || echo "null")
+  assert_contains "merge tags include the version-sha tag" "$ovn_tags_run" '${OVN_VERSION}-${COMMIT_SHA}'
+  assert_contains "merge tags include :latest" "$ovn_tags_run" '${IMAGE}:latest'
+  assert_contains "version and latest tags are main-only" "$ovn_tags_run" '"${GITHUB_REF_NAME}" == "main"'
+
+  # Post-merge verify job: pulls the merged manifest, read-only permissions.
+  local verify_needs
+  verify_needs=$(yq_raw '.jobs["verify-ovn-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "verify-ovn-image needs merge-ovn-image" "$verify_needs" "merge-ovn-image"
+
+  local verify_pkg_perms
+  verify_pkg_perms=$(yq_raw '.jobs["verify-ovn-image"]["permissions"]["packages"]' "$WORKFLOW" || echo "null")
+  assert_eq "verify-ovn-image has packages: read" "read" "$verify_pkg_perms"
+
+  local verify_contents_perms
+  verify_contents_perms=$(yq_raw '.jobs["verify-ovn-image"]["permissions"]["contents"]' "$WORKFLOW" || echo "null")
+  assert_eq "verify-ovn-image has contents: read (for checkout)" "read" "$verify_contents_perms"
+
+  # The arm64 image is never compiled on a PR (docker load takes one platform),
+  # so this job is the only place its binaries run. A single ubuntu-latest
+  # runner would pull the amd64 variant and report green for both.
+  local verify_runner verify_runners
+  verify_runner=$(yq_raw '.jobs["verify-ovn-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+  assert_contains "verify-ovn-image uses matrix runner expression" "$verify_runner" "matrix.runner"
+
+  verify_runners=$(yq_raw '.jobs["verify-ovn-image"]["strategy"]["matrix"]["runner"][]' "$WORKFLOW" || true)
+  assert_contains "verify-ovn-image verifies on an amd64 runner" "$verify_runners" "ubuntu-latest"
+  assert_contains "verify-ovn-image verifies on an arm64 runner" "$verify_runners" "ubuntu-24.04-arm"
 }
 
 # --- build-service-images depends on build-base-images and verify-base-images ---
@@ -560,6 +631,35 @@ test_timeout_minutes_on_all_jobs() {
     echo "  FAIL: merge-keystone-federation-proxy-image missing timeout-minutes"
     FAIL=$((FAIL + 1))
   fi
+
+  local ovn_timeout ovn_merge_timeout ovn_verify_timeout
+  ovn_timeout=$(yq_raw '.jobs["build-ovn"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
+  ovn_merge_timeout=$(yq_raw '.jobs["merge-ovn-image"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
+  ovn_verify_timeout=$(yq_raw '.jobs["verify-ovn-image"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
+
+  if [ "$ovn_timeout" != "null" ] && [ -n "$ovn_timeout" ]; then
+    echo "  PASS: build-ovn has timeout-minutes: $ovn_timeout"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: build-ovn missing timeout-minutes"
+    FAIL=$((FAIL + 1))
+  fi
+
+  if [ "$ovn_merge_timeout" != "null" ] && [ -n "$ovn_merge_timeout" ]; then
+    echo "  PASS: merge-ovn-image has timeout-minutes: $ovn_merge_timeout"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: merge-ovn-image missing timeout-minutes"
+    FAIL=$((FAIL + 1))
+  fi
+
+  if [ "$ovn_verify_timeout" != "null" ] && [ -n "$ovn_verify_timeout" ]; then
+    echo "  PASS: verify-ovn-image has timeout-minutes: $ovn_verify_timeout"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: verify-ovn-image missing timeout-minutes"
+    FAIL=$((FAIL + 1))
+  fi
 }
 
 # --- All jobs use runs-on: ubuntu-latest ---
@@ -592,6 +692,15 @@ test_runs_on_ubuntu_latest() {
 
   assert_contains "build-keystone-federation-proxy uses matrix runner expression" "$fedproxy_runner" "matrix.runner"
   assert_eq "merge-keystone-federation-proxy-image uses ubuntu-latest" "ubuntu-latest" "$fedproxy_merge_runner"
+
+  local ovn_runner ovn_merge_runner ovn_verify_runner
+  ovn_runner=$(yq_raw '.jobs["build-ovn"]["runs-on"]' "$WORKFLOW" || echo "null")
+  ovn_merge_runner=$(yq_raw '.jobs["merge-ovn-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+  ovn_verify_runner=$(yq_raw '.jobs["verify-ovn-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+
+  assert_contains "build-ovn uses matrix runner expression" "$ovn_runner" "matrix.runner"
+  assert_eq "merge-ovn-image uses ubuntu-latest" "ubuntu-latest" "$ovn_merge_runner"
+  assert_contains "verify-ovn-image uses matrix runner expression" "$ovn_verify_runner" "matrix.runner"
 }
 
 # --- Base images always push unconditionally ---
@@ -1025,6 +1134,13 @@ test_verify_jobs_no_sbom_permissions() {
 
   assert_eq "test-service-images has no id-token permission" "null" "$test_service_id_token"
   assert_eq "test-service-images has no attestations permission" "null" "$test_service_attestations"
+
+  local verify_ovn_id_token verify_ovn_attestations
+  verify_ovn_id_token=$(yq_raw '.jobs["verify-ovn-image"]["permissions"]["id-token"]' "$WORKFLOW" || echo "null")
+  verify_ovn_attestations=$(yq_raw '.jobs["verify-ovn-image"]["permissions"]["attestations"]' "$WORKFLOW" || echo "null")
+
+  assert_eq "verify-ovn-image has no id-token permission" "null" "$verify_ovn_id_token"
+  assert_eq "verify-ovn-image has no attestations permission" "null" "$verify_ovn_attestations"
 }
 
 # --- SBOM generation steps exist ---
@@ -1717,6 +1833,10 @@ test_verify_jobs_no_security_events_permission() {
   local test_service_perm
   test_service_perm=$(yq_raw '.jobs["test-service-images"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
   assert_eq "test-service-images has no security-events permission" "null" "$test_service_perm"
+
+  local verify_ovn_perm
+  verify_ovn_perm=$(yq_raw '.jobs["verify-ovn-image"]["permissions"]["security-events"] // "null"' "$WORKFLOW" || true)
+  assert_eq "verify-ovn-image has no security-events permission" "null" "$verify_ovn_perm"
 }
 
 # --- Grype scan output format is sarif ---
@@ -1759,7 +1879,7 @@ test_push_triggers
 echo ""
 test_pull_request_trigger
 echo ""
-test_five_jobs_defined
+test_all_jobs_defined
 echo ""
 test_verify_base_images_job
 echo ""
@@ -1768,6 +1888,8 @@ echo ""
 test_base_image_digest_outputs
 echo ""
 test_keystone_federation_proxy_jobs
+echo ""
+test_ovn_jobs
 echo ""
 test_service_images_depend_on_base
 echo ""

@@ -64,6 +64,7 @@ jobs:
           - images/barbican/Dockerfile
           - images/tempest/Dockerfile
           - images/keystone-federation-proxy/Dockerfile
+          - images/ovn/Dockerfile
           - operators/Dockerfile
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -490,6 +491,173 @@ jobs:
           inspect-tag: ghcr.io/${{ needs.prepare.outputs.image-owner }}/keystone-federation-proxy:${{ github.sha }}
           sbom-output-file: sbom-keystone-federation-proxy.cyclonedx.json
           grype-category: grype-keystone-federation-proxy
+
+  # Release-independent OVS + OVN daemons compiled from pinned upstream
+  # sources: images/ovn/Dockerfile pins the OVN tag and takes OVS from that
+  # tag's 'ovs' submodule gitlink, so the image has no release axis.
+  # Per-platform builds pushed by digest, verified inline on PRs, tagged
+  # <ovn-version>-<sha> on every push and <ovn-version> + latest on main.
+  build-ovn:
+    needs: [lint-dockerfiles, prepare]
+    runs-on: ${{ matrix.runner }}
+    # OVS and OVN are compiled from source on a 4-vCPU runner.
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+      security-events: write #: SARIF upload for Grype scan on PR
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Reject fork PRs
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: echo "::error::Fork PRs cannot push to GHCR. Open your PR from a branch in the upstream repository." && exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Prepare platform pair
+        id: platform-pair
+        uses: ./.github/actions/platform-pair
+        with:
+          platform: ${{ matrix.platform }}
+
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          install-cosign: 'false'
+
+      - name: Resolve ubuntu:noble digest
+        id: ubuntu-base
+        run: hack/ci-resolve-ubuntu-digest.sh
+
+      - name: Resolve OVN version
+        id: ovn-version
+        run: |
+          version=$(hack/ci-resolve-ovn-version.sh)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build ovn
+        id: build-ovn
+        # PR mode loads locally for the inline scan+verify; ARM64 is skipped
+        # on PRs because docker load supports a single platform.
+        if: github.event_name != 'pull_request' || matrix.platform == 'linux/amd64'
+        uses: ./.github/actions/build-push-image
+        with:
+          image-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/ovn
+          context: images/ovn
+          platform: ${{ matrix.platform }}
+          platform-pair: ${{ steps.platform-pair.outputs.value }}
+          build-args: |
+            APT_MIRROR=http://azure.archive.ubuntu.com
+          labels-title: ovn
+          labels-description: OVN and Open vSwitch daemons and client tools built from pinned upstream sources
+          metadata-tags: |
+            type=raw,value=${{ steps.ovn-version.outputs.version }}
+          extra-labels: |
+            org.opencontainers.image.base.name=ubuntu:noble
+            org.opencontainers.image.base.digest=${{ steps.ubuntu-base.outputs.digest }}
+          cache-scope: ovn
+          push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
+          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/ovn:pr-verify', needs.prepare.outputs.image-owner) || format('ghcr.io/{0}/ovn', needs.prepare.outputs.image-owner) }}
+          artifact-name: digests-ovn-${{ steps.platform-pair.outputs.value }}
+          grype-category: grype-ovn-${{ steps.platform-pair.outputs.value }}
+          image-ref-for-scan: ghcr.io/${{ needs.prepare.outputs.image-owner }}/ovn:pr-verify
+          verify-script: tests/container-images/verify_ovn.sh
+          verify-image-ref: ghcr.io/${{ needs.prepare.outputs.image-owner }}/ovn:pr-verify
+
+  merge-ovn-image:
+    if: github.event_name != 'pull_request'
+    needs: [build-ovn, prepare]
+    runs-on: ubuntu-latest
+    timeout-minutes: 23
+    permissions:
+      contents: read
+      packages: write
+      id-token: write #: Sigstore OIDC signing
+      attestations: write #: GitHub Attestations API
+      artifact-metadata: write # gh#108: actions/attest v4.1.0 storage record
+      security-events: write #: GitHub Security tab SARIF upload
+    outputs:
+      ovn-image: ghcr.io/${{ needs.prepare.outputs.image-owner }}/ovn@${{ steps.merge-ovn.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve OVN version
+        id: ovn-version
+        run: |
+          version=$(hack/ci-resolve-ovn-version.sh)
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      # <ovn-version> and latest are main-only so that two branches building
+      # the same upstream version cannot silently overwrite them;
+      # <ovn-version>-<sha> is pushed from every branch.
+      - name: Build OVN tags
+        id: ovn-tags
+        env:
+          IMAGE: ghcr.io/${{ needs.prepare.outputs.image-owner }}/ovn
+          OVN_VERSION: ${{ steps.ovn-version.outputs.version }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          TAGS="${IMAGE}:${OVN_VERSION}-${COMMIT_SHA}"
+          [[ "${GITHUB_REF_NAME}" == "main" ]] && TAGS="${TAGS} ${IMAGE}:${OVN_VERSION} ${IMAGE}:latest"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Merge and attest ovn
+        id: merge-ovn
+        uses: ./.github/actions/merge-manifest-and-attest
+        with:
+          image: ghcr.io/${{ needs.prepare.outputs.image-owner }}/ovn
+          artifact-pattern: digests-ovn-*
+          tags: ${{ steps.ovn-tags.outputs.tags }}
+          inspect-tag: ghcr.io/${{ needs.prepare.outputs.image-owner }}/ovn:${{ steps.ovn-version.outputs.version }}-${{ github.sha }}
+          sbom-output-file: sbom-ovn.cyclonedx.json
+          grype-category: grype-ovn
+
+  # Runs on both architectures: PR mode compiles amd64 only (docker load takes
+  # a single platform), so the arm64 half of the published manifest is first
+  # executed here. docker pull resolves the manifest to the runner's own
+  # architecture, so the runner is what selects the variant under test.
+  verify-ovn-image:
+    if: github.event_name != 'pull_request'
+    needs: [merge-ovn-image]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          install-cosign: 'false'
+
+      - name: Pull and verify ovn image
+        env:
+          OVN_IMAGE: ${{ needs.merge-ovn-image.outputs.ovn-image }}
+        run: |
+          docker pull "$OVN_IMAGE"
+          bash tests/container-images/verify_ovn.sh "$OVN_IMAGE"
 
   # Per-platform service builds pushed by digest or loaded locally for PR verification.
   build-service-images:
