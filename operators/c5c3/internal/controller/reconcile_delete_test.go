@@ -34,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -59,6 +60,19 @@ func drainEvents(rec *record.FakeRecorder) []string {
 			return out
 		}
 	}
+}
+
+// ownedByCP hand-builds a controller OwnerReference to cp so metav1.IsControlledBy
+// recognises a seeded child as swept by the prune sweep.
+func ownedByCP(cp *c5c3v1alpha1.ControlPlane) []metav1.OwnerReference {
+	return []metav1.OwnerReference{{
+		APIVersion:         c5c3v1alpha1.GroupVersion.String(),
+		Kind:               "ControlPlane",
+		Name:               cp.Name,
+		UID:                cp.UID,
+		Controller:         ptr.To(true),
+		BlockOwnerDeletion: ptr.To(true),
+	}}
 }
 
 // deletingControlPlane returns a ControlPlane being deleted (DeletionTimestamp

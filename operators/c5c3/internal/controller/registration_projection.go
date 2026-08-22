@@ -21,14 +21,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	"github.com/c5c3/cobaltcore/internal/common/apply"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
@@ -151,25 +149,15 @@ type (
 	registrationClaim  func(obj client.Object) error
 )
 
-// ownerEnsure is the default registrationEnsure: a Server-Side Apply that
-// controller-references owner.
-func ownerEnsure(c client.Client, scheme *runtime.Scheme, owner client.Object) registrationEnsure {
-	return func(ctx context.Context, obj client.Object) error {
-		return apply.EnsureObject(ctx, c, scheme, owner, obj, apply.FieldManager)
-	}
-}
-
 // deleteRegistrationChild issues an idempotent Delete on one named child in
 // namespace, tolerating NotFound. It drops resolved collision probes and
 // superseded password Secrets — neither of which either mechanism's prune sweep
-// may touch while the block that owns them is declared. errPrefix names the
-// mechanism ("service-account" or "registration") so the failure keeps pointing
-// at the path that issued it.
-func deleteRegistrationChild(ctx context.Context, c client.Client, obj client.Object, name, namespace, errPrefix string) error {
+// may touch while the block that owns them is declared.
+func deleteRegistrationChild(ctx context.Context, c client.Client, obj client.Object, name, namespace string) error {
 	obj.SetName(name)
 	obj.SetNamespace(namespace)
 	if err := client.IgnoreNotFound(c.Delete(ctx, obj)); err != nil {
-		return fmt.Errorf("deleting %s child %q: %w", errPrefix, name, err)
+		return fmt.Errorf("deleting registration child %q: %w", name, err)
 	}
 	return nil
 }
@@ -516,8 +504,7 @@ type managedChildProbeInput struct {
 	// true for the user and catalog gates and false for the project gates,
 	// matching what each kind does today.
 	dropProbeOnOwned bool
-	errPrefix        string
-	// ensure applies the probe; nil takes the owner-referenced default.
+	// ensure applies the probe.
 	ensure registrationEnsure
 }
 
@@ -538,10 +525,10 @@ type managedChildProbeInput struct {
 // never collapsed into a verdict: a gate that cannot see is not a gate that says
 // "absent".
 func managedChildProbeGate(
-	ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, in managedChildProbeInput,
+	ctx context.Context, c client.Client, in managedChildProbeInput,
 ) (bool, probeVerdict, error) {
 	dropProbe := func() error {
-		return deleteRegistrationChild(ctx, c, in.probe, in.probe.GetName(), in.namespace, in.errPrefix)
+		return deleteRegistrationChild(ctx, c, in.probe, in.probe.GetName(), in.namespace)
 	}
 
 	switch err := c.Get(ctx, types.NamespacedName{Name: in.managedName, Namespace: in.namespace}, in.managed); {
@@ -560,12 +547,8 @@ func managedChildProbeGate(
 		return true, probeAbsent, dropProbe()
 	}
 
-	ensure := in.ensure
-	if ensure == nil {
-		ensure = ownerEnsure(c, scheme, owner)
-	}
-	if err := ensure(ctx, in.probe); err != nil {
-		return false, probePending, fmt.Errorf("%s %s probe %q: %w", in.errPrefix, in.kind, in.probe.GetName(), err)
+	if err := in.ensure(ctx, in.probe); err != nil {
+		return false, probePending, fmt.Errorf("registration %s probe %q: %w", in.kind, in.probe.GetName(), err)
 	}
 	switch verdict := interpretProbe(in.probe); verdict {
 	case probeResolved, probePending:
@@ -592,10 +575,9 @@ type managedAccountUserInput struct {
 	// named "<this account's prefix>password-v<N>" are candidates.
 	passwordSecretPrefix string
 	ownsChild            func(obj client.Object) bool
-	errPrefix            string
 	// claim marks the managed User. The User is read-modify-written rather than
 	// applied (the mutation reads live state), so the seam is a claim on the
-	// object rather than a full apply. nil takes the owner-referenced default.
+	// object rather than a full apply.
 	claim registrationClaim
 }
 
@@ -614,7 +596,7 @@ type managedAccountUserInput struct {
 // serviceAccountPasswordGenerationAnnotation to decide whether to (re-)stamp the
 // generation, which cannot be expressed as a pure projection of the spec.
 func ensureManagedAccountUser(
-	ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object, in managedAccountUserInput,
+	ctx context.Context, c client.Client, in managedAccountUserInput,
 ) (*orcv1alpha1.User, int64, bool, *metav1.Time, error) {
 	existing := &orcv1alpha1.User{}
 	getErr := c.Get(ctx, types.NamespacedName{Name: in.name, Namespace: in.namespace}, existing)
@@ -674,13 +656,10 @@ func ensureManagedAccountUser(
 		if _, present := user.Annotations[serviceAccountPasswordGenerationAnnotation]; user.CreationTimestamp.IsZero() || rotating || !present {
 			user.Annotations[serviceAccountPasswordGenerationAnnotation] = strconv.FormatInt(desiredGen, 10)
 		}
-		if in.claim != nil {
-			return in.claim(user)
-		}
-		return controllerutil.SetControllerReference(owner, user, scheme)
+		return in.claim(user)
 	})
 	if err != nil {
-		return nil, 0, false, nil, fmt.Errorf("%s managed User %q: %w", in.errPrefix, in.name, err)
+		return nil, 0, false, nil, fmt.Errorf("registration managed User %q: %w", in.name, err)
 	}
 
 	// Record the rotation timestamp and prune superseded password Secrets once
@@ -705,7 +684,7 @@ func ensureManagedAccountUser(
 			if g, ok := parseServiceAccountGeneration(secretName); ok &&
 				strings.HasPrefix(secretName, in.passwordSecretPrefix) && g < desiredGen &&
 				in.ownsChild(&pwSecrets.Items[i]) {
-				if err := deleteRegistrationChild(ctx, c, &corev1.Secret{}, secretName, in.namespace, in.errPrefix); err != nil {
+				if err := deleteRegistrationChild(ctx, c, &corev1.Secret{}, secretName, in.namespace); err != nil {
 					return nil, 0, false, nil, err
 				}
 			}
@@ -723,13 +702,10 @@ func ensureManagedAccountUser(
 // way. The apply error is returned unwrapped, so the caller keeps naming the
 // mechanism in its own words.
 func ensureAccountDomainImport(
-	ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object,
+	ctx context.Context,
 	name, namespace, domainName string, credRef orcv1alpha1.CloudCredentialsReference,
 	ensure registrationEnsure,
 ) error {
-	if ensure == nil {
-		ensure = ownerEnsure(c, scheme, owner)
-	}
 	return ensure(ctx, unmanagedDomainImport(name, namespace, domainName, credRef))
 }
 
@@ -764,24 +740,21 @@ type accountRoleOutcome struct {
 // projections. Only the object construction, the apply and the inspection live
 // here; the per-role loop, the precedence and every message stay in the caller.
 func applyAccountRole(
-	ctx context.Context, c client.Client, scheme *runtime.Scheme, owner client.Object,
+	ctx context.Context,
 	importName, assignmentName, namespace, role string,
 	credRef, managedCredRef orcv1alpha1.CloudCredentialsReference,
-	userRef, projectRef, errPrefix string, ensure registrationEnsure,
+	userRef, projectRef string, ensure registrationEnsure,
 ) (accountRoleOutcome, error) {
 	var out accountRoleOutcome
-	if ensure == nil {
-		ensure = ownerEnsure(c, scheme, owner)
-	}
 
 	out.roleObj = unmanagedRoleImport(importName, namespace, role, credRef)
 	if err := ensure(ctx, out.roleObj); err != nil {
-		return out, fmt.Errorf("%s Role import %q: %w", errPrefix, importName, err)
+		return out, fmt.Errorf("registration Role import %q: %w", importName, err)
 	}
 
 	out.assignment = managedRoleAssignmentChild(assignmentName, namespace, importName, userRef, projectRef, managedCredRef)
 	if err := ensure(ctx, out.assignment); err != nil {
-		return out, fmt.Errorf("%s RoleAssignment %q: %w", errPrefix, assignmentName, err)
+		return out, fmt.Errorf("registration RoleAssignment %q: %w", assignmentName, err)
 	}
 
 	for _, obj := range []orcv1alpha1.ObjectWithConditions{out.roleObj, out.assignment} {
@@ -830,8 +803,6 @@ type accountPublication struct {
 	ensureSourceSecret   func(ctx context.Context, mutate func(*corev1.Secret) error) error
 	ensurePushSecret     func(ctx context.Context, ps *esov1alpha1.PushSecret) error
 	ensureExternalSecret func(ctx context.Context) error
-
-	errPrefix string
 }
 
 // publishAccountCredentials assembles the source Secret, mirrors it to the per-CR
@@ -853,7 +824,7 @@ func publishAccountCredentials(
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("reading %s password Secret: %w", pub.errPrefix, err)
+		return false, fmt.Errorf("reading registration password Secret: %w", err)
 	}
 	password := pwSecret.Data[serviceAccountPasswordKey]
 	if len(password) == 0 {
@@ -875,38 +846,38 @@ func publishAccountCredentials(
 		secret.Data[appCredCloudsYAMLKey] = cloudsYAML
 		return nil
 	}); err != nil {
-		return false, fmt.Errorf("assembling %s source Secret %q in namespace %q: %w",
-			pub.errPrefix, pub.sourceSecretName, pub.deliveryNamespace, err)
+		return false, fmt.Errorf("assembling registration source Secret %q in namespace %q: %w",
+			pub.sourceSecretName, pub.deliveryNamespace, err)
 	}
 
 	sum := sha256.Sum256(cloudsYAML)
 	contentHash := hex.EncodeToString(sum[:])
 
 	if err := pub.ensurePushSecret(ctx, pub.pushSecret); err != nil {
-		return false, fmt.Errorf("ensuring %s PushSecret: %w", pub.errPrefix, err)
+		return false, fmt.Errorf("ensuring registration PushSecret: %w", err)
 	}
 	if err := repushPushSecret(ctx, pub.delivery, pub.deliveryNamespace, pub.pushSecret.Name,
 		pub.pushHashAnnotation, contentHash); err != nil {
-		return false, fmt.Errorf("forcing %s PushSecret re-push: %w", pub.errPrefix, err)
+		return false, fmt.Errorf("forcing registration PushSecret re-push: %w", err)
 	}
 	pushed := &esov1alpha1.PushSecret{}
 	pushedKey := types.NamespacedName{Name: pub.pushSecret.Name, Namespace: pub.deliveryNamespace}
 	if err := pub.delivery.Get(ctx, pushedKey, pushed); err != nil {
-		return false, fmt.Errorf("reading %s PushSecret: %w", pub.errPrefix, err)
+		return false, fmt.Errorf("reading registration PushSecret: %w", err)
 	}
 	if !pushSecretReady(pushed) {
 		return false, nil
 	}
 
 	if err := pub.ensureExternalSecret(ctx); err != nil {
-		return false, fmt.Errorf("ensuring %s ExternalSecret: %w", pub.errPrefix, err)
+		return false, fmt.Errorf("ensuring registration ExternalSecret: %w", err)
 	}
 	// The completed push is part of the trigger: without it a re-sync could
 	// materialize the value that was in OpenBao BEFORE this generation's push.
 	syncTrigger := contentHash + "/" + pushed.Status.SyncedResourceVersion
 	if err := resyncExternalSecret(ctx, pub.delivery, pub.deliveryNamespace,
 		pub.credentialsSecretName, syncTrigger); err != nil {
-		return false, fmt.Errorf("forcing %s ExternalSecret re-sync: %w", pub.errPrefix, err)
+		return false, fmt.Errorf("forcing registration ExternalSecret re-sync: %w", err)
 	}
 
 	materialized := &corev1.Secret{}
@@ -915,7 +886,7 @@ func publishAccountCredentials(
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("reading materialized %s Secret: %w", pub.errPrefix, err)
+		return false, fmt.Errorf("reading materialized registration Secret: %w", err)
 	}
 	return bytes.Equal(materialized.Data[serviceAccountPasswordKey], password), nil
 }
