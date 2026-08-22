@@ -91,11 +91,12 @@ key-manager catalog row. Dropped, the operator derives
 `https://barbican.127-0-0-1.nip.io` from the gateway hostname, which is the
 default-443 form and unreachable on a kind cluster mapped to 8443.
 
-The defaulting webhook injects a `barbican` service account into
-`spec.korc.serviceAccounts` (user `barbican`, project `service-barbican`, role
-`service`), so Barbican has a Keystone user to validate tokens as. The database,
-the cache, and the Keystone endpoint are derived from `spec.infrastructure` and
-from the Keystone child's naming convention; none of them is set here.
+The operator projects a `KeystoneService` registration named after the Barbican
+child, carrying the key-manager catalog entry and the `barbican` service account
+(user `barbican`, project `service-barbican`, role `service`), so Barbican has a
+Keystone user to validate tokens as. The database, the cache, and the Keystone
+endpoint are derived from `spec.infrastructure` and from the Keystone child's
+naming convention; none of them is set here.
 
 ## Step 2 — Onboard the barbican database-engine tenant
 

@@ -63,8 +63,8 @@ type serverResourcesLister interface {
 // discovery probe; the mandatory kinds the c5c3 operator ships itself (ControlPlane)
 // and the infrastructure kinds it hard-depends on — MariaDB, Memcached, the ESO
 // kinds and the eight K-ORC kinds — are intentionally not listed. K-ORC in
-// particular is read unconditionally by every reconcile pass (reconcileKORC,
-// reconcileServiceAccounts), so a missing K-ORC CRD is a fail-fast startup error,
+// particular is read unconditionally by every reconcile pass (reconcileKORC, the
+// registration legs), so a missing K-ORC CRD is a fail-fast startup error,
 // not a slimmable state that a guarded watch could paper over.
 //
 // The two openbao.org kinds are listed for the same reason the sibling service

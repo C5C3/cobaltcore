@@ -38,11 +38,9 @@ const keystoneServicePushContentHashAnnotation = "c5c3.io/keystoneservice-push-h
 // password, and the role assignments) and the delivery of its credentials into
 // the CR's own namespace through OpenBao.
 //
-// It is behavior-matched to the ControlPlane's ensureServiceAccount, with two
-// differences that follow from the CR shape rather than from a change of policy:
-// the owner is the KeystoneService, and a CR carries exactly ONE account, so the
-// inline machinery's per-account precedence pass collapses into early returns in
-// the same order — collision, terminal error, pending probe, bounded wait.
+// A CR carries ONE account, so the precedence between its outcomes is a chain of
+// early returns rather than a pass over a list: collision, terminal error,
+// pending probe, bounded wait.
 func (r *KeystoneServiceReconciler) ensureAccount(
 	ctx context.Context, ks *c5c3v1alpha1.KeystoneService, cp *c5c3v1alpha1.ControlPlane,
 	credRef, managedCredRef orcv1alpha1.CloudCredentialsReference,
@@ -462,8 +460,7 @@ func (r *KeystoneServiceReconciler) ensureKeystoneServicePasswordSecret(
 // reading one never mutates it) and a MANAGED RoleAssignment binding that role to
 // this account's user on its project.
 //
-// Unlike the ControlPlane's inline accounts, which share one Role import per
-// ControlPlane, the imports here are per CR: registrations are independently
+// The imports are per CR rather than shared: registrations are independently
 // owned and deleted, so a shared import would have no single owner to tear it
 // down and the first CR deleted would pull it out from under the others.
 func (r *KeystoneServiceReconciler) ensureKeystoneServiceRoles(

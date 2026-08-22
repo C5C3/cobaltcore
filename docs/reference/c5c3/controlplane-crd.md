@@ -519,14 +519,13 @@ carry per-field External-mode forbid-rules.
 | `namespace` | [`*ServiceNamespaceSpec`](#service-namespaces) | No | `nil` (placed in the ControlPlane's namespace) | Places the Placement service, and the database, cache, secret store, and credential material that follow it, in a namespace of its own. Create-only: the validating webhook freezes the block after creation. See [Service Namespaces](#service-namespaces). |
 | `targetClusterRef` | [`*commonv1.TargetClusterRefSpec`](../target-clusters.md#the-field) | No | `nil` (the local cluster the operator runs on) | Places the Placement service, and the database, cache, secret store, and credential material that follow it, on a registered target cluster. The projected `Placement` CR stays on the management cluster and carries the ref verbatim. Requires a `namespace` block of its own, plus a `publicEndpoint` or a `gateway` so the placement catalog advertises an address other clusters resolve (webhook). Create-only: the validating webhook freezes the ref after creation. See [ControlPlane placement](../target-clusters.md#controlplane-placement). |
 
-Setting `services.placement` makes the defaulting webhook inject a `placement`
-entry into [`spec.korc.serviceAccounts`](#serviceaccountspec): project
-`service-placement` with `create: true`, role `service`, and a
-`targetNamespace` naming the namespace Placement is placed in whenever that
-differs from the ControlPlane's. That account is the Keystone user the projected
-child authenticates as, so the validating webhook also requires it. A CR that
-reaches admission without the entry is rejected instead of projecting a Placement
-with no service user.
+Setting `services.placement` makes the reconciler project a `KeystoneService`
+registration named `{controlplane.Name}-placement` into the namespace Placement
+is placed in: the `placement` catalog entry plus the `placement` service account,
+whose project `service-placement` is created with the role `service`. That
+account is the Keystone user the projected child authenticates as, so the
+Placement child is not projected until the registration reports it provisioned
+(`PlacementReady=False/WaitingForServiceRegistration` until then).
 
 Setting `services.placement` bounds the ControlPlane's own name too. The
 projected child is `{controlplane.Name}-placement`, and the placement operator
@@ -582,16 +581,15 @@ The logical database name is not exposed here. The projection forces it to
 Barbican credential access to that schema alone; any other name would be issued
 a credential it cannot use.
 
-Setting `services.barbican` makes the defaulting webhook inject a `barbican`
-entry into [`spec.korc.serviceAccounts`](#serviceaccountspec): project
-`service-barbican` with `create: true`, role `service`, and a `targetNamespace`
-naming the namespace Barbican is placed in whenever that differs from the
-ControlPlane's. It creates its own project rather than reusing Glance's
-`service`, since two `create: true` entries naming one project would each adopt
-the other's Keystone row. That account is the Keystone user the projected child
-authenticates as, so the validating webhook also requires it: a CR that reaches
-admission without the entry is rejected instead of projecting a Barbican with no
-service user.
+Setting `services.barbican` makes the reconciler project a `KeystoneService`
+registration named `{controlplane.Name}-barbican` into the namespace Barbican is
+placed in: the `key-manager` catalog entry plus the `barbican` service account,
+whose project `service-barbican` is created with the role `service`. It creates
+its own project rather than reusing Glance's `service`, since two registrations
+creating one project would each adopt the other's Keystone row. That
+account is the Keystone user the projected child authenticates as, so the
+Barbican child is not projected until the registration reports it provisioned
+(`BarbicanReady=False/WaitingForServiceRegistration` until then).
 
 Setting `services.barbican` bounds the ControlPlane's own name too. The projected
 child is `{controlplane.Name}-barbican`, and the Barbican CRD caps
@@ -931,13 +929,13 @@ identity service, because Keystone enforces no uniqueness on service names and a
 managed registration against a populated catalog would silently duplicate rows.
 Instead it imports the existing identity service and each of its endpoint
 interfaces as unmanaged K-ORC CRs, which resolve read-only and write nothing.
-Creating catalog entries survives only as the explicit `managedEntries` opt-in
-below.
+The ControlPlane itself therefore registers **zero** catalog entries in External
+mode; a genuinely new entry is declared with a `KeystoneService` CR, which owns
+its own catalog rows and their teardown.
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `identityServiceName` | `string` | No | `""` | Disambiguates the identity `Service` import when the external catalog carries more than one `identity`-type service. When empty the import filters on type alone. Minimum length 1, maximum 255, and — like [`managedEntries[].name`](#externalcatalogentryspec) — no comma, mirroring K-ORC's `OpenStackName` pattern `^[^,]+$` which the value is cast to on the import filter. |
-| `managedEntries` | [`[]ExternalCatalogEntrySpec`](#externalcatalogentryspec) | No | `nil` | The explicit opt-in for creating genuinely new catalog entries. Absent by default, so External mode creates **zero** catalog entries. A `listType=map` list keyed on `type`, so the API server rejects duplicate entry types. At most 32 entries (`maxItems`), because every entry amplifies into managed K-ORC CRs and therefore into writes against the external Keystone. |
+| `identityServiceName` | `string` | No | `""` | Disambiguates the identity `Service` import when the external catalog carries more than one `identity`-type service. When empty the import filters on type alone. Minimum length 1, maximum 255, and no comma, mirroring K-ORC's `OpenStackName` pattern `^[^,]+$` which the value is cast to on the import filter. |
 
 > **All three interfaces are imported; only one is required.** The `public`,
 > `internal` **and** `admin` endpoints of the identity service are imported, not
@@ -971,33 +969,6 @@ below.
 > endpoint import match several rows. K-ORC reports that as a terminal error and
 > the control plane relays it — loud, never silent — but no spec field can select
 > among them today.
-
----
-
-## ExternalCatalogEntrySpec
-
-One genuinely new catalog entry the control plane creates and owns in the
-external Keystone. Projected as one managed K-ORC `Service` named
-`{controlplane.Name}-catalog-{type}` plus one managed `Endpoint` per declared
-interface. Removing an entry from `managedEntries` deletes exactly those
-resources and nothing else.
-
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `type` | `string` | Yes | — | The OpenStack service type (e.g. `image`, `compute`). Keys the `listType=map` list. Must be a lowercase DNS-1123 label (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, maximum 63) because it is embedded verbatim in the child CR names. `identity` is **forbidden** (CEL rule + webhook): that entry is owned by the imports. The webhook additionally rejects a type whose composed child CR name — `{controlplane.Name}-catalog-{type}-{interface}` — would exceed the apiserver's 253-byte `metadata.name` limit, which no CRD marker can express. |
-| `name` | `string` | No | `""` | Overrides the catalog service name. When empty K-ORC names the service after the child CR. Minimum length 1, maximum 255, and no comma — the pattern mirrors K-ORC's own `OpenStackName` (`^[^,]+$`), which the name is cast to on the child `Service` CR, so a name admitted here can never be rejected downstream. The validating webhook mirrors the pattern. |
-| `endpoints` | [`[]ExternalCatalogEndpointSpec`](#externalcatalogendpointspec) | No | `nil` | The endpoint rows registered for this entry, at most one per interface (`listType=map` keyed on `interface`). An entry with no endpoints registers the service row alone. |
-
----
-
-## ExternalCatalogEndpointSpec
-
-One endpoint row of a managed catalog entry.
-
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `interface` | `string` (`public` \| `internal` \| `admin`) | Yes | — | The catalog interface this endpoint is published under. Keys the `listType=map` list. |
-| `url` | `string` | Yes | — | The endpoint URL registered in the catalog. Must match `^https?://[^\s/]+` and be at most 1024 bytes — the cap mirrors K-ORC's own `EndpointResourceSpec.url`, so a URL admitted here can never be rejected downstream. The validating webhook mirrors both the shape and the cap with a full `net/url` parse. |
 
 ---
 
@@ -1046,7 +1017,6 @@ bootstrapped and rotated and which bootstrap resources are reconciled.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `adminCredential` | [`AdminCredentialSpec`](#admincredentialspec) | Yes | — | The admin OpenStack credential K-ORC uses to reconcile resources, plus the application-credential rotation policy. |
-| `serviceAccounts` | [`[]ServiceAccountSpec`](#serviceaccountspec) | No | `nil` | Composite OpenStack service accounts (nova, glance, …) the control plane manages: one entry = one K-ORC `User` + `Project` with an operator-generated, OpenBao-backed, rotatable password. Mode-independent (managed and external Keystone). `listType=map` keyed by `name`; max 32 entries. |
 
 ---
 
@@ -1190,54 +1160,10 @@ the kind/name and applies it.
 | `kind` | `string` | Yes | — | The K-ORC resource kind to bootstrap. Constrained to the kinds the control plane bootstraps today by `+kubebuilder:validation:Enum=Project;Role`; widen the enum when the reconciler learns to interpret additional kinds. |
 | `name` | `string` | Yes | — | Name of the bootstrapped resource. |
 
-> **RESERVED.** No controller reads `bootstrapResources` today. For service
-> users of other OpenStack services, declare a composite
-> [`serviceAccounts`](#serviceaccountspec) entry instead — it owns the full
-> user + project + password lifecycle.
-
----
-
-## ServiceAccountSpec
-
-Declares one composite OpenStack service account: a managed K-ORC `User` with an
-operator-generated, OpenBao-backed, rotatable password, its project (referenced
-or created), and the roles bound to it. Projected by
-[`reconcileServiceAccounts`](./controlplane-reconciler.md#reconcileserviceaccounts).
-
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `name` | `string` | Yes | — | Keys the `listType=map` list and is embedded in every child CR and Secret name (DNS-1123 label, `[a-z0-9]([-a-z0-9]*[a-z0-9])?`, ≤ 63). Not the OpenStack user name — that is `userName`. |
-| `userName` | `string` | No | `name` | The OpenStack user name managed in Keystone. Defaults to `name` via the defaulting webhook. Pattern `^[^,]+$`, ≤ 255 (mirrors K-ORC's `OpenStackName`). |
-| `domainName` | `string` | No | admin domain | The OpenStack domain the user and project live in. Empty resolves to `spec.korc.adminCredential.domainName`. |
-| `adopt` | `bool` | No | `false` | Explicit consent that a pre-existing Keystone user of this name may be taken over. Fail-loudly by default: a declared user that already exists surfaces `ServiceAccountsReady=False/ServiceAccountCollision` and is never touched. `adopt: true` opts into a **password takeover** AND into operator ownership — an adopted user is a managed `User`, so it is **deleted from Keystone at teardown**, exactly like one the operator created. |
-| `project` | [`ServiceAccountProjectSpec`](#serviceaccountprojectspec) | Yes | — | The project the service user is associated with, referenced (default) or created. |
-| `roles` | `[]string` | No | `nil` | OpenStack role names assigned to the user on the project. Each role projects one **unmanaged** K-ORC `Role` import (referenced by name, never created or deleted — Keystone roles are global) plus one **managed** `RoleAssignment` binding it to the user on the project (one per user × project × role). Their readiness folds into the per-account `ServiceAccountsReady` gate; removing a role prunes both child CRs; at teardown the managed assignment is deleted from Keystone while the `Role` import is released untouched. Item pattern `^[^,]+$`, ≤ 255, max 32. |
-| `rotation` | [`*ServiceAccountRotationSpec`](#serviceaccountrotationspec) | No | mode `Manual` | Per-account password-rotation policy. `Manual` is currently **inert here**: a `CredentialRotation` with target `serviceAccountPassword` names a `KeystoneService` CR, and no `KeystoneService` owns an inline account's `User`. The account is still projected and still delivers its credentials; declare it as a `KeystoneService` CR to make it rotatable. |
-| `targetNamespace` | `string` | No | ControlPlane's own namespace | The namespace the consumer credentials Secret — and the source Secret, PushSecret, and ExternalSecret behind it — materializes in, through that namespace's `openbao-tenant-store`. When set it must be **either the ControlPlane's own namespace or one of its dedicated service namespaces** (declared via the services' `namespace` blocks); the webhook rejects any other namespace, since delivery rides that namespace's tenant store and none is provisioned elsewhere. **Immutable per entry** (matched by `name`): moving delivery would strand the credentials already delivered to the old namespace. DNS-1123 label, `[a-z0-9]([-a-z0-9]*[a-z0-9])?`, ≤ 63. |
-
-### ServiceAccountProjectSpec
-
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `name` | `string` | Yes | — | The OpenStack project name. Pattern `^[^,]+$`, ≤ 255 (mirrors K-ORC's `KeystoneName`). |
-| `create` | `bool` | No | `false` | `false` **references** a pre-existing project via an unmanaged import (the operator never creates or deletes it); `true` **creates and owns** a managed `Project`, gated by the same fail-loudly collision probe as the user. |
-
-### ServiceAccountRotationSpec
-
-| Field | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `mode` | `ServiceAccountRotationMode` | No | `Manual` | `Manual` rotates only on a [`CredentialRotation`](#credentialrotationspec) request — which names a `KeystoneService`, so `Manual` is inert on an **inline** `spec.korc.serviceAccounts[]` account. `Scheduled` is **reserved** (surfaced in the enum now, deferred non-silently via a `ScheduledRotationDeferred` event). Deliberately not the admin `RotationMode`: there is no external password source, so `PasswordDriven` does not apply. |
-
-**Consumption contract.** Each account's credentials are materialized into a
-Secret named `{controlplane.Name}-service-account-{name}-credentials` (keys
-`password` and a ready-to-use `clouds.yaml`) in the account's **delivery
-namespace** — `targetNamespace`, or the ControlPlane's own namespace when that is
-empty — mirrored from the per-CR OpenBao path
-`openstack/keystone/{delivery-namespace}/{controlplane.Name}/service-accounts/{name}`
-(the namespace segment follows the delivery namespace so it stays inside that
-namespace's tenant-store policy). `status.serviceAccounts[].secretName` /
-`secretNamespace` name where it lives. See the
-[reconciler reference](./controlplane-reconciler.md#reconcileserviceaccounts).
+> **RESERVED.** No controller reads `bootstrapResources` today. For the service
+> user of another OpenStack service, declare a `KeystoneService` CR instead — it
+> owns the full user + project + password lifecycle, and its credentials are
+> delivered into its own namespace.
 
 ---
 
@@ -1250,7 +1176,6 @@ namespace's tenant-store policy). `status.serviceAccounts[].secretName` /
 | `updatePhase` | [`UpdatePhase`](#updatephase) | Current phase of a control-plane release update. Written on every status update; fixed at `Idle` in the current implementation because the release-update state machine is reserved (the other `UpdatePhase` values are not yet set). |
 | `services` | `[]ServiceStatus` | Per-service readiness of the projected service CRs. A `listType=map` list keyed by `name`, so per-service entries merge under server-side apply and can grow per-service conditions cleanly. Written on every status update with one entry per managed service in a stable order — `keystone`, then `horizon`, then `glance`, then `placement` — each present only when its `spec.services.<svc>` is set. Each entry's `ready` mirrors the matching `KeystoneReady` / `HorizonReady` / `GlanceReady` / `PlacementReady` condition and its `release` is `spec.openStackRelease`; an unmanaged service is omitted rather than reported. See [ServiceStatus](#servicestatus). |
 | `catalog` | [`*CatalogStatus`](#catalogstatus) | Observed state of the External-mode catalog imports. Nil in Managed mode, where the control plane creates the catalog entries rather than importing them. See [CatalogStatus](#catalogstatus). |
-| `serviceAccounts` | `[]ServiceAccountStatus` | Observed state of the declared service accounts, keyed by `name` (`listType=map`). The discoverability half of the consumption contract: `secretName` names the materialized Secret each account's password is read from. See [ServiceAccountStatus](#serviceaccountstatus). |
 
 > **`updatePhase` vs the Keystone CRD's `upgradePhase`.** These field names are
 > intentionally distinct: `ControlPlane.status.updatePhase` is the control-plane
@@ -1315,21 +1240,6 @@ import is reported as `resolved: false` rather than omitted.
 | `interface` | `string` (`public` \| `internal` \| `admin`) | No | The catalog interface of an imported `Endpoint`; empty for the `Service` import. |
 | `resolved` | `bool` | Yes | Whether K-ORC matched this import against a live catalog entry (its `Available` condition is `True` for the CR's current generation). |
 | `id` | `string` | No | The OpenStack id K-ORC resolved the import to. Empty while the import is unresolved. |
-
-### ServiceAccountStatus
-
-Reports the observed state of one declared service account.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `name` | `string` | Yes | The service account name; keys the `listType=map` list. |
-| `ready` | `bool` | Yes | Whether the user, project, and materialized password Secret are all converged for the current generation. |
-| `userID` | `string` | No | The OpenStack user id K-ORC resolved (or created). |
-| `projectID` | `string` | No | The OpenStack project id K-ORC resolved (or created). |
-| `passwordGeneration` | `int64` | No | The monotonically increasing generation of the password currently applied. Increments on every rotation. |
-| `lastPasswordRotation` | `*metav1.Time` | No | Timestamp of the last successful password rotation. |
-| `secretName` | `string` | No | The materialized Secret carrying the account's credentials (`password` + `clouds.yaml`) — the documented, stable handle consumers read from. |
-| `secretNamespace` | `string` | No | The namespace of `secretName` — the account's delivery namespace (spec `targetNamespace`, or the ControlPlane's own namespace when empty). Reports where the credentials Secret was materialized. |
 
 ### UpdatePhase
 
@@ -1494,12 +1404,6 @@ Keystone discipline:
 | `spec.korc.adminCredential.applicationCredential.accessRules[].path` | Pattern `^/` |
 | `spec.korc.adminCredential.bootstrapResources[].kind` | Enum: `Project`, `Role` |
 | `spec.korc.adminCredential.applicationCredential.rotation.mode` | Enum: `PasswordDriven`, `Scheduled`, `Manual` |
-| `spec.korc.serviceAccounts[].name` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`; MinLength 1; MaxLength 63 |
-| `spec.korc.serviceAccounts[].userName`, `.domainName`, `.project.name` | Pattern `^[^,]+$`; MinLength 1; MaxLength 255 |
-| `spec.korc.serviceAccounts[].roles[]` | Pattern `^[^,]+$`; item MinLength 1; item MaxLength 255; MaxItems 32 |
-| `spec.korc.serviceAccounts[].targetNamespace` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`; MinLength 1; MaxLength 63 |
-| `spec.korc.serviceAccounts[].rotation.mode` | Enum: `Manual`, `Scheduled`; schema default `Manual` |
-| `spec.korc.serviceAccounts` | listType=map keyed by `name`; MaxItems 32 |
 | `spec.services.keystone.replicas` | Minimum: 1 |
 | `spec.infrastructure.database.replicas` | Minimum: 1, schema default `3`. The webhook additionally rejects exactly `2` (Galera quorum — see below). |
 | `spec.infrastructure.cache.replicas` | Minimum: 1, schema default `3` |
@@ -1574,11 +1478,6 @@ short-circuit on the first error.
 | Infrastructure forbidden in External mode | `spec.infrastructure` | `field.Forbidden` | `spec.infrastructure` set while `mode: External`. **Cross-field, webhook-only** — CEL cannot span `spec.infrastructure` and `spec.services.keystone` (phase 2 relaxes this to optional). |
 | Horizon forbidden in External mode | `spec.services.horizon` | `field.Forbidden` | `services.horizon` set while `mode: External` (P2 — Horizon needs its own External-mode design). **Cross-field, webhook-only.** |
 | Infrastructure required in non-External mode | `spec.infrastructure` | `field.Required` | `spec.infrastructure` unset while the keystone mode is not `External` (Managed, unset mode, or `services.keystone` unset). Preserves today's contract now the Go field is an optional pointer. **Webhook-only.** |
-| Service-account shape | `spec.korc.serviceAccounts[]` | `field.Invalid` / `field.Required` / `field.Duplicate` / `field.TooMany` | Per-entry defense-in-depth mirrors of the CRD markers (name shape, `project.name` required, comma guards, child-CR name-length bound). |
-| Service-account identity uniqueness | `spec.korc.serviceAccounts[].userName` | `field.Duplicate` | Two entries resolve to the same effective `(userName, domainName)` — they would project two managed `User`s onto one Keystone user. **Cross-item, webhook-only.** |
-| Service-account admin collision | `spec.korc.serviceAccounts[].userName` | `field.Invalid` | An entry's effective identity equals the admin identity (`adminCredential.userName`/`domainName`) — a managed `User` would take over the admin user and rotate its password. **Cross-field, webhook-only.** |
-| Service-account managed-project uniqueness | `spec.korc.serviceAccounts[].project.name` | `field.Duplicate` | Two `project.create: true` entries name the same project in one domain — each managed `Project` would adopt the other's row. **Cross-item, webhook-only.** |
-| Service-account target namespace | `spec.korc.serviceAccounts[].targetNamespace` | `field.Invalid` | Set to a namespace that is neither the ControlPlane's own nor one of its dedicated service namespaces — delivery rides that namespace's `openbao-tenant-store`, and none is provisioned elsewhere. **Cross-field, webhook-only.** |
 | Glance gateway hostname required | `spec.services.glance.gateway.hostname` | `field.Required` | A `gateway` is configured but its `hostname` is empty. Mirrors the `+kubebuilder:validation:MinLength=1` marker on `commonv1.GatewaySpec.Hostname`; without it the derived public endpoint has an empty host. The same usable-DNS-name check that applies to the Keystone/Horizon gateway hostnames applies here too. |
 | Glance public endpoint is a URL | `spec.services.glance.publicEndpoint` | `field.Invalid` | Not an absolute HTTP(S) URL with a host. The value is advertised verbatim as the public image catalog Endpoint and is projected into no child CR, so `https://` would register a hostless URL that no client can resolve and nothing downstream would catch. |
 | Glance public endpoint is a bare origin | `spec.services.glance.publicEndpoint` | `field.Invalid` | Carries a path, query, or fragment (a single trailing `/` is allowed). The `^https?://` pattern anchors only the prefix, so `https://glance.example.com?utm=1` is schema-legal; the Glance API is served at the root and clients append the API path to the catalog endpoint, yielding `https://glance.example.com?utm=1/v2/images` and a 404 on every image call. **Webhook-only.** |
@@ -1604,7 +1503,6 @@ short-circuit on the first error.
 | Glance injected property value is Dict-safe | `spec.services.glance.importPlugins.injectMetadata.properties[<key>]` | `field.Invalid` | A property value carries a comma, a newline or carriage return, leading/trailing whitespace, or exceeds 255 characters. A colon is allowed: everything after the pair's first one belongs to the value, which is what lets a URL be injected. The length bound also has the CEL counterpart, because every pair renders verbatim into the one `inject` line and an unbounded value would push the child's rendered `glance-api.conf` past the 1 MiB ConfigMap ceiling. The rest is **webhook-only.** |
 | Glance ignored-role bounds | `spec.services.glance.importPlugins.injectMetadata.ignoreUserRoles` | `field.TooMany` / `field.Invalid` | The list exceeds 64 items, or an item is empty, longer than 255 characters, or carries a comma, newline, or carriage return. The rendered `ignore_user_roles` is a plain comma join, so a comma would split one role into two. The item markers bound length; the content checks are **webhook-only**. |
 | Glance decompression needs a chosen staging bound | `spec.services.glance.staging.sizeLimit` | `field.Required` | `services.glance.importPlugins.decompression` is set while `services.glance.staging` leaves both `sizeLimit` and `unbounded` unset. The plugin expands the staged image by a ratio the caller picks and nothing caps the result, which makes that bound the only one in the path — and the operator default was sized against the largest download, not the largest unpacked image. Both blocks are projected onto the Glance child untouched, so the same exported validator enforces the pairing there. **Cross-field, webhook-only.** |
-| Built-in service-account name reserved | `spec.korc.serviceAccounts[]` | `field.Invalid` | An entry resolves to the Keystone user `glance`, `placement`, or `barbican` **in the effective admin domain** — the user the `KeystoneService` registration this ControlPlane projects for that service owns. Both mechanisms would provision the one user and the registration would report `ServiceAccountCollision` for as long as both declarations stand. The three names are reserved whether or not the `services.<svc>` block is declared, because dropping the block without the deletion opt-in *preserves* the registration. An entry naming a domain of its own is a different Keystone user and is admitted. On update only entries whose resolved `(userName, domainName)` identity the update **introduces** are checked, so a CR admitted before the rule stays updatable — and deletable. **Cross-field, webhook-only.** |
 | Glance forbidden in External mode | `spec.services.glance` | `field.Forbidden` | `services.glance` set while `mode: External` (Glance needs its own External-mode design). **Cross-field, webhook-only.** |
 | Target-cluster ref shape | `spec.services.{keystone,horizon,glance,placement,barbican}.targetClusterRef.name` | `field.Required` | The ref is set with an empty `name`. Defense-in-depth mirror of the `MinLength=1` marker on the shared `commonv1.TargetClusterRefSpec`, applied through `validation.TargetClusterRef` for a caller that bypasses CRD schema admission. |
 | Placed service needs a namespace of its own | `spec.services.{keystone,horizon,glance,placement,barbican}.namespace` | `field.Required` | `targetClusterRef` is set while the service declares no `namespace` block. Every namespace maps to exactly one cluster and the ControlPlane's own stays on the local one, so the service's database, tenant store, and credential material would be provisioned in a namespace living on a different cluster than the ref names. **Cross-field, webhook-only.** |
@@ -1763,8 +1661,6 @@ independently as defense-in-depth for webhook-bypassed states.
 | Cache clusterRef.name immutable | `spec.infrastructure.cache.clusterRef.name` | Both managed, but the name changed |
 | Cloud secretName immutable | `spec.korc.adminCredential.cloudCredentialsRef.secretName` | The value changed |
 | Region immutable | `spec.region` | The region changed |
-| Service-account identity/project immutable | `spec.korc.serviceAccounts[].{userName,domainName,project.name,project.create}` | For an entry matched by `name` across old/new, one of these changed — an in-place repoint would rename or re-own live Keystone resources; remove and re-add the entry instead. `adopt` stays mutable (flipping it to `true` is the documented collision remediation). |
-| Service-account target namespace immutable | `spec.korc.serviceAccounts[].targetNamespace` | For an entry matched by `name` across old/new, the value changed — moving delivery would strand the credentials already delivered to the old namespace; remove and re-add the entry instead. |
 | Service target cluster immutable | `spec.services.{keystone,horizon,glance,placement,barbican}.targetClusterRef` | The ref was added, removed, or renamed on a service the old revision already declared; the message contains `targetClusterRef is immutable`, the same string the workload CRDs' CEL transition rules pin. Re-pointing a live service leaves its workload, its database, its tenant store, and its credential material on the cluster they were created on, and nothing in the following reconcile moves or reaps them. Webhook-only, with **no** CEL transition rule, so a migration between clusters can be gated later rather than being blocked forever — the same rationale as the `namespace` freeze. A service the old revision did **not** declare may appear placed: that is the service's creation, not a move. |
 | Release downgrade rejected | `spec.openStackRelease` | New release `(year, minor)` is lower than the old (upgrades and same-release updates allowed) |
 
@@ -1872,8 +1768,6 @@ markers' documented values where a marker also exists.
 | `spec.korc.adminCredential.userName` | `== ""` | `"admin"` | Marker + webhook |
 | `spec.korc.adminCredential.projectName` | `== ""` | `"admin"` | Marker + webhook |
 | `spec.korc.adminCredential.domainName` | `== ""` | `"Default"` | Marker + webhook |
-| `spec.korc.serviceAccounts[].userName` | `== ""` | the entry's `name` | Webhook-only |
-| `spec.korc.serviceAccounts` (the `glance` entry) | `services.glance` set and no `glance` entry present | an injected entry `{name: glance, project: {name: service, create: true}, roles: [service], targetNamespace: <the Glance namespace when dedicated, else empty>}` (its `userName` then defaults to `glance` via the row above) | Webhook-only |
 | `spec.services.glance.dedicatedBackingServices.database.clusterRef.name` | managed dedicated database declared, `== ""` | `{controlplane}-glance-db` (and `credentialsMode` → `Static`) | Webhook-only, brownfield-guarded |
 | `spec.services.glance.dedicatedBackingServices.cache.clusterRef.name` | managed dedicated cache declared, `len(servers) == 0` | `{controlplane}-glance-cache` | Webhook-only, brownfield-guarded |
 | `spec.services.{keystone,horizon,glance}.namespace.lifecycle` | `== ""` (a `namespace` block is declared) | `Managed` | Marker + webhook |
@@ -2097,17 +1991,18 @@ an External-mode ControlPlane always reports `HorizonNotManaged`.
 ### GlanceReady
 
 Set by `reconcileGlance` (gated on `KeystoneReady` — Glance validates every token
-against the Keystone child — **and** on the injected `glance` service account
-being Ready). Glance is **forbidden in External mode**, so it is only ever managed
-against a Managed-mode Keystone.
+against the Keystone child — **and** on the projected `KeystoneService`
+registration having provisioned the `glance` service account). Glance is
+**forbidden in External mode**, so it is only ever managed against a Managed-mode
+Keystone.
 
 | Status | Reason | When |
 | --- | --- | --- |
 | `True` | `GlanceReady` | The projected Glance CR reports Ready. |
 | `True` | `GlanceNotManaged` | `spec.services.glance` is unset: no image service is managed, so the aggregate `Ready` is not blocked. Any previously-projected Glance child (and its `GlanceBackend` children and DB-credential ExternalSecret) is **preserved** unless the `c5c3.io/allow-glance-deletion: "true"` annotation opts in to its deletion. The dynamic DB-credential generator, its ServiceAccount, and its client Certificate are torn down **either way** — preserving a running service does not imply preserving the generator that keeps minting its credentials. |
 | `False` | `WaitingForKeystone` | `KeystoneReady` is not `True`; Glance projection deferred. |
-| `False` | `ServiceAccountNotDeclared` | No `spec.korc.serviceAccounts` entry named `glance` is declared — the defaulting webhook injects it whenever `services.glance` is set, so a ControlPlane reaching here bypassed admission. Fails loud rather than projecting a Glance with no Keystone user. |
-| `False` | `WaitingForServiceAccount` | The `glance` service account is declared but not yet Ready; projection deferred until its Keystone user and password are provisioned. |
+| `False` | `WaitingForServiceRegistration` | The projected `KeystoneService` registration has not provisioned the `glance` account yet; projection deferred until its Keystone user and password exist. The message relays the registration's own failing sub-condition, so a collision on the `glance` user or its catalog row reads here verbatim. |
+| `False` | `ServiceRegistrationError` | Kubernetes-level error writing or reading the `KeystoneService` registration child — a refused adoption of a same-named foreign CR among them. |
 | `False` | `GlanceDBCredentialError` | Error ensuring the Glance DB-credential ExternalSecret (managed database only). |
 | `False` | `WaitingForGlanceDBCredential` | `credentialsMode: Dynamic` is in effect but no engine-issued credential has materialised yet — either the generator-backed DB-credential ExternalSecret has not synced, or (on a Static→Dynamic migration, where the ExternalSecret is updated in place and keeps reporting the previous Static sync's `Ready`) the Secret it targets still carries the retired static username. No Glance CR is projected, and an existing child keeps its current mode, until one does. The message names the `database/mariadb/creds/glance-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant, or the stale username it found. |
 | `False` | `GlanceBackendProjectionRejected` | The Glance API server rejected a projected `GlanceBackend` (HTTP 422). Reconcile the `services.glance.backends` entries to a valid projection to recover. |
@@ -2184,47 +2079,45 @@ What "every catalog child" means depends on the Keystone mode. In **Managed**
 mode the control plane owns the catalog and registers the identity `Service` and
 its public `Endpoint`. In **External** mode it is import-first: the identity
 `Service` and the `Endpoint` of the interface `endpointType` selects are the
-gating unmanaged imports (the other two interfaces are imported for visibility
-only — see [ExternalCatalogSpec](#externalcatalogspec)), plus one managed
-`Service`/`Endpoint` set per declared [`managedEntries`](#externalcatalogspec)
-entry.
+gating unmanaged imports, and nothing else — the other two interfaces are
+imported for visibility only (see
+[ExternalCatalogSpec](#externalcatalogspec)). Catalog rows a `KeystoneService`
+registers are gated by that CR's own `CatalogReady`, not by this condition.
 
 | Status | Reason | When |
 | --- | --- | --- |
 | `True` | `CatalogRegistered` | **Managed mode only.** Every managed catalog entry is registered as K-ORC CRs **and** reports `Available`. The catalog is a per-service table whose only entry today is the identity (Keystone) `Service` and its public `Endpoint`; the message counts the registered entries, so a future second service is one more entry rather than a reworded condition. |
-| `True` | `CatalogImported` | **External mode only.** The external identity `Service` and the endpoint interface `endpointType` selects resolved as unmanaged imports, and every declared managed entry is `Available`. The message reports how many of the three endpoint interfaces resolved. Deliberately distinct from `CatalogRegistered`: nothing was registered, and conflating the two would make "did this ControlPlane write to my catalog?" unanswerable from status. |
+| `True` | `CatalogImported` | **External mode only.** The external identity `Service` and the endpoint interface `endpointType` selects resolved as unmanaged imports. The message reports how many of the three endpoint interfaces resolved. Deliberately distinct from `CatalogRegistered`: nothing was registered, and conflating the two would make "did this ControlPlane write to my catalog?" unanswerable from status. |
 | `False` | `WaitingForAdminCredential` | `AdminCredentialReady` is not `True`; catalog reconciliation deferred. |
-| `False` | `WaitingForCatalog` | A catalog child is reconciled but not yet `Available` for the current generation (a stale `Available` condition whose `ObservedGeneration` lags the object does not count). In External mode this names the gating import or declared entry that has not resolved. |
+| `False` | `WaitingForCatalog` | A catalog child is reconciled but not yet `Available` for the current generation (a stale `Available` condition whose `ObservedGeneration` lags the object does not count). In External mode this names the gating import that has not resolved. |
 | `False` | `CatalogFailed` | A catalog child reports a terminal K-ORC error (`GetTerminalError`). In External mode this is where the **>1-match** half of the ambiguity contract lands: K-ORC refuses to guess and stops retrying, and the message relays it verbatim plus a hint at `external.catalog.identityServiceName` (or, for an endpoint import, at the region limitation no spec field can fix). Terminal errors are surfaced for **every** import, gating or not — with one exception: a >1-match on a **non-gating** interface has no remediation and nothing depends on it, so it is tolerated exactly like a non-gating `ImportStalled` and reported as `resolved: false`. |
 | `False` | `ImportStalled` | **External mode only.** A **gating** catalog import has been waiting to be "created externally" for longer than `externalImportStallGrace` (2m). This is the **0-match** half of the ambiguity contract: a gating import's target pre-exists by definition, so the wait never ends on its own. The message names `external.endpointType` and `spec.region` as the likely causes, and for an endpoint import the third possibility — the external catalog publishes no such interface. A non-gating interface import stalls on the same marker without failing the condition. |
 | `False` | `AuthenticationFailed` \| `EndpointUnreachable` \| `TLSVerificationFailed` \| `CatalogEndpointMismatch` \| `CredentialDrift` | **External mode only.** An unresolved import carries a K-ORC message identifying one of these failure classes; it is relayed verbatim (see [`KORCReady`](#korcready) for each class). `CatalogEndpointMismatch` additionally names the effective `endpointType` and `spec.region`. |
 | `False` | `ServiceError` | **Managed mode only.** Error create-or-updating the identity `Service` CR. |
 | `False` | `EndpointError` | **Managed mode only.** Error create-or-updating the identity `Endpoint` CR. |
 | `False` | `ImportError` | **External mode only.** Kubernetes-level error create-or-updating one of the unmanaged import CRs. |
-| `False` | `CatalogEntryError` | **External mode only.** Kubernetes-level error create-or-updating (or garbage-collecting) an opt-in managed catalog entry. |
 
 ### ServiceAccountsReady
 
-Set by `reconcileServiceAccounts` (gated on `AdminCredentialReady` and on the
-OpenBao-backed `ClusterSecretStore`). It projects each
-[`serviceAccounts`](#serviceaccountspec) entry onto a managed K-ORC `User` and
-`Project`, generates the password, round-trips it through OpenBao, and gates each
-account's readiness on the materialized Secret carrying the current-generation
-password. Mode-independent: the same rules apply against a managed and an
-external Keystone.
+Set by `reconcileServiceAccounts`. It **aggregates** the readiness of the
+`KeystoneService` registrations the built-in service legs project — one per
+declared `services.glance` / `.placement` / `.barbican` — into the one condition
+operators alert on. It projects nothing itself and needs no gate of its own: it
+only reads the children those legs wrote earlier in the same pass.
+
+The relayed reason is the failing registration's **own** first failing
+sub-condition, not an aggregate placeholder, so any reason a `KeystoneService`
+reports can appear here — including catalog-side ones such as `CatalogFailed`,
+because `CatalogReady` is folded in before `AccountReady`. The message always
+names the registration child it came from.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `NoServiceAccountsDeclared` | `spec.korc.serviceAccounts` is empty. Still `True` so the condition schema is identical whether or not accounts are declared. |
-| `True` | `ServiceAccountsProvisioned` | Every declared account's `User`, `Project`, and materialized password Secret are converged for the current generation. |
-| `False` | `WaitingForAdminCredential` | `AdminCredentialReady` is not `True`; projection deferred. |
-| `False` | `SecretStoreNotReady` | The store selected by `spec.secretStoreRef` (a ClusterSecretStore or a namespaced SecretStore) is not Ready. |
-| `False` | `ProbingForCollision` | A fail-loudly collision probe (see [adopt semantics](#serviceaccountspec)) has not yet resolved either way. |
-| `False` | `ServiceAccountCollision` | A declared user (or a `project.create: true` project) already exists in Keystone and `adopt`/`project.create: false` was not set — the operator fails loud rather than take over an account it did not create. The message names the account and both remediations. |
-| `False` | `WaitingForServiceAccounts` | The `User`/`Project`/password round-trip is converging, or an undeclared child is still being removed. |
-| `False` | `ServiceAccountsFailed` | A service-account child reports a terminal K-ORC error. |
-| `False` | `ServiceAccountError` | Kubernetes-level error reconciling (or pruning) a service-account child, or checking the selected secret store's readiness. Every `status.serviceAccounts[].ready` flag is cleared alongside the condition, so a consumer gating on per-account readiness (notably `reconcileGlance`) cannot act on the last converged value. |
-| `False` | `AuthenticationFailed` \| `EndpointUnreachable` \| `TLSVerificationFailed` \| `CatalogEndpointMismatch` \| `CredentialDrift` | **External mode only.** A pending child carries a K-ORC message identifying one of these failure classes (see [`KORCReady`](#korcready)). |
+| `True` | `NoServiceRegistrationsProjected` | No built-in service block is declared, which is every External-mode ControlPlane. Still `True` so the condition schema does not depend on the spec. |
+| `True` | `ServiceAccountsProvisioned` | Every projected registration reports `Ready`. The message counts them. |
+| `False` | `WaitingForServiceRegistration` | A registration child has not been projected yet (its service leg is gated on something upstream of its own apply), or it has not reported `Ready` yet. |
+| `False` | `ServiceRegistrationError` | Kubernetes-level error reading a registration child. Returned as an error too, so the reconcile group joins it. |
+| `False` | *(the child's reason)* | A registration reports a `False` sub-condition — `ServiceAccountCollision`, `ProbingForCollision`, `WaitingForServiceAccounts`, `ServiceAccountsFailed`, `SecretStoreNotReady`, `CatalogFailed`, … — relayed verbatim with the child's own message. |
 
 ### Ready (aggregate)
 

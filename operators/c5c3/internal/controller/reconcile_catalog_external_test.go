@@ -103,7 +103,7 @@ func unrecoverableImportConditions(msg string) []metav1.Condition {
 }
 
 // transientEntryConditions stamps the shape EVERY hard failure against the external
-// Keystone takes on a managed catalog entry: a non-terminal Progressing=True with
+// Keystone takes on a KeystoneService child: a non-terminal Progressing=True with
 // reason=TransientError, carrying the only description of what actually went wrong.
 func transientEntryConditions(msg string) []metav1.Condition {
 	return []metav1.Condition{{

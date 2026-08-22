@@ -22,7 +22,7 @@ annotations:
     - kind: added
       description: RBAC for the projected Barbican child and its BarbicanSecretStore, the dedicated OpenBao instance (openbao.org), and the Role/RoleBinding plus TokenRequest grant that instance needs
     - kind: added
-      description: RBAC for K-ORC projects (openstack.k-orc.cloud/projects) for the declarative service accounts (spec.korc.serviceAccounts) reconciler
+      description: RBAC for K-ORC projects (openstack.k-orc.cloud/projects) for the KeystoneService registrations (the projected built-in children and standalone CRs)
     - kind: added
       description: Optional image.digest value pins the operator image by immutable digest (rendered as repository:tag@digest)
     - kind: added

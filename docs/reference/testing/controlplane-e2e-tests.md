@@ -110,14 +110,16 @@ each link on the previous one:
    `AdminCredentialReady=True`.
 5. **Catalog** — owned K-ORC Service and Endpoint; `CatalogReady=True`.
 
-5b. **Service accounts** — the `glance` and `placement` accounts the defaulting
-   webhook injects (the CR declares none) each project a managed User and
-   Project, an unmanaged K-ORC Role import, and a managed RoleAssignment;
-   `ServiceAccountsReady=True` and both `status.serviceAccounts[i].ready`.
+5b. **Registrations** — one `KeystoneService` child per built-in service
+   (`…-glance`, `…-placement`, `…-barbican`), each carrying that service's
+   catalog entry and its service account: a managed User and Project, an
+   unmanaged K-ORC Role import, and a managed RoleAssignment. Every child
+   reports `Ready=AllReady`, and the ControlPlane's `ServiceAccountsReady`
+   aggregates them as `ServiceAccountsProvisioned`.
 
 5c. **Glance child** — owned Glance CR (`controlplane-keystone-glance`) with
    database/cache clusterRefs, an engine-issued (Dynamic) DB credential, the
-   derived Keystone endpoint, the injected `glance` service user, and its
+   derived Keystone endpoint, the registered `glance` service user, and its
    `controlplane-keystone-glance-default` GlanceBackend against the Garage S3
    bucket; `GlanceReady=True`.
 

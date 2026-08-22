@@ -65,13 +65,16 @@ const (
 //
 // Unlike ControlPlaneWebhook it holds no Client: every rule it enforces is
 // decidable from the object under admission alone. The two cross-object rules
-// its inline ancestor validateServiceAccounts carries — no two accounts
-// resolving to one Keystone identity, and no account taking over the admin
-// identity — are deliberately NOT reproduced here. Both would need reads that
-// admission cannot rely on: a sibling List across namespaces the allowlist has
-// yet to define, and a ControlPlane the CRD contract explicitly allows to be
-// absent at admission time (GitOps ordering). The reconciler's collision probes
-// are the guard instead, and they fail loudly rather than silently.
+// an admission-time check could carry (no two CRs resolving to one Keystone
+// identity, and no CR taking over the admin identity) are NOT enforced here.
+// Both would need reads that admission cannot rely on: a sibling List across
+// namespaces the allowlist has yet to define, and a ControlPlane the CRD
+// contract explicitly allows to be absent at admission time (GitOps ordering).
+// The reconciler is the guard instead, and it fails loudly rather than silently:
+// a sibling identity is caught by the collision probes, and the admin identity by
+// the unconditional refusal at the head of ensureAccount — unconditional because
+// account.adopt=true short-circuits the probes and must not double as the switch
+// that hands over the cloud admin account.
 // +kubebuilder:object:generate=false
 type KeystoneServiceWebhook struct {
 	commonwebhook.NoopDeleteValidator[*KeystoneService]
@@ -304,10 +307,9 @@ func validateKeystoneServiceChildName(ks *KeystoneService) field.ErrorList {
 }
 
 // validateKeystoneServiceImmutable freezes the fields that name a live Keystone
-// identity, the posture validateServiceAccountsImmutable applies to the
-// ControlPlane's inline accounts. A block that only one side declares is an
-// add or a remove the reconciler handles as a create or a teardown, not a
-// mutation, so its fields are compared only when both sides carry it.
+// identity. A block that only one side declares is an add or a remove the
+// reconciler handles as a create or a teardown, not a mutation, so its fields
+// are compared only when both sides carry it.
 //
 // adopt stays mutable on both blocks: flipping it to true is the documented
 // collision remediation. So do the endpoint rows, the roles and the rotation
@@ -329,7 +331,7 @@ func validateKeystoneServiceChildName(ks *KeystoneService) field.ErrorList {
 // The domain name is compared as declared. Resolving its fallback needs the
 // referenced ControlPlane's admin domain, which admission cannot read, so an
 // explicit value replacing the fallback is rejected even where it names that
-// same domain — the same blindness the inline ancestor has.
+// same domain.
 func validateKeystoneServiceImmutable(oldObj, newObj *KeystoneService) field.ErrorList {
 	var allErrs field.ErrorList
 	specPath := field.NewPath("spec")

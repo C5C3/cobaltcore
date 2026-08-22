@@ -5,10 +5,10 @@
 # Minimal fake CRD for the K-ORC (OpenStack Resource Controller) Project
 # resource (group openstack.k-orc.cloud). Used by envtest only — NOT a
 # production-grade schema. See applicationcredentials.yaml for the rationale.
-# The c5c3 reconciler projects one Project per declared service account
-# (spec.korc.serviceAccounts) — a managed create or an unmanaged reference —
-# so envtest must serve this kind or the ServiceAccounts sub-reconciler aborts
-# with a no-match error.
+# The c5c3 reconciler projects one Project per registered service account (a
+# KeystoneService CR's spec.account) — a managed create or an unmanaged
+# reference — so envtest must serve this kind or the registration projection
+# aborts with a no-match error.
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:

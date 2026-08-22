@@ -19,10 +19,9 @@ import (
 // ControlPlane: an optional catalog entry (spec.catalog) and an optional
 // service account (spec.account), at least one of which must be set. The CR
 // is mode-independent — the same declaration works against a Managed and an
-// External ControlPlane. Its own metadata takes the roles the ControlPlane's
-// inline surfaces give to per-entry fields: child resources and the consumer
-// Secret derive their names from metadata.name, and credential delivery lands
-// in the CR's own namespace.
+// External ControlPlane. Its own metadata keys the registration: child
+// resources and the consumer Secret derive their names from metadata.name, and
+// credential delivery lands in the CR's own namespace.
 //
 // DECISION: the operator wiring (RBAC, manager setup, watches) lands in a
 // follow-up package of the same effort, so the reconciler paces itself with
@@ -76,8 +75,8 @@ type KeystoneServiceSpec struct {
 
 	// Account declares the service's Keystone account: a user with an
 	// operator-generated, OpenBao-backed, rotatable password, its project,
-	// and the roles assigned to it — the composite the ControlPlane's inline
-	// service accounts declare today, delivered into this CR's own namespace.
+	// and the roles assigned to it. Its credentials are delivered into this
+	// CR's own namespace.
 	// +optional
 	Account *KeystoneServiceAccountSpec `json:"account,omitempty"`
 }
@@ -193,10 +192,9 @@ type KeystoneServiceEndpointSpec struct {
 // KeystoneServiceAccountSpec declares the composite OpenStack service account
 // a KeystoneService registers: a K-ORC User with an operator-generated,
 // OpenBao-backed, rotatable password, its project (referenced or created),
-// and the roles assigned to it. It is the ControlPlane's inline
-// ServiceAccountSpec surface minus that surface's name and targetNamespace
-// fields: the CR's metadata.name keys the child resources and the consumer
-// Secret, and the CR's own namespace is the delivery namespace.
+// and the roles assigned to it. The CR supplies the two handles the block
+// itself does not carry: metadata.name keys the child resources and the
+// consumer Secret, and the CR's own namespace is the delivery namespace.
 type KeystoneServiceAccountSpec struct {
 	// UserName is the OpenStack user name managed in Keystone. Empty (the
 	// default) means the CR's metadata.name; the defaulting webhook
@@ -259,9 +257,8 @@ type KeystoneServiceAccountSpec struct {
 	// role assignments the registration minted behind on the old project,
 	// and flipping create would either orphan a project the registration owns
 	// or adopt one it does not. The rules live on this field rather than on
-	// ServiceAccountProjectSpec because the ControlPlane's inline service
-	// accounts share that type and enforce the same freeze in their own
-	// webhook arm.
+	// ServiceAccountProjectSpec because that shared type carries no freeze of
+	// its own.
 	// +kubebuilder:validation:XValidation:rule="self.name == oldSelf.name",message="project.name is immutable; delete and re-create the KeystoneService to re-point its project"
 	// +kubebuilder:validation:XValidation:rule="(has(self.create) && self.create) == (has(oldSelf.create) && oldSelf.create)",message="project.create is immutable; a managed<->referenced flip would orphan or adopt the live project"
 	Project ServiceAccountProjectSpec `json:"project"`
@@ -344,9 +341,9 @@ type KeystoneServiceEndpointStatus struct {
 }
 
 // KeystoneServiceAccountStatus reports the observed state of a registered
-// service account. It is the per-CR twin of the ControlPlane's inline
-// ServiceAccountStatus, minus that type's name key (a CR carries one account)
-// and secretNamespace (delivery is always the CR's own namespace).
+// service account. A CR registers one account, so the status needs no name key,
+// and delivery is always the CR's own namespace, so it reports no secret
+// namespace.
 type KeystoneServiceAccountStatus struct {
 	// SecretName is the name of the materialized Secret carrying the account's
 	// credentials (key "password" and a ready-to-use "clouds.yaml"), in the
