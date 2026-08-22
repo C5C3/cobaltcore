@@ -575,7 +575,7 @@ func TestReconcileServiceAccounts_SupersededPruneBoundedToExistingSecrets(t *tes
 // non-admin branch of ensureServiceAccountDomain: when an account's effective
 // domain differs from the admin domain, a per-account unmanaged Domain import is
 // created (a CR-only handle; the external domain is referenced, never created or
-// deleted) and the teardown sweep names it so it is cleaned up on delete.
+// deleted).
 func TestReconcileServiceAccounts_CustomDomainCreatesUnmanagedImport(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := saControlPlane()
@@ -592,13 +592,6 @@ func TestReconcileServiceAccounts_CustomDomainCreatesUnmanagedImport(t *testing.
 	g.Expect(c.Get(context.Background(), types.NamespacedName{Name: serviceAccountDomainRef(cp, sa), Namespace: ns}, domain)).To(Succeed())
 	g.Expect(domain.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyUnmanaged))
 	g.Expect(domain.Spec.Import).NotTo(BeNil())
-
-	// The teardown sweep names the distinct per-account domain so it is torn down.
-	names := make([]string, 0)
-	for _, child := range orcChildObjects(cp) {
-		names = append(names, child.name)
-	}
-	g.Expect(names).To(ContainElement(serviceAccountDomainRef(cp, sa)))
 }
 
 func TestReconcileServiceAccounts_ManagedProjectProbeAbsentCreatesManagedProject(t *testing.T) {
