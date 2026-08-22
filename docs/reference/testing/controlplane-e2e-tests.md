@@ -78,7 +78,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, and de-listing freezes instead of tearing down |
 | [external-keystone](#external-keystone) | `controlplane-external` (+ 3 negative CRs) | External mode against a plain, operator-free Keystone: convergence with zero children, imports, the app-credential round-trip, no catalog pollution, service accounts, drift + rotation, `endpoint_type` detection, and zero-blast-radius deletion |
 | [federated-controlplane](#federated-controlplane) | `controlplane-sso` | The end-user SSO experience: websso projection, the login page's SSO choice and domain field, the websso round trip through the gateway |
-| [deletion-orchestration](#deletion-orchestration) | `deletion-orch` | ORC-teardown finalizer sequencing; deletion completes even when Keystone is already gone |
+| [deletion-orchestration](#deletion-orchestration) | `deletion-orch` | ORC-teardown finalizer sequencing; deletion completes even when Keystone is already gone, and the projected Barbican registration and its label-owned K-ORC CRs leave no residue |
 | [admin-password-scoping](#admin-password-scoping) | `controlplane` | Per-CR OpenBao-backed admin password projection |
 | [db-credential-scoping](#db-credential-scoping) | `controlplane` | Per-CR OpenBao-backed service DB credential projection |
 | [dedicated-backing-services](#dedicated-backing-services) | `cp` (ephemeral namespace) | Opt-in per-service dedicated database/cache: provisioning, ownership, sizing, and collective readiness gating |
@@ -216,7 +216,12 @@ bounded stall deadline (`orcTeardownDeadline`, 7m): the finalizer waits,
 then force-removes the stuck `openstack.k-orc.cloud/*` finalizers. Also
 asserts the projected Keystone, MariaDB, Memcached, and all five K-ORC CRs are
 garbage-collected and an ORC-teardown event (`ORCTeardownComplete`, or the
-Warning `ORCTeardownStalled` on the stalled path) was emitted.
+Warning `ORCTeardownStalled` on the stalled path) was emitted. Before the
+teardown it checks that the projected `deletion-orch-barbican` `KeystoneService`
+and at least one K-ORC CR carrying its `c5c3.io/keystoneservice-name` label are
+standing. Once the ControlPlane is gone it asserts that the `KeystoneService`
+and every K-ORC CR carrying that label are gone, which is what the force-release
+on the Keystone-gone path produces.
 
 ### admin-password-scoping
 

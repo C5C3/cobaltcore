@@ -2546,7 +2546,27 @@ projected. On deletion it:
    That window is a budget of its own rather than a share of the K-ORC one: this
    wait blocks the sweep below entirely, so a shared deadline would let an
    unreachable Keystone spend it all here and leave the admin credential's
-   revocation with no time at all.
+   revocation with no time at all. A registration still standing when the
+   ControlPlane is about to be released, on either path, has the children it
+   owns — matched by both their ownership labels and their name prefix — deleted
+   first, and the `openstack.k-orc.cloud/*` finalizers of the K-ORC ones stripped
+   afterwards, so the owning controller cannot re-add what it just lost. Its
+   PushSecrets carry `DeletionPolicy=Delete`, so their deletion is left with ESO
+   to purge from OpenBao until `orcTeardownDeadline` — reported as
+   `KORCReady=False` with reason `FinalizingORC` while the wait runs — and only
+   past it are their finalizers stripped too. That wait is entered only while the
+   tenant `SecretStore` the purge authenticates through is still standing: for a
+   registration in a dedicated namespace the namespace sweep above already took
+   it (`Managed`: the whole namespace), so the finalizers are stripped at once
+   rather than holding the namespace `Terminating` for a purge ESO can no longer
+   run. A **Warning**
+   `ServiceRegistrationResourcesOrphaned` then names the OpenStack resources and
+   the OpenBao paths left behind (unmanaged imports are released without being
+   listed, the same line step 9 draws); a release that abandoned neither — every
+   child was still live, or held nothing yet — reports a **Normal**
+   `ServiceRegistrationChildrenReleased` instead of a Warning naming empty sets.
+   With its children gone the registration's own controller releases the
+   `KeystoneService` CR.
 2. **Deletes the owned K-ORC CRs** and holds the ControlPlane CR in etcd.
    Holding the CR defers the owner-reference GC cascade, so Keystone stays
    reachable while K-ORC revokes. While ORC CRs are still Terminating the
@@ -2635,7 +2655,10 @@ projected. On deletion it:
    gone and K-ORC cannot revoke — the reconciler force-removes the stuck
    `openstack.k-orc.cloud/*` finalizers (preserving any non-K-ORC finalizers),
    emits a **Warning** `ORCTeardownStalled` event, and releases the ControlPlane
-   finalizer so deletion completes rather than wedging forever.
+   finalizer so deletion completes rather than wedging forever. A projected
+   registration still present here has its children force-released before that
+   finalizer goes, under the same **Warning**
+   `ServiceRegistrationResourcesOrphaned` as on the normal release.
 9. **Names what the escape orphaned.** The escape strips the very finalizer that
    would have revoked the credential or removed the catalog row, so every
    `Managed` CR it releases leaves its OpenStack resource behind with no
@@ -2918,8 +2941,11 @@ surfaces only as `condition_type=UNKNOWN` in the metrics.
 ## Testing
 
 The reconcilers have comprehensive unit tests using the controller-runtime fake
-client with `gomega` (`NewGomegaWithT(t)`), plus a single envtest integration
-test that drives the full chain in a real manager against a live API server.
+client with `gomega` (`NewGomegaWithT(t)`), plus envtest integration tests that
+drive the full chain in a real manager against a live API server. They cover the
+full reconcile to `Ready=True` and two deletion scenarios,
+`TestIntegration_ControlPlaneDeletion_SweepsProjectedRegistrationsFirst` and
+`TestIntegration_DedicatedNamespaces`.
 
 ### Running Tests
 
@@ -2957,6 +2983,16 @@ renamed plain Secret (pre-created under the same name) stays the cleartext sourc
 the operator reads — and waits for `AdminPasswordReady` to reach `True` before the
 Keystone child is projected.
 
+Two deletion scenarios run on the same harness with both controllers on one
+manager. `TestIntegration_ControlPlaneDeletion_SweepsProjectedRegistrationsFirst`
+pins the order for a co-located Placement registration: it goes before the admin
+`ApplicationCredential`, `KORCReady=False/FinalizingServiceRegistrations` persists
+while a K-ORC-shaped finalizer holds the registration's `User`, and the K-ORC
+sweep starts only once the registration, its K-ORC children, PushSecret and
+source Secret are gone. `TestIntegration_DedicatedNamespaces` asserts that order
+for a Barbican registration placed in a namespace of its own, ahead of the
+cross-namespace teardown assertions.
+
 ### Test Files
 
 | File | Coverage |
@@ -2972,7 +3008,7 @@ Keystone child is projected.
 | `instrumentation_test.go` | Wiring smoke test (records through the instrumenter), condition_type drift guard |
 | `setupwithmanager_test.go` | `For`/`Owns`/`Watches` wiring, field-indexer registration |
 | `helpers_test.go` | `intervalToCron` |
-| `integration_test.go` | Full envtest reconciliation to `Ready=True` (build tag `integration`) |
+| `integration_test.go` | Full envtest reconciliation to `Ready=True`; the deletion scenarios `TestIntegration_ControlPlaneDeletion_SweepsProjectedRegistrationsFirst` (registration-first teardown order, co-located) and `TestIntegration_DedicatedNamespaces` (the same in a dedicated namespace, with the cross-namespace sweep) (build tag `integration`) |
 
 ---
 
