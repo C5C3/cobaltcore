@@ -59,18 +59,11 @@
 #
 # The Glance and Placement CHILD CRs themselves never appear in this suite either:
 # Keystone never reaches Ready here (unseeded OpenBao) and both projections gate on
-# KeystoneReady plus their service account, so the child/backend reap path is
-# hard-asserted in the c5c3 unit tests (reconcile_delete_test.go) and envtest
-# instead. This suite proves the namespace lifecycle, backing-service placement,
-# tenant store, and teardown reap for the glance and placement namespaces.
-#
-# The fixture also declares a SERVICE ACCOUNT with targetNamespace set to the
-# Keystone namespace, so admitting the CR proves the webhook accepts an own-or-
-# dedicated targetNamespace on a live cluster. Its credential delivery leg (the
-# source Secret, PushSecret, consumer ExternalSecret, and materialized credentials
-# Secret in that namespace) is behind the same unseeded admin-credential machinery
-# as above, so — like the Keystone-child credential material — it is hard-asserted
-# in TestIntegration_DedicatedNamespaces rather than here.
+# KeystoneReady plus their KeystoneService registration, so the child/backend reap
+# path is hard-asserted in the c5c3 unit tests (reconcile_delete_test.go) and
+# envtest instead. This suite proves the namespace lifecycle, backing-service
+# placement, tenant store, and teardown reap for the glance and placement
+# namespaces.
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

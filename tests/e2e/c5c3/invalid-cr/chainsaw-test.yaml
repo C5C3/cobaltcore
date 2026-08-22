@@ -207,65 +207,9 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'must be a bare origin')): true
-  # An identity managed catalog entry must be rejected (CEL): that entry is owned
-  # by the External-mode imports, so declaring it is the one way the creation
-  # opt-in could clobber the external catalog's own identity row.
-  - try:
-    - apply:
-        file: 24-external-catalog-identity-entry.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'managedEntries[0].type')): true
-            (contains($error, 'owned by the External-mode imports')): true
-  # A managed catalog entry type outside the DNS-1123 label shape must be rejected
-  # (CRD pattern): the type names the child K-ORC CRs.
-  - try:
-    - apply:
-        file: 25-external-catalog-entry-type-invalid.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'managedEntries[0].type')): true
-            (contains($error, 'should match')): true
-  # A managed catalog endpoint URL without an http(s) scheme must be rejected
-  # (CRD pattern).
-  - try:
-    - apply:
-        file: 26-external-catalog-endpoint-url-invalid.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'managedEntries[0].endpoints[0].url')): true
-            (contains($error, 'should match')): true
-  # Two endpoints of one entry sharing an interface must be rejected: endpoints is
-  # a listType=map keyed on interface, so the apiserver — not the webhook —
-  # enforces uniqueness. Assert the duplicate-value error, not merely the word
-  # "interface", which Go's own `map[string]interface {}` rendering would satisfy.
-  - try:
-    - apply:
-        file: 27-external-catalog-duplicate-interface.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'managedEntries[0].endpoints[1]')): true
-            (contains($error, 'Duplicate value')): true
-  # A managed catalog entry name carrying a comma must be rejected (CRD pattern):
-  # the name is cast to K-ORC's OpenStackName, whose own pattern is ^[^,]+$, so
-  # admitting it here would only move the rejection to the child K-ORC CR — where
-  # it wedges the reconcile instead of failing at admission.
-  - try:
-    - apply:
-        file: 28-external-catalog-entry-name-invalid.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'managedEntries[0].name')): true
-            (contains($error, 'should match')): true
-  # identityServiceName carrying a comma must be rejected (CRD pattern) for the
-  # same reason as the entry name above: it is cast to K-ORC's OpenStackName on
-  # the Service import filter, and OpenStack list filters are comma-separated,
-  # which is exactly why that pattern forbids one.
+  # identityServiceName carrying a comma must be rejected (CRD pattern): it is
+  # cast to K-ORC's OpenStackName on the Service import filter, and OpenStack
+  # list filters are comma-separated, which is why that pattern forbids one.
   - try:
     - apply:
         file: 29-external-catalog-identity-service-name-invalid.yaml
@@ -274,66 +218,6 @@ spec:
             ($error != null): true
             (contains($error, 'identityServiceName')): true
             (contains($error, 'should match')): true
-  # serviceAccounts[].name outside the DNS-1123 label shape must be rejected
-  # (CRD pattern): the name keys the list and names the child K-ORC CRs.
-  - try:
-    - apply:
-        file: 30-service-account-name-invalid.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'serviceAccounts[0].name')): true
-            (contains($error, 'should match')): true
-  # serviceAccounts[].project.name is required (CRD required-field check).
-  - try:
-    - apply:
-        file: 31-service-account-missing-project-name.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'project.name')): true
-  # An entry whose effective identity equals the admin identity must be rejected
-  # by the webhook: a managed User would take over the admin user.
-  - try:
-    - apply:
-        file: 32-service-account-admin-identity-collision.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'equals the admin identity')): true
-  # Two entries resolving to the same (userName, domainName) must be rejected by
-  # the webhook: they would project two managed Users onto one Keystone user.
-  - try:
-    - apply:
-        file: 33-service-account-duplicate-identity.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'serviceAccounts[1].userName')): true
-            (contains($error, 'Duplicate')): true
-  # Two create:true entries naming one project in one domain must be rejected by
-  # the webhook: each managed Project would adopt the other's row.
-  - try:
-    - apply:
-        file: 34-service-account-duplicate-managed-project.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'serviceAccounts[1].project.name')): true
-            (contains($error, 'Duplicate')): true
-  # serviceAccounts[].targetNamespace naming a namespace that is neither the
-  # ControlPlane's own nor one assigned to a service must be rejected by the
-  # webhook: the credentials Secret is delivered through that namespace's tenant
-  # store, and none is provisioned for a namespace the ControlPlane neither owns
-  # nor placed a service in. The error points at the remedy.
-  - try:
-    - apply:
-        file: 46-service-account-target-namespace-unassigned.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'serviceAccounts[0].targetNamespace')): true
-            (contains($error, 'assign the namespace to a service via spec.services.<svc>.namespace first')): true
   # services.keystone.dedicatedBackingServices in External mode must be rejected
   # (CEL): an External ControlPlane provisions no backing services at all, so
   # there is nothing to make dedicated.
@@ -778,18 +662,6 @@ spec:
             ($error != null): true
             (contains($error, 'allowedNamespaces')): true
             (contains($error, 'Duplicate value')): true
-  # An inline service account managing the Keystone user of a DECLARED built-in
-  # service is refused: the KeystoneService child the ControlPlane projects for
-  # that service already owns the user, and letting both mechanisms provision it
-  # leaves the registration reporting ServiceAccountCollision forever.
-  - try:
-    - apply:
-        file: 90-inline-account-collides-with-builtin.yaml
-        expect:
-        - check:
-            ($error != null): true
-            (contains($error, 'serviceAccounts[0]')): true
-            (contains($error, 'which the KeystoneService registration this ControlPlane projects for Glance owns')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test

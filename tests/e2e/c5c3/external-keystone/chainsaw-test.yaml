@@ -18,10 +18,11 @@
 #   - No pollution       : the external catalog has exactly as many identity
 #                         services/endpoints as before — compared against a
 #                         pre-recorded inventory, not just "no error".
-#   - Service accounts   : the declared inline account is usable against the
-#                         external Keystone; the password rotation round-trips
-#                         against a suite-created KeystoneService registration
-#                         (rotation-probe).
+#   - Registrations      : ServiceAccountsReady aggregates the projected
+#                         KeystoneService children, and this CR projects none, so
+#                         it reports NoServiceRegistrationsProjected; the password
+#                         rotation round-trips against a suite-created
+#                         KeystoneService registration (rotation-probe).
 #   - Drift surfaced     : the external admin password changes without the Secret
 #                         following; a forced re-mint fails loudly (documented
 #                         actionable reason) and the operator does NOT remediate.
@@ -89,9 +90,7 @@ spec:
           FIX_NS="brownfield-keystone"
           AUTH_URL="http://keystone.brownfield-keystone.svc:5000/v3"
           CLOUDS_SECRET="k-orc-clouds-yaml"
-          SA_SECRET="${CP}-service-account-nova-credentials"
           ADMIN_AC_KV="openstack/keystone/${CP_NS}/${CP}/admin/app-credential"
-          SA_NOVA_KV="openstack/keystone/${CP_NS}/${CP}/service-accounts/nova"
           ROTATION_PROBE_KV="openstack/keystone/${CP_NS}/rotation-probe/service-accounts/credentials"
           IMG=ghcr.io/c5c3/tempest:2025.2
           WORK="$(mktemp -d)"
@@ -360,7 +359,7 @@ spec:
           # behind (metadata survives, `kv get` exits 0 with data:null), and
           # that must read as "not seeded" or the suite can never re-run on the
           # same cluster.
-          for kv in "${ADMIN_AC_KV}" "${SA_NOVA_KV}"; do
+          for kv in "${ADMIN_AC_KV}"; do
             if json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${kv}" 2>/dev/null)" \
                && ! printf '%s' "$json" | jq -e '.data.data == null' >/dev/null 2>&1; then
               echo "ERROR: ${kv} already holds a live value; never-seeded precondition violated"; exit 1
@@ -457,8 +456,8 @@ spec:
             || { echo "ERROR: identity service not listed in the external catalog by the verify Job"; exit 1; }
           echo "OK: the minted credential authenticates a client against the external API."
 
-          # No pollution: services/endpoints/domains byte-identical to baseline;
-          # users/projects gained exactly the declared service account.
+          # No pollution: services, endpoints, domains, users and projects stay
+          # byte-identical to the baseline.
           capture_inventory "${WORK}/A1"
           for r in service endpoint domain; do
             if ! diff "${WORK}/B0.${r}" "${WORK}/A1.${r}" >/dev/null; then
@@ -468,41 +467,20 @@ spec:
           done
           echo "OK: external services/endpoints/domains unchanged after convergence."
           assert_empty "no external users removed/renamed" "$(comm -23 "${WORK}/B0.user" "${WORK}/A1.user")"
-          assert_eq "the only added external user is the service account" "nova" \
-            "$(comm -13 "${WORK}/B0.user" "${WORK}/A1.user" | tr -d ' ')"
+          assert_empty "no external users added" "$(comm -13 "${WORK}/B0.user" "${WORK}/A1.user")"
           assert_empty "no external projects removed/renamed" "$(comm -23 "${WORK}/B0.project" "${WORK}/A1.project")"
-          assert_eq "the only added external project is the service-account project" "service-nova" \
-            "$(comm -13 "${WORK}/B0.project" "${WORK}/A1.project" | tr -d ' ')"
+          assert_empty "no external projects added" "$(comm -13 "${WORK}/B0.project" "${WORK}/A1.project")"
 
-          # ── Block 6: Service accounts (W6) usability + rotation round-trip ───
+          # ── Block 6: ServiceAccountsReady aggregation + rotation round-trip ──
           assert_eq "ServiceAccountsReady status" "True" "$(cp_status "${CP}" "${CP_NS}" ServiceAccountsReady)"
-          assert_eq "ServiceAccountsReady reason" "ServiceAccountsProvisioned" \
+          assert_eq "ServiceAccountsReady reason" "NoServiceRegistrationsProjected" \
             "$(cp_reason "${CP}" "${CP_NS}" ServiceAccountsReady)"
-          sa_json="$(kubectl get controlplane "${CP}" -n "${CP_NS}" -o json \
-            | jq '.status.serviceAccounts[] | select(.name=="nova")')"
-          assert_eq "service account nova ready" "true" "$(printf '%s' "$sa_json" | jq -r '.ready')"
-          if ! printf '%s' "$sa_json" | jq -e '(.userID // "") != "" and (.projectID // "") != ""' >/dev/null; then
-            echo "ERROR: service account nova has no resolved userID/projectID"; exit 1
-          fi
-          for k in password clouds.yaml; do
-            if ! kubectl get secret "${SA_SECRET}" -n "${CP_NS}" \
-                 -o "jsonpath={.data.$(printf '%s' "$k" | sed 's/\./\\./')}" | grep -q .; then
-              echo "ERROR: service account credentials Secret ${SA_SECRET} is missing key ${k}"; exit 1
-            fi
-          done
-          if ! bao_exec bao kv get -mount=kv-v2 "${SA_NOVA_KV}" >/dev/null 2>&1; then
-            echo "ERROR: service account credentials not present at ${SA_NOVA_KV}"; exit 1
-          fi
-          echo "OK: service account nova is provisioned (user/project/secret/OpenBao path)."
-          OLD_SA_PW="$(kubectl get secret "${SA_SECRET}" -n "${CP_NS}" -o jsonpath='{.data.password}' | base64 -d)"
-          osc_user nova heimdall "${OLD_SA_PW}" token issue >/dev/null
-          echo "OK: service account nova issues an unscoped token against the external Keystone."
 
           # Rotation round-trip. A CredentialRotation with target
           # serviceAccountPassword names a KeystoneService, so the round-trip runs
           # against an account-only registration this suite creates for it in the
-          # ControlPlane's own namespace. The inline nova account above stays
-          # un-rotated here; rewriting its fixture onto a registration is #873.
+          # ControlPlane's own namespace. The stored ControlPlane projects no
+          # registrations of its own, so the probe is the only account here.
           kubectl apply -f - <<EOF
           apiVersion: c5c3.io/v1alpha1
           kind: KeystoneService
@@ -720,16 +698,15 @@ spec:
           assert_eq "ControlPlane deletion completed" "1" "${gone}"
           assert_eq "ORCTeardownComplete event was emitted" "1" "${teardown_ok}"
 
-          # All K-ORC CRs owned by the CP are gone (imports GC'd; managed AC/SA
+          # All K-ORC CRs owned by the CP are gone (imports GC'd; the managed AC
           # revoked and deleted in Keystone by the finalizers).
           for kind in applicationcredentials services endpoints users domains projects; do
             n="$(kubectl get "${kind}.openstack.k-orc.cloud" -n "${CP_NS}" --no-headers 2>/dev/null | wc -l | tr -d ' ')"
             assert_eq "no ${kind}.openstack.k-orc.cloud remain in ${CP_NS}" "0" "${n}"
           done
           wait_gone secret "${CLOUDS_SECRET}" "${CP_NS}" 120
-          wait_gone secret "${SA_SECRET}" "${CP_NS}" 120
           # OpenBao paths purged (tolerate ESO soft-delete: data:null counts as purged).
-          for kv in "${ADMIN_AC_KV}" "${SA_NOVA_KV}" "${ROTATION_PROBE_KV}"; do
+          for kv in "${ADMIN_AC_KV}" "${ROTATION_PROBE_KV}"; do
             if json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${kv}" 2>/dev/null)"; then
               if ! printf '%s' "$json" | jq -e '.data.data == null' >/dev/null 2>&1; then
                 echo "ERROR: ${kv} still holds a live value after ControlPlane deletion"; exit 1
@@ -753,7 +730,7 @@ spec:
           assert_empty "brownfield-admin has no application credentials left" \
             "$(osc_user_capture brownfield-admin heimdall "${NEW_ADMIN_PW}" application credential list -f value || true)"
 
-          echo "OK: External-mode ControlPlane suite passed — converge, imports, credential, no-pollution, service accounts, drift, rotation, endpoint_type detection, negative paths, and zero-blast-radius deletion all verified."
+          echo "OK: External-mode ControlPlane suite passed — converge, imports, credential, no-pollution, registration aggregation, drift, rotation, endpoint_type detection, negative paths, and zero-blast-radius deletion all verified."
     catch:
     - script:
         shell: bash

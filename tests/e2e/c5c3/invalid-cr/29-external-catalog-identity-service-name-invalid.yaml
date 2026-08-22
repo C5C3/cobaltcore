@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # external.catalog.identityServiceName carrying a comma is rejected (CRD
-# pattern), exactly like managedEntries[].name: it is cast to K-ORC's
-# OpenStackName on the Service import filter, whose own pattern is ^[^,]+$.
+# pattern): it is cast to K-ORC's OpenStackName on the Service import
+# filter, whose own pattern is ^[^,]+$.
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:

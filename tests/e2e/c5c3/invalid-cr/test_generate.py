@@ -16,6 +16,9 @@ Coverage:
 * ``FIXTURES`` lists exactly the generated fixtures the chainsaw suite expects.
 * Every ``Fixture.filename`` is referenced by an ``apply.file:`` entry in
   ``chainsaw-test.yaml`` — guards against renames or accidental deletions.
+* Every ``apply.file:`` entry in ``chainsaw-test.yaml`` names a declared fixture
+  — guards the other direction: a block left behind for a fixture ``FIXTURES``
+  no longer declares reaches the cluster-bound job as an apply of a missing file.
 * Filenames are unique within ``FIXTURES``.
 * No fixture carries a metadata.namespace (Chainsaw injects the ephemeral one).
 * ``_generate.py --check`` passes in-process, so on-disk drift (either
@@ -25,6 +28,7 @@ Coverage:
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 import types
 import unittest
@@ -37,7 +41,7 @@ _CHAINSAW_TEST = _HERE / "chainsaw-test.yaml"
 # Number of fixtures emitted by _generate.py. Bumping this value requires adding
 # the matching Fixture entry AND the matching `file: <name>` line in
 # chainsaw-test.yaml.
-_EXPECTED_FIXTURE_COUNT = 91
+_EXPECTED_FIXTURE_COUNT = 79
 
 
 def _load_generator() -> types.ModuleType:
@@ -70,6 +74,20 @@ class TestFixtures(unittest.TestCase):
                 f"file: {fixture.filename}",
                 self.chainsaw,
                 f"{fixture.filename} is not applied by chainsaw-test.yaml",
+            )
+
+    def test_no_orphan_chainsaw_reference(self) -> None:
+        # The reverse of the check above. Removing a fixture means deleting both
+        # its Fixture entry and its try:/apply: block; a leftover block passes
+        # `_generate.py --check` (nothing on disk drifted) and passes chainsaw
+        # lint (which validates schema, not referenced paths), so without this it
+        # only fails once the cluster-bound e2e-operator job applies it.
+        declared = {fixture.filename for fixture in self.generator.FIXTURES}
+        for name in re.findall(r"file:\s*(\S+)", self.chainsaw):
+            self.assertIn(
+                name,
+                declared,
+                f"chainsaw-test.yaml applies {name}, which FIXTURES no longer declares",
             )
 
     def test_no_fixture_pins_a_namespace(self) -> None:

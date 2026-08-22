@@ -56,7 +56,6 @@ LICENSE_HEADER = """\
 #   {glance}              the spec.services.glance entry (indent 4) or ""
 #   {placement}           the spec.services.placement entry (indent 4) or ""
 #   {barbican}            the spec.services.barbican entry (indent 4) or ""
-#   {service_accounts}    the spec.korc.serviceAccounts block (indent 4) or ""
 #   {service_registrations}
 #                         the spec.korc.serviceRegistrations block (indent 4) or ""
 #
@@ -79,7 +78,7 @@ spec:
       passwordSecretRef:
         name: external-admin
         key: password
-{service_accounts}{service_registrations}"""
+{service_registrations}"""
 
 # A valid External keystone service body (indent 6): the issue's sketch shape.
 VALID_EXTERNAL_KEYSTONE = (
@@ -166,8 +165,6 @@ class Fixture:
     barbican: str = ""
     # The spec.globalExtraConfig block (indent 2, trailing newline) or "".
     global_extra_config: str = ""
-    # The spec.korc.serviceAccounts block (indent 4, trailing newline) or "".
-    service_accounts: str = ""
     # The spec.korc.serviceRegistrations block (indent 4, trailing newline) or "".
     service_registrations: str = ""
 
@@ -181,7 +178,6 @@ class Fixture:
             glance=self.glance,
             placement=self.placement,
             barbican=self.barbican,
-            service_accounts=self.service_accounts,
             service_registrations=self.service_registrations,
         )
         comment_lines = "".join(f"# {line}\n" for line in self.comment.splitlines())
@@ -418,203 +414,17 @@ FIXTURES: tuple[Fixture, ...] = (
     # Catalog stewardship (still the create-rejection matrix). The numbering picks
     # up at 19 because 15-18 were already taken by the transition waves below.
     Fixture(
-        filename="24-external-catalog-identity-entry.yaml",
-        comment=(
-            "external.catalog.managedEntries declaring the identity type is rejected:\n"
-            "the identity catalog entry is owned by the External-mode imports (CEL)."
-        ),
-        name="cp-external-catalog-identity",
-        keystone=(
-            VALID_EXTERNAL_KEYSTONE
-            + "        catalog:\n"
-            + "          managedEntries:\n"
-            + "          - type: identity\n"
-        ),
-    ),
-    Fixture(
-        filename="25-external-catalog-entry-type-invalid.yaml",
-        comment=(
-            "external.catalog.managedEntries[].type outside the DNS-1123 label shape is\n"
-            "rejected (CRD pattern): the type names the child K-ORC CRs."
-        ),
-        name="cp-external-catalog-bad-type",
-        keystone=(
-            VALID_EXTERNAL_KEYSTONE
-            + "        catalog:\n"
-            + "          managedEntries:\n"
-            + "          - type: Image_Service\n"
-        ),
-    ),
-    Fixture(
-        filename="26-external-catalog-endpoint-url-invalid.yaml",
-        comment=(
-            "external.catalog.managedEntries[].endpoints[].url without an http(s) scheme\n"
-            "is rejected (CRD pattern)."
-        ),
-        name="cp-external-catalog-bad-url",
-        keystone=(
-            VALID_EXTERNAL_KEYSTONE
-            + "        catalog:\n"
-            + "          managedEntries:\n"
-            + "          - type: image\n"
-            + "            endpoints:\n"
-            + "            - interface: public\n"
-            + "              url: glance.example.com\n"
-        ),
-    ),
-    Fixture(
-        filename="27-external-catalog-duplicate-interface.yaml",
-        comment=(
-            "Two endpoints of one managed entry sharing an interface are rejected by the\n"
-            "apiserver: endpoints is a listType=map keyed on interface."
-        ),
-        name="cp-external-catalog-dup-iface",
-        keystone=(
-            VALID_EXTERNAL_KEYSTONE
-            + "        catalog:\n"
-            + "          managedEntries:\n"
-            + "          - type: image\n"
-            + "            endpoints:\n"
-            + "            - interface: public\n"
-            + "              url: https://a.example.com\n"
-            + "            - interface: public\n"
-            + "              url: https://b.example.com\n"
-        ),
-    ),
-    Fixture(
-        filename="28-external-catalog-entry-name-invalid.yaml",
-        comment=(
-            "external.catalog.managedEntries[].name carrying a comma is rejected (CRD\n"
-            "pattern): the name is cast to K-ORC's OpenStackName, whose own pattern is\n"
-            "^[^,]+$, so admitting it here would wedge the reconcile on a K-ORC CRD\n"
-            "rejection no ControlPlane field error explains."
-        ),
-        name="cp-external-catalog-bad-name",
-        keystone=(
-            VALID_EXTERNAL_KEYSTONE
-            + "        catalog:\n"
-            + "          managedEntries:\n"
-            + "          - type: image\n"
-            + "            name: glance,v2\n"
-        ),
-    ),
-    Fixture(
         filename="29-external-catalog-identity-service-name-invalid.yaml",
         comment=(
             "external.catalog.identityServiceName carrying a comma is rejected (CRD\n"
-            "pattern), exactly like managedEntries[].name: it is cast to K-ORC's\n"
-            "OpenStackName on the Service import filter, whose own pattern is ^[^,]+$."
+            "pattern): it is cast to K-ORC's OpenStackName on the Service import\n"
+            "filter, whose own pattern is ^[^,]+$."
         ),
         name="cp-external-catalog-bad-identity-name",
         keystone=(
             VALID_EXTERNAL_KEYSTONE
             + "        catalog:\n"
             + "          identityServiceName: keystone,v3\n"
-        ),
-    ),
-    # Service accounts (still the create-rejection matrix). Mode-independent, so
-    # they hang off the default External keystone base (no infrastructure needed).
-    Fixture(
-        filename="30-service-account-name-invalid.yaml",
-        comment=(
-            "spec.korc.serviceAccounts[].name outside the DNS-1123 label shape is\n"
-            "rejected (CRD pattern): the name keys the list and names the child K-ORC\n"
-            "CRs and Secrets."
-        ),
-        name="cp-sa-bad-name",
-        service_accounts=(
-            "    serviceAccounts:\n"
-            "    - name: Nova_Service\n"
-            "      project:\n"
-            "        name: service\n"
-        ),
-    ),
-    Fixture(
-        filename="31-service-account-missing-project-name.yaml",
-        comment=(
-            "spec.korc.serviceAccounts[].project.name is required (CRD required-field\n"
-            "check and webhook): every account is associated with a project."
-        ),
-        name="cp-sa-no-project-name",
-        service_accounts=(
-            "    serviceAccounts:\n"
-            "    - name: nova\n"
-            "      project: {}\n"
-        ),
-    ),
-    Fixture(
-        filename="32-service-account-admin-identity-collision.yaml",
-        comment=(
-            "A service account whose effective (userName, domainName) equals the admin\n"
-            "identity is rejected by the webhook: a managed User would take over the\n"
-            "admin user and rotate its password."
-        ),
-        name="cp-sa-admin-collision",
-        service_accounts=(
-            "    serviceAccounts:\n"
-            "    - name: nova\n"
-            "      userName: admin\n"
-            "      domainName: Default\n"
-            "      project:\n"
-            "        name: service\n"
-        ),
-    ),
-    Fixture(
-        filename="33-service-account-duplicate-identity.yaml",
-        comment=(
-            "Two service accounts resolving to the same (userName, domainName) are\n"
-            "rejected by the webhook: they would project two managed Users onto one\n"
-            "Keystone user and race its password."
-        ),
-        name="cp-sa-dup-identity",
-        service_accounts=(
-            "    serviceAccounts:\n"
-            "    - name: nova\n"
-            "      project:\n"
-            "        name: service\n"
-            "    - name: nova-secondary\n"
-            "      userName: nova\n"
-            "      project:\n"
-            "        name: service\n"
-        ),
-    ),
-    Fixture(
-        filename="34-service-account-duplicate-managed-project.yaml",
-        comment=(
-            "Two create:true service accounts naming the same project in one domain are\n"
-            "rejected by the webhook: each managed Project would adopt the other's row."
-        ),
-        name="cp-sa-dup-managed-project",
-        service_accounts=(
-            "    serviceAccounts:\n"
-            "    - name: nova\n"
-            "      project:\n"
-            "        name: service\n"
-            "        create: true\n"
-            "    - name: glance\n"
-            "      project:\n"
-            "        name: service\n"
-            "        create: true\n"
-        ),
-    ),
-    Fixture(
-        filename="46-service-account-target-namespace-unassigned.yaml",
-        comment=(
-            "spec.korc.serviceAccounts[].targetNamespace naming a namespace that is\n"
-            "neither the ControlPlane's own nor one assigned to a service via\n"
-            "spec.services.<svc>.namespace is rejected by the webhook: the consumer\n"
-            "credentials Secret is delivered through that namespace's openbao-tenant-store,\n"
-            "and none is provisioned for a namespace the ControlPlane neither owns nor\n"
-            "placed a service in. The knob is inert this commit — the rule guards it before\n"
-            "the delivery reconciler wiring lands."
-        ),
-        name="cp-sa-target-namespace-unassigned",
-        service_accounts=(
-            "    serviceAccounts:\n"
-            "    - name: nova\n"
-            "      targetNamespace: shared-services\n"
-            "      project:\n"
-            "        name: service\n"
         ),
     ),
     # Per-service dedicated backing services (still the create-rejection matrix).
@@ -1681,26 +1491,6 @@ FIXTURES: tuple[Fixture, ...] = (
             "      allowedNamespaces:\n"
             "      - tenant-a\n"
             "      - tenant-a\n"
-        ),
-    ),
-    Fixture(
-        filename="90-inline-account-collides-with-builtin.yaml",
-        comment=(
-            "An inline spec.korc.serviceAccounts entry managing the Keystone user of a\n"
-            "DECLARED built-in service is rejected by the webhook: the KeystoneService\n"
-            "child the ControlPlane projects for that service already owns the user, so\n"
-            "both mechanisms would provision it and the registration would report a\n"
-            "permanent ServiceAccountCollision."
-        ),
-        name="cp-inline-account-collision",
-        keystone="      mode: Managed\n",
-        infrastructure=MANAGED_INFRA,
-        glance=VALID_GLANCE,
-        service_accounts=(
-            "    serviceAccounts:\n"
-            "    - name: glance\n"
-            "      project:\n"
-            "        name: service\n"
         ),
     ),
     # --- transition wave F: target-cluster assignment freeze

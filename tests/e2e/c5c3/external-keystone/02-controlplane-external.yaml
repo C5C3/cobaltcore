@@ -17,11 +17,6 @@
 #     import from the duplicate keystone-legacy the fixture holds — proving the
 #     P7 filter converges where the ambiguous ControlPlane (05) fails loudly.
 #   - endpointType is omitted, so it defaults to public (the reachable interface).
-#   - One declared service account (W6): a managed user "nova" and a managed
-#     project "service-nova", both in the admin domain heimdall. rotation defaults
-#     to Manual; roles is left unset here (role projection — one unmanaged Role
-#     import plus one managed RoleAssignment per role — is mode-independent and is
-#     exercised by the managed full-controlplane-keystone suite).
 #
 # The admin-password Secret this CR references lives in its own file
 # (02-admin-password-secret.yaml), NOT here: the adoption guide imports the region
@@ -59,9 +54,4 @@ spec:
         restricted: true
         rotation:
           mode: PasswordDriven
-    serviceAccounts:
-      - name: nova
-        project:
-          name: service-nova
-          create: true
 # endregion controlplane-external
