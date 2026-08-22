@@ -57,7 +57,7 @@ HELMRELEASE_TIMEOUT="${HELMRELEASE_TIMEOUT:-600}"
 # managers. hack/deploy-infra.sh carries the same pin for the target cluster;
 # the two are bumped together by one customManagers entry and
 # tests/unit/hack/deploy_mgmt_cluster_test.sh fails when they drift apart.
-FLUX_OPERATOR_VERSION="v0.58.0"
+FLUX_OPERATOR_VERSION="v0.58.1"
 
 # The Flux source/release pairs applied to this cluster, in dependency order.
 # Each entry is `<source file>|<release file>|<namespace>/<release name>`,
