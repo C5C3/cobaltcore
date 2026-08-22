@@ -889,7 +889,10 @@ func (r *KeystoneServiceReconciler) sweepChildren(
 // hostage to a plane that no longer exists. The Kubernetes children are still
 // deleted — they would otherwise leak — but their outcome no longer gates the
 // finalizer. This mirrors the identity-backend teardown's posture for a Keystone
-// that is already gone.
+// that is already gone. For a registration the ControlPlane projected, that path
+// only ever meets finalizer-free children: the ControlPlane teardown strips its
+// children's K-ORC and ESO finalizers before it releases itself
+// (releaseStalledRegistrationChildren).
 func (r *KeystoneServiceReconciler) reconcileDelete(ctx context.Context, ks *c5c3v1alpha1.KeystoneService) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(ks, keystoneServiceFinalizerName) {
 		return ctrl.Result{}, nil
