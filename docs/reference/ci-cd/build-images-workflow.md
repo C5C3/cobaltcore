@@ -32,6 +32,8 @@ security pipeline. See [Reusable Components](#reusable-components) for details.
 | Export Digest action | `.github/actions/export-digest/action.yaml` |
 | Merge Manifest script | `hack/ci-merge-manifest.sh` |
 | Run Unit Tests script | `hack/ci-run-unit-tests.sh` |
+| Resolve OVN version script | `hack/ci-resolve-ovn-version.sh` |
+| Build OVN image script | `hack/ci-build-ovn-image.sh` |
 
 Both workflow files use the `.yaml` extension and quote the trigger key as `"on"` to
 prevent YAML boolean interpretation. They start with the standard SPDX license
@@ -256,11 +258,14 @@ debugging failed tests.
 
 ## Jobs
 
-The workflow defines thirteen jobs with a dependency graph:
+The workflow defines seventeen jobs with a dependency graph:
 
 ```text
 lint-dockerfiles ─┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
 prepare ──────────┤      └──> merge-keystone-federation-proxy-image (push only)
+                  │
+                  ├──> build-ovn (matrix: amd64 + arm64)
+                  │      └──> merge-ovn-image (push only) ──> verify-ovn-image (push only)
                   │
                   └──> build-base-images (matrix: amd64 + arm64)
                          └──> merge-base-images ──> verify-base-images ──┬──> generate-matrix
@@ -311,6 +316,48 @@ the amd64 image locally for the inline Grype scan and the
 script), and a PR-skipped merge job assembling the multi-arch manifest with
 the `:latest` + `:<sha>` tag scheme the base images use, followed by the
 supply-chain pipeline (SBOM, attestation, cosign).
+
+### build-ovn / merge-ovn-image / verify-ovn-image
+
+OVN and Open vSwitch daemons and client tools, compiled from upstream git
+(`images/ovn/Dockerfile`, two stages on the same digest-pinned `ubuntu:noble`).
+The single `ARG OVN_VERSION` line in that Dockerfile is the whole version
+input. `hack/ci-resolve-ovn-version.sh` parses it, and every job that needs the
+number calls the script instead of reading the file. Open vSwitch comes from
+the `ovs` submodule gitlink at the pinned OVN tag, so one bump moves both
+projects (decision D1 of issue #898). Because a tag is a mutable ref,
+`ARG OVN_COMMIT` records the commit that tag resolves to and `ARG OVS_COMMIT`
+the SHA the gitlink names there; the build fetches `ARG OVN_COMMIT` instead of
+the tag and aborts when the gitlink there disagrees with `ARG OVS_COMMIT`.
+OVN's `Documentation/intro/install/general.rst` notes under Build Requirements
+that the submodule is "not recommended to be used as a source for OVS build";
+ovn-kubernetes builds its OVS from that gitlink in
+`dist/images/Dockerfile.fedora`, and this image does the same.
+
+`build-ovn` needs only `lint-dockerfiles` and `prepare`. Its `linux/amd64` +
+`linux/arm64` include matrix is written out in the workflow, because the image
+has no `source-refs.yaml` key for `generate-matrix` to discover and no release
+axis. Both projects are compiled from source on a four-vCPU runner, so the job
+carries `timeout-minutes: 60`, the longest allowance of any build job here. On
+pull requests it builds amd64 only, loads the result locally as `:pr-verify`,
+and runs the inline Grype scan and `tests/container-images/verify_ovn.sh`
+against that tag.
+On push events it pushes per-platform digests for the merge job.
+
+`merge-ovn-image` (push only) assembles the manifest through
+`merge-manifest-and-attest`: SBOM `sbom-ovn.cyclonedx.json`, Grype scan,
+attestation, cosign signature. It publishes `<ovn-version>-<sha>` on every push
+to `main` or `stable/**`, and adds `<ovn-version>` and `latest` on `main` (see
+[Release-independent images](#release-independent-images)). Its `ovn-image`
+output is the merged manifest as `ghcr.io/<owner>/ovn@<digest>`.
+
+`verify-ovn-image` (push only) pulls that digest and runs `verify_ovn.sh`
+against the multi-arch manifest, on a `[ubuntu-latest, ubuntu-24.04-arm]`
+runner matrix. `docker pull` resolves the manifest to the runner's own
+architecture, so the two legs execute the amd64 and the arm64 variant
+respectively — pull requests compile amd64 only, and this job is where the
+arm64 binaries first run. It holds `contents: read` and `packages: read` and
+nothing else, so the post-merge check cannot write to the registry.
 
 ### build-base-images
 
@@ -695,6 +742,21 @@ The composite tag uniquely identifies the exact build: upstream version, patch l
 branch, and commit. The version and SHA tags provide convenient shortcuts for deployment
 systems.
 
+### Release-independent images
+
+`keystone-federation-proxy` and `ovn` have no OpenStack version to tag with:
+
+| Image | Tags | Branches |
+| --- | --- | --- |
+| `keystone-federation-proxy` | `latest`, `<sha>` | all |
+| `ovn` | `<ovn-version>-<sha>` | all |
+| `ovn` | `<ovn-version>`, `latest` | `main` only |
+
+`<sha>` is the full 40-character `github.sha` here, as it is for the base
+images. Restricting `ovn:<ovn-version>` and `ovn:latest` to `main` has the same
+reason as the service version tag above: when two branches build the same
+upstream version, a shared tag would be silently overwritten.
+
 ## Retention
 
 The nightly `cleanup-images.yaml` workflow decides retention from each package
@@ -746,6 +808,7 @@ The workflow behaves differently depending on the trigger event:
 | OIDC token request | None | Requested in merge jobs for Sigstore signing |
 | Service image verification | Inline step in `build-service-images` | Separate `verify-service-images` job |
 | Verification image source | Locally loaded image (same amd64 runner) | Pulled from GHCR |
+| ovn image verification | Inline step in `build-ovn` (`verify_ovn.sh` on `:pr-verify`) | Separate `verify-ovn-image` job (pulled by digest from GHCR) |
 
 **Why base images are always pushed:** Service Dockerfiles reference base images via
 `docker-image://` URIs in build contexts. This Docker BuildKit feature requires the
@@ -1303,6 +1366,34 @@ a new service also requires creating a corresponding `verify_<service>.sh` test 
 `tests/container-images/` and updating the inline PR verification step in
 `build-service-images` accordingly.
 
+### Release-independent images (non-OpenStack upstream)
+
+Not every image tracks an OpenStack release. `keystone-federation-proxy`
+installs Apache and its two auth modules from the `ubuntu:noble` archive, and
+`ovn` compiles a family of C daemons from upstream git. Images on this path
+have no entry in `source-refs.yaml` or `extra-packages.yaml`, and
+`generate-matrix` never sees them. What they need in place of that wiring:
+
+- The upstream version pinned in the Dockerfile as an `ARG`, for example
+  `ARG OVN_VERSION=v26.03.2`.
+- `hack/ci-resolve-<image>-version.sh` as the only parser of that line. The
+  workflow, the local builder and the verify script all call it.
+- `hack/ci-build-<image>-image.sh`, so a contributor reproduces the CI build
+  with one command.
+- A `build-<image>` job that needs `lint-dockerfiles` and `prepare` with its
+  platform include matrix written out, a PR-skipped `merge-<image>-image` job,
+  and a `verify-<image>-image` job when the merged manifest is checked after
+  the push. The Dockerfile also joins the `lint-dockerfiles` matrix.
+- `tests/container-images/verify_<image>.sh` as the image contract, wired into
+  the inline PR verification and into the post-merge job.
+- Static assertions: the job structure and tag scheme in
+  `verify_build_images_workflow.sh`, a note in `verify_release_config.sh`
+  recording why the image is absent from its `SERVICES` list, and a check in
+  `verify_deviation_comments.sh` when the image creates the `openstack` user
+  itself.
+- A Renovate `customManager` for the `ARG` line, `packageRules` for the update
+  types the image accepts, and a regression test under `tests/unit/renovate/`.
+
 ## Adding a New Release
 
 To add a new release series (e.g., `2026.1`):
@@ -1438,6 +1529,7 @@ The following table summarizes which test scripts run where:
 | `verify_python_base.sh` | — | verify-base-images | Yes |
 | `verify_venv_builder.sh` | — | verify-base-images | Yes |
 | `verify_<service>.sh` | — | build-service-images (PR) / verify-service-images (push) | Yes |
+| `verify_ovn.sh` | — | build-ovn (PR) / verify-ovn-image (push) | Yes |
 
 ## SPDX Header
 
