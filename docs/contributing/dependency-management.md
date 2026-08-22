@@ -53,6 +53,7 @@ The custom managers cover:
 - **K-ORC Flux source** — the `ref.tag` of the K-ORC `GitRepository` in `deploy/flux-system/sources/k-orc.yaml` (github-releases). This closes a drift gap: without it the Flux-applied K-ORC CRDs could fall behind the Renovate-tracked `k-orc/openstack-resource-controller` Go module the operator compiles against.
 - **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`.
 - **`renovate-config-validator` pin** — the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
+- **OVN image pin** — the `ARG OVN_VERSION` line in `images/ovn/Dockerfile` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix).
 
 Major updates are **disabled** for all custom-regex managers — these touch deploy-time
 CRDs, the OpenStack release matrix, and build tooling where a major bump always needs
@@ -61,7 +62,12 @@ has to follow the major the hosted bot runs, or the validator silently stops che
 `renovate.json` against the schema that bot enforces. That pin is never automerged
 either — the validator run is the only check that exercises the new release, so a bump
 must not be able to approve itself into a `test-shell` job that runs on `main` and on
-`v*` tag pushes.
+`v*` tag pushes. The OVN pin disables minor updates as well, because the image is held
+on the 26.03 LTS line: 26.09 is a minor bump and 27.03 a major one, and both leave that
+line. Patch bumps there wait the 3-day cooldown but are **not** automerged, for the
+reason below. `build-images.yaml` runs on every `pull_request` touching `images/**`,
+builds the amd64 image and runs `tests/container-images/verify_ovn.sh` against it, so
+the reviewer merges on a green build.
 
 Separately, the native `nix` manager keeps the development flake fresh: it maintains
 `flake.lock` (the pinned `nixpkgs` revision) via lock-file maintenance, opening a grouped
@@ -70,6 +76,27 @@ re-lock is not a version bump and the 3-day cooldown cannot gate it — a review
 the base-runtime bump instead. The Nix devshell re-reads the canonical tool pins
 (`ci.yaml`, the `Makefile`, `hack/install-test-deps.sh`) on entry, so a tool-version
 bump needs **no** flake edit — see [Nix Development Environment](./nix-dev-environment.md).
+
+### Pins with no datasource: the OVN image content pins
+
+`images/ovn/Dockerfile` carries two pins Renovate deliberately does **not** track:
+
+| Pin | What it names |
+| --- | --- |
+| `ARG OVN_COMMIT` | The commit `ARG OVN_VERSION` resolves to today, and the ref the build fetches |
+| `ARG OVS_COMMIT` | The commit the `ovs` submodule gitlink names at that commit |
+
+Both are content pins, standing to `OVN_VERSION` as the `sha256` digest stands to
+`ubuntu:noble`, and no Renovate datasource can express "the commit at tag X" or "the
+`ovs` gitlink at tag X". So a tag bump moves `OVN_VERSION` and leaves both behind. The
+build fetches `OVN_COMMIT` rather than the tag, so it still compiles the old release and
+CI fails one step later, in `tests/container-images/verify_ovn.sh`: the version the
+binaries report no longer matches the bumped pin. **Owner: the reviewer of the Renovate
+PR** — they clone the new tag, read both SHAs with
+`git -C <ovn-clone-at-tag> rev-parse HEAD` and `rev-parse HEAD:ovs`, and commit them
+onto the branch. That step is why the OVN patch rule does not automerge: an automerged
+PR would leave nobody to carry the pins across, and the group would stall red until
+someone noticed OVN security patches had stopped landing.
 
 ---
 

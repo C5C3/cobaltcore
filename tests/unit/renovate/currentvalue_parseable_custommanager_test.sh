@@ -83,6 +83,16 @@ value_matches_shape() {
     if [[ "$value" =~ [[:space:]] ]]; then return 1; fi
     return 0
     ;;
+  regex:*)
+    # Regex versioning parses the values its declared pattern matches,
+    # so the shape is the pattern itself. bash ERE cannot parse the
+    # (?<major>...) named groups Renovate requires, hence perl.
+    if RE="${template#regex:}" VALUE="$value" \
+      perl -e 'exit(($ENV{VALUE} =~ /$ENV{RE}/) ? 0 : 1)'; then
+      return 0
+    fi
+    return 1
+    ;;
   *)
     # An unknown versioning is a failure at the call site, not a pass:
     # the table only grows when someone deliberately states which value
@@ -112,6 +122,8 @@ test_shape_table_self_check() {
     "pep440|>=1.0|1"
     "docker|3.20|0"
     "docker||1"
+    "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$|v26.03.2|0"
+    "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$|26.03.2|1"
     "loose|1.0.0|2"
     "|1.0.0|2"
   )
