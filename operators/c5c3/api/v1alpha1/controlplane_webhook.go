@@ -2435,9 +2435,7 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 		// Nothing bounds the ControlPlane's own name below 253, so the composed child
 		// name can overflow a CR admission already accepted, and ensureExternalCatalogImports
 		// then wedges in CatalogReady=False/ImportError backoff on an apiserver Invalid
-		// the operator never asked for. Same rule as the managedEntries child names
-		// (validateExternalCatalog), one level up — and it binds first, because the
-		// import name is the longer of the two.
+		// the operator never asked for.
 		if n := len(cp.Name) + identityImportChildNameOverhead; n > maxObjectNameBytes {
 			allErrs = append(allErrs, field.Invalid(field.NewPath("metadata", "name"), cp.Name, fmt.Sprintf(
 				"the identity Endpoint import CR name would be %d bytes; shorten the ControlPlane name "+

@@ -1371,9 +1371,10 @@ reusing the ControlPlane's own specs so Glance points at the same backing servic
   [Reaching a placed service](#reaching-a-placed-service)). `keystonePublicEndpoint` is a
   pass-through of the Keystone service's own public endpoint (empty when Keystone is
   not externally exposed, in which case the child falls back to the internal URL).
-- **Service user:** derived from the auto-injected `glance` service account — its
-  `username`, project, and user/project domains — with the password read from the
-  account's materialized consumer Secret `{controlplane.Name}-service-account-glance-credentials`.
+- **Service user:** derived from the `glance` account the projected
+  `KeystoneService` registration provisions — its `username`, project, and
+  user/project domains — with the password read from the consumer Secret that
+  registration delivers, `{controlplane.Name}-glance-credentials`.
 - **Backends:** each `services.glance.backends` entry projects one `GlanceBackend`
   child (the CP-side S3 `endpoint` maps to the child's `spec.s3.host`; an unset
   `bucketURLFormat` serializes away so the child's own `path` default applies), and
@@ -1480,10 +1481,10 @@ points at the same backing services:
   `keystonePublicEndpoint` is a pass-through of the Keystone
   service's own public endpoint (empty when Keystone is not externally exposed,
   in which case the child falls back to the internal URL).
-- **Service user:** derived from the auto-injected `placement` service account,
-  its `username`, project, and user/project domains, with the password read from
-  the account's materialized consumer Secret
-  `{controlplane.Name}-service-account-placement-credentials`.
+- **Service user:** derived from the `placement` account the projected
+  `KeystoneService` registration provisions, its `username`, project, and
+  user/project domains, with the password read from the consumer Secret that
+  registration delivers, `{controlplane.Name}-placement-credentials`.
 - **ExtraConfig:** `spec.globalExtraConfig` merged with
   `services.placement.extraConfig` (the per-service value winning key by key),
   assigned unconditionally so clearing the ControlPlane block reverts the child
@@ -1598,10 +1599,10 @@ Horizon, Glance, and Placement siblings:
   service's own public endpoint, the URL Barbican advertises on a 401 (empty when
   Keystone is not externally exposed, in which case the child falls back to the
   internal endpoint).
-- **Service user:** derived from the auto-injected `barbican` service account,
-  its `username`, project, and user/project domains, with the password read from
-  the account's materialized consumer Secret
-  `{controlplane.Name}-service-account-barbican-credentials`.
+- **Service user:** derived from the `barbican` account the projected
+  `KeystoneService` registration provisions, its `username`, project, and
+  user/project domains, with the password read from the consumer Secret that
+  registration delivers, `{controlplane.Name}-barbican-credentials`.
 - **ExtraConfig:** `spec.globalExtraConfig` merged with
   `services.barbican.extraConfig` (the per-service value winning key by key),
   assigned unconditionally so clearing the ControlPlane block reverts the child
@@ -2072,7 +2073,7 @@ OpenBao:
 | File | `reconcile_catalog.go` (Managed), `reconcile_catalog_external.go` (External) |
 | Condition | `CatalogReady` |
 | Gate | `AdminCredentialReady == True`, **and** every catalog child reports `Available` |
-| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`), plus — when `spec.services.glance` is set — an image `Service` (`{controlplane.Name}-image-service`) with an internal **and** a public `Endpoint` (`{controlplane.Name}-image-endpoint-internal` / `{controlplane.Name}-image-endpoint-public`), the same pair of interfaces for a placement `Service` (`{controlplane.Name}-placement-service`, Endpoints `{controlplane.Name}-placement-endpoint-internal` / `{controlplane.Name}-placement-endpoint-public`) when `spec.services.placement` is set, and again for a key-manager `Service` (`{controlplane.Name}-key-manager-service`, Endpoints `{controlplane.Name}-key-manager-endpoint-internal` / `{controlplane.Name}-key-manager-endpoint-public`) when `spec.services.barbican` is set. External mode: the same identity `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, plus one managed `Service`/`Endpoint` set per declared entry (`{controlplane.Name}-catalog-{type}[-{interface}]`). All in `childNamespace(cp)` |
+| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`), plus — when `spec.services.glance` is set — an image `Service` (`{controlplane.Name}-image-service`) with an internal **and** a public `Endpoint` (`{controlplane.Name}-image-endpoint-internal` / `{controlplane.Name}-image-endpoint-public`), the same pair of interfaces for a placement `Service` (`{controlplane.Name}-placement-service`, Endpoints `{controlplane.Name}-placement-endpoint-internal` / `{controlplane.Name}-placement-endpoint-public`) when `spec.services.placement` is set, and again for a key-manager `Service` (`{controlplane.Name}-key-manager-service`, Endpoints `{controlplane.Name}-key-manager-endpoint-internal` / `{controlplane.Name}-key-manager-endpoint-public`) when `spec.services.barbican` is set. External mode: the same identity `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, and nothing managed. All in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while gated, while a child is not yet Available, or on a terminal K-ORC failure |
 
 `reconcileCatalog` drives `CatalogReady`. Everything up to and including the
@@ -2174,29 +2175,11 @@ endpoint interfaces become K-ORC CRs with `managementPolicy: unmanaged`, an
 import filter, and no desired resource. K-ORC resolves them read-only and writes
 nothing; deleting their CRs later removes only the Kubernetes objects.
 
-The default posture creates **zero** catalog entries. Creation survives only as
-the `spec.services.keystone.external.catalog.managedEntries` opt-in, projected as
-managed `Service`/`Endpoint` CRs authenticating through the operator-owned
-`{name}-admin-password-cloud` Secret (see [the deletion resource
-set](#external-mode-deletion-resource-set) for why they cannot use the spec's
-`cloudCredentialsRef`). On every pass the reconciler also sweeps the
-entry CRs it owns that the spec no longer declares, so removing a declaration
-deletes exactly that entry. The sweep matches on **both** the controller
-reference and the `{controlplane.Name}-catalog-` name prefix, so it can never
-catch the unmanaged imports or a CR belonging to somebody else.
-
-**Removal gates readiness exactly as registration does.** A pruned CR stays
-`Terminating` behind its `openstack.k-orc.cloud/*` finalizer until K-ORC has taken
-the row out of the external catalog, so until then the ControlPlane still owns that
-row. `CatalogReady` therefore reports `WaitingForCatalog` naming the CR being
-removed, and `CatalogFailed` when K-ORC gives up on the `DELETE`. A fire-and-forget
-prune would report `CatalogReady=True` over a live row — and hand the stuck CR to
-the [teardown stall escape](#external-mode-deletion-resource-set), which orphans it.
-The same reasoning gates a **re-declared** entry whose earlier removal is still in
-flight: `controllerutil.CreateOrUpdate` finds the `Terminating` CR, projects a
-byte-identical spec and updates nothing, so no generation bump invalidates the
-`Available=True` K-ORC left on it. `korcAvailableUpToDate` is generation-aware, not
-deletion-aware, so `deletionTimestamp` is checked separately.
+The ControlPlane creates **zero** catalog entries in External mode: this branch
+of `reconcileCatalog` is import-only. A genuinely new row is declared with a `KeystoneService` CR, whose
+own reconciler creates it, gates its own `CatalogReady` on it, and deletes it at
+that CR's teardown — so nothing the ControlPlane writes can duplicate or outlive
+a row in a catalog it does not own.
 
 `status.catalog.imports` is rebuilt before any failure return, so an unresolved
 import is visible as `resolved: false` rather than omitted.
@@ -2228,20 +2211,18 @@ endpoint merely blocked on the service it references:
 | --- | --- | --- | --- | --- |
 | — | `AdminCredentialReady` not True | False | `WaitingForAdminCredential` | requeue 10s; no import CR is reconciled |
 | — | import create/update fails | False | `ImportError` | returns the error |
-| — | managed entry create/update or sweep fails | False | `CatalogEntryError` | returns the error |
-| 1 | an **unresolved** import, entry or removal carries a classifiable K-ORC message | False | `AuthenticationFailed` \| `EndpointUnreachable` \| `TLSVerificationFailed` \| `CatalogEndpointMismatch` \| `CredentialDrift` | requeue 10s; K-ORC's message is relayed verbatim. The write path is classified alongside the imports: nothing K-ORC reports on a managed entry is terminal, so without this every realistic entry failure would fall through to the unbounded wait of row 5. A resolved import is never re-classified — K-ORC leaves the last transient attempt's message on `Progressing`, and classifying it would flip a converged catalog to a failure it has recovered from |
+| 1 | an **unresolved** import carries a classifiable K-ORC message | False | `AuthenticationFailed` \| `EndpointUnreachable` \| `TLSVerificationFailed` \| `CatalogEndpointMismatch` \| `CredentialDrift` | requeue 10s; K-ORC's message is relayed verbatim. A resolved import is never re-classified — K-ORC leaves the last transient attempt's message on `Progressing`, and classifying it would flip a converged catalog to a failure it has recovered from |
 | 2 | an import reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s; gating or not — K-ORC has given up on it. On the **>1-match** message the hint names `external.catalog.identityServiceName` for the `Service` import, or the region limitation for an `Endpoint` import (K-ORC's `EndpointFilter` carries no region, so no spec field can select among per-region rows). **One exception:** an `InvalidConfiguration` on a **non-gating** import does not fail the condition. A non-gating import has no user-supplied configuration to fix — its filter is entirely operator-derived — so it has no remediation and nothing depends on it; it is tolerated exactly like the 0-match of row 3 and reported as `resolved: false`. The exception is keyed on K-ORC's machine-readable reason, never on the >1-match message text: keying it on the text would turn a K-ORC rewording into a permanent `CatalogReady=False`. An `UnrecoverableError` gates on every import, and so does any terminal error on a gating one |
 | 3 | a **gating** import stalled past `externalImportStallGrace` | False | `ImportStalled` | requeue 10s; the **0-match** case. The message names the stuck import, the `authURL`, and `external.endpointType` / `spec.region` — plus, for an `Endpoint` import, that the external catalog may publish no such interface |
-| 4 | a declared managed entry, or one being removed, reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s |
-| 5 | a **gating** import is unresolved, a declared entry is not yet Available or is still `Terminating` from an earlier removal, or a removal has not completed | False | `WaitingForCatalog` | requeue 10s; the bounded, legitimate wait. For an entry the message appends K-ORC's own — a policy denial (HTTP 403 on `POST /v3/services`, what a domain-admin adoption hits) is non-terminal and unclassifiable, so this is the only place it surfaces |
-| 6 | every gating import resolved, every declared entry Available, every removal complete | True | `CatalogImported` | the message reports how many of the three endpoint interfaces resolved |
+| 4 | a **gating** import is unresolved | False | `WaitingForCatalog` | requeue 10s; the bounded, legitimate wait |
+| 5 | every gating import resolved | True | `CatalogImported` | the message reports how many of the three endpoint interfaces resolved |
 
 `publicEndpoint` is forbidden in External mode, so `keystoneCatalogURL` — the URL
 the Managed branch registers — is never consulted here: advertisement visibility
 is owned by the imports.
 
 > **Promote-to-managed is reserved, not implemented.** Turning an import into a
-> managed entry (to edit its endpoint URL declaratively) is a later phase.
+> managed row (to edit its endpoint URL declaratively) is a later phase.
 > K-ORC's `managementPolicy` is CEL-immutable, so it will have to be a
 > delete-and-recreate of the import CR. Nothing in the deterministic CR names or
 > the spec-derived filters chosen here precludes that.
@@ -2252,122 +2233,50 @@ is owned by the imports.
 | --- | --- |
 | File | `reconcile_serviceaccounts.go` |
 | Condition | `ServiceAccountsReady` |
-| Gate | `AdminCredentialReady == True` **and** the store selected via `spec.secretStoreRef` (default the operator-provisioned per-tenant store) is Ready in **every distinct delivery namespace** across the declared accounts — always including the child namespace, plus each account's `targetNamespace` — read on the cluster each namespace lives on, with the not-ready namespace named in the condition message (`secrets.IsStoreRefReady`, per namespace). A delivery namespace whose target cluster does not resolve parks the condition on `TargetClusterUnavailable` before the first gate read, so nothing is written |
-| Requeue | `korcRequeueAfter` = **10s** while a gate is closed or an account is converging |
+| Gate | none — the member only reads the `KeystoneService` children the built-in service legs wrote earlier in the same pass, so there is no projection it could defer |
+| Requeue | `korcRequeueAfter` = **10s** while a registration is not yet Ready |
 
-`reconcileServiceAccounts` projects each `spec.korc.serviceAccounts` entry onto a
-managed K-ORC `User` and `Project` with an operator-generated, OpenBao-backed,
-rotatable password. It is **mode-independent**: the same rules apply against a
-managed in-cluster Keystone and an external one.
+`reconcileServiceAccounts` **aggregates**: it reads the `KeystoneService`
+registration child each enabled built-in service leg projects — `services.glance`,
+`services.placement`, `services.barbican`, in that order — and folds their
+readiness into the one condition operators alert on. It projects no OpenStack
+resource itself; the registration CR owns the Keystone user, its project, its role
+assignments, the generation-scoped password, and the OpenBao round-trip that
+delivers the credentials.
 
-Not every entry is hand-written. Declaring a service makes the defaulting webhook
-inject the account that service authenticates to Keystone as, each with role
-`service` and a `targetNamespace` naming the namespace its service is placed in:
-`glance` in project `service`, `placement` in `service-placement`, and `barbican`
-in `service-barbican`. The projects differ because each injected entry carries
-`create: true`, and two such entries naming one project would each adopt the
-other's Keystone row, which the validating webhook rejects as a duplicate.
+The double reporting is intended. A failing registration already fails its own
+service condition (`GlanceReady`, `PlacementReady`, `BarbicanReady`); the
+aggregate names the same cause under the condition type that does not depend on
+knowing which service broke.
 
-Per declared entry it, in order:
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| no built-in service block is declared | True | `NoServiceRegistrationsProjected` | every External-mode ControlPlane; set rather than omitted so the condition schema does not depend on the spec |
+| a registration child is absent | False | `WaitingForServiceRegistration` | its service leg is gated on something upstream of its own apply; requeue 10s |
+| reading a registration child fails | False | `ServiceRegistrationError` | returns the error, wrapped with which child was being read |
+| a registration reports a `False` sub-condition | False | *(the child's own reason)* | relayed verbatim with the child's message, prefixed by which child it came from; requeue 10s |
+| a registration has not reported `Ready` yet | False | `WaitingForServiceRegistration` | requeue 10s |
+| every registration reports `Ready` | True | `ServiceAccountsProvisioned` | the message counts them |
 
-1. **Domain handle** — reuses the admin `Domain` import when the effective domain
-   matches the admin domain, else creates a per-account unmanaged `Domain` import.
-2. **Project** — `project.create: false` is an unmanaged import (referenced, never
-   created or deleted); `project.create: true` is a **probe-gated** managed
-   `Project`.
-3. **User collision gate** — K-ORC's managed create **silently adopts** a same-name
-   resource, so a short-lived unmanaged `User` **probe import** decides
-   exists/absent before any managed `User` is created. A resolved probe fails loud
-   (`ServiceAccountCollision`) unless `adopt: true`; a probe reporting the resource
-   does not exist is deleted and the managed `User` created.
-4. **Managed `User` + generation-scoped password** — the `User`'s `passwordRef`
-   points at a `{cp}-service-account-{name}-password-v{N}` Secret. K-ORC's user
-   actuator re-applies the password **only when the passwordRef name changes**, so
-   a rotation is a Secret-name flip, driven by the CredentialRotation reconciler
-   clearing the `cobaltcore.c5c3.io/password-generation` annotation. The superseded
-   generation Secret is deleted once K-ORC confirms the new one is applied
-   (`status.resource.appliedPasswordRef`).
-5. **Role assignments** — for each declared `roles[]` entry, project one
-   **unmanaged** `Role` import (filtered by the role name, no domain — Keystone
-   roles are global) named `{cp}-service-account-{name}-role-{slug}` plus one
-   **managed** `RoleAssignment` named `{cp}-service-account-{name}-assign-{slug}`
-   binding that role to the account's user on its project (one per user × project ×
-   role). The import rides the spec clouds.yaml; the assignment rides the
-   admin-password cloud, so a teardown `Delete` survives the AC revoke (like the
-   managed `User`). Readiness is folded into the per-account gate — the account is
-   not Ready until every assignment is Available — and a `Role` import stalled past
-   the grace window hints the role may be missing from Keystone. `{slug}` is a
-   deterministic, name-safe discriminator (a normalized ≤16-char base plus 8 hex of
-   `sha256(role)`), so distinct roles never alias.
-6. **OpenBao round-trip** (once the current password is applied) — assemble a
-   source Secret, `PushSecret` (`DeletionPolicy: Delete`) it to
-   `openstack/keystone/{delivery-namespace}/{cp.Name}/service-accounts/{name}`, and
-   materialize the consumer Secret via an `ExternalSecret`, mirroring the admin
-   app-credential's re-push / force-sync discipline. The **delivery namespace** is
-   the account's `targetNamespace`, or the ControlPlane's own namespace when empty.
-   The source Secret, PushSecret, consumer ExternalSecret, and the materialized
-   `…-credentials` Secret all land in that namespace, riding **its own**
-   `openbao-tenant-store`; the K-ORC-facing password Secret is read from the child
-   namespace (that source never moves). When the delivery namespace is a dedicated
-   service namespace, these carry the ControlPlane's **ownership labels** rather
-   than a controller owner reference — Kubernetes forbids a cross-namespace one — so
-   they route through `ensureUnownedOrOwned` (and a `CreateOrUpdate` that refuses to
-   adopt a same-named foreign object) instead of an owner-referenced apply. When
-   that namespace is placed on a [target cluster](../target-clusters.md) the whole
-   delivery leg is written there, and the three gates behind it (the tenant store's
-   readiness, the PushSecret's, and the materialized password) are read from the
-   same cluster; the K-ORC-facing password Secret stays at home beside the `User`
-   CR that references it. The
-   remote-key **namespace segment follows the delivery namespace** so the path stays
-   inside that namespace's templated eso-tenant policy — the same scoping the admin
-   password rides on the Keystone namespace. Both the PushSecret and the
-   ExternalSecret take their store ref from `spec.secretStoreRef` (default the
-   per-tenant store) via `secrets.PushSecretStoreRefs` / `secrets.ESOSecretStoreRef`.
-   Per-account readiness gates on the **materialized password matching the current
-   generation**, so a rotated-away password never reads Ready.
+**The relayed reason is the child's first failing sub-condition, not the
+aggregate's.** `keystoneServiceSubConditionTypes` orders `CatalogReady` before
+`AccountReady`, so a registration whose Keystone catalog row failed reports a
+catalog reason (`CatalogFailed`, `ServiceCollision`) under a condition
+named for service accounts. That is deliberate: `NotAllReady` says only that
+something is wrong, while the sub-condition's own reason says what and admits a
+fix.
 
-**Per-account status.** Each declared entry is projected onto a
-`status.serviceAccounts[]` entry keyed by `name`. Its `ready` field mirrors that
-account's own convergence — user, project, and a materialized password Secret
-matching the current generation — so a single lagging account is attributable
-without reading the aggregate `ServiceAccountsReady` message. The entry also
-carries the resolved `userID` / `projectID`, the applied `passwordGeneration`, and
-`lastPasswordRotation`, alongside the `secretName` / `secretNamespace` handle below.
+**Consumption contract.** Consumers read the credentials from the Secret the
+registration materializes in its own namespace — `{keystoneservice.Name}-credentials`,
+keys `password` and a ready-to-use `clouds.yaml` — named in the registration's
+`status.account.secretName`. For which OpenBao paths exist in each Keystone mode,
+see [OpenBao paths per ControlPlane
+mode](../infrastructure/openbao-bootstrap.md#openbao-paths-per-controlplane-mode).
 
-A pass that **errors** returns before it projects this slice, so every `ready`
-flag is cleared first (`invalidateServiceAccountReadiness`) while the remaining
-fields — `lastPasswordRotation` in particular — are preserved. The slice is a live
-gate, not just reporting: `reconcileGlance` runs in the same tail group and reads
-it, so leaving the last converged `ready: true` behind would let Glance keep
-projecting for an account the failing pass could not verify. All entries are
-cleared, not only the one that errored, because the early return means the
-accounts ordered after it were never attempted either. One successful pass
-restores them.
-
-**Consumption contract.** Consumers read from the materialized Secret
-`{controlplane.Name}-service-account-{name}-credentials` (keys `password` and a
-ready-to-use `clouds.yaml`), named in `status.serviceAccounts[].secretName` and
-located in `status.serviceAccounts[].secretNamespace` (the account's delivery
-namespace — its `targetNamespace`, or the ControlPlane's own namespace). The
-credentials are always read from that Secret (or the OpenBao path directly); after
-a rotation, one reload picks up the new password. For which OpenBao paths exist in
-each Keystone mode, see
-[OpenBao paths per ControlPlane mode](../infrastructure/openbao-bootstrap.md#openbao-paths-per-controlplane-mode).
-
-**Deletion.** A managed `User`/`Project` (created **or adopted** — adoption makes
-it operator-owned) and the managed `RoleAssignment`s are deleted from Keystone at
-teardown, sequenced through the ORC-teardown finalizer exactly like the admin
-credential; a probe / domain import / referenced project / `Role` import is a
-CR-only delete. The password/source Secrets, PushSecret, and ExternalSecret are
-owner-reference-GC'd at home; a delivery leg placed in a dedicated service
-namespace carries the ownership labels instead, so the teardown deletes the
-PushSecret explicitly (while that namespace's tenant store is still alive) and
-sweeps the source Secret and ExternalSecret by name — the materialized Secret is
-ESO-owned and dies with its ExternalSecret. The OpenBao entry dies with the
-PushSecret (`DeletionPolicy: Delete`).
-
-**Deferred.** `rotation.mode: Scheduled` is accepted but not yet implemented; it
-emits a one-shot `ScheduledRotationDeferred` event so the deferral is not silent.
+**Deletion.** The registrations go first at teardown: `reconcileDelete` deletes
+the projected `KeystoneService` children and waits for them, because their K-ORC
+CRs belong to the registration and its controller tears them down through the
+admin credential the next step revokes.
 
 ### CredentialRotation reconciler
 
@@ -2731,9 +2640,8 @@ projected. On deletion it:
    would have revoked the credential or removed the catalog row, so every
    `Managed` CR it releases leaves its OpenStack resource behind with no
    Kubernetes object naming it. A second **Warning**, `ORCResourcesOrphaned`,
-   lists exactly those CRs — the admin `ApplicationCredential` and any
-   `managedEntries` rows — and tells the operator to remove them from Keystone by
-   hand. `Unmanaged` imports are never listed: their CR delete could not have
+   lists exactly those CRs — the admin `ApplicationCredential` among them — and
+   tells the operator to remove them from Keystone by hand. `Unmanaged` imports are never listed: their CR delete could not have
    touched OpenStack. The classification is by `ManagementPolicy` and fails loud
    (anything not explicitly `Unmanaged` is reported), because under-reporting a
    leak is worse than over-reporting one.
@@ -2829,8 +2737,6 @@ it.
 | `Service` (K-ORC) | `{name}-identity-service` | ControlPlane CR | both modes; managed catalog entry in Managed mode, unmanaged import in External mode |
 | `Endpoint` (K-ORC) | `{name}-identity-endpoint` | ControlPlane CR | managed mode only; public interface |
 | `Endpoint` (K-ORC) | `{name}-identity-endpoint-{interface}` | ControlPlane CR | External mode only; one unmanaged import per interface (`public`, `internal`, `admin`) |
-| `Service` (K-ORC) | `{name}-catalog-{type}` | ControlPlane CR | External mode only; one managed CR per declared `managedEntries` entry |
-| `Endpoint` (K-ORC) | `{name}-catalog-{type}-{interface}` | ControlPlane CR | External mode only; one managed CR per declared entry endpoint |
 
 #### Barbican secret-store teardown
 
@@ -2878,22 +2784,14 @@ act.
 
 `orcChildObjects(cp)` derives the swept CR names from the ControlPlane spec, so
 Managed mode enumerates exactly the five CRs it always did and External mode adds
-the per-interface identity `Endpoint` imports plus the CRs of every declared
-managed entry. A name that never existed in the current mode is simply `NotFound`
-and is tolerated as already-gone.
+the per-interface identity `Endpoint` imports. A name that never existed in the
+current mode is simply `NotFound` and is tolerated as already-gone.
 
-In External mode `orcTeardownChildren(cp)` folds in one more source: every
-catalog-entry CR the ControlPlane still **owns**, found by `List` + the same
-controller-reference-**and**-name-prefix scope the reconcile-time prune uses. The
-two enumerations diverge whenever a `managedEntries` declaration is dropped from a
-spec the prune never re-observed — the prune lives in `reconcileCatalogExternal`,
-which `reconcileCatalog` gates on `AdminCredentialReady` and which never runs once
-`deletionTimestamp` is set. Enumerating by spec alone would release the finalizer
-while those CRs still existed; garbage collection would then take them (and the
-credentials `Secret` they authenticate with) at once, stranding them `Terminating`
-behind their `openstack.k-orc.cloud/*` finalizers with the stall escape blind to
-them, and `kubectl delete namespace` would hang. A declared entry appears in both
-enumerations and is named exactly once.
+The enumeration is purely spec-derived, and it can be: every name it produces
+follows from the ControlPlane's identity and its keystone mode, neither of which a
+spec edit can drop while leaving a CR behind. Rows a `KeystoneService` registers
+are not in this set at all — that CR owns them, and `reconcileDelete` deletes the
+projected registrations first and waits for their own teardown.
 
 What a `Delete` does to the external OpenStack installation is decided by each
 K-ORC CR's `ManagementPolicy`, not by the ControlPlane's mode:
@@ -2912,16 +2810,6 @@ K-ORC CR's `ManagementPolicy`, not by the ControlPlane's mode:
   the identity `Service` and its per-interface `Endpoint`s are `Unmanaged`
   imports, so deleting them is a CR-only delete and the external catalog is left
   bit-for-bit intact.
-- **The opt-in managed catalog entries** (External mode only) — `Managed`. They
-  are the one thing this ControlPlane created in an external catalog, so they are
-  the one thing it removes from it, exactly mirroring the `ApplicationCredential`.
-  Because they must *reach* the external Keystone to be deleted, they authenticate
-  through the operator-owned `{name}-admin-password-cloud` Secret rather than the
-  spec's `cloudCredentialsRef` — the sweep issues every `Delete` in one
-  unsequenced pass, and the `ApplicationCredential` the spec's `clouds.yaml`
-  carries is being revoked at the same moment. The admin password outlives the
-  revocation; the app credential does not.
-
 That holds for a teardown K-ORC can complete. The **stall escape is the deliberate
 exception**: past `orcTeardownDeadline` it releases every stuck CR by stripping
 the finalizer that would have done the revoke or the `DELETE`, so each `Managed` CR
@@ -3215,7 +3103,7 @@ admin password; `FernetKeysReady` / `CredentialKeysReady` for the signing keys).
 | Admin application credential (K-ORC) | `openstack/keystone/admin/app-credential` | `openstack/keystone/{namespace}/{name}/admin/app-credential` |
 | Admin bootstrap password (Model B) | `bootstrap/keystone-admin` | `bootstrap/{namespace}/{name}/admin` |
 | Fernet / credential keys (boundary-4) | `openstack/keystone/{name}/{fernet,credential}-keys` | `openstack/keystone/{namespace}/{name}/{fernet,credential}-keys` |
-| Service-account passwords | — (new) | `openstack/keystone/{namespace}/{name}/service-accounts/{account}` |
+| Service-account passwords | — (new) | `openstack/keystone/{namespace}/{name}/service-accounts/credentials`, where `{namespace}/{name}` is the **KeystoneService** CR's |
 
 For the admin AC the `{namespace}/{name}` is the **ControlPlane** CR's
 (`adminAppCredentialRemoteKeyFor`); for the admin password and the Fernet /

@@ -304,9 +304,9 @@ coordination.k8s.io/leases rule required for leader election.
 # domains, projects, roles, roleassignments. Minted/owned by reconcileKORC and
 # reconcileCatalog; users + domains are imported (unmanaged) so the admin
 # ApplicationCredential's UserRef resolves (ensureKORCAdminImports); users +
-# projects are also managed/owned by reconcileServiceAccounts
-# (spec.korc.serviceAccounts). Roles are imported and RoleAssignments minted for
-# the service-account role projection.
+# projects are also managed/owned by the KeystoneService registration projection
+# (registration_projection.go). Roles are imported and RoleAssignments minted for
+# the registrations' role projection.
 - apiGroups:
     - openstack.k-orc.cloud
   resources:

@@ -35,10 +35,9 @@ spec:
           ControlPlane: an optional catalog entry (spec.catalog) and an optional
           service account (spec.account), at least one of which must be set. The CR
           is mode-independent — the same declaration works against a Managed and an
-          External ControlPlane. Its own metadata takes the roles the ControlPlane's
-          inline surfaces give to per-entry fields: child resources and the consumer
-          Secret derive their names from metadata.name, and credential delivery lands
-          in the CR's own namespace.
+          External ControlPlane. Its own metadata keys the registration: child
+          resources and the consumer Secret derive their names from metadata.name, and
+          credential delivery lands in the CR's own namespace.
 
           DECISION: the operator wiring (RBAC, manager setup, watches) lands in a
           follow-up package of the same effort, so the reconciler paces itself with
@@ -77,8 +76,8 @@ spec:
                 description: |-
                   Account declares the service's Keystone account: a user with an
                   operator-generated, OpenBao-backed, rotatable password, its project,
-                  and the roles assigned to it — the composite the ControlPlane's inline
-                  service accounts declare today, delivered into this CR's own namespace.
+                  and the roles assigned to it. Its credentials are delivered into this
+                  CR's own namespace.
                 properties:
                   adopt:
                     description: |-
@@ -125,9 +124,8 @@ spec:
                       role assignments the registration minted behind on the old project,
                       and flipping create would either orphan a project the registration owns
                       or adopt one it does not. The rules live on this field rather than on
-                      ServiceAccountProjectSpec because the ControlPlane's inline service
-                      accounts share that type and enforce the same freeze in their own
-                      webhook arm.
+                      ServiceAccountProjectSpec because that shared type carries no freeze of
+                      its own.
                     properties:
                       create:
                         description: |-

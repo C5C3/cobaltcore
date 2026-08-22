@@ -324,16 +324,16 @@ func (r *ControlPlaneReconciler) ensureESOTenantStoreObjects(
 //
 // A PLACED namespace exists on both clusters, but it only needs a store on both
 // where it has a delivery path on both. Every path that follows the service to
-// its cluster — the admin password, the Keystone and per-service DB credentials,
-// an inline service account's consumer Secret — resolves the store through
-// childrenClientFor and reads it THERE. The one exception is a KeystoneService
-// registration: its CR lives on the management cluster beside the ControlPlane,
-// in the namespace of the service it registers, and its controller gates delivery
-// on a SecretStore read locally in that namespace. So a placed namespace hosting
-// a registration gets the home copy as well, and a placed Keystone or Horizon
-// namespace does not — a store nothing reads would still be certificate-issued,
-// ESO-validated against OpenBao for the life of the plane, and, sitting in the
-// pipeline's blocking prefix, would park the whole chain behind its readiness.
+// its cluster (the admin password, the Keystone and per-service DB credentials)
+// resolves the store through childrenClientFor and reads it THERE. The one
+// exception is a KeystoneService registration: its CR lives on the management
+// cluster beside the ControlPlane, in the namespace of the service it registers,
+// and its controller gates delivery on a SecretStore read locally in that
+// namespace. So a placed namespace hosting a registration gets the home copy as
+// well, and a placed Keystone or Horizon namespace does not — a store nothing
+// reads would still be certificate-issued, ESO-validated against OpenBao for the
+// life of the plane, and, sitting in the pipeline's blocking prefix, would park
+// the whole chain behind its readiness.
 func (r *ControlPlaneReconciler) esoTenantStoreClusters(
 	cp *c5c3v1alpha1.ControlPlane, ns string, children client.Client,
 ) []client.Client {

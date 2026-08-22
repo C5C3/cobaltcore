@@ -75,14 +75,14 @@ const (
 	keystoneServiceNamespaceLabel = "c5c3.io/keystoneservice-namespace"
 )
 
-// Condition reasons this controller introduces. Everything with an equivalent in
-// the ControlPlane's inline machinery reuses that constant instead
-// (reasonWaitingForServiceAccountAdmin, reasonServiceAccountStoreNotReady,
+// Condition reasons this controller introduces. Everything with an equivalent
+// reason in the ControlPlane's own condition vocabulary reuses that constant
+// instead (reasonWaitingForServiceAccountAdmin, reasonServiceAccountStoreNotReady,
 // reasonProbingForCollision, reasonServiceAccountCollision,
 // reasonWaitingForServiceAccounts, reasonServiceAccountsFailed,
 // reasonServiceAccountError, conditionReasonCatalogFailed,
-// conditionReasonWaitingForCatalog), so the two mechanisms report one vocabulary
-// while they coexist.
+// conditionReasonWaitingForCatalog), so the KeystoneService children and the
+// ControlPlane report one vocabulary.
 const (
 	// reasonKeystoneServiceCatalogNotDeclared / reasonKeystoneServiceAccountNotDeclared
 	// are the True reasons for a block the spec does not declare. The condition is
@@ -358,8 +358,8 @@ func (r *KeystoneServiceReconciler) resolveControlPlane(
 // The ControlPlane's OWN namespace and its DEDICATED service namespaces are
 // admitted implicitly. Both are already the ControlPlane's: it declares the
 // dedicated ones itself through the services' namespace blocks and provisions a
-// tenant store in each, which is the same reasoning that lets an inline service
-// account deliver its consumer Secret there.
+// tenant store in each, which is the delivery path a registration's consumer
+// Secret takes.
 //
 // Every OTHER namespace needs an explicit entry in
 // spec.korc.serviceRegistrations.allowedNamespaces. A nil block and an empty list
@@ -381,7 +381,7 @@ func keystoneServiceNamespaceAllowed(cp *c5c3v1alpha1.ControlPlane, ks *c5c3v1al
 }
 
 // keystoneServiceCredentialRefs returns the two clouds.yaml references the
-// projected children authenticate with, mirroring reconcileServiceAccounts.
+// projected children authenticate with.
 //
 // credRef is the ControlPlane's admin credential, used by the READ-ONLY probes
 // and unmanaged imports. managedCredRef is the operator-owned admin PASSWORD
@@ -390,9 +390,9 @@ func keystoneServiceNamespaceAllowed(cp *c5c3v1alpha1.ControlPlane, ks *c5c3v1al
 // through it would get a 404 on its own DELETE and orphan the Keystone resource.
 func keystoneServiceCredentialRefs(cp *c5c3v1alpha1.ControlPlane) (credRef, managedCredRef orcv1alpha1.CloudCredentialsReference) {
 	credRef = orcv1alpha1.CloudCredentialsReference{
-		// Fall back to the conventional name for a webhook-bypassed CR, exactly as
-		// reconcileCatalog and reconcileServiceAccounts do, so every child resolves
-		// the same clouds.yaml Secret.
+		// Fall back to the conventional name for a webhook-bypassed CR, as
+		// reconcileCatalog does, so every child resolves the same clouds.yaml
+		// Secret.
 		SecretName: cmp.Or(cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName, korcCloudsYamlSecretName),
 		CloudName:  cp.Spec.KORC.AdminCredential.CloudCredentialsRef.CloudName,
 	}
@@ -442,9 +442,7 @@ func keystoneServiceChildPrefix(ks *c5c3v1alpha1.KeystoneService) string {
 // ControlPlane's namespace, and deliberately stays there: copying it into each
 // allowlisted namespace would hand every tenant the cloud-admin credential and
 // undo the escalation the registration allowlist exists to prevent. So the
-// children go to the credential rather than the credential to the children —
-// which is what the inline service accounts have always done (childNamespace in
-// reconcile_serviceaccounts.go).
+// children go to the credential rather than the credential to the children.
 //
 // Only the DELIVERY objects stay in the registration's namespace: the assembled
 // source Secret, the PushSecret that pushes it through that namespace's tenant
@@ -564,9 +562,8 @@ func keystoneServiceCatalogName(ks *c5c3v1alpha1.KeystoneService) string {
 //
 // The namespace segment is the CR's own, which is what the templated eso-tenant
 // policy admits (openstack/keystone/{caller-namespace}/+/service-accounts/+): the
-// CR's name takes the per-CR segment the ControlPlane's inline accounts give to
-// the ControlPlane name, and the fixed "credentials" leaf keeps the two
-// mechanisms' paths disjoint while both exist.
+// CR's name fills the segment between the namespace and the fixed "credentials"
+// leaf, so no two registrations share a path.
 func keystoneServiceRemoteKeyFor(ks *c5c3v1alpha1.KeystoneService) string {
 	return "openstack/keystone/" + ks.Namespace + "/" + ks.Name + "/service-accounts/credentials"
 }
@@ -1109,8 +1106,8 @@ func credentialsSecretToKeystoneServiceMapper(c client.Reader) handler.MapFunc {
 // another namespace, so ownership is expressed as labels and the mapping has to
 // read them. It needs no client: the labels carry the whole key.
 //
-// An object without both labels belongs to something else — the ControlPlane's
-// own inline children share these namespaces — and maps to nothing.
+// An object without both labels belongs to something else (the ControlPlane's
+// own children share these namespaces) and maps to nothing.
 func keystoneServiceChildToRequest(_ context.Context, obj client.Object) []reconcile.Request {
 	labels := obj.GetLabels()
 	name, namespace := labels[keystoneServiceNameLabel], labels[keystoneServiceNamespaceLabel]

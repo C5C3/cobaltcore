@@ -18,7 +18,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
@@ -81,8 +80,8 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	storeReady, err := secrets.IsStoreRefReady(ctx, r.Client, storeRef, childNamespace(cp))
 	if err != nil {
 		// Stamp the condition BEFORE returning. AdminCredentialReady is a live
-		// gate for reconcileCatalog and reconcileServiceAccounts, which now run
-		// in the same RunSequentialGroup tail rather than behind a short-circuit:
+		// gate for reconcileCatalog and the built-in service legs, which run in
+		// the same RunSequentialGroup tail rather than behind a short-circuit:
 		// an unstamped error return would leave them reading the previous pass's
 		// True and projecting against a credential whose backing store could not
 		// be verified.
@@ -222,7 +221,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// content-hash annotation changes the PushSecret's metadata hash and forces the
 	// re-push now; it is idempotent (skipped when the hash already matches), so a
 	// converged credential never churns the push.
-	if err := r.forceRepushPushSecret(ctx, r.Client, cp, childNamespace(cp), ps.Name, adminAppCredentialPushContentHashAnnotation, contentHash); err != nil {
+	if err := repushPushSecret(ctx, r.Client, childNamespace(cp), ps.Name, adminAppCredentialPushContentHashAnnotation, contentHash); err != nil {
 		fail("PushSecretError", fmt.Sprintf("forcing admin app-credential PushSecret re-push: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -270,7 +269,7 @@ func (r *ControlPlaneReconciler) reconcileAdminCredential(ctx context.Context, c
 	// more as soon as the re-push lands; both inputs are stable once converged, so
 	// a steady-state pass still leaves the ExternalSecret untouched.
 	syncTrigger := contentHash + "/" + pushed.Status.SyncedResourceVersion
-	if err := r.forceSyncExternalSecret(ctx, r.Client, cp, childNamespace(cp), cloudsYamlName, syncTrigger); err != nil {
+	if err := resyncExternalSecret(ctx, r.Client, childNamespace(cp), cloudsYamlName, syncTrigger); err != nil {
 		fail("CloudsYamlError", fmt.Sprintf("forcing k-orc clouds.yaml ExternalSecret re-sync: %v", err))
 		return ctrl.Result{}, err
 	}
@@ -391,31 +390,6 @@ func parseAppCredIdentity(cloudsYAML []byte) (appCredIdentity, bool) {
 	return appCredIdentity{}, false
 }
 
-// forceSyncExternalSecret nudges ESO to re-materialise the named ExternalSecret
-// in namespace immediately rather than at the next hourly refresh, by stamping
-// the external-secrets.io/force-sync annotation with the given trigger
-// (typically a content hash combined with the source PushSecret's
-// syncedResourceVersion — see the admin-credential call site in
-// reconcileAdminCredential for why the completed-push marker must be part of it).
-// ESO folds the ExternalSecret's annotations into its sync-decision hash, so a
-// changed value forces a re-sync; an unchanged value is a no-op, so a steady-state
-// pass does not churn the ExternalSecret.
-//
-// namespace is childNamespace(cp) for the admin credential and the account's
-// delivery namespace (serviceAccountDeliveryNamespace) for a service account,
-// whose consumer ExternalSecret may live in a dedicated service namespace; c is
-// the client that namespace's children are written with, so the nudge reaches
-// the ExternalSecret on the cluster ESO reconciles it from.
-//
-// A missing ExternalSecret is treated as a no-op nil — the sub-reconciler that
-// owns the ExternalSecret's creation, and the byte-compare gate at the call site
-// (not this nudge), is what guarantees the materialized value is fresh before the
-// owning condition flips True. Shared by the admin-credential and service-account
-// sub-reconcilers.
-func (r *ControlPlaneReconciler) forceSyncExternalSecret(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, namespace, name, trigger string) error {
-	return resyncExternalSecret(ctx, c, namespace, name, trigger)
-}
-
 // adminAppCredentialPushContentHashAnnotation stamps the assembled clouds.yaml
 // content hash onto the admin app-credential PushSecret. Changing it alters the
 // PushSecret's metadata hash, which is the only input ESO's PushSecret
@@ -432,24 +406,3 @@ const adminAppCredentialPushContentHashAnnotation = "c5c3.io/push-content-hash" 
 // overwrite each other's value on every pass, re-pushing the credential to OpenBao
 // on every reconcile instead of only when it changes.
 const adminAppCredentialCACertHashAnnotation = "c5c3.io/push-cacert-hash" //nolint:gosec // G101 false positive: annotation key, not a credential.
-
-// forceRepushPushSecret nudges ESO to re-push the named PushSecret's source
-// Secret to OpenBao by stamping the given annotation on the backing PushSecret in
-// namespace. ESO's PushSecret controller re-pushes only when the PushSecret
-// object's own metadata hash changes (it does not watch the referenced Secret),
-// so without this stamp a source-Secret update — e.g. the fresh-create handoff
-// from the bootstrap clouds.yaml to the minted credential, a newly projected CA
-// bundle, or a rotated service-account password — would not reach OpenBao until
-// the PushSecret's hourly refreshInterval. Each caller keys its own annotation by
-// the content it owns, so the stamp changes only when that content changes and a
-// steady-state pass is a no-op.
-//
-// namespace is childNamespace(cp) for the admin credential and the account's
-// delivery namespace (serviceAccountDeliveryNamespace) for a service account,
-// whose backing PushSecret may live in a dedicated service namespace; c is the
-// client that namespace's children are written with, so the stamp reaches the
-// PushSecret on the cluster ESO reconciles it from. Shared by the
-// admin-credential and service-account sub-reconcilers.
-func (r *ControlPlaneReconciler) forceRepushPushSecret(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, namespace, name, annotation, hash string) error {
-	return repushPushSecret(ctx, c, namespace, name, annotation, hash)
-}

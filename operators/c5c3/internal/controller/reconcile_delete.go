@@ -342,7 +342,7 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 			r.Recorder.Event(cp, "Warning", "ORCResourcesOrphaned", fmt.Sprintf(
 				"the OpenStack resources behind the managed K-ORC CRs %v were NOT deleted: their finalizers were "+
 					"force-removed before K-ORC could revoke the admin application credential or remove the "+
-					"spec.services.keystone.external.catalog.managedEntries rows it registered. Nothing in "+
+					"catalog rows and identities it registered. Nothing in "+
 					"Kubernetes names them any more — remove them from Keystone by hand",
 				orphaned,
 			))

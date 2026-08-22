@@ -152,11 +152,6 @@ spec:
     adminCredential:
       passwordSecretRef:
         name: brownfield-admin-password   # user-supplied, from the existing installation
-    serviceAccounts:
-      - name: nova
-        project:
-          name: service-nova
-          create: true
 ```
 
 `spec.infrastructure` became optional and is **forbidden** in External mode, as is
@@ -176,10 +171,12 @@ conditions that carry signal are `KORCReady`, `AdminCredentialReady`,
 `CatalogReady`, and `ServiceAccountsReady`.
 
 Beyond the original sketch, phase 1 also delivered **declarative service
-accounts** (`korc.serviceAccounts`): managed K-ORC users and projects with
-operator-generated, OpenBao-backed, rotatable passwords, collision-gated against
-pre-existing users and adoptable on explicit consent. This is the operational win
-the sketch predicted, and it landed in phase 1 rather than later.
+accounts**: managed K-ORC users and projects with operator-generated,
+OpenBao-backed, rotatable passwords, collision-gated against pre-existing users
+and adoptable on explicit consent. This is the operational win the sketch
+predicted, and it landed in phase 1 rather than later. They are declared with a
+`KeystoneService` CR — the inline `korc.serviceAccounts` surface phase 1 shipped
+them on has since been retired.
 
 ### How the open questions resolved
 

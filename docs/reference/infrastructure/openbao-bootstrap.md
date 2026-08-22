@@ -774,7 +774,7 @@ marker, so a first push to a never-seeded path always succeeds):
 | Path (under the `kv-v2` mount) | Written by | Read back by |
 | --- | --- | --- |
 | `openstack/keystone/{ns}/{cp}/admin/app-credential` | c5c3 operator admin-AC backup PushSecret (`adminAppCredentialRemoteKeyFor`, `DeletionPolicy: Delete`) | per-CR `k-orc-clouds-yaml` ExternalSecret (`ensureKORCCloudsYAMLExternalSecret`) |
-| `openstack/keystone/{ns}/{cp}/service-accounts/{account}` | c5c3 operator per-service-account backup PushSecret (`serviceAccountRemoteKeyFor`, one per declared `korc.serviceAccounts` entry) | the matching per-service-account ExternalSecret |
+| `openstack/keystone/{ns}/{name}/service-accounts/credentials` | c5c3 operator per-registration backup PushSecret (`keystoneServiceRemoteKeyFor`, one per `KeystoneService` CR — `{ns}/{name}` is that CR's) | the matching per-registration ExternalSecret |
 
 **Managed mode additionally** — seeded and/or backed up because the operator owns
 the Keystone lifecycle:

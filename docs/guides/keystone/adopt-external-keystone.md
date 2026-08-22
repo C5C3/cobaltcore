@@ -145,7 +145,6 @@ Field by field:
 | `userName` / `projectName` / `domainName` | The admin identity to authenticate as. They default to `admin` / `admin` / `Default`; the fixture uses a non-default identity, so all three are set. |
 | `applicationCredential.restricted` | Keeps the minted credential least-privilege — it cannot mint further application credentials. Spelled out here, but `true` is the default. |
 | `applicationCredential.rotation.mode` | `PasswordDriven` keys the re-mint on a hash of the admin password — see [step 6](#_6-rotating-the-admin-password-out-of-band). Spelled out here, but it is the default. |
-| `korc.serviceAccounts` | Declarative service accounts — see [step 5](#_5-declare-service-accounts). |
 
 `spec.openStackRelease` stays required but is **advisory** in this mode: no images
 are deployed, so it only has to match your installation at a future managed
@@ -245,37 +244,66 @@ On kind, OpenBao enforces mTLS, so browsing to it or using the `bao` CLI needs a
 client certificate. The materialized Secret above is the supported handle.
 :::
 
-### 5. Declare service accounts
+### 5. Register a service account
 
-`korc.serviceAccounts` gives the service users of other OpenStack services
-(nova, glance, …) a managed home: a Keystone user and project with an
-operator-generated, OpenBao-backed, rotatable password.
+Service users of other OpenStack services (nova, glance, …) are declared with a
+`KeystoneService` CR, one per service. The ControlPlane itself carries no
+account fields: the registration owns its Keystone user and project, the
+operator-generated OpenBao-backed password, and the teardown of all three.
 
-The entry in [step 2](#_2-apply-the-external-mode-controlplane) declares user
-`nova` with a **created** project `service-nova`. The semantics that matter:
+This is the registration the e2e suite creates in the ControlPlane's own
+namespace — an account with no catalog entry:
 
-- **`project.create: false`** references an existing project via an unmanaged
-  import — it is never created, and never deleted.
-- **`adopt: true`** is explicit consent to take over a **pre-existing** Keystone
-  user of that name. Without it, a name collision fails loudly
+```yaml
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: rotation-probe
+  namespace: brownfield
+spec:
+  controlPlaneRef:
+    name: controlplane-external
+  account:
+    project:
+      name: service-rotation-probe
+      create: true
+```
+
+The semantics that matter:
+
+- **The CR's own metadata keys everything.** `metadata.name` names the child
+  resources and the consumer Secret, and `metadata.namespace` is the delivery
+  namespace. `account.userName` defaults to `metadata.name`.
+- **`account.project.create: false`** references an existing project via an
+  unmanaged import — it is never created, and never deleted.
+- **`account.adopt: true`** is explicit consent to take over a **pre-existing**
+  Keystone user of that name. Without it, a name collision fails loudly
   (`ServiceAccountCollision`) rather than silently hijacking the account. Note an
-  adopted user becomes operator-owned, so it *is* deleted at teardown.
-- **`roles`** are projected — each becomes an unmanaged K-ORC `Role` import plus a
-  managed `RoleAssignment` binding the role to the user on the project, and the
-  account is not Ready until every assignment lands in Keystone.
+  adopted user becomes operator-owned, so it *is* deleted at teardown. The one
+  identity `adopt` does **not** unlock is the ControlPlane's own admin identity,
+  which the reconciler refuses outright.
+- **`account.roles`** are projected — each becomes an unmanaged K-ORC `Role`
+  import plus a managed `RoleAssignment` binding the role to the user on the
+  project, and the account is not Ready until every assignment lands in Keystone.
 
-Each account's password is generated into OpenBao at
-`openstack/keystone/{namespace}/{controlplane}/service-accounts/{name}` and
-materialized as a stable consumer Secret:
+A registration in the ControlPlane's own namespace, or in one of its dedicated
+service namespaces, is admitted as it stands; anywhere else the namespace has to
+be listed in `spec.korc.serviceRegistrations.allowedNamespaces` on the
+ControlPlane first.
+
+The password is generated into OpenBao at
+`openstack/keystone/{namespace}/{name}/service-accounts/credentials` — keyed on
+the **KeystoneService** CR — and materialized as a stable consumer Secret named
+after it:
 
 ```bash
-kubectl -n brownfield get secret controlplane-external-service-account-nova-credentials \
+kubectl -n brownfield get secret rotation-probe-credentials \
   -o jsonpath='{.data.clouds\.yaml}' | base64 -d
 ```
 
-Per-account readiness is reported individually in
-`status.serviceAccounts[].ready`, so one lagging account is attributable without
-decoding the aggregate condition.
+Readiness is reported on the registration itself (`Ready`, with `AccountReady`
+and `CatalogReady` beneath it), so one lagging registration is attributable
+without decoding the ControlPlane's aggregate condition.
 
 ### 6. Rotating the admin password, out-of-band
 
@@ -363,17 +391,12 @@ A service-account password rotates the same way, with
 auto-detect at all, so without it the request is a guaranteed no-op.
 
 ::: warning `spec.serviceAccount` was replaced by `spec.keystoneService`
-The field named an inline account (`spec.korc.serviceAccounts[].name`); it now
-names a `KeystoneService` CR. `CredentialRotation` is `v1alpha1`, so the rename is
+The field named an account declared on the ControlPlane; it now names a
+`KeystoneService` CR. `CredentialRotation` is `v1alpha1`, so the rename is
 applied in place and there is no conversion: an existing CR carrying
 `serviceAccount` loses the value on the next write and reports `Ready=False`
 reason `MissingKeystoneService`. **Re-create it** against a `KeystoneService`
 registration.
-
-An inline `spec.korc.serviceAccounts[]` account has no rotation trigger while this
-holds — it is still projected and still delivers its credentials, but nothing
-addresses its password. Declare accounts that need rotating as `KeystoneService`
-CRs.
 :::
 
 ::: warning The minted credential must never be copied

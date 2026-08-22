@@ -224,24 +224,26 @@ Horizon, on the third HTTPS listener the kind overlay adds for
 `glance.127-0-0-1.nip.io`, and `publicEndpoint` makes the public image catalog
 row advertise the actually reachable host URL — the `:8443` host port — instead
 of the default-443 form the operator would otherwise derive from the gateway
-hostname. The defaulting webhook injects a `glance` service account (user
-`glance`, project `service`, role `service`) into `spec.korc.serviceAccounts` so
-Glance can validate the Keystone tokens it receives; its database and cache
-derive from `spec.infrastructure`, exactly like Keystone's. On the managed
+hostname. The operator projects a `KeystoneService` registration
+`controlplane-glance` carrying the image catalog entry and the `glance` service
+account (user `glance`, project `service`, role `service`), so Glance can
+validate the Keystone tokens it receives; its database and cache derive from
+`spec.infrastructure`, exactly like Keystone's. On the managed
 shared database its DB credential is engine-issued and auto-rotated exactly like
 Keystone's — short-lived leases from the OpenBao database engine, and the Step 4
 onboarding provisions the engine tenant for all four database services
 (keystone, glance, placement, and barbican). A `GlanceReady` condition joins
-the chain — gating on `KeystoneReady` plus that injected service account — and
-`status.services` gains a third entry.
+the chain — gating on `KeystoneReady` plus that registration having provisioned
+the account — and `status.services` gains a third entry.
 
 The `placement` block projects a Placement child, `controlplane-placement`: the
 API deployment, its own logical schema on the shared MariaDB, and a Keystone
-service user. The defaulting webhook injects a `placement` service account into
-`spec.korc.serviceAccounts` (user `placement`, role `service`) with a project of
-its own, `service-placement`; each `create: true` entry projects a managed
-Project, so two entries naming one project would collide. Database and cache
-derive from `spec.infrastructure` the same way Glance's do, and on the managed
+service user. Its own `KeystoneService` registration `controlplane-placement`
+carries the placement catalog entry and the `placement` account (user
+`placement`, role `service`) with a project of its own, `service-placement`;
+each registration creates its project, so two naming one project would collide.
+Database and cache derive from `spec.infrastructure` the same way Glance's do,
+and on the managed
 shared database the DB credential is engine-issued too, from the tenant Step 4
 onboards. The `gateway` block puts the API on the sixth HTTPS listener the kind
 overlay adds, `placement.127-0-0-1.nip.io`, and `publicEndpoint` carries the
@@ -253,10 +255,11 @@ The `barbican` block adds the Key Manager service. `secretStore.dedicated` asks
 for an OpenBao instance this ControlPlane owns, so the operator projects three
 CRs: the Barbican child `controlplane-barbican`, the instance
 `controlplane-barbican-bao`, and the store `controlplane-barbican-store` that
-attaches the two. The defaulting webhook injects a `barbican` service account
-(user `barbican`, role `service`) with a project of its own,
-`service-barbican`. Its database credential is engine-issued from the tenant
-Step 4 onboards, like Glance's and Placement's. The `gateway` block puts the
+attaches the two. A `KeystoneService` registration `controlplane-barbican`
+carries the key-manager catalog entry and the `barbican` account (user
+`barbican`, role `service`) with a project of its own, `service-barbican`. Its
+database credential is engine-issued from the tenant Step 4 onboards, like
+Glance's and Placement's. The `gateway` block puts the
 key-manager API on the seventh HTTPS listener, `barbican.127-0-0-1.nip.io`, and
 `publicEndpoint` carries the `:8443` host port into the public key-manager
 catalog row. A `BarbicanReady` condition joins the chain beside `GlanceReady`
@@ -362,29 +365,6 @@ spec:
       applicationCredential:
         rotation:
           mode: PasswordDriven
-    serviceAccounts:
-      - name: glance                 # injected because services.glance is set
-        userName: glance             # defaults to the account name
-        project:
-          name: service
-          create: true
-        roles:
-          - service                  # Keystone SRBAC default for identity:validate_token
-      - name: placement              # injected because services.placement is set
-        userName: placement          # defaults to the account name
-        project:
-          name: service-placement    # its own project: two create:true entries
-                                     # cannot name the same Keystone project
-          create: true
-        roles:
-          - service
-      - name: barbican               # injected because services.barbican is set
-        userName: barbican           # defaults to the account name
-        project:
-          name: service-barbican     # its own project, for the same reason
-          create: true
-        roles:
-          - service
 ```
 
 </details>

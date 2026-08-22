@@ -33,16 +33,16 @@ import (
 )
 
 // This file is the ONE projection layer both registration mechanisms run on:
-// the ControlPlane's inline service accounts and managed catalog rows
-// (reconcile_serviceaccounts.go, reconcile_catalog.go) and the KeystoneService
-// controller's per-CR registrations (keystoneservice_account.go,
-// keystoneservice_catalog.go). Only the hardened flows live here — the
-// collision probe gate, the generation-scoped password engine, the OpenBao
-// publish leg, the ESO nudges, and the K-ORC child spec builders. Each
-// mechanism keeps its own orchestration skeleton, its own reporting model, and
-// its own condition message texts, and parameterizes the differences that are
-// deliberate (shared vs per-CR role imports, the two push-hash annotation keys,
-// the two OpenBao path layouts, the two ownership strategies).
+// the ControlPlane's own catalog rows and credential delivery
+// (reconcile_catalog.go, reconcile_admincredential.go, builtin_registrations.go)
+// and the KeystoneService controller's per-CR registrations
+// (keystoneservice_account.go, keystoneservice_catalog.go). Only the hardened
+// flows live here — the collision probe gate, the generation-scoped password
+// engine, the OpenBao publish leg, the ESO nudges, and the K-ORC child spec
+// builders. Each mechanism keeps its own orchestration skeleton, its own
+// reporting model, and its own condition message texts, and parameterizes the
+// differences that are deliberate (the two push-hash annotation keys, the two
+// OpenBao path layouts, the two ownership strategies).
 //
 // It lives in the controller package rather than in internal/common because it
 // reads c5c3 API types and package-local helpers (childNamespace,
@@ -52,11 +52,11 @@ import (
 // --- shared vocabulary ---
 
 // serviceAccountPasswordGenerationAnnotation stamps the current password
-// generation N onto the managed K-ORC User CR. reconcileServiceAccounts derives
-// N from the User's passwordRef suffix and the annotation is the rotation nudge
-// marker: the CredentialRotation reconciler CLEARS it to "" to request a rotation
-// (mirroring adminPasswordHashAnnotation), and an empty value drives a generation
-// bump on the next pass.
+// generation N onto the managed K-ORC User CR. The KeystoneService controller
+// derives N from the User's passwordRef suffix and the annotation is the
+// rotation nudge marker: the CredentialRotation reconciler CLEARS it to "" to
+// request a rotation (mirroring adminPasswordHashAnnotation), and an empty value
+// drives a generation bump on the next pass.
 const serviceAccountPasswordGenerationAnnotation = "cobaltcore.c5c3.io/password-generation" //nolint:gosec // G101 false positive: annotation key, not a credential.
 
 // serviceAccountPasswordKey is the Secret data key the generated password is
@@ -138,12 +138,10 @@ func pendingServiceAccountObjs(objs ...orcv1alpha1.ObjectWithConditions) []orcv1
 }
 
 // registrationEnsure applies a projected child, and registrationClaim marks one
-// the caller builds itself. They are the seam the two ownership strategies enter
-// through: the ControlPlane's inline accounts keep every child in the plane's own
-// namespace and owner-reference it, while a KeystoneService projects into that
-// namespace from another one, where an owner reference is illegal and ownership
-// is carried by labels instead. A nil seam means the owner-referenced default, so
-// the inline path passes nothing.
+// the caller builds itself. They are the seam ownership enters through: a
+// KeystoneService projects into the ControlPlane's namespace from another one,
+// where an owner reference is illegal and ownership is carried by labels
+// instead.
 type (
 	registrationEnsure func(ctx context.Context, obj client.Object) error
 	registrationClaim  func(obj client.Object) error
@@ -202,7 +200,11 @@ func repushPushSecret(ctx context.Context, c client.Client, namespace, name, ann
 }
 
 // resyncExternalSecret nudges ESO to re-materialize the consumer Secret now
-// rather than at the next hourly refresh. ESO folds the ExternalSecret's
+// rather than at the next hourly refresh, by stamping the
+// external-secrets.io/force-sync annotation with the given trigger (typically a
+// content hash combined with the source PushSecret's syncedResourceVersion — see
+// the admin-credential call site in reconcileAdminCredential for why the
+// completed-push marker must be part of it). ESO folds the ExternalSecret's
 // annotations into its sync-decision hash, so a changed trigger forces a re-sync
 // and an unchanged one writes nothing.
 //
