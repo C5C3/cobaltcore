@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid base for the immutability wave. It is applied FIRST and must SUCCEED. The
+# 15-21 variants reuse this metadata.name, so Chainsaw applies each of them to the
+# live object as an RFC 7386 merge patch, i.e. as an UPDATE, which is what makes
+# the CEL transition rules and the webhook freezes evaluate at all. serviceName
+# and domainName are deliberately left to their fallbacks (metadata.name and the
+# referenced ControlPlane's admin domain): fixtures 18 and 20 add them explicitly,
+# which is the webhook-only half of each freeze.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-immutable
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  catalog:
+    serviceType: object-store
+    endpoints:
+    - interface: public
+      url: https://swift.example.com
+  account:
+    userName: svc-object-store
+    project:
+      name: service
+    roles:
+    - service

@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# account.project.name empty violates the MinLength marker. The project is what
+# the service user's role assignments are scoped to, so an unnamed one resolves to
+# nothing. The error names 'project.name' and carries
+# 'should be at least 1 chars long'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-invalid-project-name-empty
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  account:
+    userName: svc-object-store
+    project:
+      name: ""
+    roles:
+    - service

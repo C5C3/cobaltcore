@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE adding an explicit catalog.serviceName, rejected by the validating
+# webhook, which compares the EFFECTIVE name: the base relied on the metadata.name
+# fallback, so naming the entry something else IS a catalog rename. The CEL
+# transition rule on the field cannot see it, because a transition rule does not
+# evaluate when the old object left the optional field unset. The error carries
+# the substring 'serviceName is immutable'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-immutable
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  catalog:
+    serviceType: object-store
+    serviceName: renamed-entry
+    endpoints:
+    - interface: public
+      url: https://swift.example.com
+  account:
+    userName: svc-object-store
+    project:
+      name: service
+    roles:
+    - service

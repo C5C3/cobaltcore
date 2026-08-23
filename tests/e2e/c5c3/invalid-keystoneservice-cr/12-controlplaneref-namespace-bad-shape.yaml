@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# controlPlaneRef.namespace 'Tenant_A' violates the RFC 1123 label pattern (CRD
+# marker): no Kubernetes namespace can carry that name, so the reference could
+# never resolve to an object. The error names 'controlPlaneRef.namespace' and
+# carries 'should match'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-invalid-ref-namespace-shape
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+    namespace: Tenant_A
+  catalog:
+    serviceType: object-store
+    endpoints:
+    - interface: public
+      url: https://swift.example.com

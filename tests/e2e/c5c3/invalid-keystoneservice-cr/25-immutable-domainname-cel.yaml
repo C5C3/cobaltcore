@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE moving the DECLARED account.domainName to another domain, rejected by the
+# CEL transition rule on the field. This is the schema-layer half of the freeze
+# fixture 20 pins at the webhook, and the rule is what still rejects the move for
+# a caller that bypasses webhook admission. Because the webhook mirrors the
+# message verbatim, the chainsaw step additionally requires the error to carry no
+# webhook denial. The error carries the substring:
+# domainName is immutable
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-immutable-explicit
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  catalog:
+    serviceType: object-store
+    serviceName: entry-one
+    endpoints:
+    - interface: public
+      url: https://swift.example.com
+  account:
+    userName: svc-object-store
+    domainName: other-domain
+    project:
+      name: service
+    roles:
+    - service

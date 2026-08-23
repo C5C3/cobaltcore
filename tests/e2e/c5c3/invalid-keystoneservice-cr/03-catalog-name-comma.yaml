@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# catalog.serviceName carrying a comma violates the CRD pattern, which mirrors
+# K-ORC's own OpenStackName: a comma admitted here would only move the rejection
+# to the child Service CR, where it wedges the reconcile in an exponential backoff
+# that no KeystoneService field error explains. The error names 'serviceName' and
+# carries 'should match'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-invalid-name-comma
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  catalog:
+    serviceType: object-store
+    serviceName: "swift,v2"
+    endpoints:
+    - interface: public
+      url: https://swift.example.com

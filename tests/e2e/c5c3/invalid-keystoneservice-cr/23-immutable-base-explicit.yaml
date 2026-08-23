@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Valid base for the declared-value half of the immutability wave. It is applied
+# FIRST of its wave and must SUCCEED. Unlike the ks-immutable base it DECLARES
+# catalog.serviceName and account.domainName: a CEL transition rule does not
+# evaluate when the old object left the optional field unset, so fixtures 18 and
+# 20 reach only the webhook and the schema-layer half of both freezes is
+# reachable from this base alone. 24 and 25 change one declared value each.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-immutable-explicit
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  catalog:
+    serviceType: object-store
+    serviceName: entry-one
+    endpoints:
+    - interface: public
+      url: https://swift.example.com
+  account:
+    userName: svc-object-store
+    domainName: Default
+    project:
+      name: service
+    roles:
+    - service

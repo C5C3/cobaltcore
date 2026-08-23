@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# account.domainName carrying a comma violates the CRD pattern, which mirrors
+# K-ORC's KeystoneName filter. The domain scopes both the user and its project, so
+# a name the child CRs reject would strand the whole account. The error names
+# 'domainName' and carries 'should match'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-invalid-domainname-comma
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  account:
+    userName: svc-object-store
+    domainName: "corp,root"
+    project:
+      name: service
+    roles:
+    - service

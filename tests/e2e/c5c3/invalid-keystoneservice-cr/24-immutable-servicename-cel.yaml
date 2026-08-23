@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE renaming the DECLARED catalog.serviceName, rejected by the CEL transition
+# rule on the field. This is the schema-layer half of the freeze fixture 18 pins
+# at the webhook, and the rule is what still rejects the rename for a caller that
+# bypasses webhook admission. Because the webhook mirrors the message verbatim,
+# the chainsaw step additionally requires the error to carry no webhook denial.
+# The error carries the substring:
+# serviceName is immutable
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-immutable-explicit
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  catalog:
+    serviceType: object-store
+    serviceName: entry-two
+    endpoints:
+    - interface: public
+      url: https://swift.example.com
+  account:
+    userName: svc-object-store
+    domainName: Default
+    project:
+      name: service
+    roles:
+    - service

@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A KeystoneService declaring neither a catalog nor an account block asks for no
+# registration at all. Rejected by the spec-level CEL rule, which lives at the
+# schema layer so it binds even where no validating webhook is registered. The
+# error carries the substring:
+# at least one of spec.catalog or spec.account must be set
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-invalid-no-blocks
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent

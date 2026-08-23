@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# controlPlaneRef.name empty violates the MinLength marker on ControlPlaneRefSpec.
+# Every child this CR projects authenticates through the referenced plane's admin
+# credential, so an empty name resolves to no plane at all. The catalog block is
+# the valid one, so the reference is the only violation. The error names
+# 'controlPlaneRef.name' and carries 'should be at least 1 chars long'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-invalid-ref-name-empty
+spec:
+  controlPlaneRef:
+    name: ""
+  catalog:
+    serviceType: object-store
+    endpoints:
+    - interface: public
+      url: https://swift.example.com
