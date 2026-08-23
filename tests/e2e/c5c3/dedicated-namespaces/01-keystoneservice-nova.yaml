@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The registration under test: a service registered from one of the plane's
+# DEDICATED service namespaces, the Managed Keystone namespace this suite has
+# the operator create.
+#
+# The CR is parked by design. This suite never seeds OpenBao, so the
+# ControlPlane's AdminCredentialReady never turns True and the account block
+# stays deferred at WaitingForAdminCredential. That is the state the leg
+# asserts, not a state it waits out.
+#
+# What the leg proves:
+#
+#   - A registration placed in a dedicated service namespace is admitted
+#     without an allowlist entry: the namespace is one of the plane's own, so
+#     the reason is never NamespaceNotAllowed.
+#   - Nothing is delivered into that namespace and nothing is projected while
+#     the admin credential is missing: no consumer Secret, no K-ORC children.
+#   - The CR is released with the namespace once the ControlPlane is gone.
+#
+# No catalog block is declared, so CatalogReady reads True with the reason
+# CatalogNotDeclared and the account block is the only one the leg watches.
+#
+# The @KEYSTONE_NS@ and @CP_NS@ tokens are substituted by the test script.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: nova
+  namespace: "@KEYSTONE_NS@"
+spec:
+  controlPlaneRef:
+    name: cp
+    namespace: "@CP_NS@"
+  account:
+    project:
+      name: service-nova
+      create: true
