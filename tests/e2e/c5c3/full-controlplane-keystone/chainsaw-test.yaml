@@ -1124,6 +1124,12 @@ spec:
           echo "OK: token issued, identity + image + placement + key-manager services catalogued, and the image, placement and secret round-trips passed — full chain verified."
     catch:
     - script:
+        # Pinned, because chainsaw applies the test's exec budget to EVERY
+        # script operation and not just to the try block. Left unpinned this
+        # dump would inherit 30m against a wedged apiserver, where a kubectl
+        # call blocks instead of erroring and `2>&1 || true` bounds the exit
+        # status rather than the duration.
+        timeout: 5m
         shell: bash
         content: |
           echo "=== ControlPlane describe ==="
@@ -1187,6 +1193,11 @@ spec:
           kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
     finally:
     - script:
+        # Pinned for the same reason as catch above; one delete needs nothing
+        # like the test's exec budget. Keeps the suite's ceiling at
+        # exec + catch + finally + cleanup = 43m, which is the number
+        # .github/workflows/ci.yaml budgets against.
+        timeout: 5m
         shell: bash
         content: |
           # Best-effort cleanup of the verify Job, which now lives in the
