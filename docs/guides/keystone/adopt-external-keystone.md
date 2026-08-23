@@ -252,22 +252,9 @@ account fields: the registration owns its Keystone user and project, the
 operator-generated OpenBao-backed password, and the teardown of all three.
 
 This is the registration the e2e suite creates in the ControlPlane's own
-namespace — an account with no catalog entry:
+namespace, declaring a catalog entry and an account:
 
-```yaml
-apiVersion: c5c3.io/v1alpha1
-kind: KeystoneService
-metadata:
-  name: rotation-probe
-  namespace: brownfield
-spec:
-  controlPlaneRef:
-    name: controlplane-external
-  account:
-    project:
-      name: service-rotation-probe
-      create: true
-```
+<<< @/../tests/e2e/c5c3/external-keystone/07-keystoneservice-nova.yaml#keystoneservice-nova
 
 The semantics that matter:
 
@@ -297,7 +284,7 @@ the **KeystoneService** CR — and materialized as a stable consumer Secret name
 after it:
 
 ```bash
-kubectl -n brownfield get secret rotation-probe-credentials \
+kubectl -n brownfield get secret nova-credentials \
   -o jsonpath='{.data.clouds\.yaml}' | base64 -d
 ```
 
