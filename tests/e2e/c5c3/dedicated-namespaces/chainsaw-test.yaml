@@ -53,9 +53,13 @@
 # cross-namespace readiness (credential ExternalSecrets, the projected Keystone
 # child, the OpenBao path re-keying) is hard-asserted in the envtest scenario
 # TestIntegration_DedicatedNamespaces, which runs against the real CRD schema and
-# webhook on every PR. This suite proves the placement and lifecycle half on a
+# webhook on every PR. The consumer credential a KeystoneService delivers into a
+# dedicated namespace sits behind that same unseeded admin credential, so it is
+# asserted in that scenario too. A registration's admission FROM a dedicated
+# service namespace and its release with the plane need a live cluster, and this
+# suite asserts both. This suite proves the placement and lifecycle half on a
 # live cluster: namespaces, backing-service placement, ownership labels, tenant
-# stores, and the deletion sweep.
+# stores, the parked registration, and the deletion sweep.
 #
 # The Glance and Placement CHILD CRs themselves never appear in this suite either:
 # Keystone never reaches Ready here (unseeded OpenBao) and both projections gate on
@@ -114,6 +118,7 @@ spec:
           missing=""
           for crd in \
             controlplanes.c5c3.io \
+            keystoneservices.c5c3.io \
             mariadbs.k8s.mariadb.com \
             memcacheds.memcached.c5c3.io \
             keystones.keystone.openstack.c5c3.io \
@@ -208,6 +213,33 @@ spec:
             done
           }
 
+          # Only a NotFound is "gone". Discarding stderr would make a
+          # connection reset or a 500 during a finalizer drain read exactly like
+          # a deleted object, and this is what the deletion legs prove.
+          wait_gone() { # <resource> <name> <namespace> <timeoutSeconds>
+            local res="$1" name="$2" ns="$3" timeout="$4" deadline err
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              if err="$(kubectl get "${res}" "${name}" -n "${ns}" 2>&1 >/dev/null)"; then
+                : # still present
+              elif grep -qi 'not found' <<<"${err}"; then
+                echo "OK: ${res}/${name} in ${ns} is gone"
+                return 0
+              else
+                echo "WARN: kubectl get ${res}/${name} failed (${err}); retrying"
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} in ${ns} still present, or unreadable, after ${timeout}s"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          ks_reason() { # <name> <ns> <ctype>
+            kubectl get keystoneservice "$1" -n "$2" -o "jsonpath={.status.conditions[?(@.type=='$3')].reason}" 2>/dev/null || true
+          }
+
           # ── The External namespace must exist BEFORE the ControlPlane ─────
           # The External lifecycle never creates it; NamespacesReady parks on
           # NamespaceNotFound until it is there. The Managed one is left to the
@@ -227,6 +259,51 @@ spec:
           assert_cp_labelled namespace "${KEYSTONE_NS}" ""
           assert_eq "the Managed namespace carries the managed-by label" "c5c3-operator" \
             "$(kubectl get namespace "${KEYSTONE_NS}" -o "jsonpath={.metadata.labels.${MANAGED_BY_LABEL//./\\.}}")"
+
+          # ── A registration placed in the dedicated service namespace ───────
+          # A dedicated service namespace belongs to the plane, so a
+          # registration placed there is admitted implicitly: no allowlist entry
+          # is needed and the reason is never NamespaceNotAllowed. OpenBao is
+          # never seeded in this suite, so the registration then parks at
+          # WaitingForAdminCredential, with nothing delivered into the namespace
+          # and nothing projected into the plane's.
+          sed -e "s|@KEYSTONE_NS@|${KEYSTONE_NS}|g" -e "s|@CP_NS@|${CP_NS}|g" \
+            01-keystoneservice-nova.yaml | kubectl apply -f -
+          # The layer under test is the implicit admission of a dedicated service
+          # namespace: NamespaceNotAllowed means it failed, and waiting longer proves
+          # nothing, so the poll exits at once on it.
+          deadline=$(( $(date +%s) + 120 )); reason=""
+          while true; do
+            reason="$(ks_reason nova "${KEYSTONE_NS}" AccountReady)"
+            if [ "${reason}" = "WaitingForAdminCredential" ]; then
+              break
+            fi
+            if [ "${reason}" = "NamespaceNotAllowed" ]; then
+              echo "ERROR: the dedicated service namespace ${KEYSTONE_NS} was not admitted implicitly (AccountReady reason NamespaceNotAllowed)"
+              exit 1
+            fi
+            if [ "$(date +%s)" -ge "${deadline}" ]; then
+              echo "ERROR: keystoneservice/nova in ${KEYSTONE_NS} did not reach AccountReady=WaitingForAdminCredential within 120s (last reason: '${reason:-<none>}')"
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the registration in ${KEYSTONE_NS} is admitted and parked at WaitingForAdminCredential."
+          assert_eq "the parked registration is not Ready" "False" \
+            "$(kubectl get keystoneservice nova -n "${KEYSTONE_NS}" -o "jsonpath={.status.conditions[?(@.type=='Ready')].status}")"
+          assert_eq "the undeclared catalog block reads CatalogNotDeclared" "CatalogNotDeclared" \
+            "$(ks_reason nova "${KEYSTONE_NS}" CatalogReady)"
+          if kubectl get secret nova-credentials -n "${KEYSTONE_NS}" >/dev/null 2>&1; then
+            echo "ERROR: Secret nova-credentials was delivered into ${KEYSTONE_NS} before the admin credential"
+            exit 1
+          fi
+          echo "OK: nothing is delivered into ${KEYSTONE_NS} before the admin credential."
+          # Captured, then counted, under set -e and without 2>/dev/null: a failed get
+          # must not read as the zero this asserts. A probe would sit in the plane's
+          # namespace, which is why it is checked there.
+          projected="$(kubectl get users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud -n "${CP_NS}" \
+            -l c5c3.io/keystoneservice-name=nova --no-headers)"
+          assert_eq "nothing is projected for the parked registration" "0" "$(grep -c . <<<"${projected}" || true)"
 
           # Glance's namespace is a SECOND Managed namespace — same contract.
           wait_exists namespace "${GLANCE_NS}" "" 60
@@ -299,6 +376,11 @@ spec:
           #    the namespaces follow their lifecycle ───────────────────────────
           kubectl delete controlplane "${CP_NAME}" -n "${CP_NS}" --wait=true --timeout=300s
 
+          # The registration's finalizer releases fail-open once its ControlPlane is
+          # gone; this is the only thing that keeps the Managed namespace from wedging
+          # on a registration it still hosts.
+          wait_gone keystoneservice nova "${KEYSTONE_NS}" 180
+
           # The service children are gone (nothing GC-cascades a cross-namespace
           # child; the finalizer deleted them explicitly).
           DELETE_DEADLINE=$(( $(date +%s) + 300 ))
@@ -353,7 +435,7 @@ spec:
           # Clean up the pre-created External namespace.
           kubectl delete namespace "${HORIZON_NS}" --wait=false || true
 
-          echo "OK: dedicated namespaces created, placed, labelled, tenant-stored, and torn down per lifecycle."
+          echo "OK: dedicated namespaces created, placed, labelled, tenant-stored, a dedicated-namespace registration admitted and released, and torn down per lifecycle."
     catch:
     - script:
         shell: bash
@@ -366,6 +448,8 @@ spec:
           kubectl get controlplane cp -n "${NAMESPACE}" -o yaml 2>&1 || true
           echo "=== Namespaces ==="
           kubectl get namespace "${KEYSTONE_NS}" "${HORIZON_NS}" "${GLANCE_NS}" "${PLACEMENT_NS}" -o yaml 2>&1 || true
+          echo "=== KeystoneServices in ${KEYSTONE_NS} ==="
+          kubectl get keystoneservice -n "${KEYSTONE_NS}" -o yaml 2>&1 || true
           echo "=== Backing services across the service namespaces ==="
           kubectl get mariadb,memcached -n "${KEYSTONE_NS}" 2>&1 || true
           kubectl get mariadb,memcached -n "${HORIZON_NS}" 2>&1 || true
