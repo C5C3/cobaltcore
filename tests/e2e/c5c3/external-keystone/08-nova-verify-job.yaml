@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The consumer side of the nova registration. The Job mounts nova-credentials,
+# the Secret the registration delivers (keys clouds.yaml and password, cloud name
+# admin, auth_url pointing at the external fixture Keystone), and proves the
+# delivered credentials are the live ones: `token issue` fails unless the
+# password in the Secret is the one K-ORC applied to the user, and `catalog show
+# nova` fails unless the registered compute row reached the catalog the token
+# carries.
+#
+# K-ORC endpoints carry no region, so the registered rows land with an empty one.
+# The identity calls here resolve anyway, through the RegionOne identity endpoint
+# keystone-manage bootstrap created in the fixture.
+#
+# `catalog show nova` matches the catalog service by name, and that name defaults
+# to the CR name. A catalog.serviceName set on the fixture later has to be
+# mirrored here.
+#
+# The image is the repo's own tempest image (it bundles the OpenStack client),
+# pinned to the tag CI loads into kind, with imagePullPolicy: IfNotPresent so it
+# uses that copy rather than pulling from GHCR. The test script applies the Job
+# after the registration converges, applies it again after rotation, and deletes
+# it in its finally block.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nova-verify
+  namespace: brownfield
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: osc
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_CLIENT_CONFIG_FILE
+              value: /etc/openstack/clouds.yaml
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "== openstack --os-cloud admin token issue =="
+              # Discarded, never read: the command prints the full Fernet token in
+              # its id field, and this Job's log is dumped into CI output by the
+              # suite's catch block. The exit code is the whole assertion.
+              openstack --os-cloud admin token issue > /dev/null
+              echo "OK: the delivered credentials issue a token"
+              echo "== openstack --os-cloud admin catalog show nova =="
+              openstack --os-cloud admin catalog show nova > /tmp/catalog.txt
+              cat /tmp/catalog.txt
+              grep -q "http://nova-api.brownfield.svc.cluster.local:8774/v2.1" /tmp/catalog.txt
+              echo "OK: the delivered credentials authenticate and the catalog carries the nova compute row"
+          volumeMounts:
+            - name: clouds
+              mountPath: /etc/openstack
+              readOnly: true
+      volumes:
+        - name: clouds
+          secret:
+            secretName: nova-credentials

@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A brownfield service registering itself against a Keystone the operator does
+# not own: the catalog row goes into the fixture installation's catalog, the
+# service account is created in it, and the account's credentials come back into
+# a Secret in this namespace.
+#
+# The user and the project land in heimdall, the plane's admin domain, because
+# account.domainName is unset. The role is "service", the role keystone-manage
+# bootstrap created in the fixture. Every declared role resolves as an UNMANAGED
+# K-ORC Role import, so a role that is not already there never resolves.
+#
+# catalog.serviceName, account.userName and account.domainName are left unset on
+# purpose: they default to nova, nova and heimdall. Neither adopt flag is set.
+# The fixture catalog holds identity rows only, so the compute entry collides
+# with nothing there is to adopt. controlPlaneRef.namespace is unset too, so the
+# plane resolves in the CR's own namespace, where controlplane-external lives.
+#
+# The endpoints point at a Service that does not have to exist, since registering
+# a catalog row never connects to it.
+#
+# The suite tears the registration down before the ControlPlane, so its rows
+# leave Keystone through the admin credential while that credential is still
+# live. The adoption guide (docs/guides/keystone/adopt-external-keystone.md)
+# imports the region below.
+---
+# region keystoneservice-nova
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: nova
+  namespace: brownfield
+spec:
+  controlPlaneRef:
+    name: controlplane-external
+  catalog:
+    serviceType: compute
+    endpoints:
+    - interface: public
+      url: "http://nova-api.brownfield.svc.cluster.local:8774/v2.1"
+    - interface: internal
+      url: "http://nova-api.brownfield.svc.cluster.local:8774/v2.1"
+  account:
+    project:
+      name: service-nova
+      create: true
+    roles:
+    - service
+# endregion keystoneservice-nova
