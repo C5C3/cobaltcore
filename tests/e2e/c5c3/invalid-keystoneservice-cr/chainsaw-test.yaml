@@ -1,0 +1,338 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for the KeystoneService admission surface. Pins the
+# spec-level CEL rules, the CRD patterns, enum and listType=map key, the CEL
+# transition rules, and the validating webhook's child-name bound and
+# effective-value freezes in operators/c5c3/api/v1alpha1/ to deterministic
+# admission failures against a real API server.
+#
+# Enforcement precedence at admission: the mutating (defaulting) webhook runs
+# first (it materializes account.userName from metadata.name), then the CRD
+# schema validation (structural + enum + pattern + CEL, including the
+# transition rules that evaluate only on UPDATE), then the validating webhook.
+# A rule a CEL expression can carry is answered at the schema layer and the
+# validating webhook never runs for it; the child-name bound and the freezes
+# that compare an EFFECTIVE value, which no CEL rule on a spec field can
+# express, are answered by the webhook. Each assertion below targets whichever
+# layer owns the rule.
+#
+# Fixtures carry NO metadata.namespace: Chainsaw runs the Test in its own
+# ephemeral namespace and injects it.
+#
+# The referenced ControlPlane `cp-invalid-cr-absent` never exists, by design.
+# The CRD contract admits a dangling reference (GitOps ordering, so a
+# registration may be applied before its plane), the reconciler parks the one
+# admitted CR on Ready=False with reason ControlPlaneNotFound and projects
+# nothing (operators/c5c3/internal/controller/keystoneservice_controller.go),
+# and reconcileDelete fails open while the plane is absent and releases the
+# `c5c3.io/keystoneservice-teardown` finalizer, so Chainsaw's namespace cleanup
+# cannot wedge.
+#
+# All fixtures are generated from the single canonical scaffold in
+# `_generate.py`. After editing the scaffold or any per-fixture override,
+# regenerate via:
+#   python3 tests/e2e/c5c3/invalid-keystoneservice-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes `_generate.py
+# --check` (drift mode, both directions incl. orphans) and `test_generate.py`
+# (FIXTURES count + chainsaw-test.yaml cross-reference) so any hand-edit to a
+# generated fixture fails the build before the cluster-bound e2e-operator job
+# runs.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: c5c3-invalid-keystoneservice-cr
+spec:
+  steps:
+  # Neither a catalog nor an account block asks for no registration at all
+  # (CEL, spec-level).
+  - try:
+    - apply:
+        file: 00-no-blocks.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'at least one of spec.catalog or spec.account must be set')): true
+  # catalog.serviceType 'identity' names the row the ControlPlane owns in both
+  # modes (CEL, on the field).
+  - try:
+    - apply:
+        file: 01-catalog-identity-type.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'the identity catalog entry is ControlPlane-owned')): true
+  # catalog.serviceType must be a DNS-1123 label (CRD pattern): it is embedded
+  # verbatim in the names of the child K-ORC CRs.
+  - try:
+    - apply:
+        file: 02-catalog-type-bad-shape.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceType')): true
+            (contains($error, 'should match')): true
+  # catalog.serviceName carrying a comma is rejected by the CRD pattern that
+  # mirrors K-ORC's OpenStackName.
+  - try:
+    - apply:
+        file: 03-catalog-name-comma.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceName')): true
+            (contains($error, 'should match')): true
+  # catalog.endpoints[].url must carry an http(s) scheme (CRD pattern): the
+  # value is advertised verbatim as the catalog endpoint.
+  - try:
+    - apply:
+        file: 04-endpoint-url-bad-scheme.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'endpoints[0].url')): true
+            (contains($error, 'should match')): true
+  # catalog.endpoints[].interface outside public, internal, admin is rejected
+  # by the CRD enum.
+  - try:
+    - apply:
+        file: 05-endpoint-interface-off-enum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'endpoints[0].interface')): true
+            (contains($error, 'supported values')): true
+  # Two endpoint rows sharing one interface collide on the listType=map key,
+  # which the apiserver answers before any rule of ours runs.
+  - try:
+    - apply:
+        file: 06-endpoint-duplicate-interface.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'endpoints')): true
+            (contains($error, 'Duplicate value')): true
+  # account.userName carrying a comma is rejected by the CRD pattern, the same
+  # K-ORC OpenStackName shape the catalog service name carries.
+  - try:
+    - apply:
+        file: 07-account-username-comma.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'userName')): true
+            (contains($error, 'should match')): true
+  # account.domainName carrying a comma is rejected by the CRD pattern that
+  # mirrors K-ORC's KeystoneName filter.
+  - try:
+    - apply:
+        file: 08-account-domainname-comma.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'domainName')): true
+            (contains($error, 'should match')): true
+  # account.project.name must name a project (CRD MinLength): the service
+  # user's role assignments are scoped to it.
+  - try:
+    - apply:
+        file: 09-account-project-name-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'project.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
+  # An account.roles entry carrying a comma is rejected by the CRD items
+  # pattern: each role becomes a K-ORC Role import filtered by that name.
+  - try:
+    - apply:
+        file: 10-account-role-comma.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'roles')): true
+            (contains($error, 'should match')): true
+  # controlPlaneRef.name must name a plane (CRD MinLength on
+  # ControlPlaneRefSpec): every child authenticates through it.
+  - try:
+    - apply:
+        file: 11-controlplaneref-name-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
+  # controlPlaneRef.namespace must be an RFC 1123 label (CRD pattern): no
+  # namespace can carry a name outside it, so the reference resolves nowhere.
+  - try:
+    - apply:
+        file: 12-controlplaneref-namespace-bad-shape.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.namespace')): true
+            (contains($error, 'should match')): true
+  # The one create rule only the validating webhook enforces: nothing in the
+  # CRD schema caps metadata.name below the apiserver's 253 bytes, and a
+  # 211-byte name plus the 43-byte child overhead is 254. This step therefore
+  # also proves the webhook is serving for this kind.
+  - try:
+    - apply:
+        file: 13-metadata-name-overlong.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'shorten the KeystoneService name')): true
+  # ── Update-rejection block ──────────────────────────────────────────────
+  # The valid base CR is applied FIRST and must SUCCEED: it carries no expect
+  # block, so an admission failure here fails the Test. It parks on
+  # Ready=False/ControlPlaneNotFound, because the referenced plane never exists.
+  #
+  # The validating webhook mirrors every freeze below with byte-identical text,
+  # so a step whose rule the CEL layer owns pins that layer with two negative
+  # arms rather than trusting the message alone. Without them the XValidation
+  # marker could be dropped, or a regenerated CRD could lose it, and the webhook
+  # would keep the step green while a caller against a cluster where
+  # vkeystoneservice.kb.io is not registered could still make the edit.
+  #
+  # Both arms are needed. 'admission webhook' is the denial prefix
+  # k8s.io/apiserver's webhookerrors.ToStatusErr emits, wording this repo does
+  # not own: an upstream reword on a Kubernetes bump makes a prefix-only arm
+  # satisfied by every rejection, and therefore vacuous, without failing
+  # anything. The webhook's registered name is the half this repo does own. The
+  # DEPLOYED name comes from the Helm chart the e2e cluster installs
+  # (operators/c5c3/helm/c5c3-operator/templates/webhook-configuration.yaml),
+  # which hardcodes it independently of the +kubebuilder:webhook marker in
+  # operators/c5c3/api/v1alpha1/keystoneservice_webhook.go. Renaming it there
+  # would leave these arms scanning for a name no rejection carries, and every
+  # rejection — a webhook denial included — would satisfy them. test_generate.py
+  # therefore cross-checks the pinned name against that chart template.
+  - try:
+    - apply:
+        file: 14-immutable-base.yaml
+  # controlPlaneRef.name is immutable (CEL transition rule, UPDATE-only): the
+  # edit would strand what the registration created on the old plane.
+  - try:
+    - apply:
+        file: 15-immutable-controlplaneref-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.name is immutable')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vkeystoneservice.kb.io')): false
+  # controlPlaneRef.namespace is immutable, webhook-only: an empty value means
+  # the CR's own namespace, and no CEL rule on a spec field can read
+  # metadata.namespace to resolve that default.
+  - try:
+    - apply:
+        file: 16-immutable-controlplaneref-namespace.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'controlPlaneRef.namespace is immutable')): true
+  # catalog.serviceType is immutable (CEL transition rule, UPDATE-only): the
+  # takeover probe runs only while no managed Service child exists.
+  - try:
+    - apply:
+        file: 17-immutable-servicetype.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceType is immutable')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vkeystoneservice.kb.io')): false
+  # catalog.serviceName is immutable, webhook-only here: the base relied on the
+  # metadata.name fallback, so the CEL transition rule on the unset optional
+  # field cannot evaluate and only the webhook's effective-name comparison
+  # rejects the rename.
+  - try:
+    - apply:
+        file: 18-immutable-servicename-explicit.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceName is immutable')): true
+  # account.userName is immutable (CEL transition rule, UPDATE-only): a rename
+  # would mint a second Keystone user and strand the first.
+  - try:
+    - apply:
+        file: 19-immutable-username.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'userName is immutable')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vkeystoneservice.kb.io')): false
+  # account.domainName is immutable, webhook-only here: the webhook compares
+  # the DECLARED value, so an explicit domainName over the fallback is rejected
+  # even where it would name the same domain.
+  - try:
+    - apply:
+        file: 20-immutable-domainname-explicit.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'domainName is immutable')): true
+  # account.project.create is immutable (CEL transition rule, UPDATE-only): the
+  # flip would hand the registration ownership of a project it referenced, and
+  # deleting the CR would then delete that live project.
+  - try:
+    - apply:
+        file: 21-immutable-project-create.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'project.create is immutable')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vkeystoneservice.kb.io')): false
+  # account.project.name is immutable (CEL transition rule, UPDATE-only): the
+  # role assignments the registration already minted stay behind on the old
+  # project, so the edit scopes every later one somewhere else.
+  - try:
+    - apply:
+        file: 22-immutable-project-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'project.name is immutable')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vkeystoneservice.kb.io')): false
+  # ── Declared-value update block ─────────────────────────────────────────
+  # The second valid base is applied FIRST of its own wave and must SUCCEED: it
+  # carries no expect block, so an admission failure here fails the Test. It
+  # DECLARES catalog.serviceName and account.domainName, the two optional
+  # fields the ks-immutable base leaves to their fallbacks. A CEL transition
+  # rule does not evaluate when the old object left the field unset, so steps
+  # 18 and 20 above reach only the webhook and the schema-layer half of both
+  # freezes is reachable from this base alone.
+  - try:
+    - apply:
+        file: 23-immutable-base-explicit.yaml
+  # catalog.serviceName is immutable at the SCHEMA layer here: the old object
+  # declares the field, so the CEL transition rule evaluates and rejects before
+  # the validating webhook runs. The webhook mirrors the message verbatim, so
+  # the step also requires the error to carry no webhook denial, on the two arms
+  # the update-rejection block above describes.
+  - try:
+    - apply:
+        file: 24-immutable-servicename-cel.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'serviceName is immutable')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vkeystoneservice.kb.io')): false
+  # account.domainName is immutable at the SCHEMA layer here, for the reason
+  # above: the old object declares the field, so the CEL transition rule
+  # evaluates first and the webhook mirror never runs.
+  - try:
+    - apply:
+        file: 25-immutable-domainname-cel.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'domainName is immutable')): true
+            (contains($error, 'admission webhook')): false
+            (contains($error, 'vkeystoneservice.kb.io')): false
