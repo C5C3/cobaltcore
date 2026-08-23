@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# catalog.endpoints[].interface 'gopher' is outside the CRD enum (public,
+# internal, admin), the three interfaces a Keystone catalog row can be published
+# under. The error names 'interface' and carries 'supported values'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-invalid-interface-enum
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  catalog:
+    serviceType: object-store
+    endpoints:
+    - interface: gopher
+      url: https://swift.example.com

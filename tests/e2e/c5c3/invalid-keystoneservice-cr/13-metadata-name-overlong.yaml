@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A 211-byte metadata.name is rejected by the validating webhook's child-name
+# bound, the one rule the CRD schema cannot express: nothing caps metadata.name
+# below the apiserver's own 253 bytes, but every child K-ORC CR carries the
+# 43-byte base overhead every KeystoneService is charged (this CR declares no
+# account, so it is not charged the wider roles budget), and 211 + 43 = 254
+# crosses the limit. Without the gate, admission would accept a CR whose reconcile
+# then wedges projecting a child the apiserver rejects. The error carries the
+# substring 'shorten the KeystoneService name'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  catalog:
+    serviceType: object-store
+    endpoints:
+    - interface: public
+      url: https://swift.example.com

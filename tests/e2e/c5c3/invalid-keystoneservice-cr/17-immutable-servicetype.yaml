@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE changing catalog.serviceType, rejected by the CEL transition rule on the
+# field. The collision probe that decides whether a pre-existing row of this type
+# and name may be taken over runs only while no managed Service child exists, so
+# an in-place edit re-shapes the registered row without ever re-probing. The error
+# carries the substring 'serviceType is immutable'.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-immutable
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  catalog:
+    serviceType: block-storage
+    endpoints:
+    - interface: public
+      url: https://swift.example.com
+  account:
+    userName: svc-object-store
+    project:
+      name: service
+    roles:
+    - service

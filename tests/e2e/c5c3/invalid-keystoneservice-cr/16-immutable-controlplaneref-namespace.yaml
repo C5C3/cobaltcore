@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE adding an explicit controlPlaneRef.namespace over the empty default,
+# rejected by the validating webhook's effective-namespace comparison. The freeze
+# is webhook-only: an empty value means the CR's own namespace, and no CEL rule on
+# a spec field can read metadata.namespace to resolve it. The error carries the
+# substring:
+# controlPlaneRef.namespace is immutable
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-immutable
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+    namespace: elsewhere
+  catalog:
+    serviceType: object-store
+    endpoints:
+    - interface: public
+      url: https://swift.example.com
+  account:
+    userName: svc-object-store
+    project:
+      name: service
+    roles:
+    - service

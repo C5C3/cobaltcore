@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE re-pointing controlPlaneRef.name at another ControlPlane, rejected by the
+# CEL transition rule on spec.controlPlaneRef. The edit would strand the Keystone
+# user, project and catalog row the registration already created on the old plane,
+# owned by nothing. The error carries the substring:
+# controlPlaneRef.name is immutable
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-immutable
+spec:
+  controlPlaneRef:
+    name: cp-other
+  catalog:
+    serviceType: object-store
+    endpoints:
+    - interface: public
+      url: https://swift.example.com
+  account:
+    userName: svc-object-store
+    project:
+      name: service
+    roles:
+    - service

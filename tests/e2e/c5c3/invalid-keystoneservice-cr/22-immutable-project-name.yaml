@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE re-pointing account.project.name at another project, rejected by the CEL
+# transition rule on the project field: the role assignments the registration
+# already minted stay behind on the old project, so the edit scopes every later
+# one to a project the earlier ones never reached. The error carries the
+# substring:
+# project.name is immutable
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: ks-immutable
+spec:
+  controlPlaneRef:
+    name: cp-invalid-cr-absent
+  catalog:
+    serviceType: object-store
+    endpoints:
+    - interface: public
+      url: https://swift.example.com
+  account:
+    userName: svc-object-store
+    project:
+      name: other-project
+    roles:
+    - service
