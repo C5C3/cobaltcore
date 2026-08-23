@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Proves the delivered credentials are the LIVE ones.
+#
+# Asserting the Secret's two keys only proves ESO materialized something. This
+# authenticates with it: `token issue` fails unless the password in the Secret is
+# the password K-ORC applied to the Keystone user, and `catalog show` fails
+# unless the named entry reached the catalog the token carries. The entry shown
+# is @CATALOG_ENTRY@: the registration's own name in the round-trip and rotation
+# legs, the adopted "legacy" row in the collision leg.
+#
+# When the rotation leg has created the Secret @KS_NAME@-verify-oldpw, the Job
+# additionally proves the pre-rotation password is rejected. The value arrives
+# through an optional secretKeyRef rather than a substituted `value:` field, so
+# the cleartext never lands in the Job object. It goes in as --os-password, which
+# overrides the password of the cloud --os-cloud selects, and the rejection has
+# to look like one — a failed call is only a proof if it failed on the
+# credential, not on an unreachable Keystone.
+#
+# All of these are identity calls, so the region workaround the full-chain suite
+# needs for its non-identity commands does not apply here: the identity endpoints
+# keystone-manage bootstrap creates carry RegionOne, which is what the delivered
+# clouds.yaml pins.
+#
+# The image is pinned to the tag the e2e-controlplane job loads into kind, with
+# IfNotPresent so it uses that copy rather than pulling from GHCR. The test
+# script substitutes the three placeholders, applies the Job after the
+# registration converges, and removes it in its finally block.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "@KS_NAME@-verify"
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: osc
+        image: ghcr.io/c5c3/tempest:2025.2
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OS_CLIENT_CONFIG_FILE
+          value: /etc/openstack/clouds.yaml
+        - name: CATALOG_ENTRY
+          value: "@CATALOG_ENTRY@"
+        - name: ENDPOINT_URL
+          value: "@ENDPOINT_URL@"
+        # The rotation leg creates @KS_NAME@-verify-oldpw before it applies the
+        # Job and deletes it after; the other legs run without the Secret, and
+        # optional: true then leaves OLD_PASSWORD unset.
+        - name: OLD_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: "@KS_NAME@-verify-oldpw"
+              key: password
+              optional: true
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          echo "== openstack --os-cloud admin token issue =="
+          openstack --os-cloud admin token issue
+          echo "== openstack --os-cloud admin catalog show ${CATALOG_ENTRY} =="
+          openstack --os-cloud admin catalog show "${CATALOG_ENTRY}" > /tmp/catalog.txt
+          cat /tmp/catalog.txt
+          grep -q "${ENDPOINT_URL}" /tmp/catalog.txt
+          if [ -n "${OLD_PASSWORD}" ]; then
+            echo "== the pre-rotation password must be rejected =="
+            if OLD_OUT="$(openstack --os-cloud admin --os-password "${OLD_PASSWORD}" token issue 2>&1)"; then
+              echo "ERROR: the pre-rotation password still authenticates"
+              exit 1
+            fi
+            # A call that failed on anything but the credential proves nothing:
+            # an unreachable Keystone fails here exactly as a rejection does.
+            if ! printf '%s\n' "${OLD_OUT}" | grep -qiE 'unauthorized|401|authentication'; then
+              echo "ERROR: the pre-rotation attempt failed, but not on the credential:"
+              printf '%s\n' "${OLD_OUT}"
+              exit 1
+            fi
+            echo "OK: the pre-rotation password is rejected"
+          fi
+          echo "OK: the delivered credentials authenticate and the catalog carries the registered endpoint"
+        volumeMounts:
+        - name: clouds
+          mountPath: /etc/openstack
+          readOnly: true
+      volumes:
+      - name: clouds
+        secret:
+          secretName: "@KS_NAME@-credentials"

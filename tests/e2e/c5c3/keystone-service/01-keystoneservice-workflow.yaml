@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The registration under test: a service in the ControlPlane's OWN namespace,
+# declaring both blocks against it.
+#
+# spec.controlPlaneRef.namespace is left unset on purpose. The CR then resolves
+# the plane in its own namespace, which is the default this suite proves.
+#
+# Both blocks are declared. The catalog block puts a row in the service catalog;
+# the account block brings credentials back the other way, into a Secret in this
+# namespace, delivered through the tenant store the ControlPlane provisions here.
+#
+# The role is "service", the role keystone-manage bootstrap creates. Every
+# declared role becomes an UNMANAGED K-ORC Role import, so a role that does not
+# exist in Keystone never resolves.
+#
+# The user name and the catalog service name are both left to default to
+# metadata.name ("workflow"). The endpoints point at a Service that does not have
+# to exist, since registering a catalog row never connects to it. @CP_NS@ is
+# substituted by the test with the ephemeral namespace.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: workflow
+spec:
+  controlPlaneRef:
+    name: cp
+  catalog:
+    serviceType: workflow
+    endpoints:
+    - interface: public
+      url: "http://workflow-api.@CP_NS@.svc.cluster.local:8989/v2"
+    - interface: internal
+      url: "http://workflow-api.@CP_NS@.svc.cluster.local:8989/v2"
+  account:
+    project:
+      name: service-workflow
+      create: true
+    roles:
+    - service

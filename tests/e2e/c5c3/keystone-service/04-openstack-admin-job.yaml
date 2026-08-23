@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The admin-side counterpart of the verify Job: identity calls driven as the
+# cloud admin, through the plane's per-CR k-orc-clouds-yaml Secret, the same
+# Secret the full-chain suite's verify Job mounts.
+#
+# seed creates the stray catalog row and the stray user the collision leg
+# registers against. show reports what Keystone holds, so the test can assert
+# that a row was adopted rather than duplicated, and later that the adopted row
+# left with its CR while the never-adopted user stayed. Both modes print a
+# SERVICE_ID= and a USER_ID= line the test parses out of the Job's log; in show
+# mode a duplicate row turns into a comma-joined id list, and a row or user that
+# is gone into ABSENT.
+#
+# ABSENT means the row is gone, never "Keystone could not be asked": every lookup
+# captures the list first and fails loudly when the call itself failed. Both
+# creates are guarded for the same reason a retry must re-converge rather than
+# stack a second copy of the row.
+#
+# Identity calls only, so no region-stripping workaround. The Job is reserved for
+# the rows only an admin can see or create, which is the collision leg and the
+# deletion leg. Rendered and applied by the test script, removed in its finally
+# block.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "admin-osc-@MODE@"
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: osc
+        image: ghcr.io/c5c3/tempest:2025.2
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OS_CLIENT_CONFIG_FILE
+          value: /etc/openstack/clouds.yaml
+        - name: MODE
+          value: "@MODE@"
+        - name: SERVICE_TYPE
+          value: "@SERVICE_TYPE@"
+        - name: SERVICE_NAME
+          value: "@SERVICE_NAME@"
+        - name: USER_NAME
+          value: "@USER_NAME@"
+        - name: USER_DOMAIN
+          value: Default
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          set -e
+          # Both lookups capture the list and branch on the failure explicitly.
+          # The container runs /bin/sh, where a pipeline's exit status is the last
+          # command's — the awk or the paste, never the openstack call — so `set
+          # -e` cannot see a Keystone that is restarting, a token that expired or
+          # a connection that was reset, and the empty capture would be reported
+          # as "the row is gone".
+          service_ids() { # the ids of the rows matching SERVICE_NAME and SERVICE_TYPE, comma joined
+            if ! LIST="$(openstack --os-cloud admin service list -f value -c ID -c Name -c Type)"; then
+              echo "ERROR: the catalog lookup failed; absence cannot be told from an unreachable Keystone" >&2
+              exit 1
+            fi
+            printf '%s\n' "${LIST}" \
+              | awk -v n="${SERVICE_NAME}" -v t="${SERVICE_TYPE}" '$2 == n && $3 == t { print $1 }' \
+              | paste -sd, -
+          }
+          user_ids() { # the ids of the users named USER_NAME in USER_DOMAIN, comma joined
+            if ! LIST="$(openstack --os-cloud admin user list --domain "${USER_DOMAIN}" -f value -c ID -c Name)"; then
+              echo "ERROR: the user lookup failed; absence cannot be told from an unreachable Keystone" >&2
+              exit 1
+            fi
+            printf '%s\n' "${LIST}" | awk -v n="${USER_NAME}" '$2 == n { print $1 }' | paste -sd, -
+          }
+          case "${MODE}" in
+            seed)
+              echo "== seeding a stray catalog row and a stray user for the collision leg =="
+              # backoffLimit allows a second attempt, and Keystone's `service
+              # create` does not reject a duplicate: it stacks a second row with a
+              # new id, which the collision leg would then assert against the
+              # wrong one, while `user create` fails the retry with a 409. Both
+              # are guarded, as the brownfield fixture Job guards its own.
+              SERVICE_ID="$(service_ids)"
+              if [ -z "${SERVICE_ID}" ]; then
+                SERVICE_ID="$(openstack --os-cloud admin service create --name "${SERVICE_NAME}" "${SERVICE_TYPE}" -f value -c id)"
+              fi
+              USER_ID="$(user_ids)"
+              if [ -z "${USER_ID}" ]; then
+                USER_ID="$(openstack --os-cloud admin user create --domain "${USER_DOMAIN}" \
+                  --password "$(head -c 24 /dev/urandom | base64)" "${USER_NAME}" -f value -c id)"
+              fi
+              echo "SERVICE_ID=${SERVICE_ID}"
+              echo "USER_ID=${USER_ID}"
+              ;;
+            show)
+              echo "== looking up the rows as the cloud admin =="
+              SERVICE_IDS="$(service_ids)"
+              USER_IDS="$(user_ids)"
+              echo "SERVICE_ID=${SERVICE_IDS:-ABSENT}"
+              echo "USER_ID=${USER_IDS:-ABSENT}"
+              ;;
+            *)
+              echo "ERROR: unknown MODE '${MODE}'"
+              exit 1
+              ;;
+          esac
+        volumeMounts:
+        - name: clouds
+          mountPath: /etc/openstack
+          readOnly: true
+      volumes:
+      - name: clouds
+        secret:
+          secretName: k-orc-clouds-yaml
