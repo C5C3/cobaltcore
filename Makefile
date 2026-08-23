@@ -387,6 +387,7 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/keystone/invalid-identitybackend-cr/_generate.py --check
 	@python3 tests/e2e/horizon/invalid-cr/_generate.py --check
 	@python3 tests/e2e/c5c3/invalid-cr/_generate.py --check
+	@python3 tests/e2e/c5c3/invalid-keystoneservice-cr/_generate.py --check
 	@python3 tests/e2e/glance/invalid-cr/_generate.py --check
 	@python3 tests/e2e/glance/invalid-glancebackend-cr/_generate.py --check
 	@python3 tests/e2e/placement/invalid-cr/_generate.py --check
@@ -397,6 +398,7 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/keystone/invalid-identitybackend-cr/test_generate.py
 	@python3 tests/e2e/horizon/invalid-cr/test_generate.py
 	@python3 tests/e2e/c5c3/invalid-cr/test_generate.py
+	@python3 tests/e2e/c5c3/invalid-keystoneservice-cr/test_generate.py
 	@python3 tests/e2e/glance/invalid-cr/test_generate.py
 	@python3 tests/e2e/glance/invalid-glancebackend-cr/test_generate.py
 	@python3 tests/e2e/placement/invalid-cr/test_generate.py
