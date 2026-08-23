@@ -45,11 +45,13 @@ deploys keystone-operator, c5c3-operator, and K-ORC as local dev images
 `full-controlplane-keystone` suite so broken wiring in the live chain fails
 the build instead of skipping. A second step on the same job runs
 `keystone-service-foreign-namespace`, which brings up a Keystone-only
-ControlPlane of its own and seeds that plane's OpenBao paths itself. The two
-suites run in sequence because the shared chainsaw config sets `failFast`, so
-one invocation over both directories would let a failure in either abort the
-other. See the [CI workflow reference](../ci-cd/ci-workflow.md) for the job
-definition.
+ControlPlane of its own and seeds that plane's OpenBao paths itself. A third
+runs `keystone-service`, the own-namespace registration suite: the round-trip,
+a rotation through a `CredentialRotation`, a collision held until `adopt`, and
+deletion, against a Keystone-only plane of its own. The three suites run in
+sequence because the shared chainsaw config sets `failFast`, so one invocation
+over the directories would let a failure in any abort the others. See the
+[CI workflow reference](../ci-cd/ci-workflow.md) for the job definition.
 
 ## Running the Tests
 
@@ -76,6 +78,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | --- | --- | --- |
 | [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check |
 | [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, and de-listing freezes instead of tearing down |
+| [keystone-service](#keystone-service) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `legacy` + `CredentialRotation` `rotate-workflow` | Own-namespace registration: the round-trip authenticates through the materialized clouds.yaml, a CredentialRotation rotates the password, a registration colliding with pre-existing rows holds at `ServiceCollision` / `ServiceAccountCollision` until adopt takes them over, and deletion leaves no residue |
 | [external-keystone](#external-keystone) | `controlplane-external` (+ 3 negative CRs) | External mode against a plain, operator-free Keystone: convergence with zero children, imports, the app-credential round-trip, no catalog pollution, service accounts, drift + rotation, `endpoint_type` detection, and zero-blast-radius deletion |
 | [federated-controlplane](#federated-controlplane) | `controlplane-sso` | The end-user SSO experience: websso projection, the login page's SSO choice and domain field, the websso round trip through the gateway |
 | [deletion-orchestration](#deletion-orchestration) | `deletion-orch` | ORC-teardown finalizer sequencing; deletion completes even when Keystone is already gone, and the projected Barbican registration and its label-owned K-ORC CRs leave no residue |
@@ -427,6 +430,82 @@ Run it locally against a full ControlPlane stack with
 the full-chain suite. It is the second chainsaw step of the `e2e-controlplane` CI
 job.
 
+### keystone-service
+
+Covers the registration form every built-in service will use: a `KeystoneService`
+in the ControlPlane's own namespace, which needs no allowlist entry. Register,
+rotate, collide loudly, delete cleanly: each behaviour is unit-tested on a fake
+client and again in envtest with K-ORC as schema, and neither of those sees
+Keystone, OpenBao, ESO or cert-manager. No other e2e asserts `ServiceCollision`
+or `ServiceAccountCollision`.
+
+Four legs run against the live stack:
+
+1. **Round-trip**: `workflow` declares both blocks with
+   `controlPlaneRef.namespace` unset and reaches `Ready=True/AllReady`,
+   `CatalogReady=CatalogRegistered`, `AccountReady=AccountProvisioned`. Seven
+   K-ORC children named `workflow-<hash>-registration-<discriminator>` reach
+   `Available` in the plane's namespace, each controller-owned by the CR, an
+   ownership claim no owner reference can make across a namespace. The consumer
+   Secret `workflow-credentials` is materialised with its `password` and
+   `clouds.yaml` keys, the OpenBao leaf under
+   `openstack/keystone/{namespace}/workflow/service-accounts/credentials` carries
+   the same password, and a Job authenticates with the Secret and shows the
+   catalog row. The plane reports
+   `ServiceAccountsReady=NoServiceRegistrationsProjected` and
+   `RegistrationTenantStoresReady=NoRegistrationNamespaces`.
+2. **Rotation**: a `CredentialRotation` with `reMint: true` rotates the account
+   password. Within 300 s the consumer password changes,
+   `status.account.passwordGeneration` reaches 2, `lastPasswordRotation` is set,
+   `…-password-v2` appears and `…-password-v1` is pruned. The User child's
+   `appliedPasswordRef` and its `cobaltcore.c5c3.io/password-generation`
+   annotation follow. The verify Job then runs with the old password in hand and
+   proves the new one authenticates while the old one is rejected.
+3. **Collision** (decision D6): an admin Job seeds a `metering` catalog row and a
+   `legacy` user, then `legacy` registers against both with no `adopt` and holds
+   at `CatalogReady=False/ServiceCollision` and
+   `AccountReady=False/ServiceAccountCollision`, each message naming the field
+   that consents to a takeover. The waits gate on those reasons, since
+   `ProbingForCollision` also reports `Ready=False` while the imports resolve.
+   Nothing is taken over, re-checked after a 30 s settle. Patching
+   `catalog.adopt: true` takes the row over at its seeded id, with no
+   duplicate; the account half keeps holding; deleting the CR removes the adopted
+   row from Keystone while the never-adopted user stays. The suite stops short of
+   account adoption: with the pinned K-ORC an adopted user keeps its pre-existing
+   password at generation 1, tracked as #920.
+4. **Deletion**: deleting `workflow` leaves no K-ORC object under its labels, no
+   consumer Secret, ExternalSecret, PushSecret, source Secret or password Secret,
+   no live value at the OpenBao leaf, and no service or user row in Keystone. The
+   plane stays `Ready=True` with `NoServiceRegistrationsProjected`.
+
+Its ControlPlane is its own: the webhook admits one per namespace, so the suite
+runs a Keystone-only plane named `cp` in the ephemeral test namespace and seeds
+the same two OpenBao prerequisites the sibling does (`write-bootstrap-secrets.sh`
+with `KORC_CONTROLPLANES` pointing at its own identity, then
+`setup-database-tenant.sh`). Before the first registration lands it waits for
+`InfrastructureReady`, `DBCredentialsReady`, `KeystoneReady`, `KORCReady`,
+`AdminCredentialReady`, `ESOTenantStoreReady` and `Ready`. The tenant-store wait
+is the one addition over the sibling: the registration's
+ExternalSecret and PushSecret ride the plane's own-namespace
+`openbao-tenant-store`, so the store is proven up before a delivery that never
+starts can be blamed on the registration.
+
+Two Job fixtures do the looking. `workflow-verify` mounts the consumer Secret and
+runs `openstack token issue` and `openstack catalog show`, templated over the
+registration name, the catalog entry to show, and the endpoint URL that entry
+must carry. The rotation leg additionally hands it the pre-rotation password
+through a Secret it creates and deletes around the run, so the cleartext never
+lands in the Job object.
+`admin-osc-seed` and `admin-osc-show` mount the plane's `k-orc-clouds-yaml` and
+drive the same CLI as the cloud admin, for the rows only an admin can see or
+create. Both print a `SERVICE_ID=` and a `USER_ID=` line the test script parses
+out of the Job log, with `ABSENT` for a row that is gone.
+
+Run it locally against a full ControlPlane stack with
+`E2E_REQUIRE_CONTROLPLANE_STACK=true make e2e-controlplane`, which runs it third,
+after the full-chain and foreign-namespace suites. It is the third chainsaw step
+of the `e2e-controlplane` CI job.
+
 ## File Layout
 
 ```text
@@ -460,6 +539,14 @@ tests/e2e/c5c3/
 │   ├── chainsaw-test.yaml              Full chain, link by link
 │   ├── 00-controlplane-cr.yaml         ControlPlane CR (controlplane-keystone)
 │   └── 01-openstack-verify-job.yaml    openstack CLI verify Job
+├── keystone-service/
+│   ├── chainsaw-test.yaml              Own-namespace registration, four legs
+│   ├── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; no allowlist)
+│   ├── 01-keystoneservice-workflow.yaml  The round-trip registration (workflow)
+│   ├── 02-keystoneservice-legacy.yaml  The colliding registration (legacy)
+│   ├── 03-openstack-verify-job.yaml    openstack CLI verify Job on the consumer Secret
+│   ├── 04-openstack-admin-job.yaml     openstack CLI admin Job (seed / show)
+│   └── 05-credentialrotation-workflow.yaml  Rotation trigger for workflow
 ├── keystone-service-foreign-namespace/
 │   ├── chainsaw-test.yaml              Cross-namespace registration, three legs
 │   ├── 00-controlplane-cr.yaml         Keystone-only ControlPlane (cp; @TENANT_NS@ token)
