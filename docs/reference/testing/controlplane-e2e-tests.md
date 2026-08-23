@@ -79,7 +79,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | [full-controlplane-keystone](#full-controlplane-keystone) | `controlplane-keystone` | The entire orchestration chain, link by link, through aggregate `Ready` and a live API check |
 | [keystone-service-foreign-namespace](#keystone-service-foreign-namespace) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `outsider` | Cross-namespace registration: an allowlisted namespace registers and authenticates with its consumer Secret, an unlisted one holds at `NamespaceNotAllowed`, and de-listing freezes instead of tearing down |
 | [keystone-service](#keystone-service) | `cp` (ephemeral namespace) + `KeystoneService` `workflow` / `legacy` + `CredentialRotation` `rotate-workflow` | Own-namespace registration: the round-trip authenticates through the materialized clouds.yaml, a CredentialRotation rotates the password, a registration colliding with pre-existing rows holds at `ServiceCollision` / `ServiceAccountCollision` until adopt takes them over, and deletion leaves no residue |
-| [external-keystone](#external-keystone) | `controlplane-external` (+ 3 negative CRs) | External mode against a plain, operator-free Keystone: convergence with zero children, imports, the app-credential round-trip, no catalog pollution, service accounts, drift + rotation, `endpoint_type` detection, and zero-blast-radius deletion |
+| [external-keystone](#external-keystone) | `controlplane-external` (+ 3 negative CRs) | External mode against a plain, operator-free Keystone: convergence with zero children, imports, the app-credential round-trip, no catalog pollution, a brownfield registration's round-trip, rotation and teardown, drift + rotation, `endpoint_type` detection, and zero-blast-radius deletion |
 | [federated-controlplane](#federated-controlplane) | `controlplane-sso` | The end-user SSO experience: websso projection, the login page's SSO choice and domain field, the websso round trip through the gateway |
 | [deletion-orchestration](#deletion-orchestration) | `deletion-orch` | ORC-teardown finalizer sequencing; deletion completes even when Keystone is already gone, and the projected Barbican registration and its label-owned K-ORC CRs leave no residue |
 | [admin-password-scoping](#admin-password-scoping) | `controlplane` | Per-CR OpenBao-backed admin password projection |
@@ -184,13 +184,18 @@ its catalog with a non-default admin identity (domain `heimdall`, project
 3. **App credential** — minted against the external Keystone, present at the per-CR
    OpenBao path with the ESO `managed-by` stamp and in a materialised clouds.yaml
    targeting the external API; a verify Job authenticates a client with it.
-4. **No pollution** — the external services, endpoints, and domains are byte-for-byte
-   identical to a pre-recorded baseline; users and projects gained exactly the one
-   declared service account.
-5. **Service accounts** — the declared inline account issues an unscoped token, and
-   a `CredentialRotation` round-trips the password of `rotation-probe`, a
-   suite-created account-only `KeystoneService` registration (new works, old is
-   rejected).
+4. **No pollution** — once the ControlPlane has converged, the external services,
+   endpoints, domains, roles, users and projects are byte-identical to a
+   pre-recorded baseline.
+5. **Brownfield registration** — the `nova` `KeystoneService` (a `compute` catalog
+   entry with two endpoint rows, an account in `heimdall` holding the `service`
+   role) reaches `Ready=True/AllReady`. Its consumer Secret `nova-credentials`
+   authenticates a verify Job against the external API, and `catalog show nova`
+   carries the registered row. The admin-side inventory gained the service, the
+   two endpoints, the user and the project the registration declared, and nothing
+   else. A `CredentialRotation` then rotates the account password: the new one
+   authenticates, the old one is rejected, and the verify Job re-runs on the
+   rotated Secret. Its teardown takes those rows back out again.
 6. **Drift + rotation** — changing the external admin password without updating the
    Secret makes a forced re-mint fail loudly (a documented drift reason, no
    remediation); updating the Secret then drives a hash-driven re-mint to a fresh
@@ -307,6 +312,12 @@ the placement and lifecycle contract on a live cluster:
   and nothing in the ControlPlane's own namespace;
 - a per-tenant `openbao-tenant-store` `SecretStore` is provisioned in every
   namespace the ControlPlane occupies;
+- a `KeystoneService` placed in the `Managed` Keystone namespace is admitted
+  without an allowlist entry and parks at
+  `AccountReady=False/WaitingForAdminCredential`, since the suite never seeds
+  OpenBao; `CatalogReady` reads `True/CatalogNotDeclared`, no consumer Secret is
+  delivered into that namespace and no K-ORC child is projected for it, and the CR
+  is released within 180 s of the ControlPlane's deletion;
 - on deletion the cross-namespace children are torn down explicitly (no GC
   cascade reaches them), the `Managed` namespace is deleted, and the `External`
   namespace **survives** with its ControlPlane residue swept.
@@ -322,7 +333,9 @@ The credential material and the projected Keystone child sit behind the
 OpenBao-seeded DB-credential / admin-password machinery this ephemeral suite
 cannot reach; the full cross-namespace readiness (the credential ExternalSecrets,
 the projected child, the OpenBao path re-keying) is hard-asserted in the envtest
-scenario `TestIntegration_DedicatedNamespaces` on every PR.
+scenario `TestIntegration_DedicatedNamespaces` on every PR. The registration's
+credential delivery into the dedicated namespace waits on the same unseeded admin
+credential, and that scenario asserts it too.
 
 ### multi-controlplane
 
@@ -521,7 +534,8 @@ tests/e2e/c5c3/
 │   └── 00-controlplane-cr.yaml         ControlPlane CR (cp; ephemeral namespace)
 ├── dedicated-namespaces/
 │   ├── chainsaw-test.yaml              Per-service dedicated namespaces + lifecycles
-│   └── 00-controlplane-cr.yaml         ControlPlane CR (cp; @KEYSTONE_NS@/@HORIZON_NS@ tokens)
+│   ├── 00-controlplane-cr.yaml         ControlPlane CR (cp; @KEYSTONE_NS@/@HORIZON_NS@ tokens)
+│   └── 01-keystoneservice-nova.yaml    The parked registration in the Managed Keystone namespace (@KEYSTONE_NS@/@CP_NS@ tokens)
 ├── deletion-orchestration/
 │   ├── chainsaw-test.yaml              ORC-teardown finalizer sequencing
 │   └── 00-controlplane-cr.yaml         ControlPlane CR (deletion-orch)
@@ -530,11 +544,13 @@ tests/e2e/c5c3/
 │   ├── 00-fixture-keystone.yaml        Plain SQLite Keystone fixture (no operator)
 │   ├── 01-fixture-catalog-setup-job.yaml  Non-default identities + duplicate service
 │   ├── 02-admin-password-secret.yaml   Fixture admin password for the main CR
-│   ├── 02-controlplane-external.yaml   Main External CR + service account
+│   ├── 02-controlplane-external.yaml   Main External CR
 │   ├── 03-controlplane-wrong-password.yaml  Wrong-password negative case
 │   ├── 04-controlplane-stalled.yaml    Unreachable-internal-endpoint case
 │   ├── 05-controlplane-ambiguous.yaml  Ambiguous-catalog negative case
-│   └── 06-openstack-verify-job.yaml    openstack CLI verify Job
+│   ├── 06-openstack-verify-job.yaml    openstack CLI verify Job
+│   ├── 07-keystoneservice-nova.yaml    The brownfield registration (nova; compute + account)
+│   └── 08-nova-verify-job.yaml         openstack CLI verify Job on nova-credentials
 ├── full-controlplane-keystone/
 │   ├── chainsaw-test.yaml              Full chain, link by link
 │   ├── 00-controlplane-cr.yaml         ControlPlane CR (controlplane-keystone)
