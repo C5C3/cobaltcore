@@ -20,9 +20,14 @@
 #                         pre-recorded inventory, not just "no error".
 #   - Registrations      : ServiceAccountsReady aggregates the projected
 #                         KeystoneService children, and this CR projects none, so
-#                         it reports NoServiceRegistrationsProjected; the password
-#                         rotation round-trips against a suite-created
-#                         KeystoneService registration (rotation-probe).
+#                         it reports NoServiceRegistrationsProjected. A
+#                         suite-created brownfield KeystoneService (nova)
+#                         declaring both blocks, a compute catalog row with two
+#                         endpoints and a service account in heimdall, reaches
+#                         Ready against the external Keystone: its consumer
+#                         Secret authenticates a verify Job and shows the
+#                         registered row, a CredentialRotation rotates it, and
+#                         its teardown takes the rows it added back out.
 #   - Drift surfaced     : the external admin password changes without the Secret
 #                         following; a forced re-mint fails loudly (documented
 #                         actionable reason) and the operator does NOT remediate.
@@ -68,10 +73,10 @@ spec:
   # that namespace. The fixture and the three negative ControlPlanes live in their
   # own namespaces, created and torn down inside the script.
   namespace: brownfield
-  # The step budget carries the four ControlPlanes plus the Block 6 rotation
-  # probe, which adds three waits of its own: its registration must converge,
-  # the rotation poll runs for up to 300s, and its finalizer teardown is
-  # awaited before Block 7 starts.
+  # The step budget carries the four ControlPlanes plus the Block 6 nova
+  # registration, which adds waits of its own: a 600s Ready wait, two verify
+  # Jobs, a rotation poll of up to 300s, and a finalizer teardown awaited
+  # before Block 7 starts.
   timeouts:
     assert: 5m
     exec: 40m
@@ -91,7 +96,8 @@ spec:
           AUTH_URL="http://keystone.brownfield-keystone.svc:5000/v3"
           CLOUDS_SECRET="k-orc-clouds-yaml"
           ADMIN_AC_KV="openstack/keystone/${CP_NS}/${CP}/admin/app-credential"
-          ROTATION_PROBE_KV="openstack/keystone/${CP_NS}/rotation-probe/service-accounts/credentials"
+          NOVA_KV="openstack/keystone/${CP_NS}/nova/service-accounts/credentials"
+          NOVA_SECRET="nova-credentials"
           IMG=ghcr.io/c5c3/tempest:2025.2
           WORK="$(mktemp -d)"
 
@@ -178,6 +184,8 @@ spec:
             -o "jsonpath={.status.conditions[?(@.type=='$3')].reason}" 2>/dev/null || true; }
           cp_message() { kubectl get controlplane "$1" -n "$2" \
             -o "jsonpath={.status.conditions[?(@.type=='$3')].message}" 2>/dev/null || true; }
+          ks_reason() { kubectl get keystoneservice "$1" -n "$2" \
+            -o "jsonpath={.status.conditions[?(@.type=='$3')].reason}" 2>/dev/null || true; }
 
           assert_eq() { # <desc> <expected> <actual>
             if [ "$2" != "$3" ]; then echo "ERROR: $1 — expected '$2', got '$3'"; exit 1; fi
@@ -232,6 +240,31 @@ spec:
               sleep 5
             done
             echo "OK: ${res}/${name} in ${ns} is gone"
+          }
+
+          # kubectl wait --for=condition=complete only ever watches the condition it
+          # is given, so a Job that reaches Failed satisfies nothing and sits out the
+          # whole timeout before reporting "timed out" and nothing about the cause.
+          # Poll BOTH terminal conditions and dump the Job log on either bad outcome.
+          wait_job() { # <job> <ns> <timeout>
+            local job="$1" ns="$2" timeout="$3" deadline complete failed
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              complete="$(kubectl get job "$job" -n "$ns" \
+                -o "jsonpath={.status.conditions[?(@.type=='Complete')].status}" 2>/dev/null || true)"
+              failed="$(kubectl get job "$job" -n "$ns" \
+                -o "jsonpath={.status.conditions[?(@.type=='Failed')].status}" 2>/dev/null || true)"
+              if [ "$complete" = "True" ]; then echo "OK: job/${job} in ${ns} completed"; return 0; fi
+              if [ "$failed" = "True" ]; then
+                kubectl logs -n "$ns" "job/${job}" --tail=80 2>&1 || true
+                echo "ERROR: job/${job} in ${ns} failed"; return 1
+              fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                kubectl logs -n "$ns" "job/${job}" --tail=80 2>&1 || true
+                echo "ERROR: job/${job} in ${ns} neither completed nor failed within ${timeout}s"; return 1
+              fi
+              sleep 5
+            done
           }
 
           # osc_admin runs `openstack $@` against the fixture as its bootstrap admin
@@ -304,6 +337,21 @@ spec:
               --command -- /bin/sh -c 'echo "@@OSC@@"; openstack "$@" 2>/dev/null; echo "@@OSC_RC=$?@@"' osc "$@" \
               2>/dev/null | osc_fence_extract
           }
+          # osc_user_probe is osc_user_capture with the client's stderr folded INTO
+          # the fenced body rather than dropped in-pod. Its one caller is the
+          # post-rotation revocation probe, which has to tell a rejected credential
+          # apart from a Keystone it could not reach — `openstack` reports both on
+          # stderr and exits 1 either way, so the exit status alone cannot.
+          osc_user_probe() { # <user> <user-domain> <password> <args...>
+            local u="$1" d="$2" pw="$3"; shift 3
+            kubectl run "oscp-$(date +%s%N)" -n "${FIX_NS}" --rm -i --restart=Never \
+              --image="${IMG}" --image-pull-policy=IfNotPresent \
+              --env OS_AUTH_URL="${AUTH_URL}" --env OS_IDENTITY_API_VERSION=3 \
+              --env OS_USERNAME="$u" --env OS_USER_DOMAIN_NAME="$d" \
+              --env "OS_PASSWORD=${pw}" \
+              --command -- /bin/sh -c 'echo "@@OSC@@"; openstack "$@" 2>&1; echo "@@OSC_RC=$?@@"' osc "$@" \
+              2>/dev/null | osc_fence_extract
+          }
           # capture_inventory snapshots the external catalog + identity into per-
           # resource, id-stripped, C-sorted files under <prefix>.<resource>, so a
           # later diff proves the operator added/removed exactly the rows it should.
@@ -317,7 +365,7 @@ spec:
               --env "OS_PASSWORD=${BOOTSTRAP_ADMIN_PW}" \
               --command -- /bin/sh -c '
                 set -e
-                for r in service endpoint user project domain; do
+                for r in service endpoint user project domain role; do
                   echo "@@@${r}@@@"
                   openstack ${r} list -f value 2>/dev/null
                 done
@@ -334,7 +382,7 @@ spec:
               echo "ERROR: inventory capture ${prefix} did not complete; output was:"
               printf '%s\n' "$raw"; exit 1
             fi
-            for r in service endpoint user project domain; do
+            for r in service endpoint user project domain role; do
               printf '%s\n' "$out" \
                 | awk -v s="@@@${r}@@@" '$0==s{f=1;next} /^@@@/{f=0} f' \
                 | awk '{$1=""; sub(/^ +/,""); print}' | LC_ALL=C sort > "${prefix}.${r}"
@@ -359,7 +407,7 @@ spec:
           # behind (metadata survives, `kv get` exits 0 with data:null), and
           # that must read as "not seeded" or the suite can never re-run on the
           # same cluster.
-          for kv in "${ADMIN_AC_KV}"; do
+          for kv in "${ADMIN_AC_KV}" "${NOVA_KV}"; do
             if json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${kv}" 2>/dev/null)" \
                && ! printf '%s' "$json" | jq -e '.data.data == null' >/dev/null 2>&1; then
               echo "ERROR: ${kv} already holds a live value; never-seeded precondition violated"; exit 1
@@ -368,7 +416,7 @@ spec:
           echo "OK: the External ControlPlane's OpenBao paths hold no live value (never seeded or cleanly purged)."
           capture_inventory "${WORK}/B0"
           echo "== baseline external inventory =="
-          for r in service endpoint user project domain; do
+          for r in service endpoint user project domain role; do
             echo "-- ${r} --"; cat "${WORK}/B0.${r}"
           done
 
@@ -451,21 +499,21 @@ spec:
           assert_contains "clouds.yaml carries an application credential" "$CLOUDS" "application_credential_id"
           kubectl delete job external-openstack-verify -n "${CP_NS}" --ignore-not-found >/dev/null 2>&1 || true
           kubectl apply -f 06-openstack-verify-job.yaml
-          kubectl wait --for=condition=complete job/external-openstack-verify -n "${CP_NS}" --timeout=5m
+          wait_job external-openstack-verify "${CP_NS}" 300
           kubectl logs -n "${CP_NS}" job/external-openstack-verify | grep -qi identity \
             || { echo "ERROR: identity service not listed in the external catalog by the verify Job"; exit 1; }
           echo "OK: the minted credential authenticates a client against the external API."
 
-          # No pollution: services, endpoints, domains, users and projects stay
-          # byte-identical to the baseline.
+          # No pollution: services, endpoints, domains, roles, users and projects
+          # stay byte-identical to the baseline.
           capture_inventory "${WORK}/A1"
-          for r in service endpoint domain; do
+          for r in service endpoint domain role; do
             if ! diff "${WORK}/B0.${r}" "${WORK}/A1.${r}" >/dev/null; then
               echo "ERROR: external ${r} inventory changed after convergence (pollution):"
               diff "${WORK}/B0.${r}" "${WORK}/A1.${r}" || true; exit 1
             fi
           done
-          echo "OK: external services/endpoints/domains unchanged after convergence."
+          echo "OK: external services/endpoints/domains/roles unchanged after convergence."
           assert_empty "no external users removed/renamed" "$(comm -23 "${WORK}/B0.user" "${WORK}/A1.user")"
           assert_empty "no external users added" "$(comm -13 "${WORK}/B0.user" "${WORK}/A1.user")"
           assert_empty "no external projects removed/renamed" "$(comm -23 "${WORK}/B0.project" "${WORK}/A1.project")"
@@ -476,95 +524,192 @@ spec:
           assert_eq "ServiceAccountsReady reason" "NoServiceRegistrationsProjected" \
             "$(cp_reason "${CP}" "${CP_NS}" ServiceAccountsReady)"
 
-          # Rotation round-trip. A CredentialRotation with target
-          # serviceAccountPassword names a KeystoneService, so the round-trip runs
-          # against an account-only registration this suite creates for it in the
-          # ControlPlane's own namespace. The stored ControlPlane projects no
-          # registrations of its own, so the probe is the only account here.
-          kubectl apply -f - <<EOF
-          apiVersion: c5c3.io/v1alpha1
-          kind: KeystoneService
-          metadata:
-            name: rotation-probe
-            namespace: ${CP_NS}
-          spec:
-            controlPlaneRef:
-              name: ${CP}
-            account:
-              project:
-                name: service-rotation-probe
-                create: true
-          EOF
-          kubectl wait --for=condition=Ready "keystoneservice/rotation-probe" -n "${CP_NS}" --timeout=300s
+          # 6a: converge the brownfield nova registration. K-ORC creates a user, a
+          # project, a role import, a role assignment, a service row and two
+          # endpoint rows, and ESO round-trips the password through OpenBao, so
+          # this is the longest wait of the block.
+          kubectl apply -f 07-keystoneservice-nova.yaml
+          kubectl wait --for=condition=Ready keystoneservice/nova -n "${CP_NS}" --timeout=600s
+          assert_eq "nova Ready reason" "AllReady" "$(ks_reason nova "${CP_NS}" Ready)"
+          assert_eq "nova CatalogReady reason" "CatalogRegistered" "$(ks_reason nova "${CP_NS}" CatalogReady)"
+          assert_eq "nova AccountReady reason" "AccountProvisioned" "$(ks_reason nova "${CP_NS}" AccountReady)"
+          ks_json="$(kubectl get keystoneservice nova -n "${CP_NS}" -o json)"
+          assert_eq "status names the consumer Secret" "${NOVA_SECRET}" \
+            "$(printf '%s' "$ks_json" | jq -r '.status.account.secretName // ""')"
+          for path in .status.account.userID .status.account.projectID .status.catalog.serviceID; do
+            v="$(printf '%s' "$ks_json" | jq -r "${path} // \"\"")"
+            assert_empty "${path} is set" "$([ -n "$v" ] && echo "" || echo "empty")"
+          done
+          assert_eq "the account is at its first password generation" "1" \
+            "$(printf '%s' "$ks_json" | jq -r '.status.account.passwordGeneration // 0')"
+          # Both endpoints carry the same URL, so the interfaces are read as
+          # values in spec order; a count of two would not tell them apart.
+          assert_eq "both endpoint rows are reported, in spec order" "public internal" \
+            "$(printf '%s' "$ks_json" | jq -r '[.status.catalog.endpoints[].interface] | join(" ")')"
+          if ! printf '%s' "$ks_json" | jq -e 'all(.status.catalog.endpoints[]; (.id // "") != "")' >/dev/null; then
+            echo "ERROR: an endpoint row carries no OpenStack id"; exit 1
+          fi
+          echo "OK: the nova registration is Ready against the external Keystone with a catalog row, two endpoint rows and a provisioned account."
+
+          # 6b: the consumer Secret carries both keys and points at the external
+          # Keystone, and the account credentials sit under the CR's OpenBao leaf.
+          for k in password clouds.yaml; do
+            if ! kubectl get secret "${NOVA_SECRET}" -n "${CP_NS}" \
+                 -o "jsonpath={.data.$(printf '%s' "$k" | sed 's/\./\\./')}" | grep -q .; then
+              echo "ERROR: consumer Secret ${NOVA_SECRET} is missing key ${k}"; exit 1
+            fi
+          done
+          NOVA_CLOUDS="$(kubectl get secret "${NOVA_SECRET}" -n "${CP_NS}" \
+            -o "jsonpath={.data.clouds\.yaml}" | base64 -d)"
+          assert_contains "nova clouds.yaml targets the external Keystone" "$NOVA_CLOUDS" "$AUTH_URL"
+          if ! bao_exec bao kv get -mount=kv-v2 "${NOVA_KV}" >/dev/null 2>&1; then
+            echo "ERROR: nova credentials not present at ${NOVA_KV}"; exit 1
+          fi
+          if ! bao_exec bao kv metadata get -format=json -mount=kv-v2 "${NOVA_KV}" \
+               | jq -e '.data.custom_metadata."managed-by" == "external-secrets"' >/dev/null; then
+            echo "ERROR: ESO did not stamp managed-by=external-secrets on ${NOVA_KV}"; exit 1
+          fi
+          echo "OK: the nova credentials are in OpenBao with the ESO managed-by stamp."
+
+          # 6c: the delivered password is the live one, and the delivered
+          # clouds.yaml carries a consumer Job through to the registered row.
           # `kubectl wait` cannot express "this Secret carries a non-empty key",
           # so the materialised password is polled for.
-          deadline=$(( $(date +%s) + 120 )); OLD_PROBE_PW=""
+          deadline=$(( $(date +%s) + 120 )); OLD_NOVA_PW=""
           while true; do
-            OLD_PROBE_PW="$(kubectl get secret rotation-probe-credentials -n "${CP_NS}" \
+            OLD_NOVA_PW="$(kubectl get secret "${NOVA_SECRET}" -n "${CP_NS}" \
               -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
-            if [ -n "${OLD_PROBE_PW}" ]; then
+            if [ -n "${OLD_NOVA_PW}" ]; then
               break
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "ERROR: Secret rotation-probe-credentials in ${CP_NS} carries no password within 120s"; exit 1
+              echo "ERROR: Secret ${NOVA_SECRET} in ${CP_NS} carries no password within 120s"; exit 1
             fi
             sleep 5
           done
-          osc_user rotation-probe heimdall "${OLD_PROBE_PW}" token issue >/dev/null
-          echo "OK: the rotation-probe registration issues an unscoped token against the external Keystone."
+          osc_user nova heimdall "${OLD_NOVA_PW}" token issue >/dev/null
+          echo "OK: the nova registration issues an unscoped token against the external Keystone."
+          kubectl delete job nova-verify -n "${CP_NS}" --ignore-not-found >/dev/null 2>&1 || true
+          kubectl apply -f 08-nova-verify-job.yaml
+          wait_job nova-verify "${CP_NS}" 300
+          echo "OK: the delivered clouds.yaml authenticates against the external API and the catalog carries the registered compute row."
 
+          # 6d: the rows the registration added, seen from the admin side. A1
+          # stays the baseline the ControlPlane alone must not pollute (Block 5
+          # asserts that), and the registration's own rows are diffed against it
+          # here. The endpoint check counts `nova compute` matches and never
+          # reads the region column, which the K-ORC rows leave empty.
+          capture_inventory "${WORK}/A1b"
+          if ! diff "${WORK}/A1.domain" "${WORK}/A1b.domain" >/dev/null; then
+            echo "ERROR: external domain inventory changed after the nova registration:"
+            diff "${WORK}/A1.domain" "${WORK}/A1b.domain" || true; exit 1
+          fi
+          assert_eq "exactly one service row added" "nova compute" "$(comm -13 "${WORK}/A1.service" "${WORK}/A1b.service")"
+          added_ep="$(comm -13 "${WORK}/A1.endpoint" "${WORK}/A1b.endpoint")"
+          assert_eq "two endpoint rows added" "2" "$(grep -c . <<<"$added_ep" || true)"
+          assert_eq "both added endpoints are nova compute" "2" "$(grep -c 'nova compute' <<<"$added_ep" || true)"
+          assert_eq "exactly user nova added" "nova" "$(comm -13 "${WORK}/A1.user" "${WORK}/A1b.user")"
+          assert_eq "exactly project service-nova added" "service-nova" "$(comm -13 "${WORK}/A1.project" "${WORK}/A1b.project")"
+          assert_empty "no external role added by the registration" "$(comm -13 "${WORK}/A1.role" "${WORK}/A1b.role")"
+          for r in service endpoint user project domain role; do
+            assert_empty "no external ${r} removed by the registration" "$(comm -23 "${WORK}/A1.${r}" "${WORK}/A1b.${r}")"
+          done
+          echo "OK: the registration added exactly its service, two endpoints, user and project, and removed nothing."
+
+          # 6e: rotation round-trip. A CredentialRotation with target
+          # serviceAccountPassword names a KeystoneService, so it runs against
+          # the registration above; the stored ControlPlane projects no
+          # registrations of its own, so nova is the only account here.
           kubectl apply -f - <<EOF
           apiVersion: c5c3.io/v1alpha1
           kind: CredentialRotation
           metadata:
-            name: rotate-probe
+            name: rotate-nova
             namespace: ${CP_NS}
           spec:
             target: serviceAccountPassword
-            keystoneService: rotation-probe
+            keystoneService: nova
             reMint: true
           EOF
-          deadline=$(( $(date +%s) + 300 )); NEW_PROBE_PW=""
+          deadline=$(( $(date +%s) + 300 )); NEW_NOVA_PW=""
           while true; do
-            NEW_PROBE_PW="$(kubectl get secret rotation-probe-credentials -n "${CP_NS}" \
+            NEW_NOVA_PW="$(kubectl get secret "${NOVA_SECRET}" -n "${CP_NS}" \
               -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
             pw_changed=no
-            if [ -n "${NEW_PROBE_PW}" ] && [ "${NEW_PROBE_PW}" != "${OLD_PROBE_PW}" ]; then
+            if [ -n "${NEW_NOVA_PW}" ] && [ "${NEW_NOVA_PW}" != "${OLD_NOVA_PW}" ]; then
               pw_changed=yes
             fi
             # Guarded like the password read above: under `set -e` a single API
             # hiccup on this assignment would kill the whole suite instead of
             # retrying on the next tick. An empty object polls as not-yet-rotated.
-            probe_json="$(kubectl get keystoneservice rotation-probe -n "${CP_NS}" -o json 2>/dev/null || echo '{}')"
-            rotated="$(printf '%s' "$probe_json" | jq -r '.status.account.lastPasswordRotation // ""')"
-            pw_gen="$(printf '%s' "$probe_json" | jq -r '.status.account.passwordGeneration // 0')"
+            nova_json="$(kubectl get keystoneservice nova -n "${CP_NS}" -o json 2>/dev/null || echo '{}')"
+            rotated="$(printf '%s' "$nova_json" | jq -r '.status.account.lastPasswordRotation // ""')"
+            pw_gen="$(printf '%s' "$nova_json" | jq -r '.status.account.passwordGeneration // 0')"
             if [ "${pw_changed}" = "yes" ] && [ -n "${rotated}" ] && [ "${pw_gen}" -ge 2 ]; then
               break
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "ERROR: rotation-probe did not rotate within 300s (password changed: ${pw_changed}, lastPasswordRotation: '${rotated:-<none>}', passwordGeneration: ${pw_gen})"; exit 1
+              echo "ERROR: nova did not rotate within 300s (password changed: ${pw_changed}, lastPasswordRotation: '${rotated:-<none>}', passwordGeneration: ${pw_gen})"; exit 1
             fi
             sleep 5
           done
-          echo "OK: the rotation-probe password rotated (lastPasswordRotation set, passwordGeneration=${pw_gen})."
-          osc_user rotation-probe heimdall "${NEW_PROBE_PW}" token issue >/dev/null
-          echo "OK: the rotated registration password issues a token."
-          if osc_user rotation-probe heimdall "${OLD_PROBE_PW}" token issue >/dev/null 2>&1; then
-            echo "ERROR: the pre-rotation registration password still authenticates"; exit 1
-          fi
-          echo "OK: the pre-rotation registration password is rejected."
+          echo "OK: the nova account password rotated (lastPasswordRotation set, passwordGeneration=${pw_gen})."
+          kubectl wait --for=condition=Ready keystoneservice/nova -n "${CP_NS}" --timeout=300s
+          osc_user nova heimdall "${NEW_NOVA_PW}" token issue >/dev/null
+          echo "OK: the rotated nova password issues a token."
+          # This is the only assertion that the rotation REVOKED the superseded
+          # password, and a bare non-zero exit collapses three outcomes into one. A
+          # probe that never ran (an unschedulable pod, a lost attach) carries no
+          # fenced output and reads as rc=125, which is not evidence of rejection. A
+          # probe that ran but could not reach Keystone exits exactly like a rejected
+          # credential, so the client's own diagnostics decide. pipefail is off across
+          # the probe: it would promote a non-zero `kubectl run` status (the --rm
+          # deletion notice, a replayed pod log) over awk's, and awk's IS the client's.
+          set +e +o pipefail
+          probe_out="$(osc_user_probe nova heimdall "${OLD_NOVA_PW}" token issue)"
+          rc=$?
+          set -e -o pipefail
+          case "${rc}" in
+            0)   echo "ERROR: the pre-rotation nova password still authenticates"; exit 1 ;;
+            125) echo "ERROR: the pre-rotation nova credential probe never ran (no fenced output); cannot conclude rejection"; exit 1 ;;
+            # Match the authentication failure on either half of keystoneauth's
+            # rendering rather than pinning the "(HTTP 401)" suffix alone: that
+            # suffix is a client formatting detail, and IMG is bumped with every
+            # onboarded release. Either needle still tells rejected apart from
+            # unreachable, which is the whole point here — a connection error
+            # carries no HTTP status and no authentication wording at all.
+            *)   case "${probe_out}" in
+                   *"HTTP 401"*|*"requires authentication"*)
+                     echo "OK: the pre-rotation nova password is rejected as an authentication failure (client rc=${rc})." ;;
+                   *)
+                     echo "ERROR: the pre-rotation nova probe failed without an authentication error (rc=${rc}): ${probe_out}"
+                     exit 1 ;;
+                 esac ;;
+          esac
+          kubectl delete job nova-verify -n "${CP_NS}" --ignore-not-found >/dev/null 2>&1 || true
+          kubectl apply -f 08-nova-verify-job.yaml
+          wait_job nova-verify "${CP_NS}" 300
+          echo "OK: the rotated Secret authenticates the verify Job and still shows the registered row."
 
-          # The probe is torn down here rather than in the finally block: its
-          # finalizer removes the probe's user and project from the external
-          # Keystone through the ControlPlane's admin credential, which Block 9
-          # revokes when it deletes the ControlPlane. A probe still alive at that
-          # point strands both rows in Keystone, failing Block 9's inventory diff,
-          # and its own teardown never completes.
-          kubectl delete credentialrotation rotate-probe -n "${CP_NS}"
-          kubectl delete keystoneservice rotation-probe -n "${CP_NS}" --wait=false
-          wait_gone keystoneservice rotation-probe "${CP_NS}" 300
-          wait_gone secret rotation-probe-credentials "${CP_NS}" 120
-          echo "OK: the rotation-probe registration and its credentials Secret are torn down."
+          # 6f: the registration is torn down here rather than in the finally
+          # block: its finalizer removes the nova user, project, service and
+          # endpoint rows from the external Keystone through the ControlPlane's
+          # admin credential, which Block 9 revokes when it deletes the
+          # ControlPlane. A registration still alive at that point strands its
+          # rows in Keystone, failing Block 9's inventory diff, and its own
+          # teardown never completes.
+          kubectl delete credentialrotation rotate-nova -n "${CP_NS}"
+          kubectl delete keystoneservice nova -n "${CP_NS}" --wait=false
+          wait_gone keystoneservice nova "${CP_NS}" 300
+          wait_gone secret nova-credentials "${CP_NS}" 120
+          capture_inventory "${WORK}/A1c"
+          for r in service endpoint user project domain role; do
+            if ! diff "${WORK}/A1.${r}" "${WORK}/A1c.${r}" >/dev/null; then
+              echo "ERROR: external ${r} inventory differs from the post-convergence baseline after the nova teardown:"
+              diff "${WORK}/A1.${r}" "${WORK}/A1c.${r}" || true; exit 1
+            fi
+          done
+          echo "OK: the nova registration took its service, endpoint, user and project rows back out and left the unmanaged service role alone."
 
           # ── Block 7: negative ControlPlanes (clocks already elapsed) ─────────
           # 7a: wrong password -> distinct authentication-failure condition.
@@ -675,7 +820,7 @@ spec:
           # 8f: the new credential authenticates end-to-end.
           kubectl delete job external-openstack-verify -n "${CP_NS}" --ignore-not-found >/dev/null 2>&1 || true
           kubectl apply -f 06-openstack-verify-job.yaml
-          kubectl wait --for=condition=complete job/external-openstack-verify -n "${CP_NS}" --timeout=5m
+          wait_job external-openstack-verify "${CP_NS}" 300
           echo "OK: the re-minted credential authenticates a client against the external API."
 
           # ── Block 9: deletion = zero blast radius ───────────────────────────
@@ -706,7 +851,7 @@ spec:
           done
           wait_gone secret "${CLOUDS_SECRET}" "${CP_NS}" 120
           # OpenBao paths purged (tolerate ESO soft-delete: data:null counts as purged).
-          for kv in "${ADMIN_AC_KV}" "${ROTATION_PROBE_KV}"; do
+          for kv in "${ADMIN_AC_KV}" "${NOVA_KV}"; do
             if json="$(bao_exec bao kv get -format=json -mount=kv-v2 "${kv}" 2>/dev/null)"; then
               if ! printf '%s' "$json" | jq -e '.data.data == null' >/dev/null 2>&1; then
                 echo "ERROR: ${kv} still holds a live value after ControlPlane deletion"; exit 1
@@ -717,20 +862,20 @@ spec:
 
           # The external installation is bit-for-bit untouched, and still serving.
           capture_inventory "${WORK}/A2"
-          for r in service endpoint user project domain; do
+          for r in service endpoint user project domain role; do
             if ! diff "${WORK}/B0.${r}" "${WORK}/A2.${r}" >/dev/null; then
               echo "ERROR: external ${r} inventory differs from baseline after deletion (blast radius):"
               diff "${WORK}/B0.${r}" "${WORK}/A2.${r}" || true; exit 1
             fi
           done
-          echo "OK: external services/endpoints/users/projects/domains are bit-for-bit identical to the baseline."
+          echo "OK: external services/endpoints/users/projects/domains/roles are bit-for-bit identical to the baseline."
           osc_admin token issue >/dev/null
           osc_user brownfield-admin heimdall "${NEW_ADMIN_PW}" token issue >/dev/null
           echo "OK: the fixture Keystone still issues tokens after the ControlPlane is gone."
           assert_empty "brownfield-admin has no application credentials left" \
             "$(osc_user_capture brownfield-admin heimdall "${NEW_ADMIN_PW}" application credential list -f value || true)"
 
-          echo "OK: External-mode ControlPlane suite passed — converge, imports, credential, no-pollution, registration aggregation, drift, rotation, endpoint_type detection, negative paths, and zero-blast-radius deletion all verified."
+          echo "OK: External-mode ControlPlane suite passed — converge, imports, credential, no-pollution, brownfield registration, drift, rotation, endpoint_type detection, negative paths, and zero-blast-radius deletion all verified."
     catch:
     - script:
         shell: bash
@@ -749,6 +894,10 @@ spec:
           done
           echo "=== PushSecret / ExternalSecret in brownfield ==="
           kubectl get pushsecret,externalsecret -n brownfield 2>&1 || true
+          echo "=== KeystoneServices in brownfield ==="
+          kubectl get keystoneservice -n brownfield -o yaml 2>&1 || true
+          echo "=== nova-verify Job logs ==="
+          kubectl logs -n brownfield job/nova-verify --tail=80 2>&1 || true
           echo "=== Fixture pod + setup Job logs (brownfield-keystone) ==="
           kubectl get pods -n brownfield-keystone 2>&1 || true
           kubectl logs -n brownfield-keystone deploy/keystone --all-containers --tail=120 2>&1 || true
@@ -769,6 +918,62 @@ spec:
           # main ControlPlane and its children. Everything else this suite created
           # outside that namespace is torn down here, best-effort.
           kubectl delete job external-openstack-verify -n brownfield --ignore-not-found --wait=false 2>&1 || true
+          kubectl delete job nova-verify -n brownfield --ignore-not-found --wait=false 2>&1 || true
+          # On the failure path the nova registration's finalizer removes its rows
+          # from the fixture Keystone through the ControlPlane's admin credential, so
+          # it has to finish BEFORE the namespace loop below destroys that fixture —
+          # `--wait=false` here would hand the finalizer a Keystone that is already
+          # gone. Its K-ORC children would then hold their own finalizers forever and
+          # wedge the FIXED brownfield namespace in Terminating, failing every later
+          # run of this suite on the same cluster. Nothing rescues them: the operator
+          # only force-releases the registrations a ControlPlane projects, and nova is
+          # suite-created.
+          kubectl delete credentialrotation rotate-nova -n brownfield --ignore-not-found --wait=false 2>&1 || true
+          if ! kubectl delete keystoneservice nova -n brownfield --ignore-not-found --timeout=180s 2>&1; then
+            echo "WARN: the nova teardown stalled; force-releasing its children so brownfield can still terminate"
+            # Delete FIRST and strip only afterwards, the ordering the operator's own
+            # force-release keeps: stripping a child that is not yet Terminating is an
+            # ordinary update K-ORC answers by re-adding its finalizer.
+            for res in roleassignments roles endpoints services users projects domains; do
+              kubectl get "${res}.openstack.k-orc.cloud" -n brownfield \
+                -l c5c3.io/keystoneservice-name=nova -o name 2>/dev/null | while read -r o; do
+                  kubectl delete "$o" -n brownfield --ignore-not-found --wait=false 2>&1 || true
+                  kubectl patch "$o" -n brownfield --type=merge -p '{"metadata":{"finalizers":null}}' 2>&1 || true
+                done
+            done
+            # The registration also owns a label-matched PushSecret in this namespace,
+            # and it wedges brownfield exactly like the K-ORC children do: with
+            # DeletionPolicy=Delete, ESO holds it Terminating behind its finalizer
+            # until it has purged the OpenBao path — through the per-tenant store that
+            # lives in, and dies with, this same namespace. WAIT for that purge first,
+            # the way the operator's own force-release does: a straight strip leaves a
+            # live value behind that fails the next run's never-seeded precondition.
+            # This is a fresh shell, so the main step's bao_exec and BAO_TOKEN are
+            # out of scope; the strip below has to reach OpenBao on its own.
+            BAO_TOKEN="$(kubectl get secret openbao-init-keys -n shared-services \
+              -o jsonpath='{.data.init-output}' 2>/dev/null | base64 -d | jq -r '.root_token' || true)"
+            kubectl get pushsecret -n brownfield \
+              -l c5c3.io/keystoneservice-name=nova -o name 2>/dev/null | while read -r o; do
+                if ! kubectl delete "$o" -n brownfield --ignore-not-found --timeout=60s 2>&1; then
+                  echo "WARN: ESO did not purge ${o} within 60s; stripping its finalizer and taking the OpenBao path out by hand"
+                  kubectl patch "$o" -n brownfield --type=merge \
+                    -p '{"metadata":{"finalizers":null}}' 2>&1 || true
+                  # The strip skips ESO's remote purge, so nothing else takes the
+                  # path out: leaving it live fails the never-seeded precondition of
+                  # every later run of this suite on the same cluster, forever. The
+                  # mTLS client material is what the OpenBao listener wants in kind.
+                  kubectl exec -n shared-services openbao-0 -- \
+                    env BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN="${BAO_TOKEN}" \
+                    VAULT_CACERT=/openbao/tls/ca.crt \
+                    VAULT_CLIENT_CERT=/openbao/client-tls/tls.crt \
+                    VAULT_CLIENT_KEY=/openbao/client-tls/tls.key \
+                    bao kv metadata delete -mount=kv-v2 \
+                    openstack/keystone/brownfield/nova/service-accounts/credentials 2>&1 || true
+                fi
+              done
+            kubectl patch keystoneservice nova -n brownfield --type=merge \
+              -p '{"metadata":{"finalizers":null}}' 2>&1 || true
+          fi
           for ns in brownfield-wrong-password brownfield-stalled brownfield-ambiguous brownfield-keystone; do
             kubectl delete namespace "${ns}" --ignore-not-found --wait=false 2>&1 || true
           done
