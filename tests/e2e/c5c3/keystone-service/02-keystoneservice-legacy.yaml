@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The colliding registration: it names a catalog row (type "metering", name
+# "legacy") and a user ("legacy" in domain Default) that the suite's admin Job
+# seeds in Keystone before this CR is applied.
+#
+# Neither catalog.adopt nor account.adopt is set, so the controller has to hold
+# at CatalogReady=False/ServiceCollision and
+# AccountReady=False/ServiceAccountCollision. That is decision D6's fail-loudly
+# default: a row or an account the operator did not create is never taken over
+# behind the user's back.
+#
+# The test then patches catalog.adopt: true in. The seeded row becomes a managed
+# K-ORC Service and later leaves Keystone with the CR. account.adopt stays unset
+# for the whole suite. Account adoption is tracked separately as #920, because
+# with the pinned K-ORC an adopted user keeps its pre-existing password at
+# generation 1.
+#
+# The catalog service name and the user name both default to metadata.name
+# ("legacy"). @CP_NS@ is substituted by the test with the ephemeral namespace.
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: legacy
+spec:
+  controlPlaneRef:
+    name: cp
+  catalog:
+    serviceType: metering
+    endpoints:
+    - interface: public
+      url: "http://legacy-api.@CP_NS@.svc.cluster.local:8777/"
+  account:
+    project:
+      name: service-legacy
+      create: true
+    roles:
+    - service
