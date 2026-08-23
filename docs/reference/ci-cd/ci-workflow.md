@@ -816,8 +816,18 @@ seeds that plane's per-CR OpenBao paths itself, and proves an allowlisted
 namespace can register and authenticate while an unlisted one is refused. The two
 suites are separate steps because the shared chainsaw config sets `failFast`, so
 one invocation over both directories would let either abort the other; the second
-step writes its JUnit XML under a distinct report name so both survive in the
+step writes its JUnit XML under a distinct report name so each survives in the
 uploaded artifact.
+
+A third chainsaw step runs `tests/e2e/c5c3/keystone-service/`, the own-namespace
+`KeystoneService` suite: it brings up a Keystone-only ControlPlane of its own and
+seeds that plane's OpenBao paths itself, then proves the round-trip through the
+materialised `clouds.yaml`, the rotation driven by a `CredentialRotation`, a
+collision held at `ServiceCollision` / `ServiceAccountCollision` until
+`catalog.adopt` takes the row over, and residue-free deletion. It is a separate
+step for the same `failFast` reason and writes its JUnit XML as
+`chainsaw-report-keystone-service-own-namespace`, so the uploaded artifact
+carries three report files.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
 **Condition:** Runs only when `e2e-controlplane == 'true'`, the upstream
