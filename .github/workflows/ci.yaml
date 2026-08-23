@@ -1539,9 +1539,33 @@ jobs:
   # and sequential steps also keep two identity planes from converging on one node
   # at the same time.
   #
+  # A third step runs the keystone-service suite, the own-namespace registration
+  # (round-trip, rotation, collision/adopt, deletion), against a third
+  # Keystone-only plane of its own. It stays separate for the same failFast
+  # reason.
+  #
   # A real MariaDB + Memcached + Keystone + three operators + OpenBao + ESO +
   # K-ORC + cert-manager + Envoy on one node is heavy, so this is a dedicated job
   # with an extended timeout on the larger runner (matching tempest).
+  #
+  # The three suites run in sequence against one node, so their wall clocks add
+  # rather than overlap. A suite's ceiling is NOT its exec budget alone: chainsaw
+  # applies that budget to every script operation, so try, catch and finally each
+  # get one, and the cleanup runs after all three. Each of the three therefore
+  # pins its catch and its finally explicitly, which puts the ceilings at
+  # 30+5+5+3 = 43m (full-chain), 40+5+20+15 = 80m (foreign-namespace) and
+  # 50+5+20+15 = 90m (own-namespace). Unpinned, catch and finally would inherit
+  # the exec budget and the own-namespace ceiling alone would be 165m.
+  #
+  # timeout-minutes has to outlast the bring-up (kind create, twelve kind loads,
+  # setup-e2e-infra, K-ORC and six operator deploys) plus the suites that pass
+  # plus the full ceiling of the one that stalls, or the job wall arrives before
+  # a suite's own timeout does: chainsaw is killed outright, its catch block
+  # never runs, and a stalled leg is reported as a cancelled job with no JUnit
+  # report to read it out of. 195m covers ~30m of observed bring-up, the two
+  # earlier suites, and the 90m ceiling of the last one; the worst case holds the
+  # runner for over three hours, which is the price of a stalled suite reporting
+  # as a failure rather than a cancellation.
   e2e-controlplane:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
     # always(): allow the job to run when upstream Go jobs are skipped
@@ -1556,7 +1580,7 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 90
+    timeout-minutes: 195
     continue-on-error: false
     permissions:
       contents: read
@@ -1691,6 +1715,17 @@ jobs:
           chainsaw test --config tests/e2e/chainsaw-config.yaml \
             --report-name chainsaw-report-keystone-service \
             tests/e2e/c5c3/keystone-service-foreign-namespace/
+        env:
+          E2E_REQUIRE_CONTROLPLANE_STACK: "true"
+      # The own-namespace registration suite runs third, again in its own
+      # invocation for the failFast reason above, under a report name of its own
+      # so all three JUnit files survive in the uploaded artifact.
+      - name: Run own-namespace registration E2E test
+        run: |
+          mkdir -p _output/reports
+          chainsaw test --config tests/e2e/chainsaw-config.yaml \
+            --report-name chainsaw-report-keystone-service-own-namespace \
+            tests/e2e/c5c3/keystone-service/
         env:
           E2E_REQUIRE_CONTROLPLANE_STACK: "true"
       - name: Dump diagnostic info

@@ -505,15 +505,16 @@ e2e-prometheus:
 # E2E_REQUIRE_CONTROLPLANE_STACK=true to make the suite's presence guard fail
 # loudly (as the CI job does) rather than SKIP.
 #
-# The two suites run as separate invocations, as they do in CI: the shared
-# chainsaw config sets failFast, so a red foreign-namespace suite would otherwise
-# abort the full-chain suite, and running them in sequence also keeps their two
+# The three suites run as separate invocations, as they do in CI: the shared
+# chainsaw config sets failFast, so a red registration suite would otherwise
+# abort the full-chain suite, and running them in sequence also keeps their
 # identity planes from converging on one node at the same time.
 e2e-controlplane:
 	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
 	@kubectl get crd controlplanes.c5c3.io >/dev/null 2>&1 || { echo 'the c5c3 ControlPlane stack is not installed; run `WITH_CONTROLPLANE=true make deploy-infra` (and deploy K-ORC + the operators) first' >&2; exit 1; }
 	chainsaw test --config tests/e2e/chainsaw-config.yaml tests/e2e/c5c3/full-controlplane-keystone/
 	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-keystone-service tests/e2e/c5c3/keystone-service-foreign-namespace/
+	chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-keystone-service-own-namespace tests/e2e/c5c3/keystone-service/
 
 .PHONY: e2e-external-keystone
 # e2e-external-keystone runs the External-mode ControlPlane suite against a plain

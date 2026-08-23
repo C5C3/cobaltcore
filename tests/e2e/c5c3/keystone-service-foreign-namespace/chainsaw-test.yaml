@@ -535,6 +535,12 @@ spec:
           echo "OK: foreign-namespace registration proven end to end."
     catch:
     - script:
+        # Pinned, because chainsaw applies the test's exec budget to EVERY
+        # script operation and not just to the try block. Left unpinned this
+        # dump would inherit 40m against a wedged apiserver, where a kubectl
+        # call blocks instead of erroring and `2>&1 || true` bounds the exit
+        # status rather than the duration.
+        timeout: 5m
         shell: bash
         content: |
           # A separate shell from the try script, so everything is re-derived.
@@ -575,6 +581,11 @@ spec:
           done
     finally:
     - script:
+        # Pinned for the same reason as catch above. The waits below are bounded
+        # and add up to 780s; 20m covers them plus the deletes that drive them,
+        # and keeps the suite's ceiling at exec + catch + finally + cleanup =
+        # 80m, which is the number .github/workflows/ci.yaml budgets against.
+        timeout: 20m
         shell: bash
         content: |
           # chainsaw owns the ephemeral namespace and reaps the ControlPlane with
