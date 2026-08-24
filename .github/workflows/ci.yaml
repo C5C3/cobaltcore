@@ -175,11 +175,13 @@ jobs:
               - '.github/actions/setup-e2e-infra/action.yaml'
               - '.github/workflows/ci.yaml'
               - 'Makefile'
-            # Full ControlPlane -> Keystone chain E2E job — separate filter so
-            # the resource-heavy e2e-controlplane job runs only when the c5c3 or
-            # keystone operator code, the full-chain suite, the deploy stack, the
-            # hack scripts (deploy-infra, ci-deploy-korc, ci-deploy-operator), or
-            # the composite actions it uses actually change.
+            # ControlPlane E2E path filter. Its output gates the
+            # resource-heavy ControlPlane e2e jobs. Separate filter so they run
+            # only when their inputs actually change: any operator the chain
+            # deploys (c5c3, keystone, horizon, glance, placement, barbican),
+            # the suites, the deploy stack, the hack scripts (deploy-infra,
+            # ci-deploy-korc, ci-deploy-operator) or the composite actions they
+            # use.
             e2e_controlplane:
               - 'operators/c5c3/**'
               - 'operators/keystone/**'
