@@ -69,7 +69,7 @@ that bypassed admission) indexes nothing, not a dangling key.
 | Resource | Watch Type | Effect |
 | --- | --- | --- |
 | `KeystoneService` | `For()` | Filtered by `watch.CRUpdatePredicate()` so the controller's own status writes do not re-wake it |
-| K-ORC `Service`, `Endpoint`, `User`, `Domain`, `Project`, `Role`, `RoleAssignment` | `Watches()` | Mapped back to the owning CR by the ownership labels every child carries (`keystoneServiceChildToRequest`). These children live in the ControlPlane's namespace, where an owner reference to a CR in another namespace is illegal, so `Owns()` would never see them |
+| K-ORC `Service`, `Endpoint`, `User`, `Domain`, `Project`, `Role`, `RoleAssignment` | `Watches()` | Mapped back to the owning CR by the ownership labels every child carries (`keystoneServiceChildToRequest`). These children live in the ControlPlane's namespace, so a registration from any other namespace can hold no owner reference to them and `Owns()` would miss it; one label mapper per kind covers both placements |
 | `Secret` | `Watches()` | Same label mapper: it reaches the generation-scoped password Secret beside the User and the assembled source Secret beside the consumer |
 | `ExternalSecret`, `PushSecret` | `Owns()` | The delivery objects stay in the CR's own namespace, where a controller reference is legal and the garbage collector reaps them |
 | `ControlPlane` | `Watches()` | Index-backed fan-out (`controlPlaneToKeystoneServicesMapper`) with **no** generation predicate: the `AdminCredentialReady` flip the shared gate waits on and the allowlist edits that admit or de-list a namespace both arrive as ControlPlane updates, and both must re-enqueue at watch latency rather than at the next poll |
