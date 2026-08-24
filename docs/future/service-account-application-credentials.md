@@ -30,9 +30,9 @@ using that password."
 
 ## Baseline: what exists today
 
-- The defaulting webhook injects a service account per declared service, with
-  the role `service` (the role Keystone's `identity:validate_token` policy
-  accepts for token validation).
+- The ControlPlane projects a `KeystoneService` registration per declared
+  built-in service, carrying the role `service` (the role Keystone's
+  `identity:validate_token` policy accepts for token validation).
 - K-ORC provisions the user, project, and role assignment. The operator
   generates a 256-bit password, round-trips it through OpenBao, and an
   ExternalSecret materializes `password` and a password-based `clouds.yaml`
@@ -128,9 +128,10 @@ Per service account, the admin pattern repeats:
 | Provisioning | Admin sets the password | Bootstrap password still required |
 
 The change surface in the repository is contained: the `Section()` helper in
-`internal/common/keystoneauth`, the two service-account provisioning call
-sites (inline ControlPlane accounts and the standalone `KeystoneService`),
-the three `ServiceUserSpec` CRD surfaces with their config-ownership
+`internal/common/keystoneauth`, the one service-account provisioning path (the
+`KeystoneService` controller, which serves both the registrations the
+ControlPlane projects for its built-in services and standalone CRs written by
+hand), the three `ServiceUserSpec` CRD surfaces with their config-ownership
 catalogs, and the rotation target.
 
 ## Risks and open questions
