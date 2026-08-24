@@ -459,8 +459,8 @@ Four legs run against the live stack:
    `controlPlaneRef.namespace` unset and reaches `Ready=True/AllReady`,
    `CatalogReady=CatalogRegistered`, `AccountReady=AccountProvisioned`. Seven
    K-ORC children named `workflow-<hash>-registration-<discriminator>` reach
-   `Available` in the plane's namespace, each controller-owned by the CR, an
-   ownership claim no owner reference can make across a namespace. The consumer
+   `Available` in the plane's namespace, each carrying a controller owner
+   reference to the CR, which the suite asserts. The consumer
    Secret `workflow-credentials` is materialised with its `password` and
    `clouds.yaml` keys, the OpenBao leaf under
    `openstack/keystone/{namespace}/workflow/service-accounts/credentials` carries
