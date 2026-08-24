@@ -2498,12 +2498,13 @@ generation on its next pass). Its model:
   / `gracePeriodDays` are accepted but deferred to a later level; when set, an
   informational `ScheduledRotationDeferred` event is emitted but **no** loop runs
   and **no** error is raised.
-- **Target enum.** Only `adminApplicationCredential` is supported; any other
-  target finishes `Ready=False` reason `UnsupportedTarget`.
+- **Target enum.** `adminApplicationCredential` and `serviceAccountPassword` are
+  supported; any other target finishes `Ready=False` reason
+  `UnsupportedTarget`.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
-| target not `adminApplicationCredential` | False | `UnsupportedTarget` | no requeue |
+| target neither `adminApplicationCredential` nor `serviceAccountPassword` | False | `UnsupportedTarget` | no requeue |
 | no ControlPlane in namespace | False | `NoControlPlane` | requeue 10s |
 | multiple ControlPlanes | False | `AmbiguousControlPlane` | no requeue; defense-in-depth — unreachable while the one-per-namespace webhook is active |
 | ControlPlane List errors | False | `ControlPlaneListError` | no requeue |
