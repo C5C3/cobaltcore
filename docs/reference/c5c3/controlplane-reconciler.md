@@ -1327,13 +1327,105 @@ an empty websso block, which would silently remove a working SSO button.
 | Horizon child not yet Ready | False | `WaitingForHorizon` | requeue 15s |
 | Horizon child Ready | True | `HorizonReady` | — |
 
+### Built-in service registrations
+
+Glance, Placement and Barbican each need a Keystone catalog row and a Keystone
+service user. None of the three registers either itself: every one of them
+projects a [`KeystoneService`](./keystoneservice-crd.md) child and lets that CR's
+controller do the work. `builtin_registrations.go` is the leg all three share, so
+it is described once here rather than three times below, and a fourth built-in
+service adds the values it registers with rather than another copy of the leg.
+
+| Aspect | Value |
+| --- | --- |
+| File | `builtin_registrations.go` |
+| Conditions | `GlanceReady`, `PlacementReady`, `BarbicanReady` — the leg writes the caller's condition, never one of its own |
+| Projects / Owns | one `KeystoneService` named `{controlplane.Name}-{service}` in the namespace that service is placed in, applied through the **local** client whatever cluster the service runs on |
+| Requeue | `korcRequeueAfter` = **10s** while the registration is not usable yet |
+
+**What the child asserts.** `spec.controlPlaneRef` names the ControlPlane's
+namespace explicitly rather than relying on the default, so the child resolves the
+same plane wherever it is placed. `spec.catalog` carries the service's type and
+name with **two** endpoints, `internal` and `public`, from the start, so no later
+catalog migration is needed. `spec.account` carries the service's user with a
+project of its own and `create: true`, plus the single role `service`. Each
+service creates its own project (`service-placement`, `service-barbican`), because
+two registrations creating one project would each adopt the other's Keystone row.
+
+**The URLs each row advertises.** The `internal` endpoint advertises the
+in-cluster API Service URL — `http://{controlplane.Name}-glance.<glance-namespace>.svc:9292`
+(`glanceEndpointURL`), `…-placement.<placement-namespace>.svc:8778`
+(`placementEndpointURL`), `…-barbican.<barbican-namespace>.svc:9311`
+(`barbicanEndpointURL`). None of the three carries a `/v3` path suffix; unlike
+identity, these APIs are served at the root. The `public` endpoint resolves
+through one preference order (`glanceCatalogURL` and its siblings): an explicit
+`services.<svc>.publicEndpoint`, advertised verbatim, then the externally routable
+gateway hostname `https://{gateway.hostname}`, then the same in-cluster URL when
+the service is not exposed through a Gateway.
+
+A service carrying a [`targetClusterRef`](../target-clusters.md) advertises its
+public URL on the `internal` interface too (`internalCatalogURL`): the in-cluster
+Service URL resolves only on the cluster that service runs on, so K-ORC — and
+every other consumer reading the catalog from elsewhere — would otherwise get an
+address it cannot connect to. Admission requires a placed catalog service to carry
+a `publicEndpoint` or a gateway, so that URL is never empty. The K-ORC children the
+registration projects stay on the management cluster in the ControlPlane's
+namespace whatever the rows advertise, under the naming convention the
+[KeystoneService Reconciler](./keystoneservice-reconciler.md) documents.
+
+**The gate is two-staged.** The service child is not projected until the
+registration reports `AccountReady` (`builtinRegistrationAccountReady`), because a
+service pointed at a Keystone user that does not exist, with a password its
+consumer Secret does not carry, cannot start. A previously projected child keeps
+running on the credentials it already has. The service's own condition then stays
+`False` until the registration reports its aggregate `Ready`
+(`foldBuiltinRegistrationReady`), which covers the catalog row: a running service
+whose catalog entry never landed is reachable by nothing that discovers it through
+the catalog.
+
+**The relayed reason is the child's first failing sub-condition**, walked in
+`keystoneServiceSubConditionTypes` order, not the aggregate's. `NotAllReady` says
+only that something is wrong, while `ServiceCollision` on the registration's
+`CatalogReady` says what and admits a fix — so a catalog-side reason can and does
+surface on `GlanceReady`. The message names which child it came from.
+
+**Foreign spec fields are reclaimed, not tolerated.** A field manager other than
+this operator can write assertions the projecting apply cannot take back:
+`spec.catalog.adopt`, `spec.account.adopt`, `spec.account.rotation`, and endpoint
+interfaces the ControlPlane never declared. Leaving them standing is not an
+option, because an undeclared endpoint row is **published** in the Keystone catalog
+by the registration's own controller, and every admin-scoped client that resolves
+it sends its token wherever the row points. An ordinary Update reclaims them, the
+pass halts, and the next one picks the reclaimed child up. Both a Warning event and
+the `ServiceRegistrationFieldsReclaimed` condition record it: an event ages out of
+etcd on the cluster's TTL, and without the condition a tampering remediated at
+02:00 would leave the ControlPlane reporting `Ready=True` with no durable trace.
+
+**Credentials follow a placed service.** For a service on a target cluster the leg
+mirrors the registration's consumer credentials there
+(`ensureBuiltinRegistrationMirror`): it resolves that cluster, gates on the store
+being ready **on that cluster**, and writes an `ExternalSecret` drawing the same
+OpenBao path. A co-located service is a no-op. For the credentials' shape and the
+aggregate condition over all three registrations, see
+[reconcileServiceAccounts](#reconcileserviceaccounts).
+
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| projecting, reading, reclaiming or mirroring the child fails | False | `ServiceRegistrationError` | returns the error. The refusal to adopt a same-named CR this ControlPlane did not create is relayed verbatim, since it spells out what it refuses and why |
+| the child carries spec fields this ControlPlane never projected | False | `ServiceRegistrationFieldsReclaimed` | the fields are reset first, so neither the event nor the condition claims a reset that did not land; requeue 10s |
+| the target cluster of a placed service does not resolve | False | `TargetClusterUnavailable` | the resolver's own message; a wait, not a failed reconcile; requeue 10s |
+| the store on that target cluster is not ready | False | `SecretStoreNotReady` | an ExternalSecret written against it would never sync, and the service would wait on a Secret whose absence nothing explains; requeue 10s |
+| the registration has not provisioned the account yet | False | `WaitingForServiceRegistration` | no service child is written at all; requeue 10s |
+| the registration reports a `False` sub-condition | False | *(the child's own reason)* | relayed with the child's message and which child it came from; requeue 10s |
+| the registration has not reported `Ready` at all yet | False | `WaitingForServiceRegistration` | a child created moments ago, before its controller reconciled it; requeue 10s |
+
 ### reconcileGlance
 
 | Aspect | Value |
 | --- | --- |
 | File | `reconcile_glance.go` |
 | Condition | `GlanceReady` |
-| Gate | `KeystoneReady == True` (Glance validates every token against the Keystone child) **and** the injected `glance` service account being Ready |
+| Gate | `KeystoneReady == True` (Glance validates every token against the Keystone child) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)) |
 | Projects / Owns | one `Glance` child named `{controlplane.Name}-glance` (`glanceNameSuffix`) in `cp.GlanceNamespace()`; one `GlanceBackend` child per `services.glance.backends` entry, named `{controlplane.Name}-glance-{entry}`; and — managed database only — the per-ControlPlane DB-credential objects in the Glance service namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `glance-db-creds`, an mTLS client Certificate `{controlplane.Name}-glance-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/glance-{glance-namespace}` (auth role `glance-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-glance-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/glance/{glance-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.glance` is set |
 | Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `glance` service account is not yet Ready; `infraRequeueAfter` = **15s** while the child is not Ready |
 
@@ -1419,8 +1511,9 @@ unowned, and the finalizer sweeps it by those labels.
 | --- | --- | --- | --- |
 | `spec.services.glance` unset | True | `GlanceNotManaged` | staged adoption; a previously-projected child is preserved unless `c5c3.io/allow-glance-deletion: "true"` is set — but its dynamic DB-credential generator, ServiceAccount, and client Certificate are torn down either way, so no credential minter outlives the service |
 | `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Glance CR is projected while Keystone is unready |
-| no `glance` service account declared | False | `ServiceAccountNotDeclared` | admission was bypassed (the defaulting webhook injects it); fails loud rather than projecting a Glance with no Keystone user |
-| `glance` service account not yet Ready | False | `WaitingForServiceAccount` | requeue 10s; deferred until its Keystone user and password are provisioned |
+| the projected registration has not provisioned the account yet | False | `WaitingForServiceRegistration` | requeue 10s; no Glance child is written until the Keystone user and its password exist. See [Built-in service registrations](#built-in-service-registrations) |
+| projecting, reading or mirroring the registration child fails | False | `ServiceRegistrationError` | returns the error |
+| the registration child carries foreign spec fields | False | `ServiceRegistrationFieldsReclaimed` | they are reset and the pass halts; requeue 10s |
 | Glance placed on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 10s; the DB credential resolves its namespace's cluster before it writes anything (`ensureServiceDBCredential`). The resolver's own message |
 | DB-credential ensure fails (Dynamic generator objects or Static ExternalSecret) | False | `GlanceDBCredentialError` | returns the error (managed database only) |
 | Dynamic DB credential not yet materialised | False | `WaitingForGlanceDBCredential` | requeue 10s; no Glance CR is projected and an existing child keeps its current mode until the generator-backed ExternalSecret reports Ready **and** the Secret it targets carries an engine-issued username. The message names the `database/mariadb/creds/glance-<namespace>` path, which only exists after `setup-database-tenant.sh` has onboarded the tenant, or — on a Static→Dynamic migration, where the in-place ExternalSecret update leaves the previous Static sync's `Ready` in place over a stale Secret — the non-engine-issued username it found |
@@ -1437,7 +1530,7 @@ unowned, and the finalizer sweeps it by those labels.
 | --- | --- |
 | File | `reconcile_placement.go`, `reconcile_placement_dbcredentials.go` |
 | Condition | `PlacementReady` |
-| Gate | `KeystoneReady == True` (Placement validates every token against the Keystone child) **and** the injected `placement` service account being Ready |
+| Gate | `KeystoneReady == True` (Placement validates every token against the Keystone child) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)) |
 | Projects / Owns | one `Placement` child named `{controlplane.Name}-placement` (`placementNameSuffix`) in `cp.PlacementNamespace()`; and, on a managed database only, the per-ControlPlane DB-credential objects in the Placement service namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `placement-db-creds`, an mTLS client Certificate `{controlplane.Name}-placement-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/placement-{placement-namespace}` (auth role `placement-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-placement-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/placement/{placement-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.placement` is set |
 | Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `placement` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed; `infraRequeueAfter` = **15s** while the child is not Ready |
 
@@ -1536,8 +1629,9 @@ labels.
 | --- | --- | --- | --- |
 | `spec.services.placement` unset | True | `PlacementNotManaged` | staged adoption; a previously-projected child is preserved unless `c5c3.io/allow-placement-deletion: "true"` is set, but its dynamic DB-credential generator, ServiceAccount, and client Certificate are torn down either way, so no credential minter outlives the service |
 | `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Placement CR is projected while Keystone is unready |
-| no `placement` service account declared | False | `ServiceAccountNotDeclared` | admission was bypassed (the defaulting webhook injects it); fails loud rather than projecting a Placement with no Keystone user |
-| `placement` service account not yet Ready | False | `WaitingForServiceAccount` | requeue 10s; deferred until its Keystone user and password are provisioned |
+| the projected registration has not provisioned the account yet | False | `WaitingForServiceRegistration` | requeue 10s; no Placement child is written until the Keystone user and its password exist. See [Built-in service registrations](#built-in-service-registrations) |
+| projecting, reading or mirroring the registration child fails | False | `ServiceRegistrationError` | returns the error |
+| the registration child carries foreign spec fields | False | `ServiceRegistrationFieldsReclaimed` | they are reset and the pass halts; requeue 10s |
 | Placement placed on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 10s; the DB credential resolves its namespace's cluster before it writes anything (`ensureServiceDBCredential`). The resolver's own message |
 | DB-credential ensure fails (Dynamic generator objects or Static ExternalSecret) | False | `PlacementDBCredentialError` | returns the error (managed database only) |
 | Dynamic DB credential not yet materialised | False | `WaitingForPlacementDBCredential` | requeue 10s; the message names the `database/mariadb/creds/placement-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant, or the non-engine-issued username it found in the target Secret |
@@ -1552,7 +1646,7 @@ labels.
 | --- | --- |
 | File | `reconcile_barbican.go`, `reconcile_barbican_openbao.go`, `reconcile_barbican_dbcredentials.go` |
 | Condition | `BarbicanReady` |
-| Gate | `KeystoneReady == True` (Barbican validates every token against the Keystone child) **and** the injected `barbican` service account being Ready |
+| Gate | `KeystoneReady == True` (Barbican validates every token against the Keystone child) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)) |
 | Projects / Owns | a trio in `cp.BarbicanNamespace()`: one `Barbican` child `{controlplane.Name}-barbican` (`barbicanNameSuffix`), one `BarbicanSecretStore` `{controlplane.Name}-barbican-store` (`barbicanSecretStoreNameSuffix`), and — on a dedicated secret store only — one `OpenBaoCluster` `{controlplane.Name}-barbican-bao` (`barbicanOpenBaoNameSuffix`) with the ensemble below. Plus, on a managed database only, the per-ControlPlane DB-credential objects in the same namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `barbican-db-creds`, an mTLS client Certificate `{controlplane.Name}-barbican-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/barbican-{barbican-namespace}` (auth role `barbican-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-barbican-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/barbican/{barbican-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.barbican` is set |
 | Requeue | `keystoneInfraGateRequeueAfter` = **5s** while gated on Keystone; `korcRequeueAfter` = **10s** while the `barbican` service account is not yet Ready; `dbCredentialsRequeueAfter` = **10s** while the Dynamic DB credential has not landed; `infraRequeueAfter` = **15s** while the dedicated ensemble's target cluster does not resolve, while the OpenBao instance is not Available, while the secret store is being recreated, and while the child is not Ready |
 
@@ -1745,8 +1839,9 @@ finalizer sweeps it by those labels.
 | --- | --- | --- | --- |
 | `spec.services.barbican` unset | True | `BarbicanNotManaged` | staged adoption; the child, its store, and the catalog CRs are preserved unless `c5c3.io/allow-barbican-deletion: "true"` is set, and the dedicated OpenBao instance until `c5c3.io/allow-barbican-secret-store-data-deletion: "true"` is set on top of it. The dynamic DB-credential generator, ServiceAccount, and client Certificate are torn down either way. The message names whichever annotation is still missing |
 | `KeystoneReady` not True | False | `WaitingForKeystone` | requeue 5s; no Barbican CR is projected while Keystone is unready |
-| no `barbican` service account declared | False | `ServiceAccountNotDeclared` | no requeue; admission was bypassed (the defaulting webhook injects it), so it fails loud rather than projecting a Barbican with no Keystone user |
-| `barbican` service account not yet Ready | False | `WaitingForServiceAccount` | requeue 10s; deferred until its Keystone user and password are provisioned |
+| the projected registration has not provisioned the account yet | False | `WaitingForServiceRegistration` | requeue 10s; no Barbican child is written until the Keystone user and its password exist. See [Built-in service registrations](#built-in-service-registrations) |
+| projecting, reading or mirroring the registration child fails | False | `ServiceRegistrationError` | returns the error |
+| the registration child carries foreign spec fields | False | `ServiceRegistrationFieldsReclaimed` | they are reset and the pass halts; requeue 10s |
 | Barbican placed on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 10s from the DB credential, which resolves its namespace's cluster before it writes anything (`ensureServiceDBCredential`); requeue 15s from the dedicated OpenBao ensemble, which is where a brownfield database reaches the resolver first. Nothing is written, on either cluster. The resolver's own message |
 | DB-credential ensure or read fails (Dynamic generator objects or Static ExternalSecret) | False | `BarbicanDBCredentialError` | returns the error (managed database only) |
 | Dynamic DB credential not yet materialised | False | `WaitingForBarbicanDBCredential` | requeue 10s; the message names the `database/mariadb/creds/barbican-<namespace>` path, which only exists once `setup-database-tenant.sh` has onboarded the tenant, or the non-engine-issued username it found in the target Secret |
