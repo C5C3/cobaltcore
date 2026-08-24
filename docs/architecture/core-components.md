@@ -19,7 +19,7 @@ resources, and aggregates their readiness.
 | `ControlPlane` | `c5c3.io/v1alpha1` | Top-level resource for a whole control plane: infrastructure, services, identity plane ([CRD reference](../reference/c5c3/controlplane-crd.md)) |
 | `CredentialRotation` | `c5c3.io/v1alpha1` | Rotates the admin application credential ([reconciler reference](../reference/c5c3/controlplane-reconciler.md)) |
 | `SecretAggregate` | `c5c3.io/v1alpha1` | Aggregates secrets from multiple sources into one consumer Secret |
-| `KeystoneService` | `c5c3.io/v1alpha1` | Registers one service against a ControlPlane's identity plane: catalog entry and service account (schema landed, controller follows) |
+| `KeystoneService` | `c5c3.io/v1alpha1` | Registers one service against a ControlPlane's identity plane: catalog entry and service account, from the service's own namespace ([CRD reference](../reference/c5c3/keystoneservice-crd.md)) |
 
 ## Service operators
 

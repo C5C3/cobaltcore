@@ -180,6 +180,8 @@ export default defineConfig({
             items: [
               { text: 'ControlPlane CRD', link: '/reference/c5c3/controlplane-crd' },
               { text: 'Reconciler Architecture', link: '/reference/c5c3/controlplane-reconciler' },
+              { text: 'KeystoneService CRD', link: '/reference/c5c3/keystoneservice-crd' },
+              { text: 'KeystoneService Reconciler', link: '/reference/c5c3/keystoneservice-reconciler' },
             ],
           },
           {
