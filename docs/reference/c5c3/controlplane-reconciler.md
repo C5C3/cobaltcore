@@ -138,14 +138,17 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
 | K-ORC `Endpoint` | `Owns()` | Re-reconciles when the public identity Endpoint changes |
-| K-ORC `Role` | `Owns()` | Re-reconciles when a service-account role's unmanaged `Role` import resolves |
-| K-ORC `RoleAssignment` | `Owns()` | Re-reconciles when a service-account managed `RoleAssignment` becomes Available |
+| K-ORC `User`, `Domain` | `Owns()` | Re-reconciles when the admin identity imports change. These, the `ApplicationCredential` and the identity `Service`/`Endpoint` are the K-ORC CRs the ControlPlane itself owns (`orcChildObjects`) |
+| K-ORC `Project`, `Role`, `RoleAssignment` | `Owns()` | Registered, but no CR the ControlPlane projects carries them any more. A registration's project, role imports and role assignments are claimed by its own `KeystoneService` (`claimKeystoneServiceChild`: a controller owner reference to the **registration** when co-located with it, ownership labels otherwise), never by the ControlPlane, so an `Owns()` leg keyed on a ControlPlane owner reference does not match them. Such a change wakes the registration's controller, and the ControlPlane sees it one step later when the registration's status moves, through the legs below |
 | `ExternalSecret` | `Owns()` | Re-reconciles when an owned ESO ExternalSecret (DB credential, admin password, K-ORC clouds.yaml) syncs or fails, so the credential conditions track ESO promptly |
 | `PushSecret` | `Owns()` | Re-reconciles when the owned admin-credential PushSecret status changes |
+| `KeystoneService` (co-located child) | `Owns()` | Re-reconciles when a registration child projected for a built-in service changes. Both gates the service legs apply are status-only reads, and the standalone mapper leg below drops exactly those writes, so without this leg a child going Ready would only reach the ControlPlane at the next periodic requeue |
+| `KeystoneService` (placed child) | `Watches()` | The label-predicate twin, for a registration child of a service placed in a namespace of its own, which can carry no owner reference |
+| `KeystoneService` (standalone) | `Watches()` | Per-CR fan-out via `keystoneServiceToControlPlaneMapper`, behind `watch.CRUpdatePredicate()`: which allowlisted namespaces host a registration is what decides where `reconcileRegistrationTenantStores` provisions a store, so a CR appearing or being deleted has to re-drive the plane. Such a CR is no child of the ControlPlane, so it is mapped by its own `controlPlaneRef`, and the predicate drops the KeystoneService controller's status-only writes, which cannot move the provisioning set |
 | `Secret` | `Watches()` | Maps Secret events to referencing ControlPlane CRs via the `ControlPlaneSecretNameIndexKey` field indexer (`secretToControlPlaneMapper`) |
 | `ClusterSecretStore` | `Watches()` | Per-ref fan-out via `storeToControlPlaneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind): a status change on a cluster-scoped store enqueues only the ControlPlanes whose effective `spec.secretStoreRef` resolves to it |
 | `SecretStore` | `Watches()` | The namespaced twin, scoped to the store's own namespace, so a ControlPlane pinned to a per-tenant `SecretStore` reacts to its backend health (`storeToControlPlaneMapper` for the namespaced kind) |
-| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `Placement` / `Barbican` / `BarbicanSecretStore` / `OpenBaoCluster` / `OpenBaoTenant` / `MariaDB` / `Memcached` / `ExternalSecret` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
+| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `Placement` / `Barbican` / `BarbicanSecretStore` / `OpenBaoCluster` / `OpenBaoTenant` / `MariaDB` / `Memcached` / `ExternalSecret` / `KeystoneService` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
 
 The `Secret` watch uses `Watches()` with a `MapFunc` rather than `Owns()`
 because the admin-password Secret
@@ -2360,6 +2363,57 @@ the projected `KeystoneService` children and waits for them, because their K-ORC
 CRs belong to the registration and its controller tears them down through the
 admin credential the next step revokes.
 
+### reconcileRegistrationTenantStores
+
+| Aspect | Value |
+| --- | --- |
+| File | `reconcile_esotenant.go` |
+| Condition | `RegistrationTenantStoresReady` |
+| Gate | none — it consumes no condition this chain produces; the trio it writes depends on cert-manager and OpenBao alone |
+| Projects / Owns | the same trio [`reconcileESOTenantStore`](#reconcileesotenantstore) writes (a `ServiceAccount` `eso-tenant-auth`, a cert-manager mTLS `Certificate` `eso-tenant-client-tls`, and a namespaced `SecretStore` `openbao-tenant-store`), one per **allowlisted** namespace hosting at least one `KeystoneService`; nothing when `spec.secretStoreRef` overrides the default |
+| Requeue | `esoTenantStoreRequeueAfter` = **10s** while a store is not yet Ready, and on a provisioning failure |
+
+Credential delivery is namespace-local. A registration's consumer Secret is
+materialized through the tenant store in the CR's **own** namespace, and
+`reconcileESOTenantStore` provisions one only in the namespaces the ControlPlane
+occupies. Without this member an allowlisted foreign registration would mint its
+Keystone account and then wait forever on a store nobody creates.
+
+It shares `ensureESOTenantStoreTrioIn` with its blocking-prefix twin, so the
+ownership mechanism, the adoption refusal and the error wording are written once.
+The OpenBao side needs nothing: the `eso-tenant` role binds the ServiceAccount
+name in **any** namespace and its templated policy confines each token to its own
+paths, so a trio in a foreign namespace authenticates as that namespace's tenant
+identity and reaches only its own paths.
+
+**Why it is a member of its own, at the end of the group.** The tenant-store step
+runs in the chain's blocking prefix, where a non-zero result parks DBCredentials,
+AdminPassword and Keystone behind it. These namespaces are not the operator's — a
+foreign object can occupy the store's name, a certificate can fail to issue there —
+and none of that may reach the plane's core reconciliation. A failure here
+surfaces in this condition, and through it in the aggregate `Ready`, and stops.
+For the same reason a provisioning failure **requeues** rather than returning an
+error: the cause is usually a tenant-side one no backoff resolves, and returning
+an error would put the whole ControlPlane reconcile into exponential backoff for
+it. Every namespace is attempted even after one fails, so a single broken
+namespace cannot starve its peers, and the failures are reported together.
+
+**Collecting, and the one namespace it will not collect.** The namespaces already
+provisioned are enumerated by ownership label **before** the allowlist is
+consulted, so emptying the allowlist still collects the trios whose registrations
+have left. A namespace that no longer appears in the allowlist but still holds
+registrations is **frozen, not collected**: de-listing is an admission gate, and
+revoking the store under a running service would destroy credentials it depends
+on. See [ServiceRegistrationsSpec](./controlplane-crd.md#serviceregistrationsspec).
+
+| Path | Status | Reason | Notes |
+| --- | --- | --- | --- |
+| `spec.secretStoreRef` set (override) | True | `StoreRefOverridden` | nothing to provision and nothing this member created standing to collect; a registration resolves that store in its own namespace itself |
+| no allowlisted namespace hosts a registration | True | `NoRegistrationNamespaces` | both arms share one message: nothing admitted at all, and an allowlist no registration sits in. Returns before the registration List, so a ControlPlane that never uses the feature never depends on the KeystoneService field index |
+| provisioning or collecting a trio failed | False | `ProvisioningError` | requeue 10s, no error returned; the message names the failing namespaces and the joined error. A failed List while enumerating the provisioned namespaces or counting registrations sets the same reason **and** returns the error |
+| a store is written but not yet Ready | False | `SecretStoreNotReady` | requeue 10s, naming the namespace; the delivery leg gates on exactly this, so reporting True early would claim a path that does not carry yet. A failed readiness read returns the error with no condition written, leaving the previous value standing |
+| every store Ready | True | `RegistrationTenantStoresReady` | the message counts the namespaces |
+
 ### CredentialRotation reconciler
 
 | Aspect | Value |
@@ -2998,19 +3052,32 @@ The `condition_type` label is resolved from the package-private
 
 | `sub_reconciler` | `condition_type` |
 | --- | --- |
+| `Namespaces` | `NamespacesReady` |
 | `Infrastructure` | `InfrastructureReady` |
+| `ESOTenantStore` | `ESOTenantStoreReady` |
 | `DBCredentials` | `DBCredentialsReady` |
 | `Keystone` | `KeystoneReady` |
+| `Horizon` | `HorizonReady` |
+| `Glance` | `GlanceReady` |
 | `Placement` | `PlacementReady` |
 | `Barbican` | `BarbicanReady` |
 | `KORC` | `KORCReady` |
 | `AdminCredential` | `AdminCredentialReady` |
 | `AdminPassword` | `AdminPasswordReady` |
 | `Catalog` | `CatalogReady` |
+| `ServiceAccounts` | `ServiceAccountsReady` |
+| `RegistrationTenantStores` | `RegistrationTenantStoresReady` |
+
+The map carries two further entries, `KeystoneServiceCatalog` and
+`KeystoneServiceAccount`, which belong to the `KeystoneService` controller rather
+than to this one; see the
+[KeystoneService Reconciler](./keystoneservice-reconciler.md). The
+`RegistrationTenantStores` series is kept apart from `ESOTenantStore`'s because
+the two carry different blast radii and one alert should not read as the other.
 
 If `instrumenter.Instrument` is ever called with a name absent from the map, the
 helper emits the sentinel `condition_type=UNKNOWN`
-(`subReconcilerConditionTypeUnknown`) rather than an empty label, so any drift is
+(`instrumentation.ConditionTypeUnknown`) rather than an empty label, so any drift is
 visible in dashboards/alerts. One static drift guard keeps the map honest:
 `TestSubReconcilerConditionTypesCoversAllNames` asserts that every mapped
 `condition_type` is a member of `subConditionTypes`. Adding a new
@@ -3104,6 +3171,8 @@ operators/c5c3/
 │   ├── credentialrotation_types.go             CredentialRotation CRD types
 │   ├── secretaggregate_types.go                SecretAggregate CRD types
 │   ├── controlplane_webhook.go                 ControlPlaneWebhook (validating + defaulting)
+│   ├── keystoneservice_types.go                KeystoneService CRD types (see the KeystoneService pages)
+│   ├── keystoneservice_webhook.go              KeystoneServiceWebhook (see the KeystoneService pages)
 │   └── ...
 └── internal/
     ├── controller/
@@ -3142,12 +3211,19 @@ operators/c5c3/
     │   ├── reconcile_korc.go                   reconcileKORC (AC mint/re-mint, drift detection)
     │   ├── reconcile_admincredential.go        reconcileAdminCredential (assemble + push + re-push
     │   │                                        nudges, semantic clouds.yaml gate)
-    │   ├── reconcile_catalog.go                reconcileCatalog (mode fork; managed identity + image
-    │   │                                        Service/Endpoints), korcAvailableUpToDate
+    │   ├── reconcile_catalog.go                reconcileCatalog (mode fork; the managed identity
+    │   │                                        Service/Endpoint), korcAvailableUpToDate
     │   ├── reconcile_catalog_external.go       reconcileCatalogExternal (import-first: unmanaged
     │   │                                        identity imports, opt-in entries, stall detection)
-    │   ├── reconcile_serviceaccounts.go        reconcileServiceAccounts (managed K-ORC User/Project +
-    │   │                                        rotatable, OpenBao-backed password)
+    │   ├── reconcile_serviceaccounts.go        reconcileServiceAccounts (folds the built-in
+    │   │                                        registrations into ServiceAccountsReady)
+    │   ├── builtin_registrations.go            The registration leg Glance/Placement/Barbican share:
+    │   │                                        project the KeystoneService child, gate, mirror, reclaim
+    │   ├── registration_projection.go          K-ORC child + ESO builders shared with the
+    │   │                                        KeystoneService controller
+    │   ├── keystoneservice_controller.go       KeystoneServiceReconciler (see the KeystoneService pages)
+    │   ├── keystoneservice_catalog.go          Its catalog block (see the KeystoneService pages)
+    │   ├── keystoneservice_account.go          Its account block (see the KeystoneService pages)
     │   ├── reconcile_delete.go                 reconcileDelete (ORC-teardown finalizer sequencing)
     │   ├── reconcile_credentialrotation.go     CredentialRotationReconciler (nudge model)
     │   ├── requeue_intervals.go                infra/dbCredentials/adminPassword/keystone/korc/credentialRotation backoffs
