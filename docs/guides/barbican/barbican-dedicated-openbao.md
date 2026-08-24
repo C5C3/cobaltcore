@@ -143,7 +143,8 @@ kubectl get controlplane controlplane -n openstack \
 | Reason | What it is waiting for |
 | --- | --- |
 | `WaitingForKeystone` | `KeystoneReady` is not `True` yet. Barbican validates every token against the Keystone child, so its projection is deferred until then. |
-| `WaitingForServiceAccount` | The injected `barbican` service account has no Keystone user and password yet. |
+| `WaitingForServiceRegistration` | The `KeystoneService` registration projected above has not provisioned the `barbican` Keystone user and its password yet. No Barbican child is written until it has. |
+| `ServiceRegistrationError` | Projecting, reading or mirroring that registration child failed. The message relays what went wrong. |
 | `WaitingForBarbicanDBCredential` | No engine-issued credential has landed. Re-run step 2. |
 | `WaitingForOpenBaoInstance` | The dedicated instance is not `Available`. The store and the child are projected once it serves requests. |
 | `WaitingForBarbican` | The Barbican child exists and is not `Ready` yet (db-sync, rollout, store projection). |

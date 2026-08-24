@@ -327,6 +327,55 @@ Keystone `5000`, each service → its own database/cache) are tabulated in the
 [cross-namespace traffic matrix](../reference/c5c3/controlplane-crd.md#network-policies).
 :::
 
+## Registering a service in the dedicated namespace
+
+A dedicated service namespace is one the ControlPlane owns, so a
+[`KeystoneService`](../reference/c5c3/keystoneservice-crd.md) created there is
+admitted as it stands. It needs **no** entry in
+`spec.korc.serviceRegistrations.allowedNamespaces`: that list admits namespaces
+outside the ones the plane already owns, and `openstack-internal` is not one of
+them. Adding it there changes nothing.
+
+The delivery works for the same reason. A registration's consumer Secret is
+materialized through the per-tenant `openbao-tenant-store` in the CR's **own**
+namespace, and Step 3 already put one in `openstack-internal` along with the
+Keystone service. So a CR like this one, applied in that namespace, registers its
+catalog entry and mints its Keystone user, and its credentials land beside it as
+`nova-credentials`:
+
+```yaml
+apiVersion: c5c3.io/v1alpha1
+kind: KeystoneService
+metadata:
+  name: nova
+  namespace: openstack-internal
+spec:
+  controlPlaneRef:
+    name: controlplane
+    namespace: openstack
+  account:
+    project:
+      name: service-nova
+      create: true
+    roles:
+      - service
+```
+
+`controlPlaneRef.namespace` is the ControlPlane's namespace, `openstack`, not the
+registration's own. Readiness is reported on the CR itself, so a registration
+holding on the admin credential is attributable without decoding the
+ControlPlane's aggregate condition:
+
+```bash
+kubectl get keystoneservice nova -n openstack-internal \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}){"\n"}{end}'
+```
+
+Registering from a namespace the ControlPlane does **not** own is the other flow,
+and it does need allowlist consent: the namespace has to be listed in
+[`spec.korc.serviceRegistrations.allowedNamespaces`](../reference/c5c3/controlplane-crd.md#serviceregistrationsspec)
+first, and the operator then provisions a tenant store there.
+
 ## Using a pre-existing namespace (External lifecycle)
 
 When the namespace's quotas, RBAC, and policies are provisioned out-of-band,
@@ -395,9 +444,14 @@ chainsaw test --test-dir tests/e2e/c5c3/dedicated-namespaces
 
 The suite asserts the placement and lifecycle half on a live cluster — both
 lifecycles, backing-service placement, ownership labels, per-namespace tenant
-stores, and the deletion sweep. The credential re-keying and the projected
-Keystone child are hard-asserted against the real CRD schema and webhook by
-the envtest scenario `TestIntegration_DedicatedNamespaces`
+stores, and the deletion sweep. It also carries the registration leg above: a
+`KeystoneService` in the `Managed` Keystone namespace is admitted without an
+allowlist entry, and because that suite never seeds OpenBao it parks at
+`AccountReady=False/WaitingForAdminCredential`, delivering no consumer Secret and
+projecting no K-ORC child until the ControlPlane's admin credential exists. The
+credential re-keying and the projected Keystone child are hard-asserted against
+the real CRD schema and webhook by the envtest scenario
+`TestIntegration_DedicatedNamespaces`
 (`operators/c5c3/internal/controller/integration_test.go`), which runs on
 every PR.
 

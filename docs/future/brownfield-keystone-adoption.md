@@ -29,7 +29,8 @@ externally running Keystone API:
 
 - minting and rotating the admin **application credential**,
 - managing **service accounts** (service users, projects, role assignments)
-  and their password rotation,
+  and their password rotation, declared per service with a `KeystoneService` CR
+  registered against the plane,
 - stewarding **catalog services and endpoints**,
 - storing all of it per-CR in OpenBao with the existing ExternalSecrets /
   PushSecret round-trip.
@@ -167,8 +168,11 @@ and the failure-classification vocabulary.
 Sub-reconcilers that would deploy something short-circuit with
 `Status=True, Reason=ExternallyManaged` (Infrastructure, DBCredentials,
 AdminPassword, Keystone), so the condition schema is identical across modes. The
-conditions that carry signal are `KORCReady`, `AdminCredentialReady`,
-`CatalogReady`, and `ServiceAccountsReady`.
+conditions that carry signal are `KORCReady`, `AdminCredentialReady`, and
+`CatalogReady`. `ServiceAccountsReady` folds the registrations the plane projects
+for its own built-in services, of which an External-mode plane has none, so it
+reads `True/NoServiceRegistrationsProjected` throughout; a registration's own
+readiness lives on its `KeystoneService` CR.
 
 Beyond the original sketch, phase 1 also delivered **declarative service
 accounts**: managed K-ORC users and projects with operator-generated,
