@@ -406,28 +406,34 @@ grants. The markers therefore add `core/namespaces` with
 │  ║           │                                                                    ║ │
 │  ║           ▼                                                                    ║ │
 │  ║  ┌──────────────────────────┐                                                  ║ │
-│  ║  │ reconcileServiceAccounts │  Project managed K-ORC User/Project accounts     ║ │
-│  ║  │  (gate: AdminCredReady)  │  Sets: ServiceAccountsReady                      ║ │
-│  ║  └────────┬─────────────────┘  Requeue: 10s gated / accounts converging        ║ │
-│  ║           │                                                                    ║ │
-│  ║           ▼                                                                    ║ │
-│  ║  ┌──────────────────────────┐                                                  ║ │
 │  ║  │ reconcileGlance          │  Project the Glance image-service child CR       ║ │
-│  ║  │  (gate: KS + glance SA)  │  Sets: GlanceReady (not-managed when unset)      ║ │
+│  ║  │ (gate: KS + its registr.)│  Sets: GlanceReady (not-managed when unset)      ║ │
 │  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
 │  ║           │                                                                    ║ │
 │  ║           ▼                                                                    ║ │
 │  ║  ┌──────────────────────────┐                                                  ║ │
 │  ║  │ reconcilePlacement       │  Project the Placement child CR                  ║ │
-│  ║  │ (gate: KS + placement SA)│  Sets: PlacementReady (not-managed when unset)   ║ │
+│  ║  │ (gate: KS + its registr.)│  Sets: PlacementReady (not-managed when unset)   ║ │
 │  ║  └────────┬─────────────────┘  Requeue: 5s gated / 15s child not Ready         ║ │
 │  ║           │                                                                    ║ │
 │  ║           ▼                                                                    ║ │
 │  ║  ┌──────────────────────────┐                                                  ║ │
 │  ║  │ reconcileBarbican        │  Project the Barbican child, its secret store,   ║ │
-│  ║  │ (gate: KS + barbican SA) │  and a dedicated OpenBao instance                ║ │
+│  ║  │ (gate: KS + its registr.)│  and a dedicated OpenBao instance                ║ │
 │  ║  └────────┬─────────────────┘  Sets: BarbicanReady (not-managed when unset)    ║ │
-│  ║                                Requeue: 5s gated / 15s instance or child       ║ │
+│  ║           │                    Requeue: 5s gated / 15s instance or child       ║ │
+│  ║           ▼                                                                    ║ │
+│  ║  ┌──────────────────────────┐                                                  ║ │
+│  ║  │ reconcileServiceAccounts │  Fold the three registration children's          ║ │
+│  ║  │  (gate: none)            │  readiness. Sets: ServiceAccountsReady           ║ │
+│  ║  └────────┬─────────────────┘  Requeue: 10s while one is not Ready             ║ │
+│  ║           │                                                                    ║ │
+│  ║           ▼                                                                    ║ │
+│  ║  ┌──────────────────────────────┐                                              ║ │
+│  ║  │ reconcileRegistrationTenant- │  Tenant-store trio in each allowlisted       ║ │
+│  ║  │ Stores    (gate: none)       │  registration namespace                      ║ │
+│  ║  └──────────────────────────────┘  Sets: RegistrationTenantStoresReady         ║ │
+│  ║                                    Requeue: 10s while a store is not Ready     ║ │
 │  ║                                                                                ║ │
 │  ║  member requeues → ShortestRequeue · member errors → errors.Join               ║ │
 │  ╚═══════════╤════════════════════════════════════════════════════════════════════╝ │
@@ -458,21 +464,31 @@ in `instrumenter.Instrument` (see
 [Metrics Instrumentation](#metrics-instrumentation)) so a duration sample and an
 error counter are emitted under a stable `sub_reconciler` label.
 
-**Phase 2 — the tail group.** Horizon, KORC, AdminCredential, Catalog,
-ServiceAccounts, Glance, Placement and Barbican are the eight named members of
-one `commonreconcile.RunSequentialGroup`, embedded as the pipeline's final
-**bare (unnamed)** `Step`. The group members self-instrument through
-`instrumenter.Instrument` — following the keystone self-instrumenting-group
-convention — which is why the enclosing group step carries no `sub_reconciler`
-name of its own. `RunSequentialGroup` attempts **every** member on **every**
-pass and never short-circuits: each member self-gates on the conditions it needs
-(Horizon on `KeystoneReady`; KORC until the admin-password Secret is readable;
-AdminCredential on `KORCReady`; Catalog and ServiceAccounts on
-`AdminCredentialReady`; Glance, Placement and Barbican on `KeystoneReady` and
-their own service account's per-account readiness), so running all of them each
-pass is safe. Barbican carries one gate the others do not: on a dedicated secret
-store it holds the projection until the OpenBao instance it provisions serves
-requests.
+**Phase 2 — the tail group.** Horizon, KORC, AdminCredential, Catalog, Glance,
+Placement, Barbican, ServiceAccounts and RegistrationTenantStores are the nine
+named members of one `commonreconcile.RunSequentialGroup`, embedded as the
+pipeline's final **bare (unnamed)** `Step`. The group members self-instrument
+through `instrumenter.Instrument` — following the keystone
+self-instrumenting-group convention — which is why the enclosing group step
+carries no `sub_reconciler` name of its own. `RunSequentialGroup` attempts
+**every** member on **every** pass and never short-circuits: each member
+self-gates on the conditions it needs (Horizon on `KeystoneReady`; KORC until the
+admin-password Secret is readable; AdminCredential on `KORCReady`; Catalog on
+`AdminCredentialReady`; Glance, Placement and Barbican on `KeystoneReady` and on
+the `AccountReady` of the `KeystoneService` registration each projects for itself,
+see [Built-in service registrations](#built-in-service-registrations)), so running
+all of them each pass is safe. Barbican carries one gate the others do not: on a
+dedicated secret store it holds the projection until the OpenBao instance it
+provisions serves requests.
+
+The last two members carry **no** gate, and their order in the group is what
+makes that safe. ServiceAccounts only folds the registration children the three
+service legs wrote earlier in the same pass, so it must run after them and has
+nothing to defer. RegistrationTenantStores consumes no condition this chain
+produces — the trio it writes depends on cert-manager and OpenBao alone, exactly
+like its blocking-prefix twin — and sits in the group rather than in that prefix
+so a namespace the control plane does not own can never park DBCredentials,
+AdminPassword and Keystone behind it.
 
 ```go
 pipeline := []commonreconcile.Step{
@@ -488,8 +504,8 @@ pipeline := []commonreconcile.Step{
         return commonreconcile.RunSequentialGroup(ctx, instrumenter.Instrument,
             []commonreconcile.Step{
                 {Name: "Horizon", Fn: /* ... */},
-                // KORC, AdminCredential, Catalog, ServiceAccounts, Glance,
-                // Placement, Barbican
+                // KORC, AdminCredential, Catalog, Glance, Placement,
+                // Barbican, ServiceAccounts, RegistrationTenantStores
             })
     }},
 }
@@ -505,9 +521,9 @@ This guarantees:
    prefix steps and the whole tail group are skipped for that pass.
 2. **Group (phase 2) — every member runs each pass.** No member's non-zero
    result or error prevents a later member from running, so a still-converging
-   or failing Horizon no longer parks KORC, the
-   AdminCredential/Catalog/ServiceAccounts identity bootstrap, Glance,
-   Placement, or Barbican. Each member's condition therefore always persists.
+   or failing Horizon no longer parks KORC, the AdminCredential/Catalog
+   identity bootstrap, Glance, Placement, Barbican, or the two ungated members
+   that close the group. Each member's condition therefore always persists.
 3. **Group result aggregation.** When no member errors, the group result is the
    **shortest** member requeue (`commonreconcile.ShortestRequeue`) and the error
    is nil. When one or more members error, the group returns `ctrl.Result{}`
@@ -568,7 +584,7 @@ The aggregated sub-condition types (the source-of-truth `subConditionTypes`
 slice in `controlplane_controller.go`) are:
 
 ```text
-NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, PlacementReady, BarbicanReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady
+NamespacesReady, InfrastructureReady, ESOTenantStoreReady, DBCredentialsReady, KeystoneReady, HorizonReady, GlanceReady, PlacementReady, BarbicanReady, KORCReady, AdminCredentialReady, AdminPasswordReady, CatalogReady, ServiceAccountsReady, RegistrationTenantStoresReady
 ```
 
 The `Ready` condition carries `ObservedGeneration = cp.Generation` so clients can
@@ -2073,7 +2089,7 @@ OpenBao:
 | File | `reconcile_catalog.go` (Managed), `reconcile_catalog_external.go` (External) |
 | Condition | `CatalogReady` |
 | Gate | `AdminCredentialReady == True`, **and** every catalog child reports `Available` |
-| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`), plus — when `spec.services.glance` is set — an image `Service` (`{controlplane.Name}-image-service`) with an internal **and** a public `Endpoint` (`{controlplane.Name}-image-endpoint-internal` / `{controlplane.Name}-image-endpoint-public`), the same pair of interfaces for a placement `Service` (`{controlplane.Name}-placement-service`, Endpoints `{controlplane.Name}-placement-endpoint-internal` / `{controlplane.Name}-placement-endpoint-public`) when `spec.services.placement` is set, and again for a key-manager `Service` (`{controlplane.Name}-key-manager-service`, Endpoints `{controlplane.Name}-key-manager-endpoint-internal` / `{controlplane.Name}-key-manager-endpoint-public`) when `spec.services.barbican` is set. External mode: the same identity `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, and nothing managed. All in `childNamespace(cp)` |
+| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`). That is the whole managed table: a built-in service's catalog row belongs to the `KeystoneService` registration projected for it, not here. External mode: the same identity `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, and nothing managed. All in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while gated, while a child is not yet Available, or on a terminal K-ORC failure |
 
 `reconcileCatalog` drives `CatalogReady`. Everything up to and including the
@@ -2085,66 +2101,37 @@ CRD-not-installed condition.
 
 #### Managed mode — the control plane owns the catalog
 
-`reconcileCatalog` registers the OpenStack service-catalog entries as owned K-ORC
-CRs, driven from a per-service table (`managedCatalogRows`) so a second service is
-a table row rather than a copied literal. The first row is always the identity
+`reconcileCatalog` registers the OpenStack service-catalog entries the control
+plane itself owns as owned K-ORC CRs, driven from a per-service table
+(`managedCatalogRows`). That table holds exactly **one** row, the identity
 (Keystone) service: an `identity`-type `Service` named `keystone`, plus a
 `public` `Endpoint` whose URL defaults to the conventional in-cluster identity URL
 `http://keystone.<namespace>.svc:5000/v3` and whose `serviceRef` points at the
-identity Service. When `spec.services.glance` is set a second row registers the
-`image` (Glance) service — a `Service` named `glance` with **two** Endpoints (D6,
-both interfaces from the start so no later catalog migration is needed): the
-`internal` one advertises the in-cluster Glance API Service URL
-`http://{controlplane.Name}-glance.<glance-namespace>.svc:9292` (`glanceEndpointURL`),
-while the `public` one prefers an explicit `services.glance.publicEndpoint`
-(advertised verbatim), then the externally routable gateway hostname
-(`https://{gateway.hostname}`), then falls back to that same in-cluster URL when
-Glance is not exposed via a Gateway (`glanceCatalogURL`). Unlike identity there is
-no `/v3` path suffix — the Glance API is served at the root. The image row follows
-the generic `{controlplane.Name}-image-service` / `{controlplane.Name}-image-endpoint-{interface}`
-naming convention rather than identity's legacy CR names. Every child is projected
-idempotently via Server-Side Apply under the shared field manager
-(`cobaltcore-operator`).
+identity Service. The child is projected idempotently via Server-Side Apply under
+the shared field manager (`cobaltcore-operator`).
 
-`spec.services.placement` adds a further row on the same terms: a `placement`-type
-`Service` named `placement`, again with both Endpoints. The `internal` one
-advertises the in-cluster Placement API Service URL
-`http://{controlplane.Name}-placement.<placement-namespace>.svc:8778`
-(`placementEndpointURL`); the `public` one resolves through the same preference
-order as Glance's (`placementCatalogURL`: an explicit
-`services.placement.publicEndpoint`, then `https://{gateway.hostname}`, then that
-in-cluster URL). The Placement API is served at the root too, so there is no path
-suffix, and the CR names follow the generic convention:
-`{controlplane.Name}-placement-service` and
-`{controlplane.Name}-placement-endpoint-{interface}`.
+The rows for the built-in services are **not** here. Glance's `image` row,
+Placement's `placement` row and Barbican's `key-manager` row each belong to the
+`KeystoneService` registration their service leg projects, which owns the row's
+K-ORC children and their teardown; see
+[Built-in service registrations](#built-in-service-registrations) for what each
+one advertises. The identity row stays ControlPlane-owned in both modes because
+nothing registers it on the plane's behalf: it is the entry K-ORC authenticates
+through.
 
-`spec.services.barbican` adds the fourth row, a `key-manager`-type `Service`
-named `barbican` with both Endpoints. The `internal` one advertises the
-in-cluster Barbican API Service URL
-`http://{controlplane.Name}-barbican.<barbican-namespace>.svc:9311`
-(`barbicanEndpointURL`); the `public` one resolves through the same preference
-order (`barbicanCatalogURL`: an explicit `services.barbican.publicEndpoint`,
-then `https://{gateway.hostname}`, then that in-cluster URL). The Barbican API is
-served at the root, so there is no `/v3` path suffix here either. The CR names
-take the OpenStack service type: `{controlplane.Name}-key-manager-service` and
-`{controlplane.Name}-key-manager-endpoint-{interface}`, while the catalog row
-they register is named `barbican`.
-
-A row whose service carries a [`targetClusterRef`](../target-clusters.md)
-advertises its public URL on the `internal` interface too (`internalCatalogURL`):
-the in-cluster Service URL above resolves only on the cluster that service runs
-on, so K-ORC — and every other consumer that reads the catalog from elsewhere —
-would get an address it cannot connect to. The identity row needs no such switch,
-having a public interface only. The `Service`/`Endpoint` CRs themselves stay in
-`childNamespace(cp)` on the management cluster whatever the rows advertise: they
-are K-ORC's to reconcile, and K-ORC runs there. See
+The identity row registers a `public` interface only, so it needs none of the
+target-cluster switching a placed service's row does. Its `Service`/`Endpoint` CRs
+stay in `childNamespace(cp)` on the management cluster: they are K-ORC's to
+reconcile, and K-ORC runs there. See
 [Reaching a placed service](#reaching-a-placed-service).
 
 No managed row carries a region: `managedCatalogService` and
 `managedCatalogEndpoint` set the management policy, the credentials ref, and the
 resource block (type/name/enabled, and interface/URL/serviceRef), and nothing
 else. The region every client filters on comes from the `clouds.yaml`
-`region_name` the admin credential renders from `spec.region`.
+`region_name` the admin credential renders from `spec.region`. The registration
+children carry no region either, for the same upstream reason: K-ORC's
+`EndpointResourceSpec` has no region field.
 
 Registering the child CRs only instructs K-ORC to create the catalog entries — it
 does not mean they exist in Keystone — so `CatalogReady` is gated on both children
@@ -2163,7 +2150,7 @@ surfaced as the distinct `CatalogFailed` reason instead of a false-positive Read
 | Endpoint create/update fails | False | `EndpointError` | returns the error |
 | a catalog entry's Service/Endpoint reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s (Service before its Endpoints, so the root stuck dependency surfaces) |
 | a catalog entry's Service/Endpoint registered but not yet Available | False | `WaitingForCatalog` | requeue 10s |
-| every catalog entry registered and Available | True | `CatalogRegistered` | message counts the registered entries: identity always, plus the image (Glance) entry when `spec.services.glance` is set, the placement entry when `spec.services.placement` is set, and the key-manager (Barbican) entry when `spec.services.barbican` is set |
+| every catalog entry registered and Available | True | `CatalogRegistered` | the message counts the registered entries, which is the identity row alone today; the table is what a future ControlPlane-owned row would be added to |
 
 #### External mode — import-first
 
