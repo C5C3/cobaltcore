@@ -1017,6 +1017,52 @@ bootstrapped and rotated and which bootstrap resources are reconciled.
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `adminCredential` | [`AdminCredentialSpec`](#admincredentialspec) | Yes | — | The admin OpenStack credential K-ORC uses to reconcile resources, plus the application-credential rotation policy. |
+| `serviceRegistrations` | [`*ServiceRegistrationsSpec`](#serviceregistrationsspec) | No | `nil` | Which namespaces this control plane consents to standalone [`KeystoneService`](./keystoneservice-crd.md) registrations from. Optional: its zero value admits only the namespaces the control plane already owns. |
+
+---
+
+## ServiceRegistrationsSpec
+
+Carries the control plane's consent to standalone `KeystoneService` CRs
+registering against it.
+
+A `KeystoneService` mints a Keystone service user with the roles its spec asks
+for, so a CR in a namespace the control plane does not consent to would turn
+namespace access into cloud admin. The reconciler gates every registration on
+this block and reports `Ready=False` with reason `NamespaceNotAllowed` for a
+namespace it does not admit, projecting nothing. See the
+[KeystoneService Reconciler](./keystoneservice-reconciler.md) for where that gate
+sits in the registration's flow.
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `allowedNamespaces` | `[]string` | No | `[]` | Namespaces **outside** the ones this control plane already owns that may register against it. `listType=set`, so the API server rejects a duplicate entry. At most 32 entries, each 1 to 63 characters matching `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, the RFC-1123 label shape of a Kubernetes namespace name. |
+
+> **The namespaces the control plane owns need no entry.** Its own namespace and
+> its [dedicated service namespaces](#service-namespaces) are admitted
+> implicitly: it provisions a tenant store in each of them already, and their
+> contents are its own. A nil block and an empty list are therefore identical —
+> both admit exactly those, and nothing else.
+
+> **The list is an admission gate, not a revocation tool.** Removing a namespace
+> freezes reconciliation of the `KeystoneService` CRs in it, which report
+> `Ready=False/NamespaceNotAllowed`, while every Keystone user, catalog row and
+> delivered Secret already minted stays in place and keeps authenticating.
+> Teardown happens only through deletion of the `KeystoneService` CR itself, so an
+> edit here can never destroy credentials a running service depends on. To revoke
+> a registration, delete its CR.
+
+> **A redundant entry is a no-op, not an error.** Naming the control plane's own
+> namespace or one of its dedicated service namespaces is accepted and changes
+> nothing. `validateServiceRegistrations` deliberately adds no rule of its own
+> here: rejecting such an entry would couple the allowlist to unrelated spec
+> edits, so dropping a service's `namespace` block would invalidate an allowlist
+> entry that never changed, on the very update that removed the block.
+
+The per-tenant secret store a registration in an allowlisted namespace delivers
+its credentials through is provisioned by a sub-reconciler of its own and gated
+by [`RegistrationTenantStoresReady`](#registrationtenantstoresready), not by
+`ESOTenantStoreReady`.
 
 ---
 
@@ -1444,6 +1490,7 @@ Keystone discipline:
 | `spec.services.glance.importPlugins.conversion.outputFormat` | Enum: `qcow2`, `raw`, `vmdk` |
 | `spec.services.glance.importPlugins.injectMetadata.properties` | Required; MinProperties 1; MaxProperties 64; CEL: `self.all(k, size(k) <= 255 && size(self[k]) <= 255)` → "each injected property name and value must be at most 255 characters" (the CEL rule is the only marker that reaches the map's halves) |
 | `spec.services.glance.importPlugins.injectMetadata.ignoreUserRoles` | MaxItems 64; item MinLength 1; item MaxLength 255 |
+| `spec.korc.serviceRegistrations.allowedNamespaces` | `listType=set` (the API server rejects duplicate entries); MaxItems 32; item MinLength 1; item MaxLength 63; item Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` |
 
 ### Validating-webhook rules
 
@@ -1515,6 +1562,9 @@ short-circuit on the first error.
 | Keystone CA bundle needs every service co-located | `spec.services.keystone.caBundleSecretRef` | `field.Forbidden` | The bundle is set while a declared service does not share Keystone's target cluster. The bundle reaches K-ORC and nothing else — it is projected as the inline `cacert` key into the two K-ORC credentials Secrets — while a service on another cluster gets that same `https` URL as its projected `spec.keystoneEndpoint` and renders it into `[keystone_authtoken]`, which carries no option for a trust anchor. That service would fail every token validation with `certificate signed by unknown authority` and no field on any CR to repair it with, so the combination is refused rather than admitted as TLS-configured: publish a placed Keystone with a publicly trusted certificate, or co-locate every service with it. **Cross-field, webhook-only.** |
 | Keystone CA bundle name required | `spec.services.keystone.caBundleSecretRef.name` | `field.Required` | `caBundleSecretRef` set with an empty `name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
 | Keystone CA bundle forbidden in External mode | `spec.services.keystone.caBundleSecretRef` | `field.Forbidden` | The bundle is set while `mode: External`, where `external.caBundleSecretRef` is the field that verifies the external endpoint. Defense-in-depth mirror of the per-field CEL rule. |
+| Registration allowlist cap | `spec.korc.serviceRegistrations.allowedNamespaces` | `field.TooMany` | More than 32 entries. Defense-in-depth alongside the `MaxItems` marker, for a caller that bypasses CRD schema admission. |
+| Registration allowlist entry shape | `spec.korc.serviceRegistrations.allowedNamespaces[i]` | `field.Invalid` | An entry is not a lowercase alphanumeric RFC-1123 label; it names a Kubernetes namespace. Defense-in-depth alongside the item `Pattern` marker. |
+| Registration allowlist duplicates | `spec.korc.serviceRegistrations.allowedNamespaces[i]` | `field.Duplicate` | An entry repeats an earlier one. Defense-in-depth alongside the `listType=set` marker. `validateServiceRegistrations` adds **no** rule beyond these three: an entry naming a namespace the control plane already owns is a redundant no-op rather than an error, see [ServiceRegistrationsSpec](#serviceregistrationsspec). |
 
 Whether the named target cluster is **registered** is deliberately not checked.
 A registration is a runtime fact that can appear and disappear long after the
