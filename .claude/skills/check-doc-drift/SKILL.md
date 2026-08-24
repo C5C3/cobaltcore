@@ -28,7 +28,7 @@ splits the corpus into three areas, each with a single source of truth:
 
 | Doc area | Files | Source of truth |
 |---|---|---|
-| Operator reference | `docs/reference/<op>/` reconciler pages (e.g. `keystone-reconciler.md`, `controlplane-reconciler.md`, `horizon-reconciler.md`) | `operators/<op>/internal/controller/reconcile_*.go` + `operators/<op>/api/v1alpha1/*_types.go` + `internal/common/` |
+| Operator reference | `docs/reference/<op>/` reconciler pages (e.g. `keystone-reconciler.md`, `controlplane-reconciler.md`, `horizon-reconciler.md`, `keystoneservice-reconciler.md`) | `operators/<op>/internal/controller/reconcile_*.go` + `operators/<op>/api/v1alpha1/*_types.go` + `internal/common/` |
 | CRD reference | `docs/reference/<op>/*-crd.md` | `operators/<op>/api/v1alpha1/*_types.go` and the generated CRDs under `operators/<op>/config/crd/bases/` |
 | Infrastructure stack | `docs/guides/`, `docs/quick-start*.md`, `docs/reference/infrastructure/` | `deploy/` kustomize tree + `hack/deploy-infra.sh` (incl. `INFRA_ONLY`) + `hack/deploy-mgmt-cluster.sh` + the `deploy/target-cluster/target-cluster-access` helm chart + `releases/<version>/source-refs.yaml` |
 | Cross-cluster reference | `docs/reference/target-clusters.md` (the placement contract: ownership labels, teardown order, capability probing, per-service placement notes) | `internal/common/multicluster/` + the placement paths in `operators/*/internal/controller/` + the `Makefile` `e2e-multicluster` target |
@@ -82,7 +82,15 @@ delegate the areas to parallel sub-agents for a large corpus.
   `docs/reference/<op>/` reconciler page, confirm the description
   matches the current implementation under
   `operators/<op>/internal/controller/` (what it touches, what
-  condition it sets, what it requeues on).
+  condition it sets, what it requeues on). A reconciler page whose
+  sections fall outside that heading shape is cross-referenced the same
+  way, section by section, since D2 cannot see it: in
+  `keystoneservice-reconciler.md` pair `## Catalog Projection` with
+  `keystoneservice_catalog.go`, `## Account Projection` with
+  `keystoneservice_account.go`, and `## Deletion and Teardown` with the
+  finalizer path in `keystoneservice_controller.go`; in
+  `controlplane-reconciler.md` pair `### Built-in service
+  registrations` with `builtin_registrations.go`.
 - **CRD reference** — for each Spec field listed in
   `docs/reference/<op>/*-crd.md`, confirm the type, JSON tag, default,
   required-ness, and CEL validation rule match the
