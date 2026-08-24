@@ -435,14 +435,21 @@ ControlPlane. See the
 
 ## Step 5 — Watch the chain reconcile
 
-The aggregate `Ready` flips to `True` once all 14 sub-conditions are met, in
+The aggregate `Ready` flips to `True` once all 15 sub-conditions are met, in
 dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady`,
-`PlacementReady`, and `BarbicanReady` gate on `KeystoneReady` plus
-`ServiceAccountsReady`; the K-ORC branch runs alongside):
+`PlacementReady`, and `BarbicanReady` gate on `KeystoneReady` plus the
+`KeystoneService` registration each service projects for itself;
+`ServiceAccountsReady` then folds those three registrations, so it comes after
+them; the K-ORC branch runs alongside):
 
 ```
-NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → ServiceAccountsReady → GlanceReady → PlacementReady → BarbicanReady
+NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady → BarbicanReady → ServiceAccountsReady → RegistrationTenantStoresReady
 ```
+
+`RegistrationTenantStoresReady` closes the chain and reads
+`True/NoRegistrationNamespaces` on this devstack: it provisions secret stores for
+namespaces outside this ControlPlane's own that register services against it, and
+the quick start declares none.
 
 ```bash
 kubectl get controlplane controlplane -n openstack \

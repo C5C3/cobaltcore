@@ -181,10 +181,14 @@ Nothing is deployed, so the sub-reconcilers that would deploy something report
 evidence that anything converged.
 
 The conditions that carry real signal are `KORCReady`, `AdminCredentialReady`,
-`CatalogReady`, and `ServiceAccountsReady`. All of them are proxied through K-ORC:
-the operator holds no OpenStack client of its own, so "can we reach and
-authenticate against your Keystone?" is answered by whether the imports and the
-application-credential mint succeed.
+and `CatalogReady`. All three are proxied through K-ORC: the operator holds no
+OpenStack client of its own, so "can we reach and authenticate against your
+Keystone?" is answered by whether the imports and the application-credential mint
+succeed. `ServiceAccountsReady` is **not** among them here: it folds the
+registrations the ControlPlane projects for its own built-in services, and an
+External-mode plane manages none, so it reads `True` with reason
+`NoServiceRegistrationsProjected` whatever your registrations are doing. Their
+readiness is reported on each `KeystoneService` CR, as step 5 shows.
 
 ```bash
 kubectl -n brownfield get controlplane controlplane-external
@@ -269,6 +273,14 @@ The semantics that matter:
   adopted user becomes operator-owned, so it *is* deleted at teardown. The one
   identity `adopt` does **not** unlock is the ControlPlane's own admin identity,
   which the reconciler refuses outright.
+
+  ::: warning Adoption does not apply the new password on the first pass
+  With the currently pinned K-ORC, a newly adopted user keeps its pre-existing
+  password even though the registration reports `AccountReady=True` and the
+  consumer Secret carries the operator's generated one. Rotate the account once
+  with a `CredentialRotation` to force the first real write. Tracked in
+  [#920](https://github.com/C5C3/cobaltcore/issues/920).
+  :::
 - **`account.roles`** are projected — each becomes an unmanaged K-ORC `Role`
   import plus a managed `RoleAssignment` binding the role to the user on the
   project, and the account is not Ready until every assignment lands in Keystone.
