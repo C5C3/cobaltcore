@@ -320,8 +320,8 @@ as fields as the operator grows.
 | `keystone` | [`*ServiceKeystoneSpec`](#servicekeystonespec) | No | `nil` | Configuration for the Keystone service projected by the reconciler. Optional: when unset, this ControlPlane manages no Keystone service (staged adoption, or an externally-managed Keystone) and `KeystoneReady` is reported as not-managed. Flipping it from set to `nil` **preserves** the previously-projected Keystone child by default — deleting it would cascade to the child's irreplaceable `<name>-credential-keys` Secret (and its OpenBao backup), so an accidental unset is fail-safe. Set the `c5c3.io/allow-keystone-deletion: "true"` annotation on the ControlPlane to opt in to deleting the child on unset. |
 | `horizon` | [`*ServiceHorizonSpec`](#servicehorizonspec) | No | `nil` | Configuration for the Horizon dashboard projected by the reconciler. Optional: when unset, this ControlPlane manages no dashboard and `HorizonReady` is reported as not-managed (`HorizonNotManaged`), so the aggregate `Ready` is not blocked. **Forbidden in External mode** — the dashboard needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Horizon child by default; set the `c5c3.io/allow-horizon-deletion: "true"` annotation to opt in to deleting the child on unset. |
 | `glance` | [`*ServiceGlanceSpec`](#serviceglancespec) | No | `nil` | Configuration for the Glance image service projected by the reconciler. Optional: when unset, this ControlPlane manages no image service and `GlanceReady` is reported as not-managed (`GlanceNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** — Glance validates every token against the ControlPlane's Keystone child. **Forbidden in External mode** — Glance needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Glance child by default; set the `c5c3.io/allow-glance-deletion: "true"` annotation to opt in to deleting the child (and its `GlanceBackend` children and DB-credential ExternalSecret) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation — preserving a running service does not imply preserving a credential minter. |
-| `placement` | [`*ServicePlacementSpec`](#serviceplacementspec) | No | `nil` | Configuration for the Placement service projected by the reconciler. Optional: when unset, this ControlPlane manages no placement service and `PlacementReady` is reported as not-managed (`PlacementNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Placement validates every token against the ControlPlane's Keystone child) and on the injected `placement` service account being Ready. **Forbidden in External mode**: Placement needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Placement child by default; set the `c5c3.io/allow-placement-deletion: "true"` annotation to opt in to deleting the child (with its DB-credential ExternalSecret and the placement catalog CRs) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation, so no credential minter outlives the service. |
-| `barbican` | [`*ServiceBarbicanSpec`](#servicebarbicanspec) | No | `nil` | Configuration for the Barbican key manager projected by the reconciler. Optional: when unset, this ControlPlane manages no key manager and `BarbicanReady` is reported as not-managed (`BarbicanNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Barbican validates every token against the ControlPlane's Keystone child) and on the injected `barbican` service account being Ready. **Forbidden in External mode**: Barbican needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Barbican child by default; set the `c5c3.io/allow-barbican-deletion: "true"` annotation to opt in to deleting the child (with its `BarbicanSecretStore`, its DB-credential ExternalSecret, and the key-manager catalog CRs) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation. Destroying a **dedicated** OpenBao instance and the secrets in it takes a second annotation on top, `c5c3.io/allow-barbican-secret-store-data-deletion: "true"`; see [ServiceBarbicanSecretStoreSpec](#servicebarbicansecretstorespec). |
+| `placement` | [`*ServicePlacementSpec`](#serviceplacementspec) | No | `nil` | Configuration for the Placement service projected by the reconciler. Optional: when unset, this ControlPlane manages no placement service and `PlacementReady` is reported as not-managed (`PlacementNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Placement validates every token against the ControlPlane's Keystone child) and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. **Forbidden in External mode**: Placement needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Placement child by default; set the `c5c3.io/allow-placement-deletion: "true"` annotation to opt in to deleting the child (with its DB-credential ExternalSecret and the placement catalog CRs) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation, so no credential minter outlives the service. |
+| `barbican` | [`*ServiceBarbicanSpec`](#servicebarbicanspec) | No | `nil` | Configuration for the Barbican key manager projected by the reconciler. Optional: when unset, this ControlPlane manages no key manager and `BarbicanReady` is reported as not-managed (`BarbicanNotManaged`), so the aggregate `Ready` is not blocked. The projection is **gated on `KeystoneReady`** (Barbican validates every token against the ControlPlane's Keystone child) and on the `AccountReady` of the `KeystoneService` registration the reconciler projects for it. **Forbidden in External mode**: Barbican needs its own External-mode design. Flipping it from set to `nil` preserves the previously-projected Barbican child by default; set the `c5c3.io/allow-barbican-deletion: "true"` annotation to opt in to deleting the child (with its `BarbicanSecretStore`, its DB-credential ExternalSecret, and the key-manager catalog CRs) on unset. The dynamic DB-credential generator is torn down on unset regardless of the annotation. Destroying a **dedicated** OpenBao instance and the secrets in it takes a second annotation on top, `c5c3.io/allow-barbican-secret-store-data-deletion: "true"`; see [ServiceBarbicanSecretStoreSpec](#servicebarbicansecretstorespec). |
 
 ---
 
@@ -1893,7 +1893,7 @@ func (w *ControlPlaneWebhook) ValidateDelete(_ context.Context, _ *ControlPlane)
 
 ## Status Conditions
 
-The ControlPlane status is driven by twelve sub-reconcilers, each owning one
+The ControlPlane status is driven by fifteen sub-reconcilers, each owning one
 condition type, plus an aggregate `Ready` condition. The condition-type
 constants in `controlplane_controller.go` (`subConditionTypes`) are the single
 source of truth; call sites reference the constants rather than inline literals.
@@ -1902,19 +1902,17 @@ The sub-reconcilers run in dependency order; a stage that has not converged
 requeues and stops the chain, so later conditions are never computed against a
 half-built earlier stage. Seven stages additionally gate **explicitly** on an
 earlier condition being `True` (`reconcileKeystone` on `InfrastructureReady`,
-`reconcileHorizon` on `KeystoneReady`, `reconcileGlance` and
-`reconcilePlacement` on `KeystoneReady` — and on their injected `glance` /
-`placement` service accounts — `reconcileAdminCredential` on `KORCReady`,
-`reconcileCatalog` and `reconcileServiceAccounts` on `AdminCredentialReady`).
-`reconcileGlance` and `reconcilePlacement` run **last**, after
-`reconcileServiceAccounts`, because they gate on the per-account readiness that
-stage computes into status in the same pass:
+`reconcileHorizon` on `KeystoneReady`, `reconcileGlance`, `reconcilePlacement`
+and `reconcileBarbican` on `KeystoneReady` and on the `AccountReady` of the
+`KeystoneService` registration each of them projects for itself,
+`reconcileAdminCredential` on `KORCReady`, `reconcileCatalog` on
+`AdminCredentialReady`):
 
 ```
 NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady
   → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady
-  → AdminCredentialReady → CatalogReady → ServiceAccountsReady → GlanceReady
-  → PlacementReady
+  → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady
+  → BarbicanReady → ServiceAccountsReady → RegistrationTenantStoresReady
 ```
 
 `ESOTenantStoreReady` runs ahead of every store-consuming stage because it
@@ -1925,9 +1923,13 @@ it), so both `ESOTenantStoreReady` and `HorizonReady` appear on an External-mode
 CR's status — the latter as `HorizonNotManaged`, since the dashboard is forbidden
 in External mode.
 
-`ServiceAccountsReady` gates explicitly on `AdminCredentialReady` (like
-`CatalogReady`): the admin credential must be minted before K-ORC can project
-the service-account User/Project.
+`ServiceAccountsReady` and `RegistrationTenantStoresReady` run **last** and carry
+no gate of their own. The first only reads the `KeystoneService` registrations
+the Glance, Placement and Barbican legs wrote earlier in the same pass, so there
+is no projection it could defer. The second writes into namespaces the control
+plane does not own, which is why it sits at the end of the chain rather than
+beside `ESOTenantStoreReady`: a namespace someone else administers must never
+park this control plane's own credential material behind it.
 
 `Ready` is `True` (reason `AllReady`) **only** when all sub-conditions are
 `True` (via `conditions.AllTrue`); otherwise it is `False` (reason
@@ -2169,13 +2171,46 @@ names the registration child it came from.
 | `False` | `ServiceRegistrationError` | Kubernetes-level error reading a registration child. Returned as an error too, so the reconcile group joins it. |
 | `False` | *(the child's reason)* | A registration reports a `False` sub-condition — `ServiceAccountCollision`, `ProbingForCollision`, `WaitingForServiceAccounts`, `ServiceAccountsFailed`, `SecretStoreNotReady`, `CatalogFailed`, … — relayed verbatim with the child's own message. |
 
+### RegistrationTenantStoresReady
+
+Set by `reconcileRegistrationTenantStores`. It provisions the per-tenant
+`openbao-tenant-store` trio (a `ServiceAccount`, an mTLS `Certificate`, and the
+`SecretStore` itself) in every **allowlisted** namespace hosting at least one
+`KeystoneService`, and collects the trio again once the last registration there
+is gone. Credential delivery is namespace-local, so without it an allowlisted
+foreign registration would mint its Keystone account and then wait forever on a
+store nobody creates.
+
+It is deliberately separate from [`ESOTenantStoreReady`](#esotenantstoreready),
+which covers only the namespaces the control plane occupies. That one runs in the
+chain's blocking prefix, where a non-zero result parks `DBCredentialsReady`,
+`AdminPasswordReady` and `KeystoneReady` behind it. These namespaces are not the
+operator's — a foreign object can occupy the store's name there, a certificate can
+fail to issue — and none of that may reach the plane's core reconciliation. A
+failure here surfaces in this condition, and through it in the aggregate `Ready`,
+and stops there.
+
+An allowlisted namespace that hosts no registration is not provisioned. A
+namespace **removed** from the allowlist while it still holds registrations keeps
+its store rather than losing it: de-listing is an admission gate, and revoking the
+store under a running service would destroy credentials it depends on (see
+[ServiceRegistrationsSpec](#serviceregistrationsspec)).
+
+| Status | Reason | When |
+| --- | --- | --- |
+| `True` | `StoreRefOverridden` | An explicit `spec.secretStoreRef` opts the whole control plane out of operator-provisioned stores. Nothing is provisioned, and nothing this sub-reconciler created is standing to collect; a registration resolves that store in its own namespace itself. |
+| `True` | `NoRegistrationNamespaces` | No allowlisted namespace hosts a service registration. Covers both arms that reach it: an empty or absent allowlist with nothing standing, and an allowlist whose namespaces hold no `KeystoneService`. |
+| `True` | `RegistrationTenantStoresReady` | The `openbao-tenant-store` `SecretStore` is Ready in every allowlisted registration namespace. The message counts them. |
+| `False` | `ProvisioningError` | Writing or collecting a trio failed. Every namespace is attempted before the failures are reported together, so one broken namespace cannot starve its peers, and the message names the failing namespaces and the joined error. It **requeues** (10s) instead of returning an error: the cause is usually a tenant-side one no backoff resolves, such as a foreign object holding the store's name, and returning an error would put the whole ControlPlane reconcile into exponential backoff for it. Listing the provisioned namespaces or counting the registrations is the one arm that does return the error as well. |
+| `False` | `SecretStoreNotReady` | A store is written but not yet Ready, naming the namespace. A registration's delivery leg gates on exactly this, so reporting `True` while a store is still issuing its client certificate would claim a delivery path that does not carry yet. Requeue 10s. A failed readiness **read** returns the error with no condition written, leaving the previous value standing until the retry. |
+
 ### Ready (aggregate)
 
 Set by `setReadyCondition`.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `AllReady` | All thirteen sub-conditions above are `True`. |
+| `True` | `AllReady` | All fifteen sub-conditions are `True`. |
 | `False` | `NotAllReady` | One or more sub-conditions are not `True`. |
 
 ---
@@ -2265,6 +2300,16 @@ re-keyed on the Keystone service namespace:
 A **brownfield** or **External** admin-password Secret is the user's, supplied
 against the ControlPlane they wrote, so it stays in the ControlPlane's own
 namespace where they put it.
+
+A namespace the control plane does **not** occupy gets a trio too when it is
+allowlisted for service registrations and hosts at least one `KeystoneService`,
+because that CR's consumer Secret is materialized through the store in its own
+namespace. Those trios are provisioned by a sub-reconciler of their own and gated
+by [`RegistrationTenantStoresReady`](#registrationtenantstoresready), so a
+namespace somebody else administers cannot park the control plane's own
+credential material. OpenBao again needs no change: the `eso-tenant` role binds
+the ServiceAccount name in any namespace, and its templated policy confines each
+token to its own paths.
 
 ### Cross-namespace service discovery
 
