@@ -12,7 +12,8 @@
 # leaves the job permanently skipped and the chart permanently unpublished.
 #
 # hack/ci-resolve-changes.sh is executed for real in both of its branches; the
-# three ci.yaml sides are asserted against the workflow file.
+# three ci.yaml sides are asserted against the workflow file. The shared
+# resolve-script scaffolding lives in tests/lib/ci_resolve.sh.
 #
 # Usage: bash tests/unit/ci/target_cluster_chart_output_test.sh
 
@@ -21,7 +22,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
-RESOLVE_SH="$PROJECT_ROOT/hack/ci-resolve-changes.sh"
+
+# The resolve script needs a non-empty ALL_OPERATORS to get past its own guard.
+# This signal does not compose with any FILTER_<operator>, so any real operator
+# name does — the list only has to be non-empty.
+ALL_OPERATORS_FIXTURE="keystone c5c3"
 
 PASS=0
 FAIL=0
@@ -29,6 +34,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_resolve.sh
+source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -38,17 +45,9 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # value, and echo the target-cluster-chart line it emits.
 run_resolve() {
   local ref="$1" filter="$2"
-  local out
-  out=$(mktemp)
 
-  ALL_OPERATORS="keystone c5c3" \
-    GITHUB_OUTPUT="$out" \
-    GITHUB_REF="$ref" \
-    FILTER_target_cluster_chart="$filter" \
-    bash "$RESOLVE_SH" >/dev/null 2>&1
-
-  grep '^target-cluster-chart=' "$out"
-  rm -f "$out"
+  resolve_output target-cluster-chart "$ref" "$ALL_OPERATORS_FIXTURE" \
+    FILTER_target_cluster_chart="$filter"
 }
 
 # ---------------------------------------------------------------------------
@@ -67,13 +66,9 @@ test_branch_push_passes_the_filter_through() {
 test_unset_filter_defaults_to_false() {
   echo "Test: an unwired filter defaults to false rather than tripping set -u"
 
-  local out
-  out=$(mktemp)
-  ALL_OPERATORS="keystone" GITHUB_OUTPUT="$out" GITHUB_REF=refs/heads/main \
-    bash "$RESOLVE_SH" >/dev/null 2>&1
   assert_eq "the output is emitted even with no FILTER_ env var" \
-    "target-cluster-chart=false" "$(grep '^target-cluster-chart=' "$out")"
-  rm -f "$out"
+    "target-cluster-chart=false" \
+    "$(resolve_output target-cluster-chart refs/heads/main "$ALL_OPERATORS_FIXTURE")"
 }
 
 test_tag_push_forces_the_chart() {
@@ -86,12 +81,7 @@ test_tag_push_forces_the_chart() {
 test_ci_yaml_wires_both_ends() {
   echo "Test: ci.yaml passes the filter in and reads the output back out"
 
-  assert_file_contains "the paths filter exists" "$CI_YAML" \
-    "target_cluster_chart:"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
-    'FILTER_target_cluster_chart: ${{ steps.filter.outputs.target_cluster_chart }}'
-  assert_file_contains "the changes job exports the output" "$CI_YAML" \
-    'target-cluster-chart: ${{ steps.result.outputs.target-cluster-chart }}'
+  assert_filter_is_wired target_cluster_chart target-cluster-chart
   assert_file_contains "the push job gates on it" "$CI_YAML" \
     "needs.changes.outputs.target-cluster-chart == 'true'"
 }

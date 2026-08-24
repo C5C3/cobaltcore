@@ -14,7 +14,8 @@
 #
 # hack/ci-resolve-changes.sh is executed for real in all of its branches; the
 # ci.yaml sides are asserted against the workflow file. Modelled on the sibling
-# tests/unit/ci/target_cluster_chart_output_test.sh.
+# tests/unit/ci/target_cluster_chart_output_test.sh, with the shared
+# resolve-script scaffolding in tests/lib/ci_resolve.sh.
 #
 # Usage: bash tests/unit/ci/e2e_multicluster_output_test.sh
 
@@ -23,7 +24,11 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
-RESOLVE_SH="$PROJECT_ROOT/hack/ci-resolve-changes.sh"
+
+# The operators the two-cluster suite places services on. The resolve script
+# reads FILTER_${op} only for operators named here, so a shorter list would
+# make the FILTER_keystone scenario below assert nothing.
+ALL_OPERATORS_FIXTURE="keystone barbican"
 
 PASS=0
 FAIL=0
@@ -31,6 +36,8 @@ SKIP=0
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
+# shellcheck source=tests/lib/ci_resolve.sh
+source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -43,18 +50,9 @@ source "$PROJECT_ROOT/tests/lib/assertions.sh"
 run_resolve() {
   local ref="$1" filter="$2"
   shift 2
-  local out
-  out=$(mktemp)
 
-  env "$@" \
-    ALL_OPERATORS="keystone barbican" \
-    GITHUB_OUTPUT="$out" \
-    GITHUB_REF="$ref" \
-    FILTER_e2e_multicluster="$filter" \
-    bash "$RESOLVE_SH" >/dev/null 2>&1
-
-  grep '^e2e-multicluster=' "$out"
-  rm -f "$out"
+  resolve_output e2e-multicluster "$ref" "$ALL_OPERATORS_FIXTURE" \
+    FILTER_e2e_multicluster="$filter" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -82,13 +80,9 @@ test_composed_shape_matches_e2e_controlplane() {
 test_unset_filter_defaults_to_false() {
   echo "Test: an unwired filter defaults to false rather than tripping set -u"
 
-  local out
-  out=$(mktemp)
-  ALL_OPERATORS="keystone" GITHUB_OUTPUT="$out" GITHUB_REF=refs/heads/main \
-    bash "$RESOLVE_SH" >/dev/null 2>&1
   assert_eq "the output is emitted even with no FILTER_ env var" \
-    "e2e-multicluster=false" "$(grep '^e2e-multicluster=' "$out")"
-  rm -f "$out"
+    "e2e-multicluster=false" \
+    "$(resolve_output e2e-multicluster refs/heads/main "$ALL_OPERATORS_FIXTURE")"
 }
 
 test_tag_push_forces_the_job() {
@@ -101,12 +95,7 @@ test_tag_push_forces_the_job() {
 test_ci_yaml_wires_all_four_sides() {
   echo "Test: ci.yaml declares the filter, passes it in, exports it and gates on it"
 
-  assert_file_contains "the paths filter exists" "$CI_YAML" \
-    "e2e_multicluster:"
-  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
-    'FILTER_e2e_multicluster: ${{ steps.filter.outputs.e2e_multicluster }}'
-  assert_file_contains "the changes job exports the output" "$CI_YAML" \
-    'e2e-multicluster: ${{ steps.result.outputs.e2e-multicluster }}'
+  assert_filter_is_wired e2e_multicluster e2e-multicluster
   assert_file_contains "the job gates on it" "$CI_YAML" \
     "needs.changes.outputs.e2e-multicluster == 'true'"
 }
