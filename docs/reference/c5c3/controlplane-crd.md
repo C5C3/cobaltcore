@@ -1064,6 +1064,10 @@ its credentials through is provisioned by a sub-reconciler of its own and gated
 by [`RegistrationTenantStoresReady`](#registrationtenantstoresready), not by
 `ESOTenantStoreReady`.
 
+The [Register a Service the ControlPlane Does Not Manage](../../guides/register-a-foreign-service.md)
+guide walks the flow on the ControlPlane devstack, including what removing a
+namespace from the allowlist does and does not do.
+
 ---
 
 ## AdminCredentialSpec

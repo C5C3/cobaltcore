@@ -289,6 +289,8 @@ A registration in the ControlPlane's own namespace, or in one of its dedicated
 service namespaces, is admitted as it stands; anywhere else the namespace has to
 be listed in `spec.korc.serviceRegistrations.allowedNamespaces` on the
 ControlPlane first.
+[Register a Service the ControlPlane Does Not Manage](../register-a-foreign-service.md)
+walks that flow.
 
 The password is generated into OpenBao at
 `openstack/keystone/{namespace}/{name}/service-accounts/credentials` — keyed on

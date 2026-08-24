@@ -293,6 +293,10 @@ and keeps authenticating. Teardown happens only through deletion of the
 KeystoneService itself, so an allowlist edit can never destroy credentials a
 running service depends on.
 
+The [Register a Service the ControlPlane Does Not Manage](../../guides/register-a-foreign-service.md)
+guide walks the flow on the ControlPlane devstack, including what removing a
+namespace from the allowlist does and does not do.
+
 ## Consumer Secret contract
 
 A registration with an account block delivers its credentials as a Secret in
