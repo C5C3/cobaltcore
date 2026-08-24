@@ -306,8 +306,9 @@ authentication failure, a TLS error, and a catalog mismatch would all read as
 
 `keystoneServiceWaitOrClassify` therefore **prefers a classifiable failure over
 the generic wait reason** on every bounded wait in both blocks, surfacing
-`AuthenticationFailed`, `EndpointUnreachable`, `TLSVerificationFailed`, or
-`CatalogEndpointMismatch` with the external auth URL and K-ORC's own message.
+`AuthenticationFailed`, `CredentialDrift`, `EndpointUnreachable`,
+`TLSVerificationFailed`, or `CatalogEndpointMismatch` with the external auth URL
+and K-ORC's own message.
 
 ## Child Naming and Placement
 

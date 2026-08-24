@@ -407,9 +407,9 @@ reaches for that block is not a failure of it.
 
 Against an External-mode ControlPlane, a bounded wait is replaced by the
 specific cause whenever K-ORC's failure can be classified:
-`AuthenticationFailed`, `EndpointUnreachable`, `TLSVerificationFailed`, or
-`CatalogEndpointMismatch`. A TLS or credential problem therefore does not read
-as "registered but not yet Available" forever.
+`AuthenticationFailed`, `CredentialDrift`, `EndpointUnreachable`,
+`TLSVerificationFailed`, or `CatalogEndpointMismatch`. A TLS or credential
+problem therefore does not read as "registered but not yet Available" forever.
 
 ## Defaulting and Validation Summary
 
