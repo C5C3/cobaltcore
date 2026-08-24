@@ -26,6 +26,10 @@
 #   - spec.secretStoreRef — the shared openbao-cluster-store is allow-listed to
 #     openstack and shared-services, so an ephemeral namespace must stay on the
 #     operator-provisioned per-tenant store.
+#
+# The foreign-registration guide (docs/guides/register-a-foreign-service.md)
+# imports the region below.
+# region controlplane
 apiVersion: c5c3.io/v1alpha1
 kind: ControlPlane
 metadata:
@@ -65,3 +69,4 @@ spec:
     serviceRegistrations:
       allowedNamespaces:
       - "@TENANT_NS@"
+# endregion controlplane

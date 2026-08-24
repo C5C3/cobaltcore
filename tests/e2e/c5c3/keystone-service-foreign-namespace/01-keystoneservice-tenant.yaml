@@ -18,6 +18,10 @@
 # The user name and the catalog service name are both left to default to
 # metadata.name ("workflow"); the endpoints point at a Service that does not have
 # to exist, since registering a catalog row never connects to it.
+#
+# The foreign-registration guide (docs/guides/register-a-foreign-service.md)
+# imports the region below.
+# region keystoneservice-workflow
 apiVersion: c5c3.io/v1alpha1
 kind: KeystoneService
 metadata:
@@ -40,3 +44,4 @@ spec:
       create: true
     roles:
     - service
+# endregion keystoneservice-workflow

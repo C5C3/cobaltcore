@@ -45,6 +45,7 @@ export default defineConfig({
           { text: 'Advanced Configuration', link: '/guides/advanced-configuration' },
           { text: 'Multi-Tenant Deployment', link: '/guides/multi-tenant-deployment' },
           { text: 'Deploy Services into Dedicated Namespaces', link: '/guides/dedicated-service-namespaces' },
+          { text: 'Register a Service the ControlPlane Does Not Manage', link: '/guides/register-a-foreign-service' },
           { text: 'End-to-End SSO', link: '/guides/end-to-end-sso' },
           { text: 'Deploy to a Target Cluster', link: '/guides/deploy-to-a-target-cluster' },
           {
