@@ -45,7 +45,7 @@ is what makes the commands below read sensibly.
 | Piece | Namespace | Why |
 | --- | --- | --- |
 | The allowlist entry | `openstack` | It is consent the ControlPlane gives, so it lives on the ControlPlane CR |
-| The K-ORC children: user, project, role assignment, catalog service row, endpoint rows | `openstack` | K-ORC reads the admin `clouds.yaml` from each child's own namespace, and that credential is materialized once, beside the ControlPlane |
+| The K-ORC children: user, project, role import, role assignment, catalog service row, endpoint rows | `openstack` | K-ORC reads the admin `clouds.yaml` from each child's own namespace, and that credential is materialized once, beside the ControlPlane |
 | The tenant secret store and the consumer Secret | `workflow` | Credentials are delivered where the workload that reads them runs |
 
 The children follow the credential into `openstack`. Copying the cloud-admin
