@@ -283,8 +283,8 @@ layers grant consent, in widening order:
 
 The first two are implicit: both are already the control plane's, and it
 provisions a tenant store in each, which is the path a consumer Secret takes.
-A CR from an unlisted namespace reports `Ready=False/NamespaceNotAllowed` and
-projects nothing.
+A CR from an unlisted namespace reports `NamespaceNotAllowed` on every declared
+block, so `Ready` reads `False/NotAllReady`, and it projects nothing.
 
 The allowlist is an **admission gate, not a revocation tool**. Removing a
 namespace freezes reconciliation of the registrations in it while every

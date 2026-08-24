@@ -1029,8 +1029,9 @@ registering against it.
 A `KeystoneService` mints a Keystone service user with the roles its spec asks
 for, so a CR in a namespace the control plane does not consent to would turn
 namespace access into cloud admin. The reconciler gates every registration on
-this block and reports `Ready=False` with reason `NamespaceNotAllowed` for a
-namespace it does not admit, projecting nothing. See the
+this block and reports `NamespaceNotAllowed` on every declared block of a
+registration whose namespace it does not admit, so that CR's `Ready` reads
+`False/NotAllReady` and it projects nothing. See the
 [KeystoneService Reconciler](./keystoneservice-reconciler.md) for where that gate
 sits in the registration's flow.
 
@@ -1046,8 +1047,9 @@ sits in the registration's flow.
 
 > **The list is an admission gate, not a revocation tool.** Removing a namespace
 > freezes reconciliation of the `KeystoneService` CRs in it, which report
-> `Ready=False/NamespaceNotAllowed`, while every Keystone user, catalog row and
-> delivered Secret already minted stays in place and keeps authenticating.
+> `NamespaceNotAllowed` on their declared blocks and `Ready=False/NotAllReady`,
+> while every Keystone user, catalog row and delivered Secret already minted
+> stays in place and keeps authenticating.
 > Teardown happens only through deletion of the `KeystoneService` CR itself, so an
 > edit here can never destroy credentials a running service depends on. To revoke
 > a registration, delete its CR.

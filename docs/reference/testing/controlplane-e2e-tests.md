@@ -412,9 +412,9 @@ The suite runs three legs against a live Keystone, OpenBao, ESO and cert-manager
    `openstack catalog show workflow` with it. Authenticating is what separates a
    delivered Secret from a correct one.
 2. **Negative**: a `KeystoneService` in a namespace the allowlist never carries
-   holds at `Ready=False/NamespaceNotAllowed` on both blocks, with nothing
-   projected in either namespace and a condition message naming the field that
-   would admit it. The check repeats after a settle, so a projection still in
+   holds at `NamespaceNotAllowed` on both blocks, so its `Ready` reads
+   `False/NotAllReady`, with nothing projected in either namespace and a
+   condition message naming the field that would admit it. The check repeats after a settle, so a projection still in
    flight cannot pass as none.
 3. **Freeze**: removing the namespace from the allowlist flips its registration
    to `NamespaceNotAllowed` while the consumer Secret, the Keystone user and the
