@@ -265,14 +265,21 @@ The semantics that matter:
 - **The CR's own metadata keys everything.** `metadata.name` names the child
   resources and the consumer Secret, and `metadata.namespace` is the delivery
   namespace. `account.userName` defaults to `metadata.name`.
-- **`account.project.create: false`** references an existing project via an
-  unmanaged import — it is never created, and never deleted.
-- **`account.adopt: true`** is explicit consent to take over a **pre-existing**
-  Keystone user of that name. Without it, a name collision fails loudly
-  (`ServiceAccountCollision`) rather than silently hijacking the account. Note an
-  adopted user becomes operator-owned, so it *is* deleted at teardown. The one
-  identity `adopt` does **not** unlock is the ControlPlane's own admin identity,
-  which the reconciler refuses outright.
+- **`account.project.create: true`** makes the registration create
+  `service-nova` and own it, so the project is deleted again at teardown. Set
+  `create: false` to reference a project that already exists: it is then
+  imported unmanaged, never created and never deleted.
+- **Neither `adopt` flag is set.** Both default to the fail-loudly posture, so a
+  pre-existing Keystone user of the same name surfaces
+  `ServiceAccountCollision` and a pre-existing catalog row of the same type and
+  name surfaces `ServiceCollision`, instead of either being taken over
+  silently. The fixture's catalog holds identity rows only, so the compute entry
+  collides with nothing.
+
+  Setting `account.adopt: true` is explicit consent to take over such a user.
+  An adopted user becomes operator-owned, so it *is* deleted at teardown. The
+  one identity `adopt` does **not** unlock is the ControlPlane's own admin
+  identity, which the reconciler refuses outright.
 
   ::: warning Adoption does not apply the new password on the first pass
   With the currently pinned K-ORC, a newly adopted user keeps its pre-existing
