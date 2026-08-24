@@ -226,7 +226,7 @@ row advertise the actually reachable host URL — the `:8443` host port — inst
 of the default-443 form the operator would otherwise derive from the gateway
 hostname. The operator projects a `KeystoneService` registration
 `controlplane-glance` carrying the image catalog entry and the `glance` service
-account (user `glance`, project `service`, role `service`), so Glance can
+account (user `glance`, project `service-glance`, role `service`), so Glance can
 validate the Keystone tokens it receives; its database and cache derive from
 `spec.infrastructure`, exactly like Keystone's. On the managed
 shared database its DB credential is engine-issued and auto-rotated exactly like

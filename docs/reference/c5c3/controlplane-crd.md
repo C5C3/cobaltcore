@@ -585,7 +585,7 @@ Setting `services.barbican` makes the reconciler project a `KeystoneService`
 registration named `{controlplane.Name}-barbican` into the namespace Barbican is
 placed in: the `key-manager` catalog entry plus the `barbican` service account,
 whose project `service-barbican` is created with the role `service`. It creates
-its own project rather than reusing Glance's `service`, since two registrations
+its own project rather than reusing Glance's `service-glance`, since two registrations
 creating one project would each adopt the other's Keystone row. That
 account is the Keystone user the projected child authenticates as, so the
 Barbican child is not projected until the registration reports it provisioned
