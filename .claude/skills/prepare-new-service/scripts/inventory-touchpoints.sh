@@ -20,6 +20,9 @@ if [[ $# -ne 1 ]] || [[ ! "$1" =~ ^[a-z][a-z0-9-]*$ ]]; then
 fi
 
 SERVICE="$1"
+# The Go identifier form of the service name ("glance" -> "Glance"), used by the
+# layer-4 registration checks below.
+SVC_KIND="$(tr '[:lower:]' '[:upper:]' <<< "${SERVICE:0:1}")${SERVICE:1}"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "${REPO_ROOT}"
 
@@ -107,8 +110,14 @@ check "c5c3 helm _helpers.tpl rbacRules mention '${SERVICE}'" \
   grep -q "${SERVICE}" operators/c5c3/helm/c5c3-operator/templates/_helpers.tpl
 check "controlplane_controller.go mirrors a ${SERVICE}Ready condition" \
   grep -qi "${SERVICE}Ready" operators/c5c3/internal/controller/controlplane_controller.go
-check "catalog row in reconcile_catalog.go (skip if no catalog endpoints)" \
-  grep -qi "${SERVICE}" operators/c5c3/internal/controller/reconcile_catalog.go
+check "desired${SVC_KIND}Registration builder in builtin_registrations.go (skip if the service has neither a catalog entry nor a service user)" \
+  grep -q "func desired${SVC_KIND}Registration" operators/c5c3/internal/controller/builtin_registrations.go
+check "reconcile_${SERVICE}.go projects the registration (reconcileBuiltinRegistration) and folds it into ${SVC_KIND}Ready (foldBuiltinRegistrationReady)" \
+  bash -c "grep -q 'reconcileBuiltinRegistration(ctx, cp, desired${SVC_KIND}Registration(cp)' operators/c5c3/internal/controller/reconcile_${SERVICE}.go && grep -q 'foldBuiltinRegistrationReady(cp, child, conditionType${SVC_KIND}Ready)' operators/c5c3/internal/controller/reconcile_${SERVICE}.go"
+check "projectedBuiltinRegistrations entry in reconcile_serviceaccounts.go (ServiceAccountsReady aggregation)" \
+  grep -q "desired${SVC_KIND}Registration(cp)" operators/c5c3/internal/controller/reconcile_serviceaccounts.go
+check "${SERVICE}CatalogURL public-URL helper in reconcile_catalog.go" \
+  grep -q "func ${SERVICE}CatalogURL" operators/c5c3/internal/controller/reconcile_catalog.go
 check "reconcile_${SERVICE}_dbcredentials.go (skip if no database; keystone's glue lives in reconcile_dbcredentials.go)" \
   test -f "operators/c5c3/internal/controller/reconcile_${SERVICE}_dbcredentials.go"
 check "envtest full chain covers '${SERVICE}' (integration_test.go)" \

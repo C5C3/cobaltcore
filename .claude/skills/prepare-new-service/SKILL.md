@@ -30,7 +30,10 @@ sub-issues — and a Phase-0 decision record (D1–D10) worth imitating.
 Aurora dashboard — meta issue #758 with pre-work #757 (shared workload
 builder) — is the first **non-OpenStack-upstream** service; its Phase-0
 block records the release-decoupling decisions that
-§ Non-OpenStack-upstream services generalizes.
+§ Non-OpenStack-upstream services generalizes. Meta issue #846 is the
+worked example for the registration mechanism Phase 4 consumes: it
+replaced the ControlPlane's inline catalog table and service-account
+entries with the projected `KeystoneService` child described below.
 
 ## The five layers
 
@@ -42,7 +45,7 @@ Every service in CobaltCore threads through five layers. Keystone
 | 1. Container image | `images/<svc>/Dockerfile`, `releases/*/source-refs.yaml`, `releases/*/extra-packages.yaml`, `tests/container-images/verify_<svc>.sh` | build/test matrix: **yes** (from source-refs keys); hadolint matrix in `build-images.yaml`: **no** |
 | 2. Service operator | `operators/<svc>/` (api, controller — including the recurring-maintenance CronJobs of § Recurring maintenance jobs and the target-cluster placement artefacts of § Placement on target clusters —, webhook, helm chart on `operators/shared/helm/operator-library`), `go.work`, `Makefile` `OPERATORS` | **no** — module + enumerations by hand |
 | 3. CI / e2e / deploy | `ci.yaml` paths-filter + `ALL_OPERATORS` + matrices, `tests/ci/verify_<svc>_ci_pipeline.sh`, `tests/e2e/<svc>/`, `tests/e2e/<svc>-operator/`, `tests/e2e-chaos/<svc>-*/`, `tests/tempest/<svc>-*/`, `deploy/flux-system/releases/<svc>-operator.yaml`, kind devstack wiring (`deploy/kind/base/openstack-gateway.yaml` listener + `deploy/kind/infrastructure/<svc>-nip-io-tls-certificate.yaml`, the `deploy/kind/base/kustomization.yaml` HelmRelease suspend patch **plus its counterparts in `hack/deploy-infra.sh`**: the flux-path un-suspend patch, the `enable_operator_servicemonitor` call, and the `hack/refresh-operator-image-digests.sh` target tuple — a service missing from the un-suspend list stays suspended on the quick-start path, its CRDs never install, and the c5c3-operator's controlplane cache never syncs), OpenBao bootstrap legs (`deploy/openbao/bootstrap/`, `deploy/openbao/policies/`) | chainsaw suites: **yes** (auto-discovered); ci.yaml wiring: **no** (3-step procedure in `hack/ci-resolve-changes.sh` header); devstack/OpenBao wiring: **no** |
-| 4. ControlPlane (c5c3) | `ServicesSpec` in `operators/c5c3/api/v1alpha1/controlplane_types.go` (incl. `publicEndpoint`, `databaseCredentialsMode`, and `targetClusterRef` per-service fields), `reconcile_<svc>.go` (+ `reconcile_<svc>_dbcredentials.go` for DB services), catalog row in `reconcile_catalog.go`, teardown in `reconcile_delete.go` + the placed-namespace sweep, condition/instrumentation maps, RBAC markers + helm `_helpers.tpl`, scheme, webhook (incl. the per-service placement rules — `tests/e2e/c5c3/invalid-cr/` pins them), envtest full chain (`integration_test.go`) + `tests/e2e/c5c3/full-controlplane-keystone/` | **no** — ~10 enumeration points |
+| 4. ControlPlane (c5c3) | `ServicesSpec` in `operators/c5c3/api/v1alpha1/controlplane_types.go` (incl. `publicEndpoint`, `databaseCredentialsMode`, and `targetClusterRef` per-service fields), `reconcile_<svc>.go` (+ `reconcile_<svc>_dbcredentials.go` for DB services), the projected `KeystoneService` registration (a `desired<Svc>Registration` builder in `builtin_registrations.go`, the `reconcileBuiltinRegistration` and `foldBuiltinRegistrationReady` calls in `reconcile_<svc>.go`, the `projectedBuiltinRegistrations` entry in `reconcile_serviceaccounts.go`, the `<svc>CatalogURL` helper in `reconcile_catalog.go`, the `catalog: true` row in `declaredServiceTargetClusters` in `controlplane_webhook.go`, and the registration delete in `deleteOrphaned<Svc>`), teardown in `reconcile_delete.go` + the placed-namespace sweep, condition/instrumentation maps, RBAC markers + helm `_helpers.tpl`, scheme, webhook (incl. the per-service placement rules — `tests/e2e/c5c3/invalid-cr/` pins them), envtest full chain (`integration_test.go`) + `tests/e2e/c5c3/full-controlplane-keystone/` | **no** — ~10 enumeration points |
 | 5. Documentation | `docs/reference/<svc>/` (hand-written, `quadrant: operator` frontmatter), VitePress sidebar, per-service guides under `docs/guides/<svc>/`, quick-start extension (`docs/quick-start-controlplane.md`), `tests/unit/docs/` conventions | **no** — no doc generator exists |
 
 ## Procedure
@@ -96,9 +99,23 @@ applies and which decisions need a Phase-0 spike:
   **backing-store-outage chaos suite** (`glance-garage-outage`: writes
   fail closed, `/healthcheck` and `Ready` stay up).
 - **Consumes another service's API?** A service user
-  (`[keystone_authtoken]`-style) needs credential sourcing, c5c3 role
-  assignments, and cross-namespace credential delivery — glance was the
-  first consumer; #654/#655 are the templates.
+  (`[keystone_authtoken]`-style) is the `account` block of the
+  `KeystoneService` child the ControlPlane projects for the service:
+  user `<svc>`, its own project `service-<svc>` with `create: true`, and
+  the single role `service`, all assembled by `builtinRegistration` in
+  `builtin_registrations.go`. Add the two name constants beside
+  `GlanceServiceAccountName` / `GlanceServiceProjectName` in
+  `controlplane_webhook.go`. Each service creates its own project;
+  sharing one would make two registrations adopt each other's Keystone
+  row. The registration delivers a consumer Secret `{child}-credentials`
+  carrying `clouds.yaml` and `password` keys, and the service leg reads
+  only the `password` key into the child's service-user secret ref
+  (`reconcile_glance.go` is the template). A service placed on a target
+  cluster gets those credentials mirrored there by
+  `ensureBuiltinRegistrationMirror`; a dedicated service namespace gets
+  its tenant store from `reconcileRegistrationTenantStores`. Glance was
+  the first consumer and #654/#655 are the pre-work templates; #846 is
+  the mechanism.
 - **Pluggable backends?** If users attach a variable number of backends
   (image stores, identity domains), model them as a **satellite CRD**
   mirroring `KeystoneIdentityBackend`/`GlanceBackend`: inverted
@@ -107,11 +124,26 @@ applies and which decisions need a Phase-0 spike:
   projection from c5c3 with prefix-guarded pruning, plus the three suites
   the pattern demands (multi-instance, default/aggregation-switch with
   last-good retention, `invalid-<child>-cr`).
-- **Service-catalog endpoints?** If yes, add a row to the generalized
-  `managedCatalogRows` table in `reconcile_catalog.go` (K-ORC `Service` +
-  `Endpoint`). Register **public + internal from birth** (the glance D6
-  posture) — adding an interface later is a catalog migration. Extend the
-  c5c3 teardown (`reconcile_delete.go`) for the new catalog CRs.
+- **Service-catalog endpoints?** If yes, they are the `catalog` block of
+  the same projected `KeystoneService` child. `builtinRegistration`
+  registers **public and internal from birth** (the glance D6 posture is
+  now the builder's shape), so adding an interface later is still a
+  catalog migration. The `internal` URL is the service's
+  `<svc>EndpointURL` in `reconcile_<svc>.go` wrapped by
+  `internalCatalogURL`; the `public` URL is `<svc>CatalogURL` in
+  `reconcile_catalog.go`, which prefers an explicit `publicEndpoint`,
+  then the gateway hostname, then the in-cluster URL. Do **not** add a
+  row to `managedCatalogRows`: that table holds the identity row alone
+  and never gains another. Teardown needs no `reconcile_delete.go` edit
+  either, since the registration's own finalizer removes its rows and
+  `deleteRegistrationsBeforeTeardown` sweeps every projected child; what
+  the service leg owns is deleting its registration in
+  `deleteOrphaned<Svc>`. Add the service's row to
+  `declaredServiceTargetClusters` (`controlplane_webhook.go`) with
+  `catalog: true`, which is what requires a placed service to publish a
+  reachable URL. A service the ControlPlane will not manage skips all of
+  this and registers itself: see
+  `docs/guides/register-a-foreign-service.md`.
 - **Config format?** oslo INI is covered by `internal/common/config`;
   anything else (Django settings, JSON) needs a renderer decision first.
 - **Behavior breaks between the supported releases?** Check upstream
@@ -165,7 +197,8 @@ when re-run mid-effort.
 
 The repo evolves — do not trust this skill's tables blindly. Spot-check
 that the enumeration points named above still exist at HEAD (grep for
-`ALL_OPERATORS`, `subConditionTypes`, `OPERATORS ?=`, `ServicesSpec`), and
+`ALL_OPERATORS`, `subConditionTypes`, `OPERATORS ?=`, `ServicesSpec`,
+`desiredGlanceRegistration`), and
 skim the per-layer "Adding a New Service" docs, which are authoritative
 for layer 1, 2, and 3 details:
 
@@ -234,7 +267,13 @@ Standard phase skeleton (drop/merge phases the profile rules out):
 - **Phase 3 — CI, e2e, deploy stack** (alongside Phase 2) — including the
   kind Gateway listener/cert, OpenBao bootstrap legs, and chaos suites.
 - **Phase 4 — ControlPlane integration** (blocked on Phase 2) — including
-  catalog row, credential glue, teardown, envtest + full-ControlPlane e2e.
+  the projected `KeystoneService` registration: a
+  `desired<Svc>Registration` builder in `builtin_registrations.go`, the
+  `reconcileBuiltinRegistration` and `foldBuiltinRegistrationReady` calls
+  in the service leg, the `projectedBuiltinRegistrations` entry, the
+  consumer-Secret glue, and the orphan delete; plus envtest
+  (`integration_test.go`) and the registrations step of
+  `tests/e2e/c5c3/full-controlplane-keystone/`.
 - **Phase 5 — documentation** (continuous, gates each phase) — reference
   set, per-service guides, and the quick-start extension.
 
