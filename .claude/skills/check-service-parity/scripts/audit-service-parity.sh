@@ -36,6 +36,10 @@
 #       webhook immutability mirror (validation.TargetClusterRefImmutable),
 #       a targetclusterref invalid-cr fixture, the multicluster builder,
 #       and the remote-children sweep (SweepRemoteChildren)
+#   P13 service registration: the desired<Svc>Registration builder, the
+#       reconcileBuiltinRegistration + foldBuiltinRegistrationReady calls in
+#       the service leg, the projectedBuiltinRegistrations aggregation entry,
+#       and the registration delete in deleteOrphaned<Svc>
 #
 # The keystone reference is audited too — a reference regression is its own
 # [FAIL]. Deliberate thin-profile deviations (a service that legitimately
@@ -63,8 +67,21 @@ hdr()  { echo; echo "=== $* ==="; }
 # archive, or cleanup subcommand, and the placement schema does not
 # soft-delete, so there is no backlog of dead rows to reclaim and the operator
 # projects no maintenance CronJob. Recorded in docs/reference/placement/index.md.
+#
+# keystone:P13:registration — the identity catalog row is the ControlPlane's own
+# (managedCatalogRows in reconcile_catalog.go, created in Managed mode and
+# imported in External), and the plane authenticates through the admin
+# application credential rather than a service account, so Keystone registers no
+# KeystoneService child for itself.
+#
+# horizon:P13:registration — the dashboard is reached by a browser, not looked up
+# by an OpenStack client: it is the one declared service with catalog: false in
+# declaredServiceTargetClusters (controlplane_webhook.go), and it needs neither a
+# catalog entry nor a Keystone service user.
 ALLOWED_DEVIATIONS="
 placement:P10:maintenance-cronjob
+keystone:P13:registration
+horizon:P13:registration
 "
 
 allowed() { # allowed <svc> <check> <item>
@@ -489,6 +506,48 @@ for svc in ${SERVICES}; do
   t=0; grep -rq "SweepRemoteChildren" "operators/${svc}/internal/controller/" 2>/dev/null || t=1
   check "${svc}" P12 "remote-sweep" "${t}" \
     "deletion sweeps remote children (commonmulticluster.SweepRemoteChildren)"
+done
+
+# ---------------------------------------------------------------------------
+# P13 — service registration
+# ---------------------------------------------------------------------------
+# A built-in service registers against the identity plane through ONE projected
+# KeystoneService child carrying its catalog entry and its service account
+# (builtin_registrations.go); the ControlPlane holds no inline catalog row and no
+# inline account entry for it. Four artefacts travel together: the
+# desired<Svc>Registration builder, the reconcileBuiltinRegistration +
+# foldBuiltinRegistrationReady calls in the service leg, the
+# projectedBuiltinRegistrations entry that folds the child into
+# ServiceAccountsReady, and the registration delete in deleteOrphaned<Svc>. A leg
+# without the fold reports the service Ready with no catalog row; a builder
+# without the aggregation entry leaves ServiceAccountsReady blind to it; a leg
+# without the delete strands the registration when the service is unset.
+hdr "P13: service registration (KeystoneService builder, leg calls, aggregation entry, orphan delete)"
+REG="operators/c5c3/internal/controller/builtin_registrations.go"
+AGG="operators/c5c3/internal/controller/reconcile_serviceaccounts.go"
+for svc in ${SERVICES}; do
+  svc_kind="$(tr '[:lower:]' '[:upper:]' <<< "${svc:0:1}")${svc:1}"
+  leg="operators/c5c3/internal/controller/reconcile_${svc}.go"
+
+  t=0; grep -q "func desired${svc_kind}Registration" "${REG}" || t=1
+  check "${svc}" P13 "registration" "${t}" \
+    "builtin_registrations.go builds desired${svc_kind}Registration"
+  # The remaining three apply only to a service that registers at all.
+  [[ "${t}" -eq 0 ]] || continue
+
+  t=0
+  grep -q "reconcileBuiltinRegistration(ctx, cp, desired${svc_kind}Registration(cp)" "${leg}" 2>/dev/null \
+    && grep -q "foldBuiltinRegistrationReady(cp, child, conditionType${svc_kind}Ready)" "${leg}" 2>/dev/null || t=1
+  check "${svc}" P13 "leg-calls" "${t}" \
+    "reconcile_${svc}.go projects the registration and folds its readiness into ${svc_kind}Ready"
+
+  t=0; grep -q "desired${svc_kind}Registration(cp)" "${AGG}" || t=1
+  check "${svc}" P13 "aggregation" "${t}" \
+    "reconcile_serviceaccounts.go folds the ${svc} registration into ServiceAccountsReady"
+
+  t=0; grep -q "c5c3v1alpha1.KeystoneService{" "${leg}" 2>/dev/null || t=1
+  check "${svc}" P13 "orphan-delete" "${t}" \
+    "deleteOrphaned${svc_kind} deletes the KeystoneService registration"
 done
 
 # ---------------------------------------------------------------------------
