@@ -39,7 +39,7 @@ threads through five layers:
 | Container image | `images/<svc>/Dockerfile`, `tests/container-images/verify_<svc>.sh`, `releases/*/`(source-refs, extra-packages, test-excludes) | the keystone image contract and `verify_release_config.sh` |
 | Service operator | `operators/<svc>/` (module, CRD, webhook, helm chart, dashboards) | the keystone operator scaffolding on `internal/common` |
 | CI / e2e / deploy | `.github/workflows/*.yaml`, `hack/ci-resolve-changes.sh` env, `tests/e2e/<svc>/`, `tests/e2e-chaos/`, `tests/e2e-multicluster/` (when the service joins the placed-services suite: fixtures **and** the hard-coded image list in the ci.yaml `e2e-multicluster` job), `deploy/flux-system/`, the per-service lists in `hack/deploy-infra.sh` + `hack/refresh-operator-image-digests.sh` | the enumeration points and canonical suite set keystone populates |
-| ControlPlane integration | `operators/c5c3/api/` `ServicesSpec`, `internal/controller/reconcile_<svc>.go`, c5c3 chart RBAC | the keystone projection (`reconcile_keystone.go`, `KeystoneReady`) |
+| ControlPlane integration | `operators/c5c3/api/` `ServicesSpec`, `internal/controller/reconcile_<svc>.go`, `internal/controller/builtin_registrations.go`, c5c3 chart RBAC | the keystone projection (`reconcile_keystone.go`, `KeystoneReady`); for the registration, `desiredGlanceRegistration`, since Keystone registers no child for itself |
 | Documentation | `docs/reference/<svc>/`, `docs/guides/<svc>/enable-<svc>-operator-*.md`, `docs/.vitepress/config.ts` | the keystone reference/guide set |
 
 There is no single authoritative gate for parity — that is the point of
@@ -157,6 +157,22 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
   `RemoteChildrenFinalizer`). A service missing any of them cannot be
   placed, or strands label-owned remote children on delete — no
   cross-cluster ownerReference exists to cascade for it.
+- **P13** — service registration: a built-in service registers against
+  the identity plane through one projected `KeystoneService` child
+  carrying its catalog entry and its service account
+  (`builtin_registrations.go`); the ControlPlane holds no inline catalog
+  row and no inline account entry for it. Four artefacts travel
+  together — the `desired<Svc>Registration` builder, the
+  `reconcileBuiltinRegistration` and `foldBuiltinRegistrationReady`
+  calls in the service leg, the `projectedBuiltinRegistrations` entry
+  that folds the child into `ServiceAccountsReady`, and the registration
+  delete in `deleteOrphaned<Svc>`. Each absence has its own failure: a
+  leg without the fold reports the service `Ready` with no catalog row,
+  a builder without the aggregation entry leaves `ServiceAccountsReady`
+  blind to it, and a leg without the delete strands the registration
+  when the service block is unset. Keystone and horizon are recorded
+  deviations: the identity row is the plane's own, and the dashboard is
+  reached by a browser rather than looked up in the catalog.
 - The **inventory** lists, per service, the helm-unittest, e2e, and
   chaos suite counts, plus whether the service appears in the
   two-cluster placed-services suite (`tests/e2e-multicluster/` —
@@ -213,6 +229,16 @@ The script checks presence, not content. Using the inventory, confirm:
    coverage suffices; the ci.yaml `e2e-multicluster` job hard-codes
    the image list it preloads, so suite membership means extending
    that job too.
+8. That the registration P13 found actually describes the service:
+   `serviceType` is the catalog type upstream publishes and
+   `serviceName` the upstream service name, the user and project
+   constants sit beside `GlanceServiceAccountName` /
+   `GlanceServiceProjectName` in `controlplane_webhook.go`, both the
+   `internal` and the `public` interface are registered from birth, the
+   service's row in `declaredServiceTargetClusters` carries
+   `catalog: true`, and the leg reads only the `password` key of the
+   consumer Secret the registration delivers. P13 proves the four
+   artefacts exist; whether they carry the right values is this step.
 
 ### 3. Run the per-layer authoritative gates
 
@@ -237,7 +263,9 @@ Produce a concise summary grouped by severity:
 - **HIGH** — a service missing from a CI enumeration point (P5) or
   from a release config file (P1): its pipeline coverage silently
   does not run; a missing ControlPlane projection artefact (P9) for a
-  service the ControlPlane models.
+  service the ControlPlane models; a catalog service missing a P13
+  artefact, which leaves it unregistered or its registration
+  unwatched.
 - **MEDIUM** — a missing canonical e2e suite, chaos suite, or
   helm-unittest suite without an `ALLOWED_DEVIATIONS` entry; a
   missing dashboard drift test; a missing deploy-stack entry; a
@@ -299,6 +327,15 @@ These recurring shapes are worth grepping for first:
    for. The failure is invisible in every gate that renders or asserts
    on the CronJob itself; only an EndpointSlice-level assertion (the
    `maintenance-endpoint-isolation` suite) catches it.
+9. **Registration landing piecemeal.** The four P13 artefacts are one
+   contract, and each missing piece fails differently: a leg that
+   projects the registration but never folds it reports the service
+   `Ready` while its catalog row is absent, a builder with no
+   `projectedBuiltinRegistrations` entry leaves `ServiceAccountsReady`
+   blind to the child, and a leg with no delete in
+   `deleteOrphaned<Svc>` strands the registration once the service
+   block is unset. Nothing in CI catches any of them: the registration
+   is a projection, not a compiled dependency.
 
 ## Notes
 
@@ -310,10 +347,10 @@ These recurring shapes are worth grepping for first:
   keystone regression surfaces as every other service suddenly
   "leading" the reference. Read multi-service failures with that in
   mind. The canon has known holes, though — a later service can pioneer
-  a surface keystone lacks (glance: the dual public+internal catalog
-  row, the satellite backend CRD, the backing-store-outage chaos
-  suite). A pioneered surface is a candidate for back-porting or for a
-  recorded deviation, not automatically a finding against the pioneer.
+  a surface keystone lacks (glance: the satellite backend CRD and the
+  backing-store-outage chaos suite). A pioneered surface is a candidate
+  for back-porting or for a recorded deviation, not automatically a
+  finding against the pioneer.
 - `ALLOWED_DEVIATIONS` (top of the audit script) is the single place
   deliberate deviations live, one `<svc>:<check>:<item>` token per
   line. Record the *why* in a comment next to the token.
