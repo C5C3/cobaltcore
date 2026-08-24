@@ -575,7 +575,8 @@ What a placed service takes with it, and what stays behind:
 | The database-credential quartet: `ServiceAccount`, `Certificate`, `VaultDynamicSecret`, `ExternalSecret` | The service's cluster |
 | The admin-password `ExternalSecret` | The service's cluster |
 | Barbican's dedicated OpenBao ensemble, including the auth-delegator `ClusterRoleBinding` | The service's cluster |
-| The service-account delivery objects: source Secret, `PushSecret`, `ExternalSecret`, and the Secret ESO materializes from it | The service's cluster |
+| A registration's service-account delivery objects: source Secret, `PushSecret`, `ExternalSecret`, and the Secret ESO materializes from it | The management cluster |
+| The mirrored `ExternalSecret` a placed built-in service reads, and the Secret ESO materializes from it | The service's cluster |
 | The namespace a service is placed in | Both |
 
 The namespace is on both because both sides need it: the projected CR lives in it
@@ -635,11 +636,16 @@ Where a URL points depends on where its two ends sit. `korcAuthURL` answers for
 the cluster a credentials document is read on. K-ORC runs on the management
 cluster, so the admin documents carry the Keystone public endpoint
 (`services.keystone.publicEndpoint`, else `https://{gateway.hostname}/v3` derived
-from the gateway) as soon as Keystone is placed; a service account's
-`clouds.yaml` is read on the cluster its delivery namespace lives on, so that
-namespace's placement is what its `auth_url` follows. Each dependent service gets
-the in-cluster Keystone URL exactly when it and Keystone resolve to the same
-cluster, and the public one otherwise. A placed catalog service registers its public URL
+from the gateway) as soon as Keystone is placed. A registration's `clouds.yaml`
+is rendered with no target-cluster ref at all, so it carries the
+management-cluster answer: the in-cluster Keystone URL while Keystone runs
+there, the public one once Keystone is placed, and the external `authURL`
+verbatim in External mode. A placed built-in service reads only the `password`
+key of that Secret, so the document's own `auth_url` never reaches it. The
+Keystone URL a dependent service configures comes from its own placement
+instead (`keystoneEndpointFor` with that service's `targetClusterRef`): the
+in-cluster one only when it and Keystone resolve to the same cluster, the
+public one otherwise. A placed catalog service registers its public URL
 on every interface it has, so the `internal` rows of the image, placement, and
 key-manager entries carry the public form too. Composing those URLs is all this
 does. Whether they are reachable from the other cluster is a routing question the
