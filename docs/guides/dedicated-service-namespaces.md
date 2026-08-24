@@ -371,8 +371,9 @@ kubectl get keystoneservice nova -n openstack-internal \
   -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}){"\n"}{end}'
 ```
 
-Registering from a namespace the ControlPlane does **not** own is the other flow,
-and it does need allowlist consent: the namespace has to be listed in
+Registering from a namespace the ControlPlane does **not** own is
+[the other flow](./register-a-foreign-service.md), and it does need allowlist
+consent: the namespace has to be listed in
 [`spec.korc.serviceRegistrations.allowedNamespaces`](../reference/c5c3/controlplane-crd.md#serviceregistrationsspec)
 first, and the operator then provisions a tenant store there.
 
