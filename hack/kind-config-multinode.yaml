@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Multi-node kind cluster configuration: one control-plane node plus two
+# workers. The variant for suites that need more than one schedulable node;
+# the first consumer is the OVN overlay datapath suite (issue #905). Opt in
+# with `KIND_CONFIG=hack/kind-config-multinode.yaml make deploy-infra`; the
+# default stays the single-node hack/kind-config.yaml.
+#
+# Node roles and scheduling: kind keeps the
+# node-role.kubernetes.io/control-plane:NoSchedule taint on a multi-node
+# cluster and strips it only from a single-node one. The two workers are
+# therefore the schedulable set, and a DaemonSet without a toleration gets
+# two pods, one per worker.
+#
+# Running side by side is not possible: this file and hack/kind-config.yaml
+# bind the same host ports (443 and 8428 on 127.0.0.1), so the second
+# `kind create cluster` on one host or runner fails to bind them. A job that
+# uses this file runs alone, the way the e2e-multicluster job gives its
+# second cluster no port mappings at all.
+#
+# Node order matters: nodes[0] must stay the control plane, because
+# render_kind_config in hack/deploy-infra.sh rewrites nodes[0] only.
+---
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    # Bridge host :443 → container :31443 so `https://keystone.127-0-0-1.nip.io/v3`
+    # reaches the Envoy Gateway data-plane Service (type=NodePort,
+    # nodePort=31443; pinned via the EnvoyProxy CR in
+    # deploy/kind/base/envoy-gateway.yaml). Listening on 127.0.0.1 keeps
+    # the Quick Start endpoint local-only.
+    extraPortMappings:
+      - hostPort: 443
+        containerPort: 31443
+        protocol: TCP
+        listenAddress: "127.0.0.1"
+      # Bridge host :8428 → container :30428 so host-side OTLP metric export
+      # (`http://localhost:8428/opentelemetry/v1/metrics`) reaches the
+      # VictoriaMetrics server (type=NodePort, nodePort=30428) of the opt-in
+      # dizzy observability overlay (deploy/kind/dizzy/, gated on
+      # WITH_DIZZY=true in hack/deploy-infra.sh). Listening on 127.0.0.1 keeps
+      # it loopback-only. The mapping is unconditional so WITH_DIZZY=true can
+      # be enabled later on any cluster created after this change without
+      # recreating the cluster.
+      - hostPort: 8428
+        containerPort: 30428
+        protocol: TCP
+        listenAddress: "127.0.0.1"
+  # The schedulable nodes. They carry no extraPortMappings: the two bridges on
+  # the control-plane node above reach a NodePort Service wherever its pod runs
+  # (externalTrafficPolicy defaults to Cluster).
+  - role: worker
+  - role: worker

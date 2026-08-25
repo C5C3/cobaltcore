@@ -77,6 +77,22 @@ EXTERNALSECRET_TIMEOUT="${EXTERNALSECRET_TIMEOUT:-120}"
 # suffix. See docs/quick-start.md.
 KIND_HOST_PORT="${KIND_HOST_PORT:-443}"
 
+# The kind config render_kind_config starts from. Defaults to the single
+# control-plane-node hack/kind-config.yaml. The known alternative is
+# hack/kind-config-multinode.yaml (one control plane plus two workers), for
+# suites that need more than one schedulable node. A relative path resolves
+# against the working directory of the `make deploy-infra` invocation, which is
+# the repository root under `make`. The `:-` expansion means an explicitly empty
+# KIND_CONFIG= falls back to the default rather than to an empty path.
+#
+# Two preconditions on any config passed here. Its control-plane node has to
+# stay at nodes[0], because render_kind_config applies the KIND_HOST_PORT
+# override to nodes[0] and nothing else — a config whose first node is a worker
+# gets the wrong node's mapping rewritten, with no error. And it only takes
+# effect on the run that creates the cluster; see warn_unused_kind_config for
+# what happens otherwise.
+KIND_CONFIG="${KIND_CONFIG:-${SCRIPT_DIR}/kind-config.yaml}"
+
 # Soft/hard RLIMIT_NOFILE applied to every kind node's containerd after cluster
 # creation (see cap_node_nofile). Docker Desktop ships containerd with
 # LimitNOFILE=infinity, so pods inherit ~1e9 open files; uWSGI (the Keystone API
@@ -1581,18 +1597,64 @@ openbao_onboard_database_tenant() {
 }
 
 # ---------------------------------------------------------------------------
+# warn_unused_kind_config REASON — Report that KIND_CONFIG had no effect.
+#
+# render_kind_config runs on exactly one of the three Step-1 branches, the one
+# that creates the cluster. On the other two a non-default KIND_CONFIG changes
+# nothing, while the startup banner still prints it. A developer who reruns
+# `make deploy-infra` with KIND_CONFIG=hack/kind-config-multinode.yaml without
+# tearing the single-node cluster down first would otherwise read the banner as
+# confirmation and go looking for the missing second DaemonSet pod in the
+# operator.
+#
+# The comparison resolves KIND_CONFIG first. The default is absolute
+# (${SCRIPT_DIR}/kind-config.yaml) while the documented way to set the variable
+# is a repository-relative path, so a raw string compare fires the warning on
+# `KIND_CONFIG=hack/kind-config.yaml` — the default itself, named the way the
+# docs name it. A warning on the default is the one thing that would teach a
+# developer to skip it.
+#
+# Arguments:
+#   $1 — why the config is being ignored, spliced into the warning
+# ---------------------------------------------------------------------------
+warn_unused_kind_config() {
+  local reason="$1"
+  local resolved="${KIND_CONFIG}"
+
+  # A path that does not exist stays as it is: this branch never reads the file,
+  # so an unresolvable value is still worth naming in the warning.
+  #
+  # CDPATH is cleared for the `cd`: a developer who exports one in their profile
+  # would otherwise have a relative KIND_CONFIG resolved against a CDPATH entry
+  # instead of the working directory, and `cd` echoes the directory it landed in
+  # whenever it found it that way — two lines in the substitution, so the
+  # comparison below fails and the warning fires on the default.
+  if [[ -e "${KIND_CONFIG}" ]]; then
+    resolved="$(CDPATH='' cd -- "$(dirname -- "${KIND_CONFIG}")" && pwd)/$(basename -- "${KIND_CONFIG}")"
+  fi
+
+  if [[ "${resolved}" != "${SCRIPT_DIR}/kind-config.yaml" ]]; then
+    log "WARNING: KIND_CONFIG='${KIND_CONFIG}' is ignored — ${reason}. The cluster keeps the config it was created with; pass this one to whatever creates it (in CI that is the helm/kind-action step's 'config:' input), or tear the cluster down first."
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # render_kind_config — Produce the kind-config YAML that `kind create cluster`
 # should consume, applying the `KIND_HOST_PORT` override and/or the
 # WITH_REGISTRY_CACHE containerd registry-mirror patch when requested.
 #
+# The source file is `KIND_CONFIG` (default hack/kind-config.yaml; set it to
+# hack/kind-config-multinode.yaml for a cluster with two workers). It is read,
+# never written: every transform lands in the destination copy.
+#
 # When neither knob is active (`KIND_HOST_PORT == 443` and
-# WITH_REGISTRY_CACHE != true — the default), the checked-in
-# hack/kind-config.yaml is copied verbatim — no `yq` dependency at runtime, so
-# CI (which feeds hack/kind-config.yaml straight to helm/kind-action) stays
-# byte-for-byte unchanged.
+# WITH_REGISTRY_CACHE != true — the default), the source file is copied
+# verbatim — no `yq` dependency at runtime, so CI (which feeds
+# hack/kind-config.yaml straight to helm/kind-action) stays byte-for-byte
+# unchanged.
 #
 # Otherwise `yq` is required and the applicable transforms are layered onto a
-# copy of the checked-in file:
+# copy of the source file:
 #   - KIND_HOST_PORT override: rewrite the single `nodes[0].extraPortMappings[]`
 #     entry whose `hostPort` is 443, leaving `containerPort` (31443), `protocol`
 #     (TCP), and `listenAddress` (127.0.0.1) untouched. The Envoy proxy NodePort
@@ -1609,12 +1671,18 @@ openbao_onboard_database_tenant() {
 # Arguments:
 #   $1 — destination path for the rendered config
 # Errors:
+#   - exits 1 if KIND_CONFIG does not exist or is not readable
 #   - exits 1 if KIND_HOST_PORT is not a positive integer in [1, 65535]
 #   - exits 1 if `yq` is required (either transform) but not on PATH
 # ---------------------------------------------------------------------------
 render_kind_config() {
   local out_path="$1"
-  local src="${SCRIPT_DIR}/kind-config.yaml"
+  local src="${KIND_CONFIG}"
+
+  if [[ ! -r "${KIND_CONFIG}" ]]; then
+    log "ERROR: KIND_CONFIG='${KIND_CONFIG}' does not exist or is not readable."
+    exit 1
+  fi
 
   if [[ ! "${KIND_HOST_PORT}" =~ ^[0-9]+$ ]] \
     || (( KIND_HOST_PORT < 1 || KIND_HOST_PORT > 65535 )); then
@@ -1998,6 +2066,7 @@ main() {
   log "Pod timeout         : ${POD_TIMEOUT}s"
   log "ExternalSecret timeout : ${EXTERNALSECRET_TIMEOUT}s"
   log "Kind host port      : ${KIND_HOST_PORT} → 31443 (override via KIND_HOST_PORT)"
+  log "Kind config         : ${KIND_CONFIG} (override via KIND_CONFIG)"
   log "Node RLIMIT_NOFILE  : ${NODE_NOFILE_LIMIT:-<unset — skip cap>} (override via NODE_NOFILE_LIMIT)"
   log "Chaos Mesh         : ${WITH_CHAOS_MESH} (set WITH_CHAOS_MESH=true to install)"
   log "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)"
@@ -2028,17 +2097,20 @@ main() {
   # Step 1: Create kind cluster
   log "=== Step 1/8: Create kind cluster ==="
   if [[ "${SKIP_KIND_CREATE:-false}" == "true" ]]; then
+    warn_unused_kind_config "the cluster is pre-created (SKIP_KIND_CREATE=true)"
     log "SKIP_KIND_CREATE=true — assuming kind cluster '${CLUSTER_NAME}' already exists (CI mode)."
   elif kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
+    warn_unused_kind_config "kind cluster '${CLUSTER_NAME}' already exists"
     log "Kind cluster '${CLUSTER_NAME}' already exists — skipping creation."
   else
-    # Render kind-config.yaml into a tempfile so KIND_HOST_PORT overrides
-    # take effect without mutating the checked-in file. We do not
-    # install a cleanup trap here: openbao_bootstrap registers its own EXIT
-    # trap later in the run and a second `trap ... EXIT` would overwrite it,
-    # leaking BAO_TOKEN into the environment. The tempfile is a few hundred
-    # bytes and `/tmp` is volume-cleared at reboot, so explicit deletion
-    # post-success is sufficient.
+    # Render the KIND_CONFIG file (default hack/kind-config.yaml) into a
+    # tempfile so KIND_HOST_PORT overrides take effect without mutating the
+    # checked-in file. We do not install a cleanup trap here:
+    # openbao_bootstrap registers its own EXIT trap later in the run and a
+    # second `trap ... EXIT` would overwrite it, leaking BAO_TOKEN into the
+    # environment. The tempfile is a few hundred bytes and `/tmp` is
+    # volume-cleared at reboot, so explicit deletion post-success is
+    # sufficient.
     local kind_cfg
     kind_cfg="$(mktemp -t cobaltcore-kind-config.XXXXXX.yaml)"
     render_kind_config "${kind_cfg}"
