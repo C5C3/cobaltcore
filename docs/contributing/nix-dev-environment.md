@@ -67,7 +67,7 @@ pin them to an exact patch:
 | Python 3 | the runtime the Helm-schema generator and the docs site need |
 | Helm | CI uses `azure/setup-helm` with no version input, so it floats |
 | `shellcheck`, `jq`, GNU userland | runner-preinstalled and unpinned in `ci.yaml` |
-| `yq` | pinned (`v4.53.3`) in `verify-container-images.yaml` and `build-images.yaml`; `ci.yaml` uses the runner's floating `yq`, so the flake tracks the nixpkgs `yq-go` |
+| `yq` | pinned (`v4.53.6`) in `verify-container-images.yaml` and `build-images.yaml`; `ci.yaml` uses the runner's floating `yq`, so the flake tracks the nixpkgs `yq-go` |
 
 ## Prerequisites
 
