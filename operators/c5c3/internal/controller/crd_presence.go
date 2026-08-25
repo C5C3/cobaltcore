@@ -17,6 +17,7 @@ import (
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -27,16 +28,24 @@ import (
 
 // The ControlPlane reconciler watches kinds owned by sibling service operators —
 // Keystone, Horizon, Glance, Placement and Barbican — plus the two openbao.org
-// kinds a dedicated Barbican secret store is built from. controller-runtime installs
-// a shared informer for each watched kind and blocks manager start until every
-// informer has synced; on a cluster missing one of those CRDs the informer never
-// syncs, the manager fails start after CacheSyncTimeout, and the leader crash-loops.
+// kinds a dedicated Barbican secret store is built from and the rabbitmq.com
+// RabbitmqCluster kind. controller-runtime installs a shared informer for each
+// watched kind and blocks manager start until every informer has synced; on a
+// cluster missing one of those CRDs the informer never syncs, the manager fails
+// start after CacheSyncTimeout, and the leader crash-loops.
 // The helpers here let SetupWithManager register the fragile watches only when their
 // CRD is actually served, so a slimmed-down install (Keystone-only, no Glance) starts
 // clean. The infrastructure hard dependencies — MariaDB, Memcached, the ESO kinds
 // and the eight K-ORC kinds — are deliberately NOT guarded: every reconcile pass
 // reads them unconditionally, so their absence must fail fast rather than defer to a
 // wedged reconcile (see optionalWatchObjects).
+//
+// The RabbitmqCluster kind is guarded for a reason of its own rather than the
+// sibling-service one: messaging is opt-in, so spec.infrastructure.messaging is
+// never materialized by defaulting and a Keystone-only install on a cluster without
+// the rabbitmq-cluster-operator starts clean. A ControlPlane that does declare
+// managed messaging on such a cluster fails closed in ensureRabbitMQ, with
+// InfrastructureReady False and reason RabbitMQError, so the guard hides nothing.
 //
 // Presence is decided by a discovery probe against the live API server rather than by
 // checking the runtime scheme: the scheme is compiled in and always advertises every
@@ -72,7 +81,20 @@ type serverResourcesLister interface {
 // for a Barbican taking a dedicated secret store, and reconcileBarbican reads them
 // only on that path (ensureBarbicanOpenBao), so a ControlPlane without one runs
 // perfectly well on a cluster that never served them.
+//
+// The RabbitmqCluster kind is listed for a reason of its own: messaging is opt-in,
+// so spec.infrastructure.messaging is never materialized by defaulting and a
+// Keystone-only install on a cluster without the rabbitmq-cluster-operator has no
+// broker to watch. A ControlPlane that does declare managed messaging there fails
+// closed in ensureRabbitMQ (InfrastructureReady False, reason RabbitMQError), so
+// the guard defers nothing that would otherwise be caught. It is carried as an
+// *unstructured.Unstructured, because this repository takes no dependency on the
+// RabbitMQ Cluster Operator's Go module; apiutil.GVKForObject reads an
+// unstructured object's GVK off the object itself, so it needs no scheme entry.
 func optionalWatchObjects() []client.Object {
+	rabbitmq := &unstructured.Unstructured{}
+	rabbitmq.SetGroupVersionKind(rabbitmqClusterGVK)
+
 	return []client.Object{
 		&keystonev1alpha1.Keystone{},
 		&horizonv1alpha1.Horizon{},
@@ -84,6 +106,7 @@ func optionalWatchObjects() []client.Object {
 		&barbicanv1alpha1.BarbicanSecretStore{},
 		&openbaov1alpha1.OpenBaoCluster{},
 		&openbaov1alpha1.OpenBaoTenant{},
+		rabbitmq,
 	}
 }
 

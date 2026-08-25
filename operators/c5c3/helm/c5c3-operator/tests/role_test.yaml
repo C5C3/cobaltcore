@@ -41,7 +41,7 @@ tests:
       - hasDocuments:
           count: 0
 
-  - it: should have 34 rules matching ClusterRole
+  - it: should have 35 rules matching ClusterRole
     set:
       rbac:
         namespaceScoped: true
@@ -50,7 +50,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 34
+          count: 35
 
   - it: should grant full CRUD on controlplanes
     set:
@@ -209,6 +209,29 @@ tests:
               - memcached.c5c3.io
             resources:
               - memcacheds
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on rabbitmqclusters
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rabbitmq.com
+            resources:
+              - rabbitmqclusters
             verbs:
               - get
               - list

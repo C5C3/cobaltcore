@@ -249,6 +249,7 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=c5c3.io,resources=keystoneservices,verbs=create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=memcached.c5c3.io,resources=memcacheds,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=rabbitmq.com,resources=rabbitmqclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends,verbs=get;list;watch
 // +kubebuilder:rbac:groups=horizon.openstack.c5c3.io,resources=horizons,verbs=get;list;watch;create;update;patch;delete
@@ -1055,6 +1056,13 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 	certificate := &unstructured.Unstructured{}
 	certificate.SetGroupVersionKind(certificateGVK)
 
+	// The RabbitmqCluster kind is watched as an *unstructured.Unstructured
+	// carrying rabbitmqClusterGVK (the c5c3 operator takes no dependency on the
+	// RabbitMQ Cluster Operator's Go module), and its legs sit under the
+	// discovery guard below because the CRD is opt-in infrastructure.
+	rabbitmq := &unstructured.Unstructured{}
+	rabbitmq.SetGroupVersionKind(rabbitmqClusterGVK)
+
 	// Every leg watching the management cluster carries both engage options
 	// below; see their definition for why an unpinned leg would quietly stop
 	// watching it once a provider is configured.
@@ -1136,9 +1144,9 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		// informer, so the predicate is what keeps that informer from waking the
 		// mapper on every namespace event in the cluster. (The Keystone, Horizon,
 		// Glance, GlanceBackend, Placement, Barbican, BarbicanSecretStore,
-		// OpenBaoCluster and OpenBaoTenant cross-namespace legs belong to this group
-		// too but are registered under the discovery guard below, co-located with
-		// their Owns.)
+		// OpenBaoCluster, OpenBaoTenant and RabbitmqCluster cross-namespace legs
+		// belong to this group too but are registered under the discovery guard
+		// below, co-located with their Owns.)
 		Watches(&mariadbv1alpha1.MariaDB{}, crossNamespaceChildHandler(),
 			mcbuilder.WithPredicates(crossNamespaceChildPredicate()), engageLocal, engageNoProviders).
 		Watches(memcached, crossNamespaceChildHandler(),
@@ -1222,7 +1230,10 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 	// informers target the same CRD and both would block manager start when it is
 	// not served. The two openbao.org kinds join them: the openbao-operator is
 	// installed only for a Barbican that takes a dedicated secret store, so a
-	// ControlPlane without one runs on a cluster that never served them.
+	// ControlPlane without one runs on a cluster that never served them. The
+	// RabbitmqCluster kind joins them because messaging is opt-in: a Keystone-only
+	// install on a cluster without the RabbitMQ CRD starts clean, and crdWatchGate
+	// restarts the operator once that CRD appears.
 	for _, obj := range []client.Object{
 		&keystonev1alpha1.Keystone{},
 		&horizonv1alpha1.Horizon{},
@@ -1233,6 +1244,7 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		&barbicanv1alpha1.BarbicanSecretStore{},
 		&openbaov1alpha1.OpenBaoCluster{},
 		&openbaov1alpha1.OpenBaoTenant{},
+		rabbitmq,
 	} {
 		if isServed(obj) {
 			b = b.Owns(obj, engageLocal, engageNoProviders).

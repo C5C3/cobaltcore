@@ -138,6 +138,22 @@ coordination.k8s.io/leases rule required for leader election.
     - update
     - patch
     - delete
+# rabbitmq.com - rabbitmqclusters
+# Projected and Owned by reconcileInfrastructure for spec.infrastructure.messaging
+# (resolved via the cluster RESTMapper at runtime; no Go scheme registration
+# required). The watch is registered only when the CRD is served.
+- apiGroups:
+    - rabbitmq.com
+  resources:
+    - rabbitmqclusters
+  verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
 # keystone.openstack.c5c3.io - keystones
 # The ControlPlane reconciler projects and Owns a Keystone child.
 - apiGroups:
