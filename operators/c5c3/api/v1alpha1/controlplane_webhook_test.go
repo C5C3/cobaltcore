@@ -6907,3 +6907,375 @@ func TestValidateUpdate_FreezesServiceTargetClusterRefs(t *testing.T) {
 		g.Expect(err).NotTo(HaveOccurred())
 	})
 }
+
+// --- spec.infrastructure.messaging (issue #895) ---
+//
+// The shared message bus is opt-in: the defaulting webhook fills the leaves of a
+// declared block but never creates the block itself, and once declared in MANAGED
+// mode the block is frozen as a one-way add (a brownfield one provisions nothing,
+// so it can still be dropped).
+
+// TestDefault_MessagingNotMaterialized pins the opt-in contract: a ControlPlane
+// that declares no messaging must come out of the defaulting webhook with none,
+// including the bare CR whose spec.infrastructure the webhook does allocate.
+func TestDefault_MessagingNotMaterialized(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+
+	cp := managedControlPlane()
+	g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+	g.Expect(cp.Spec.Infrastructure.Messaging).To(BeNil())
+
+	bare := &ControlPlane{}
+	g.Expect(w.Default(context.Background(), bare)).To(Succeed())
+	g.Expect(bare.Spec.Infrastructure).NotTo(BeNil())
+	g.Expect(bare.Spec.Infrastructure.Messaging).To(BeNil(),
+		"allocating the infrastructure block must not invent a message bus")
+}
+
+// TestDefault_MessagingLeaves covers the leaf defaults of a DECLARED messaging
+// block: the managed clusterRef is invented only when the brownfield
+// discriminator (secretRef) is unset, an explicit value is preserved, and the
+// well-known Secret keys are filled.
+func TestDefault_MessagingLeaves(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   *commonv1.MessagingSpec
+		// An empty want means the corresponding block must stay nil.
+		wantClusterRefName string
+		wantSecretKey      string
+		wantCABundleKey    string
+	}{
+		{
+			name:               "empty block becomes managed",
+			in:                 &commonv1.MessagingSpec{},
+			wantClusterRefName: DefaultMessagingClusterRefName,
+		},
+		{
+			name:               "empty clusterRef name is filled",
+			in:                 &commonv1.MessagingSpec{ClusterRef: &corev1.LocalObjectReference{}},
+			wantClusterRefName: DefaultMessagingClusterRefName,
+		},
+		{
+			name:          "brownfield secretRef gets the transport-url key and no clusterRef",
+			in:            &commonv1.MessagingSpec{SecretRef: &commonv1.SecretRefSpec{Name: "bus-url"}},
+			wantSecretKey: commonv1.DefaultTransportURLSecretKey,
+		},
+		{
+			name: "explicit clusterRef is preserved and the tls key is filled",
+			in: &commonv1.MessagingSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "x"},
+				TLS:        &commonv1.MessagingTLSSpec{CABundleSecretRef: commonv1.SecretRefSpec{Name: "ca"}},
+			},
+			wantClusterRefName: "x",
+			wantCABundleKey:    DefaultCABundleSecretKey,
+		},
+		{
+			name: "explicit keys are never overwritten",
+			in: &commonv1.MessagingSpec{
+				SecretRef: &commonv1.SecretRefSpec{Name: "bus-url", Key: "url"},
+				TLS:       &commonv1.MessagingTLSSpec{CABundleSecretRef: commonv1.SecretRefSpec{Name: "ca", Key: "bundle.pem"}},
+			},
+			wantSecretKey:   "url",
+			wantCABundleKey: "bundle.pem",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			cp := managedControlPlane()
+			cp.Spec.Infrastructure.Messaging = tc.in
+
+			g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+
+			m := cp.Spec.Infrastructure.Messaging
+			g.Expect(m).NotTo(BeNil())
+			if tc.wantClusterRefName == "" {
+				g.Expect(m.ClusterRef).To(BeNil(), "a brownfield bus must not grow a managed clusterRef")
+			} else {
+				g.Expect(m.ClusterRef).NotTo(BeNil())
+				g.Expect(m.ClusterRef.Name).To(Equal(tc.wantClusterRefName))
+			}
+			if tc.wantSecretKey == "" {
+				g.Expect(m.SecretRef).To(BeNil())
+			} else {
+				g.Expect(m.SecretRef).NotTo(BeNil())
+				g.Expect(m.SecretRef.Key).To(Equal(tc.wantSecretKey))
+			}
+			if tc.wantCABundleKey == "" {
+				g.Expect(m.TLS).To(BeNil())
+			} else {
+				g.Expect(m.TLS).NotTo(BeNil())
+				g.Expect(m.TLS.CABundleSecretRef.Key).To(Equal(tc.wantCABundleKey))
+			}
+
+			// A second pass must change nothing.
+			before := cp.DeepCopy()
+			g.Expect(w.Default(context.Background(), cp)).To(Succeed())
+			g.Expect(cp.Spec.Infrastructure).To(Equal(before.Spec.Infrastructure))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsMessagingXOR verifies the webhook twin of the CEL
+// rule on commonv1.MessagingSpec. The fixtures skip the defaulting webhook on
+// purpose: defaulting would turn the neither-set case into a managed block.
+func TestValidateCreate_RejectsMessagingXOR(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   *commonv1.MessagingSpec
+	}{
+		{
+			name: "both set",
+			in: &commonv1.MessagingSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: DefaultMessagingClusterRefName},
+				SecretRef:  &commonv1.SecretRefSpec{Name: "bus-url", Key: commonv1.DefaultTransportURLSecretKey},
+			},
+		},
+		{
+			name: "neither set",
+			in:   &commonv1.MessagingSpec{Replicas: 3},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			cp := validControlPlane()
+			cp.Spec.Infrastructure.Messaging = tc.in
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.infrastructure.messaging"))
+			g.Expect(err.Error()).To(ContainSubstring("exactly one of clusterRef or secretRef must be set"))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsMessagingEmptyNames covers the Secret references a
+// declared bus points at: an unnamed brownfield Secret or CA bundle resolves to
+// nothing at reconcile time, so it is rejected at admission.
+func TestValidateCreate_RejectsMessagingEmptyNames(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		in       *commonv1.MessagingSpec
+		wantPath string
+	}{
+		{
+			name:     "brownfield without a Secret name",
+			in:       &commonv1.MessagingSpec{SecretRef: &commonv1.SecretRefSpec{Key: commonv1.DefaultTransportURLSecretKey}},
+			wantPath: "spec.infrastructure.messaging.secretRef.name",
+		},
+		{
+			// Brownfield, because tls is only supported there: a managed bus would
+			// trip the mode rejection too and stop isolating the empty name.
+			name: "tls without a CA bundle Secret name",
+			in: &commonv1.MessagingSpec{
+				SecretRef: &commonv1.SecretRefSpec{Name: "bus-url", Key: commonv1.DefaultTransportURLSecretKey},
+				TLS:       &commonv1.MessagingTLSSpec{CABundleSecretRef: commonv1.SecretRefSpec{Key: DefaultCABundleSecretKey}},
+			},
+			wantPath: "spec.infrastructure.messaging.tls.caBundleSecretRef.name",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			cp := validControlPlane()
+			cp.Spec.Infrastructure.Messaging = tc.in
+
+			_, err := w.ValidateCreate(context.Background(), cp)
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantPath))
+		})
+	}
+}
+
+// TestValidateCreate_RejectsMessagingTLSInManagedMode pins that client trust is a
+// brownfield-only leaf. ensureRabbitMQ projects spec.replicas and nothing else,
+// so a managed broker comes up on the RabbitMQ Cluster Operator's default,
+// plaintext listener: a tls block beside a clusterRef would ask for an encrypted
+// connection nothing provisions, and the mismatch would only surface when the
+// first consumer rendered ssl = true against a broker that never had a listener
+// for it.
+func TestValidateCreate_RejectsMessagingTLSInManagedMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+		ClusterRef: &corev1.LocalObjectReference{Name: DefaultMessagingClusterRefName},
+		TLS: &commonv1.MessagingTLSSpec{
+			CABundleSecretRef: commonv1.SecretRefSpec{Name: "rabbitmq-ca", Key: DefaultCABundleSecretKey},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.infrastructure.messaging.tls"))
+	g.Expect(err.Error()).To(ContainSubstring("tls is supported in brownfield mode only"))
+}
+
+// TestValidateCreate_AcceptsMessagingTLSInBrownfield is the acceptance twin: the
+// same tls block on a brownfield bus is admitted.
+func TestValidateCreate_AcceptsMessagingTLSInBrownfield(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := validControlPlane()
+	cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+		SecretRef: &commonv1.SecretRefSpec{Name: "bus-url", Key: commonv1.DefaultTransportURLSecretKey},
+		TLS: &commonv1.MessagingTLSSpec{
+			CABundleSecretRef: commonv1.SecretRefSpec{Name: "rabbitmq-ca", Key: DefaultCABundleSecretKey},
+		},
+	}
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+}
+
+// managedMessaging returns the managed bus the freeze tests start from.
+func managedMessaging() *commonv1.MessagingSpec {
+	return &commonv1.MessagingSpec{
+		ClusterRef: &corev1.LocalObjectReference{Name: DefaultMessagingClusterRefName},
+		Replicas:   3,
+	}
+}
+
+// TestValidateUpdate_MessagingFreeze pins the one-way-add contract: declaring
+// the bus on a live ControlPlane is allowed, dropping it — in EITHER mode — or
+// reshaping its addressing is not.
+func TestValidateUpdate_MessagingFreeze(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		oldM *commonv1.MessagingSpec
+		newM *commonv1.MessagingSpec
+		// An empty wantMsg means the update is accepted.
+		wantMsg string
+	}{
+		{
+			name: "declaring the bus on a live ControlPlane",
+			oldM: nil,
+			newM: managedMessaging(),
+		},
+		{
+			name:    "removing a declared MANAGED bus",
+			oldM:    managedMessaging(),
+			newM:    nil,
+			wantMsg: "cannot be removed once declared",
+		},
+		{
+			// Brownfield provisions nothing, so the removal strands no state on its
+			// own — but admitting it laundered the mode freeze into a two-step flip:
+			// null the brownfield block, then re-add it with a clusterRef, and every
+			// consumer is re-pointed at a fresh, empty RabbitmqCluster without a
+			// single admission error. Nothing records the previous mode, so the
+			// one-step rejection below only holds while this one does too.
+			name: "removing a declared BROWNFIELD bus",
+			oldM: &commonv1.MessagingSpec{
+				SecretRef: &commonv1.SecretRefSpec{Name: "bus-url", Key: commonv1.DefaultTransportURLSecretKey},
+			},
+			newM:    nil,
+			wantMsg: "cannot be removed once declared",
+		},
+		{
+			name: "managed to brownfield",
+			oldM: managedMessaging(),
+			newM: &commonv1.MessagingSpec{
+				SecretRef: &commonv1.SecretRefSpec{Name: "bus-url", Key: commonv1.DefaultTransportURLSecretKey},
+			},
+			wantMsg: "messaging mode (managed clusterRef vs brownfield secretRef) is immutable",
+		},
+		{
+			name: "managed clusterRef rename",
+			oldM: managedMessaging(),
+			newM: &commonv1.MessagingSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "openstack-rabbitmq-2"},
+				Replicas:   3,
+			},
+			wantMsg: "managed messaging clusterRef.name is immutable",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			w := &ControlPlaneWebhook{}
+			oldCP := managedControlPlane()
+			oldCP.Spec.Infrastructure.Messaging = tc.oldM
+			newCP := managedControlPlane()
+			newCP.Spec.Infrastructure.Messaging = tc.newM
+
+			_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+			if tc.wantMsg == "" {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+			g.Expect(err).To(HaveOccurred())
+			g.Expect(err.Error()).To(ContainSubstring("spec.infrastructure.messaging"))
+			g.Expect(err.Error()).To(ContainSubstring(tc.wantMsg))
+		})
+	}
+}
+
+// TestValidateUpdate_AcceptsMessagingMutableLeaves pins the other half of the
+// freeze: everything the reconciler re-reads on every pass stays mutable.
+func TestValidateUpdate_AcceptsMessagingMutableLeaves(t *testing.T) {
+	w := &ControlPlaneWebhook{}
+
+	// Both directions stay mutable. Growing is what the RabbitMQ Cluster Operator
+	// supports in place; shrinking is what ensureRabbitMQ converges by recreating
+	// the owned cluster. Rejecting the shrink here would leave an oversized bus on
+	// a constrained cluster unrepairable — the broker never reaches its declared
+	// replica count, so InfrastructureReady never goes True and the only remaining
+	// action is deleting the whole ControlPlane.
+	for _, tc := range []struct {
+		name     string
+		replicas int32
+	}{
+		{name: "replicas scale up", replicas: 5},
+		{name: "replicas scale down", replicas: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			oldCP := managedControlPlane()
+			oldCP.Spec.Infrastructure.Messaging = managedMessaging()
+			newCP := managedControlPlane()
+			newCP.Spec.Infrastructure.Messaging = managedMessaging()
+			newCP.Spec.Infrastructure.Messaging.Replicas = tc.replicas
+
+			_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+			g.Expect(err).NotTo(HaveOccurred())
+		})
+	}
+
+	t.Run("brownfield secretRef key change", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		brownfield := func(key string) *commonv1.MessagingSpec {
+			return &commonv1.MessagingSpec{SecretRef: &commonv1.SecretRefSpec{Name: "bus-url", Key: key}}
+		}
+		oldCP := managedControlPlane()
+		oldCP.Spec.Infrastructure.Messaging = brownfield(commonv1.DefaultTransportURLSecretKey)
+		newCP := managedControlPlane()
+		newCP.Spec.Infrastructure.Messaging = brownfield("rotated_transport_url")
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+
+	// Client trust is a brownfield-only leaf: a managed broker is provisioned
+	// without a TLS listener, so tls beside a clusterRef is rejected outright (see
+	// TestValidateCreate_RejectsMessagingTLSInManagedMode).
+	t.Run("adding client trust to a brownfield bus", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		brownfield := func() *commonv1.MessagingSpec {
+			return &commonv1.MessagingSpec{
+				SecretRef: &commonv1.SecretRefSpec{Name: "bus-url", Key: commonv1.DefaultTransportURLSecretKey},
+			}
+		}
+		oldCP := managedControlPlane()
+		oldCP.Spec.Infrastructure.Messaging = brownfield()
+		newCP := managedControlPlane()
+		newCP.Spec.Infrastructure.Messaging = brownfield()
+		newCP.Spec.Infrastructure.Messaging.TLS = &commonv1.MessagingTLSSpec{
+			CABundleSecretRef: commonv1.SecretRefSpec{Name: "rabbitmq-ca", Key: DefaultCABundleSecretKey},
+		}
+
+		_, err := w.ValidateUpdate(context.Background(), oldCP, newCP)
+		g.Expect(err).NotTo(HaveOccurred())
+	})
+}

@@ -131,9 +131,10 @@ type ControlPlaneSpec struct {
 }
 
 // InfrastructureSpec declares the shared backing services for the control
-// plane. Both fields reuse the canonical commonv1 shapes so the
-// ControlPlane and the per-service CRs validate the database/cache the same
-// way.
+// plane. All three fields reuse the canonical commonv1 shapes so the
+// ControlPlane and the per-service CRs validate the database, cache, and
+// messaging the same way. Database and cache are always present; messaging is
+// an optional pointer, so a ControlPlane that declares no message bus gets none.
 type InfrastructureSpec struct {
 	// Database defines the MariaDB connection parameters shared by the control
 	// plane. Supports managed (clusterRef) and brownfield (host) modes; exactly
@@ -148,6 +149,21 @@ type InfrastructureSpec struct {
 	// type-level CEL rule (and the validating webhook), mirroring keystone — no
 	// field-level marker is needed here, and duplicating it would emit the rule twice.
 	Cache commonv1.CacheSpec `json:"cache"`
+
+	// Messaging declares the shared RabbitMQ message bus. It is opt-in: the
+	// defaulting webhook never materializes this block, and a ControlPlane
+	// that omits it provisions no broker. When set in managed mode
+	// (clusterRef), the reconciler provisions exactly one RabbitmqCluster in
+	// the ControlPlane's own namespace whether or not a service consumes it:
+	// a bus is shared across services by nature, so "declared" means
+	// "wanted". This differs from database and cache, which follow the
+	// services that consume them. Consumers reach the bus at
+	// <name>.<namespace>.svc. Once declared the block cannot be removed
+	// (the validating webhook rejects it); delete the ControlPlane to tear
+	// the bus down. Managed vs brownfield is a type-level CEL rule on the
+	// embedded commonv1.MessagingSpec, as for database and cache.
+	// +optional
+	Messaging *commonv1.MessagingSpec `json:"messaging,omitempty"`
 }
 
 // ServicesSpec declares the per-service configuration of the control plane.

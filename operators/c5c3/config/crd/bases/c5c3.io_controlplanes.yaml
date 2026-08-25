@@ -367,6 +367,100 @@ spec:
                         mode)
                       rule: '!has(self.credentialsMode) || self.credentialsMode !=
                         ''Dynamic'' || has(self.clusterRef)'
+                  messaging:
+                    description: |-
+                      Messaging declares the shared RabbitMQ message bus. It is opt-in: the
+                      defaulting webhook never materializes this block, and a ControlPlane
+                      that omits it provisions no broker. When set in managed mode
+                      (clusterRef), the reconciler provisions exactly one RabbitmqCluster in
+                      the ControlPlane's own namespace whether or not a service consumes it:
+                      a bus is shared across services by nature, so "declared" means
+                      "wanted". This differs from database and cache, which follow the
+                      services that consume them. Consumers reach the bus at
+                      <name>.<namespace>.svc. Once declared the block cannot be removed
+                      (the validating webhook rejects it); delete the ControlPlane to tear
+                      the bus down. Managed vs brownfield is a type-level CEL rule on the
+                      embedded commonv1.MessagingSpec, as for database and cache.
+                    properties:
+                      clusterRef:
+                        description: ClusterRef references a RabbitmqCluster CR in
+                          the cluster (managed mode).
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      replicas:
+                        default: 3
+                        description: |-
+                          Replicas is the number of RabbitMQ pods in the referenced cluster (managed
+                          mode). It mirrors CacheSpec.Replicas: only the managed-mode projection
+                          honours it, so a constrained cluster such as a single-node kind can pin a
+                          single pod. Ignored in brownfield mode.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      secretRef:
+                        description: |-
+                          SecretRef references the K8s Secret holding the complete rabbit:// transport
+                          URL under Key (brownfield mode). The defaulting webhooks materialize an
+                          empty Key to DefaultTransportURLSecretKey.
+                        properties:
+                          key:
+                            type: string
+                          name:
+                            description: |-
+                              Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                              subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                              fixes every consumer at once — a service operator adminPasswordSecretRef /
+                              database.secretRef / messaging / TLS cert refs and the c5c3
+                              passwordSecretRef — so an empty name no longer slips through "required".
+                            minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      tls:
+                        description: |-
+                          TLS configures the client trust for the broker connection. The pointer keeps
+                          the field opt-in: a nil TLS means a plaintext connection.
+                        properties:
+                          caBundleSecretRef:
+                            description: |-
+                              CABundleSecretRef references the K8s Secret holding the CA bundle the
+                              consumer trusts when verifying the broker endpoint. The defaulting webhooks
+                              materialize an empty Key to "ca.crt".
+                            properties:
+                              key:
+                                type: string
+                              name:
+                                description: |-
+                                  Name is the referenced Secret's name. It must be a non-empty DNS-1123
+                                  subdomain (the Kubernetes object-name grammar). Tightening the shared type
+                                  fixes every consumer at once — a service operator adminPasswordSecretRef /
+                                  database.secretRef / messaging / TLS cert refs and the c5c3
+                                  passwordSecretRef — so an empty name no longer slips through "required".
+                                minLength: 1
+                                pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                type: string
+                            required:
+                            - name
+                            type: object
+                        required:
+                        - caBundleSecretRef
+                        type: object
+                    type: object
+                    x-kubernetes-validations:
+                    - message: exactly one of clusterRef or secretRef must be set
+                      rule: has(self.clusterRef) != has(self.secretRef)
                 required:
                 - cache
                 - database
