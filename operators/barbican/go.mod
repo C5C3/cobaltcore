@@ -4,7 +4,7 @@ go 1.26.6
 
 require (
 	github.com/c5c3/cobaltcore/internal/common v0.0.0
-	github.com/dc-tec/openbao-operator v0.0.0-20260825033816-25384730cd32
+	github.com/dc-tec/openbao-operator v0.0.0-20260825173912-639b0018e8e5
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.42.1
@@ -46,6 +46,7 @@ require (
 	github.com/go-openapi/swag/loading v0.27.3 // indirect
 	github.com/go-openapi/swag/mangling v0.27.3 // indirect
 	github.com/go-openapi/swag/netutils v0.27.0 // indirect
+	github.com/go-openapi/swag/pools v0.27.3 // indirect
 	github.com/go-openapi/swag/stringutils v0.27.3 // indirect
 	github.com/go-openapi/swag/typeutils v0.27.3 // indirect
 	github.com/go-openapi/swag/yamlutils v0.27.3 // indirect
