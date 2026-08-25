@@ -423,6 +423,25 @@ func simulateMemcachedReadyWhenPresent(t testing.TB, ctx context.Context, c clie
 		To(Succeed(), "simulate Memcached ready")
 }
 
+// simulateRabbitmqClusterReadyWhenPresent waits for the projected (unstructured)
+// RabbitmqCluster child, then reports what the RabbitMQ Cluster Operator sets on
+// a healthy broker via the shared simulator: AllReplicasReady, ClusterAvailable
+// and ReconcileSuccess True, plus the default-user secret reference. The operator
+// publishes no Ready condition, so AllReplicasReady is the one the infrastructure
+// gate reads.
+func simulateRabbitmqClusterReadyWhenPresent(t testing.TB, ctx context.Context, c client.Client, key client.ObjectKey) {
+	t.Helper()
+	g := NewGomegaWithT(t)
+
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(rabbitmqClusterGVK)
+	g.Eventually(func() error {
+		return c.Get(ctx, key, u)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "RabbitmqCluster child should be created")
+	g.Expect(simulators.SimulateRabbitmqClusterReady(ctx, c, key, key.Name+"-default-user")).
+		To(Succeed(), "simulate RabbitmqCluster ready")
+}
+
 // simulateKeystoneReadyWhenPresent waits for the projected Keystone child, then
 // sets its Ready condition True inline (there is no Keystone simulator — the
 // reconcileKeystone gate mirrors the child Ready condition).
@@ -3186,6 +3205,16 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 			},
 		},
 		{
+			name:    "messaging both clusterRef and secretRef",
+			wantErr: true,
+			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
+				cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+					ClusterRef: &corev1.LocalObjectReference{Name: "x"},
+					SecretRef:  &commonv1.SecretRefSpec{Name: "bus-url"},
+				}
+			},
+		},
+		{
 			name:    "non-URL keystone publicEndpoint",
 			wantErr: true,
 			mutate: func(cp *c5c3v1alpha1.ControlPlane) {
@@ -3254,6 +3283,32 @@ func TestIntegration_ControlPlane_ValidationMarkers(t *testing.T) {
 			}
 		})
 	}
+
+	// The messaging replica floor cannot be reached through the table above: a Go
+	// zero int32 carries json:"replicas,omitempty", so the typed client drops the
+	// field and the CRD default of 3 fills it back in. Submitting the ControlPlane
+	// as an unstructured object is the only way to put replicas: 0 on the wire.
+	t.Run("messaging replicas 0", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-marker-"}}
+		g.Expect(c.Create(ctx, ns)).To(Succeed())
+
+		raw, err := runtime.DefaultUnstructuredConverter.ToUnstructured(
+			integrationManagedControlPlane("cp-marker-replicas", ns.Name),
+		)
+		g.Expect(err).NotTo(HaveOccurred(), "convert the fixture to unstructured")
+		obj := &unstructured.Unstructured{Object: raw}
+		obj.SetGroupVersionKind(c5c3v1alpha1.GroupVersion.WithKind("ControlPlane"))
+		g.Expect(unstructured.SetNestedMap(obj.Object, map[string]interface{}{
+			"clusterRef": map[string]interface{}{"name": "x"},
+			"replicas":   int64(0),
+		}, "spec", "infrastructure", "messaging")).To(Succeed())
+
+		err = c.Create(ctx, obj)
+		g.Expect(err).To(HaveOccurred(), "a replica count below the CRD minimum must be rejected")
+		g.Expect(apierrors.IsInvalid(err)).To(BeTrue(),
+			fmt.Sprintf("expected an Invalid status error, got: %v", err))
+	})
 }
 
 // TestIntegration_RetiredInlineFieldsArePruned proves the structural schema
@@ -5678,4 +5733,120 @@ func TestIntegration_KeystoneService_ForeignChildrenLandInThePlaneNamespace(t *t
 			&c5c3v1alpha1.KeystoneService{}))
 	}, itEventuallyTimeout, itPollInterval).Should(BeTrue(),
 		"and then releases the finalizer, once no owned child is listed any more")
+}
+
+// --- shared messaging bus (issue #895) ---
+
+// integrationMessagingControlPlane is integrationManagedControlPlane with the
+// database and the cache switched to brownfield and a managed messaging block
+// added. Neither brownfield block provisions a child, so the RabbitmqCluster is
+// the only managed instance left and InfrastructureReady gates on it alone.
+func integrationMessagingControlPlane(name, namespace string) *c5c3v1alpha1.ControlPlane {
+	cp := integrationManagedControlPlane(name, namespace)
+	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+		Host:      "db.invalid",
+		Database:  "keystone",
+		SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"},
+	}
+	cp.Spec.Infrastructure.Cache = commonv1.CacheSpec{
+		Servers: []string{"mc.invalid:11211"},
+		Backend: "dogpile.cache.pymemcache",
+	}
+	cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+		ClusterRef: &corev1.LocalObjectReference{Name: "openstack-rabbitmq"},
+		Replicas:   1,
+	}
+	return cp
+}
+
+// TestIntegration_Messaging_ManagedProjectsRabbitmqCluster drives the managed
+// message bus against a live API server: the reconciler writes an owned
+// RabbitmqCluster into the ControlPlane's own namespace at the declared replica
+// count, holds InfrastructureReady False with reason WaitingForMessaging while
+// the broker converges, and flips it True once the RabbitMQ Cluster Operator's
+// AllReplicasReady condition is reported.
+func TestIntegration_Messaging_ManagedProjectsRabbitmqCluster(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-messaging-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	cp := integrationMessagingControlPlane("cp", ns.Name)
+	g.Expect(c.Create(ctx, cp)).To(Succeed(), "create the messaging ControlPlane CR")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+	busKey := client.ObjectKey{Name: "openstack-rabbitmq", Namespace: ns.Name}
+
+	bus := &unstructured.Unstructured{}
+	bus.SetGroupVersionKind(rabbitmqClusterGVK)
+	g.Eventually(func() error {
+		return c.Get(ctx, busKey, bus)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),
+		"the RabbitmqCluster child must be created in the ControlPlane's own namespace")
+
+	live := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, cpKey, live)).To(Succeed(), "get the live ControlPlane")
+	g.Expect(metav1.IsControlledBy(bus, live)).To(BeTrue(),
+		"the bus must be controller-owned so it is torn down with the ControlPlane")
+	replicas, found, err := unstructured.NestedInt64(bus.Object, "spec", "replicas")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue(), "spec.replicas must be projected")
+	g.Expect(replicas).To(Equal(int64(1)), "the declared replica count must reach the child")
+
+	cond := waitForControlPlaneCondition(t, ctx, c, cpKey,
+		conditionTypeInfrastructureReady, metav1.ConditionFalse, itEventuallyTimeout)
+	g.Expect(cond.Reason).To(Equal("WaitingForMessaging"),
+		"a broker that has not reported AllReplicasReady holds the infrastructure gate")
+
+	simulateRabbitmqClusterReadyWhenPresent(t, ctx, c, busKey)
+
+	waitForControlPlaneCondition(t, ctx, c, cpKey,
+		conditionTypeInfrastructureReady, metav1.ConditionTrue, itEventuallyTimeout)
+}
+
+// TestIntegration_Messaging_Defaulting pins what admission does to a messaging
+// block declared empty: the mutating webhook invents the managed clusterRef, the
+// CRD default supplies the replica count, and the block cannot be dropped again
+// once the ControlPlane is live.
+func TestIntegration_Messaging_Defaulting(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	c, ctx, _ := setupControlPlaneEnvTest(t)
+
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "test-cp-messaging-default-"}}
+	g.Expect(c.Create(ctx, ns)).To(Succeed(), "create test namespace")
+
+	cp := integrationManagedControlPlane("cp", ns.Name)
+	cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{}
+	g.Expect(c.Create(ctx, cp)).To(Succeed(),
+		"an empty messaging block must be admitted: the defaulting webhook resolves the XOR")
+	cpKey := types.NamespacedName{Name: cp.Name, Namespace: ns.Name}
+
+	defaulted := &c5c3v1alpha1.ControlPlane{}
+	g.Expect(c.Get(ctx, cpKey, defaulted)).To(Succeed(), "re-fetch the defaulted ControlPlane")
+	m := defaulted.Spec.Infrastructure.Messaging
+	g.Expect(m).NotTo(BeNil(), "the declared block must survive defaulting")
+	g.Expect(m.SecretRef).To(BeNil(), "an empty block resolves to managed mode, not brownfield")
+	g.Expect(m.ClusterRef).NotTo(BeNil(), "the defaulting webhook must materialize messaging.clusterRef")
+	g.Expect(m.ClusterRef.Name).To(Equal(c5c3v1alpha1.DefaultMessagingClusterRefName))
+	g.Expect(m.Replicas).To(Equal(int32(3)), "the CRD default supplies the replica count")
+
+	// Dropping the block from a live ControlPlane is rejected: the owned
+	// RabbitmqCluster keeps the queues. Get-mutate-update under RetryOnConflict,
+	// on the rationale TestIntegration_DedicatedBackingServices_TransitionRejected
+	// states: the live controller writes to the CR concurrently, so a stale
+	// resourceVersion returns 409 before admission evaluates the removal.
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &c5c3v1alpha1.ControlPlane{}
+		if err := c.Get(ctx, cpKey, latest); err != nil {
+			return err
+		}
+		latest.Spec.Infrastructure.Messaging = nil
+		return c.Update(ctx, latest)
+	})
+	g.Expect(err).To(HaveOccurred(), "removing a declared messaging block must be rejected")
+	g.Expect(err.Error()).To(ContainSubstring("cannot be removed once declared"))
 }

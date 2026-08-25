@@ -7,11 +7,14 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -21,6 +24,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
@@ -1512,4 +1516,578 @@ func TestReconcileInfrastructure_UnresolvableTargetProvisionsNothing(t *testing.
 		g.Expect(c.List(ctx, caches)).To(Succeed())
 		g.Expect(caches.Items).To(BeEmpty(), "no cache may be provisioned on the %s cluster", name)
 	}
+}
+
+// --- shared messaging bus (issue #895) ---
+
+// managedMessagingControlPlane builds a ControlPlane whose database and cache are
+// brownfield and whose spec.infrastructure.messaging is in managed mode. Neither
+// brownfield block provisions anything, so the enumeration and the readiness
+// assertions below see exactly one instance: the message bus.
+func managedMessagingControlPlane() *c5c3v1alpha1.ControlPlane {
+	cp := managedInfraControlPlane()
+	cp.Spec.Infrastructure.Database = commonv1.DatabaseSpec{
+		Host:      "db.example.com",
+		Database:  "keystone",
+		SecretRef: commonv1.SecretRefSpec{Name: "keystone-db"},
+	}
+	cp.Spec.Infrastructure.Cache = commonv1.CacheSpec{
+		Servers: []string{"memcached.example.com:11211"},
+		Backend: "dogpile.cache.pymemcache",
+	}
+	cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+		ClusterRef: &corev1.LocalObjectReference{Name: "openstack-rabbitmq"},
+		Replicas:   1,
+	}
+	return cp
+}
+
+// rabbitmqWithConditions builds a RabbitmqCluster child carrying conds under
+// status.conditions, or no conditions list at all when conds is nil. Its
+// spec.replicas matches managedMessagingControlPlane's declared count, so a
+// readiness test exercises the read path without the ensure pass writing first.
+func rabbitmqWithConditions(name, ns string, conds []interface{}) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(rabbitmqClusterGVK)
+	u.SetName(name)
+	u.SetNamespace(ns)
+	_ = unstructured.SetNestedField(u.Object, int64(1), "spec", "replicas")
+	if conds != nil {
+		_ = unstructured.SetNestedSlice(u.Object, conds, "status", "conditions")
+	}
+	return u
+}
+
+// rabbitmqInstances returns the RabbitmqCluster entries of an enumeration, so a
+// test can assert on the bus without restating the database and cache entries.
+func rabbitmqInstances(instances []infraInstance) []infraInstance {
+	var out []infraInstance
+	for _, inst := range instances {
+		if inst.kind == "RabbitmqCluster" {
+			out = append(out, inst)
+		}
+	}
+	return out
+}
+
+// TestManagedInfraInstances_MessagingNilAndBrownfieldProvisionNothing pins the
+// two shapes that own no broker: an absent block (messaging is opt-in, the
+// defaulting webhook never materializes it) and a brownfield one pointing at a
+// transport-URL Secret. Neither may enumerate a RabbitmqCluster, because there is
+// nothing to provision and nothing to gate InfrastructureReady on.
+func TestManagedInfraInstances_MessagingNilAndBrownfieldProvisionNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		messaging *commonv1.MessagingSpec
+	}{
+		{name: "no messaging block at all", messaging: nil},
+		{
+			name: "brownfield messaging points at an external broker",
+			messaging: &commonv1.MessagingSpec{
+				SecretRef: &commonv1.SecretRefSpec{Name: "bus-url", Key: "transport_url"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			s := infraTestScheme(t)
+			cp := managedMessagingControlPlane()
+			cp.Spec.Infrastructure.Messaging = tc.messaging
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			g.Expect(rabbitmqInstances(r.managedInfraInstances(cp))).To(BeEmpty(),
+				"nothing to provision, so no RabbitmqCluster may be enumerated")
+		})
+	}
+}
+
+// TestManagedInfraInstances_MessagingEnumeratedAtHome pins the rule that sets the
+// bus apart from the database and the cache: it is enumerated at the
+// ControlPlane's OWN namespace regardless of who consumes it. A ControlPlane
+// declaring no service at all still gets its broker, and a ControlPlane whose
+// Keystone is placed in another namespace keeps the broker at home while the
+// database and cache follow the service.
+func TestManagedInfraInstances_MessagingEnumeratedAtHome(t *testing.T) {
+	t.Run("declared with no service consuming it", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := managedMessagingControlPlane()
+		cp.Spec.Services = c5c3v1alpha1.ServicesSpec{}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		buses := rabbitmqInstances(r.managedInfraInstances(cp))
+		g.Expect(buses).To(HaveLen(1), "a declared managed bus is wanted even with services: {}")
+		g.Expect(buses[0].name).To(Equal("openstack-rabbitmq"))
+		g.Expect(buses[0].namespace).To(Equal(cp.Namespace))
+		g.Expect(buses[0].declaredAt).To(Equal("spec.infrastructure.messaging"))
+	})
+
+	t.Run("the bus stays at home while the database and cache follow Keystone", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		s := infraTestScheme(t)
+		cp := splitNamespaceControlPlane()
+		cp.Spec.Infrastructure.Messaging = &commonv1.MessagingSpec{
+			ClusterRef: &corev1.LocalObjectReference{Name: "openstack-rabbitmq"},
+			Replicas:   1,
+		}
+		c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+		r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+		type placement struct{ kind, name, namespace string }
+		var got []placement
+		for _, inst := range r.managedInfraInstances(cp) {
+			got = append(got, placement{inst.kind, inst.name, inst.namespace})
+		}
+		g.Expect(got).To(ConsistOf(
+			placement{"MariaDB", "openstack-db", "identity"},
+			placement{"Memcached", "openstack-memcached", "identity"},
+			placement{"Memcached", "openstack-memcached", "dashboard"},
+			placement{"RabbitmqCluster", "openstack-rabbitmq", "openstack"},
+		), "the bus belongs to the ControlPlane, not to the namespace Keystone was placed in")
+	})
+}
+
+// TestEnsureRabbitMQ_CreatesOwnedClusterFromSpec verifies the fresh-create
+// projection: a RabbitmqCluster named after clusterRef, owned by the
+// ControlPlane, carrying the declared replica count. A zero count is only
+// reachable when CRD validation was bypassed, and is floored to the default
+// rather than creating a broker with no pods. A freshly created cluster reports
+// no conditions, so readiness must come back false.
+func TestEnsureRabbitMQ_CreatesOwnedClusterFromSpec(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		replicas     int32
+		wantReplicas int64
+	}{
+		{name: "the declared single replica is projected", replicas: 1, wantReplicas: 1},
+		{
+			name:         "a bypassed zero count is floored to the default",
+			replicas:     0,
+			wantReplicas: int64(infraRabbitMQReplicasDefault),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			s := infraTestScheme(t)
+			cp := managedMessagingControlPlane()
+			cp.Spec.Infrastructure.Messaging.Replicas = tc.replicas
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(ready).To(BeFalse(), "a cluster without conditions is not ready")
+
+			u := &unstructured.Unstructured{}
+			u.SetGroupVersionKind(rabbitmqClusterGVK)
+			g.Expect(c.Get(ctx, types.NamespacedName{
+				Name: "openstack-rabbitmq", Namespace: cp.Namespace,
+			}, u)).To(Succeed(), "the RabbitmqCluster must be created in the ControlPlane's namespace")
+			g.Expect(u.GroupVersionKind()).To(Equal(rabbitmqClusterGVK))
+
+			replicas, found, nerr := unstructured.NestedInt64(u.Object, "spec", "replicas")
+			g.Expect(nerr).NotTo(HaveOccurred())
+			g.Expect(found).To(BeTrue(), "spec.replicas must be projected")
+			g.Expect(replicas).To(Equal(tc.wantReplicas))
+			g.Expect(metav1.IsControlledBy(u, cp)).To(BeTrue(),
+				"the bus must be controller-owned so it is torn down with the ControlPlane")
+		})
+	}
+}
+
+// TestEnsureRabbitMQ_OwnedReconcilesReplicasOnly verifies the narrow projection
+// onto an OWNED cluster: the replica count is corrected back to the declared one,
+// and every other field of the spec is left where the platform put it. Image,
+// resources and tls are site-specific hardening the ControlPlane never projects,
+// so re-asserting a default over them would silently downgrade a tuned broker.
+func TestEnsureRabbitMQ_OwnedReconcilesReplicasOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := infraTestScheme(t)
+	cp := managedMessagingControlPlane()
+	cp.Spec.Infrastructure.Messaging.Replicas = 3
+
+	owned := &unstructured.Unstructured{}
+	owned.SetGroupVersionKind(rabbitmqClusterGVK)
+	owned.SetName("openstack-rabbitmq")
+	owned.SetNamespace(cp.Namespace)
+	g.Expect(unstructured.SetNestedField(owned.Object, int64(1), "spec", "replicas")).To(Succeed())
+	g.Expect(unstructured.SetNestedField(owned.Object, "x", "spec", "image")).To(Succeed())
+	g.Expect(unstructured.SetNestedField(owned.Object, "1", "spec", "resources", "requests", "cpu")).To(Succeed())
+	g.Expect(unstructured.SetNestedField(owned.Object, "t", "spec", "tls", "secretName")).To(Succeed())
+	g.Expect(controllerutil.SetControllerReference(cp, owned, s)).To(Succeed())
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, owned).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(rabbitmqClusterGVK)
+	g.Expect(c.Get(ctx, types.NamespacedName{
+		Name: "openstack-rabbitmq", Namespace: cp.Namespace,
+	}, u)).To(Succeed())
+
+	replicas, _, _ := unstructured.NestedInt64(u.Object, "spec", "replicas")
+	g.Expect(replicas).To(Equal(int64(3)), "an owned bus must have spec.replicas reconciled")
+
+	image, _, _ := unstructured.NestedString(u.Object, "spec", "image")
+	g.Expect(image).To(Equal("x"), "spec.image is not projected and must survive")
+	cpu, _, _ := unstructured.NestedString(u.Object, "spec", "resources", "requests", "cpu")
+	g.Expect(cpu).To(Equal("1"), "spec.resources is not projected and must survive")
+	tlsSecret, _, _ := unstructured.NestedString(u.Object, "spec", "tls", "secretName")
+	g.Expect(tlsSecret).To(Equal("t"), "spec.tls is not projected and must survive")
+}
+
+// TestEnsureRabbitMQ_OwnedScaleDownRecreates pins the asymmetric half of the
+// re-projection ONCE AUTHORISED: a declared count BELOW the owned cluster's is
+// converged by deleting the CR, not by writing the lower value onto it. The
+// RabbitMQ Cluster Operator refuses an in-place shrink, so an Update would leave
+// the declared size and the running broker permanently divergent behind a True
+// AllReplicasReady. The next pass takes the NotFound branch and recreates the
+// cluster at the declared size, which is also the only exit from an oversized bus
+// on a cluster that cannot schedule its pods. The recreate is destructive, so it
+// only runs with messagingRecreateAllowedAnnotation set — the sibling test below
+// pins the refusal without it.
+func TestEnsureRabbitMQ_OwnedScaleDownRecreates(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := infraTestScheme(t)
+	cp := managedMessagingControlPlane()
+	cp.Spec.Infrastructure.Messaging.Replicas = 1
+	cp.Annotations = map[string]string{messagingRecreateAllowedAnnotation: "true"}
+
+	owned := rabbitmqWithConditions("openstack-rabbitmq", cp.Namespace, []interface{}{
+		map[string]interface{}{"type": "AllReplicasReady", "status": "True"},
+	})
+	g.Expect(unstructured.SetNestedField(owned.Object, int64(3), "spec", "replicas")).To(Succeed())
+	g.Expect(controllerutil.SetControllerReference(cp, owned, s)).To(Succeed())
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, owned).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse(),
+		"readiness must not be gated on the cluster that is going away, even though it still reports AllReplicasReady")
+
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(rabbitmqClusterGVK)
+	err = c.Get(ctx, types.NamespacedName{Name: "openstack-rabbitmq", Namespace: cp.Namespace}, u)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"the oversized owned cluster must be deleted, not updated to a count the operator ignores")
+
+	// The next pass recreates it at the declared size.
+	ready, err = r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse(), "a freshly created cluster reports no conditions")
+	g.Expect(c.Get(ctx, types.NamespacedName{
+		Name: "openstack-rabbitmq", Namespace: cp.Namespace,
+	}, u)).To(Succeed())
+	replicas, _, _ := unstructured.NestedInt64(u.Object, "spec", "replicas")
+	g.Expect(replicas).To(Equal(int64(1)), "the recreated bus must carry the declared count")
+}
+
+// TestEnsureRabbitMQ_OwnedScaleDownRefusedWithoutOptIn pins the gate in front of
+// that recreate. The shrink destroys the broker's volumes and with them every
+// durable queue and unacked message, and it needs no deliberate act to reach the
+// reconciler: replicas carries a schema default of 3, so a GitOps commit that
+// merely DROPS the line off a ControlPlane running 5 is defaulted back to 3 and
+// arrives here as a scale-down nobody typed. Without
+// messagingRecreateAllowedAnnotation the pass must refuse it — the live broker
+// stays untouched at its current size and the divergence surfaces as an error
+// naming the annotation, which reconcileInfrastructure reports as
+// InfrastructureReady False / RabbitMQError.
+func TestEnsureRabbitMQ_OwnedScaleDownRefusedWithoutOptIn(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		annotation map[string]string
+	}{
+		{name: "no annotation at all", annotation: nil},
+		{name: "annotation explicitly false", annotation: map[string]string{messagingRecreateAllowedAnnotation: "false"}},
+		{name: "annotation not parseable as a bool", annotation: map[string]string{messagingRecreateAllowedAnnotation: "yes please"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			s := infraTestScheme(t)
+			cp := managedMessagingControlPlane()
+			// The accident the gate exists for: the declared count is the schema
+			// DEFAULT, reached by dropping the replicas line off a broker running 5.
+			cp.Spec.Infrastructure.Messaging.Replicas = 3
+			cp.Annotations = tc.annotation
+
+			owned := rabbitmqWithConditions("openstack-rabbitmq", cp.Namespace, []interface{}{
+				map[string]interface{}{"type": "AllReplicasReady", "status": "True"},
+			})
+			g.Expect(unstructured.SetNestedField(owned.Object, int64(5), "spec", "replicas")).To(Succeed())
+			g.Expect(controllerutil.SetControllerReference(cp, owned, s)).To(Succeed())
+
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, owned).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+			g.Expect(ready).To(BeFalse(), "an unconverged bus is not ready")
+			g.Expect(err).To(HaveOccurred(), "an unauthorised shrink must not be converged silently")
+			g.Expect(err.Error()).To(ContainSubstring(messagingRecreateAllowedAnnotation),
+				"the error must name the annotation that authorises the recreate")
+
+			u := &unstructured.Unstructured{}
+			u.SetGroupVersionKind(rabbitmqClusterGVK)
+			g.Expect(c.Get(ctx, types.NamespacedName{
+				Name: "openstack-rabbitmq", Namespace: cp.Namespace,
+			}, u)).To(Succeed(), "the broker must survive an unauthorised shrink")
+			g.Expect(u.GetDeletionTimestamp()).To(BeNil(), "the broker must not even be marked for deletion")
+			replicas, _, _ := unstructured.NestedInt64(u.Object, "spec", "replicas")
+			g.Expect(replicas).To(Equal(int64(5)), "the running count must be left where it is")
+		})
+	}
+}
+
+// TestEnsureRabbitMQ_TerminatingChildIsNotReady pins the readiness read against a
+// broker that is being destroyed. The RabbitMQ Cluster Operator holds a finalizer
+// on its CRs, so a deleted RabbitmqCluster lingers in Terminating with its
+// spec.replicas AND its status.conditions intact — AllReplicasReady still reads
+// True on a bus whose StatefulSet and Secrets are going away. Nothing in the
+// replica comparison catches that: an authorised scale-down that is reverted
+// before the finalizer clears lands on desired == current, so neither the
+// shrink branch nor the re-projection fires and the fall-through would report the
+// dying broker ready, opening the projection gate every consuming service keys on
+// InfrastructureReady against a bus that is mid-teardown.
+func TestEnsureRabbitMQ_TerminatingChildIsNotReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := infraTestScheme(t)
+	cp := managedMessagingControlPlane()
+	cp.Spec.Infrastructure.Messaging.Replicas = 3
+
+	terminating := rabbitmqWithConditions("openstack-rabbitmq", cp.Namespace, []interface{}{
+		map[string]interface{}{"type": "AllReplicasReady", "status": "True"},
+	})
+	g.Expect(unstructured.SetNestedField(terminating.Object, int64(3), "spec", "replicas")).To(Succeed())
+	terminating.SetFinalizers([]string{"deletion.finalizers.rabbitmqclusters.rabbitmq.com"})
+	deletedAt := metav1.Now()
+	terminating.SetDeletionTimestamp(&deletedAt)
+	g.Expect(controllerutil.SetControllerReference(cp, terminating, s)).To(Succeed())
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, terminating).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeFalse(),
+		"a terminating broker still reports AllReplicasReady, but readiness must never be gated on a bus that is going away")
+}
+
+// TestEnsureRabbitMQ_AdoptsForeignReadOnly verifies the adoption path: a
+// RabbitmqCluster the ControlPlane did not create keeps its own replica count,
+// gains no owner reference (deleting the ControlPlane must never cascade into a
+// broker the platform provisioned), and is still read for readiness.
+func TestEnsureRabbitMQ_AdoptsForeignReadOnly(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := infraTestScheme(t)
+	cp := managedMessagingControlPlane()
+
+	foreign := rabbitmqWithConditions("openstack-rabbitmq", cp.Namespace, []interface{}{
+		map[string]interface{}{"type": "AllReplicasReady", "status": "True"},
+	})
+	g.Expect(unstructured.SetNestedField(foreign.Object, int64(5), "spec", "replicas")).To(Succeed())
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, foreign).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeTrue(), "an adopted cluster is still read for readiness")
+
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(rabbitmqClusterGVK)
+	g.Expect(c.Get(ctx, types.NamespacedName{
+		Name: "openstack-rabbitmq", Namespace: cp.Namespace,
+	}, u)).To(Succeed())
+	replicas, _, _ := unstructured.NestedInt64(u.Object, "spec", "replicas")
+	g.Expect(replicas).To(Equal(int64(5)), "a foreign broker must not be reshaped to the declared count")
+	g.Expect(u.GetOwnerReferences()).To(BeEmpty(),
+		"must not claim GC ownership of a pre-existing broker")
+}
+
+// failingRabbitmqGet returns interceptor funcs whose Get fails for the
+// RabbitmqCluster kind alone, so a test can drive the non-NotFound Get arm
+// without disturbing the ControlPlane reads around it. It is the shape a cluster
+// missing the RabbitmqCluster CRD takes: the Get comes back with an error that is
+// not NotFound.
+func failingRabbitmqGet(sentinel error) interceptor.Funcs {
+	return interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey,
+			obj client.Object, opts ...client.GetOption,
+		) error {
+			if obj.GetObjectKind().GroupVersionKind().Kind == "RabbitmqCluster" {
+				return sentinel
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	}
+}
+
+// TestEnsureRabbitMQ_GetErrorIsWrapped pins the fail-closed read: a Get that is
+// not NotFound (a cluster without the RabbitmqCluster CRD answers with a
+// meta.NoKindMatchError) is returned wrapped, naming the read that failed and
+// keeping the cause unwrappable.
+func TestEnsureRabbitMQ_GetErrorIsWrapped(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := infraTestScheme(t)
+	cp := managedMessagingControlPlane()
+	sentinel := errors.New("no matches for kind \"RabbitmqCluster\"")
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+		WithInterceptorFuncs(failingRabbitmqGet(sentinel)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	ready, err := r.ensureRabbitMQ(ctx, c, cp, cp.Spec.Infrastructure.Messaging, cp.Namespace)
+	g.Expect(ready).To(BeFalse())
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(strings.HasPrefix(err.Error(), `getting RabbitmqCluster "openstack-rabbitmq": `)).To(BeTrue(),
+		"the wrapped error must name the read that failed, got %q", err.Error())
+	g.Expect(errors.Is(err, sentinel)).To(BeTrue(), "the cause must stay unwrappable")
+}
+
+// TestReconcileInfrastructure_MessagingGetErrorSurfacesRabbitMQError carries the
+// wrapped read failure up to the condition: InfrastructureReady goes False with
+// the class-level RabbitMQError reason and a message naming the instance and the
+// spec path it was declared at, and the error is returned so the pass is retried
+// with backoff rather than requeued on the polling interval.
+func TestReconcileInfrastructure_MessagingGetErrorSurfacesRabbitMQError(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := infraTestScheme(t)
+	cp := managedMessagingControlPlane()
+	sentinel := errors.New("boom")
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+		WithInterceptorFuncs(failingRabbitmqGet(sentinel)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileInfrastructure(ctx, cp)
+	g.Expect(errors.Is(err, sentinel)).To(BeTrue(), "the ensure failure must reach the caller")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeInfrastructureReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("RabbitMQError"))
+	g.Expect(cond.Message).To(Equal(
+		`ensuring RabbitmqCluster "openstack-rabbitmq" in namespace "default" ` +
+			`(spec.infrastructure.messaging): getting RabbitmqCluster "openstack-rabbitmq": boom`,
+	))
+}
+
+// TestReconcileInfrastructure_MessagingReadinessOnAllReplicasReady pins which
+// condition the gate reads. The RabbitMQ Cluster Operator publishes no Ready
+// condition, so AllReplicasReady is what InfrastructureReady follows: any other
+// condition, an empty list, and a malformed entry all leave the control plane
+// waiting on WaitingForMessaging.
+func TestReconcileInfrastructure_MessagingReadinessOnAllReplicasReady(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		conds []interface{}
+		ready bool
+	}{
+		{
+			name:  "AllReplicasReady True is what the gate follows",
+			conds: []interface{}{map[string]interface{}{"type": "AllReplicasReady", "status": "True"}},
+			ready: true,
+		},
+		{
+			name:  "ClusterAvailable alone is not readiness",
+			conds: []interface{}{map[string]interface{}{"type": "ClusterAvailable", "status": "True"}},
+		},
+		{name: "a cluster that reports no conditions at all", conds: nil},
+		{
+			name:  "a malformed conditions entry is not readiness",
+			conds: []interface{}{"AllReplicasReady=True"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			ctx := context.Background()
+			s := infraTestScheme(t)
+			cp := managedMessagingControlPlane()
+			bus := rabbitmqWithConditions("openstack-rabbitmq", cp.Namespace, tc.conds)
+			g.Expect(controllerutil.SetControllerReference(cp, bus, s)).To(Succeed())
+
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, bus).Build()
+			r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+			res, err := r.reconcileInfrastructure(ctx, cp)
+			g.Expect(err).NotTo(HaveOccurred())
+
+			cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeInfrastructureReady)
+			g.Expect(cond).NotTo(BeNil())
+			if tc.ready {
+				g.Expect(res).To(Equal(ctrl.Result{}))
+				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+				g.Expect(cond.Reason).To(Equal("InfrastructureReady"))
+				return
+			}
+			g.Expect(res.RequeueAfter).To(Equal(infraRequeueAfter))
+			g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			g.Expect(cond.Reason).To(Equal("WaitingForMessaging"))
+			g.Expect(cond.Message).To(Equal(
+				`RabbitmqCluster "openstack-rabbitmq" in namespace "default" ` +
+					`(spec.infrastructure.messaging) is not ready`,
+			))
+		})
+	}
+}
+
+// TestUnstructuredConditionTrue covers the shared condition reader the Memcached
+// and RabbitmqCluster gates both go through: it answers for the requested type
+// alone, and every shape that is not a True entry of that type reads as false
+// rather than erroring, so a converging child requeues.
+func TestUnstructuredConditionTrue(t *testing.T) {
+	withConditions := func(conds []interface{}) *unstructured.Unstructured {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(rabbitmqClusterGVK)
+		if conds != nil {
+			_ = unstructured.SetNestedSlice(u.Object, conds, "status", "conditions")
+		}
+		return u
+	}
+
+	for _, tc := range []struct {
+		name  string
+		conds []interface{}
+		want  bool
+	}{
+		{
+			name:  "the requested type reports True",
+			conds: []interface{}{map[string]interface{}{"type": "AllReplicasReady", "status": "True"}},
+			want:  true,
+		},
+		{
+			name:  "the requested type reports False",
+			conds: []interface{}{map[string]interface{}{"type": "AllReplicasReady", "status": "False"}},
+		},
+		{
+			name:  "another type reports True",
+			conds: []interface{}{map[string]interface{}{"type": "ClusterAvailable", "status": "True"}},
+		},
+		{name: "no conditions list at all", conds: nil},
+		{name: "a malformed conditions entry", conds: []interface{}{"AllReplicasReady=True"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			g.Expect(unstructuredConditionTrue(withConditions(tc.conds), "AllReplicasReady")).To(Equal(tc.want))
+		})
+	}
+
+	t.Run("unstructuredReady still answers for the Ready specialisation", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		g.Expect(unstructuredReady(readyMemcached("openstack-memcached", "default"))).To(BeTrue())
+	})
 }
