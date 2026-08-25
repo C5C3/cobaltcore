@@ -68,7 +68,7 @@ import (
 // image resolves to docker.io/openbao/openbao:<version>; the static seal needs
 // >= 2.4.0. Renovate tracks this pin, so the assignment stays a single-line string
 // literal.
-const defaultOpenBaoVersion = "2.6.1"
+const defaultOpenBaoVersion = "2.6.2"
 
 const (
 	// barbicanOpenBaoNameSuffix is appended to barbicanName(cp) to derive the

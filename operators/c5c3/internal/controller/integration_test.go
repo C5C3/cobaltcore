@@ -1607,7 +1607,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 	// keeps a re-created ControlPlane from meeting raft storage sealed under a key
 	// that no longer exists, External TLS over the two cert-manager Secrets, and a
 	// static seal whose key lives beside it.
-	g.Expect(instance.Spec.Version).To(Equal("2.6.1"))
+	g.Expect(instance.Spec.Version).To(Equal("2.6.2"))
 	g.Expect(instance.Spec.Replicas).To(Equal(int32(1)))
 	g.Expect(instance.Spec.DeletionPolicy).To(Equal(openbaov1alpha1.DeletionPolicyDeletePVCs))
 	g.Expect(instance.Spec.TLS.Enabled).To(BeTrue())

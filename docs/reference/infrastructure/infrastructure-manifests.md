@@ -959,7 +959,7 @@ on. All live in the `openstack` namespace except the cluster-scoped ClusterRoleB
 | `Certificate` | `cert-manager.io/v1` | `openbao-instance-tls-ca` | Delivers the trust-domain CA into the fixed-name Secret the operator reads (data key `ca.crt`) |
 | `ServiceAccount` | `v1` | `openbao-instance-provisioner` | Client identity the Kubernetes-auth role `provisioner` binds to |
 | `ClusterRoleBinding` | `rbac.authorization.k8s.io/v1` | `openbao-instance-auth-delegator` | Grants `system:auth-delegator` to the operator-created instance ServiceAccount `openbao-instance-serviceaccount` |
-| `OpenBaoCluster` | `openbao.org/v1alpha1` | `openbao-instance` | Profile `Development`, version `2.6.1`, one replica, 1Gi raft storage, TLS mode `External`, static seal, self-init enabled, applied `paused`, API-server egress patched in at deploy time |
+| `OpenBaoCluster` | `openbao.org/v1alpha1` | `openbao-instance` | Profile `Development`, version `2.6.2`, one replica, 1Gi raft storage, TLS mode `External`, static seal, self-init enabled, applied `paused`, API-server egress patched in at deploy time |
 
 The instance runs in every kind deploy, so the primitives a managed Barbican secret store
 needs are exercised with no Barbican attached: static-seal auto-unseal, cert-manager TLS
