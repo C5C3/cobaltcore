@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.infrastructure.messaging.tls beside a managed clusterRef is rejected.
+# The block carries CLIENT trust only, and the reconciler projects nothing but
+# spec.replicas onto the owned RabbitmqCluster, so a managed broker comes up on
+# the RabbitMQ Cluster Operator's default, plaintext listener. Admitting the
+# pair would promise an encrypted connection nothing provisions, and the
+# mismatch would only surface once the first consumer rendered ssl = true.
+# tls is supported in brownfield mode, where the broker's listeners are
+# someone else's concern. Webhook-only: the shared commonv1.MessagingSpec must
+# not carry a c5c3-specific CEL rule.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-messaging-tls-managed
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      clusterRef:
+        name: openstack-rabbitmq
+      tls:
+        caBundleSecretRef:
+          name: rabbitmq-ca
+  services:
+    keystone:
+      mode: Managed
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

@@ -662,6 +662,39 @@ spec:
             ($error != null): true
             (contains($error, 'allowedNamespaces')): true
             (contains($error, 'Duplicate value')): true
+  # The shared message bus is either managed (clusterRef, a RabbitmqCluster the
+  # ControlPlane provisions) or brownfield (secretRef, a transport URL read off a
+  # Secret). Naming both leaves the reconciler no way to decide which broker the
+  # control plane talks to, so the type-level CEL rule on commonv1.MessagingSpec
+  # rejects it.
+  - try:
+    - apply:
+        file: 90-messaging-both-modes.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'exactly one of clusterRef or secretRef must be set')): true
+  # A brownfield ref naming no Secret addresses no broker at all. The shared
+  # SecretRefSpec.Name carries MinLength=1, so the CRD schema rejects it before
+  # the webhook mirror runs.
+  - try:
+    - apply:
+        file: 91-messaging-secretref-empty-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.infrastructure.messaging.secretRef.name')): true
+  # messaging.tls carries CLIENT trust only, and the reconciler projects nothing
+  # but spec.replicas onto the owned RabbitmqCluster, so a MANAGED broker comes up
+  # on the operator's default, plaintext listener. Admitting tls beside a
+  # clusterRef would promise an encrypted connection nothing provisions.
+  - try:
+    - apply:
+        file: 92-messaging-tls-in-managed-mode.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'tls is supported in brownfield mode only')): true
 ---
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -802,3 +835,41 @@ spec:
         - check:
             ($error != null): true
             (contains($error, 'targetClusterRef is immutable')): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  # Own ephemeral namespace so the accepted base persists (see the sibling
+  # transition waves).
+  name: c5c3-invalid-cr-messaging-freeze
+spec:
+  steps:
+  - try:
+    # Base CR (Managed, declaring the shared message bus in brownfield mode) must
+    # be admitted. Brownfield throughout, so the base provisions nothing and
+    # leaves no side effects for the rejection steps to clean up, while still
+    # carrying a declared messaging block to freeze.
+    - apply:
+        file: 93-transition-base-messaging.yaml
+    # Flipping the live block from brownfield onto a managed clusterRef is
+    # rejected: the two modes address different brokers, so the flip would
+    # re-point every consumer at a freshly provisioned, empty RabbitmqCluster
+    # while the queues in use stay on the brownfield one.
+    - apply:
+        file: 94-transition-messaging-mode-flip.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'messaging mode (managed clusterRef vs brownfield secretRef) is immutable')): true
+    # Dropping a BROWNFIELD messaging block is rejected too: admitting it would
+    # launder the mode freeze above into a two-step flip (null the block, then
+    # re-add it with a clusterRef as an ordinary opt-in), landing on exactly the
+    # state the previous step rejects without a single admission error. The
+    # MANAGED removal is the same rule from the other side; the
+    # tests/e2e/c5c3/messaging suite pins it against a live owned broker.
+    - apply:
+        file: 95-transition-remove-messaging.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cannot be removed once declared')): true

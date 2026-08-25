@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# ControlPlane fixture for the messaging E2E test.
+#
+# It carries NO metadata.namespace: chainsaw runs the suite in its own ephemeral
+# namespace and the test applies this CR into it with `kubectl apply -n`. The
+# webhook permits one ControlPlane per namespace, so a fixture pinning a
+# namespace would collide with the c5c3 suites that use the canonical `openstack`
+# one.
+#
+# The shared database and cache are deliberately brownfield, addressing `.invalid`
+# endpoints that are never dialled (the suite asserts on the projected CRs, not on
+# a live OpenStack). A brownfield block provisions nothing, so the RabbitmqCluster
+# below is the only backing-service instance in the namespace, which is what lets
+# the test assert the exact provisioned set rather than a superset.
+#
+# services is empty on purpose. The bus is provisioned from
+# spec.infrastructure.messaging alone, whether or not a service consumes it: a bus
+# is shared across services by nature, so "declared" means "wanted". Database and
+# cache follow their consumers; the bus does not, and an empty services block is
+# the sharpest statement of that difference.
+#
+# replicas is 1 because the e2e clusters are single-node kind. No resources are
+# pinned, because spec.infrastructure.messaging projects none: image, resources,
+# persistence and tls stay at the RabbitMQ Cluster Operator's defaults (1 CPU and
+# 2Gi per pod, a 10Gi PVC). If those defaults do not schedule on the CI node, that
+# is a finding to report, not something to patch around in this fixture.
+#
+# There is no korc block: the defaulting webhook materializes it, as in the
+# sibling c5c3 fixtures.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: shared-db.invalid
+      port: 3306
+      database: openstack
+      secretRef:
+        name: shared-db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+        - shared-memcached.invalid:11211
+    messaging:
+      clusterRef:
+        name: cp-rabbitmq
+      replicas: 1
+  services: {}

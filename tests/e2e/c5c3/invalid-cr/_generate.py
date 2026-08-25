@@ -103,6 +103,15 @@ MANAGED_INFRA = (
     "      - mc:11211\n"
 )
 
+# MANAGED_INFRA plus a brownfield messaging block (indent 2, trailing newline).
+# The transition-wave-G base declares the bus brownfield so the persisting base
+# provisions nothing while still carrying a declared block to freeze.
+MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING = MANAGED_INFRA + (
+    "    messaging:\n"
+    "      secretRef:\n"
+    "        name: bus-url\n"
+)
+
 
 # A valid glance service body (indent 4): one S3 backend promoted to the default
 # store. The three glance-block fixtures below mutate exactly one aspect of it,
@@ -1541,6 +1550,138 @@ FIXTURES: tuple[Fixture, ...] = (
             "        name: edge\n"
         ),
         infrastructure=MANAGED_INFRA,
+    ),
+    # --- shared message bus (issue #895, create-rejection matrix) ---
+    Fixture(
+        filename="90-messaging-both-modes.yaml",
+        comment=(
+            "spec.infrastructure.messaging naming both a clusterRef and a secretRef violates\n"
+            "the type-level CEL rule on commonv1.MessagingSpec (exactly one of clusterRef or\n"
+            "secretRef must be set). The two refs are the managed and the brownfield mode:\n"
+            "one has the ControlPlane provision a RabbitmqCluster, the other reads a\n"
+            "transport URL off a Secret, and a CR asking for both leaves the reconciler no\n"
+            "way to decide which broker the control plane talks to. The webhook mirror in\n"
+            "validation.MessagingXOR is the twin that catches this when the schema is\n"
+            "bypassed."
+        ),
+        name="cp-messaging-both-modes",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA
+        + (
+            "    messaging:\n"
+            "      clusterRef:\n"
+            "        name: openstack-rabbitmq\n"
+            "      secretRef:\n"
+            "        name: bus-url\n"
+        ),
+    ),
+    Fixture(
+        filename="91-messaging-secretref-empty-name.yaml",
+        comment=(
+            "spec.infrastructure.messaging.secretRef.name is empty. Brownfield messaging\n"
+            "reads the whole rabbit:// transport URL out of that Secret, so a ref naming no\n"
+            "Secret addresses no broker at all. The shared SecretRefSpec.Name carries\n"
+            "MinLength=1, which rejects it at the CRD schema layer; the webhook's\n"
+            "field.Required on spec.infrastructure.messaging.secretRef.name is the twin for\n"
+            "a bypassed schema. Only the brownfield mode is declared, so the empty name is\n"
+            "the only violation."
+        ),
+        name="cp-messaging-empty-secret-name",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA
+        + (
+            "    messaging:\n"
+            "      secretRef:\n"
+            '        name: ""\n'
+        ),
+    ),
+    Fixture(
+        filename="92-messaging-tls-in-managed-mode.yaml",
+        comment=(
+            "spec.infrastructure.messaging.tls beside a managed clusterRef is rejected.\n"
+            "The block carries CLIENT trust only, and the reconciler projects nothing but\n"
+            "spec.replicas onto the owned RabbitmqCluster, so a managed broker comes up on\n"
+            "the RabbitMQ Cluster Operator's default, plaintext listener. Admitting the\n"
+            "pair would promise an encrypted connection nothing provisions, and the\n"
+            "mismatch would only surface once the first consumer rendered ssl = true.\n"
+            "tls is supported in brownfield mode, where the broker's listeners are\n"
+            "someone else's concern. Webhook-only: the shared commonv1.MessagingSpec must\n"
+            "not carry a c5c3-specific CEL rule."
+        ),
+        name="cp-messaging-tls-managed",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA
+        + (
+            "    messaging:\n"
+            "      clusterRef:\n"
+            "        name: openstack-rabbitmq\n"
+            "      tls:\n"
+            "        caBundleSecretRef:\n"
+            "          name: rabbitmq-ca\n"
+        ),
+    ),
+    # --- transition wave G: shared message-bus freeze
+    #     (Test: c5c3-invalid-cr-messaging-freeze) ---
+    Fixture(
+        filename="93-transition-base-messaging.yaml",
+        comment=(
+            "Accepted base for the messaging freeze test: a Managed ControlPlane that\n"
+            "declares the shared message bus in brownfield mode. Brownfield throughout\n"
+            "(database, cache and messaging all address endpoints outside the cluster), so\n"
+            "the base provisions nothing and leaves no side effects for the rejection steps\n"
+            "to clean up, while still carrying a declared messaging block for them to\n"
+            "freeze."
+        ),
+        name="cp-transition-g",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA_WITH_BROWNFIELD_MESSAGING,
+    ),
+    Fixture(
+        filename="94-transition-messaging-mode-flip.yaml",
+        comment=(
+            "UPDATE flipping the accepted brownfield base onto a managed clusterRef is\n"
+            "rejected: the messaging mode is immutable, like the cache one. The two modes\n"
+            "address different brokers, so the flip would re-point every consumer at a\n"
+            "RabbitmqCluster the ControlPlane provisions fresh and empty while the queues\n"
+            "the control plane has been using stay on the brownfield broker. secretRef is\n"
+            "explicitly nulled for the reason the barbican store flip states: Chainsaw\n"
+            "applies an UPDATE as an RFC 7386 JSON merge patch, so an omitted secretRef\n"
+            "would be RETAINED from the base and the resulting both-modes shape would trip\n"
+            "the CEL XOR rule at CRD validation, before the webhook's mode freeze ever\n"
+            "runs."
+        ),
+        name="cp-transition-g",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA
+        + (
+            "    messaging:\n"
+            "      clusterRef:\n"
+            "        name: openstack-rabbitmq\n"
+            "      secretRef: null\n"
+        ),
+    ),
+    Fixture(
+        filename="95-transition-remove-messaging.yaml",
+        comment=(
+            "UPDATE dropping the BROWNFIELD messaging block from the accepted base is\n"
+            "rejected: the block is a one-way add in BOTH modes. Brownfield provisions\n"
+            "nothing - managedInfraInstances returns early on a nil clusterRef - so the\n"
+            "removal strands no state on its own, but admitting it would launder the mode\n"
+            "freeze the previous step pins into a two-step flip: null the block here, then\n"
+            "re-add it with a clusterRef as an ordinary opt-in, and every consumer is\n"
+            "re-pointed at a fresh, empty RabbitmqCluster while the queues stay on the\n"
+            "brownfield broker - without a single admission error. Nothing in spec or\n"
+            "status remembers the mode a previous revision declared, so the one-step\n"
+            "rejection only holds while this one does too. The MANAGED removal is the same\n"
+            "rule seen from the other side, pinned against a live owned broker by the\n"
+            "messaging e2e suite and by TestValidateUpdate_MessagingFreeze. messaging is\n"
+            "explicitly nulled, not merely omitted: Chainsaw applies an UPDATE as an RFC\n"
+            "7386 JSON merge patch, so an omitted block would simply be retained and the\n"
+            "step would assert nothing."
+        ),
+        name="cp-transition-g",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA + "    messaging: null\n",
     ),
 )
 

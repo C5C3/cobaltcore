@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE flipping the accepted brownfield base onto a managed clusterRef is
+# rejected: the messaging mode is immutable, like the cache one. The two modes
+# address different brokers, so the flip would re-point every consumer at a
+# RabbitmqCluster the ControlPlane provisions fresh and empty while the queues
+# the control plane has been using stay on the brownfield broker. secretRef is
+# explicitly nulled for the reason the barbican store flip states: Chainsaw
+# applies an UPDATE as an RFC 7386 JSON merge patch, so an omitted secretRef
+# would be RETAINED from the base and the resulting both-modes shape would trip
+# the CEL XOR rule at CRD validation, before the webhook's mode freeze ever
+# runs.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-transition-g
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      clusterRef:
+        name: openstack-rabbitmq
+      secretRef: null
+  services:
+    keystone:
+      mode: Managed
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password
