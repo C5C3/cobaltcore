@@ -7,6 +7,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -78,6 +79,12 @@ const (
 	// so this only fires when validation was bypassed; it keeps the projection
 	// admissible (replicas >= 1) rather than creating a zero-replica MariaDB.
 	infraMariaDBReplicasDefault = int32(3)
+	// infraRabbitMQReplicasDefault is the zero-value floor applied when
+	// spec.infrastructure.messaging.replicas is unset (0). The CRD default is 3
+	// and its minimum is 1, so this only fires when validation was bypassed; it
+	// keeps the projection admissible (replicas >= 1) rather than creating a
+	// zero-replica broker.
+	infraRabbitMQReplicasDefault = int32(3)
 )
 
 // memcachedGVK is the GroupVersionKind of the Memcached CR projected in managed
@@ -92,8 +99,45 @@ var memcachedGVK = schema.GroupVersionKind{
 	Kind:    "Memcached",
 }
 
-// reconcileInfrastructure reconciles the backing services (MariaDB, Memcached)
-// the ControlPlane provisions and drives the InfrastructureReady condition.
+// rabbitmqClusterGVK is the GroupVersionKind of the RabbitmqCluster CR projected
+// in managed messaging mode. Like memcachedGVK it is addressed unstructured:
+// this repository takes no dependency on the RabbitMQ Cluster Operator's Go
+// module.
+var rabbitmqClusterGVK = schema.GroupVersionKind{
+	Group:   "rabbitmq.com",
+	Version: "v1beta1",
+	Kind:    "RabbitmqCluster",
+}
+
+// messagingRecreateAllowedAnnotation, when set to a truthy value on a
+// ControlPlane, opts that ControlPlane in to the DESTRUCTIVE convergence of a
+// managed messaging.replicas SCALE-DOWN. The RabbitMQ Cluster Operator refuses
+// an in-place shrink, so the only path to a lowered count is deleting the owned
+// RabbitmqCluster and creating it again — which discards its volumes and with
+// them every durable queue and every unacked message on the bus. Without the
+// annotation ensureRabbitMQ REFUSES the shrink and reports the divergence
+// instead.
+//
+// The gate exists because the decrement needs no deliberate act to reach the
+// reconciler: replicas carries a schema default of 3, so a GitOps commit that
+// merely DROPS the line off a ControlPlane running 5 reads as a no-op in review,
+// is defaulted back to 3 by the apiserver, and arrives here as desired=3 against
+// a live broker at 5. Mirrors keystoneDeletionAllowedAnnotation: destroying
+// irreplaceable state is opt-in, never a side effect of an ordinary spec edit.
+const messagingRecreateAllowedAnnotation = "c5c3.io/allow-messaging-recreate"
+
+// messagingRecreateAllowed reports whether cp opts in to the delete-and-recreate
+// a managed messaging scale-down needs, via a truthy
+// messagingRecreateAllowedAnnotation. A missing, malformed, or non-truthy value
+// means "refuse" — the fail-safe default that protects the broker's queues.
+func messagingRecreateAllowed(cp *c5c3v1alpha1.ControlPlane) bool {
+	allowed, err := strconv.ParseBool(cp.Annotations[messagingRecreateAllowedAnnotation])
+	return err == nil && allowed
+}
+
+// reconcileInfrastructure reconciles the backing services (MariaDB, Memcached,
+// RabbitMQ) the ControlPlane provisions and drives the InfrastructureReady
+// condition.
 //
 // That set is the instances the ControlPlane's services actually RESOLVE to
 // (managedInfraInstances enumerates them): the SHARED instances in
@@ -282,6 +326,13 @@ type infraInstance struct {
 // of each when they are co-located, exactly one of each (today's behavior) when
 // neither is assigned a namespace.
 //
+// MESSAGING DOES NOT. It is the one class enumerated at the ControlPlane's own
+// namespace regardless of consumers. A message bus is shared across services by
+// nature (Nova and Neutron RPC have to meet on one broker), so a declared managed
+// spec.infrastructure.messaging is wanted even on a ControlPlane with
+// services: {}. childrenClientsFor resolves cp.Namespace to the local client, so
+// the bus is always written at home.
+//
 // Entries are deduplicated on (kind, namespace, name) — the identity of the child
 // CR they resolve to. The namespace is part of that identity now: the same shared
 // clusterRef name in two namespaces is two distinct child CRs, and must be
@@ -344,6 +395,25 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 			},
 		})
 	}
+	addMessaging := func(m *commonv1.MessagingSpec, namespace, declaredAt string) {
+		if m == nil || m.ClusterRef == nil {
+			return // absent, or brownfield: nothing to provision.
+		}
+		if !claim("RabbitmqCluster", namespace, m.ClusterRef.Name) {
+			return
+		}
+		instances = append(instances, infraInstance{
+			kind:        "RabbitmqCluster",
+			name:        m.ClusterRef.Name,
+			namespace:   namespace,
+			declaredAt:  declaredAt,
+			errorReason: "RabbitMQError",
+			waitReason:  "WaitingForMessaging",
+			ensure: func(ctx context.Context, c client.Client) (bool, error) {
+				return r.ensureRabbitMQ(ctx, c, cp, m, namespace)
+			},
+		})
+	}
 
 	keystoneNS := cp.KeystoneNamespace()
 
@@ -390,6 +460,15 @@ func (r *ControlPlaneReconciler) managedInfraInstances(cp *c5c3v1alpha1.ControlP
 		barbicanNS := cp.BarbicanNamespace()
 		addDatabase(effectiveBarbicanDatabase(cp), barbicanNS, barbicanDatabaseDeclaredAt(cp))
 		addCache(effectiveBarbicanCache(cp), barbicanNS, barbicanCacheDeclaredAt(cp))
+	}
+
+	// The shared message bus is the one class enumerated at the ControlPlane's
+	// own namespace regardless of consumers: see the doc comment above. The nil
+	// check on the block mirrors the effective-* resolvers, so a webhook-bypassed
+	// CR without spec.infrastructure enumerates nothing instead of panicking
+	// (reconcileInfrastructure fails such a CR closed before it gets here).
+	if cp.Spec.Infrastructure != nil {
+		addMessaging(cp.Spec.Infrastructure.Messaging, childNamespace(cp), "spec.infrastructure.messaging")
 	}
 
 	return instances
@@ -634,11 +713,158 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, c client.C
 	return unstructuredReady(u), nil
 }
 
+// ensureRabbitMQ create-or-updates the owned RabbitmqCluster CR named after
+// m.clusterRef in namespace and reports whether it is ready. m is the declared
+// shared spec.infrastructure.messaging block; the bus has no per-service
+// dedicated variant, because it is shared across services by nature.
+//
+// Only spec.replicas is projected. Image, resources, persistence and tls stay at
+// the RabbitMQ Cluster Operator's defaults, or at whatever the platform set on an
+// adopted CR: they are site-specific hardening outside the aggregate's knowledge,
+// the posture ensureMariaDB already takes on TLS and issuerRefs.
+//
+// Readiness follows the operator's AllReplicasReady condition. The RabbitMQ
+// Cluster Operator sets no Ready condition at all, so unstructuredReady would
+// never see a healthy broker; unstructuredConditionTrue reads the condition the
+// operator does set.
+//
+// A cluster that does not serve the RabbitmqCluster kind surfaces on the Get as a
+// meta.NoKindMatchError, which is not NotFound. A ControlPlane declaring managed
+// messaging on such a cluster therefore fails closed with InfrastructureReady
+// False and reason RabbitMQError instead of quietly provisioning nothing.
+//
+// Like ensureMemcached it is unstructured (this repository takes no dependency on
+// the RabbitMQ Cluster Operator's Go module, see rabbitmqClusterGVK) and
+// read-modify-write: the write is gated on the LIVE object's ownership, so an
+// owned CR has its replica count re-projected while an externally-provisioned CR
+// sharing the name is adopted read-only and never has ownership claimed.
+//
+// Unlike ensureMemcached the re-projection is not symmetric. Growing an owned
+// cluster is an in-place Update; SHRINKING one is a delete-and-recreate, because
+// the RabbitMQ Cluster Operator refuses an in-place scale-down and an Update
+// carrying the lowered count would be silently ignored. That is destructive by
+// construction — the broker and its volumes are recreated empty — and it is the
+// only path the operator offers for a declared count the running cluster
+// exceeds, so it is GATED on messagingRecreateAllowedAnnotation: an unauthorised
+// shrink is refused with an error naming the annotation, and the broker keeps
+// running at its current size.
+func (r *ControlPlaneReconciler) ensureRabbitMQ(ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane, m *commonv1.MessagingSpec, namespace string) (bool, error) {
+	// Floor a zero/negative count (only reachable when CRD validation was
+	// bypassed) to the default rather than creating a broker with no pods.
+	replicas := m.Replicas
+	if replicas < 1 {
+		replicas = infraRabbitMQReplicasDefault
+	}
+
+	key := types.NamespacedName{
+		Name:      m.ClusterRef.Name,
+		Namespace: namespace,
+	}
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(rabbitmqClusterGVK)
+	err := c.Get(ctx, key, u)
+	switch {
+	case apierrors.IsNotFound(err):
+		u.SetName(key.Name)
+		u.SetNamespace(key.Namespace)
+		// int32 must be widened to int64 for unstructured nested-field storage.
+		if serr := unstructured.SetNestedField(u.Object, int64(replicas), "spec", "replicas"); serr != nil {
+			return false, fmt.Errorf("setting spec.replicas: %w", serr)
+		}
+		if serr := claimChildOwnership(c, cp, u, r.Scheme); serr != nil {
+			return false, fmt.Errorf("claiming ownership of RabbitmqCluster %q: %w", key.Name, serr)
+		}
+		if cerr := c.Create(ctx, u); cerr != nil {
+			return false, fmt.Errorf("creating RabbitmqCluster %q: %w", key.Name, cerr)
+		}
+	case err != nil:
+		return false, fmt.Errorf("getting RabbitmqCluster %q: %w", key.Name, err)
+	default:
+		// A child mid-teardown — including the one an earlier pass's scale-down
+		// deleted — keeps its spec AND its status.conditions until the RabbitMQ
+		// Cluster Operator's finalizer clears, so AllReplicasReady still reads True
+		// on a broker that is being destroyed. Report not ready and write nothing:
+		// readiness must never be gated on a bus that is going away, and neither
+		// the re-projection below nor a second Delete would change its fate.
+		if u.GetDeletionTimestamp() != nil {
+			return false, nil
+		}
+
+		// An existing RabbitmqCluster. If this ControlPlane OWNS it (we created it
+		// on an earlier pass), reconcile spec.replicas so a change to the declared
+		// messaging.replicas scales the broker we own instead of being ignored after
+		// first creation. A pre-existing / externally-provisioned one (NOT owned) is
+		// adopted as-is, never reshaped and never claimed for GC, on the rationale
+		// ensureMemcached states.
+		if metav1.IsControlledBy(u, cp) {
+			desired := int64(replicas)
+			current, found, gerr := unstructured.NestedInt64(u.Object, "spec", "replicas")
+			if gerr != nil {
+				return false, fmt.Errorf("reading RabbitmqCluster %q spec.replicas: %w", key.Name, gerr)
+			}
+			// The RabbitMQ Cluster Operator refuses an in-place shrink (it logs an
+			// UnsupportedOperation event, sets ReconcileSuccess=False and leaves the
+			// StatefulSet at its old size), so writing a lowered count onto the CR
+			// would leave the declared size and the running broker permanently
+			// divergent while AllReplicasReady — and with it InfrastructureReady —
+			// stayed True. A scale-down is therefore a delete-and-recreate: the next
+			// pass takes the NotFound branch above and creates the cluster at the
+			// declared size. Reported not ready, so readiness is not gated on a
+			// cluster that is going away.
+			//
+			// That recreate destroys every queue and message on the bus, and an
+			// unintended decrement is cheap to write — replicas defaults to 3, so
+			// dropping the line off a ControlPlane running 5 arrives here as a
+			// scale-down nobody typed. So it is REFUSED unless the ControlPlane
+			// carries messagingRecreateAllowedAnnotation: the broker keeps running at
+			// its current size and the divergence surfaces as InfrastructureReady
+			// False with reason RabbitMQError, naming the annotation that authorises
+			// the recreate.
+			if found && desired < current {
+				if !messagingRecreateAllowed(cp) {
+					return false, fmt.Errorf(
+						"declared messaging.replicas %d is below owned RabbitmqCluster %q's %d and the RabbitMQ "+
+							"Cluster Operator cannot shrink in place; converging requires deleting and recreating "+
+							"the broker, which loses every queue and message on it (set annotation %s=true on the "+
+							"ControlPlane to authorise the recreate)",
+						desired, key.Name, current, messagingRecreateAllowedAnnotation)
+				}
+				if derr := c.Delete(ctx, u); derr != nil && !apierrors.IsNotFound(derr) {
+					return false, fmt.Errorf("deleting owned RabbitmqCluster %q for scale-down: %w", key.Name, derr)
+				}
+				return false, nil
+			}
+			if !found || current != desired {
+				if serr := unstructured.SetNestedField(u.Object, desired, "spec", "replicas"); serr != nil {
+					return false, fmt.Errorf("setting RabbitmqCluster %q spec.replicas: %w", key.Name, serr)
+				}
+				if uerr := c.Update(ctx, u); uerr != nil {
+					return false, fmt.Errorf("updating owned RabbitmqCluster %q replicas: %w", key.Name, uerr)
+				}
+			}
+		}
+	}
+
+	return unstructuredConditionTrue(u, "AllReplicasReady"), nil
+}
+
 // unstructuredReady reports whether an unstructured object carries a
-// status.conditions entry of type "Ready" with status "True". A missing or
-// malformed conditions list is treated as not-ready rather than an error so a
+// status.conditions entry of type "Ready" with status "True". It is the "Ready"
+// specialisation of unstructuredConditionTrue, so a missing or malformed
+// conditions list is treated as not-ready rather than an error and a
 // freshly-created child simply requeues.
 func unstructuredReady(u *unstructured.Unstructured) bool {
+	return unstructuredConditionTrue(u, "Ready")
+}
+
+// unstructuredConditionTrue reports whether an unstructured object carries a
+// status.conditions entry of type conditionType with status "True". Operators
+// disagree on which condition means healthy (the memcached-operator sets Ready,
+// the RabbitMQ Cluster Operator sets AllReplicasReady and no Ready at all), so
+// the condition type is the caller's choice. A missing or malformed conditions
+// list reads as false rather than an error, so a freshly-created child simply
+// requeues.
+func unstructuredConditionTrue(u *unstructured.Unstructured, conditionType string) bool {
 	conds, found, err := unstructured.NestedSlice(u.Object, "status", "conditions")
 	if err != nil || !found {
 		return false
@@ -648,7 +874,7 @@ func unstructuredReady(u *unstructured.Unstructured) bool {
 		if !ok {
 			continue
 		}
-		if cond["type"] == "Ready" && cond["status"] == string(metav1.ConditionTrue) {
+		if cond["type"] == conditionType && cond["status"] == string(metav1.ConditionTrue) {
 			return true
 		}
 	}
