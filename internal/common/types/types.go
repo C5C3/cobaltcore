@@ -15,6 +15,14 @@ import (
 // keep the literal in sync separately).
 const DefaultCacheBackend = "dogpile.cache.pymemcache"
 
+// DefaultTransportURLSecretKey is the Secret key that carries a complete
+// rabbit:// transport URL: the key a brownfield MessagingSpec.SecretRef points
+// at, and the key of the derived "<instance>-transport-url" Secret. It lives
+// here as the single source of truth shared by the defaulting webhook that
+// materializes an empty secretRef.key and the messaging helper that reads the
+// Secret back, so the key cannot drift between the two.
+const DefaultTransportURLSecretKey = "transport_url"
+
 // DatabaseStorageSizeDefault is the per-replica managed-MariaDB volume size
 // materialized when DatabaseSpec.StorageSize is left empty. It is the single Go
 // source of truth shared by the c5c3 fresh-create projection (the fallback in
@@ -252,6 +260,46 @@ type CacheSpec struct {
 	// +kubebuilder:default=3
 	// +kubebuilder:validation:Minimum=1
 	Replicas int32 `json:"replicas,omitempty"`
+}
+
+// MessagingSpec supports managed (ClusterRef) and brownfield (SecretRef) modes.
+// Exactly one of ClusterRef or SecretRef must be set; the XValidation rule below
+// enforces that invariant at the schema layer for every operator that embeds a
+// MessagingSpec, so it holds even when a validating webhook is bypassed.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.clusterRef) != has(self.secretRef)",message="exactly one of clusterRef or secretRef must be set"
+type MessagingSpec struct {
+	// ClusterRef references a RabbitmqCluster CR in the cluster (managed mode).
+	// +optional
+	ClusterRef *corev1.LocalObjectReference `json:"clusterRef,omitempty"`
+	// SecretRef references the K8s Secret holding the complete rabbit:// transport
+	// URL under Key (brownfield mode). The defaulting webhooks materialize an
+	// empty Key to DefaultTransportURLSecretKey.
+	// +optional
+	SecretRef *SecretRefSpec `json:"secretRef,omitempty"`
+	// Replicas is the number of RabbitMQ pods in the referenced cluster (managed
+	// mode). It mirrors CacheSpec.Replicas: only the managed-mode projection
+	// honours it, so a constrained cluster such as a single-node kind can pin a
+	// single pod. Ignored in brownfield mode.
+	// +optional
+	// +kubebuilder:default=3
+	// +kubebuilder:validation:Minimum=1
+	Replicas int32 `json:"replicas,omitempty"`
+	// TLS configures the client trust for the broker connection. The pointer keeps
+	// the field opt-in: a nil TLS means a plaintext connection.
+	// +optional
+	TLS *MessagingTLSSpec `json:"tls,omitempty"`
+}
+
+// MessagingTLSSpec carries the client-side trust a consumer renders into
+// [oslo_messaging_rabbit] as ssl = true and ssl_ca_file. Server-side TLS on a
+// managed RabbitmqCluster (its spec.tls) is a platform concern and is not
+// projected from this block, mirroring the managed MariaDB posture.
+type MessagingTLSSpec struct {
+	// CABundleSecretRef references the K8s Secret holding the CA bundle the
+	// consumer trusts when verifying the broker endpoint. The defaulting webhooks
+	// materialize an empty Key to "ca.crt".
+	CABundleSecretRef SecretRefSpec `json:"caBundleSecretRef"`
 }
 
 // SecretRefSpec references a Kubernetes Secret.

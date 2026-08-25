@@ -63,6 +63,39 @@ func TestCacheXOR(t *testing.T) {
 	}
 }
 
+func TestMessagingXOR(t *testing.T) {
+	cases := []struct {
+		name      string
+		messaging commonv1.MessagingSpec
+		wantErr   bool
+	}{
+		{"managed mode valid", commonv1.MessagingSpec{ClusterRef: &corev1.LocalObjectReference{Name: "rabbitmq"}}, false},
+		{"brownfield mode valid", commonv1.MessagingSpec{SecretRef: &commonv1.SecretRefSpec{Name: "transport-url"}}, false},
+		{
+			"both set rejected",
+			commonv1.MessagingSpec{
+				ClusterRef: &corev1.LocalObjectReference{Name: "rabbitmq"},
+				SecretRef:  &commonv1.SecretRefSpec{Name: "transport-url"},
+			},
+			true,
+		},
+		{"neither set rejected", commonv1.MessagingSpec{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			errs := MessagingXOR(testPath, &tc.messaging)
+			if !tc.wantErr {
+				g.Expect(errs).To(gomega.BeEmpty())
+				return
+			}
+			g.Expect(errs).To(gomega.HaveLen(1))
+			g.Expect(errs[0].Field).To(gomega.Equal(testPath.String()))
+			g.Expect(errs[0].Error()).To(gomega.ContainSubstring("exactly one of clusterRef or secretRef must be set"))
+		})
+	}
+}
+
 func TestCacheNoControlChars(t *testing.T) {
 	cases := []struct {
 		name    string
