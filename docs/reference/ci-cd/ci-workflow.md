@@ -65,7 +65,7 @@ env:
   KIND_VERSION: v0.32.0
   CONTROLLER_GEN_VERSION: v0.21.0
   GOFUMPT_VERSION: v0.10.0
-  GOLANGCI_LINT_VERSION: v2.12.2
+  GOLANGCI_LINT_VERSION: v2.13.1
 ```
 
 `REGISTRY` and `IMAGE_PREFIX` are referenced by the `build-and-push`, `helm-push`,
@@ -179,7 +179,7 @@ Runs golangci-lint using the project's `.golangci.yml` configuration.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `actions/cache@v5` | Persists the golangci-lint analysis cache, keyed on the Go and golangci-lint versions |
-| 4 | `golangci/golangci-lint-action@v9` | Installs golangci-lint binary (`install-only: true`); version pinned via `GOLANGCI_LINT_VERSION` (`v2.12.2`) |
+| 4 | `golangci/golangci-lint-action@v9` | Installs golangci-lint binary (`install-only: true`); version pinned via `GOLANGCI_LINT_VERSION` (`v2.13.1`) |
 | 5 | `make lint` | Runs golangci-lint per module via the Makefile |
 
 The `golangci-lint-action@v9` step is used with `install-only: true`, which installs the
