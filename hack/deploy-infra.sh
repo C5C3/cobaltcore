@@ -122,6 +122,13 @@ ALLOW_PRE_RELOCATION="${ALLOW_PRE_RELOCATION:-false}"
 # stays minimal; set WITH_CHAOS_MESH=true to enable chaos-engineering tests
 WITH_CHAOS_MESH="${WITH_CHAOS_MESH:-false}"
 
+# Gates the host-side load of the kernel modules the OVN chassis suites need
+# (openvswitch for the Open vSwitch datapath, geneve for the tunnels between
+# chassis). No kind overlay sits behind this flag; the ovn-operator is deployed
+# the way every operator is. Defaults to false so the kind Quick Start needs no
+# sudo; set WITH_OVN_KERNEL_MODULES=true on a host that runs those suites.
+WITH_OVN_KERNEL_MODULES="${WITH_OVN_KERNEL_MODULES:-false}"
+
 # Gates the opt-in kube-prometheus-stack kind overlay (deploy/kind/prometheus)
 # which installs Prometheus + Grafana for visualising keystone-operator
 # metrics. Defaults to false so the kind Quick Start stays minimal; set
@@ -1194,19 +1201,27 @@ check_relocated_infrastructure() {
 }
 
 # ---------------------------------------------------------------------------
-# load_chaos_mesh_kernel_modules — Ensure NetworkChaos prerequisites on the host.
+# load_host_kernel_modules PURPOSE MODULE... — Ensure the given kernel modules
+# on the host, best-effort.
 #
-# chaos-mesh's NetworkChaos uses ipset/iptables/tc inside the target pod's
-# network namespace via nsenter. The underlying kernel modules must be loaded
-# on the host kernel (Kind nodes share it), otherwise chaos-daemon fails with
-# "unable to flush ip sets for pod …" and AllInjected stays False.
-#
-# Best-effort: skipped on non-Linux, and on Linux we warn but don't abort if
-# modprobe is unavailable or fails — PodChaos-only flows still work.
+# Kind nodes share the host kernel, so a module a workload needs inside the
+# cluster has to be loaded outside it. Every runtime failure is logged and
+# swallowed: the load is skipped on non-Linux and without root or passwordless
+# sudo, and a failing modprobe or apt-get only warns. PURPOSE names the caller
+# in those log lines. The one non-zero return is the argument-count guard,
+# which reports a caller bug, not a host condition.
 # ---------------------------------------------------------------------------
-load_chaos_mesh_kernel_modules() {
+load_host_kernel_modules() {
+  if [[ $# -lt 2 ]]; then
+    log "ERROR: load_host_kernel_modules needs a purpose and at least one module."
+    return 1
+  fi
+
+  local purpose="$1"
+  local modules=("${@:2}")
+
   if [[ "$(uname -s)" != "Linux" ]]; then
-    log "Non-Linux host — skipping kernel-module load (chaos-mesh NetworkChaos runs in the Linux VM kernel)."
+    log "Non-Linux host — skipping kernel-module load (${purpose} runs in the Linux VM kernel)."
     return 0
   fi
 
@@ -1215,17 +1230,12 @@ load_chaos_mesh_kernel_modules() {
     if sudo -n true 2>/dev/null; then
       sudo_cmd=(sudo -n)
     else
-      log "WARNING: not root and no passwordless sudo — skipping kernel-module load; NetworkChaos may fail."
+      log "WARNING: not root and no passwordless sudo — skipping kernel-module load; ${purpose} may fail."
       return 0
     fi
   fi
 
-  # ip_set_hash_ip is the on-disk module name for the ipset hash:ip type; loading
-  # it is enough — chaos-mesh only needs hash:net in practice, which is provided
-  # by the same linux-modules-extra package. Keep the list aligned with what
-  # chaos-daemon actually invokes via ipset/tc.
-  local modules=(ip_set ip_set_hash_ip ip_set_hash_net xt_set sch_netem sch_tbf)
-  log "Loading kernel modules for chaos-mesh NetworkChaos: ${modules[*]}"
+  log "Loading kernel modules for ${purpose}: ${modules[*]}"
 
   local missing=()
   local mod err
@@ -1247,7 +1257,7 @@ load_chaos_mesh_kernel_modules() {
   # Ubuntu cloud images commonly omit linux-modules-extra, which ships ip_set,
   # xt_set and friends. Install it on demand and retry the modules that failed.
   if ! command -v apt-get &>/dev/null; then
-    log "WARNING: modules missing and apt-get unavailable — NetworkChaos tests may fail: ${missing[*]}"
+    log "WARNING: modules missing and apt-get unavailable — ${purpose} tests may fail: ${missing[*]}"
     return 0
   fi
 
@@ -1256,11 +1266,11 @@ load_chaos_mesh_kernel_modules() {
   extra_pkg="linux-modules-extra-${kver}"
   log "Installing ${extra_pkg} to provide missing modules: ${missing[*]}"
   if ! "${sudo_cmd[@]}" apt-get update -qq; then
-    log "WARNING: apt-get update failed — NetworkChaos tests may fail."
+    log "WARNING: apt-get update failed — ${purpose} tests may fail."
     return 0
   fi
   if ! "${sudo_cmd[@]}" apt-get install -y -qq "${extra_pkg}"; then
-    log "WARNING: apt-get install ${extra_pkg} failed — NetworkChaos tests may fail."
+    log "WARNING: apt-get install ${extra_pkg} failed — ${purpose} tests may fail."
     return 0
   fi
 
@@ -1277,8 +1287,38 @@ load_chaos_mesh_kernel_modules() {
   done
 
   if [[ ${#still_missing[@]} -ne 0 ]]; then
-    log "WARNING: kernel modules still missing after retry — NetworkChaos tests may fail: ${still_missing[*]}"
+    log "WARNING: kernel modules still missing after retry — ${purpose} tests may fail: ${still_missing[*]}"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# load_chaos_mesh_kernel_modules — Ensure NetworkChaos prerequisites on the host.
+#
+# chaos-mesh's NetworkChaos uses ipset/iptables/tc inside the target pod's
+# network namespace via nsenter. The underlying kernel modules must be loaded
+# on the host kernel (Kind nodes share it), otherwise chaos-daemon fails with
+# "unable to flush ip sets for pod …" and AllInjected stays False.
+#
+# Best-effort: skipped on non-Linux, and on Linux we warn but don't abort if
+# modprobe is unavailable or fails — PodChaos-only flows still work.
+# ---------------------------------------------------------------------------
+load_chaos_mesh_kernel_modules() {
+  # ip_set_hash_ip is the on-disk module name for the ipset hash:ip type; loading
+  # it is enough — chaos-mesh only needs hash:net in practice, which is provided
+  # by the same linux-modules-extra package. Keep the list aligned with what
+  # chaos-daemon actually invokes via ipset/tc.
+  load_host_kernel_modules "chaos-mesh NetworkChaos" ip_set ip_set_hash_ip ip_set_hash_net xt_set sch_netem sch_tbf
+}
+
+# ---------------------------------------------------------------------------
+# load_ovn_kernel_modules — Ensure the OVN chassis prerequisites on the host.
+#
+# ovn-controller programs the Open vSwitch datapath and terminates the Geneve
+# tunnels on the node it runs on; both need their module in the host kernel.
+# Best-effort, like every caller of load_host_kernel_modules.
+# ---------------------------------------------------------------------------
+load_ovn_kernel_modules() {
+  load_host_kernel_modules "OVN chassis (Open vSwitch datapath and Geneve tunnels)" openvswitch geneve
 }
 
 # ---------------------------------------------------------------------------
@@ -2069,6 +2109,7 @@ main() {
   log "Kind config         : ${KIND_CONFIG} (override via KIND_CONFIG)"
   log "Node RLIMIT_NOFILE  : ${NODE_NOFILE_LIMIT:-<unset — skip cap>} (override via NODE_NOFILE_LIMIT)"
   log "Chaos Mesh         : ${WITH_CHAOS_MESH} (set WITH_CHAOS_MESH=true to install)"
+  log "OVN kernel modules  : ${WITH_OVN_KERNEL_MODULES} (set WITH_OVN_KERNEL_MODULES=true to modprobe openvswitch and geneve on the host)"
   log "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)"
   log "metrics-server      : ${WITH_METRICS_SERVER} (set WITH_METRICS_SERVER=true to install)"
   log "dizzy stack         : ${WITH_DIZZY} (VictoriaMetrics + Grafana for dizzy load/chaos runs; set WITH_DIZZY=true to install)"
@@ -2092,6 +2133,15 @@ main() {
     load_chaos_mesh_kernel_modules
   else
     log "Skipping chaos-mesh kernel modules (WITH_CHAOS_MESH=false)."
+  fi
+
+  # Load the OVN chassis modules the same way, gated on
+  # WITH_OVN_KERNEL_MODULES so the default Quick Start does not require
+  # passwordless sudo or modprobe access.
+  if [[ "${WITH_OVN_KERNEL_MODULES}" == "true" ]]; then
+    load_ovn_kernel_modules
+  else
+    log "Skipping OVN kernel modules (WITH_OVN_KERNEL_MODULES=false)."
   fi
 
   # Step 1: Create kind cluster
