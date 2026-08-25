@@ -155,7 +155,7 @@ func (r *KeystoneIdentityBackendReconciler) Reconcile(ctx context.Context, req c
 	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &backend, identityBackendFinalizerName); err != nil {
 		return ctrl.Result{}, err
 	} else if added {
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
 	statusBefore := backend.Status.DeepCopy()

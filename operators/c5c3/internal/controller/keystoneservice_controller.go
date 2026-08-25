@@ -158,7 +158,7 @@ func (r *KeystoneServiceReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &ks, keystoneServiceFinalizerName); err != nil {
 		return ctrl.Result{}, err
 	} else if added {
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
 	statusBefore := ks.Status.DeepCopy()

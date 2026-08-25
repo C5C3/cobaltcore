@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"github.com/c5c3/cobaltcore/internal/common/job"
+	"github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
 
@@ -146,7 +147,7 @@ func TestInitiateUpgrade_HappyPath(t *testing.T) {
 
 	res, err := InitiateUpgrade(context.Background(), p)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: reconcile.RequeueNextPass}))
 	// Target and phase are stamped for ReconcileUpgrade to pick up next pass.
 	g.Expect(st.target).To(Equal("2026.1"))
 	g.Expect(st.phase).To(Equal(commonv1.UpgradePhaseExpanding))
@@ -244,7 +245,7 @@ func TestReconcileUpgrade_ExpandCompleteTransitionsToMigrating(t *testing.T) {
 	st := upgradeState{phase: commonv1.UpgradePhaseExpanding, installed: "2025.2", target: "2026.1"}
 	res, err := ReconcileUpgrade(context.Background(), upgradeParams(c, s, owner, rec, &conds, &st, "2026.1"))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: reconcile.RequeueNextPass}))
 	g.Expect(st.phase).To(Equal(commonv1.UpgradePhaseMigrating))
 	cond := meta.FindStatusCondition(conds, "DatabaseReady")
 	g.Expect(cond.Reason).To(Equal(ReasonMigrateInProgress))
@@ -265,7 +266,7 @@ func TestReconcileUpgrade_MigrateCompleteTransitionsToRollingUpdate(t *testing.T
 	st := upgradeState{phase: commonv1.UpgradePhaseMigrating, installed: "2025.2", target: "2026.1"}
 	res, err := ReconcileUpgrade(context.Background(), upgradeParams(c, s, owner, rec, &conds, &st, "2026.1"))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: reconcile.RequeueNextPass}))
 	g.Expect(st.phase).To(Equal(commonv1.UpgradePhaseRollingUpdate))
 	cond := meta.FindStatusCondition(conds, "DatabaseReady")
 	g.Expect(cond.Reason).To(Equal(ReasonUpgradeRollingUpdate))
@@ -422,7 +423,7 @@ func TestReconcileUpgrade_AbortOnSpecRevert(t *testing.T) {
 	st := upgradeState{phase: commonv1.UpgradePhaseExpanding, installed: "2025.2", target: "2026.1"}
 	res, err := ReconcileUpgrade(context.Background(), upgradeParams(c, s, owner, rec, &conds, &st, "2025.2"))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: reconcile.RequeueNextPass}))
 	g.Expect(st.phase).To(Equal(commonv1.UpgradePhase("")))
 	g.Expect(st.target).To(BeEmpty())
 

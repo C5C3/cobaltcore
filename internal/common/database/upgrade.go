@@ -22,6 +22,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/job"
+	"github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/release"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
@@ -205,7 +206,7 @@ func InitiateUpgrade(ctx context.Context, p UpgradeFlowParams) (ctrl.Result, err
 
 	logger.Info("Upgrade detected", "from", from.Raw, "to", to.Raw, "phase", commonv1.UpgradePhaseExpanding)
 	p.Recorder.Eventf(p.Owner, corev1.EventTypeNormal, ReasonUpgradeInitiated, "Upgrade initiated: %s → %s", from.Raw, to.Raw)
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: reconcile.RequeueNextPass}, nil
 }
 
 // ReconcileUpgrade drives an active upgrade. It first handles an abort (the spec
@@ -370,7 +371,7 @@ func completeExpand(_ context.Context, p UpgradeFlowParams) (ctrl.Result, error)
 		Message:            fmt.Sprintf("Expand complete, starting migrate: %s → %s", *p.InstalledRelease, *p.TargetRelease),
 	})
 	p.Recorder.Eventf(p.Owner, corev1.EventTypeNormal, ReasonExpandComplete, "Expand phase complete: %s → %s", *p.InstalledRelease, *p.TargetRelease)
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: reconcile.RequeueNextPass}, nil
 }
 
 // completeMigrate transitions the upgrade from Migrating to RollingUpdate after
@@ -385,7 +386,7 @@ func completeMigrate(_ context.Context, p UpgradeFlowParams) (ctrl.Result, error
 		Message:            fmt.Sprintf("Migrate complete, waiting for Deployment rollout: %s → %s", *p.InstalledRelease, *p.TargetRelease),
 	})
 	p.Recorder.Eventf(p.Owner, corev1.EventTypeNormal, ReasonMigrateComplete, "Migrate phase complete: %s → %s", *p.InstalledRelease, *p.TargetRelease)
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: reconcile.RequeueNextPass}, nil
 }
 
 // completeContract finalizes the upgrade after the contract Job succeeds: it
@@ -446,7 +447,7 @@ func AbortUpgrade(ctx context.Context, p UpgradeFlowParams) (ctrl.Result, error)
 	p.Recorder.Eventf(p.Owner, corev1.EventTypeNormal, ReasonUpgradeAborted,
 		"Upgrade %s → %s aborted: spec release reverted to installed release %s",
 		*p.InstalledRelease, abortedTarget, *p.InstalledRelease)
-	return ctrl.Result{Requeue: true}, nil
+	return ctrl.Result{RequeueAfter: reconcile.RequeueNextPass}, nil
 }
 
 // deleteUpgradeJobs deletes the expand/migrate/contract Jobs owned by the CR.

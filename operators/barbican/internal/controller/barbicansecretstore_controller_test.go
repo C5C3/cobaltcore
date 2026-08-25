@@ -1727,7 +1727,7 @@ func TestSecretStoreReconcile_RemoteStoreStampsTheAnnotationBeforeTheFinalizer(t
 	result, err := f.reconcile(t, store)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}),
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}),
 		"the mark is read back from etcd on the next pass, not trusted in memory")
 	marked := f.store(t)
 	g.Expect(marked.Annotations).To(HaveKeyWithValue(childrenClusterAnnotation, "edge-1"))
@@ -1738,7 +1738,7 @@ func TestSecretStoreReconcile_RemoteStoreStampsTheAnnotationBeforeTheFinalizer(t
 	result, err = f.reconcile(t, store)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 	marked = f.store(t)
 	g.Expect(marked.Finalizers).To(ConsistOf(commonmulticluster.RemoteChildrenFinalizer))
 	g.Expect(marked.Annotations).To(HaveKeyWithValue(childrenClusterAnnotation, "edge-1"),
@@ -1770,7 +1770,7 @@ func TestSecretStoreReconcile_RemoteStoreCorrectsAPlantedAnnotation(t *testing.T
 	result, err := f.reconcile(t, store)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 	g.Expect(f.store(t).Annotations).To(HaveKeyWithValue(childrenClusterAnnotation, "edge-1"),
 		"the resolved cluster is authoritative, not whatever the annotation already said")
 }

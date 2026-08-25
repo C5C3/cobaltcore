@@ -46,6 +46,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
@@ -103,7 +104,7 @@ func TestReconcile_AddsORCFinalizerOnFirstReconcile(t *testing.T) {
 		NamespacedName: types.NamespacedName{Name: cp.Name, Namespace: cp.Namespace},
 	})
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}),
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}),
 		"first reconcile must requeue after installing the finalizer")
 
 	got := &c5c3v1alpha1.ControlPlane{}

@@ -649,7 +649,7 @@ func TestReconcile_ParallelGroupRequeueShortCircuitsChain(t *testing.T) {
 	}
 
 	// DatabaseReady must be ABSENT: the parallel group's requeue short-circuited
-	// the chain before reconcileDatabase ran. With the pre-fix Requeue:true the
+	// the chain before reconcileDatabase ran. With the pre-fix bare requeue the
 	// result was dropped and the chain would have reached Database.
 	g.Expect(meta.FindStatusCondition(updated.Status.Conditions, "DatabaseReady")).To(BeNil(),
 		"DatabaseReady must NOT be set — the parallel-group requeue short-circuited before reconcileDatabase (issue #467)")
@@ -1849,9 +1849,8 @@ func markKeystoneTerminating(t *testing.T, c client.Client, ks *keystonev1alpha1
 }
 
 // TestReconcile_AddsFinalizerOnFirstReconcile verifies that Reconcile installs
-// the Keystone finalizer on a live CR that lacks it and returns Requeue=true so
-// the next pass observes the persisted finalizer before any sub-reconciler
-// runs.
+// the Keystone finalizer on a live CR that lacks it and requeues so the next
+// pass observes the persisted finalizer before any sub-reconciler runs.
 func TestReconcile_AddsFinalizerOnFirstReconcile(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -1864,8 +1863,8 @@ func TestReconcile_AddsFinalizerOnFirstReconcile(t *testing.T) {
 	result, err := r.Reconcile(ctx, req)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}),
-		"first reconcile must return Requeue=true after persisting the finalizer")
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}),
+		"first reconcile must requeue after persisting the finalizer")
 
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
@@ -1912,8 +1911,8 @@ func TestReconcile_FinalizerAlreadyPresent_NoExtraUpdate(t *testing.T) {
 	result, err := r.Reconcile(ctx, req)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).NotTo(Equal(ctrl.Result{Requeue: true}),
-		"must not return Requeue=true when the finalizer is already present")
+	g.Expect(result).NotTo(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}),
+		"must not requeue when the finalizer is already present")
 	g.Expect(keystoneUpdates).To(Equal(0),
 		"no r.Update on Keystone must occur when the finalizer is already installed")
 }
@@ -2477,9 +2476,9 @@ drain:
 // ---------------------------------------------------------------------------
 
 // TestReconcile_AddsOpenBaoFinalizerOnFirstReconcile verifies that Reconcile
-// installs the OpenBao finalizer on a live CR that lacks it and returns
-// Requeue=true so the next pass observes the persisted finalizer before any
-// sub-reconciler runs.
+// installs the OpenBao finalizer on a live CR that lacks it and requeues so
+// the next pass observes the persisted finalizer before any sub-reconciler
+// runs.
 func TestReconcile_AddsOpenBaoFinalizerOnFirstReconcile(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ks := testKeystone()
@@ -2494,8 +2493,8 @@ func TestReconcile_AddsOpenBaoFinalizerOnFirstReconcile(t *testing.T) {
 	result, err := r.Reconcile(ctx, req)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}),
-		"first reconcile must return Requeue=true after persisting the openbao finalizer")
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}),
+		"first reconcile must requeue after persisting the openbao finalizer")
 
 	var updated keystonev1alpha1.Keystone
 	g.Expect(r.Get(ctx, req.NamespacedName, &updated)).To(Succeed())
@@ -2543,8 +2542,8 @@ func TestReconcile_OpenBaoFinalizerAlreadyPresent_NoExtraUpdate(t *testing.T) {
 	result, err := r.Reconcile(ctx, req)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).NotTo(Equal(ctrl.Result{Requeue: true}),
-		"must not return Requeue=true when both finalizers are already present")
+	g.Expect(result).NotTo(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}),
+		"must not requeue when both finalizers are already present")
 	g.Expect(keystoneUpdates).To(Equal(0),
 		"no r.Update on Keystone must occur when both finalizers are already installed")
 }
@@ -4475,7 +4474,7 @@ func TestReconcile_InstallsRemoteChildrenFinalizerForATargetCluster(t *testing.T
 	result, err := r.Reconcile(ctx, req)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}),
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}),
 		"the pass installing the finalizer must requeue before any sub-reconciler runs")
 
 	var updated keystonev1alpha1.Keystone

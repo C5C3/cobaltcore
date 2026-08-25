@@ -728,8 +728,8 @@ is deleting, producing an infinite reconcile loop. The early branch avoids
 this entirely — Terminating CRs only ever flow through `reconcileDelete`.
 
 On the live-CR path, `controllerutil.AddFinalizer` is called if the finalizer
-is missing and the CR is `Update`d, followed by an early `Requeue: true`
-return. This ensures the next reconcile pass observes the finalizer already
+is missing and the CR is `Update`d, followed by an early
+`RequeueAfter: RequeueNextPass` (1s) return. This ensures the next reconcile pass observes the finalizer already
 persisted in etcd rather than a transient in-memory copy, and it makes the
 finalizer installation a single-pass, conflict-safe operation under
 controller-runtime's retry semantics.
@@ -1105,8 +1105,8 @@ loop. The early branch avoids this entirely.
 
 On the live-CR path, `controllerutil.AddFinalizer(keystone, keystoneOpenBaoFinalizer)`
 is called if the finalizer is missing, the CR is `Update`d, and an early
-`Requeue: true` return ensures the next reconcile pass observes the
-finalizer already persisted in etcd. The MariaDB and OpenBao finalizer
+`RequeueAfter: RequeueNextPass` (1s) return ensures the next reconcile pass
+observes the finalizer already persisted in etcd. The MariaDB and OpenBao finalizer
 additions are independent `Update`+`Requeue` steps; both converge within
 two requeues on a fresh CR and within a single pass on subsequent
 reconciles.
@@ -3062,7 +3062,8 @@ Two lifecycle paths:
    commits a staged rotation if one is present. On a
    successful apply it sets `PasswordRotationReady=True` with reason
    `AdminPasswordRotated` ("rotation applied; staging secret cleared") and
-   short-circuits with `Requeue: true` so the next pass re-enters the happy path
+   short-circuits with `RequeueNextPass` (1s) so the next pass re-enters the
+   happy path
    with the push-source Secret already updated.
 5. **Ensure rotation RBAC** — `ensureAdminPasswordRotationRBAC` creates or
    updates the split ServiceAccount, Role, and RoleBinding
@@ -3407,7 +3408,7 @@ keystone-pipeline-scoped (the guard tests require map values to be members of
 | `reconcileHPA` | — | — | API error → exponential backoff |
 | `reconcileBootstrap` | Job running | 60s | `ErrJobFailed` from bootstrap |
 | `reconcileTrustFlush` | — | — | API error → exponential backoff |
-| `reconcilePasswordRotation` | Rotation applied (short-circuit) | `Requeue: true` | API error → exponential backoff |
+| `reconcilePasswordRotation` | Rotation applied (short-circuit) | `RequeueNextPass` (1s) | API error → exponential backoff |
 
 All errors are wrapped with descriptive context via `fmt.Errorf("...: %w", err)`.
 Unrecoverable API errors (e.g., permission denied, schema validation failure) are

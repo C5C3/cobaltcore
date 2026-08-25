@@ -127,7 +127,7 @@ func TestReconcile_AddsFinalizerOnFirstPass(t *testing.T) {
 	res, err := r.Reconcile(context.Background(), barbicanRequest)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}), "the finalizer add requeues so the next pass sees it persisted")
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}), "the finalizer add requeues so the next pass sees it persisted")
 	g.Expect(getBarbican(t, r.Client).Finalizers).To(ContainElement(barbicanFinalizer))
 }
 
@@ -539,7 +539,7 @@ func TestReconcile_InstallsRemoteChildrenFinalizerForATargetCluster(t *testing.T
 	res, err := r.Reconcile(context.Background(), barbicanRequest)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}),
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}),
 		"the pass installing the finalizer must requeue before any sub-reconciler runs")
 	g.Expect(getBarbican(t, r.Client).Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer))
 }

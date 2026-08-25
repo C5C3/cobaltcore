@@ -20,4 +20,12 @@ const (
 	// readiness. ESO sync is fast but depends on an external vault, so a
 	// moderate interval balances responsiveness with API load.
 	RequeueSecretPolling = 15 * time.Second
+
+	// RequeueNextPass is the interval a reconcile returns after it has persisted
+	// state the next pass must observe — a finalizer it just added, an annotation
+	// it just recorded, an upgrade phase it just advanced. It replaces the
+	// deprecated Result.Requeue flag: short enough that the follow-up pass reads
+	// the write back immediately, long enough not to spin the work queue when the
+	// write has not reached the informer cache yet.
+	RequeueNextPass = 1 * time.Second
 )

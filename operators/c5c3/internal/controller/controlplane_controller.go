@@ -330,12 +330,12 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	// still funnels through reconcileDelete. Installed after the duplicate guard
 	// so only the active incumbent — the ControlPlane that actually projects K-ORC
 	// CRs — carries the finalizer; parked duplicates return above and never need
-	// it. Returning Requeue=true after the Update guarantees the next reconcile
-	// observes the persisted finalizer.
+	// it. Requeuing after the Update guarantees the next reconcile observes the
+	// persisted finalizer.
 	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &cp, controlPlaneORCFinalizer); err != nil {
 		return ctrl.Result{}, err
 	} else if added {
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
 	// The remote-children finalizer goes on only when the ControlPlane places a
@@ -359,7 +359,7 @@ func (r *ControlPlaneReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			commonmulticluster.RemoteChildrenFinalizer); err != nil {
 			return ctrl.Result{}, err
 		} else if added {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 		}
 	}
 

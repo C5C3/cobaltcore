@@ -285,7 +285,7 @@ func (r *HorizonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			commonmulticluster.RemoteChildrenFinalizer); err != nil {
 			return ctrl.Result{}, err
 		} else if added {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 		}
 	}
 

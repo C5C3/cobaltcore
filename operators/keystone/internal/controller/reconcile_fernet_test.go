@@ -1268,8 +1268,8 @@ func TestReconcileFernetKeys_CreatesEmptyStagingSecret(t *testing.T) {
 
 // TestReconcileFernetKeys_AppliesStagedKeysWhenAnnotationPresent verifies that
 // reconcileFernetKeys applies a completed staging Secret onto the production
-// fernet keys Secret, deletes the staging Secret, and short-circuits with
-// Requeue=true when the rotation-completed annotation is present.
+// fernet keys Secret, deletes the staging Secret, and short-circuits with a
+// requeue when the rotation-completed annotation is present.
 func TestReconcileFernetKeys_AppliesStagedKeysWhenAnnotationPresent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := fernetTestScheme()

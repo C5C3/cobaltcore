@@ -25,6 +25,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/job"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	"github.com/c5c3/cobaltcore/internal/common/rotation"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	esov1alpha1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1alpha1"
@@ -226,7 +227,7 @@ func (r *KeystoneReconciler) reconcilePasswordRotation(ctx context.Context, chil
 			Reason:             "AdminPasswordRotated",
 			Message:            "rotation applied; staging secret cleared",
 		})
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
 	// 5. Ensure the RBAC resources for the rotation CronJob.

@@ -1513,7 +1513,7 @@ func TestReconcileDeployment_RollingUpdate_ReadyDeployment_TransitionsToContract
 	g.Expect(err).NotTo(HaveOccurred())
 
 	// Must requeue immediately (not RequeueAfter) so the next reconcile enters reconcileContract.
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}), "expected immediate requeue for phase transition")
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}), "expected immediate requeue for phase transition")
 
 	// UpgradePhase must transition to Contracting.
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseContracting))

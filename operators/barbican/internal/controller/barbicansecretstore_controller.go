@@ -465,13 +465,13 @@ func (r *BarbicanSecretStoreReconciler) ensureRemoteTeardownMarks(
 		if err := r.Update(ctx, store); err != nil {
 			return ctrl.Result{}, fmt.Errorf("recording the children cluster on the store: %w", err)
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
 	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, store, commonmulticluster.RemoteChildrenFinalizer); err != nil {
 		return ctrl.Result{}, err
 	} else if added {
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 	return ctrl.Result{}, nil
 }

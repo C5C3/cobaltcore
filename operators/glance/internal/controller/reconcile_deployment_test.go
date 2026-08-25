@@ -960,7 +960,7 @@ func TestReconcileDeployment_RollingUpdateFlipsToContracting(t *testing.T) {
 
 	res, err := r.reconcileDeployment(context.Background(), r.Client, glance, art, "", "")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 
 	g.Expect(glance.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseContracting))
 	// The endpoint is deliberately NOT stamped on the flip pass.
