@@ -85,6 +85,7 @@ Without the stack the suites skip cleanly, so `make e2e` (which runs the whole
 | [admin-password-scoping](#admin-password-scoping) | `controlplane` | Per-CR OpenBao-backed admin password projection |
 | [db-credential-scoping](#db-credential-scoping) | `controlplane` | Per-CR OpenBao-backed service DB credential projection |
 | [dedicated-backing-services](#dedicated-backing-services) | `cp` (ephemeral namespace) | Opt-in per-service dedicated database/cache: provisioning, ownership, sizing, and collective readiness gating |
+| [messaging](#messaging) | `cp` (ephemeral namespace) | The shared RabbitMQ bus: provisioned from `spec.infrastructure.messaging` with no service declared, owned, sized from `replicas`, gating `InfrastructureReady` on `AllReplicasReady`, and frozen against removal |
 | [dedicated-namespaces](#dedicated-namespaces) | `cp` (ephemeral namespace) | Per-service dedicated namespaces: Managed/External lifecycles, backing-service placement, ownership labels, per-namespace tenant stores, and the deletion sweep |
 | [multi-controlplane](#multi-controlplane) | `controlplane-a`, `controlplane-b` | Per-CR admin-credential isolation across two tenants; rotation non-interference |
 | [secret-store-scoping](#secret-store-scoping) | — (namespace-only) | Per-ControlPlane OpenBao identity via a namespaced `SecretStore`; OpenBao-enforced cross-tenant isolation |
@@ -293,6 +294,70 @@ ControlPlane's namespace — and this suite runs in an ephemeral namespace by
 design. They are hard-asserted in the envtest scenario
 `TestIntegration_DedicatedBackingServices`, which runs against the real CRD
 schema and webhook on every PR.
+
+### messaging
+
+Asserts the shared
+[RabbitMQ message bus](../c5c3/controlplane-crd.md#messagingspec): a
+`ControlPlane` that declares `spec.infrastructure.messaging` in managed mode
+(`clusterRef: cp-rabbitmq`, `replicas: 1`) and **no service at all**
+(`services: {}`). A broker that appears can only come from the messaging block
+itself, which is the distinction the suite exists to pin: a database and a cache
+follow the services that consume them, the bus does not.
+
+The fixture's shared database and cache are **brownfield**, addressing
+`.invalid` endpoints nothing dials. A brownfield block provisions nothing, so the
+`RabbitmqCluster` is the only backing-service instance in the namespace and the
+suite asserts that as an **exact set** (no `MariaDB`, no `Memcached`).
+
+What it checks on a live cluster:
+
+- the `RabbitmqCluster` `cp-rabbitmq` exists;
+- it carries a **controller owner reference with `blockOwnerDeletion`** from the
+  ControlPlane, the teardown contract the sibling dedicated-backing-services
+  suite pins for MariaDB and Memcached;
+- its `spec.replicas` is `1`, taken from the declared block;
+- it reaches `AllReplicasReady=True` within 600s. The RabbitMQ Cluster Operator
+  publishes no `Ready` condition, so this is the condition the reconciler gates
+  on as well;
+- `InfrastructureReady` then flips to `True` with reason `InfrastructureReady`
+  within 180s;
+- dropping the **managed** messaging block from the live ControlPlane is
+  **rejected** by the webhook. This is the managed half of the one-way add, and
+  this is the only suite with a live managed bus to assert it against; the
+  brownfield half (also *rejected*, so the mode freeze cannot be laundered into a
+  two-step flip) lives in the `invalid-cr` messaging-freeze wave.
+- deleting the ControlPlane tears the broker down through the operator's own
+  path: the `RabbitmqCluster` goes with its owner, the operator labels the pod
+  `skipPreStopChecks`, and no broker pod remains. The suite does this itself
+  instead of leaving it to chainsaw's namespace cleanup. On Kubernetes >= 1.33
+  the namespace controller deletes pods first and revisits the namespace only
+  after half the longest pod `terminationGracePeriodSeconds` it found, which is
+  about 3.5 days for a broker pod at the operator's default of 604800s, so a
+  namespace deleted around a live broker wedges with the ControlPlane never
+  deleted.
+
+It runs in **chainsaw's ephemeral namespace** with a ControlPlane of its own
+(`cp`) for the reasons the dedicated-backing-services suite gives, plus one of
+its own: managed messaging is a one-way add on a live CR, so the declaration
+cannot be patched onto the canonical `openstack` ControlPlane and then unwound.
+
+The presence guard probes the CRD set the sibling suite probes plus
+`rabbitmqclusters.rabbitmq.com`, and SKIPs when any is absent
+(`E2E_REQUIRE_CONTROLPLANE_STACK=true` turns the SKIP into a hard failure). The
+RabbitMQ leg earns its place: the c5c3 operator watches that kind behind a
+discovery gate, so a cluster without the rabbitmq-cluster-operator admits the
+fixture and then parks the ControlPlane at `InfrastructureReady=False` with
+reason `RabbitMQError`. Probing the CRD turns that into a SKIP instead of a
+doomed wait for a broker the cluster can never create.
+
+Two things are left unasserted on purpose. **Consumer wiring** is one: no service
+reads the bus yet, so the suite stops at the provisioned, owned, sized, ready
+broker, and the transport-URL projection into a service's oslo.messaging config
+lands with the first consumer. **Pod resources** are the other: the fixture pins
+none, so the broker comes up on the operator's defaults (1 CPU and 2Gi per pod,
+a 10Gi PVC). A pod that will not schedule on the CI node is a finding to report;
+the fixture stays as it is.
 
 ### dedicated-namespaces
 
@@ -580,6 +645,9 @@ tests/e2e/c5c3/
 │   ├── 01-keystoneservice-tenant.yaml  The admitted registration (workflow)
 │   ├── 02-keystoneservice-outsider.yaml  The refused registration (outsider)
 │   └── 03-openstack-verify-job.yaml    openstack CLI verify Job on the consumer Secret
+├── messaging/
+│   ├── chainsaw-test.yaml              Shared RabbitMQ bus: provisioned, owned, sized, ready, torn down
+│   └── 00-controlplane-cr.yaml         ControlPlane CR (cp; ephemeral namespace)
 ├── multi-controlplane/
 │   ├── chainsaw-test.yaml              Two-tenant isolation contract
 │   ├── 00-tenant-a-controlplane.yaml   ControlPlane CR controlplane-a

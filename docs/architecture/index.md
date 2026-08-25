@@ -40,6 +40,7 @@ target clusters.
 │  ┌─────────────────────────┐     ┌─────────────────────────────────────┐  │
 │  │ mariadb-operator        │────▶│ MariaDB (Galera)                    │  │
 │  │ memcached-operator      │────▶│ Memcached                           │  │
+│  │rabbitmq-cluster-operator│────▶│ RabbitmqCluster (opt-in)            │  │
 │  │ garage-operator         │────▶│ Garage (S3 object store)            │  │
 │  └─────────────────────────┘     └─────────────────────────────────────┘  │
 │                                                                           │

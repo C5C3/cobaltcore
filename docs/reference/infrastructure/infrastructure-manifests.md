@@ -27,6 +27,7 @@ deploy/
     │   ├── openbao-operator.yaml         OpenBao Operator OCI chart artifact (digest-pinned OCIRepository)
     │   ├── c5c3-charts.yaml              C5C3 shared OCI chart registry
     │   ├── k-orc.yaml                    K-ORC (OpenStack Resource Controller) Helm chart registry
+    │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator GitRepository (tag + commit pinned)
     │   ├── prometheus-community.yaml     Prometheus Community OCI chart registry
     │   └── chaos-mesh.yaml               Chaos Mesh Helm chart registry (kind-only addon — see "Kind Overlay Demo Addons")
     ├── releases/                         FluxCD HelmRelease CRs
@@ -42,6 +43,7 @@ deploy/
     │   ├── glance-operator.yaml          Glance Operator (from c5c3-charts)
     │   ├── placement-operator.yaml       Placement Operator (from c5c3-charts)
     │   ├── k-orc.yaml                    K-ORC OpenStack Resource Controller
+    │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator (Flux Kustomization over config/installation)
     │   ├── c5c3-operator.yaml            c5c3-operator ControlPlane orchestrator (from c5c3-charts)
     │   └── chaos-mesh.yaml               Chaos Mesh (kind-only addon — see "Kind Overlay Demo Addons")
     └── infrastructure/                   CRD-dependent infrastructure resources
@@ -61,7 +63,7 @@ comment, license identifier).
 
 ## Namespaces
 
-Fifteen `Namespace` resources are defined in `namespaces.yaml` and included as the first
+Seventeen `Namespace` resources are defined in `namespaces.yaml` and included as the first
 entry in the base kustomization. Kustomize applies `Namespace` resources before other
 resource kinds, ensuring target namespaces exist before any namespaced resources are
 created.
@@ -78,11 +80,13 @@ created.
 | `horizon-system` | Horizon Operator controller (Horizon CRs and the operator-managed dashboard live in `openstack`) |
 | `glance-system` | Glance Operator controller (Glance/GlanceBackend CRs and the operator-managed payload live in `openstack`) |
 | `placement-system` | Placement Operator controller (Placement CRs and the operator-managed payload live in `openstack`) |
+| `barbican-system` | Barbican Operator controller (Barbican/BarbicanSecretStore CRs and the operator-managed payload live in `openstack`) |
 | `openstack` | Infrastructure instance CRs that exist to run the operators standalone (MariaDB cluster, Memcached cluster; on kind also the OpenBao proving instance and the shared Gateway) |
 | `shared-services` | Infrastructure consumed by more than one control plane: the OpenBao HA Raft cluster and the Garage object store |
 | `openbao-operator-system` | openbao-operator controller. It stays out of `shared-services` so the shared OpenBao cluster and the operator that manages per-service instances keep separate lifecycles |
 | `c5c3-system` | c5c3-operator controller; the `ControlPlane` and its child CRs are created in the `ControlPlane`'s own namespace |
 | `orc-system` | K-ORC (OpenStack Resource Controller) and its installer resources |
+| `rabbitmq-system` | RabbitMQ Cluster Operator controller and its webhook certificates. A `RabbitmqCluster` a ControlPlane declares lives in that ControlPlane's own namespace, not here |
 
 `shared-services` is a trust zone, not just a placement bucket. It holds the
 credentials that unlock every other secret in the stack — `openbao-init-keys` (the root
@@ -217,6 +221,16 @@ particular chart.
 It is applied by a Flux `Kustomization`, not a HelmRelease; see
 [K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller).
 
+**The RabbitMQ Cluster Operator is sourced from Git too.** Upstream publishes no
+chart, so `sources/rabbitmq-cluster-operator.yaml` is a second `GitRepository` in
+`flux-system` at `interval: 1h`, scoped to `/config` via `spec.ignore`. It pins
+both halves of the ref: `ref.tag: "v2.22.5"` as the readable version and as
+Renovate's lookup handle, and `ref.commit` as the content pin. Flux's gogit
+client evaluates `commit` ahead of every other ref field, so a re-pushed tag
+cannot hand different bytes to a controller that runs with cluster-wide RBAC.
+This source is applied by a Flux `Kustomization` as well; see
+[RabbitMQ Cluster Operator](#rabbitmq-cluster-operator).
+
 The `chaos-mesh` HelmRepository ships in the kind-only opt-in overlay at
 `deploy/kind/chaos-mesh/source.yaml` — it is intentionally absent
 from `deploy/flux-system/{sources,kustomization.yaml}`. See
@@ -234,9 +248,10 @@ artifact. All other repositories use standard HTTPS Helm registries.
 
 ## HelmRelease Operators
 
-Fifteen HelmRelease CRs deploy the infrastructure operators and CRD charts (K-ORC is
-applied separately via a Flux `Kustomization` — see
-[K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller)). All use
+Fifteen HelmRelease CRs deploy the infrastructure operators and CRD charts (K-ORC and the
+RabbitMQ Cluster Operator are applied separately, each via a Flux `Kustomization` — see
+[K-ORC (OpenStack Resource Controller)](#k-orc-openstack-resource-controller) and
+[RabbitMQ Cluster Operator](#rabbitmq-cluster-operator)). All use
 `apiVersion: helm.toolkit.fluxcd.io/v2` and share these common settings:
 
 | Setting | Value | Purpose |
@@ -278,6 +293,15 @@ c5c3-operator therefore does **not** `dependsOn` K-ORC even though K-ORC is a **
 dependency**: `SetupWithManager` `Owns` the K-ORC kinds, so the manager only starts
 once those CRDs are installed (until then the pod restarts), and converges once they
 appear.
+
+The `rabbitmq-cluster-operator` Kustomization is outside the graph for the same
+reason, and it needs cert-manager: the upstream base carries the two admission
+webhooks, a self-signed `Issuer`, and the `Certificate`s backing them. It declares
+no `dependsOn`, because a Flux `Kustomization` can only depend on other
+Kustomizations and cert-manager is a HelmRelease. On a cold cluster the
+Issuer/Certificate apply fails while cert-manager's CRDs are still missing, the
+Kustomization reports NotReady, and one of the following `retryInterval` passes
+(2m) succeeds once cert-manager is up. The NotReady window is that convergence.
 
 The `c5c3-operator` HelmRelease sits at the top of this graph: it
 `dependsOn` the four operators whose CRs it projects (keystone-operator,
@@ -663,6 +687,73 @@ manifest that previously declared it has been removed. The `orc-system` Namespac
 itself remains because the K-ORC installer's own resources land there. See
 [Admin Credential Chain](#admin-credential-chain) below.
 
+### RabbitMQ Cluster Operator
+
+**File:** `deploy/flux-system/releases/rabbitmq-cluster-operator.yaml`
+
+| Property | Value |
+| --- | --- |
+| Kind | `Kustomization` (`kustomize.toolkit.fluxcd.io/v1`) |
+| Target namespace | `rabbitmq-system` (the upstream base self-namespaces) |
+| Source | `rabbitmq-cluster-operator` `GitRepository` (tag `v2.22.5`, commit `17dd297f71de40a722baf69167b8af511072175e`) |
+| Path | `./config/installation` |
+| Image | `ghcr.io/rabbitmq/cluster-operator`, `newTag: "2.22.5"`, `digest: "sha256:2727b84b835ada97247bbb65ebfa6998168b4e8ee11b0e6cece56ac2c9c4f0fb"` |
+| Dependencies | None declared; cert-manager is an implicit one |
+
+The RabbitMQ Cluster Operator serves the `rabbitmq.com/v1beta1` `RabbitmqCluster`
+CRD. The c5c3-operator projects one such CR for every ControlPlane that declares
+managed [`spec.infrastructure.messaging`](../c5c3/controlplane-crd.md#messagingspec),
+and this operator turns it into the message bus that control plane's services
+share.
+
+The base at `./config/installation` installs the `rabbitmq-system` Namespace, the
+`rabbitmqclusters.rabbitmq.com` CRD (served version `v1beta1`), the operator's
+RBAC, the manager Deployment (requests and limits `200m` / `500Mi`), the two
+admission webhooks it has shipped since v2.22.0, and the self-signed `Issuer` plus
+the `Certificate`s that back them. cert-manager has been required since v2.20.
+
+**Why a Kustomization and no chart.** Upstream publishes none; the install path it
+documents is the kustomize base carried in its own repository. The only OCI chart
+that ever wrapped this operator was Bitnami's
+`oci://registry-1.docker.io/bitnamicharts/rabbitmq-cluster-operator`, and it is
+retired: it stopped at chart 4.4.34 on 2025-08-21 (operator 2.16.1), and the
+`docker.io/bitnami/rabbitmq-cluster-operator` images it points at are gone from
+Docker Hub.
+
+**Accepted posture.** Upstream is maintained by VMware/Broadcom under the Mozilla
+Public License 2.0 and publishes no cosign signature, so `spec.verify` would have
+nothing to check. Both halves are pinned by content instead: the Git commit in the
+source, the image digest here. The inner kustomization already rewrites the dev
+placeholder `rabbitmqoperator/cluster-operator-dev` to
+`ghcr.io/rabbitmq/cluster-operator` with the mutable tag `latest`, so the `images`
+override keys on that resolved name and is what keeps `latest` out of the cluster.
+`newTag` records the tag the digest was resolved from (`crane digest
+ghcr.io/rabbitmq/cluster-operator:<tag>`) and doubles as the offline drift anchor,
+the same split `releases/k-orc.yaml` uses.
+
+Keying on a **name** is the weak point: kustomize's image transformer silently
+no-ops when no resource matches, so if upstream ever re-points the base at a
+different image (it already moved once, from the dev placeholder), the override
+would apply to nothing, no error would be raised, and the cluster would run the
+mutable `latest` tag for a controller holding cluster-wide RBAC over
+`RabbitmqCluster`s, StatefulSets, and Secrets. Neither the Renovate tests (which
+guard the literal YAML pairing) nor the production-posture test (which guards
+byte-identity of this file) render the kustomize output, so the check has to look
+at what actually landed: after waiting for the Kustomization, both
+`hack/deploy-infra.sh` and `hack/deploy-mgmt-cluster.sh` read every container
+image of every Deployment in `rabbitmq-system` and abort the deploy unless each
+one carries an `@sha256:` digest.
+
+**Renovate.** Two customManagers track the pair, one on the source
+(`github-tags`, capturing `tag` and `commit`) and one on the image (`docker`,
+capturing `newTag` and `digest`). Their two packageRules share
+`groupName: "rabbitmq cluster-operator"`, so all four values move in one reviewed
+PR, with `automerge: false` and `minimumReleaseAge: "3 days"`. Both managers
+anchor on the literal YAML shape (the paired lines adjacent, both values
+double-quoted), which
+`tests/unit/renovate/rabbitmq_cluster_operator_source_custommanager_test.sh` and
+`tests/unit/renovate/rabbitmq_cluster_operator_image_custommanager_test.sh` guard.
+
 ### c5c3-operator
 
 **File:** `deploy/flux-system/releases/c5c3-operator.yaml`
@@ -724,8 +815,9 @@ OCIRepository.
 | `placement-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 | `c5c3-operator` | `c5c3-charts` | `sources/c5c3-charts.yaml` |
 
-`k-orc` is not in this table: it is a Flux `Kustomization` whose `sourceRef` is the
-`k-orc` `GitRepository` (`sources/k-orc.yaml`), not a HelmRelease backed by a
+`k-orc` and `rabbitmq-cluster-operator` are not in this table: each is a Flux
+`Kustomization` whose `sourceRef` is a `GitRepository` (`sources/k-orc.yaml` and
+`sources/rabbitmq-cluster-operator.yaml`), not a HelmRelease backed by a
 HelmRepository.
 
 The kind-only `chaos-mesh` HelmRelease ships in the opt-in overlay at
@@ -1356,6 +1448,21 @@ release (`releases/garage-operator.yaml`) references it by `sourceRef.name` and 
 the chart name in `chart.spec.chart`. The OCI variant changes nothing else in the recipe
 — Renovate's native Flux handling resolves the HelmRelease version range with no custom
 rule, exactly as for the HTTPS sources.
+
+**An operator with no chart** takes the Git-sourced variant of the recipe, which
+[K-ORC](#k-orc-openstack-resource-controller) and the
+[RabbitMQ Cluster Operator](#rabbitmq-cluster-operator) both follow. Step 1 adds a
+`GitRepository` scoped to the installer path with `spec.ignore`, and step 2 adds a
+Flux `Kustomization` over that path instead of a HelmRelease, with the image
+pinned through `spec.images` (`newTag` plus `digest`) because a kustomize base
+carries no values file. Renovate's native Flux handling does not reach either
+half, so each needs a customManager anchored on the literal YAML shape, a
+packageRule sharing one `groupName` so the pair moves in one PR, and one test per
+manager under `tests/unit/renovate/`. Two more places have to learn the name: the
+`FLUX_KUSTOMIZATIONS` array in `hack/deploy-mgmt-cluster.sh`, which applies and
+waits for such a Kustomization after the HelmReleases, and the Phase 3b wait in
+`hack/deploy-infra.sh`, since a Kustomization is invisible to
+`wait_for_helmreleases`.
 
 Infrastructure instance CRs (e.g., a new database, cache, or object-store cluster) follow
 the same pattern: add a file in `infrastructure/` and list it in

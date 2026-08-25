@@ -61,6 +61,9 @@ documented per component in
   ([section](../reference/infrastructure/infrastructure-manifests.md#mariadb-galera-cluster)).
 - **memcached-operator** with a `Memcached` CR for token and content caching
   ([section](../reference/infrastructure/infrastructure-manifests.md#memcached-cluster)).
+- **rabbitmq-cluster-operator** serving the `RabbitmqCluster` CRD behind a
+  ControlPlane's opt-in shared message bus
+  ([section](../reference/infrastructure/infrastructure-manifests.md#rabbitmq-cluster-operator)).
 - **garage-operator** with a `Garage` CR providing the S3 object store that
   backs Glance multi-store
   ([section](../reference/infrastructure/infrastructure-manifests.md#garage-object-store)).

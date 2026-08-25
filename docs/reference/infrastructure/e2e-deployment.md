@@ -145,9 +145,21 @@ Step 4 ── Wait for HelmReleases Ready
      │         cert-manager, openbao, mariadb-operator,
      │         external-secrets, memcached-operator
      │
+     ├── Phase 3b: kustomization/rabbitmq-cluster-operator Ready
+     │         The RabbitMQ Cluster Operator arrives as a Flux
+     │         Kustomization, which the HelmRelease wait above cannot
+     │         see. This wait hard-fails: a ControlPlane projects a
+     │         RabbitmqCluster for spec.infrastructure.messaging, so
+     │         the operator belongs on every cluster this script
+     │         provisions.
+     │
 Step 5 ── Apply infrastructure kustomize overlay (deploy/kind/infrastructure/)
      │         ClusterIssuer, MariaDB CR, Memcached CR,
      │         OpenBao TLS cert, ESO resources
+     │         Gated by wait_for_crds on the operator CRDs: memcacheds,
+     │         externalsecrets, clustersecretstores, mariadbs,
+     │         envoyproxies, the three garage kinds, openbaoclusters,
+     │         rabbitmqclusters.rabbitmq.com
      │
 Step 6 ── Wait for OpenBao pods Ready
      │

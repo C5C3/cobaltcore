@@ -230,9 +230,11 @@ than on the individual service CRs.
 
 ## InfrastructureSpec
 
-Declares the shared backing services for the control plane. Both
+Declares the shared backing services for the control plane. All three
 fields reuse the canonical `commonv1` shapes so the ControlPlane and the
-per-service CRs validate the database/cache the same way.
+per-service CRs validate the database, cache, and messaging the same way.
+Database and cache are always present. `messaging` is an optional pointer: a
+ControlPlane that declares no message bus gets none.
 
 `spec.infrastructure` (and each of its `database` / `cache` blocks)
 may be **omitted entirely** on a minimal managed-mode ControlPlane. The
@@ -256,6 +258,7 @@ notes](#infrastructurespec) below.
 | --- | --- | --- | --- | --- |
 | `database` | [`commonv1.DatabaseSpec`](../keystone/keystone-crd.md#databasespec) | No | managed `clusterRef: openstack-db`, `database: keystone`, `secretRef.name: keystone-db` | MariaDB connection parameters shared by the control plane. Supports managed (`clusterRef`) and brownfield (`host`) modes; exactly one must hold **after defaulting** (enforced by the CRD CEL `XValidation` rule and the validating webhook — see [Validation Rules](#validation-rules)). Optional because the defaulting webhook materializes a managed-mode block when omitted. **`database.secretRef` ownership:** in managed mode this reference is **operator-owned** — `reconcileDBCredentials` materialises a per-ControlPlane DB-credential Secret and the reconciler overrides the projected Keystone CR's `spec.database.secretRef` to point at it, so the `keystone-db` default `secretRef.name` is only a managed-mode convenience name (it is **not** what Keystone consumes and no longer resolves to a cluster Secret). A **brownfield** ControlPlane (`database.host` set, no `clusterRef`) **MUST supply** its own `database.secretRef` Secret out-of-band — the operator projects no ExternalSecret in brownfield mode. See [managed-mode provisioning](#infrastructurespec) below. |
 | `cache` | [`commonv1.CacheSpec`](../keystone/keystone-crd.md#cachespec) | No | managed `clusterRef: openstack-memcached`, `backend: dogpile.cache.pymemcache` | Memcached configuration shared by the control plane. Supports managed (`clusterRef`) and brownfield (`servers`) modes; exactly one must hold **after defaulting** (enforced by the CRD CEL `XValidation` rule and the validating webhook). Optional because the defaulting webhook materializes a managed-mode block when omitted. |
+| `messaging` | [`*commonv1.MessagingSpec`](#messagingspec) | No | `nil` (the defaulting webhook never materializes the block) | The shared RabbitMQ message bus. **Opt-in**: a ControlPlane that omits the block provisions no broker, and the webhook invents nothing for it, unlike `database` and `cache`. In managed mode (`clusterRef`) the reconciler provisions **one** `RabbitmqCluster` in the ControlPlane's own namespace whether or not a service consumes it: a bus is shared across services by nature, so declaring it is what asks for it. Brownfield mode (`secretRef`) attaches to an existing broker and provisions nothing. Adding the block to a live ControlPlane is allowed; removing it is rejected in **both** modes. See [MessagingSpec](#messagingspec). |
 
 <!-- DECISION: `database`/`cache` Required flipped from Yes to No because the
      defaulting webhook now constructs a managed-mode block when the field is omitted.
@@ -305,6 +308,113 @@ that adopts a pre-existing MariaDB/Memcached leaves its topology untouched.
 > — and the `keystone-db` default no longer resolves to a cluster Secret. See the
 > [ControlPlane Reconciler reference](./controlplane-reconciler.md) for the
 > `reconcileDBCredentials` flow.
+
+---
+
+## MessagingSpec
+
+`spec.infrastructure.messaging` declares the RabbitMQ message bus the control
+plane's services share. The block is optional and the defaulting webhook never
+creates it: no `messaging` block, no broker.
+
+Managed mode (`clusterRef`) hands the bus to the
+[RabbitMQ Cluster Operator](../infrastructure/infrastructure-manifests.md#rabbitmq-cluster-operator).
+The reconciler create-or-updates one owned `RabbitmqCluster` CR of that name.
+Brownfield mode (`secretRef`) points at a Secret that already holds a complete
+`rabbit://` transport URL, and nothing is provisioned.
+
+The managed bus is the one backing-service class enumerated at the
+**ControlPlane's own namespace** regardless of consumers. `database` and `cache`
+are enumerated at the namespace of the service that resolves to them, and a
+shared instance every service opted out of is skipped. A message bus is shared
+across services by nature, so a declared bus is a wanted bus, even before the
+first consumer exists. See
+[reconcileInfrastructure](./controlplane-reconciler.md#reconcileinfrastructure).
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `clusterRef` | `*corev1.LocalObjectReference` | Conditional (XOR with `secretRef`) | `openstack-rabbitmq` (webhook, only when `secretRef` is unset) | Managed mode. Names the `RabbitmqCluster` CR the reconciler owns in the ControlPlane's namespace. |
+| `secretRef` | [`*commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | Conditional (XOR with `clusterRef`) | `key: transport_url` | Brownfield mode. Names a Secret holding the complete `rabbit://user:password@host:port/` transport URL under `key`. The Secret is read, never written. |
+| `replicas` | `int32` | No | `3` (schema default, `Minimum` 1) | Number of RabbitMQ pods in the managed cluster. Projected onto the owned CR's `spec.replicas` and re-projected when the value changes, so the broker scales with the field. Growing is an in-place update; **shrinking is a delete-and-recreate**, because the RabbitMQ Cluster Operator refuses an in-place scale-down — the reconciler deletes the owned `RabbitmqCluster` and creates it again at the declared count, which loses the broker's volumes and everything on them. Because the field carries a schema default, an edit that merely drops the line off a larger broker arrives as a scale-down nobody typed, so the recreate is **opt-in**: without the `c5c3.io/allow-messaging-recreate: "true"` annotation on the ControlPlane the reconciler refuses the shrink, leaves the broker running at its current size, and reports `InfrastructureReady=False` / `RabbitMQError` naming the annotation. Ignored in brownfield mode. Pin it to `1` at creation on a constrained cluster such as a single-node kind. |
+| `tls` | [`*MessagingTLSSpec`](#messagingtlsspec) | No | `nil` (plaintext) | Client trust for the broker connection. **Brownfield mode only**: a managed `RabbitmqCluster` is provisioned without a TLS listener, so the webhook rejects `tls` beside a `clusterRef`. |
+
+**Defaulting.** The block is never materialized; only its leaves are filled, and
+only when it is present. `clusterRef.name` defaults to `openstack-rabbitmq`
+(`DefaultMessagingClusterRefName`) and is brownfield-guarded the way
+`database.clusterRef.name` is: a `secretRef` in the CR keeps the webhook from
+inventing a `clusterRef` beside it, so the XOR rule still passes. An empty
+`secretRef.key` becomes `transport_url` (`commonv1.DefaultTransportURLSecretKey`)
+and an empty `tls.caBundleSecretRef.key` becomes `ca.crt`. See the
+[Defaulting Webhook](#defaulting-webhook).
+
+**Validation.** A type-level CEL rule on `commonv1.MessagingSpec` enforces
+`has(self.clusterRef) != has(self.secretRef)` with the message `exactly one of
+clusterRef or secretRef must be set`, so the XOR holds for a webhook-bypassed CR
+too. The validating webhook mirrors it at `spec.infrastructure.messaging` and
+adds three checks: a brownfield `secretRef.name` and a
+`tls.caBundleSecretRef.name` cannot be empty (`field.Required`), and a `tls`
+block beside a managed `clusterRef` is rejected outright — the reconciler
+projects only `spec.replicas` onto the owned cluster, so a managed broker comes
+up on the RabbitMQ Cluster Operator's default, plaintext listener. External
+keystone mode forbids `spec.infrastructure` as a whole, and with it the messaging
+block. On update the block is a **one-way add in both modes**: it can be
+declared on a live ControlPlane and never removed again — the brownfield removal
+is rejected too, because admitting it would launder the mode freeze into a
+two-step flip. Neither the mode nor a managed `clusterRef.name` may change;
+`replicas`, `secretRef` and `tls` stay editable. See
+[Update-only immutability rules](#update-only-immutability-rules).
+
+Managed, with a single pod for a constrained cluster:
+
+```yaml
+spec:
+  infrastructure:
+    messaging:
+      clusterRef:
+        name: openstack-rabbitmq
+      replicas: 1
+```
+
+Brownfield, attaching to a broker someone else runs:
+
+```yaml
+spec:
+  infrastructure:
+    messaging:
+      secretRef:
+        name: openstack-transport-url
+        key: transport_url
+```
+
+A consumer in the ControlPlane's namespace reaches the managed bus at
+`<clusterRef.name>.<namespace>.svc` and reads the broker credential from the
+Secret the RabbitMQ Cluster Operator publishes at the cluster's
+`status.defaultUser.secretReference`. The shared resolver that turns both modes
+into one derived `<instance>-transport-url` Secret lands with the first
+consumer, together with the answer to how a service **placed on a target
+cluster** reaches a bus that runs beside the ControlPlane (issue #906).
+
+### MessagingTLSSpec
+
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `caBundleSecretRef` | [`commonv1.SecretRefSpec`](../keystone/keystone-crd.md#secretrefspec) | Yes | `key: ca.crt` | The Secret holding the CA bundle a consumer trusts when it verifies the broker endpoint. |
+
+The block carries **client trust only**: a consumer renders it into
+`[oslo_messaging_rabbit]` as `ssl = true` and `ssl_ca_file`. Server-side TLS on a
+managed `RabbitmqCluster` (its own `spec.tls`) is a platform concern and is not
+projected from here, the posture the managed MariaDB already takes on TLS and
+issuer refs.
+
+That makes `tls` a **brownfield-only** leaf, and the webhook enforces it: a
+managed bus is provisioned without a TLS listener, so a `tls` block beside a
+`clusterRef` would ask for an encrypted connection nothing sets up — a mismatch
+that would surface only once the first consumer rendered `ssl = true` against a
+plaintext broker. In brownfield mode the broker's listeners belong to whoever
+runs it, so the block only says which CA the consumer trusts.
+
+There is no `enabled` flag: any present `tls` block asks for an encrypted
+connection, a nil block for a plaintext one.
 
 ---
 
@@ -873,6 +983,27 @@ classes are individual fields rather than one opaque block. A service's block
 only ever surfaces the classes that service actually consumes, which is why
 Horizon has a `cache` and no `database`.
 
+The message bus is modeled outside this block, at
+[`spec.infrastructure.messaging`](#messagingspec): one bus per ControlPlane,
+enumerated at the ControlPlane's own namespace regardless of which services
+consume it. A **dedicated per-service bus** is the next class this recipe
+applies to, with Neutron as its first host (issue #906). It takes:
+
+- `Messaging *commonv1.MessagingSpec` on the service's dedicated block, listed in
+  that block's at-least-one-class CEL rule;
+- an accessor `Dedicated<Svc>Messaging()` beside the existing
+  `Dedicated<Svc>Database()` and `Dedicated<Svc>Cache()`;
+- a `<svc>MessagingDeclaredAt` helper naming the spec path the instance was
+  declared at, so a pending-instance condition message tells a dedicated bus from
+  the shared one;
+- `validateDedicated<Svc>Messaging` in the webhook: the XOR, the two required
+  Secret names, and the freeze twins of the shared block;
+- a `defaultMessagingLeaves(m, obj.Name+"-<svc>-rabbitmq")` call in `Default`;
+- an `addMessaging(...)` call in `managedInfraInstances` at the **service's**
+  namespace, gated on the service being declared. That is the enumeration rule
+  every dedicated class follows, and the one the shared bus is the single
+  exception to.
+
 ---
 
 ## ExternalKeystoneSpec
@@ -1400,6 +1531,7 @@ truth.
 | `ImageSpec` | `services.keystone.image` | [Keystone CRD → ImageSpec](../keystone/keystone-crd.md#imagespec) |
 | `DatabaseSpec` | `infrastructure.database` | [Keystone CRD → DatabaseSpec](../keystone/keystone-crd.md#databasespec) |
 | `CacheSpec` | `infrastructure.cache` | [Keystone CRD → CacheSpec](../keystone/keystone-crd.md#cachespec) |
+| `MessagingSpec` | `infrastructure.messaging` | [MessagingSpec](#messagingspec) (on this page: the ControlPlane is the first CRD to embed it) |
 | `SecretRefSpec` | `korc.adminCredential.passwordSecretRef` | [Keystone CRD → SecretRefSpec](../keystone/keystone-crd.md#secretrefspec) |
 | `SecretStoreRefSpec` | `secretStoreRef` (projected onto the Keystone, Horizon, Glance, Placement, and Barbican children) | [Keystone CRD → SecretStoreRefSpec](../keystone/keystone-crd.md#secretstorerefspec) |
 | `PolicySpec` | `globalPolicyOverrides`, `services.keystone.policyOverrides` | [Keystone CRD → PolicySpec](../keystone/keystone-crd.md#policyspec) |
@@ -1459,6 +1591,7 @@ Keystone discipline:
 | `spec.services.keystone.replicas` | Minimum: 1 |
 | `spec.infrastructure.database.replicas` | Minimum: 1, schema default `3`. The webhook additionally rejects exactly `2` (Galera quorum — see below). |
 | `spec.infrastructure.cache.replicas` | Minimum: 1, schema default `3` |
+| `spec.infrastructure.messaging.replicas` | Minimum: 1, schema default `3` |
 | `CredentialRotation spec.target` | Enum: `adminApplicationCredential`, `serviceAccountPassword` |
 | `CredentialRotation spec.keystoneService` | Pattern `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`; MinLength 1; MaxLength 253 |
 | `CredentialRotation` (CEL) | `target == 'serviceAccountPassword'` ⇒ `has(self.keystoneService)` → "keystoneService is required when target is serviceAccountPassword" |
@@ -1469,6 +1602,7 @@ Keystone discipline:
 | `status.updatePhase` | Enum: `Idle`, `Updating`, `UpdatingServices`, `Verifying`, `RollingBack` |
 | `spec.infrastructure.database` (CEL) | `has(self.clusterRef) != has(self.host)` → "exactly one of clusterRef or host must be set" |
 | `spec.infrastructure.cache` (CEL) | `has(self.clusterRef) != (has(self.servers) && size(self.servers) > 0)` → "exactly one of clusterRef or servers must be set" |
+| `spec.infrastructure.messaging` (CEL) | `has(self.clusterRef) != has(self.secretRef)` → "exactly one of clusterRef or secretRef must be set" |
 | `spec.globalPolicyOverrides`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(k) > 0)` → "policy rule name must not be empty" |
 | `spec.globalPolicyOverrides`, `spec.services.keystone.policyOverrides` (CEL) | `!has(self.rules) \|\| self.rules.all(k, size(self.rules[k]) > 0)` → "policy rule value must not be empty" |
 | `spec.services.keystone` (CEL) | `mode == 'External'` ⇒ `has(self.external)` → "external is required when services.keystone.mode is External" |
@@ -1510,6 +1644,10 @@ short-circuit on the first error.
 | Release pattern | `spec.openStackRelease` | `field.Invalid` | Value does not match `^\d{4}\.[12]$`. Defense-in-depth alongside the CRD `+kubebuilder:validation:Pattern` marker. |
 | Database mutual exclusivity | `spec.infrastructure.database` | `field.Invalid` | Both `clusterRef` and `host` set, or neither (`(clusterRef != nil) == (host != "")`). Defense-in-depth alongside the CEL `XValidation` rule on `commonv1.DatabaseSpec`. |
 | Cache mutual exclusivity | `spec.infrastructure.cache` | `field.Invalid` | Both `clusterRef` and `servers` set, or neither (`(clusterRef != nil) == (len(servers) > 0)`). Defense-in-depth alongside the CEL `XValidation` rule on `commonv1.CacheSpec`. |
+| Messaging mutual exclusivity | `spec.infrastructure.messaging` | `field.Invalid` | The block is present with both `clusterRef` and `secretRef` set, or with neither. Defense-in-depth alongside the CEL `XValidation` rule on `commonv1.MessagingSpec`; a nil block has nothing to validate, since messaging is opt-in. |
+| Messaging brownfield Secret name required | `spec.infrastructure.messaging.secretRef.name` | `field.Required` | A brownfield `secretRef` with an empty `name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
+| Messaging CA bundle name required | `spec.infrastructure.messaging.tls.caBundleSecretRef.name` | `field.Required` | A `tls` block with an empty `caBundleSecretRef.name`. Mirrors the shared `SecretRefSpec` MinLength marker. |
+| Messaging TLS is brownfield-only | `spec.infrastructure.messaging.tls` | `field.Invalid` | A `tls` block beside a managed `clusterRef`. `ensureRabbitMQ` projects `spec.replicas` and nothing else, so the owned `RabbitmqCluster` comes up on the operator's default, plaintext listener and the requested client trust would never be honoured. **Webhook-only**: the shared `commonv1.MessagingSpec` must not carry a c5c3-specific CEL rule the keystone operator would inherit. |
 | Database replicas quorum | `spec.infrastructure.database.replicas` | `field.Invalid` | Value is exactly `2`. The managed-mode projection turns any `replicas > 1` into a Galera cluster, and a two-node Galera cluster cannot hold a majority — a single pod disruption then loses quorum. Replicas must be 1 (standalone) or >=3. The CRD marker enforces only `Minimum=1` (the shared `commonv1.DatabaseSpec` must not carry a c5c3-specific CEL rule the keystone operator, which ignores `replicas`, would inherit), so this check is **webhook-only**; a zero value (defaulting bypassed) is left to the reconciler's floor. |
 | Admin password Secret required | `spec.korc.adminCredential.passwordSecretRef.name` | `field.Required` | `name` is empty — without it the reconciler cannot (re-)mint the admin application credential. **Webhook-only**. |
 | Gateway hostname required | `spec.services.keystone.gateway.hostname` | `field.Required` | A `gateway` is configured but its `hostname` is empty. Mirrors the `+kubebuilder:validation:MinLength=1` marker on `commonv1.GatewaySpec.Hostname`; without it the reconciler derives an empty `https:///v3` public endpoint. |
@@ -1704,6 +1842,40 @@ An **infrastructure presence flip** (adding or removing the whole
 `spec.infrastructure` block on update while the mode is unchanged) is rejected
 independently as defense-in-depth for webhook-bypassed states.
 
+The **messaging block is a one-way add in both modes**. Declaring
+`spec.infrastructure.messaging` on a live ControlPlane is always allowed;
+removing it is not.
+
+The **managed** half is the direct one: the owned `RabbitmqCluster` holds the
+queues, so the removal would leave it running and unreferenced — delete the
+ControlPlane to tear that bus down. The **brownfield** half provisions nothing,
+so its removal strands no state on its own, but admitting it would turn the mode
+freeze below into a two-step operation: null the brownfield block, then re-add it
+with a `clusterRef` as an ordinary opt-in, and the ControlPlane has reached
+exactly the state the mode freeze exists to reject — a fresh, empty
+`RabbitmqCluster` every consumer renders a transport URL for while the queues
+stay on the external broker the `secretRef` named — without a single admission
+error. Neither spec nor status remembers the mode a previous revision declared,
+so the one-step rejection is only worth having while the two-step path is closed
+too. Re-pointing a brownfield bus at a different broker never needed the removal:
+`secretRef` stays mutable.
+
+The mode and a managed `clusterRef.name` are frozen the way the cache ones are.
+`replicas`, `secretRef` and `tls` stay mutable: `ensureRabbitMQ` re-projects the
+replica count onto the owned CR on every pass — converging a scale-**down** by
+recreating the cluster, since the RabbitMQ Cluster Operator refuses an in-place
+shrink — and the brownfield Secret and the client trust are re-read on every
+reconcile. Freezing the scale-down instead would leave an oversized bus on a
+constrained cluster unrepairable: the broker never reaches its declared replica
+count, so `InfrastructureReady` never goes `True`, and the only remaining action
+would be deleting the whole ControlPlane. The destructive half of that mutability
+is gated in the reconciler rather than at admission: a shrink runs only when the
+ControlPlane carries `c5c3.io/allow-messaging-recreate: "true"`, so the repair
+path stays open while an unintended decrement is refused with the broker intact.
+
+The freeze is webhook-only, with no CEL transition rule, so a later teardown or
+migration feature can relax it.
+
 | Rule | Field Path | Condition |
 | --- | --- | --- |
 | Managed → External rejected | `spec.services.keystone.mode` | Old not External, new External — "cannot be changed to External" |
@@ -1715,6 +1887,9 @@ independently as defense-in-depth for webhook-bypassed states.
 | Database replicas immutable | `spec.infrastructure.database.replicas` | The value changed. `replicas` is projected into the managed MariaDB child's replica count and derived Galera topology, so a live edit would drive a destructive Update on the owned cluster (toggling Galera off or scaling a running Galera cluster down); the topology can only be changed safely by recreating the control plane. |
 | Cache mode immutable | `spec.infrastructure.cache` | `clusterRef` nil-ness changed (managed ↔ brownfield) |
 | Cache clusterRef.name immutable | `spec.infrastructure.cache.clusterRef.name` | Both managed, but the name changed |
+| Messaging removal rejected | `spec.infrastructure.messaging` | A block was declared on the old revision and is absent on the new one, in **either** mode: "spec.infrastructure.messaging cannot be removed once declared: …". Adding the block is allowed; the brownfield removal is rejected because admitting it would launder the mode freeze below into a two-step flip. |
+| Messaging mode immutable | `spec.infrastructure.messaging` | `clusterRef` nil-ness changed (managed ↔ brownfield): "messaging mode (managed clusterRef vs brownfield secretRef) is immutable" |
+| Messaging clusterRef.name immutable | `spec.infrastructure.messaging.clusterRef.name` | Both managed, but the name changed: "managed messaging clusterRef.name is immutable" |
 | Cloud secretName immutable | `spec.korc.adminCredential.cloudCredentialsRef.secretName` | The value changed |
 | Region immutable | `spec.region` | The region changed |
 | Service target cluster immutable | `spec.services.{keystone,horizon,glance,placement,barbican}.targetClusterRef` | The ref was added, removed, or renamed on a service the old revision already declared; the message contains `targetClusterRef is immutable`, the same string the workload CRDs' CEL transition rules pin. Re-pointing a live service leaves its workload, its database, its tenant store, and its credential material on the cluster they were created on, and nothing in the following reconcile moves or reaps them. Webhook-only, with **no** CEL transition rule, so a migration between clusters can be gated later rather than being blocked forever — the same rationale as the `namespace` freeze. A service the old revision did **not** declare may appear placed: that is the service's creation, not a move. |
@@ -1798,6 +1973,14 @@ with an empty mode), then branches on the mode:
   brownfield discriminator (`database.host` / `cache.servers`) is unset, so the
   database/cache XOR validation still passes for a brownfield CR.
 
+**Messaging is opt-in and never materialized.** The webhook does not construct
+`spec.infrastructure.messaging`, so a ControlPlane that omits it is admitted with
+no message bus at all. When the block is present, `defaultMessagingLeaves` fills
+its well-known leaves on the same brownfield discipline as the database:
+`clusterRef.name` (`openstack-rabbitmq`) is invented only when `secretRef` is
+unset, a brownfield `secretRef.key` becomes `transport_url`, and a
+`tls.caBundleSecretRef.key` becomes `ca.crt`.
+
 The defaulting constants in `controlplane_webhook.go` (e.g. `DefaultRegion`
 `"RegionOne"`, `DefaultDatabaseName` `"keystone"`, `DefaultCacheBackend`
 `"dogpile.cache.pymemcache"`) are the single source of truth shared with the
@@ -1815,6 +1998,9 @@ markers' documented values where a marker also exists.
 | `spec.infrastructure.database.clusterRef.name` | `host == ""` (managed mode) | `"openstack-db"` | Webhook-only, brownfield-guarded |
 | `spec.infrastructure.cache.backend` | `== ""` | `"dogpile.cache.pymemcache"` | Webhook-only |
 | `spec.infrastructure.cache.clusterRef.name` | `len(servers) == 0` (managed mode) | `"openstack-memcached"` | Webhook-only, brownfield-guarded |
+| `spec.infrastructure.messaging.clusterRef.name` | messaging block present, `secretRef == nil` (managed mode) | `"openstack-rabbitmq"` | Webhook-only, brownfield-guarded |
+| `spec.infrastructure.messaging.secretRef.key` | messaging block present, `secretRef` set, `key == ""` | `"transport_url"` | Webhook-only |
+| `spec.infrastructure.messaging.tls.caBundleSecretRef.key` | messaging block present, `tls` set, `key == ""` | `"ca.crt"` | Webhook-only |
 | `spec.korc.adminCredential.passwordSecretRef.name` | `== ""` | `"keystone-admin"` | Webhook-only |
 | `spec.korc.adminCredential.passwordSecretRef.key` | `== ""` | `"password"` | Webhook-only |
 | `spec.services.keystone.mode` | `== ""` (keystone block present) | `Managed` | Marker + webhook |
@@ -1957,6 +2143,8 @@ Set by `reconcileInfrastructure`.
 | `False` | `WaitingForCache` | Managed Memcached is ensured but not yet Ready. |
 | `False` | `MariaDBError` | Error create-or-updating the MariaDB child. |
 | `False` | `MemcachedError` | Error create-or-updating the Memcached child. |
+| `False` | `WaitingForMessaging` | The managed `RabbitmqCluster` is ensured but does not report `AllReplicasReady` yet. Message: `RabbitmqCluster "<name>" in namespace "<ns>" (spec.infrastructure.messaging) is not ready`. |
+| `False` | `RabbitMQError` | Error create-or-updating the `RabbitmqCluster` child. Message: `ensuring RabbitmqCluster "<name>" in namespace "<ns>" (spec.infrastructure.messaging): <error>`. A cluster that does not serve the `rabbitmq.com` CRD fails closed here, with a `no matches for kind` error from the `Get`. An unauthorised scale-down lands here too: the declared `replicas` is below the owned cluster's and `c5c3.io/allow-messaging-recreate` is not set, so the destructive recreate is refused and the error names the annotation. |
 | `True` | `ExternallyManaged` | `services.keystone.mode` is `External`: identity is managed against `services.keystone.external.authURL`, so no MariaDB/Memcached is provisioned. |
 | `False` | `InfrastructureNotConfigured` | `spec.infrastructure` is unset on a **non**-External ControlPlane. The validating webhook requires the block outside External mode, so this only fires for a webhook-bypassed CR; it fails closed rather than dereferencing the nil block. |
 

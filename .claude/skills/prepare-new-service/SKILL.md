@@ -87,10 +87,19 @@ applies and which decisions need a Phase-0 spike:
   growth is silent — no probe, condition, or metric observes a purge that
   was never scheduled. § Recurring maintenance jobs below is the build
   sheet and the retro-fit bill.
-- **Message bus?** No shared RabbitMQ spec or backing service exists yet —
-  the **first** RabbitMQ consumer must add a `commonv1` messaging type and
-  extend `InfrastructureSpec` + `hack/deploy-infra.sh`. That is its own
-  pre-work issue.
+- **Message bus?** The shared bus exists: `commonv1.MessagingSpec` at
+  `spec.infrastructure.messaging` (opt-in, managed `clusterRef` or brownfield
+  `secretRef`), the `RabbitmqCluster` the ControlPlane provisions in its own
+  namespace, and the rabbitmq-cluster-operator delivered through Flux. The
+  consumer side does not: the **first** RabbitMQ consumer builds the shared
+  resolver that turns either mode into the derived `<instance>-transport-url`
+  Secret, the `OS_DEFAULT__TRANSPORT_URL` env override that sources it, and the
+  `[oslo_messaging_rabbit]` posture it renders. It also has to answer whether it
+  shares that bus or wants a **dedicated** one, which is a per-service slot
+  nobody has built yet. The recipe for it is
+  `### Adding a backing-service class` in
+  `docs/reference/c5c3/controlplane-crd.md`; Neutron is its first host
+  (issue #906).
 - **Extra backing store?** (object store, message queue, cache beyond
   memcached) — a new backing service is its own pre-work issue (#653:
   Garage S3 for glance is the template — operator + declarative
