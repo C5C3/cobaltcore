@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.infrastructure.messaging naming both a clusterRef and a secretRef violates
+# the type-level CEL rule on commonv1.MessagingSpec (exactly one of clusterRef or
+# secretRef must be set). The two refs are the managed and the brownfield mode:
+# one has the ControlPlane provision a RabbitmqCluster, the other reads a
+# transport URL off a Secret, and a CR asking for both leaves the reconciler no
+# way to decide which broker the control plane talks to. The webhook mirror in
+# validation.MessagingXOR is the twin that catches this when the schema is
+# bypassed.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-messaging-both-modes
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging:
+      clusterRef:
+        name: openstack-rabbitmq
+      secretRef:
+        name: bus-url
+  services:
+    keystone:
+      mode: Managed
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

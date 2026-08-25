@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# UPDATE dropping the BROWNFIELD messaging block from the accepted base is
+# rejected: the block is a one-way add in BOTH modes. Brownfield provisions
+# nothing - managedInfraInstances returns early on a nil clusterRef - so the
+# removal strands no state on its own, but admitting it would launder the mode
+# freeze the previous step pins into a two-step flip: null the block here, then
+# re-add it with a clusterRef as an ordinary opt-in, and every consumer is
+# re-pointed at a fresh, empty RabbitmqCluster while the queues stay on the
+# brownfield broker - without a single admission error. Nothing in spec or
+# status remembers the mode a previous revision declared, so the one-step
+# rejection only holds while this one does too. The MANAGED removal is the same
+# rule seen from the other side, pinned against a live owned broker by the
+# messaging e2e suite and by TestValidateUpdate_MessagingFreeze. messaging is
+# explicitly nulled, not merely omitted: Chainsaw applies an UPDATE as an RFC
+# 7386 JSON merge patch, so an omitted block would simply be retained and the
+# step would assert nothing.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-transition-g
+spec:
+  openStackRelease: "2025.2"
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+    messaging: null
+  services:
+    keystone:
+      mode: Managed
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

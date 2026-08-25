@@ -1,0 +1,374 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the SHARED RabbitMQ message bus.
+#
+# A ControlPlane declares spec.infrastructure.messaging and gets exactly one
+# broker for the whole control plane. This suite asserts, on a live cluster:
+#
+#   - the bus is PROVISIONED from spec.infrastructure.messaging alone. The fixture
+#     declares no service at all (services: {}), because a bus is shared across
+#     services by nature: "declared" means "wanted", unlike a database or a cache,
+#     which follow the services that consume them;
+#   - it is OWNED by the ControlPlane (a controller owner reference with
+#     blockOwnerDeletion), the garbage-collection contract the sibling
+#     dedicated-backing-services suite pins for MariaDB and Memcached;
+#   - it is SIZED from the block: spec.replicas on the RabbitmqCluster comes from
+#     spec.infrastructure.messaging.replicas;
+#   - the brownfield shared database and cache provision NOTHING, so the broker is
+#     the only backing-service instance in the namespace;
+#   - readiness is GATED on the broker. The RabbitMQ Cluster Operator sets no
+#     Ready condition, so the reconciler follows AllReplicasReady, and
+#     InfrastructureReady only goes True (reason InfrastructureReady) once that
+#     condition is True;
+#   - the block is a one-way add: dropping it from the live ControlPlane is
+#     rejected, because the owned RabbitmqCluster would keep running with every
+#     queue on it. Only the MANAGED half of the freeze is asserted here — this is
+#     the only suite with a live managed bus — while the brownfield half (rejected
+#     too, because admitting it would launder the mode freeze into a two-step
+#     flip) lives in tests/e2e/c5c3/invalid-cr;
+#   - teardown goes through the ControlPlane, never through the namespace. The
+#     suite deletes its ControlPlane itself and waits until the owned
+#     RabbitmqCluster and the broker pod are gone before chainsaw deletes the
+#     namespace. On Kubernetes >= 1.33 the namespace controller deletes pods
+#     first, holds every other resource back while a pod remains, and revisits
+#     the namespace only after half the longest pod terminationGracePeriodSeconds
+#     it found; the broker pod carries the RabbitMQ Cluster Operator's default of
+#     604800s, so a namespace deleted around a live broker is revisited ~3.5 days
+#     later and the ControlPlane is never even issued a delete (see the teardown
+#     section of the script).
+#
+# ── Ephemeral namespace, not the canonical `openstack` ControlPlane ──────────
+# Like the dedicated-backing-services suite, this test does NOT reuse the
+# canonical "controlplane" CR in namespace "openstack": the webhook permits one
+# ControlPlane per namespace, and MANAGED messaging is a one-way add on a live CR,
+# so the declaration below cannot be patched onto a pre-existing ControlPlane and
+# then unwound. Chainsaw's ephemeral per-test namespace gives the suite a ControlPlane
+# identity of its own.
+#
+# ── Presence guard + single consolidated script ──────────────────────────────
+# Mirrors the sibling c5c3 suites: the stack this test spans is not installed by
+# every E2E cluster, and the suite runs under execution.failFast
+# (tests/e2e/chainsaw-config.yaml), so a pure declarative test would hard-fail
+# every cluster missing that stack. A runtime presence guard probes for the CRDs
+# and exits 0 with a SKIP line when they are absent;
+# E2E_REQUIRE_CONTROLPLANE_STACK=true flips the guard from SKIP to a hard failure
+# so a job that IS meant to carry the stack cannot go green on missing wiring.
+# Because chainsaw has no step-level skip, the guard and all assertions live in
+# ONE script step.
+#
+# The guard probes the CRD list the sibling suite probes (every kind the
+# ControlPlane controller watches or reads, see that suite's header) plus
+# rabbitmqclusters.rabbitmq.com. The RabbitmqCluster leg is listed for a reason of
+# its own: the c5c3 operator watches that kind behind a discovery gate, so a
+# cluster without the rabbitmq-cluster-operator starts clean and admits the
+# fixture, then parks the ControlPlane on InfrastructureReady=False with reason
+# RabbitMQError. Probing the CRD turns that into a SKIP instead of a failing wait
+# for a broker the cluster can never create.
+#
+# ── Deliberately not asserted: consumer wiring ───────────────────────────────
+# No service reads the bus yet, so this suite stops at the provisioned, owned,
+# sized, ready broker and asserts nothing about who talks to it. The transport
+# URL projection into a service's oslo.messaging config lands with the first
+# consumer.
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: messaging
+spec:
+  # No fixed spec.namespace: chainsaw runs this Test in its own ephemeral
+  # namespace and injects it as $NAMESPACE (see the note above).
+  timeouts:
+    assert: 5m
+    exec: 15m
+  steps:
+  - try:
+    - script:
+        # Budget: the AllReplicasReady poll is bounded at 600s, the
+        # InfrastructureReady poll at 180s, the ControlPlane delete at 300s, the
+        # RabbitmqCluster and broker-pod teardown waits at 180s each, and every
+        # other probe is a bounded kubectl call. 13m caps the whole step and
+        # leaves headroom on a cold single-node cluster pulling the RabbitMQ
+        # image; the teardown waits complete in seconds on the operator's own
+        # deletion path.
+        timeout: 13m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; every c5c3
+        # e2e script pins bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          CP_NS="${NAMESPACE}"
+          CP_NAME=cp
+          BUS=cp-rabbitmq
+
+          REQUIRE_STACK="${E2E_REQUIRE_CONTROLPLANE_STACK:-false}"
+          skip_or_fail() { # <reason...>
+            if [ "${REQUIRE_STACK}" = "true" ]; then
+              echo "ERROR: $*"
+              echo "       E2E_REQUIRE_CONTROLPLANE_STACK=true — the ControlPlane"
+              echo "       stack is required on this job, so this is a hard failure."
+              exit 1
+            fi
+            echo "SKIP: $*"
+            exit 0
+          }
+
+          # ── Presence guard ────────────────────────────────────────────────
+          # The list is the sibling dedicated-backing-services one plus
+          # rabbitmqclusters.rabbitmq.com, for the two reasons the header states.
+          # Keep it in sync with ControlPlaneReconciler.SetupWithManager.
+          missing=""
+          for crd in \
+            controlplanes.c5c3.io \
+            rabbitmqclusters.rabbitmq.com \
+            mariadbs.k8s.mariadb.com \
+            memcacheds.memcached.c5c3.io \
+            keystones.keystone.openstack.c5c3.io \
+            keystoneidentitybackends.keystone.openstack.c5c3.io \
+            horizons.horizon.openstack.c5c3.io \
+            glances.glance.openstack.c5c3.io \
+            glancebackends.glance.openstack.c5c3.io \
+            placements.placement.openstack.c5c3.io \
+            applicationcredentials.openstack.k-orc.cloud \
+            services.openstack.k-orc.cloud \
+            endpoints.openstack.k-orc.cloud \
+            users.openstack.k-orc.cloud \
+            domains.openstack.k-orc.cloud \
+            projects.openstack.k-orc.cloud; do
+            if ! kubectl get crd "$crd" >/dev/null 2>&1; then
+              missing="${missing} ${crd}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            skip_or_fail "required CRDs not present:${missing}; the c5c3-operator needs every CRD its controller watches (plus the MariaDB/Memcached and RabbitMQ Cluster operators) on this cluster."
+          fi
+          echo "OK: every CRD the ControlPlane controller watches is present, and so"
+          echo "    is rabbitmqclusters.rabbitmq.com. Running the messaging"
+          echo "    assertions in namespace ${CP_NS}."
+
+          # ── Helpers ───────────────────────────────────────────────────────
+          assert_eq() { # <description> <expected> <actual>
+            if [ "$2" != "$3" ]; then
+              echo "ERROR: $1 — expected '$2', got '$3'"
+              exit 1
+            fi
+            echo "OK: $1 ('$3')"
+          }
+
+          # assert_owned checks the controller owner reference the ControlPlane
+          # stamps on every instance it provisions. This is the teardown contract:
+          # blockOwnerDeletion + controller ownership is what makes Kubernetes
+          # garbage-collect the broker with the ControlPlane, for the bus exactly
+          # as for a MariaDB or a Memcached.
+          assert_owned() { # <resource> <name>
+            local res="$1" name="$2" owner controller blocking
+            owner="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].name}")"
+            assert_eq "${res}/${name} is owned by the ControlPlane" "${CP_NAME}" "${owner}"
+            controller="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].controller}")"
+            assert_eq "${res}/${name} owner reference is a CONTROLLER reference" "true" "${controller}"
+            blocking="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+              -o "jsonpath={.metadata.ownerReferences[?(@.kind=='ControlPlane')].blockOwnerDeletion}")"
+            assert_eq "${res}/${name} owner reference blocks owner deletion" "true" "${blocking}"
+          }
+
+          wait_exists() { # <resource> <name> <timeoutSeconds>
+            local res="$1" name="$2" timeout="$3" deadline
+            deadline=$(( $(date +%s) + timeout ))
+            while ! kubectl get "${res}" "${name}" -n "${CP_NS}" >/dev/null 2>&1; do
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} was not created within ${timeout}s"
+                exit 1
+              fi
+              sleep 5
+            done
+            echo "OK: ${res}/${name} provisioned"
+          }
+
+          # wait_gone is the sibling dedicated-namespaces helper with the namespace
+          # fixed to CP_NS: NotFound is the success, any other kubectl failure is
+          # retried until the deadline.
+          wait_gone() { # <resource> <name> <timeoutSeconds>
+            local res="$1" name="$2" timeout="$3" deadline err
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              if err="$(kubectl get "${res}" "${name}" -n "${CP_NS}" 2>&1 >/dev/null)"; then
+                : # still present
+              elif grep -qi 'not found' <<<"${err}"; then
+                echo "OK: ${res}/${name} is gone"
+                return 0
+              else
+                echo "WARN: kubectl get ${res}/${name} failed (${err}); retrying"
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} was not removed within ${timeout}s"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          # wait_condition is the sibling suite's wait_ready_condition with the
+          # condition type as a parameter: the RabbitMQ Cluster Operator publishes
+          # no Ready condition, so the broker's health is read off
+          # AllReplicasReady, which is the condition the reconciler gates on too.
+          wait_condition() { # <resource> <name> <conditionType> <timeoutSeconds>
+            local res="$1" name="$2" cond="$3" timeout="$4" deadline status
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              status="$(kubectl get "${res}" "${name}" -n "${CP_NS}" \
+                -o "jsonpath={.status.conditions[?(@.type=='${cond}')].status}" 2>/dev/null || true)"
+              if [ "${status}" = "True" ]; then
+                echo "OK: ${res}/${name} ${cond}=True"
+                return 0
+              fi
+              if [ "$(date +%s)" -ge "${deadline}" ]; then
+                echo "ERROR: ${res}/${name} ${cond} not True within ${timeout}s (last: '${status:-<none>}')"
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          # ── Apply the ControlPlane ────────────────────────────────────────
+          # Chainsaw runs scripts with the test directory as CWD. The fixture
+          # carries no namespace, so it lands in the ephemeral one.
+          kubectl apply -n "${CP_NS}" -f 00-controlplane-cr.yaml
+
+          # ── The bus is provisioned, owned, and sized from the block ────────
+          # The fixture declares no service, so a broker appearing here can only
+          # come from spec.infrastructure.messaging itself.
+          wait_exists rabbitmqcluster "${BUS}" 120
+          assert_owned rabbitmqcluster "${BUS}"
+          assert_eq "RabbitmqCluster replica count comes from spec.infrastructure.messaging" "1" \
+            "$(kubectl get rabbitmqcluster "${BUS}" -n "${CP_NS}" -o 'jsonpath={.spec.replicas}')"
+
+          # ── The brownfield SHARED database and cache provision NOTHING ─────
+          # Assert the exact provisioned set, not a superset: a MariaDB or a
+          # Memcached appearing here would mean the reconciler still projects a
+          # brownfield block, and the broker would no longer be the only instance
+          # the readiness assertion below can be attributed to.
+          assert_eq "the brownfield shared database provisions no MariaDB" "" \
+            "$(kubectl get mariadb -n "${CP_NS}" -o 'jsonpath={.items[*].metadata.name}')"
+          assert_eq "the brownfield shared cache provisions no Memcached" "" \
+            "$(kubectl get memcached -n "${CP_NS}" -o 'jsonpath={.items[*].metadata.name}')"
+
+          # ── Readiness is gated on the broker ──────────────────────────────
+          # Nothing else is provisioned here, so InfrastructureReady=True is
+          # exactly the statement "the bus came up".
+          wait_condition rabbitmqcluster "${BUS}" AllReplicasReady 600
+          READY_DEADLINE=$(( $(date +%s) + 180 ))
+          while true; do
+            INFRA_READY="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+              -o "jsonpath={.status.conditions[?(@.type=='InfrastructureReady')].status}" 2>/dev/null || true)"
+            [ "${INFRA_READY}" = "True" ] && break
+            if [ "$(date +%s)" -ge "${READY_DEADLINE}" ]; then
+              echo "ERROR: InfrastructureReady not True within 180s of the bus reaching AllReplicasReady (last: '${INFRA_READY:-<none>}')"
+              exit 1
+            fi
+            sleep 5
+          done
+          INFRA_REASON="$(kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
+            -o "jsonpath={.status.conditions[?(@.type=='InfrastructureReady')].reason}")"
+          assert_eq "InfrastructureReady carries the ready reason, not a wait reason" \
+            "InfrastructureReady" "${INFRA_REASON}"
+
+          # ── The block is a one-way add ───────────────────────────────────
+          # Dropping it would leave the owned RabbitmqCluster running and
+          # unreferenced with every queue still on it, so the webhook rejects the
+          # removal. This is the MANAGED half of the freeze; the brownfield half
+          # (rejected as well, so the mode freeze cannot be laundered into a
+          # two-step flip) is pinned in tests/e2e/c5c3/invalid-cr. Asserted here
+          # because this is the only suite with a live managed bus.
+          if removal_err="$(kubectl patch controlplane "${CP_NAME}" -n "${CP_NS}" --type=merge \
+            -p '{"spec":{"infrastructure":{"messaging":null}}}' 2>&1)"; then
+            echo "ERROR: removing the managed messaging block was ADMITTED; the freeze is gone"
+            exit 1
+          fi
+          case "${removal_err}" in
+            *"cannot be removed once declared"*)
+              echo "OK: removing the managed message bus is rejected at admission" ;;
+            *)
+              echo "ERROR: the removal was rejected, but not by the messaging freeze: ${removal_err}"
+              exit 1 ;;
+          esac
+
+          # ── Teardown goes through the ControlPlane, never the namespace ────
+          # Chainsaw's cleanup deletes the ephemeral namespace. On Kubernetes
+          # >= 1.33 (OrderedNamespaceDeletion, GA and locked since 1.34) the
+          # namespace controller deletes pods FIRST, holds every other resource
+          # back while a pod remains, and requeues the namespace after half the
+          # longest pod terminationGracePeriodSeconds it found. The broker pod
+          # carries the RabbitMQ Cluster Operator's default of 604800s (seven
+          # days, so its preStop drain can finish), so a namespace deleted around
+          # a live broker is revisited ~3.5 days later: the ControlPlane and the
+          # RabbitmqCluster are never even issued a delete, and the cleanup
+          # timeout (tests/e2e/chainsaw-config.yaml, cleanup: 3m) expires.
+          #
+          # The operator's own teardown path is the RabbitmqCluster delete: it
+          # labels the pod skipPreStopChecks, releases its finalizer, and the pod
+          # exits promptly. The controller owner reference asserted above is what
+          # triggers that delete once the ControlPlane is gone. So the suite tears
+          # the ControlPlane down itself, as dedicated-namespaces does, and hands
+          # chainsaw a namespace with no pod left in it.
+          kubectl delete controlplane "${CP_NAME}" -n "${CP_NS}" --wait=true --timeout=300s
+          wait_gone rabbitmqcluster "${BUS}" 180
+          # The cluster-operator labels a broker's pods with the RabbitmqCluster
+          # name under app.kubernetes.io/name (the catch block's selector).
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "${CP_NS}" -l "app.kubernetes.io/name=${BUS}" -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "ERROR: a broker pod outlived its RabbitmqCluster by 180s; the namespace cannot be deleted around it"
+              kubectl get pods -n "${CP_NS}" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: deleting the ControlPlane tore the broker down through the operator's"
+          echo "    own path; no RabbitmqCluster and no broker pod remain."
+
+          # Consumer wiring is not asserted: no service reads the bus yet (see the
+          # header note).
+          echo "OK: the shared message bus is provisioned, owned, sized, readiness-gated,"
+          echo "    frozen against removal while managed, and torn down with its ControlPlane."
+    catch:
+    - script:
+        shell: bash
+        content: |
+          echo "=== ControlPlane spec + status.conditions ==="
+          kubectl get controlplane cp -n "${NAMESPACE}" -o yaml 2>&1 || true
+          echo "=== RabbitmqCluster ==="
+          kubectl describe rabbitmqcluster cp-rabbitmq -n "${NAMESPACE}" 2>&1 || true
+          echo "=== All backing-service CRs in the namespace ==="
+          kubectl get rabbitmqcluster,mariadb,memcached -n "${NAMESPACE}" 2>&1 || true
+          # The broker's own pods and volumes: the operator defaults request 1 CPU
+          # and 2Gi per pod on a 10Gi PVC, so an unschedulable pod or an unbound
+          # claim is the first thing to look at on a single-node cluster.
+          echo "=== Pods and PVCs in the namespace ==="
+          kubectl get pods,pvc -n "${NAMESPACE}" -o wide 2>&1 || true
+          # The cluster-operator labels a broker's pods with the RabbitmqCluster
+          # name under app.kubernetes.io/name.
+          echo "=== Broker pods ==="
+          kubectl describe pod -n "${NAMESPACE}" -l app.kubernetes.io/name=cp-rabbitmq 2>&1 || true
+          echo "=== rabbitmq-cluster-operator pods ==="
+          kubectl get pods -n rabbitmq-system -o wide 2>&1 || true
+          echo "=== rabbitmq-cluster-operator logs (last 100 lines) ==="
+          kubectl logs -n rabbitmq-system -l app.kubernetes.io/name=rabbitmq-cluster-operator --tail=100 --all-containers 2>&1 || true
+          # The operator's release namespace differs per job (keystone-system is
+          # the ci-deploy-operator.sh default, e2e-controlplane uses
+          # c5c3-system), so resolve it from the pods instead of hardcoding one —
+          # a hardcoded miss silently drops the single most important evidence.
+          echo "=== c5c3-operator pods (restarts betray a crash-looping leader) ==="
+          kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator -o wide 2>&1 || true
+          OPERATOR_NS="$(kubectl get pods -A -l app.kubernetes.io/name=c5c3-operator \
+            -o 'jsonpath={.items[0].metadata.namespace}' 2>/dev/null || true)"
+          echo "=== c5c3-operator logs (current, last 100 lines) ==="
+          kubectl logs -n "${OPERATOR_NS:-c5c3-system}" -l app.kubernetes.io/name=c5c3-operator --tail=100 --all-containers 2>&1 || true
+          echo "=== c5c3-operator logs (previous, last 100 lines) ==="
+          kubectl logs -n "${OPERATOR_NS:-c5c3-system}" -l app.kubernetes.io/name=c5c3-operator --tail=100 --all-containers --previous 2>&1 || true
+          echo "=== Events (last 30) ==="
+          kubectl get events -n "${NAMESPACE}" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
