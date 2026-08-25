@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Deploy the RabbitMQ Cluster Operator, the controller behind the
+# rabbitmq.com/v1beta1 RabbitmqCluster CRD. The c5c3-operator projects one such
+# CR for every ControlPlane that declares managed spec.infrastructure.messaging,
+# and the operator turns it into the message bus the OpenStack services of that
+# control plane share.
+#
+# DECISION: a Flux Kustomization (kustomize.toolkit.fluxcd.io), not a
+# HelmRelease. Upstream ships no chart (see
+# sources/rabbitmq-cluster-operator.yaml), so this runs the kustomize build of
+# ./config/installation, the base upstream documents as its install path. That
+# base carries its own kustomization.yaml with namespace: rabbitmq-system: it
+# declares the Namespace and namespaces every resource into it, so no
+# spec.targetNamespace is set here. rabbitmq-system is co-declared in
+# deploy/flux-system/namespaces.yaml (as orc-system is) so the Namespace exists
+# before this Kustomization reconciles.
+#
+# cert-manager: the base includes the two admission webhooks the operator has
+# shipped since v2.22.0, plus the self-signed Issuer and the Certificates that
+# back them, so cert-manager has to be present. There is no dependsOn saying so:
+# a Flux Kustomization can only depend on other Kustomizations, and cert-manager
+# is a HelmRelease (releases/cert-manager.yaml). On a cold cluster the
+# Issuer/Certificate apply therefore fails while cert-manager's CRDs are still
+# missing, and one of the following retryInterval passes succeeds. The
+# Kustomization reports NotReady in between, which is the convergence path, not a
+# stuck state.
+#
+# POSTURE: upstream is maintained (VMware/Broadcom, Mozilla Public License 2.0)
+# and publishes no cosign signature, so both halves are pinned by content: the
+# Git commit in the source, the image digest below.
+#
+# Images: the inner kustomization already rewrites the dev placeholder
+# rabbitmqoperator/cluster-operator-dev to ghcr.io/rabbitmq/cluster-operator with
+# the mutable tag latest, so this outer override keys on that resolved NAME
+# rather than on the placeholder, and it is what keeps latest out of the cluster.
+# The digest resolves the pull; newTag stays as the human-readable record of the
+# tag the digest was resolved from and as the offline drift anchor, the same
+# split releases/k-orc.yaml documents. Resolve a new digest at bump time, e.g.
+#   crane digest ghcr.io/rabbitmq/cluster-operator:<tag>
+# Renovate bumps newTag and digest together in one reviewed PR;
+# tests/unit/renovate/rabbitmq_cluster_operator_image_custommanager_test.sh
+# guards that pairing.
+#
+# A name-keyed override is one upstream rename away from applying to nothing:
+# kustomize's image transformer no-ops silently when no resource matches, and
+# the cluster would then run the mutable latest tag for a controller with
+# cluster-wide RBAC. Neither test above renders the kustomize output, so
+# hack/deploy-infra.sh and hack/deploy-mgmt-cluster.sh assert the digest on the
+# RENDERED Deployment after this Kustomization goes Ready, and abort the deploy
+# when it is missing.
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: rabbitmq-cluster-operator
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  timeout: 5m
+  sourceRef:
+    kind: GitRepository
+    name: rabbitmq-cluster-operator
+    namespace: flux-system
+  path: ./config/installation
+  images:
+    # The Renovate customManager anchors on this exact shape: the newTag line
+    # directly precedes the digest line, and both values are double-quoted. Keep
+    # the order and the quoting when bumping, or the pair stops being tracked.
+    - name: ghcr.io/rabbitmq/cluster-operator
+      newTag: "2.22.5"
+      digest: "sha256:2727b84b835ada97247bbb65ebfa6998168b4e8ee11b0e6cece56ac2c9c4f0fb"
+  prune: true
+  wait: true

@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The RabbitMQ Cluster Operator serves the rabbitmq.com/v1beta1 RabbitmqCluster
+# CRD that the c5c3-operator projects for spec.infrastructure.messaging.
+#
+# DECISION: GitRepository, not HelmRepository or OCIRepository. Upstream ships no
+# Helm chart; the install path it documents is the config/installation kustomize
+# base carried in the repository itself. The only OCI chart that ever wrapped
+# this operator was Bitnami's
+# oci://registry-1.docker.io/bitnamicharts/rabbitmq-cluster-operator, and it is
+# not an option: it stopped at chart 4.4.34 on 2025-08-21 (operator 2.16.1), and
+# the docker.io/bitnami/rabbitmq-cluster-operator images it points at are gone
+# from Docker Hub. So we vendor a GitRepository and apply the base through a Flux
+# Kustomization (releases/rabbitmq-cluster-operator.yaml).
+#
+# CONTENT PIN, not a version pin. Upstream is maintained (VMware/Broadcom,
+# Mozilla Public License 2.0) but publishes no cosign signature, so spec.verify
+# would have nothing to check. A tag is a mutable Git ref, and re-pushing it
+# would hand different bytes to a controller that runs with cluster-wide RBAC.
+# ref.commit closes that: Flux's gogit client evaluates commit before every other
+# ref field, so the commit below is what gets checked out and the tag alone
+# decides nothing. ref.tag rides alongside as the human-readable version and as
+# Renovate's lookup handle. The image is pinned by digest in
+# releases/rabbitmq-cluster-operator.yaml.
+#
+# The clone is scoped to /config via spec.ignore, as sources/k-orc.yaml does, so
+# the source artifact stays small: the installer reads nothing outside config/.
+#
+# Renovate's native flux manager does not cover this repo, so the tag and the
+# commit are bumped together by one customManager rule in renovate.json;
+# tests/unit/renovate/rabbitmq_cluster_operator_source_custommanager_test.sh
+# guards that pairing.
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: rabbitmq-cluster-operator
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: https://github.com/rabbitmq/cluster-operator
+  # The Renovate customManager anchors on this exact shape: the tag line
+  # directly precedes the commit line, and both values are double-quoted. Keep
+  # the order and the quoting when bumping, or the pair stops being tracked.
+  ref:
+    tag: "v2.22.5"
+    commit: "17dd297f71de40a722baf69167b8af511072175e"
+  ignore: |
+    # Vendor only the config/ kustomize base; skip the rest of the repo.
+    /*
+    !/config

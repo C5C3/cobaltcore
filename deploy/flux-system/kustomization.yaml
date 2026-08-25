@@ -42,6 +42,10 @@ resources:
   # secret-store backend). A digest-pinned OCIRepository, not a HelmRepository —
   # see the manifest for why this chart pins content rather than a version.
   - sources/openbao-operator.yaml
+  # RabbitMQ Cluster Operator, which serves the RabbitmqCluster CRD behind the
+  # ControlPlane's shared message bus. A GitRepository, not a chart source: see
+  # the manifest for why.
+  - sources/rabbitmq-cluster-operator.yaml
 
   # HelmRelease operators (deployed via FluxCD).
   # Chaos Mesh is intentionally absent: opt-in via deploy/kind/chaos-mesh/
@@ -64,3 +68,7 @@ resources:
   # OpenBao instance operator (per-service OpenBao instances; Barbican
   # secret-store backend).
   - releases/openbao-operator.yaml
+  # RabbitMQ Cluster Operator for the ControlPlane's shared message bus. A
+  # Git-sourced Flux Kustomization over the upstream installer base, not a
+  # HelmRelease: see the manifest.
+  - releases/rabbitmq-cluster-operator.yaml
