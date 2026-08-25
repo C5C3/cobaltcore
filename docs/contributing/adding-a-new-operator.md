@@ -154,3 +154,82 @@ new operators build on them rather than reopening them:
   gets a separate shared renderer package rather than bolting Python emission
   onto the INI renderer. `internal/common/pysettings` now exists, implemented
   with its first consumer, the horizon-operator.
+
+## Node-level workloads
+
+Every operator on this page projects API Deployments onto whatever node the
+scheduler picks. A node-level workload does not work that way: the OVN chassis
+(issue #903) runs one pod per node, needs kernel access the Restricted posture
+forbids, and reads part of its configuration off the node it landed on. Issues
+#903 and #905 implement against the rules below.
+
+### Container posture
+
+`RestrictedSecurityContext` stays the posture for every API Deployment, Job and
+CronJob, guarded by the five `pod-security-restricted` suites under
+`tests/e2e/<op>/`. `internal/common/deployment` will gain two escapes — neither
+exists yet; today the package exports `RestrictedSecurityContext` alone, and each
+escape lands with its first consumer under issues #903 and #905 — and a container
+takes the weaker one that still works:
+
+- `CapabilitySecurityContext(caps...)` keeps the Restricted fields and adds
+  named capabilities. ovs-vswitchd and ovn-controller need `NET_ADMIN`;
+  ovsdb-server needs no capability and stays Restricted.
+- `PrivilegedSecurityContext()` is for a container that cannot run any other
+  way: the `SYS_MODULE` init container that loads modules from the host's
+  module tree, and the metadata agent, which reaches into `/run/netns`.
+
+A DaemonSet that uses either one lives in a namespace labelled
+`pod-security.kubernetes.io/enforce: privileged`. On a target cluster the label
+comes from the access chart's `privilegedNamespaces` value, which also gates the
+`daemonsets` grant, and which gives the chassis a namespace of its own: without
+PodSecurity enforcement, `create` on a workload there reaches node root, so
+nothing else may be placed in it. See
+[Target Clusters](../reference/target-clusters.md) for what that costs. On a kind
+devstack no label is needed: PodSecurity admission defaults to the `privileged`
+level there, so an unlabelled namespace admits the pods as they are.
+
+### Per-node values
+
+Identity the kubelet already knows comes through the downward API: `NODE_NAME`
+from `spec.nodeName`, `NODE_IP` from `status.hostIP`. An init container applies
+it before the daemon starts.
+
+```bash
+ovs-vsctl set open . external_ids:hostname="$NODE_NAME" external_ids:ovn-encap-ip="$NODE_IP"
+```
+
+A value that depends on cluster state the pod cannot see (the gateway role, the
+bridge mappings derived from node labels) is rendered by the operator into a
+namespaced object keyed by node name. The init container reads that object
+through a Role the operator projects. The access chart already grants `roles`,
+`rolebindings` and `configmaps` per namespace, so a target cluster needs nothing
+new for this.
+
+Stable identity, the OVN `system-id`, has to survive the pod, so the operator
+persists it — into that same namespaced per-node object, and it reads it back on
+the next pass. A Node annotation would be the other candidate, and it is the
+wrong one: writing it needs `patch` on `nodes`, Kubernetes cannot narrow that
+verb to one annotation key, and the labels and taints it carries with it are
+enough to lift `node-role.kubernetes.io/control-plane:NoSchedule` and put a
+privileged chassis pod on the control-plane node. The access chart therefore
+grants `nodes` read-only and has no `patch` opt-in at all. The chassis pod holds
+no cluster-scoped grant of its own either, and the chart grants it no ClusterRole
+or ClusterRoleBinding write.
+
+### Placement and teardown
+
+A DaemonSet placed on a target cluster is a remote child like any other. It
+carries the ownership labels described under "Ownership and teardown on the
+target" in [Target Clusters](../reference/target-clusters.md), so the
+placed-namespace sweep reclaims it when the owning CR goes away.
+
+### CI substrate
+
+`KIND_CONFIG=hack/kind-config-multinode.yaml` on `make deploy-infra` brings up
+one control-plane node plus two workers. The default single-node config binds
+the same host ports, so only one of the two clusters can exist on a host at a
+time. `WITH_OVN_KERNEL_MODULES=true` makes `hack/deploy-infra.sh` load
+`openvswitch` and `geneve` on the host first; the `setup-e2e-infra` action
+threads the flag through for CI. Which of those a job may block on is settled in
+[Kernel-module-dependent suites](../reference/ci-cd/ci-workflow.md#kernel-module-dependent-suites).

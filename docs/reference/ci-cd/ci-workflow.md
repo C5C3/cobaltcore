@@ -749,6 +749,40 @@ fault recovery.
 via `go_common`) — triggers the job via `go_changed` in `ci-resolve-changes.sh`, since chaos
 tests validate operator resilience against the current codebase.
 
+### Kernel-module-dependent suites
+
+A suite whose workload needs host kernel modules enters CI non-blocking: it
+runs on the `self-hosted` runners with `continue-on-error: true`. A separate,
+later change flips it to blocking, once its pass history on `main` justifies
+the flip. The `network` leg of `e2e-chaos` is the precedent, and it is still on
+the non-blocking side of that path.
+
+**Blocking baseline.** The suite that earns the flip first is the single-node
+one on `hack/kind-config.yaml`: the DaemonSet renders, its pods start, and the
+chassis registers itself in the OVN southbound database. Neither assertion
+needs a second schedulable node.
+
+**Multi-node legs.** A suite that does need one uses
+`hack/kind-config-multinode.yaml` (one control-plane node plus two workers) in
+a job of its own, never on a runner that also holds a `hack/kind-config.yaml`
+cluster. Both configs bind the same host ports, so the second cluster fails to
+create. The `e2e-multicluster` job sidesteps the same collision by creating its
+management cluster with no kind config.
+
+The path the file takes into the job is the `config:` input of the
+`helm/kind-action` step, not the `KIND_CONFIG` variable: `setup-e2e-infra` runs
+with `SKIP_KIND_CREATE: "true"`, so the cluster already exists by the time
+`hack/deploy-infra.sh` sees the variable, and it warns that the value is being
+ignored rather than recreating anything.
+
+The modules come from `WITH_OVN_KERNEL_MODULES=true` in the `setup-e2e-infra`
+step's `env`, which threads through to `hack/deploy-infra.sh` and runs
+`modprobe` for `openvswitch` and `geneve` before the cluster is created. The
+load is best-effort, through the helper that also loads the chaos suite's
+`ip_set` and `sch_netem` modules. On a host without root or passwordless sudo
+it logs a warning and continues, and the suite then fails on its own
+assertions.
+
 ### e2e-prometheus
 
 End-to-end kube-prometheus-stack tests using kind cluster, Flux-managed
