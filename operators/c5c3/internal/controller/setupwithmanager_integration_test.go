@@ -21,8 +21,8 @@
 // rejects a second controller named "controlplane" registered without
 // controller.Options{SkipNameValidation}. The inline harness
 // (setupControlPlaneEnvTest) sets SkipNameValidation precisely so it does not
-// contend with this test. TestBuildControlPlaneController_StartsWithoutServiceCRDs
-// below likewise does not contend: it wires the controller through
+// contend with this test. The two TestBuildControlPlaneController_StartsWithout*
+// tests below likewise do not contend: they wire the controller through
 // buildControlPlaneController on a builder configured with SkipNameValidation —
 // the same escape the inline harness uses — instead of calling
 // SetupWithManager. TestKeystoneServiceSetup_WatchesConverge takes the same
@@ -31,6 +31,7 @@ package controller
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -61,7 +62,8 @@ import (
 // K-ORC). The shared skeleton then starts the manager, so every Owns/Watches
 // informer — including the unstructured Memcached and Certificate Owns and the
 // ClusterSecretStore Watch — must sync against the real API server; a missing
-// watched kind would fail mgr.Start.
+// watched kind would fail mgr.Start. The RabbitmqCluster fake CRD is served here
+// too, so the guarded broker Owns leg registers and has to sync like the rest.
 func TestSetupWithManager_AllControllersStart(t *testing.T) {
 	testutil.SkipIfEnvTestUnavailable(t)
 	g := NewGomegaWithT(t)
@@ -204,6 +206,89 @@ func TestBuildControlPlaneController_StartsWithoutServiceCRDs(t *testing.T) {
 		return got.Finalizers, nil
 	}, itEventuallyTimeout, itPollInterval).Should(ContainElement(controlPlaneORCFinalizer),
 		"Reconcile must install the ORC-teardown finalizer even with the service CRDs unserved")
+}
+
+// TestBuildControlPlaneController_StartsWithoutRabbitmqClusterCRD covers the
+// install messaging is opt-in for: a cluster that never had the RabbitMQ Cluster
+// Operator installed, because no ControlPlane on it declares a managed
+// spec.infrastructure.messaging block. The RabbitmqCluster kind is unserved there,
+// so its guarded Owns and cross-namespace Watches legs must be skipped; registering
+// them anyway would leave the informer unsynced, fail mgr.Start on the
+// CacheSyncTimeout, and crash-loop the c5c3 operator on a cluster that has no
+// business running a broker.
+//
+// The baseline CRD set installs the rabbitmq-operator fake CRD, so this test drops
+// exactly that directory and keeps every other one, leaving the hard-dependency
+// kinds (K-ORC included) served.
+func TestBuildControlPlaneController_StartsWithoutRabbitmqClusterCRD(t *testing.T) {
+	testutil.SkipIfEnvTestUnavailable(t)
+	g := NewGomegaWithT(t)
+
+	var crdDirs []string
+	for _, dir := range testutil.BaselineCRDDirectoryPaths() {
+		if filepath.Base(dir) == "rabbitmq-operator" {
+			continue
+		}
+		crdDirs = append(crdDirs, dir)
+	}
+	g.Expect(crdDirs).To(HaveLen(len(testutil.BaselineCRDDirectoryPaths())-1),
+		"the rabbitmq-operator fake CRD directory must be part of the baseline for this test to mean anything")
+
+	// The setup helper only returns once mgr.Start succeeded and every registered
+	// informer synced, so a re-registered RabbitmqCluster leg fails here. The
+	// controller is wired through buildControlPlaneController on a builder carrying
+	// SkipNameValidation, so it does not contend with
+	// TestSetupWithManager_AllControllersStart for the global controller name.
+	c, ctx, _ := testutil.SetupC5c3EnvTestWithControllerAndCRDs(
+		t,
+		crdDirs,
+		c5c3v1alpha1.AddToScheme,
+		func(mgr ctrl.Manager) error {
+			// mgr.GetAPIReader() mirrors main.go: admission lookups read the API
+			// server directly, never a stale cache.
+			if err := (&c5c3v1alpha1.ControlPlaneWebhook{Client: mgr.GetAPIReader()}).SetupWebhookWithManager(mgr); err != nil {
+				return err
+			}
+			// The webhook manifests installed by envtest carry the KeystoneService
+			// entries (failurePolicy=Fail), so the handler must be served here too.
+			return (&c5c3v1alpha1.KeystoneServiceWebhook{}).SetupWebhookWithManager(mgr)
+		},
+		func(mgr ctrl.Manager) error {
+			r := &ControlPlaneReconciler{
+				Client:   mgr.GetClient(),
+				Scheme:   mgr.GetScheme(),
+				Recorder: mgr.GetEventRecorderFor("controlplane-controller"),
+			}
+			// A nil provider engages no target cluster, so the remote legs add
+			// nothing here and only the local ones have to sync.
+			mcMgr, err := mcmanager.WithMultiCluster(mgr, nil)
+			if err != nil {
+				return err
+			}
+			b, err := r.buildControlPlaneController(mcMgr, mcbuilder.ControllerManagedBy(mcMgr).
+				WithOptions(controller.TypedOptions[mcreconcile.Request]{SkipNameValidation: ptr.To(true)}))
+			if err != nil {
+				return err
+			}
+			return b.WithClusterNotFoundWrapper(false).Complete(commonmulticluster.LocalReconciler(r))
+		},
+	)
+
+	// Positive reconcile signal: a ControlPlane declaring no messaging still gets
+	// controlPlaneORCFinalizer, which Reconcile installs before the sub-reconciler
+	// pipeline runs, so its appearance proves the controller started and reconciles
+	// with the broker CRD absent.
+	cp := integrationMinimalControlPlane("no-rabbitmq-cp", "default")
+	g.Expect(c.Create(ctx, cp)).To(Succeed())
+
+	g.Eventually(func() ([]string, error) {
+		var got c5c3v1alpha1.ControlPlane
+		if err := c.Get(ctx, client.ObjectKeyFromObject(cp), &got); err != nil {
+			return nil, err
+		}
+		return got.Finalizers, nil
+	}, itEventuallyTimeout, itPollInterval).Should(ContainElement(controlPlaneORCFinalizer),
+		"Reconcile must install the ORC-teardown finalizer with the RabbitmqCluster CRD unserved")
 }
 
 // TestKeystoneServiceSetup_WatchesConverge drives the KeystoneService wiring end
