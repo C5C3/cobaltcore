@@ -240,7 +240,7 @@ func TestEnsureBarbicanOpenBao_ProjectsInstanceSpec(t *testing.T) {
 
 	instance := getBarbicanOpenBaoCluster(t, r, cp)
 	g.Expect(instance.Name).To(Equal("cp-barbican-bao"))
-	g.Expect(instance.Spec.Version).To(Equal("2.6.1"))
+	g.Expect(instance.Spec.Version).To(Equal("2.6.2"))
 	g.Expect(instance.Spec.Profile).To(Equal(openbaov1alpha1.ProfileDevelopment))
 	g.Expect(instance.Spec.Replicas).To(Equal(int32(1)))
 	g.Expect(instance.Spec.Storage.Size).To(Equal("1Gi"))

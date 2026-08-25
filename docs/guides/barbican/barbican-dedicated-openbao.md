@@ -361,7 +361,7 @@ metadata:
   namespace: openstack
 spec:
   profile: Development
-  version: "2.6.1"        # the static seal needs >= 2.4.0
+  version: "2.6.2"        # the static seal needs >= 2.4.0
   replicas: 1
   storage:
     size: 1Gi
