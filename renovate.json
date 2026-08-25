@@ -234,6 +234,32 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/deploy/flux-system/sources/rabbitmq-cluster-operator\\.yaml$/"
+      ],
+      "matchStrings": [
+        "tag: \"(?<currentValue>v[^\"]+)\"\\n\\s*commit: \"(?<currentDigest>[a-f0-9]{40})\""
+      ],
+      "depNameTemplate": "rabbitmq/cluster-operator",
+      "datasourceTemplate": "github-tags",
+      "packageNameTemplate": "rabbitmq/cluster-operator",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/deploy/flux-system/releases/rabbitmq-cluster-operator\\.yaml$/"
+      ],
+      "matchStrings": [
+        "newTag: \"(?<currentValue>[^\"]+)\"\\n\\s*digest: \"(?<currentDigest>sha256:[a-f0-9]{64})\""
+      ],
+      "depNameTemplate": "ghcr.io/rabbitmq/cluster-operator",
+      "datasourceTemplate": "docker",
+      "packageNameTemplate": "ghcr.io/rabbitmq/cluster-operator",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/deploy/kind/infrastructure/openbao-instance\\.yaml$/"
       ],
       "matchStrings": [
@@ -519,6 +545,22 @@
       "automerge": false,
       "minimumReleaseAge": "3 days",
       "groupName": "openbao-operator chart"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/flux-system/sources/rabbitmq-cluster-operator.yaml"],
+      "matchPackageNames": ["rabbitmq/cluster-operator"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "rabbitmq cluster-operator"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"],
+      "matchPackageNames": ["ghcr.io/rabbitmq/cluster-operator"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "rabbitmq cluster-operator"
     },
     {
       "matchManagers": ["custom.regex"],
