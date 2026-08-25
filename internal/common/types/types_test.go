@@ -9,8 +9,11 @@
 package types
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 // TestImageSpec_Reference backs the fully-qualified reference helper: a pinned
@@ -150,6 +153,89 @@ func TestDatabaseSpec_TLSField_OptionalPointer(t *testing.T) {
 	cloneWith.TLS.Mode = "prefer"
 	if withTLS.TLS.Mode != "verify-ca" {
 		t.Errorf("mutating clone.TLS altered the original: %+v", *withTLS.TLS)
+	}
+}
+
+// TestMessagingSpec_DeepCopy backs: DeepCopy of a populated MessagingSpec
+// returns an independent, equal value whose pointer fields are freshly
+// allocated, and nil TLS / nil SecretRef pointers deep-copy to nil. The XOR
+// invariant is an admission rule, so a spec carrying both refs is a legitimate
+// deep-copy input here.
+func TestMessagingSpec_DeepCopy(t *testing.T) {
+	original := &MessagingSpec{
+		ClusterRef: &corev1.LocalObjectReference{Name: "rabbitmq"},
+		SecretRef:  &SecretRefSpec{Name: "keystone-transport-url", Key: DefaultTransportURLSecretKey},
+		Replicas:   3,
+		TLS:        &MessagingTLSSpec{CABundleSecretRef: SecretRefSpec{Name: "rabbitmq-ca", Key: "ca.crt"}},
+	}
+
+	clone := original.DeepCopy()
+
+	if clone == original {
+		t.Fatal("DeepCopy did not allocate a new *MessagingSpec")
+	}
+	if !reflect.DeepEqual(clone, original) {
+		t.Errorf("DeepCopy produced an unequal value: got %+v, want %+v", *clone, *original)
+	}
+	if clone.ClusterRef == original.ClusterRef {
+		t.Errorf("DeepCopy did not allocate a new *LocalObjectReference for ClusterRef")
+	}
+	if clone.SecretRef == original.SecretRef {
+		t.Errorf("DeepCopy did not allocate a new *SecretRefSpec for SecretRef")
+	}
+	if clone.TLS == original.TLS {
+		t.Errorf("DeepCopy did not allocate a new *MessagingTLSSpec for TLS")
+	}
+
+	// Mutating the clone's pointer targets must not affect the original.
+	clone.ClusterRef.Name = "mutated"
+	clone.SecretRef.Key = "mutated"
+	clone.TLS.CABundleSecretRef.Name = "mutated"
+	clone.Replicas = 1
+	if original.ClusterRef.Name != "rabbitmq" ||
+		original.SecretRef.Key != DefaultTransportURLSecretKey ||
+		original.TLS.CABundleSecretRef.Name != "rabbitmq-ca" ||
+		original.Replicas != 3 {
+		t.Errorf("mutating the clone altered the original: %+v", *original)
+	}
+
+	managed := MessagingSpec{ClusterRef: &corev1.LocalObjectReference{Name: "rabbitmq"}}
+	cloneManaged := managed.DeepCopy()
+	if cloneManaged.SecretRef != nil {
+		t.Errorf("DeepCopy of a MessagingSpec with nil SecretRef must keep SecretRef nil, got %+v", cloneManaged.SecretRef)
+	}
+	if cloneManaged.TLS != nil {
+		t.Errorf("DeepCopy of a MessagingSpec with nil TLS must keep TLS nil, got %+v", cloneManaged.TLS)
+	}
+
+	var nilTLS *MessagingTLSSpec
+	if nilTLS.DeepCopy() != nil {
+		t.Errorf("DeepCopy of a nil *MessagingTLSSpec must return nil")
+	}
+}
+
+// TestMessagingSpec_OptionalPointers backs the omitempty contract: a zero
+// MessagingSpec serializes to an empty object, so an unset messaging block adds
+// no keys to a CR, and a nil *MessagingSpec field drops out of its parent
+// entirely.
+func TestMessagingSpec_OptionalPointers(t *testing.T) {
+	data, err := json.Marshal(MessagingSpec{})
+	if err != nil {
+		t.Fatalf("marshalling a zero MessagingSpec failed: %v", err)
+	}
+	if string(data) != "{}" {
+		t.Errorf("zero MessagingSpec marshalled to %s, want {}", data)
+	}
+
+	type wrapper struct {
+		Messaging *MessagingSpec `json:"messaging,omitempty"`
+	}
+	data, err = json.Marshal(wrapper{})
+	if err != nil {
+		t.Fatalf("marshalling a wrapper with a nil *MessagingSpec failed: %v", err)
+	}
+	if string(data) != "{}" {
+		t.Errorf("wrapper with a nil *MessagingSpec marshalled to %s, want {}", data)
 	}
 }
 

@@ -7,11 +7,11 @@
 // aggregate.
 //
 // DECISION (CEL-vs-webhook split): several of these rules also exist as CEL
-// XValidation markers on the shared commonv1 types (the database and cache
-// XORs, Dynamic-requires-clusterRef, the image tag/digest XOR). The CEL rules
-// stay — they are the schema-layer gate the API server enforces even when the
-// webhook is unavailable. The webhooks keep a defense-in-depth copy for
-// objects that bypass schema validation (old objects, direct etcd writes),
+// XValidation markers on the shared commonv1 types (the database, cache and
+// messaging XORs, Dynamic-requires-clusterRef, the image tag/digest XOR). The
+// CEL rules stay — they are the schema-layer gate the API server enforces even
+// when the webhook is unavailable. The webhooks keep a defense-in-depth copy
+// for objects that bypass schema validation (old objects, direct etcd writes),
 // but that copy is THIS package's single implementation rather than a
 // hand-rolled per-operator triplicate: each rule now exists exactly twice —
 // once as CEL, once here.
@@ -55,6 +55,20 @@ func CacheXOR(fldPath *field.Path, cache *commonv1.CacheSpec) field.ErrorList {
 			fldPath,
 			*cache,
 			"exactly one of clusterRef or servers must be set",
+		)}
+	}
+	return nil
+}
+
+// MessagingXOR enforces that exactly one of clusterRef (managed mode) or
+// secretRef (brownfield mode) is set, mirroring the CEL rule on
+// commonv1.MessagingSpec.
+func MessagingXOR(fldPath *field.Path, m *commonv1.MessagingSpec) field.ErrorList {
+	if (m.ClusterRef != nil) == (m.SecretRef != nil) {
+		return field.ErrorList{field.Invalid(
+			fldPath,
+			*m,
+			"exactly one of clusterRef or secretRef must be set",
 		)}
 	}
 	return nil
