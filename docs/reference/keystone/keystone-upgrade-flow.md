@@ -163,7 +163,7 @@ spec.image.tag changed (e.g., 2025.2 -> 2026.1)
   the target release's alembic tree; running them with the old binary would
   leave the contract step ahead of expand (`_validate_upgrade_order` fails).
 - **Command:** `keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ db_sync --expand`
-- **On completion:** Phase transitions to `Migrating`, requeues immediately.
+- **On completion:** Phase transitions to `Migrating`, requeues after `RequeueNextPass` (1s).
 - **On failure:** `DatabaseReady=False` with reason `ExpandFailed`.
 
 #### Migrating
@@ -171,7 +171,7 @@ spec.image.tag changed (e.g., 2025.2 -> 2026.1)
 - **Job name:** `{name}-db-migrate`
 - **Image:** NEW release (`spec.image.tag`) — same rationale as Expanding.
 - **Command:** `keystone-manage --config-dir=/etc/keystone/keystone.conf.d/ db_sync --migrate`
-- **On completion:** Phase transitions to `RollingUpdate`, requeues immediately.
+- **On completion:** Phase transitions to `RollingUpdate`, requeues after `RequeueNextPass` (1s).
 - **On failure:** `DatabaseReady=False` with reason `MigrateFailed`.
 
 #### RollingUpdate

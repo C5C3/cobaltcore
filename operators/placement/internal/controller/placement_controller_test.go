@@ -42,7 +42,7 @@ func TestReconcile_AddsFinalizerOnFirstPass(t *testing.T) {
 	res, err := r.Reconcile(context.Background(), placementRequest)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}), "the finalizer add requeues so the next pass sees it persisted")
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}), "the finalizer add requeues so the next pass sees it persisted")
 	got := getPlacement(t, r.Client, "test-placement")
 	g.Expect(got.Finalizers).To(ContainElement(placementFinalizer))
 }
@@ -504,7 +504,7 @@ func TestReconcile_InstallsRemoteChildrenFinalizerForATargetCluster(t *testing.T
 	res, err := r.Reconcile(context.Background(), placementRequest)
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}),
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}),
 		"the pass installing the finalizer must requeue before any sub-reconciler runs")
 	g.Expect(getPlacement(t, r.Client, "test-placement").Finalizers).To(ContainElement(commonmulticluster.RemoteChildrenFinalizer))
 }

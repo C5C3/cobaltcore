@@ -384,7 +384,7 @@ func (r *BarbicanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &barbican, barbicanFinalizer); err != nil {
 		return ctrl.Result{}, err
 	} else if added {
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
 	// The remote-children finalizer goes on only when the CR projects onto a
@@ -397,7 +397,7 @@ func (r *BarbicanReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			commonmulticluster.RemoteChildrenFinalizer); err != nil {
 			return ctrl.Result{}, err
 		} else if added {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 		}
 	}
 

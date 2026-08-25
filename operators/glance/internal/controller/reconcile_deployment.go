@@ -263,7 +263,7 @@ func (r *GlanceReconciler) reconcileDeployment(ctx context.Context, children cli
 			Reason:             conditionReasonDeploymentReady,
 			Message:            "Glance API deployment is available",
 		})
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
 	// Status.Endpoint derivation is delegated to glanceStatusEndpoint so the

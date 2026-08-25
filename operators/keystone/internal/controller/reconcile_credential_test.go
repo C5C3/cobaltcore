@@ -1285,7 +1285,7 @@ func TestEnsureCredentialRotationRBAC_IsIdempotent_CC0081(t *testing.T) {
 // RFC3339 timestamp, valid Data) is applied to the production Secret, the
 // staging Secret is deleted, a Normal "CredentialKeysRotated" event is
 // emitted, CredentialKeysReady flips to True, and the reconcile short-circuits
-// with Requeue: true.
+// with a requeue.
 func TestReconcileCredentialKeys_AppliesStagedKeysWhenAnnotationPresent(t *testing.T) {
 	g := NewGomegaWithT(t)
 	s := credentialTestScheme()

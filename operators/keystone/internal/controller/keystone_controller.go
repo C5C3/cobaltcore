@@ -468,13 +468,13 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// Ensure the MariaDB finalizer is installed before any sub-reconciler runs
 	// so that a deletion issued between now and the next pass still funnels
-	// through reconcileDelete. Returning
-	// Requeue=true after the Update guarantees the next reconcile observes the
-	// persisted finalizer rather than relying on the in-memory copy.
+	// through reconcileDelete. Requeuing after the Update guarantees the next
+	// reconcile observes the persisted finalizer rather than relying on the
+	// in-memory copy.
 	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &keystone, keystoneFinalizer); err != nil {
 		return ctrl.Result{}, err
 	} else if added {
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
 	// Ensure the OpenBao finalizer is installed so that deleting the Keystone
@@ -483,7 +483,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &keystone, keystoneOpenBaoFinalizer); err != nil {
 		return ctrl.Result{}, err
 	} else if added {
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
 	// The remote-children finalizer goes on only when the CR projects onto a
@@ -496,7 +496,7 @@ func (r *KeystoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			commonmulticluster.RemoteChildrenFinalizer); err != nil {
 			return ctrl.Result{}, err
 		} else if added {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 		}
 	}
 

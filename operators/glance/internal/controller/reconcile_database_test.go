@@ -25,6 +25,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/job"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
@@ -218,7 +219,7 @@ func TestReconcileDatabase_SequentialUpgradeAccepted(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	// A sequential upgrade initiates the shared flow: TargetRelease and the
 	// Expanding phase are stamped and the reconcile requeues immediately.
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 	g.Expect(glance.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseExpanding))
 	g.Expect(glance.Status.TargetRelease).To(Equal("2026.1"))
 	cond := conditions.GetCondition(glance.Status.Conditions, "DatabaseReady")
@@ -391,7 +392,7 @@ func TestReconcileDatabase_UpgradeExpandComplete_TransitionsToMigrating(t *testi
 
 	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 	g.Expect(glance.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseMigrating))
 
 	cond := conditions.GetCondition(glance.Status.Conditions, "DatabaseReady")
@@ -412,7 +413,7 @@ func TestReconcileDatabase_UpgradeMigrateComplete_TransitionsToRollingUpdate(t *
 
 	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 	g.Expect(glance.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseRollingUpdate))
 
 	cond := conditions.GetCondition(glance.Status.Conditions, "DatabaseReady")
@@ -487,7 +488,7 @@ func TestReconcileDatabase_UpgradeAbort_RevertToInstalled(t *testing.T) {
 
 	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 
 	g.Expect(glance.Status.UpgradePhase).To(BeEmpty())
 	g.Expect(glance.Status.TargetRelease).To(BeEmpty())
@@ -591,7 +592,7 @@ func TestReconcileDatabase_AbortReachableDuringImageDrift(t *testing.T) {
 
 	res, err := r.reconcileDatabase(context.Background(), r.Client, glance, configMapName)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 
 	// The upgrade was aborted, not blocked on the mismatch.
 	g.Expect(glance.Status.UpgradePhase).To(BeEmpty())

@@ -201,7 +201,7 @@ func (r *KeystoneReconciler) reconcileDeployment(ctx context.Context, children c
 			Reason:             "DeploymentReady",
 			Message:            "Keystone API deployment is available",
 		})
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
 	// Status.Endpoint derivation is delegated to keystoneStatusEndpoint so that

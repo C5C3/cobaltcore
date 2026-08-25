@@ -377,7 +377,7 @@ func TestReconcile_InstallsRemoteChildrenFinalizerForATargetCluster(t *testing.T
 	res, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: horizonKey})
 
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(res).To(Equal(ctrl.Result{Requeue: true}),
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}),
 		"the pass installing the finalizer must requeue before any sub-reconciler runs")
 	g.Expect(getHorizon(t, r).Finalizers).To(ConsistOf(commonmulticluster.RemoteChildrenFinalizer))
 }

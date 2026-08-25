@@ -401,7 +401,7 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if added, err := commonreconcile.EnsureFinalizer(ctx, r.Client, &glance, glanceFinalizer); err != nil {
 		return ctrl.Result{}, err
 	} else if added {
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
 	// The remote-children finalizer goes on only when the CR projects onto a
@@ -414,7 +414,7 @@ func (r *GlanceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			commonmulticluster.RemoteChildrenFinalizer); err != nil {
 			return ctrl.Result{}, err
 		} else if added {
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 		}
 	}
 

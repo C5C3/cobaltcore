@@ -30,6 +30,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/database"
 	"github.com/c5c3/cobaltcore/internal/common/job"
+	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
@@ -838,7 +839,7 @@ func TestInitiateUpgrade_SequentialUpgrade(t *testing.T) {
 
 	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 
 	// Verify status fields.
 	g.Expect(ks.Status.TargetRelease).To(Equal("2026.1"))
@@ -1212,7 +1213,7 @@ func TestReconcileExpand_JobCompleted_TransitionsToMigrating(t *testing.T) {
 
 	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 
 	// Verify phase transition.
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseMigrating))
@@ -1285,7 +1286,7 @@ func TestReconcileMigrate_JobCompleted_TransitionsToRollingUpdate(t *testing.T) 
 
 	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 
 	// Verify phase transition.
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseRollingUpdate))
@@ -1501,7 +1502,7 @@ func TestReconcileDatabase_InterruptedExpand_Resumes(t *testing.T) {
 
 	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 
 	// Verify phase transitioned to Migrating without re-creating the expand Job.
 	g.Expect(ks.Status.UpgradePhase).To(Equal(keystonev1alpha1.UpgradePhaseMigrating))
@@ -1588,7 +1589,7 @@ func TestReconcileDatabase_RevertToInstalledRelease_AbortsDuringExpand(t *testin
 
 	result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+	g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 
 	// Upgrade state cleared; installed release untouched.
 	g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
@@ -1633,7 +1634,7 @@ func TestReconcileDatabase_RevertToInstalledRelease_AbortsFromAnyPhase(t *testin
 
 			result, err := r.reconcileDatabase(context.Background(), r.Client, ks, "keystone-config-abc123", "")
 			g.Expect(err).NotTo(HaveOccurred())
-			g.Expect(result).To(Equal(ctrl.Result{Requeue: true}))
+			g.Expect(result).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
 
 			g.Expect(ks.Status.UpgradePhase).To(BeEmpty())
 			g.Expect(ks.Status.TargetRelease).To(BeEmpty())
