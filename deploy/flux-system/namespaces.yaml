@@ -19,6 +19,8 @@
 # Keystone resource CRDs the c5c3-operator drives. The orc-system Namespace is
 # co-declared here because the K-ORC installer's own resources land there; it no
 # longer hosts a static k-orc-clouds-yaml ExternalSecret (removed).
+# rabbitmq-system is co-declared for the same reason: the RabbitMQ Cluster
+# Operator installer's own resources land there.
 ---
 apiVersion: v1
 kind: Namespace
@@ -122,6 +124,15 @@ metadata:
   # lifecycle namespace, which keeps the shared-instance and operator
   # lifecycles separate.
   name: openbao-operator-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  # rabbitmq-system hosts the rabbitmq-cluster-operator controller, which serves
+  # the RabbitmqCluster CRD behind the ControlPlane's shared message bus. The
+  # upstream installer declares this Namespace too; it is co-declared here (as
+  # orc-system is) so it exists before the Kustomization reconciles.
+  name: rabbitmq-system
 # The chaos-mesh Namespace lives in the opt-in overlay deploy/kind/chaos-mesh/,
 # not here, so the privileged PodSecurity label is created only when Chaos Mesh
 # is actually deployed.
