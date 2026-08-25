@@ -14,6 +14,12 @@
 #     release file otherwise surfaces as a failed deploy minutes in)
 #   - cert-manager is waited for before the rest, since hack/ci-deploy-operator.sh
 #     needs its CA injection and two releases declare a dependsOn on it
+#   - the rabbitmq-cluster-operator source/Kustomization pair is applied and
+#     waited for after the HelmReleases, since wait_for_helmreleases never sees a
+#     Kustomization and its cert-manager objects apply only once cert-manager is up
+#   - both deploy scripts assert the rendered rabbitmq-cluster-operator image is
+#     digest-pinned, since the Flux `images:` override keys on a NAME and
+#     kustomize no-ops silently when upstream re-points the base
 #   - the `openstack` namespace the placed CRs live in is created
 #   - the script is syntactically valid and shellcheck-clean
 #
@@ -233,6 +239,86 @@ test_script_sanity() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 8: the rabbitmq-cluster-operator source/Kustomization pair is applied
+# and waited for. It arrives as a Kustomization, so wait_for_helmreleases never
+# reports on it and only an explicit kubectl wait catches a failed reconcile.
+# ---------------------------------------------------------------------------
+test_rabbitmq_kustomization_applied_and_waited() {
+  echo "Test: the rabbitmq-cluster-operator Kustomization is applied and waited for"
+
+  local file
+  for file in sources/rabbitmq-cluster-operator.yaml releases/rabbitmq-cluster-operator.yaml; do
+    if [ -f "$PROJECT_ROOT/deploy/flux-system/$file" ]; then
+      echo "  PASS: deploy/flux-system/$file exists"
+      PASS=$((PASS + 1))
+    else
+      echo "  FAIL: deploy/flux-system/$file does not exist (the script would abort mid-deploy)"
+      FAIL=$((FAIL + 1))
+    fi
+
+    assert_file_contains "the script applies deploy/flux-system/$file" \
+      "$MGMT_SH" "deploy/flux-system/$file"
+  done
+
+  # The object the wait below names has to be the object the release file
+  # declares, or the wait passes on a Kustomization that was never applied.
+  local release_file="$PROJECT_ROOT/deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"
+  local actual_kind actual_name actual_ns
+  actual_kind="$(awk '/^kind: Kustomization$/ { print $2; exit }' "$release_file")"
+  actual_name="$(awk '/^kind: Kustomization$/ { ks = 1 }
+                      ks && /^  name: / { print $2; exit }' "$release_file")"
+  actual_ns="$(awk '/^kind: Kustomization$/ { ks = 1 }
+                    ks && /^  namespace: / { print $2; exit }' "$release_file")"
+
+  assert_eq "the release file declares a Flux Kustomization" "Kustomization" "$actual_kind"
+  assert_eq "it declares Kustomization rabbitmq-cluster-operator" \
+    "rabbitmq-cluster-operator" "$actual_name"
+  assert_eq "it declares namespace flux-system" "flux-system" "$actual_ns"
+
+  # The rabbitmq-cluster-operator base carries cert-manager Issuer and
+  # Certificate objects, so its wait belongs after the HelmRelease waits.
+  local remaining_wait_line kustomization_wait_line
+  remaining_wait_line="$(grep -n 'wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" "${remaining\[@\]}"' \
+    "$MGMT_SH" | head -1 | cut -d: -f1)"
+  kustomization_wait_line="$(grep -n 'kubectl wait kustomization/rabbitmq-cluster-operator' \
+    "$MGMT_SH" | head -1 | cut -d: -f1)"
+
+  assert_not_empty "the Kustomization has a wait of its own" "$kustomization_wait_line"
+
+  if [ "${kustomization_wait_line:-0}" -gt "${remaining_wait_line:-0}" ]; then
+    echo "  PASS: the Kustomization wait follows the HelmRelease waits"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: the Kustomization wait does not follow the HelmRelease waits (its cert-manager objects apply only once cert-manager is up)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Test 9: both deploy scripts verify the rendered rabbitmq-cluster-operator
+# image is digest-pinned.
+#
+# The Flux `images:` override in the release file keys on the image NAME
+# upstream's ./config/installation resolves to, and kustomize silently no-ops
+# when nothing matches that name. If upstream re-points the base, the override
+# stops applying, no error is raised, and the cluster runs the mutable `latest`
+# tag for a controller with cluster-wide RBAC. Only the rendered Deployment shows
+# it, so both scripts have to look at it after the Kustomization is Ready.
+# ---------------------------------------------------------------------------
+test_rabbitmq_image_digest_pin_is_verified() {
+  echo "Test: both deploy scripts assert the rabbitmq-cluster-operator image digest pin"
+
+  local script
+  for script in "$MGMT_SH" "$DEPLOY_INFRA_SH"; do
+    assert_file_contains "$(basename "$script") reads the rendered rabbitmq-system images" \
+      "$script" "kubectl get deployment -n rabbitmq-system"
+    # BRE: the two asterisks of the bash glob comparison are escaped literals.
+    assert_file_contains "$(basename "$script") requires a digest in the rendered image" \
+      "$script" '!= \*"@sha256:"\*'
+  done
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_cluster_name_default
@@ -242,6 +328,8 @@ test_wait_entries_match_the_release_manifests
 test_cert_manager_is_waited_for_first
 test_openstack_namespace_is_created
 test_script_sanity
+test_rabbitmq_kustomization_applied_and_waited
+test_rabbitmq_image_digest_pin_is_verified
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

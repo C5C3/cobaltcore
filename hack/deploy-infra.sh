@@ -2475,6 +2475,52 @@ main() {
   fi
   wait_for_helmreleases "${release_wait_timeout}" "${helm_releases[@]}"
 
+  # Phase 3b: the RabbitMQ Cluster Operator arrives through a Flux Kustomization
+  # (deploy/flux-system/releases/rabbitmq-cluster-operator.yaml), which
+  # wait_for_helmreleases cannot see. It hard-fails, unlike the optional k-orc
+  # wait further down: the c5c3 ControlPlane projects a RabbitmqCluster for
+  # spec.infrastructure.messaging, so the CRD and the operator have to be on
+  # every cluster this script provisions. Its Issuer/Certificate apply needs
+  # cert-manager, which Phase 1 already waited for.
+  log "Phase 3b: Waiting for the rabbitmq-cluster-operator Kustomization..."
+  if ! kubectl wait kustomization/rabbitmq-cluster-operator -n flux-system \
+    --for=condition=Ready --timeout="${HELMRELEASE_TIMEOUT}s"; then
+    log "ERROR: kustomization/rabbitmq-cluster-operator did not become Ready within ${HELMRELEASE_TIMEOUT}s."
+    kubectl get kustomization -n flux-system 2>/dev/null || true
+    exit 1
+  fi
+  log "rabbitmq-cluster-operator Kustomization is Ready."
+
+  # The Flux `images:` override in
+  # deploy/flux-system/releases/rabbitmq-cluster-operator.yaml keys on the image
+  # NAME upstream's ./config/installation resolves to, and kustomize silently
+  # NO-OPS when no resource matches that name. If upstream re-points the base at
+  # a different image (it already moved once), the override matches nothing,
+  # kustomize reports no error, and the cluster runs the mutable `latest` tag for
+  # a controller holding cluster-wide RBAC over RabbitmqClusters, StatefulSets
+  # and Secrets. Nothing in the release file's diff shows that; the rendered
+  # Deployment does, so assert the digest pin on the object that actually ran.
+  # rabbitmq-system is the operator's own namespace (the upstream base declares
+  # it and namespaces every resource into it), so every image running there is
+  # one this override has to have reached.
+  local rabbit_image rabbit_image_seen=false
+  for rabbit_image in $(kubectl get deployment -n rabbitmq-system \
+    -o 'jsonpath={.items[*].spec.template.spec.containers[*].image}'); do
+    rabbit_image_seen=true
+    if [[ "${rabbit_image}" != *"@sha256:"* ]]; then
+      log "ERROR: a rabbitmq-system image is not digest-pinned: ${rabbit_image}"
+      log "       The spec.images override in deploy/flux-system/releases/rabbitmq-cluster-operator.yaml"
+      log "       no longer matches the image name upstream's ./config/installation resolves to."
+      exit 1
+    fi
+    log "rabbitmq-cluster-operator image is digest-pinned: ${rabbit_image}"
+  done
+  if [[ "${rabbit_image_seen}" != "true" ]]; then
+    log "ERROR: no Deployment found in namespace rabbitmq-system; the digest pin"
+    log "       of the rabbitmq-cluster-operator image could not be verified."
+    exit 1
+  fi
+
   if [[ "${WITH_DIZZY}" == "true" ]]; then
     local dizzy_grafana_url="https://dizzy.127-0-0-1.nip.io"
     if [[ "${KIND_HOST_PORT}" != "443" ]]; then
@@ -2511,6 +2557,10 @@ main() {
   # openbaoclusters.openbao.org is registered by the openbao-operator
   # HelmRelease (Phase 3 above); waiting on it keeps the overlay apply from
   # racing that registration.
+  # rabbitmqclusters.rabbitmq.com is registered by the rabbitmq-cluster-operator
+  # Kustomization (Phase 3b above); the c5c3 operator watches it under a
+  # discovery guard and restarts when it appears later, so waiting here keeps a
+  # WITH_CONTROLPLANE deploy from paying that restart.
   wait_for_crds "${POD_TIMEOUT}" \
     memcacheds.memcached.c5c3.io \
     clustersecretstores.external-secrets.io \
@@ -2520,7 +2570,8 @@ main() {
     garageclusters.garage.rajsingh.info \
     garagebuckets.garage.rajsingh.info \
     garagekeys.garage.rajsingh.info \
-    openbaoclusters.openbao.org
+    openbaoclusters.openbao.org \
+    rabbitmqclusters.rabbitmq.com
 
   # Invalidate kubectl's client-side discovery cache so that the newly
   # registered CRDs are visible to kubectl apply.
