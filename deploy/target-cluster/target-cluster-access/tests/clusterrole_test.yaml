@@ -4,7 +4,7 @@ templates:
   - templates/clusterrole.yaml
   - templates/clusterrolebinding.yaml
 tests:
-  - it: should carry only the three read-only cluster-scoped rules by default
+  - it: should carry only the four cluster-scoped rules by default
     template: templates/clusterrole.yaml
     set:
       namespaces:
@@ -16,7 +16,7 @@ tests:
           of: ClusterRole
       - lengthEqual:
           path: rules
-          count: 3
+          count: 4
 
   - it: should grant read-only on namespaces
     template: templates/clusterrole.yaml
@@ -49,6 +49,81 @@ tests:
               - external-secrets.io
             resources:
               - clustersecretstores
+            verbs:
+              - get
+              - list
+              - watch
+
+  # The ovn-operator watches Node labels to steer chassis placement and gateway
+  # roles. Nodes have no namespace, so a namespace-scoped cache cannot hold them
+  # and the reads have to be cluster-wide.
+  - it: should grant read-only on nodes by default
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - nodes
+            verbs:
+              - get
+              - list
+              - watch
+
+  # patch on Nodes is an unbounded write that no value turns on: resourceNames
+  # cannot narrow it, and it covers the labels and taints of every node
+  # alongside the annotations, so it would lift the control-plane NoSchedule
+  # taint for a privileged chassis pod. Per-node state goes into a namespaced
+  # object instead, which the per-namespace Role already covers.
+  - it: should never grant patch on nodes
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+      privilegedNamespaces: []
+    asserts:
+      # equal on the rule, not notContains on one verb list. notContains is a
+      # deep compare against each element, so it rules out exactly the shape it
+      # spells and nothing else: [get, list, watch, update, patch] would pass
+      # it. Pinning the rule leaves no verb list that does.
+      - equal:
+          path: rules[2]
+          value:
+            apiGroups:
+              - ""
+            resources:
+              - nodes
+            verbs:
+              - get
+              - list
+              - watch
+      # And no second rule to hide a write in: four rules by default, each one
+      # pinned by a test above.
+      - lengthEqual:
+          path: rules
+          count: 4
+
+  # Neither does the opt-in that does exist: authDelegatorBinding widens the
+  # ClusterRoleBinding rule and leaves the node rule read-only.
+  - it: should keep nodes read-only with authDelegatorBinding on
+    template: templates/clusterrole.yaml
+    set:
+      namespaces:
+        - openstack
+      authDelegatorBinding: true
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - nodes
             verbs:
               - get
               - list
@@ -118,7 +193,7 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 4
+          count: 5
       - contains:
           path: rules
           content:

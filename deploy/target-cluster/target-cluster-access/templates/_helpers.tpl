@@ -66,3 +66,29 @@ the other cluster.
 {{- fail "values.namespaces must name at least one namespace (the namespaces key of the registration Secret)" }}
 {{- end }}
 {{- end }}
+
+{{/*
+Refuse a values.privilegedNamespaces the chart cannot honour: an entry that is
+not in values.namespaces, and any entry at all while createNamespaces is false.
+
+The label lands on a Namespace this chart writes, so in both cases it lands
+nowhere while the install still reports success. The first sign of it is a
+chassis DaemonSet whose pods PodSecurity admission rejects, on a cluster that
+enforces baseline or restricted.
+
+The opposite direction has no guard, because the chart cannot see it. With
+createNamespaces false it never writes the Namespace, so it neither sets the
+label nor clears one already there — an empty privilegedNamespaces then means
+only that nothing is being asked for, not that PodSecurity is enforcing. See
+"REMOVING IT AGAIN" in values.yaml for how to read the live posture instead.
+*/}}
+{{- define "target-cluster-access.requirePrivilegedNamespaces" -}}
+{{- range $entry := .Values.privilegedNamespaces }}
+{{- if not (has $entry $.Values.namespaces) }}
+{{- fail (printf "values.privilegedNamespaces entry %q is not in values.namespaces" $entry) }}
+{{- end }}
+{{- end }}
+{{- if and .Values.privilegedNamespaces (not .Values.createNamespaces) }}
+{{- fail "values.privilegedNamespaces requires createNamespaces: true (the chart cannot label a namespace it does not create)" }}
+{{- end }}
+{{- end }}

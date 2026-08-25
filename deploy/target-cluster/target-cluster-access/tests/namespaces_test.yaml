@@ -62,3 +62,31 @@ tests:
             app.kubernetes.io/name: target-cluster-access
             app.kubernetes.io/instance: RELEASE-NAME
             app.kubernetes.io/managed-by: Helm
+
+  # OVS and ovn-controller run with hostNetwork, hostPath and added
+  # capabilities, so their namespace needs the label wherever PodSecurity
+  # admission defaults to baseline or restricted. The namespaces holding the
+  # service APIs stay Restricted, so the label must not spread to them.
+  - it: should label only the privileged namespaces
+    set:
+      namespaces:
+        - openstack
+        - ovn
+      privilegedNamespaces:
+        - ovn
+    asserts:
+      - equal:
+          path: metadata.labels["pod-security.kubernetes.io/enforce"]
+          value: privileged
+        documentIndex: 1
+      - isNull:
+          path: metadata.labels["pod-security.kubernetes.io/enforce"]
+        documentIndex: 0
+
+  - it: should carry no PodSecurity label by default
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - isNull:
+          path: metadata.labels["pod-security.kubernetes.io/enforce"]
