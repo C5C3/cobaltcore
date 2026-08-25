@@ -65,6 +65,10 @@ const (
 	// DefaultCacheClusterRefName is the managed Memcached CR name materialized when
 	// spec.infrastructure.cache is in managed mode (servers unset).
 	DefaultCacheClusterRefName = "openstack-memcached"
+	// DefaultMessagingClusterRefName is the managed RabbitmqCluster CR name
+	// materialized when spec.infrastructure.messaging is declared in managed
+	// mode (secretRef unset) without a clusterRef name.
+	DefaultMessagingClusterRefName = "openstack-rabbitmq"
 	// The dedicated-backing-service clusterRef names are derived from the
 	// ControlPlane's own name so a per-service instance never collides with the
 	// shared one (openstack-db / openstack-memcached) nor with another
@@ -1257,6 +1261,27 @@ func defaultCacheLeaves(cache *commonv1.CacheSpec, clusterRefName string) {
 	}
 }
 
+// defaultMessagingLeaves materializes the well-known leaves of a MessagingSpec
+// with the same brownfield-preserving discipline as defaultDatabaseLeaves: the
+// managed clusterRef is invented only when the brownfield discriminator
+// (secretRef) is unset. A brownfield secretRef gets the shared transport-URL
+// key, and a tls block gets the CA-bundle key. Idempotent: only zero values
+// are filled. The block itself is never created: messaging is opt-in.
+func defaultMessagingLeaves(m *commonv1.MessagingSpec, clusterRefName string) {
+	if m.SecretRef == nil {
+		if m.ClusterRef == nil {
+			m.ClusterRef = &corev1.LocalObjectReference{Name: clusterRefName}
+		} else if m.ClusterRef.Name == "" {
+			m.ClusterRef.Name = clusterRefName
+		}
+	} else if m.SecretRef.Key == "" {
+		m.SecretRef.Key = commonv1.DefaultTransportURLSecretKey
+	}
+	if m.TLS != nil && m.TLS.CABundleSecretRef.Key == "" {
+		m.TLS.CABundleSecretRef.Key = DefaultCABundleSecretKey
+	}
+}
+
 // Default implements admission.Defaulter[*ControlPlane].
 // It fills only zero-valued fields with their documented defaults, leaving any
 // explicit value untouched. It is idempotent: applying it twice produces the
@@ -1338,6 +1363,12 @@ func (w *ControlPlaneWebhook) Default(_ context.Context, obj *ControlPlane) erro
 		}
 		defaultDatabaseLeaves(&obj.Spec.Infrastructure.Database, DefaultDatabaseClusterRefName)
 		defaultCacheLeaves(&obj.Spec.Infrastructure.Cache, DefaultCacheClusterRefName)
+
+		// Messaging is opt-in: the block is never materialized, only its leaves
+		// are defaulted when the CR declares it.
+		if m := obj.Spec.Infrastructure.Messaging; m != nil {
+			defaultMessagingLeaves(m, DefaultMessagingClusterRefName)
+		}
 
 		// Per-service DEDICATED backing services take the same leaf defaults as the
 		// shared block — the same helpers, so a dedicated instance can never drift
@@ -1628,6 +1659,38 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 		// fails the ControlPlane at admission rather than leaving a projected
 		// child CR to be rejected by its own webhook mid-reconcile.
 		allErrs = append(allErrs, validation.CacheNoControlChars(specPath.Child("infrastructure", "cache"), &cache)...)
+
+		// messaging must use exactly one of clusterRef or secretRef (the shared
+		// validator mirroring the CEL rule on commonv1.MessagingSpec), and the
+		// Secret names a brownfield or tls block points at cannot be empty. The
+		// block is optional and never materialized, so a nil block has nothing
+		// to validate.
+		if m := infra.Messaging; m != nil {
+			mPath := specPath.Child("infrastructure", "messaging")
+			allErrs = append(allErrs, validation.MessagingXOR(mPath, m)...)
+			if m.SecretRef != nil && m.SecretRef.Name == "" {
+				allErrs = append(allErrs, field.Required(mPath.Child("secretRef", "name"),
+					"must be set when messaging is brownfield (secretRef)"))
+			}
+			if m.TLS != nil {
+				if m.TLS.CABundleSecretRef.Name == "" {
+					allErrs = append(allErrs, field.Required(mPath.Child("tls", "caBundleSecretRef", "name"),
+						"must be set when messaging.tls is configured"))
+				}
+				// tls carries CLIENT trust only, and ensureRabbitMQ projects
+				// spec.replicas and nothing else — a managed broker therefore comes up
+				// on the RabbitMQ Cluster Operator's default, plaintext listener.
+				// Admitting tls beside a clusterRef would promise an encrypted
+				// connection nothing provisions, and the mismatch would only surface
+				// when the first consumer renders ssl = true against a broker that
+				// never had a TLS listener.
+				if m.ClusterRef != nil {
+					allErrs = append(allErrs, field.Invalid(mPath.Child("tls"), *m.TLS,
+						"messaging.tls configures client trust only; a managed RabbitmqCluster is "+
+							"provisioned without a TLS listener, so tls is supported in brownfield mode only"))
+				}
+			}
+		}
 	}
 
 	// the K-ORC admin-credential password Secret reference is required —
@@ -2696,13 +2759,16 @@ func validateImmutable(oldObj, newObj *ControlPlane) field.ErrorList {
 	// present on BOTH revisions — a presence flip (block added or removed) is an
 	// infrastructure-vs-mode transition governed by the External-mode gating, not a
 	// database/cache field mutation. When either side is nil there are no managed
-	// clusterRef/name/replicas/storageSize leaves to freeze. The
+	// clusterRef/name/replicas/storageSize leaves to freeze. Messaging is compared
+	// inside the same both-present guard; the block-level presence flip of
+	// messaging itself is what validateMessagingImmutable freezes. The
 	// cloudCredentialsRef.secretName and region immutability checks below are
 	// mode-independent and always run.
 	if oldInfra, newInfra := oldObj.Spec.Infrastructure, newObj.Spec.Infrastructure; oldInfra != nil && newInfra != nil {
 		specPath := field.NewPath("spec", "infrastructure")
 		allErrs = append(allErrs, validateDatabaseImmutable(specPath.Child("database"), &oldInfra.Database, &newInfra.Database)...)
 		allErrs = append(allErrs, validateCacheImmutable(specPath.Child("cache"), &oldInfra.Cache, &newInfra.Cache)...)
+		allErrs = append(allErrs, validateMessagingImmutable(specPath.Child("messaging"), oldInfra.Messaging, newInfra.Messaging)...)
 	}
 
 	allErrs = append(allErrs, validateDedicatedBackingServicesImmutable(oldObj, newObj)...)
@@ -2799,6 +2865,52 @@ func validateCacheImmutable(fldPath *field.Path, oldCache, newCache *commonv1.Ca
 	case oldCache.ClusterRef != nil && newCache.ClusterRef != nil && oldCache.ClusterRef.Name != newCache.ClusterRef.Name:
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("clusterRef", "name"),
 			newCache.ClusterRef.Name, "managed cache clusterRef.name is immutable"))
+	}
+	return allErrs
+}
+
+// validateMessagingImmutable freezes the shared spec.infrastructure.messaging
+// block as a one-way add IN BOTH MODES. Declaring the block on a live
+// ControlPlane is always allowed; removing it never is.
+//
+// The managed half is the direct one: the owned RabbitmqCluster keeps the
+// queues, so dropping the block leaves it running and unreferenced. The
+// brownfield half provisions nothing at all (managedInfraInstances returns early
+// on a nil clusterRef), so on its own the removal strands no state — but
+// admitting it turns the mode freeze below into a two-step operation. Null the
+// brownfield block (admitted), then re-add it with a clusterRef (admitted by the
+// oldM == nil case), and the ControlPlane has reached exactly the state the mode
+// freeze exists to reject, without a single admission error: ensureRabbitMQ
+// provisions a fresh, empty RabbitmqCluster that every consumer renders a
+// transport URL for, while the queues stay on the external broker the secretRef
+// named. Neither spec nor status remembers the mode a previous revision
+// declared, so the one-step rejection is only worth having while the two-step
+// path is closed too. Re-pointing a brownfield bus at a different broker never
+// needed the removal: secretRef stays mutable.
+//
+// The mode and the managed clusterRef.name are frozen like the cache ones.
+// replicas, secretRef and tls stay mutable: ensureRabbitMQ re-projects the
+// replica count onto the owned CR on every pass — converging a scale-DOWN by
+// recreating the cluster, since the RabbitMQ Cluster Operator refuses an
+// in-place shrink — and the brownfield Secret and the client trust are read on
+// every reconcile. Webhook-only, like the cache freeze: no CEL transition rule.
+func validateMessagingImmutable(fldPath *field.Path, oldM, newM *commonv1.MessagingSpec) field.ErrorList {
+	var allErrs field.ErrorList
+	switch {
+	case oldM == nil:
+		// Opt-in on a live ControlPlane.
+	case newM == nil:
+		allErrs = append(allErrs, field.Invalid(fldPath, newM,
+			"spec.infrastructure.messaging cannot be removed once declared: a managed block's "+
+				"owned RabbitmqCluster keeps the queues, and dropping a brownfield block would "+
+				"launder the immutable messaging mode into a two-step flip; re-point secretRef "+
+				"to move to another broker, or delete the ControlPlane to tear the bus down"))
+	case (oldM.ClusterRef != nil) != (newM.ClusterRef != nil):
+		allErrs = append(allErrs, field.Invalid(fldPath, *newM,
+			"messaging mode (managed clusterRef vs brownfield secretRef) is immutable"))
+	case oldM.ClusterRef != nil && newM.ClusterRef != nil && oldM.ClusterRef.Name != newM.ClusterRef.Name:
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("clusterRef", "name"),
+			newM.ClusterRef.Name, "managed messaging clusterRef.name is immutable"))
 	}
 	return allErrs
 }
