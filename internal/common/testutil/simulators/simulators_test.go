@@ -237,6 +237,93 @@ func TestSimulateMemcachedReady_notFound(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 }
 
+// --- SimulateRabbitmqClusterReady ---
+
+func TestSimulateRabbitmqClusterReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cluster := newUnstructured("rabbitmq.com", "v1beta1", "RabbitmqCluster", "test-rabbitmq", "default")
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(cluster).
+		WithStatusSubresource(cluster).
+		Build()
+
+	key := client.ObjectKeyFromObject(cluster)
+	g.Expect(SimulateRabbitmqClusterReady(context.Background(), c, key, "test-rabbitmq-default-user")).To(Succeed())
+
+	updated := newUnstructured("rabbitmq.com", "v1beta1", "RabbitmqCluster", "test-rabbitmq", "default")
+	g.Expect(c.Get(context.Background(), key, updated)).To(Succeed())
+
+	conditions, found, err := unstructured.NestedSlice(updated.Object, "status", "conditions")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(conditions).To(HaveLen(3))
+
+	types := make([]string, 0, len(conditions))
+	for _, raw := range conditions {
+		cond := raw.(map[string]interface{})
+		g.Expect(cond["status"]).To(Equal("True"))
+		types = append(types, cond["type"].(string))
+	}
+	g.Expect(types).To(ConsistOf("AllReplicasReady", "ClusterAvailable", "ReconcileSuccess"))
+
+	// The operator sets no Ready condition, and the resolver reads the
+	// default-user Secret through this reference.
+	g.Expect(types).NotTo(ContainElement("Ready"))
+
+	name, found, err := unstructured.NestedString(updated.Object, "status", "defaultUser", "secretReference", "name")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(name).To(Equal("test-rabbitmq-default-user"))
+
+	namespace, found, err := unstructured.NestedString(
+		updated.Object, "status", "defaultUser", "secretReference", "namespace",
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(namespace).To(Equal("default"))
+}
+
+func TestSimulateRabbitmqClusterReady_idempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cluster := newUnstructured("rabbitmq.com", "v1beta1", "RabbitmqCluster", "test-rabbitmq", "default")
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(cluster).
+		WithStatusSubresource(cluster).
+		Build()
+
+	ctx := context.Background()
+	key := client.ObjectKeyFromObject(cluster)
+
+	g.Expect(SimulateRabbitmqClusterReady(ctx, c, key, "test-rabbitmq-default-user")).To(Succeed())
+	g.Expect(SimulateRabbitmqClusterReady(ctx, c, key, "test-rabbitmq-default-user")).To(Succeed())
+
+	updated := newUnstructured("rabbitmq.com", "v1beta1", "RabbitmqCluster", "test-rabbitmq", "default")
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+
+	conditions, found, err := unstructured.NestedSlice(updated.Object, "status", "conditions")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(conditions).To(HaveLen(3), "expected exactly 3 conditions after two calls")
+}
+
+func TestSimulateRabbitmqClusterReady_notFound(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		Build()
+
+	key := client.ObjectKey{Name: "missing", Namespace: "default"}
+	err := SimulateRabbitmqClusterReady(context.Background(), c, key, "missing-default-user")
+	g.Expect(err).To(HaveOccurred())
+}
+
 // --- SimulateExternalSecretSync ---
 
 func TestSimulateExternalSecretSync(t *testing.T) {
