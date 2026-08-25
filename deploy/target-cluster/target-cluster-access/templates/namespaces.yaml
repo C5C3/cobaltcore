@@ -4,6 +4,7 @@ create the namespace their children land in, and a write into a missing one
 fails, so the cluster owner creates them here unless something else already does.
 */}}
 {{- include "target-cluster-access.requireNamespaces" . }}
+{{- include "target-cluster-access.requirePrivilegedNamespaces" . }}
 {{- if .Values.createNamespaces }}
 {{- range $namespace := .Values.namespaces }}
 ---
@@ -21,5 +22,11 @@ metadata:
     helm.sh/resource-policy: keep
   labels:
     {{- include "target-cluster-access.labels" $ | nindent 4 }}
+{{- if has $namespace $.Values.privilegedNamespaces }}
+    # OVS and ovn-controller run with hostNetwork, hostPath and added
+    # capabilities. Where the cluster's PodSecurity admission defaults to
+    # baseline or restricted, their pods are rejected without this label.
+    pod-security.kubernetes.io/enforce: privileged
+{{- end }}
 {{- end }}
 {{- end }}

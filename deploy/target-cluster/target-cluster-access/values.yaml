@@ -20,10 +20,9 @@ createNamespaces: true
 
 # Whether to grant create, patch and delete on ClusterRoleBindings, which is
 # what writing the binding a dedicated OpenBao instance needs takes. Off by
-# default, because these are the only grants in this chart that no namespace
-# bounds: the binding's name carries a hash the chart cannot compute, so
-# `resourceNames` cannot narrow them and they cover every ClusterRoleBinding on
-# this cluster, cluster-admin included.
+# default, because no namespace bounds these grants: the binding's name carries
+# a hash the chart cannot compute, so `resourceNames` cannot narrow them and
+# they cover every ClusterRoleBinding on this cluster, cluster-admin included.
 #
 # Turn it on only for a cluster a ControlPlane places a Barbican with a dedicated
 # OpenBao instance on. Every other placement — including a Barbican secret store
@@ -38,6 +37,66 @@ createNamespaces: true
 # teardown reads that binding by name before releasing its finalizer, and a
 # forbidden read there leaves the ControlPlane in Terminating.
 authDelegatorBinding: false
+
+# The subset of the namespaces above that host node-level workloads. Each entry
+# gets two things: its Namespace is labelled
+# pod-security.kubernetes.io/enforce: privileged, and its Role is the only one
+# that carries `daemonsets`. Every entry has to appear in namespaces, and
+# createNamespaces has to be true, since the chart cannot label a namespace it
+# does not create; either violation fails the render.
+#
+# Turn it on only for a namespace an OVNChassis is placed in: OVS and
+# ovn-controller run with hostNetwork, hostPath and added capabilities, and on a
+# cluster whose PodSecurity admission defaults to baseline or restricted their
+# pods are rejected without the label. The service APIs stay Restricted and need
+# no entry.
+#
+# WHAT THE LABEL COSTS. PodSecurity admission is what keeps this account's
+# workload grants inside the namespace they are scoped to. Drop it, and `create`
+# on deployments and daemonsets in that namespace is enough to schedule a pod
+# with hostPath and a privileged securityContext — one per node, for a
+# DaemonSet — which is root on every schedulable node of this cluster, and from
+# there kubelet's client certificate and every other pod's projected token.
+# Whoever holds the registration kubeconfig can do that, and so can anything
+# that compromises a management-cluster operator process holding it. There is no
+# narrower grant that still projects a chassis: a node-level workload needs
+# exactly the posture PodSecurity is there to refuse.
+#
+# So give a listed namespace to the chassis and to nothing else. The chart
+# cannot check this — it sees namespace names, not what is placed in them — and
+# a namespace that also holds Keystone, Glance or Barbican loses PodSecurity
+# enforcement for their Deployments, Jobs and CronJobs too.
+#
+# The `patch` on Nodes such a workload might want is deliberately NOT granted
+# anywhere in this chart, because the two compose: patch on Nodes lifts the
+# control-plane NoSchedule taint, and the pod that then lands there sits next to
+# the cluster CA key.
+#
+# REMOVING IT AGAIN. Dropping the entry from this list and running `helm
+# upgrade` is the supported path: the namespace stays in namespaces,
+# createNamespaces stays true, Helm's three-way merge removes the label, and the
+# Role loses `daemonsets` with it.
+#
+# The other three revocations do NOT remove it, because each one stops the chart
+# from rendering the Namespace at all while helm.sh/resource-policy: keep holds
+# the live one in place: `helm uninstall`, dropping the entry from namespaces
+# itself, and setting createNamespaces to false. The label then survives on a
+# namespace this release no longer writes, and PodSecurity stays off in it for
+# whoever uses the name next. Under createNamespaces false the Role is still
+# rendered, so create on deployments, jobs and cronjobs stays too — the
+# node-root reach above without the DaemonSet; the other two take the Role with
+# them and leave only the label. Take it off by hand in those three cases:
+#
+#   kubectl label namespace <ns> pod-security.kubernetes.io/enforce-
+#
+# AN EMPTY LIST PROVES NOTHING HERE. While createNamespaces is false the chart
+# never writes the Namespace, so it neither sets the label nor clears one that
+# is already there, and it cannot read the live one either. An empty list then
+# says only that this chart is not asking for the label — not that PodSecurity
+# is enforcing. Read the posture off the cluster instead:
+#
+#   kubectl get namespace <ns> -o jsonpath='{.metadata.labels}'
+privilegedNamespaces: []
 
 serviceAccount:
   # The account the registration kubeconfig authenticates as. It is created in

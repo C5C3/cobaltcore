@@ -88,11 +88,24 @@ rules:
       - get
       - create
       - delete
-  # apps - deployments
+  # apps - deployments, daemonsets
+  # deployments carries the service APIs, in every declared namespace.
+  #
+  # daemonsets is added only in a namespace named by values.privilegedNamespaces:
+  # the OVS and ovn-controller DaemonSets an OVNChassis is projected as (issue
+  # #903) are the only DaemonSets this account writes, and they run nowhere else,
+  # because nowhere else does this chart drop PodSecurity enforcement for them.
+  # Keeping the two in lockstep means a cluster that places no chassis carries
+  # neither. The lockstep is over what the chart renders: a live namespace can
+  # still carry a privileged label this chart no longer writes, and values.yaml
+  # lists the three revocations that leave one behind.
   - apiGroups:
       - apps
     resources:
       - deployments
+{{- if has $namespace $.Values.privilegedNamespaces }}
+      - daemonsets
+{{- end }}
     verbs:
       - get
       - list

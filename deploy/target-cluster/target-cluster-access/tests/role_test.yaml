@@ -147,6 +147,84 @@ tests:
               - create
               - delete
 
+  # The OVS and ovn-controller DaemonSets an OVNChassis is projected as. Without
+  # the grant the projection's first write comes back forbidden and the chassis
+  # never reaches Ready. It widens the existing apps rule rather than adding one.
+  - it: should grant full CRUD on daemonsets in a privileged namespace
+    set:
+      namespaces:
+        - openstack
+        - ovn
+      privilegedNamespaces:
+        - ovn
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resources:
+              - deployments
+              - daemonsets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+        documentIndex: 1
+      - lengthEqual:
+          path: rules
+          count: 20
+        documentIndex: 1
+
+  # A namespace that hosts no node-level workload carries no DaemonSet write.
+  # The grant travels with the PodSecurity label the chassis needs, so a cluster
+  # that places only service APIs gets neither.
+  - it: should grant no daemonsets outside the privileged namespaces
+    set:
+      namespaces:
+        - openstack
+        - ovn
+      privilegedNamespaces:
+        - ovn
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resources:
+              - deployments
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+        documentIndex: 0
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resources:
+              - deployments
+              - daemonsets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+        documentIndex: 0
+
   # escalate suspends RBAC's privilege-escalation check, which would let the
   # holder of the registration kubeconfig author a Role granting everything in
   # this namespace and bind it to itself. The projected TokenRequest Role is

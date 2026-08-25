@@ -30,3 +30,27 @@ tests:
         - openstack
     asserts:
       - notFailedTemplate: {}
+
+  # The label lands on a Namespace this chart writes, so an entry naming one it
+  # does not write is a typo or a missing declaration. Rendered, it would label
+  # nothing and the install would still report success.
+  - it: should fail on a privileged namespace that is not declared
+    set:
+      namespaces:
+        - openstack
+      privilegedNamespaces:
+        - edge
+    asserts:
+      - failedTemplate:
+          errorMessage: 'values.privilegedNamespaces entry "edge" is not in values.namespaces'
+
+  - it: should fail on privileged namespaces without createNamespaces
+    set:
+      namespaces:
+        - openstack
+      createNamespaces: false
+      privilegedNamespaces:
+        - openstack
+    asserts:
+      - failedTemplate:
+          errorMessage: "values.privilegedNamespaces requires createNamespaces: true (the chart cannot label a namespace it does not create)"

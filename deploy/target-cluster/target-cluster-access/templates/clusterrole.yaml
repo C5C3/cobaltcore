@@ -3,8 +3,8 @@ The grants that have no namespace to be scoped to. Everything else the operators
 reach on this cluster is in role.yaml, one namespace at a time.
 
 The read-only ones are always rendered. What the auth-delegator binding is
-WRITTEN with is not: those are the only grants in this chart that a namespace
-cannot bound, so they are rendered only where the install says they are needed.
+WRITTEN with is not: no namespace bounds those grants, so they are rendered only
+where the install says they are needed.
 */}}
 {{- include "target-cluster-access.requireNamespaces" . }}
 apiVersion: rbac.authorization.k8s.io/v1
@@ -34,6 +34,28 @@ rules:
       - external-secrets.io
     resources:
       - clustersecretstores
+    verbs:
+      - get
+      - list
+      - watch
+  # core - nodes (read-only)
+  # The ovn-operator watches Node labels to steer chassis placement and gateway
+  # roles. list and watch are cluster-wide because Nodes have no namespace, so a
+  # namespace-scoped cache cannot hold them.
+  #
+  # Read-only with no opt-in half, deliberately. Kubernetes has no way to narrow
+  # patch on nodes to one annotation key: the verb carries labels and taints
+  # with it, so granting it would let whoever holds the registration kubeconfig
+  # lift node-role.kubernetes.io/control-plane:NoSchedule and land a privileged
+  # chassis pod — see privilegedNamespaces — on the control-plane node, next to
+  # /etc/kubernetes/pki/ca.key. Per-node state the operator has to persist goes
+  # into a namespaced object keyed by node name instead, which the per-namespace
+  # Role already covers; see "Per-node values" in
+  # docs/contributing/adding-a-new-operator.md.
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
     verbs:
       - get
       - list
