@@ -119,11 +119,15 @@ stop at any phase indefinitely.
 | 3 | Service takeover | Sketch | Phase 2 + the Keystone deployment itself (fernet/credential keys imported, bootstrap skipped, endpoint cutover) | — |
 | 4 | Steady state | Sketch | Everything — indistinguishable from a greenfield ControlPlane | — |
 
-Messaging (RabbitMQ) is not modeled in the ControlPlane CRD at all today —
-Keystone needs none. The phase model reserves its takeover for the point where
-additional services (which do need messaging) join the ControlPlane; it would
-follow the same pattern as the database: brownfield coordinates first, managed
-replacement with migration later.
+Messaging (RabbitMQ) is modeled in the ControlPlane CRD, at
+[`spec.infrastructure.messaging`](../reference/c5c3/controlplane-crd.md#messagingspec)
+(issue #895). The block is opt-in, and Keystone consumes no bus, so a
+Phase 1 ControlPlane declares none: External mode forbids `spec.infrastructure`
+as a whole. The brownfield `secretRef` is the attach path, and it lands with
+Phase 2's infrastructure attach. It names a Secret holding the transport URL of
+the broker the existing installation already runs, and the operator provisions
+nothing against it. Managed replacement, with the queue migration that implies,
+stays future work on the same shape as the database.
 
 ## Phase 1: the service-less ControlPlane
 

@@ -56,6 +56,10 @@ the examples below resolve on the target: `openstack-db`,
    external-secrets, openbao-operator, and the Prometheus operator CRDs. Every
    controller-runtime watch registers against this cluster at builder time, so
    those kinds have to be installed here even though no child is written here.
+   The rabbitmq-cluster-operator goes in with its controller, not just its CRD:
+   a ControlPlane's shared message bus is provisioned in the ControlPlane's own
+   namespace on this cluster, so the controller that turns a `RabbitmqCluster`
+   into running RabbitMQ pods has to run here too.
    The script installs no CobaltCore operator, and it leaves the kubectl context on
    the cluster it created:
 

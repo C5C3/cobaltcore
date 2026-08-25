@@ -457,7 +457,7 @@ the fleet and have the operator reconcile it on their timing.
 
 The watches against the management cluster register at builder time, so a
 controller whose children all live on a target still needs the child kinds
-installed at home. The three third-party CRD sets are therefore required on the
+installed at home. The four third-party CRD sets are therefore required on the
 management cluster whatever `targetClusterRef` says.
 
 | CRD set | Installed in this repo from |
@@ -465,9 +465,17 @@ management cluster whatever `targetClusterRef` says.
 | mariadb-operator | The `mariadb-operator-crds` chart on `https://mariadb-operator.github.io/mariadb-operator` |
 | external-secrets | The `external-secrets` chart on `https://charts.external-secrets.io`, which bundles its CRDs |
 | openbao-operator | The digest-pinned chart artifact `oci://ghcr.io/dc-tec/charts/openbao-operator` |
+| rabbitmq-cluster-operator | The upstream `rabbitmq/cluster-operator` Git repository at tag `v2.22.5`, applied as a Flux Kustomization over `config/installation` |
+
+The RabbitMQ Cluster Operator is installed in full there, controller included.
+The shared message bus a ControlPlane declares at
+[`spec.infrastructure.messaging`](./c5c3/controlplane-crd.md#messagingspec) is
+provisioned in the ControlPlane's own namespace, so the controller that turns
+that `RabbitmqCluster` into a broker has to run on the management cluster. No
+part of the bus is written to a target.
 
 See [Infrastructure Manifests](./infrastructure/infrastructure-manifests.md) for
-the Flux sources and the dependency order these three ride in.
+the Flux sources and the dependency order these four ride in.
 
 ## Ownership and teardown on the target
 

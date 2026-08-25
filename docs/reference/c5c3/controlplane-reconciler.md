@@ -135,6 +135,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Barbican` | `Owns()` | Re-reconciles when the projected Barbican key-manager child status changes |
 | `BarbicanSecretStore` | `Owns()` | Re-reconciles when the projected BarbicanSecretStore status changes |
 | `OpenBaoCluster`, `OpenBaoTenant` | `Owns()` | Re-reconciles when the OpenBao instance provisioned for a dedicated Barbican secret store, or the tenant admitting its namespace, changes. The openbao-operator is installed only for that mode, so a ControlPlane without one runs on a cluster that never serves these kinds; both legs sit behind the discovery probe with the other sibling-operator kinds (`probeOptionalWatches`, which skips the leg and registers a leader-gated re-check that restarts the operator once the CRD appears) |
+| `RabbitmqCluster` (unstructured `rabbitmqClusterGVK`) | `Owns()` + cross-namespace `Watches()` | Re-reconciles when the managed message-bus child status changes, so `InfrastructureReady` follows `AllReplicasReady` instead of waiting for the periodic requeue. Watched as `*unstructured.Unstructured`, since the c5c3 operator takes no dependency on the RabbitMQ Cluster Operator's Go module. Messaging is opt-in, so both legs sit behind the discovery probe with the openbao kinds: a cluster that does not serve `rabbitmqclusters.rabbitmq.com` starts without them, and `crdWatchGate` restarts the operator once the CRD appears |
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
 | K-ORC `Endpoint` | `Owns()` | Re-reconciles when the public identity Endpoint changes |
@@ -148,7 +149,7 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | `Secret` | `Watches()` | Maps Secret events to referencing ControlPlane CRs via the `ControlPlaneSecretNameIndexKey` field indexer (`secretToControlPlaneMapper`) |
 | `ClusterSecretStore` | `Watches()` | Per-ref fan-out via `storeToControlPlaneMapper` (bound to the shared `watch.StoreRefFanOut` for the cluster kind): a status change on a cluster-scoped store enqueues only the ControlPlanes whose effective `spec.secretStoreRef` resolves to it |
 | `SecretStore` | `Watches()` | The namespaced twin, scoped to the store's own namespace, so a ControlPlane pinned to a per-tenant `SecretStore` reacts to its backend health (`storeToControlPlaneMapper` for the namespaced kind) |
-| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `Placement` / `Barbican` / `BarbicanSecretStore` / `OpenBaoCluster` / `OpenBaoTenant` / `MariaDB` / `Memcached` / `ExternalSecret` / `KeystoneService` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
+| projected service children + `Namespace` (cross-namespace) | `Watches()` | Label-predicate twin of the `Owns()` rows for a service placed in a namespace of its own: a cross-namespace child carries no owner reference (Kubernetes forbids one), so `Keystone` / `Horizon` / `Glance` / `GlanceBackend` / `Placement` / `Barbican` / `BarbicanSecretStore` / `OpenBaoCluster` / `OpenBaoTenant` / `RabbitmqCluster` / `MariaDB` / `Memcached` / `ExternalSecret` / `KeystoneService` — and the `Namespace` itself — are watched a second time through the ownership labels the projections stamp (`crossNamespaceChildHandler` gated by `crossNamespaceChildPredicate`), so same-namespace children keep flowing through `Owns()` alone and neither leg double-enqueues the other's objects |
 
 The `Secret` watch uses `Watches()` with a `MapFunc` rather than `Owns()`
 because the admin-password Secret
@@ -264,6 +265,7 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `c5c3.io` | `secretaggregates` | get, list, watch |
 | `k8s.mariadb.com` | `mariadbs` | get, list, watch, create, update, patch, delete |
 | `memcached.c5c3.io` | `memcacheds` | get, list, watch, create, update, patch, delete |
+| `rabbitmq.com` | `rabbitmqclusters` | get, list, watch, create, update, patch, delete |
 | `keystone.openstack.c5c3.io` | `keystones` | get, list, watch, create, update, patch, delete |
 | `placement.openstack.c5c3.io` | `placements` | get, list, watch, create, update, patch, delete |
 | `barbican.openstack.c5c3.io` | `barbicans`, `barbicansecretstores` | get, list, watch, create, update, patch, delete |
@@ -814,7 +816,7 @@ creates nothing on either side.
 | File | `reconcile_infrastructure.go` |
 | Condition | `InfrastructureReady` |
 | Gate | none |
-| Projects / Owns | Managed-mode `MariaDB` (`k8s.mariadb.com`) and `Memcached` (unstructured `memcached.c5c3.io/v1beta1`) children, each named after its `clusterRef` and created in **the namespace of the service that resolves to it** (`cp.KeystoneNamespace()` / `cp.HorizonNamespace()`, the ControlPlane's own unless a `namespace` assignment places the service elsewhere), **on the cluster that namespace lives on** |
+| Projects / Owns | Managed-mode `MariaDB` (`k8s.mariadb.com`) and `Memcached` (unstructured `memcached.c5c3.io/v1beta1`) children, each named after its `clusterRef` and created in **the namespace of the service that resolves to it** (`cp.KeystoneNamespace()` / `cp.HorizonNamespace()`, the ControlPlane's own unless a `namespace` assignment places the service elsewhere), **on the cluster that namespace lives on**; plus the managed-mode `RabbitmqCluster` (unstructured `rabbitmq.com/v1beta1`), always in **the ControlPlane's own namespace** on the local cluster |
 | Requeue | `infraRequeueAfter` = **15s** while a managed child is not yet Ready |
 
 **Backing services follow the service.** `managedInfraInstances` adds each
@@ -828,6 +830,17 @@ it is stamped with the ownership labels and cleaned up by the finalizer instead;
 a same-namespace child keeps its controller owner reference. The dashboard's cache
 is enumerated only when the dashboard is **declared**, so a ControlPlane that
 places Keystone apart never provisions a phantom cache for an absent Horizon.
+
+**The message bus stays home.** `addMessaging` is called once, at
+`childNamespace(cp)` with the declared-at path `spec.infrastructure.messaging`,
+and it is called whether or not a service consumes the bus. That makes messaging
+the single class enumerated at the ControlPlane's own namespace regardless of
+consumers: a bus is shared across services by nature, so declaring the block is
+what asks for the broker. Brownfield messaging (`secretRef`) enumerates nothing,
+the same way a brownfield database does. Consumers reach the managed bus at
+`<clusterRef.name>.<cp.Namespace>.svc`. A service placed on a target cluster
+cannot reach it from there; that path is open until the first consumer settles it
+(issue #906).
 
 A service that names a [`targetClusterRef`](../target-clusters.md) takes its
 backing services with it: the instance is created on that cluster, where the
@@ -873,6 +886,52 @@ ControlPlane), sized from **its** `replicas` / `storageSize`, re-projected on
 drift while owned, and **adopted read-only** — never reshaped, never GC-claimed —
 when a CR under that name already exists.
 
+`ensureRabbitMQ` is the twin of `ensureMemcached`: read-modify-write on an
+`*unstructured.Unstructured` carrying `rabbitmqClusterGVK`. On
+`NotFound` it creates the CR with `spec.replicas` and a controller owner
+reference (`claimChildOwnership`); on a CR it already owns it re-projects
+`spec.replicas` and nothing else; a CR of that name owned by someone else is
+adopted read-only. The re-projection is asymmetric: growing an owned cluster is
+an in-place `Update`, while **shrinking** it is a delete-and-recreate — the
+RabbitMQ Cluster Operator refuses an in-place scale-down, so a lowered count
+written onto the CR would sit there ignored while `AllReplicasReady` (and with it
+`InfrastructureReady`) stayed `True`. The delete reports the bus not ready, so
+the next pass takes the `NotFound` branch and creates the cluster at the declared
+size. It is destructive by construction — the broker and its volumes come back
+empty, and with them every durable queue and unacked message — so it is **gated
+on an annotation**: without `c5c3.io/allow-messaging-recreate: "true"` on the
+ControlPlane the shrink is refused, the broker keeps running at its current size,
+and the divergence surfaces as `InfrastructureReady=False` / `RabbitMQError` with
+a message naming the annotation. The gate exists because `replicas` carries a
+schema default of `3`: a commit that merely drops the line off a ControlPlane
+running five pods reads as a no-op in review and arrives at the reconciler as a
+scale-down nobody typed. With the annotation set, the recreate is the only path
+the operator offers for a declared count the running cluster exceeds.
+
+A child that is mid-teardown is never reported ready. The RabbitMQ Cluster
+Operator holds a finalizer on its CRs, so a deleted `RabbitmqCluster` lingers in
+`Terminating` with its spec and its `status.conditions` intact — `AllReplicasReady`
+still reads `True` on a broker whose StatefulSet and Secrets are going away. A
+non-nil `metadata.deletionTimestamp` therefore short-circuits the pass to
+not-ready before the replica comparison, which would otherwise fall through to
+the condition read whenever the declared count happens to match the dying
+cluster's.
+
+Image, resources, persistence, and `spec.tls` stay at the
+RabbitMQ Cluster Operator's defaults, or at whatever the platform set on the
+adopted CR, the posture `ensureMariaDB` takes on TLS and issuer refs. A bypassed
+`replicas: 0` is floored to `infraRabbitMQReplicasDefault` (3) so the broker
+never comes up with no pods.
+
+Its readiness reads `AllReplicasReady` through
+`unstructuredConditionTrue(u, "AllReplicasReady")`. The RabbitMQ Cluster Operator
+sets no `Ready` condition at all, so the `Ready` specialisation would never see a
+healthy broker. A cluster that does not serve the `rabbitmq.com` CRD answers the
+`Get` with a `meta.NoKindMatchError`, which `apierrors.IsNotFound` does not
+match, so a ControlPlane that declares managed messaging there fails closed with
+`InfrastructureReady=False` / `RabbitMQError` instead of quietly provisioning
+nothing.
+
 `spec.infrastructure` is optional: an **External**-mode Keystone ControlPlane
 omits it (the validating webhook forbids it in External mode and requires it
 otherwise). In External mode the sub-reconciler provisions nothing and reports
@@ -889,6 +948,9 @@ pointer.
 | Memcached create/update fails | False | `MemcachedError` | returns the error |
 | MariaDB not yet Ready | False | `WaitingForDatabase` | requeue 15s |
 | Memcached not yet Ready | False | `WaitingForCache` | requeue 15s |
+| RabbitmqCluster create/update fails | False | `RabbitMQError` | returns the error; a cluster that does not serve `rabbitmqclusters.rabbitmq.com` lands here with the `RESTMapper`'s `no matches for kind` |
+| Declared `messaging.replicas` below the owned cluster's, `c5c3.io/allow-messaging-recreate` unset | False | `RabbitMQError` | returns the error; the destructive delete-and-recreate is refused and the broker keeps running at its current size |
+| RabbitmqCluster not yet `AllReplicasReady` | False | `WaitingForMessaging` | requeue 15s |
 | `spec.infrastructure` unset, not External | False | `InfrastructureNotConfigured` | requeue 15s; unreachable on the admission path — fails closed for a webhook-bypassed CR |
 | A service placed an instance on a target cluster that does not resolve | False | `TargetClusterUnavailable` | requeue 15s; the resolver's own message, `cluster not found` for a name that was never registered. Nothing is provisioned, on either cluster |
 | All managed children Ready (or pure brownfield) | True | `InfrastructureReady` | — |
@@ -905,7 +967,10 @@ pointer.
 > `conditions.IsReady(mariadb.Status.Conditions)`; Memcached readiness is read
 > from the unstructured `status.conditions[type=Ready].status == "True"`
 > (`unstructuredReady`), where a missing/malformed list is treated as not-ready
-> rather than an error.
+> rather than an error. `unstructuredReady` is the `Ready` specialisation of
+> `unstructuredConditionTrue`, which takes the condition type as an argument;
+> the RabbitmqCluster child is read with `AllReplicasReady` through the same
+> helper, and its `spec.replicas` comes from `messaging.replicas`.
 
 ### reconcileESOTenantStore
 
