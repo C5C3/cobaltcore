@@ -21,6 +21,13 @@
 # `${WITH_PROMETHEUS:-false}` default keeps the monitoring stack out of
 # the install.
 #
+# WITH_OVN_KERNEL_MODULES is threaded the same way so a future OVN chassis job
+# (issue #905) can opt in to the best-effort host-side `openvswitch` and
+# `geneve` module load. No job sets it in this change. When the calling job
+# leaves WITH_OVN_KERNEL_MODULES unset, `${{ env.WITH_OVN_KERNEL_MODULES }}`
+# resolves to an empty string and hack/deploy-infra.sh's
+# `${WITH_OVN_KERNEL_MODULES:-false}` default leaves the host kernel alone.
+#
 # WITH_CONTROLPLANE, CONTROLPLANE_OPERATORS, CONTROLPLANE_NAME, and
 # WITH_CONTROLPLANE_CR are threaded the same way so the e2e-controlplane job can
 # provision the shared infra for the c5c3 ControlPlane chain and provide the
@@ -65,6 +72,8 @@ runs:
         WITH_CHAOS_MESH: ${{ env.WITH_CHAOS_MESH }}
         # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
         WITH_PROMETHEUS: ${{ env.WITH_PROMETHEUS }}
+        # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
+        WITH_OVN_KERNEL_MODULES: ${{ env.WITH_OVN_KERNEL_MODULES }}
         # ControlPlane opt-in flags — empty when caller does not set them;
         # deploy-infra.sh defaults keep the ControlPlane stack out of the install.
         WITH_CONTROLPLANE: ${{ env.WITH_CONTROLPLANE }}
