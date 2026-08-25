@@ -116,6 +116,54 @@ func SimulateMemcachedReady(ctx context.Context, c client.Client, key client.Obj
 	)
 }
 
+// SimulateRabbitmqClusterReady updates an unstructured RabbitmqCluster's status
+// to what the RabbitMQ Cluster Operator reports for a healthy cluster: the
+// AllReplicasReady, ClusterAvailable and ReconcileSuccess conditions True and
+// status.defaultUser.secretReference pointing at the default-user Secret. The
+// operator sets no Ready condition, so setUnstructuredReadyStatus does not apply.
+func SimulateRabbitmqClusterReady(
+	ctx context.Context,
+	c client.Client,
+	key client.ObjectKey,
+	defaultUserSecretName string,
+) error {
+	obj := &unstructured.Unstructured{}
+	obj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "rabbitmq.com", Version: "v1beta1", Kind: "RabbitmqCluster",
+	})
+
+	if err := c.Get(ctx, key, obj); err != nil {
+		return fmt.Errorf("getting RabbitmqCluster %s: %w", key, err)
+	}
+
+	now := metav1.Now().Format(time.RFC3339)
+	conditions := make([]interface{}, 0, 3)
+	for _, conditionType := range []string{"AllReplicasReady", "ClusterAvailable", "ReconcileSuccess"} {
+		conditions = append(conditions, map[string]interface{}{
+			"type":               conditionType,
+			"status":             conditionStatusTrue,
+			"reason":             conditionType,
+			"message":            "RabbitmqCluster is ready",
+			"lastTransitionTime": now,
+		})
+	}
+
+	status := map[string]interface{}{
+		"conditions": conditions,
+		"defaultUser": map[string]interface{}{
+			"secretReference": map[string]interface{}{
+				"name":      defaultUserSecretName,
+				"namespace": key.Namespace,
+			},
+		},
+	}
+	if err := unstructured.SetNestedField(obj.Object, status, "status"); err != nil {
+		return fmt.Errorf("setting RabbitmqCluster status: %w", err)
+	}
+
+	return c.Status().Update(ctx, obj)
+}
+
 // SimulateExternalSecretSync updates an ExternalSecret resource's status to
 // indicate successful synchronization by setting the Ready condition to True
 // and updating the refresh time.
