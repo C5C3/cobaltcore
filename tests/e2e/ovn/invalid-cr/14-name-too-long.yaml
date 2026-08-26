@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A metadata.name of 46 characters is rejected by the validating webhook
+# alone. The bound is 45: the backup CronJob is named {name}-backup and the
+# API server caps a CronJob name at 52 characters, so a longer CR name would
+# be admitted and then fail every reconcile on a child the API server refuses.
+# The name is a valid DNS-1123 subdomain apart from its length, so the bound
+# is the only rule it breaks.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-invalid-name-with-forty-six-characters-set
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca

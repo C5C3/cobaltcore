@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.northd.threads above the CRD Maximum=16 marker. Past a handful of
+# threads the lock contention inside northd eats the gain from the extra
+# parallelism, so the ceiling stays low.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+  northd:
+    threads: 17

@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.updateStrategy.maxUnavailable of "0%" under RollingUpdate wedges the
+# rollout exactly the way the integer 0 does, and an int-or-string field
+# carries no marker that would catch either. The webhook resolves the value
+# before it judges it, so the percentage form cannot walk past the bound the
+# integer form is held to.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  updateStrategy:
+    type: RollingUpdate
+    maxUnavailable: "0%"

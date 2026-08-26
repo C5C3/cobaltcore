@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.southbound.inactivityProbeMs below the CRD Minimum=0 marker. Zero
+# already means no probe at all, so a negative value names no behaviour
+# ovsdb-server has.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+  southbound:
+    inactivityProbeMs: -1

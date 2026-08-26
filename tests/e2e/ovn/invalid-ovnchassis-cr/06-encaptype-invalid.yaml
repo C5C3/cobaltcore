@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.encapType outside the CRD enum (geneve, vxlan). GRE carries no
+# logical metadata OVN can use between chassis, so the schema enum is the
+# sole gate and the webhook carries no twin.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  encapType: gre

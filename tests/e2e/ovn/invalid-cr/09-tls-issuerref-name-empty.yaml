@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.tls.issuerRef.name empty violates the MinLength=1 marker on
+# OVNIssuerRef, which the API server answers before the webhook's
+# field.Required twin runs. Without an issuer there is no CA to authenticate
+# the OVN connections against, and OVN's own RBAC is keyed on the certificate
+# CN.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: ""

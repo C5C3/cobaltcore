@@ -1,0 +1,199 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for OVNCentral CRD webhook + CEL validation rejection.
+# Pins the implemented CEL XValidation, kubebuilder-marker, and
+# webhook.validate() rejection paths in operators/ovn/api/v1alpha1/ to a
+# deterministic admission failure. Each step applies an otherwise-valid
+# OVNCentral CR with a single aspect violating the rule under test, captures the
+# admission $error, and asserts the field path plus message substring.
+#
+# The API server validates against the structural schema and its CEL rules
+# before it calls the validating webhook, so a rule carried by both layers is
+# answered by the schema and the assertions below quote the schema message. The
+# webhook message is asserted only where the rule has no schema counterpart:
+# the two node-port range rules correlate a base with a replica count, the
+# backup schedule is parsed rather than matched, and the metadata.name bound
+# comes from the name of a child object.
+#
+# All fixtures are generated from the single canonical scaffold in
+# `_generate.py` (mirroring tests/e2e/placement/invalid-cr/). After editing the
+# scaffold or any per-fixture override, regenerate via:
+#   python3 tests/e2e/ovn/invalid-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes
+# `_generate.py --check` (drift mode, both directions incl. orphans) and
+# `test_generate.py` (FIXTURES count + chainsaw-test.yaml cross-reference)
+# so any hand-edit to a generated fixture fails the build before the
+# cluster-bound e2e-operator job runs.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-invalid-cr
+spec:
+  steps:
+  # An even spec.northbound.replicas must be rejected by the CEL rule on
+  # OVNDatabaseSpec.Replicas: an even Raft cluster tolerates no more failures
+  # than the odd one below it and has two ways to split the vote.
+  - try:
+    - apply:
+        file: 00-northbound-replicas-even.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'northbound.replicas')): true
+            (contains($error, 'replicas must be odd')): true
+  # spec.northbound.replicas above the Maximum=5 marker must be rejected. The
+  # value is odd, so the CEL rule stays satisfied and the marker answers.
+  - try:
+    - apply:
+        file: 01-northbound-replicas-above-maximum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'northbound.replicas')): true
+            (contains($error, 'should be less than or equal to 5')): true
+  # spec.southbound.nodePortBase below the Minimum=30000 marker must be
+  # rejected: it sits under the start of the Kubernetes node-port range.
+  - try:
+    - apply:
+        file: 02-southbound-nodeportbase-below-range.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'southbound.nodePortBase')): true
+            (contains($error, 'should be greater than or equal to 30000')): true
+  # A spec.northbound.nodePortBase whose range runs past the top of the
+  # node-port range must be rejected by the validating webhook: the rule
+  # correlates the base with the replica count, which no marker can express.
+  - try:
+    - apply:
+        file: 03-northbound-nodeportbase-no-room.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'northbound.nodePortBase')): true
+            (contains($error, 'leaves no room for 3 replicas below 32767')): true
+  # Two overlapping node-port ranges must be rejected by the validating webhook.
+  # It reports the collision at spec.southbound.nodePortBase, the range the
+  # moved northbound base ran into, not at the field the fixture changes.
+  - try:
+    - apply:
+        file: 04-nodeport-ranges-overlap.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'southbound.nodePortBase')): true
+            (contains($error, 'northbound and southbound nodePort ranges overlap')): true
+  # spec.northbound.electionTimerMs below the Minimum=1000 marker must be
+  # rejected: a sub-second timer re-elects on every hiccup between the members.
+  - try:
+    - apply:
+        file: 05-northbound-electiontimer-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'northbound.electionTimerMs')): true
+            (contains($error, 'should be greater than or equal to 1000')): true
+  # A negative spec.southbound.inactivityProbeMs must be rejected by the
+  # Minimum=0 marker: zero already means no probe at all.
+  - try:
+    - apply:
+        file: 06-southbound-inactivityprobe-negative.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'southbound.inactivityProbeMs')): true
+            (contains($error, 'should be greater than or equal to 0')): true
+  # spec.northbound.storage.size in decimal units must be rejected by the CRD
+  # pattern, which admits binary units only.
+  - try:
+    - apply:
+        file: 07-northbound-storage-size-pattern.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'northbound.storage.size')): true
+            (contains($error, 'should match')): true
+  # spec.northd.threads above the Maximum=16 marker must be rejected: past a
+  # handful of threads the lock contention inside northd eats the gain.
+  - try:
+    - apply:
+        file: 08-northd-threads-above-maximum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'northd.threads')): true
+            (contains($error, 'should be less than or equal to 16')): true
+  # spec.tls.issuerRef.name empty must be rejected by the MinLength=1 marker on
+  # OVNIssuerRef, which answers before the webhook's field.Required twin.
+  - try:
+    - apply:
+        file: 09-tls-issuerref-name-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'tls.issuerRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
+  # spec.tls.issuerRef.kind outside the CRD enum must be rejected: Issuer and
+  # ClusterIssuer are the only two kinds cert-manager issues from.
+  - try:
+    - apply:
+        file: 10-tls-issuerref-kind-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'tls.issuerRef.kind')): true
+            (contains($error, 'Unsupported value')): true
+  # spec.backup.retentionDays of 0 must be rejected by the Minimum=1 marker: the
+  # run would delete the snapshot it just took. The webhook repeats the floor,
+  # but the schema answers first.
+  - try:
+    - apply:
+        file: 11-backup-retentiondays-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'backup.retentionDays')): true
+            (contains($error, 'should be greater than or equal to 1')): true
+  # spec.backup.schedule that is not a cron expression must be rejected by the
+  # validating webhook: the field carries no schema marker.
+  - try:
+    - apply:
+        file: 12-backup-schedule-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'backup.schedule')): true
+            (contains($error, 'invalid cron expression')): true
+  # A plaintext spec.backup.s3.endpoint must be rejected by the CRD pattern: the
+  # upload would put the access key and both database snapshots on the wire.
+  - try:
+    - apply:
+        file: 13-backup-s3-endpoint-pattern.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'backup.s3.endpoint')): true
+            (contains($error, 'should match')): true
+  # A metadata.name past 45 characters must be rejected by the validating
+  # webhook: the {name}-backup CronJob would exceed the 52-character cap the API
+  # server enforces, so the CR would admit cleanly and then fail every reconcile.
+  - try:
+    - apply:
+        file: 14-name-too-long.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'metadata.name')): true
+            (contains($error, 'name must be at most 45 characters')): true
+  # spec.targetClusterRef.name empty must be rejected by the MinLength=1 marker
+  # on the shared TargetClusterRefSpec, which answers before the webhook twin.
+  - try:
+    - apply:
+        file: 15-targetclusterref-empty-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'targetClusterRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true

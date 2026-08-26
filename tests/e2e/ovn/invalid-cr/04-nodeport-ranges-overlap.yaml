@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Two node-port ranges that overlap are rejected by the validating webhook
+# alone. The northbound base is moved onto the southbound default (30651), so
+# both databases claim 30651 through 30653 and their Services collide. The
+# webhook reports the collision at spec.southbound.nodePortBase, the range the
+# moved base ran into, not at the field this fixture changes.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+  northbound:
+    nodePortBase: 30651

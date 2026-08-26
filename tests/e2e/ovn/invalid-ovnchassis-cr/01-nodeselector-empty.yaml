@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.nodeSelector empty violates the MinProperties=1 marker. An empty
+# selector matches every node rather than none, so it would start
+# ovn-controller on the control-plane nodes and on whatever else joins the
+# cluster later. The webhook repeats the check as field.Required, but the
+# schema answers first.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector: {}

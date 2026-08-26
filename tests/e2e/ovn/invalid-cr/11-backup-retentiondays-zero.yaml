@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.backup.retentionDays below the CRD Minimum=1 marker. Zero would have
+# the run delete the snapshot it just took. validateBackup repeats the floor
+# in the webhook layer, but the schema answers first.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+  backup:
+    retentionDays: 0

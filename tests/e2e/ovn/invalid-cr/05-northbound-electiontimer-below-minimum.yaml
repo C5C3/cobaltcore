@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.northbound.electionTimerMs below the CRD Minimum=1000 marker. A timer
+# under a second re-elects on every hiccup of the link between the Raft
+# members, and every election is a write outage.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+  northbound:
+    electionTimerMs: 999
