@@ -20,7 +20,8 @@ import (
 //
 // One map serves both pipelines of this operator, the OVNCentral one and the
 // OVNChassis one, because the instrumenter is shared and a sub_reconciler name
-// is unique across the two. The names below are the OVNCentral pipeline's.
+// is unique across the two. The first block below is the OVNCentral pipeline's,
+// the second the OVNChassis one's.
 //
 // The mapping is guarded in both directions: every value MUST be a member of
 // the owning CR's sub-condition list and every pipeline step name MUST be a key
@@ -35,6 +36,12 @@ var subReconcilerConditionTypes = map[string]string{
 	"Northd":     conditionTypeNorthdReady,
 	"Relay":      conditionTypeRelayReady,
 	"Backup":     conditionTypeBackupReady,
+
+	"Central":     conditionTypeCentralReady,
+	"Nodes":       conditionTypeNodesReady,
+	"OVS":         conditionTypeOVSReady,
+	"Controller":  conditionTypeControllerReady,
+	"Maintenance": conditionTypeMaintenanceReady,
 }
 
 // instrumenter wraps every sub-reconciler call with the shared duration/error
