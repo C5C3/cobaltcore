@@ -49,11 +49,11 @@ tests:
     asserts:
       - lengthEqual:
           path: rules
-          count: 20
+          count: 21
         documentIndex: 0
       - lengthEqual:
           path: rules
-          count: 20
+          count: 21
         documentIndex: 1
 
   - it: should grant full CRUD on the projected core children
@@ -147,6 +147,51 @@ tests:
               - create
               - delete
 
+  # The Northbound and Southbound Raft databases an OVNCentral is projected as.
+  # Their pods run Restricted like the service APIs, so the grant is
+  # unconditional: it does not travel with values.privilegedNamespaces the way
+  # the daemonsets grant does.
+  - it: should grant statefulsets alongside deployments in every namespace
+    set:
+      namespaces:
+        - openstack
+        - ovn
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resources:
+              - deployments
+              - statefulsets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+        documentIndex: 0
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resources:
+              - deployments
+              - statefulsets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+        documentIndex: 1
+
   # The OVS and ovn-controller DaemonSets an OVNChassis is projected as. Without
   # the grant the projection's first write comes back forbidden and the chassis
   # never reaches Ready. It widens the existing apps rule rather than adding one.
@@ -165,6 +210,7 @@ tests:
               - apps
             resources:
               - deployments
+              - statefulsets
               - daemonsets
             verbs:
               - get
@@ -177,7 +223,7 @@ tests:
         documentIndex: 1
       - lengthEqual:
           path: rules
-          count: 20
+          count: 21
         documentIndex: 1
 
   # A namespace that hosts no node-level workload carries no DaemonSet write.
@@ -198,6 +244,7 @@ tests:
               - apps
             resources:
               - deployments
+              - statefulsets
             verbs:
               - get
               - list
@@ -214,6 +261,7 @@ tests:
               - apps
             resources:
               - deployments
+              - statefulsets
               - daemonsets
             verbs:
               - get
@@ -224,6 +272,30 @@ tests:
               - patch
               - delete
         documentIndex: 0
+
+  # The backup claim an OVNCentral is projected with, named <name>-backup. The
+  # databases' own claims come from volumeClaimTemplates and are written by the
+  # StatefulSet controller, not by this account.
+  - it: should grant full CRUD on persistentvolumeclaims
+    set:
+      namespaces:
+        - openstack
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - persistentvolumeclaims
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
 
   # escalate suspends RBAC's privilege-escalation check, which would let the
   # holder of the registration kubeconfig author a Role granting everything in

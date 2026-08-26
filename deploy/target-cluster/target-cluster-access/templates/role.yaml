@@ -88,8 +88,13 @@ rules:
       - get
       - create
       - delete
-  # apps - deployments, daemonsets
+  # apps - deployments, statefulsets, daemonsets
   # deployments carries the service APIs, in every declared namespace.
+  #
+  # statefulsets carries the Northbound and Southbound Raft databases an
+  # OVNCentral is projected as (issue #903). Those pods run under the Restricted
+  # PodSecurity posture like every other service API, so the grant is
+  # unconditional and does not travel with values.privilegedNamespaces.
   #
   # daemonsets is added only in a namespace named by values.privilegedNamespaces:
   # the OVS and ovn-controller DaemonSets an OVNChassis is projected as (issue
@@ -103,9 +108,27 @@ rules:
       - apps
     resources:
       - deployments
+      - statefulsets
 {{- if has $namespace $.Values.privilegedNamespaces }}
       - daemonsets
 {{- end }}
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  # core - persistentvolumeclaims
+  # The backup claim an OVNCentral is projected with, named <name>-backup. The
+  # StatefulSet controller creates and deletes the databases' own claims from
+  # volumeClaimTemplates under its own account, so this grant covers the backup
+  # claim alone.
+  - apiGroups:
+      - ""
+    resources:
+      - persistentvolumeclaims
     verbs:
       - get
       - list
