@@ -53,7 +53,7 @@ The custom managers cover:
 - **K-ORC Flux source** — the `ref.tag` of the K-ORC `GitRepository` in `deploy/flux-system/sources/k-orc.yaml` (github-releases). This closes a drift gap: without it the Flux-applied K-ORC CRDs could fall behind the Renovate-tracked `k-orc/openstack-resource-controller` Go module the operator compiles against.
 - **Go build tooling in `Makefile` / `.github/workflows/*.yaml`** — `gofumpt`, `controller-gen`, `golangci-lint`, and `yq`.
 - **`renovate-config-validator` pin** — the `RENOVATE_VALIDATOR_VERSION` constant in `tests/unit/renovate/`, the Renovate release `test-shell` downloads and executes to validate `renovate.json`.
-- **OVN image pin** — the `ARG OVN_VERSION` line in `images/ovn/Dockerfile` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix).
+- **OVN image pin** — the `ARG OVN_VERSION` line in `images/ovn/Dockerfile` (github-tags on `ovn-org/ovn`, regex versioning because the 26.03 line carries a leading zero and a `v` prefix). A second manager tracks the same upstream tag in `defaultOVNVersion`, the constant in `operators/ovn/internal/controller/image.go` that the ovn-operator resolves for a CR leaving `spec.image` unset. It carries the bare version, so its versioning regex expects no `v` and an `extractVersionTemplate` strips the one the tag has. Both pins are grouped under `OVN LTS patch releases`, so they move in a single PR; `TestDefaultOVNVersionMatchesDockerfilePin` fails when they diverge.
 
 Major updates are **disabled** for all custom-regex managers — these touch deploy-time
 CRDs, the OpenStack release matrix, and build tooling where a major bump always needs

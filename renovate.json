@@ -413,6 +413,20 @@
       "datasourceTemplate": "github-tags",
       "packageNameTemplate": "ovn-org/ovn",
       "versioningTemplate": "regex:^v(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/operators/ovn/internal/controller/image\\.go$/"
+      ],
+      "matchStrings": [
+        "defaultOVNVersion = \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "ovn-org/ovn",
+      "datasourceTemplate": "github-tags",
+      "packageNameTemplate": "ovn-org/ovn",
+      "extractVersionTemplate": "^v(?<version>.+)$",
+      "versioningTemplate": "regex:^(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)$"
     }
   ],
   "packageRules": [
@@ -777,14 +791,20 @@
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["images/ovn/Dockerfile"],
+      "matchFileNames": [
+        "images/ovn/Dockerfile",
+        "operators/ovn/internal/controller/image.go"
+      ],
       "matchPackageNames": ["ovn-org/ovn"],
       "matchUpdateTypes": ["major", "minor"],
       "enabled": false
     },
     {
       "matchManagers": ["custom.regex"],
-      "matchFileNames": ["images/ovn/Dockerfile"],
+      "matchFileNames": [
+        "images/ovn/Dockerfile",
+        "operators/ovn/internal/controller/image.go"
+      ],
       "matchPackageNames": ["ovn-org/ovn"],
       "matchUpdateTypes": ["patch"],
       "automerge": false,

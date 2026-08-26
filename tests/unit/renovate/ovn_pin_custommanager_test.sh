@@ -78,12 +78,14 @@ test_manager_exists_and_regex_matches() {
 
   local count
   count="$(jq --arg pkg "$PKG_NAME" '[.customManagers[]
-    | select(.packageNameTemplate == $pkg)] | length' "$RENOVATE_FILE")"
-  assert_eq "exactly one customManager targets ${PKG_NAME}" "1" "$count"
+    | select(.packageNameTemplate == $pkg)
+    | select(any(.managerFilePatterns[]; test("images/ovn/Dockerfile")))] | length' "$RENOVATE_FILE")"
+  assert_eq "exactly one customManager targets ${PKG_NAME} over the Dockerfile" "1" "$count"
 
   local entry
   entry="$(jq -c --arg pkg "$PKG_NAME" '.customManagers[]
-    | select(.packageNameTemplate == $pkg)' "$RENOVATE_FILE" | head -1)"
+    | select(.packageNameTemplate == $pkg)
+    | select(any(.managerFilePatterns[]; test("images/ovn/Dockerfile")))' "$RENOVATE_FILE" | head -1)"
 
   if [ -z "$entry" ]; then
     echo "  FAIL: no customManager for ${PKG_NAME}"
