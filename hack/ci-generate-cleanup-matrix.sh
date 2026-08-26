@@ -7,7 +7,7 @@
 # image cleanup jobs from the source tree.
 #
 # Every container package this repo publishes has a directory: images/<name>/
-# becomes ghcr.io/<owner>/<name>, operators/<name>/ becomes
+# becomes ghcr.io/<owner>/<name>, and operators/<name>/ with a go.mod becomes
 # ghcr.io/<owner>/<name>-operator. Deriving the lists from those directories
 # keeps a newly onboarded service from silently losing its cleanup coverage --
 # keystone-federation-proxy sat outside every hardcoded matrix and accumulated
@@ -42,8 +42,12 @@ done
 
 for operator_dir in operators/*/; do
   operator="$(basename "${operator_dir}")"
-  # operators/shared/ holds cross-operator Go packages, not an operator image.
-  [[ "${operator}" == "shared" ]] && continue
+  # Only a directory with a go.mod is an operator that builds a
+  # <name>-operator image. A catalogs-only directory (the generated option
+  # catalogs under operators/<name>/api/v1alpha1/catalogs/ are committed ahead
+  # of the operator that reads them) is a build input, not an operator image,
+  # and operators/shared/ holds chart templates. The go.mod rule skips both.
+  [[ -f "${operator_dir}go.mod" ]] || continue
   packages+=("${operator}-operator")
 done
 
