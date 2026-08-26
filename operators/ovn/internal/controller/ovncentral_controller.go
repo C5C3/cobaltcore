@@ -31,9 +31,8 @@ import (
 // published addresses after that, and northd, the relay and the backup last,
 // since each of those consumes an address the endpoint step publishes.
 //
-// A condition is spelled out only where the owning sub-reconciler declares no
-// constant for it; the rest reference that constant, so a rename cannot leave a
-// stale literal behind here.
+// Every entry references the owning sub-reconciler's own constant, so a rename
+// cannot leave a stale literal behind here.
 var centralSubConditionTypes = []string{
 	conditionTypeTLSReady,
 	conditionTypeNorthboundReady,
@@ -41,7 +40,7 @@ var centralSubConditionTypes = []string{
 	conditionTypeEndpointsReady,
 	conditionTypeNorthdReady,
 	conditionTypeRelayReady,
-	"BackupReady",
+	conditionTypeBackupReady,
 }
 
 // centralSkeleton bundles the shared controller-skeleton glue (Ready

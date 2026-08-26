@@ -587,6 +587,26 @@ status:
 `
 
 const pinCentralScriptsConfigMapGolden = `data:
+  backup.sh: |
+    #!/bin/bash
+    set -eu
+    dir="${BACKUP_DIR:-/backup}"
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    find "${dir}" -name '*.backup.tmp' -type f -mtime +1 -delete
+    for spec in "nb:${NB_ADDR}:OVN_Northbound" "sb:${SB_ADDR}:OVN_Southbound"; do
+      db="${spec%%:*}"; rest="${spec#*:}"; schema="${rest##*:}"; addr="${rest%:*}"
+      out="${dir}/${db}-${ts}.backup"
+      if ! ovsdb-client -p /etc/ovn/tls/tls.key -c /etc/ovn/tls/tls.crt -C /etc/ovn/tls/ca.crt \
+          backup "${addr}" "${schema}" > "${out}.tmp"; then
+        rm -f "${out}.tmp"; echo "backup of ${schema} at ${addr} failed" >&2; exit 1
+      fi
+      if [ ! -s "${out}.tmp" ]; then
+        rm -f "${out}.tmp"; echo "backup of ${schema} at ${addr} produced an empty snapshot" >&2; exit 1
+      fi
+      mv "${out}.tmp" "${out}"
+    done
+    find "${dir}" -name '*.backup' -type f -mtime "+${RETENTION_DAYS}" -delete
+    find "${dir}" -name '*.backup' -type f -size 0 -delete
   run-nb.sh: |
     #!/bin/bash
     set -eu
