@@ -25,6 +25,12 @@ SERVICES="keystone horizon glance placement barbican neutron"
 # it. Its contract is tests/container-images/verify_ovn.sh together with the
 # build-ovn job in build-images.yaml. An 'ovn:' key added to a source-refs.yaml
 # by accident is still caught by the converse check in test 1.
+#
+# backup-shifter is the second release-independent image absent from the list.
+# It takes rclone from the ubuntu:noble archive, so it has no source-refs.yaml
+# key, no extra-packages.yaml entry and no build args either. Its contract is
+# tests/container-images/verify_backup_shifter.sh together with the
+# build-backup-shifter job in build-images.yaml.
 
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"
