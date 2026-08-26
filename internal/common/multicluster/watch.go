@@ -333,12 +333,19 @@ func RemoteWatchOptions(gvk schema.GroupVersionKind) []mcbuilder.WatchesOption {
 // rather than labelled, so what the mapper matches on is a name somebody else
 // can take on a cluster the CR never projects onto; the local leg needs no gate,
 // because the management cluster is where the CR itself lives.
+//
+// extra goes to BOTH legs, on top of the options each carries already. It is
+// where a caller narrows a high-traffic input down: the OVN chassis watches
+// Nodes with mcbuilder.WithPredicates(predicate.LabelChangedPredicate{}), so a
+// kubelet status heartbeat does not reconcile every CR in the fleet. An option
+// given to one leg only would leave the other watching everything.
 func AddInputWatch(
 	b *mcbuilder.Builder,
 	scheme *runtime.Scheme,
 	targets TargetClusterFunc,
 	obj client.Object,
 	fn handler.MapFunc,
+	extra ...mcbuilder.WatchesOption,
 ) (*mcbuilder.Builder, error) {
 	gvk, err := apiutil.GVKForObject(obj, scheme)
 	if err != nil {
@@ -346,8 +353,8 @@ func AddInputWatch(
 	}
 
 	return b.
-		Watches(obj, LocalRequests(fn), EngageLocalCluster, EngageNoProviderClusters).
-		Watches(obj, RemoteRequests(fn, targets), RemoteWatchOptions(gvk)...), nil
+		Watches(obj, LocalRequests(fn), append([]mcbuilder.WatchesOption{EngageLocalCluster, EngageNoProviderClusters}, extra...)...).
+		Watches(obj, RemoteRequests(fn, targets), append(RemoteWatchOptions(gvk), extra...)...), nil
 }
 
 // AddRemoteChildWatches adds one watch leg per projected kind to b: provider
