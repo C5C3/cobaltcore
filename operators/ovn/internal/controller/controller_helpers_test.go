@@ -173,3 +173,75 @@ func collectEvents(rec *record.FakeRecorder) []string {
 		}
 	}
 }
+
+// The shared OVNChassis fixture coordinates. The chassis fixture lives in the
+// same namespace as the OVNCentral one and names it, because spec.centralRef is
+// namespace-local: the chassis mount the client Secret that OVNCentral
+// publishes.
+const (
+	testOVNChassisName = "chassis"
+
+	// testChassisNodeLabel is the label a node carries to be selected by the
+	// chassis fixture.
+	testChassisNodeLabel = "openstack.c5c3.io/chassis"
+
+	// testGatewayNodeLabel narrows the selected nodes down to the gateways in
+	// the tests that set spec.gateway.
+	testGatewayNodeLabel = "openstack.c5c3.io/gateway"
+)
+
+// testOVNChassis returns the shared OVNChassis fixture, carrying the values the
+// CRD schema would have defaulted. A CR the operator reads has been through
+// admission, so a fixture that left the defaults off would exercise a spec no
+// reconcile ever sees.
+func testOVNChassis() *ovnv1alpha1.OVNChassis {
+	return &ovnv1alpha1.OVNChassis{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testOVNChassisName,
+			Namespace: testNamespace,
+		},
+		Spec: ovnv1alpha1.OVNChassisSpec{
+			CentralRef:            ovnv1alpha1.OVNCentralRef{Name: testOVNCentralName},
+			NodeSelector:          map[string]string{testChassisNodeLabel: "true"},
+			EncapType:             "geneve",
+			UpdateStrategy:        ovnv1alpha1.OVNChassisUpdateStrategy{Type: "RollingUpdate"},
+			RemoteProbeIntervalMs: 60000,
+		},
+	}
+}
+
+// ovnChassisFakeClientBuilder returns a fake client builder with the package
+// scheme and the status subresources the chassis reconciler writes: the CR's
+// own, which every sub-reconciler stamps its conditions and its node list on.
+func ovnChassisFakeClientBuilder(t *testing.T, objs ...client.Object) *fake.ClientBuilder {
+	t.Helper()
+
+	return fake.NewClientBuilder().
+		WithScheme(newTestScheme(t)).
+		WithObjects(objs...).
+		WithStatusSubresource(&ovnv1alpha1.OVNChassis{})
+}
+
+// newTestOVNChassisReconciler builds an OVNChassisReconciler over a fake client
+// pre-loaded with objs. The Resolver stays nil, which is the always-local mode
+// every single-cluster test runs in: the children land on the same fake client
+// the CRs live on.
+func newTestOVNChassisReconciler(t *testing.T, objs ...client.Object) *OVNChassisReconciler {
+	t.Helper()
+
+	return &OVNChassisReconciler{
+		Client:   ovnChassisFakeClientBuilder(t, objs...).Build(),
+		Scheme:   newTestScheme(t),
+		Recorder: record.NewFakeRecorder(50),
+	}
+}
+
+// ovnChassisCondition returns one of the OVNChassis's conditions, or nil.
+func ovnChassisCondition(cr *ovnv1alpha1.OVNChassis, conditionType string) *metav1.Condition {
+	return conditions.GetCondition(cr.Status.Conditions, conditionType)
+}
+
+// chassisKey builds the key of a child of the shared OVNChassis fixture.
+func chassisKey(name string) client.ObjectKey {
+	return client.ObjectKey{Namespace: testNamespace, Name: name}
+}
