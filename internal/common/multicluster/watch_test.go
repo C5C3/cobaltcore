@@ -24,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -611,6 +612,46 @@ func TestAddInputWatchResolvesTheWatchedKindThroughTheScheme(t *testing.T) {
 
 	g.Expect(got).To(gomega.BeNil())
 	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("resolving input kind for remote watch")))
+}
+
+// An input nobody narrows is one thing; a Node is another. The chassis watches
+// Nodes for a label change, and a predicate that reached the local leg alone
+// would leave the remote one waking every CR in the fleet on every kubelet
+// heartbeat, which is why extra goes to both.
+//
+// What an assertion can reach here is the call and its outcome. The builder
+// keeps its registered watches in an unexported field and offers no accessor,
+// so no test in this package reads an option back off a leg (see
+// TestRemoteWatchOptionsCarriesEveryOptionARemoteLegNeeds, which counts the
+// remote option set instead). The options are applied at registration, though,
+// so an option the builder cannot apply fails here rather than in production.
+func TestAddInputWatch_ExtraOptionsReachBothLegs(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	got, err := AddInputWatch(mcbuilder.ControllerManagedBy(nil), ownershipScheme(t), watchTargetsFor(t),
+		&corev1.Node{}, ChildToOwner(watchOwnerKind),
+		mcbuilder.WithPredicates(predicate.LabelChangedPredicate{}))
+
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(got).NotTo(gomega.BeNil())
+
+	// The failure the resolution owns keeps its diagnosis with an extra option
+	// in hand: a leg is never registered on a kind the scheme cannot name, no
+	// matter what is passed beside it.
+	got, err = AddInputWatch(mcbuilder.ControllerManagedBy(nil), runtime.NewScheme(), watchTargetsFor(t),
+		&corev1.Node{}, ChildToOwner(watchOwnerKind),
+		mcbuilder.WithPredicates(predicate.LabelChangedPredicate{}))
+
+	g.Expect(got).To(gomega.BeNil())
+	g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("resolving input kind for remote watch")))
+
+	// Every caller in the tree passes none, and the option set each leg carries
+	// on its own has to be unchanged for them.
+	got, err = AddInputWatch(mcbuilder.ControllerManagedBy(nil), ownershipScheme(t), watchTargetsFor(t),
+		&corev1.Secret{}, ChildToOwner(watchOwnerKind))
+
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(got).NotTo(gomega.BeNil())
 }
 
 // A CR that projects nothing onto a target cluster still runs through this, and
