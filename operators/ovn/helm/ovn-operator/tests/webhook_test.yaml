@@ -1,0 +1,152 @@
+# Webhook configuration unit tests.
+suite: Webhook Configuration
+templates:
+  - templates/webhook-configuration.yaml
+tests:
+  - it: should render MutatingWebhookConfiguration when webhook is enabled
+    documentIndex: 0
+    asserts:
+      - isKind:
+          of: MutatingWebhookConfiguration
+      - matchRegex:
+          path: metadata.name
+          pattern: -mutating$
+      - equal:
+          path: webhooks[0].clientConfig.service.path
+          value: /mutate-ovn-openstack-c5c3-io-v1alpha1-ovncentral
+      - equal:
+          path: webhooks[0].admissionReviewVersions
+          value:
+            - v1
+      - equal:
+          path: webhooks[0].failurePolicy
+          value: Fail
+      - equal:
+          path: webhooks[0].sideEffects
+          value: None
+
+  - it: should render ValidatingWebhookConfiguration when webhook is enabled
+    documentIndex: 1
+    asserts:
+      - isKind:
+          of: ValidatingWebhookConfiguration
+      - matchRegex:
+          path: metadata.name
+          pattern: -validating$
+      - equal:
+          path: webhooks[0].clientConfig.service.path
+          value: /validate-ovn-openstack-c5c3-io-v1alpha1-ovncentral
+      - equal:
+          path: webhooks[0].admissionReviewVersions
+          value:
+            - v1
+      - equal:
+          path: webhooks[0].failurePolicy
+          value: Fail
+      - equal:
+          path: webhooks[0].sideEffects
+          value: None
+      - contains:
+          path: webhooks[0].rules[0].operations
+          content: CREATE
+      - contains:
+          path: webhooks[0].rules[0].operations
+          content: UPDATE
+      # DELETE must NOT be intercepted: with failurePolicy=Fail a down operator
+      # would otherwise block CR and namespace deletion.
+      - notContains:
+          path: webhooks[0].rules[0].operations
+          content: DELETE
+
+  - it: should name the webhooks after the OVNCentral kind
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: webhooks[0].name
+          value: movncentral.kb.io
+      - equal:
+          path: webhooks[0].rules[0].apiGroups
+          value:
+            - ovn.openstack.c5c3.io
+      - contains:
+          path: webhooks[0].rules[0].resources
+          content: ovncentrals
+
+  - it: should name the validating webhook after the OVNCentral kind
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: webhooks[0].name
+          value: vovncentral.kb.io
+      - contains:
+          path: webhooks[0].rules[0].resources
+          content: ovncentrals
+
+  - it: should set cert-manager CA injection annotation on both configs
+    documentIndex: 0
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
+          value: NAMESPACE/RELEASE-NAME-ovn-operator-webhook
+
+  - it: should set cert-manager CA injection annotation on validating config
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: metadata.annotations["cert-manager.io/inject-ca-from"]
+          value: NAMESPACE/RELEASE-NAME-ovn-operator-webhook
+
+  - it: should carry the chassis mutating webhook as second entry
+    documentIndex: 0
+    asserts:
+      - lengthEqual:
+          path: webhooks
+          count: 2
+      - equal:
+          path: webhooks[1].name
+          value: movnchassis.kb.io
+      - equal:
+          path: webhooks[1].clientConfig.service.path
+          value: /mutate-ovn-openstack-c5c3-io-v1alpha1-ovnchassis
+      - equal:
+          path: webhooks[1].rules[0].apiGroups
+          value:
+            - ovn.openstack.c5c3.io
+      - contains:
+          path: webhooks[1].rules[0].resources
+          content: ovnchassis
+      - equal:
+          path: webhooks[1].failurePolicy
+          value: Fail
+
+  - it: should carry the chassis validating webhook as second entry
+    documentIndex: 1
+    asserts:
+      - lengthEqual:
+          path: webhooks
+          count: 2
+      - equal:
+          path: webhooks[1].name
+          value: vovnchassis.kb.io
+      - equal:
+          path: webhooks[1].clientConfig.service.path
+          value: /validate-ovn-openstack-c5c3-io-v1alpha1-ovnchassis
+      - equal:
+          path: webhooks[1].rules[0].apiGroups
+          value:
+            - ovn.openstack.c5c3.io
+      - contains:
+          path: webhooks[1].rules[0].resources
+          content: ovnchassis
+      # DELETE must NOT be intercepted on the chassis entry either.
+      - notContains:
+          path: webhooks[1].rules[0].operations
+          content: DELETE
+
+  - it: should not render any documents when webhook is disabled
+    set:
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

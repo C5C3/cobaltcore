@@ -1,0 +1,18 @@
+{{- if and .Values.rbac.namespaceScoped .Values.webhook.enabled }}
+{{- fail "rbac.namespaceScoped=true requires webhook.enabled=false — namespace-scoped operators cannot manage cluster-scoped webhook configurations" }}
+{{- end }}
+{{- if .Values.rbac.namespaceScoped }}
+{{- fail "rbac.namespaceScoped=true is not supported by ovn-operator — the OVNChassis controller watches cluster-scoped Nodes, which a namespaced Role cannot grant, and the manager fails its cache sync at startup" }}
+{{- end }}
+{{- if .Values.rbac.namespaceScoped }}
+# Namespace-scoped Role using shared RBAC rules partial.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "operator-library.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "operator-library.labels" . | nindent 4 }}
+rules:
+  {{- include "ovn-operator.rbacRules" . | nindent 2 }}
+{{- end }}

@@ -1,0 +1,14 @@
+{{- include "operator-library.webhookConfiguration" (dict
+      "root" .
+      "mutatingWebhookName" "movncentral.kb.io"
+      "validatingWebhookName" "vovncentral.kb.io"
+      "mutatePath" "/mutate-ovn-openstack-c5c3-io-v1alpha1-ovncentral"
+      "validatePath" "/validate-ovn-openstack-c5c3-io-v1alpha1-ovncentral"
+      "apiGroup" "ovn.openstack.c5c3.io"
+      "resource" "ovncentrals"
+      "additionalWebhooks" (list (dict
+        "mutatingWebhookName" "movnchassis.kb.io"
+        "validatingWebhookName" "vovnchassis.kb.io"
+        "mutatePath" "/mutate-ovn-openstack-c5c3-io-v1alpha1-ovnchassis"
+        "validatePath" "/validate-ovn-openstack-c5c3-io-v1alpha1-ovnchassis"
+        "resource" "ovnchassis"))) }}
