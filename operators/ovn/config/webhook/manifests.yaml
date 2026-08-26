@@ -24,6 +24,26 @@ webhooks:
     resources:
     - ovncentrals
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-ovn-openstack-c5c3-io-v1alpha1-ovnchassis
+  failurePolicy: Fail
+  name: movnchassis.kb.io
+  rules:
+  - apiGroups:
+    - ovn.openstack.c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - ovnchassis
+  sideEffects: None
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -49,4 +69,24 @@ webhooks:
     - UPDATE
     resources:
     - ovncentrals
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-ovn-openstack-c5c3-io-v1alpha1-ovnchassis
+  failurePolicy: Fail
+  name: vovnchassis.kb.io
+  rules:
+  - apiGroups:
+    - ovn.openstack.c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - ovnchassis
   sideEffects: None
