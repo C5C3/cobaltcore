@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.targetClusterRef.name empty violates the MinLength=1 marker on the
+# shared TargetClusterRefSpec. An unnamed target names no registered
+# cluster, so the operator would have nowhere to place the DaemonSets. The
+# webhook repeats it via validation.TargetClusterRef, but the schema answers
+# first.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  targetClusterRef:
+    name: ""

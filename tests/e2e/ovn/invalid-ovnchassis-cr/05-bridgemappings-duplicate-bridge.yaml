@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Two spec.bridgeMappings entries sharing one bridge are rejected by the
+# validating webhook alone. The +listMapKey=physicalNetwork already makes
+# the network side unique at the schema layer, so a repeated network never
+# reaches the webhook; the bridge side has no schema counterpart, and a
+# repeated bridge renders an ovn-bridge-mappings string whose second entry
+# silently shadows the first.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  bridgeMappings:
+  - physicalNetwork: physnet1
+    bridge: br-ex
+  - physicalNetwork: physnet2
+    bridge: br-ex

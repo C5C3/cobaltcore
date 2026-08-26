@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.tls.issuerRef.kind outside the CRD enum (Issuer, ClusterIssuer). Those
+# are the only two kinds cert-manager issues a Certificate from, so the schema
+# enum is the sole gate and the webhook carries no twin.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+      kind: Foo

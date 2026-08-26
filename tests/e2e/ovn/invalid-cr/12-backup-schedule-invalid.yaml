@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.backup.schedule that is not a cron expression is rejected by the
+# validating webhook alone: the field carries no schema marker, and the
+# webhook parses it with the same library the CronJob controller uses. Left
+# admitted, that controller would refuse the projected CronJob with an error
+# nothing surfaces back onto the OVNCentral.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+  backup:
+    schedule: "not a cron"

@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.northbound.nodePortBase whose range runs past the top of the node-port
+# range is rejected by the validating webhook alone. The rule correlates the
+# base with the replica count, which no marker can express: 32766 clears the
+# Maximum=32767 marker on its own, and only the third member's port falls
+# outside. replicas is spelled out so the count in the error message comes
+# from the fixture rather than from the schema default.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+  northbound:
+    replicas: 3
+    nodePortBase: 32766

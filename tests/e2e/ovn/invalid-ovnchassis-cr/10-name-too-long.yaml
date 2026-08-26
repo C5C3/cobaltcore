@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A metadata.name of 43 characters is rejected by the validating webhook
+# alone. The bound is 42: the per-node chassis-deletion Job is named
+# {name}-chassis-del-{8 hex}, 21 characters on top of the CR name, against
+# the 63-character cap Kubernetes puts on an object name. The name is a
+# valid DNS-1123 subdomain apart from its length, so the bound is the only
+# rule it breaks.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: ovn-chassis-invalid-name-past-42-char-bound
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"

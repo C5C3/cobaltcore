@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.southbound.nodePortBase below the CRD Minimum=30000 marker. The value
+# sits one port under the start of the Kubernetes default node-port range, so
+# the per-member Services the operator projects could not be created.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+  southbound:
+    nodePortBase: 29999

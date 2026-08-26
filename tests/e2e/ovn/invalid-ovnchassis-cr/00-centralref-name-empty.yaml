@@ -1,0 +1,17 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.centralRef.name empty violates the MinLength=1 marker on
+# OVNCentralRef, which the API server answers before the webhook's
+# field.Required twin runs. A chassis with no control plane to register
+# with has no Southbound database to read its flows from.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ""
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"

@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.updateStrategy.maxUnavailable of 0 under RollingUpdate is rejected by
+# the validating webhook alone, for the same reason: an int-or-string field
+# carries no Minimum marker. Zero stalls the rollout instead of pacing it,
+# leaving the DaemonSet on the old image with nothing reporting why. The
+# type is spelled out so the fixture reads as the RollingUpdate case rather
+# than relying on the schema default.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  updateStrategy:
+    type: RollingUpdate
+    maxUnavailable: 0

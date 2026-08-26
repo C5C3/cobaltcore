@@ -1,0 +1,172 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for OVNChassis CRD + webhook validation rejection.
+# Pins every implemented kubebuilder-marker and webhook.validate() rejection
+# path in operators/ovn/api/v1alpha1/ovnchassis_* to a deterministic admission
+# failure. Each step applies an otherwise-valid OVNChassis CR with a single
+# aspect violating the rule under test, captures the admission $error, and
+# asserts the field path plus message substring.
+#
+# The API server validates against the structural schema and its CEL rules
+# before it calls the validating webhook, so a rule carried by both layers is
+# answered by the schema and the assertions below quote the schema message. The
+# webhook message is asserted only where the rule has no schema counterpart:
+# the duplicate bridge (the +listMapKey covers the network side only), the two
+# three maxUnavailable shapes (an int-or-string field carries no marker), and the
+# metadata.name bound, which comes from the name of a child object.
+#
+# The test runs in an ephemeral namespace: the fixtures reference an OVNCentral
+# that does not exist there, which admission deliberately tolerates (GitOps
+# ordering), so the dangling reference never competes with the rule a fixture
+# pins.
+#
+# All fixtures are generated from the single canonical scaffold in
+# `_generate.py`. After editing the scaffold or any per-fixture override,
+# regenerate via:
+#   python3 tests/e2e/ovn/invalid-ovnchassis-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes
+# `_generate.py --check` (drift mode, both directions incl. orphans) and
+# `test_generate.py` (FIXTURES count + chainsaw-test.yaml cross-reference)
+# so any hand-edit to a generated fixture fails the build before the
+# cluster-bound e2e-operator job runs.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-invalid-ovnchassis-cr
+spec:
+  steps:
+  # spec.centralRef.name empty must be rejected by the MinLength=1 marker on
+  # OVNCentralRef, which answers before the webhook's field.Required twin.
+  - try:
+    - apply:
+        file: 00-centralref-name-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'centralRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
+  # spec.nodeSelector empty must be rejected by the MinProperties=1 marker: an
+  # empty selector matches every node rather than none.
+  - try:
+    - apply:
+        file: 01-nodeselector-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'nodeSelector')): true
+            (contains($error, 'should have at least 1 properties')): true
+  # spec.gateway.nodeSelector empty must be rejected by the same marker on
+  # OVNGatewaySpec: it would promote every selected node to a gateway.
+  - try:
+    - apply:
+        file: 02-gateway-nodeselector-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'gateway.nodeSelector')): true
+            (contains($error, 'should have at least 1 properties')): true
+  # A bridgeMappings physicalNetwork outside the CRD pattern must be rejected:
+  # the grammar is the DNS-1123 label a Neutron network name is bounded to.
+  - try:
+    - apply:
+        file: 03-bridgemappings-physicalnetwork-pattern.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'bridgeMappings[0].physicalNetwork')): true
+            (contains($error, 'should match')): true
+  # A bridgeMappings bridge past 15 characters must be rejected by the CRD
+  # pattern: the kernel's IFNAMSIZ leaves 15 usable bytes for an interface name.
+  - try:
+    - apply:
+        file: 04-bridgemappings-bridge-pattern.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'bridgeMappings[0].bridge')): true
+            (contains($error, 'should match')): true
+  # Two bridgeMappings entries sharing one bridge must be rejected by the
+  # validating webhook: the +listMapKey covers the physicalNetwork side only,
+  # and a repeated bridge silently shadows the first entry.
+  - try:
+    - apply:
+        file: 05-bridgemappings-duplicate-bridge.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'bridgeMappings[1].bridge')): true
+            (contains($error, 'Duplicate value')): true
+  # spec.encapType outside the CRD enum must be rejected: geneve and vxlan are
+  # the only two tunnel protocols the chassis are configured for.
+  - try:
+    - apply:
+        file: 06-encaptype-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'encapType')): true
+            (contains($error, 'Unsupported value')): true
+  # spec.updateStrategy.maxUnavailable paired with OnDelete must be rejected by
+  # the validating webhook: nothing reads it under that type.
+  - try:
+    - apply:
+        file: 07-updatestrategy-maxunavailable-with-ondelete.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'updateStrategy.maxUnavailable')): true
+            (contains($error, 'maxUnavailable applies to RollingUpdate only')): true
+  # spec.updateStrategy.maxUnavailable of 0 must be rejected by the validating
+  # webhook: it stalls the rollout instead of pacing it.
+  - try:
+    - apply:
+        file: 08-updatestrategy-maxunavailable-zero.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'updateStrategy.maxUnavailable')): true
+            (contains($error, 'maxUnavailable must resolve to at least 1 for RollingUpdate')): true
+  # The percentage form wedges the rollout the same way, so the webhook resolves
+  # the value before it judges it and rejects "0%" under the same message.
+  - try:
+    - apply:
+        file: 12-updatestrategy-maxunavailable-zero-percent.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'updateStrategy.maxUnavailable')): true
+            (contains($error, 'maxUnavailable must resolve to at least 1 for RollingUpdate')): true
+  # A negative spec.remoteProbeIntervalMs must be rejected by the Minimum=0
+  # marker: zero already means no probe at all.
+  - try:
+    - apply:
+        file: 09-remoteprobeinterval-negative.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'remoteProbeIntervalMs')): true
+            (contains($error, 'should be greater than or equal to 0')): true
+  # A metadata.name past 42 characters must be rejected by the validating
+  # webhook: the per-node {name}-chassis-del-{8 hex} Job would exceed the
+  # 63-character cap on an object name, so the CR would admit cleanly and then
+  # fail the deletion of every chassis registration it leaves behind.
+  - try:
+    - apply:
+        file: 10-name-too-long.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'metadata.name')): true
+            (contains($error, 'name must be at most 42 characters')): true
+  # spec.targetClusterRef.name empty must be rejected by the MinLength=1 marker
+  # on the shared TargetClusterRefSpec, which answers before the webhook twin.
+  - try:
+    - apply:
+        file: 11-targetclusterref-empty-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'targetClusterRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true

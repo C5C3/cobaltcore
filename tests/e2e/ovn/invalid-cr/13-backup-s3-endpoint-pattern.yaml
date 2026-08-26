@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A plaintext spec.backup.s3.endpoint violates the CRD pattern (^https://).
+# The upload carries the access key beside a full snapshot of both
+# databases, and SigV4 authenticates a request without encrypting it.
+# bucket and credentialsSecretRef are spelled out because the schema
+# requires them alongside endpoint; omitted, the required-properties check
+# would answer instead of the pattern.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+  backup:
+    s3:
+      bucket: ovn-backups
+      endpoint: http://minio.internal:9000
+      credentialsSecretRef:
+        name: ovn-backup-s3

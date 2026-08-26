@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A spec.bridgeMappings physicalNetwork outside the CRD pattern
+# (^[a-z0-9]([-a-z0-9]*[a-z0-9])?$). The grammar is the DNS-1123 label a
+# Neutron network name is bounded to, so an underscore and a capital both
+# name a segment Neutron cannot have.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  bridgeMappings:
+  - physicalNetwork: Phys_Net
+    bridge: br-ex

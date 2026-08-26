@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.northbound.replicas above the CRD Maximum=5 marker. The value is odd,
+# so the odd-count CEL rule stays satisfied and the marker is the only rule
+# this fixture breaks. Past five members the write latency of the extra Raft
+# round trips outweighs the added fault tolerance.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca
+  northbound:
+    replicas: 7

@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.updateStrategy.maxUnavailable paired with OnDelete is rejected by the
+# validating webhook alone: the field is an int-or-string with no marker to
+# correlate it with the type. Under OnDelete nothing reads it, so leaving it
+# admitted would let it read as an effective rollout pace while the pace is
+# really set by whoever deletes the pods.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: chassis
+spec:
+  centralRef:
+    name: ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  updateStrategy:
+    type: OnDelete
+    maxUnavailable: 1
