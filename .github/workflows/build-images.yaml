@@ -68,6 +68,7 @@ jobs:
           - images/tempest/Dockerfile
           - images/keystone-federation-proxy/Dockerfile
           - images/ovn/Dockerfile
+          - images/backup-shifter/Dockerfile
           - operators/Dockerfile
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -494,6 +495,110 @@ jobs:
           inspect-tag: ghcr.io/${{ needs.prepare.outputs.image-owner }}/keystone-federation-proxy:${{ github.sha }}
           sbom-output-file: sbom-keystone-federation-proxy.cyclonedx.json
           grype-category: grype-keystone-federation-proxy
+
+  # Release-independent rclone shifter for the OVN database backups. rclone
+  # comes from the ubuntu:noble archive, so the image has no release axis:
+  # per-platform builds pushed by digest (base-image pattern), verified
+  # inline on PRs (tempest pattern), merged + attested with the base-image
+  # :latest / :<sha> tag scheme on push events.
+  build-backup-shifter:
+    needs: [lint-dockerfiles, prepare]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      security-events: write #: SARIF upload for Grype scan on PR
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Reject fork PRs
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: echo "::error::Fork PRs cannot push to GHCR. Open your PR from a branch in the upstream repository." && exit 1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Prepare platform pair
+        id: platform-pair
+        uses: ./.github/actions/platform-pair
+        with:
+          platform: ${{ matrix.platform }}
+
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          install-cosign: 'false'
+
+      - name: Resolve ubuntu:noble digest
+        id: ubuntu-base
+        run: hack/ci-resolve-ubuntu-digest.sh
+
+      - name: Build backup-shifter
+        id: build-backup-shifter
+        # PR mode loads locally for the inline scan+verify; ARM64 is skipped
+        # on PRs because docker load supports a single platform.
+        if: github.event_name != 'pull_request' || matrix.platform == 'linux/amd64'
+        uses: ./.github/actions/build-push-image
+        with:
+          image-name: ghcr.io/${{ needs.prepare.outputs.image-owner }}/backup-shifter
+          context: images/backup-shifter
+          platform: ${{ matrix.platform }}
+          platform-pair: ${{ steps.platform-pair.outputs.value }}
+          build-args: |
+            APT_MIRROR=http://azure.archive.ubuntu.com
+          labels-title: backup-shifter
+          labels-description: rclone shifter for OVN database backups
+          extra-labels: |
+            org.opencontainers.image.base.name=ubuntu:noble
+            org.opencontainers.image.base.digest=${{ steps.ubuntu-base.outputs.digest }}
+          cache-scope: backup-shifter
+          push-by-digest: ${{ github.event_name != 'pull_request' && 'true' || 'false' }}
+          tags: ${{ github.event_name == 'pull_request' && format('ghcr.io/{0}/backup-shifter:pr-verify', needs.prepare.outputs.image-owner) || format('ghcr.io/{0}/backup-shifter', needs.prepare.outputs.image-owner) }}
+          artifact-name: digests-backup-shifter-${{ steps.platform-pair.outputs.value }}
+          grype-category: grype-backup-shifter-${{ steps.platform-pair.outputs.value }}
+          image-ref-for-scan: ghcr.io/${{ needs.prepare.outputs.image-owner }}/backup-shifter:pr-verify
+          verify-script: tests/container-images/verify_backup_shifter.sh
+          verify-image-ref: ghcr.io/${{ needs.prepare.outputs.image-owner }}/backup-shifter:pr-verify
+
+  merge-backup-shifter-image:
+    if: github.event_name != 'pull_request'
+    needs: [build-backup-shifter, prepare]
+    runs-on: ubuntu-latest
+    timeout-minutes: 23
+    permissions:
+      contents: read
+      packages: write
+      id-token: write #: Sigstore OIDC signing
+      attestations: write #: GitHub Attestations API
+      artifact-metadata: write # gh#108: actions/attest v4.1.0 storage record
+      security-events: write #: GitHub Security tab SARIF upload
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup Docker registry
+        uses: ./.github/actions/setup-docker-registry
+        with:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge and attest backup-shifter
+        id: merge-backup-shifter
+        uses: ./.github/actions/merge-manifest-and-attest
+        with:
+          image: ghcr.io/${{ needs.prepare.outputs.image-owner }}/backup-shifter
+          artifact-pattern: digests-backup-shifter-*
+          tags: ghcr.io/${{ needs.prepare.outputs.image-owner }}/backup-shifter:latest ghcr.io/${{ needs.prepare.outputs.image-owner }}/backup-shifter:${{ github.sha }}
+          inspect-tag: ghcr.io/${{ needs.prepare.outputs.image-owner }}/backup-shifter:${{ github.sha }}
+          sbom-output-file: sbom-backup-shifter.cyclonedx.json
+          grype-category: grype-backup-shifter
 
   # Release-independent OVS + OVN daemons compiled from pinned upstream
   # sources: images/ovn/Dockerfile pins the OVN tag and takes OVS from that
