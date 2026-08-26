@@ -23,12 +23,14 @@ ubuntu:noble
 │   │   ├── horizon      Stage 1 (build): install Horizon, pre-build static assets
 │   │   ├── glance       Stage 1 (build): install Glance + glance_store[s3]
 │   │   ├── placement    Stage 1 (build): install Placement, write WSGI entry
-│   │   └── barbican     Stage 1 (build): install Barbican into virtualenv
+│   │   ├── barbican     Stage 1 (build): install Barbican into virtualenv
+│   │   └── neutron      Stage 1 (build): install Neutron into virtualenv
 │   ├── keystone         Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── horizon          Stage 2 (runtime): copy virtualenv + static assets
 │   ├── glance           Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── placement        Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   └── barbican         Stage 2 (runtime): copy virtualenv, add runtime apt packages
+│   ├── barbican         Stage 2 (runtime): copy virtualenv, add runtime apt packages
+│   └── neutron          Stage 2 (runtime): copy virtualenv, add runtime apt packages
 ```
 
 The `venv-builder` image is used only as a build stage — it never runs in production.
@@ -431,6 +433,103 @@ class and lambda boundary — uWSGI looks `application` up as a module global,
 and a binding in a nested scope is a different symbol. A module whose only
 module-level binding is that sentinel is rejected; otherwise uWSGI binds
 `application` to `None` and every request fails.
+
+### neutron
+
+**Location:** `images/neutron/Dockerfile`
+
+The Neutron service image uses the same two-stage build as Keystone. It ships
+no WSGI entry script. Neither release ships a `neutron-server` script, and
+`neutron/wsgi/api.py` is byte-identical at 27.0.3 (2025.2) and 28.0.1
+(2026.1). Both tags bind a module-level `application` inside a
+`threading.Lock()` block, so the neutron-operator launches uWSGI with
+`--module neutron.wsgi.api` and lets the process find its configuration
+through the `OS_NEUTRON_CONFIG_DIR` and `OS_NEUTRON_CONFIG_FILES` environment
+variables. 27.0.3 also generates the PBR `wsgi_scripts` entry `neutron-api`
+from `neutron.cmd.server:main_api_uwsgi`, which nothing calls; 28.0.1 declares
+no WSGI script.
+
+**Stage 1 (`build`)** extends `venv-builder`:
+
+- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` (both empty for neutron
+  today; the wiring mirrors the other service images so `extra-packages.yaml`
+  stays the single edit point)
+- Mounts `upper-constraints.txt` and the Neutron source tree via named build
+  contexts (`--build-context neutron=...` /
+  `--build-context upper-constraints=...`)
+- Installs Neutron into the virtualenv using `uv pip install --constraint`.
+  The `--prefix` install generates the console scripts declared in `setup.cfg`
+  (27.0.3) and `pyproject.toml` (28.0.1): `neutron-db-manage`,
+  `neutron-status`, `neutron-periodic-workers`,
+  `neutron-ovn-maintenance-worker`, `neutron-ovn-metadata-agent` and
+  `neutron-ovn-db-sync-util`
+
+**Stage 2 (runtime)** extends `python-base`:
+
+- Declares `ARG EXTRA_APT_PACKAGES`, which carries four packages: the shared
+  libpython the venv-builder-compiled uwsgi links against, plus the
+  `ovsdb-client`, `haproxy` and `ip` binaries neutron shells out to
+- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
+- Sets `USER openstack` for non-root execution
+
+The image stays config-free. The neutron-operator supplies the configuration
+through `OS_NEUTRON_CONFIG_DIR` and `OS_NEUTRON_CONFIG_FILES`, and either
+points `[DEFAULT] api_paste_config` at the shipped package data file
+`/var/lib/openstack/etc/neutron/api-paste.ini` or mounts that file to
+`/etc/neutron/api-paste.ini`. That file is byte-identical at both tags.
+
+**Runtime packages:**
+
+| Package | Purpose |
+| --- | --- |
+| `haproxy` | The metadata agent spawns `haproxy -f <cfg>` per network (`neutron/agent/metadata/driver_base.py`) |
+| `iproute2` | `ip`, which that agent uses for `ip netns exec` (`neutron/agent/linux/ip_lib.py`) |
+| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
+| `openvswitch-common` | `ovsdb-client`, which `pre_fork_initialize` shells out to (`neutron/common/ovn/utils.py`); without it every API worker dies with `[Errno 2] No such file or directory: 'ovsdb-client'` |
+
+Noble ships Open vSwitch 3.3.9. The OVSDB wire protocol is schema-independent,
+so that client talks to the OVN 26.03 server.
+
+The virtualenv holds `ovs` 3.5.1 (2025.2) and 3.7.0 (2026.1), whose
+`ovs/dns_resolve.py` resolves no hostname without the `unbound` Python module.
+The image ships no `python3-unbound`: the distribution package installs into
+the system interpreter, which the virtualenv under `/var/lib/openstack` does
+not see, so `import unbound` inside the image raises `ModuleNotFoundError`.
+Per decision D9 of issue #898, `OVNCentral` publishes IP addresses in
+`status.dbAddress` and `status.internalDbAddress`, and the neutron-operator
+renders `[ovn] ovn_nb_connection` and `ovn_sb_connection` from those.
+
+**Final image properties:**
+
+- Runs as `openstack` user (UID 42424, GID 42424)
+- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Virtualenv at `/var/lib/openstack` with all Neutron dependencies
+- The console scripts listed above available via `PATH`
+- No WSGI entry script; the service is launched via the `neutron.wsgi.api`
+  module path
+
+**Unit tests:** neutron ships a `.stestr.conf`, so `hack/ci-run-unit-tests.sh`
+runs its suite under stestr (the default path, as for keystone). The script
+appends `--exclude-list /workspace/test-excludes/neutron.txt` only when
+`releases/<release>/test-excludes/neutron.txt` exists, and neither release
+excludes a test: the first runs at 27.0.3 and 28.0.1 hit no
+environment-dependent failure. At roughly 21,000 tests the suite is the
+largest in the tree.
+
+**Image contract check:** `tests/container-images/verify_neutron.sh` is the
+hard gate. Its 12 tests cover `neutron-db-manage --help` and
+`neutron-status --help`, the importability of `neutron` and of the `ovs` and
+`ovsdbapp` client libraries, the presence of `api-paste.ini`, and `--help` on
+the four companion console scripts. `ovsdb-client --version` naming Open
+vSwitch, `haproxy -v` and `ip -V` prove the apt wiring. The
+remaining tests check non-root execution, the absence of build tools, and that
+uwsgi runs. The WSGI check inspects the module instead of importing it:
+importing `neutron.wsgi.api` executes `server.boot_server(api.api_server)`,
+which reads the configuration the operator mounts and the bare image does not
+carry. So it pairs `importlib.util.find_spec` for the module path with an
+`ast.parse` of the module source, and rejects a module whose only module-level
+binding of `application` is the `None` sentinel. Pointed at a barbican image,
+the script fails in each of its first nine tests.
 
 ## Release-independent images
 
@@ -879,7 +978,7 @@ The `# DEVIATION` comment appears in `images/python-base/Dockerfile` (where the
 user is created) and in every service Dockerfile that uses it instead of a
 per-service user (`images/keystone/Dockerfile`, `images/horizon/Dockerfile`,
 `images/glance/Dockerfile`, `images/placement/Dockerfile`,
-`images/barbican/Dockerfile`).
+`images/barbican/Dockerfile`, `images/neutron/Dockerfile`).
 
 `images/ovn/Dockerfile` carries the comment for the other half of the same
 decision. That image does not derive from `python-base`, so it creates the
