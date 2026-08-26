@@ -30,7 +30,7 @@ The keystone operator is the reference consumer for most packages listed (for
 | `internal/common/watch` | `CRUpdatePredicate` for the `For(...)` watch, `SecretToOwnersMapper` + `RegisterSecretNameIndex`, `StoreRefFanOut` (enqueues only the CRs whose effective `spec.secretStoreRef` matches a changed cluster-scoped `ClusterSecretStore` or namespaced `SecretStore`), `ClusterRefMapper` (database-cluster reference to owning CRs) |
 | `internal/common/bootstrap` | `Run`/`ManagerConfig` manager bootstrap, `NewScheme` scheme assembly (client-go baseline first, then the per-operator extras), `ControllerOptions` (concurrency + tuned rate limiter), `DetectOperatorNamespace` |
 | `internal/common/instrumentation` | Sub-reconciler duration/error metrics; declare a `NewSubReconcilerInstrumenter("<op>_operator", conditionTypes)` in the operator and pass its bound `Instrument` method to the reconcile pipeline, then register it from a `RegisterMetrics()` wired into `main.go` (registration returns an error instead of panicking) |
-| `internal/common/deployment` | SSA ensure primitives, `BuildWorkload`/`BuildService` (shared pod-template and Service assembly), `RestrictedSecurityContext`, PDB/HPA builders, `ReconcileHPA` flow, replica normalization, pod-knob default helpers |
+| `internal/common/deployment` | SSA ensure primitives, `BuildWorkload`/`BuildService` (shared pod-template and Service assembly), `BuildDaemonSet`/`EnsureDaemonSet` for node-level workloads, `RestrictedSecurityContext` beside the `CapabilitySecurityContext`/`PrivilegedSecurityContext` escapes, PDB/HPA builders, `ReconcileHPA` flow, replica normalization, pod-knob default helpers |
 | `internal/common/apply` | The SSA apply primitives under every ensure helper: `EnsureObject` (owner-referenced) and `EnsureUnownedObject` |
 | `internal/common/networkpolicy` | `Ensure`/`Delete`, the auto-derived egress rules (`DNSEgressRule`/`DatabaseEgressRule`/`CacheEgressRule`/`CacheEgressPorts`), `IngressPeers`, and the three-path `Reconcile` flow with the fail-closed empty-ingress guard |
 | `internal/common/gateway` | `IsGVKAvailable` CRD probe, HTTPRoute builder/acceptance/ensure/delete over the shared `GatewaySpec`, and the three-path `ReconcileHTTPRoute` flow |
@@ -167,10 +167,9 @@ forbids, and reads part of its configuration off the node it landed on. Issues
 
 `RestrictedSecurityContext` stays the posture for every API Deployment, Job and
 CronJob, guarded by the five `pod-security-restricted` suites under
-`tests/e2e/<op>/`. `internal/common/deployment` will gain two escapes — neither
-exists yet; today the package exports `RestrictedSecurityContext` alone, and each
-escape lands with its first consumer under issues #903 and #905 — and a container
-takes the weaker one that still works:
+`tests/e2e/<op>/`. `internal/common/deployment` has two escapes beside it,
+added with the OVN chassis (#903), and a container takes the weaker one that
+still works:
 
 - `CapabilitySecurityContext(caps...)` keeps the Restricted fields and adds
   named capabilities. ovs-vswitchd and ovn-controller need `NET_ADMIN`;
@@ -200,11 +199,16 @@ ovs-vsctl set open . external_ids:hostname="$NODE_NAME" external_ids:ovn-encap-i
 ```
 
 A value that depends on cluster state the pod cannot see (the gateway role, the
-bridge mappings derived from node labels) is rendered by the operator into a
-namespaced object keyed by node name. The init container reads that object
-through a Role the operator projects. The access chart already grants `roles`,
-`rolebindings` and `configmaps` per namespace, so a target cluster needs nothing
-new for this.
+bridge mappings derived from node labels) travels in a ConfigMap. The operator
+renders one per chassis, `<name>-nodes`, with a key per selected node holding
+that node's `SYSTEM_ID=`, `GATEWAY=`, `BRIDGE_MAPPINGS=` and `ENCAP_TYPE=` as
+shell assignments. The pod mounts it as a volume at `/etc/ovn-chassis/nodes`,
+and the init container sources the key named after its own node.
+
+Nothing in the pod calls the API server for this, so it needs no Role: the OVN
+image carries no HTTP client to make the call with. A changed value reaches a
+running pod anyway, because the kubelet refreshes a mounted ConfigMap within its
+sync period.
 
 Stable identity, the OVN `system-id`, has to survive the pod, so the operator
 persists it — into that same namespaced per-node object, and it reads it back on

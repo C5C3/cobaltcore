@@ -11,9 +11,9 @@
 #     `continue-on-error: true`.
 #   - docs/contributing/adding-a-new-operator.md has the
 #     `## Node-level workloads` section and names the two non-Restricted
-#     security-context helpers — neither shipped yet — plus the access value a
-#     node-level workload depends on, and why per-node state is persisted in a
-#     namespaced object rather than a Node annotation.
+#     security-context helpers plus the access value a node-level workload
+#     depends on, and why per-node state is persisted in a namespaced object
+#     rather than a Node annotation.
 #   - docs/reference/target-clusters.md documents what the chassis layer added
 #     (daemonsets, gated with the privilegedNamespaces PodSecurity label), what
 #     that label costs, and how to take it off again.
@@ -78,15 +78,15 @@ test_operator_guide_documents_node_level_workloads() {
   assert_file_contains "posture rule names PrivilegedSecurityContext" \
     "$OPERATOR_DOC" \
     'PrivilegedSecurityContext'
-  # Neither helper is implemented yet — internal/common/deployment exports
-  # RestrictedSecurityContext alone. A reader who greps for the two names above
-  # has to learn that from the page rather than from the empty grep.
-  assert_file_contains "the two escapes are marked as not yet existing" \
+  # Both helpers ship in internal/common/deployment, beside
+  # RestrictedSecurityContext. A reader who greps for the two names above has to
+  # learn from the page which one a container takes, and where they came from.
+  assert_file_contains "the two escapes are placed in the shared package" \
     "$OPERATOR_DOC" \
-    'exists yet'
-  assert_file_contains "the shipped helper is named as the only one" \
+    'two escapes beside it'
+  assert_file_contains "the escapes are dated to the chassis that added them" \
     "$OPERATOR_DOC" \
-    'exports `RestrictedSecurityContext` alone'
+    'added with the OVN chassis'
   # The system-id is persisted in the namespaced per-node object, not in a Node
   # annotation: patch on nodes cannot be narrowed to one annotation key, so the
   # access chart grants nodes read-only. Pin the rejection so a revision that
