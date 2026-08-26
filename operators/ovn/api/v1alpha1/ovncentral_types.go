@@ -120,9 +120,17 @@ type OVNCentralSpec struct {
 // volumeClaimTemplate, which the API server itself rejects updates to. Rejecting
 // them here reports the constraint at admission instead of letting the
 // StatefulSet update fail later.
-// +kubebuilder:validation:XValidation:rule="self.replicas == oldSelf.replicas",message="replicas is immutable: Raft membership changes are not supported"
-// +kubebuilder:validation:XValidation:rule="self.electionTimerMs == oldSelf.electionTimerMs",message="electionTimerMs is immutable: it is applied when the clustered database is created"
-// +kubebuilder:validation:XValidation:rule="self.storage == oldSelf.storage",message="storage is immutable: volumeClaimTemplates cannot change"
+//
+// Each rule is guarded by a has() check on both sides. The API server evaluates
+// every validation rule of this type against the empty-object default the two
+// fields referencing it carry, and that object has none of the three keys, so an
+// unguarded rule makes the whole CRD unapplicable ("no such key: replicas
+// evaluating rule"). The guard changes nothing for a stored CR: all three keys
+// carry a schema default, so admission has filled them long before an update can
+// reach these rules.
+// +kubebuilder:validation:XValidation:rule="!has(self.replicas) || !has(oldSelf.replicas) || self.replicas == oldSelf.replicas",message="replicas is immutable: Raft membership changes are not supported"
+// +kubebuilder:validation:XValidation:rule="!has(self.electionTimerMs) || !has(oldSelf.electionTimerMs) || self.electionTimerMs == oldSelf.electionTimerMs",message="electionTimerMs is immutable: it is applied when the clustered database is created"
+// +kubebuilder:validation:XValidation:rule="!has(self.storage) || !has(oldSelf.storage) || self.storage == oldSelf.storage",message="storage is immutable: volumeClaimTemplates cannot change"
 type OVNDatabaseSpec struct {
 	// Replicas is the number of Raft members. It must be odd: an even cluster
 	// tolerates no more failures than the odd one below it and has two ways to
