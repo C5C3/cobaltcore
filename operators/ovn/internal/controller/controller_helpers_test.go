@@ -5,16 +5,19 @@
 package controller
 
 import (
+	"context"
 	"testing"
 
 	certmanagerv1 "github.com/cert-manager/cert-manager/pkg/apis/certmanager/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	ovnv1alpha1 "github.com/c5c3/cobaltcore/operators/ovn/api/v1alpha1"
@@ -138,4 +141,35 @@ func newTestOVNCentralReconciler(t *testing.T, objs ...client.Object) *OVNCentra
 // ovnCentralCondition returns one of the OVNCentral's conditions, or nil.
 func ovnCentralCondition(cr *ovnv1alpha1.OVNCentral, conditionType string) *metav1.Condition {
 	return conditions.GetCondition(cr.Status.Conditions, conditionType)
+}
+
+// ovnCentralRequest is the reconcile request for the shared OVNCentral fixture.
+var ovnCentralRequest = reconcile.Request{
+	NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: testOVNCentralName},
+}
+
+// getOVNCentral re-reads the OVNCentral CR from the given client, so an
+// assertion reads what a pass persisted rather than the in-memory copy it
+// mutated.
+func getOVNCentral(t *testing.T, c client.Client, name string) *ovnv1alpha1.OVNCentral {
+	t.Helper()
+
+	var cr ovnv1alpha1.OVNCentral
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: name}, &cr); err != nil {
+		t.Fatalf("re-reading OVNCentral %s: %v", name, err)
+	}
+	return &cr
+}
+
+// collectEvents drains the FakeRecorder channel non-blocking.
+func collectEvents(rec *record.FakeRecorder) []string {
+	var out []string
+	for {
+		select {
+		case e := <-rec.Events:
+			out = append(out, e)
+		default:
+			return out
+		}
+	}
 }
