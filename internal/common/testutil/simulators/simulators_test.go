@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -602,4 +603,235 @@ func TestSimulateDeploymentReady_zeroReplicas(t *testing.T) {
 	updated := &appsv1.Deployment{}
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(deploy), updated)).To(Succeed())
 	g.Expect(updated.Status.ReadyReplicas).To(BeEquivalentTo(0))
+}
+
+// --- MarkStatefulSetReady ---
+
+func TestMarkStatefulSetReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-sts",
+			Namespace:  "default",
+			Generation: 2,
+		},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: ptr.To(int32(3)),
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test"}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "test"}},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "test", Image: "test:latest"}}},
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(sts).
+		WithStatusSubresource(sts).
+		Build()
+
+	err := MarkStatefulSetReady(context.Background(), c, client.ObjectKeyFromObject(sts))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	updated := &appsv1.StatefulSet{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(sts), updated)).To(Succeed())
+
+	g.Expect(updated.Status.ObservedGeneration).To(Equal(int64(2)))
+	g.Expect(updated.Status.Replicas).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.ReadyReplicas).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.UpdatedReplicas).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.CurrentReplicas).To(BeEquivalentTo(3))
+}
+
+// A StatefulSet that never named a replica count runs one replica, the way the
+// API server defaults it. Reading the nil pointer as zero would mark a running
+// StatefulSet as ready with no pod at all.
+func TestMarkStatefulSetReady_NilReplicasCountsAsOne(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-sts", Namespace: "default", Generation: 1},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(sts).
+		WithStatusSubresource(sts).
+		Build()
+
+	g.Expect(MarkStatefulSetReady(context.Background(), c, client.ObjectKeyFromObject(sts))).To(Succeed())
+
+	updated := &appsv1.StatefulSet{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(sts), updated)).To(Succeed())
+	g.Expect(updated.Status.ReadyReplicas).To(BeEquivalentTo(1))
+	g.Expect(updated.Status.Replicas).To(BeEquivalentTo(1))
+}
+
+func TestMarkStatefulSetReady_Idempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-sts", Namespace: "default", Generation: 1},
+		Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(2))},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(sts).
+		WithStatusSubresource(sts).
+		Build()
+
+	ctx := context.Background()
+	key := client.ObjectKeyFromObject(sts)
+
+	g.Expect(MarkStatefulSetReady(ctx, c, key)).To(Succeed())
+	g.Expect(MarkStatefulSetReady(ctx, c, key)).To(Succeed())
+
+	updated := &appsv1.StatefulSet{}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+	g.Expect(updated.Status.ReadyReplicas).To(BeEquivalentTo(2), "a second call must not add to the counters")
+}
+
+func TestMarkStatefulSetReady_NotFound(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		Build()
+
+	key := client.ObjectKey{Name: "missing", Namespace: "default"}
+	err := MarkStatefulSetReady(context.Background(), c, key)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("getting StatefulSet"))
+}
+
+// --- MarkDaemonSetReady ---
+
+func TestMarkDaemonSetReady(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ds := &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-ds", Namespace: "default", Generation: 2},
+		Status:     appsv1.DaemonSetStatus{DesiredNumberScheduled: 3},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(ds).
+		WithStatusSubresource(ds).
+		Build()
+
+	err := MarkDaemonSetReady(context.Background(), c, client.ObjectKeyFromObject(ds))
+	g.Expect(err).NotTo(HaveOccurred())
+
+	updated := &appsv1.DaemonSet{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(ds), updated)).To(Succeed())
+
+	g.Expect(updated.Status.ObservedGeneration).To(Equal(int64(2)))
+	// The node count the test set up survives, so a DaemonSet scheduled onto
+	// three nodes is not marked ready for one.
+	g.Expect(updated.Status.DesiredNumberScheduled).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.CurrentNumberScheduled).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.UpdatedNumberScheduled).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.NumberReady).To(BeEquivalentTo(3))
+	g.Expect(updated.Status.NumberAvailable).To(BeEquivalentTo(3))
+}
+
+// A DaemonSet whose status names no node yet is marked for one. Zero is the
+// empty node selection, which is ready without a single pod, so a readiness
+// rule that stopped checking the counters would pass on it.
+func TestMarkDaemonSetReady_NoNodesYetCountsAsOne(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ds := &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-ds", Namespace: "default", Generation: 1},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(ds).
+		WithStatusSubresource(ds).
+		Build()
+
+	g.Expect(MarkDaemonSetReady(context.Background(), c, client.ObjectKeyFromObject(ds))).To(Succeed())
+
+	updated := &appsv1.DaemonSet{}
+	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(ds), updated)).To(Succeed())
+	g.Expect(updated.Status.DesiredNumberScheduled).To(BeEquivalentTo(1))
+	g.Expect(updated.Status.NumberReady).To(BeEquivalentTo(1))
+}
+
+func TestMarkDaemonSetReady_Idempotent(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	ds := &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-ds", Namespace: "default", Generation: 1},
+		Status:     appsv1.DaemonSetStatus{DesiredNumberScheduled: 2},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		WithObjects(ds).
+		WithStatusSubresource(ds).
+		Build()
+
+	ctx := context.Background()
+	key := client.ObjectKeyFromObject(ds)
+
+	g.Expect(MarkDaemonSetReady(ctx, c, key)).To(Succeed())
+	g.Expect(MarkDaemonSetReady(ctx, c, key)).To(Succeed())
+
+	updated := &appsv1.DaemonSet{}
+	g.Expect(c.Get(ctx, key, updated)).To(Succeed())
+	g.Expect(updated.Status.NumberReady).To(BeEquivalentTo(2), "a second call must not add to the counters")
+}
+
+func TestMarkDaemonSetReady_NotFound(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	c := fake.NewClientBuilder().
+		WithScheme(newScheme()).
+		Build()
+
+	key := client.ObjectKey{Name: "missing", Namespace: "default"}
+	err := MarkDaemonSetReady(context.Background(), c, key)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("getting DaemonSet"))
+}
+
+// The mark and the readiness rule it feeds are written apart, so the one that
+// matters is checked against the other: a counter the rule reads and the mark
+// leaves alone would strand every chassis test on "not ready".
+func TestMarkDaemonSetReady_EnsureDaemonSetReturnsTrue(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := newScheme()
+	owner := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-owner", Namespace: "default", UID: "test-uid"},
+	}
+	ds := deployment.BuildDaemonSet(deployment.DaemonSetParams{
+		Namespace:      "default",
+		Name:           "test-chassis",
+		Labels:         map[string]string{"app.kubernetes.io/name": "chassis"},
+		SelectorLabels: map[string]string{"app.kubernetes.io/name": "chassis"},
+		Containers: []corev1.Container{{
+			Name:  "ovn-controller",
+			Image: "registry.example.com/ovn:2026.1",
+		}},
+	})
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(owner, ds).
+		WithStatusSubresource(ds).
+		Build()
+
+	ctx := context.Background()
+	g.Expect(MarkDaemonSetReady(ctx, c, client.ObjectKeyFromObject(ds))).To(Succeed())
+
+	_, ready, err := deployment.EnsureDaemonSet(ctx, c, s, owner, ds)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(ready).To(BeTrue())
 }

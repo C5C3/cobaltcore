@@ -351,3 +351,62 @@ func SimulateDeploymentReady(ctx context.Context, c client.Client, key client.Ob
 
 	return c.Status().Update(ctx, deploy)
 }
+
+// MarkStatefulSetReady updates a StatefulSet resource's status to indicate
+// readiness: every replica is running, updated, and ready, and the
+// observedGeneration matches the StatefulSet's Generation. A StatefulSet
+// without an explicit replica count is treated as the API server treats it,
+// as one replica.
+//
+// It is the StatefulSet counterpart of SimulateDeploymentReady, for the OVN
+// central databases whose gates read those counters.
+func MarkStatefulSetReady(ctx context.Context, c client.Client, key client.ObjectKey) error {
+	sts := &appsv1.StatefulSet{}
+	if err := c.Get(ctx, key, sts); err != nil {
+		return fmt.Errorf("getting StatefulSet %s: %w", key, err)
+	}
+
+	replicas := int32(1)
+	if sts.Spec.Replicas != nil {
+		replicas = *sts.Spec.Replicas
+	}
+
+	sts.Status.ObservedGeneration = sts.Generation
+	sts.Status.Replicas = replicas
+	sts.Status.ReadyReplicas = replicas
+	sts.Status.UpdatedReplicas = replicas
+	sts.Status.CurrentReplicas = replicas
+
+	return c.Status().Update(ctx, sts)
+}
+
+// MarkDaemonSetReady updates a DaemonSet resource's status to indicate
+// readiness: every selected node runs a ready pod of the current template, and
+// the observedGeneration matches the DaemonSet's Generation. It is what
+// deployment.EnsureDaemonSet reads.
+//
+// The node count is the one already on the status, so a test that scheduled
+// the DaemonSet onto a set of nodes keeps its number. A status that names none
+// yet is marked for one node rather than for zero: zero is the empty node
+// selection, which is ready without a pod anywhere and would let a broken
+// readiness rule pass unnoticed.
+func MarkDaemonSetReady(ctx context.Context, c client.Client, key client.ObjectKey) error {
+	ds := &appsv1.DaemonSet{}
+	if err := c.Get(ctx, key, ds); err != nil {
+		return fmt.Errorf("getting DaemonSet %s: %w", key, err)
+	}
+
+	nodes := ds.Status.DesiredNumberScheduled
+	if nodes == 0 {
+		nodes = 1
+	}
+
+	ds.Status.ObservedGeneration = ds.Generation
+	ds.Status.DesiredNumberScheduled = nodes
+	ds.Status.CurrentNumberScheduled = nodes
+	ds.Status.UpdatedNumberScheduled = nodes
+	ds.Status.NumberReady = nodes
+	ds.Status.NumberAvailable = nodes
+
+	return c.Status().Update(ctx, ds)
+}
