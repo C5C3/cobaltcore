@@ -36,7 +36,7 @@ Usage: hack/gen-option-catalog.sh [--check] <service> <release> [image-ref]
 
   --check       diff the generated catalog against the committed file instead
                 of writing it; non-zero exit on any difference.
-  service       keystone, glance, placement, or barbican.
+  service       keystone, glance, placement, barbican, or neutron.
   release       release directory name (e.g. 2025.2).
   image-ref     service image to extract from
                 (default: ghcr.io/c5c3/<service>:<release>).
@@ -74,35 +74,56 @@ if [[ -z "${SERVICE_REF}" || "${SERVICE_REF}" == "null" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Map the service to its oslo-config-generator config path, to the number of
-#    sections a complete extraction must yield, and to the namespaces to drop
-#    from the generator config. That floor catches a truncated generator run,
-#    and it is per service because a full run yields very different counts:
+# 3. Map the service to one or more oslo-config-generator config paths, to the
+#    number of sections a complete extraction must yield, and to the namespaces
+#    to drop from the generator config. That floor catches a truncated generator
+#    run, and it is per service because a full run yields very different counts:
 #    keystone registers 44 sections, glance 30 and barbican 22, so 10 is a loose
 #    guard for all three, while placement registers 8 (2025.2) and 9 (2026.1).
+#    Every service but neutron maps to a single path; neutron unions three
+#    per-process generator files, see its case below.
 # ---------------------------------------------------------------------------
 DROP_NAMESPACES=""
 case "${SERVICE}" in
   keystone)
-    GEN_CONFIG_PATH="config-generator/keystone.conf"
+    GEN_CONFIG_PATHS="config-generator/keystone.conf"
     MIN_SECTIONS=10
     ;;
   glance)
-    GEN_CONFIG_PATH="etc/oslo-config-generator/glance-api.conf"
+    GEN_CONFIG_PATHS="etc/oslo-config-generator/glance-api.conf"
     MIN_SECTIONS=10
     ;;
   placement)
-    GEN_CONFIG_PATH="etc/placement/config-generator.conf"
+    GEN_CONFIG_PATHS="etc/placement/config-generator.conf"
     MIN_SECTIONS=8
     ;;
   barbican)
-    GEN_CONFIG_PATH="etc/oslo-config-generator/barbican.conf"
+    GEN_CONFIG_PATHS="etc/oslo-config-generator/barbican.conf"
     MIN_SECTIONS=10
     # barbican registers its kmip secret store unconditionally while the image
     # ships no pykmip, and a namespace the image cannot import aborts the whole
     # generator run. The catalog describes what the shipped image accepts, and a
     # plugin the image cannot load accepts nothing.
     DROP_NAMESPACES="barbican.plugin.secret_store.kmip"
+    ;;
+  neutron)
+    # neutron splits its options across per-process generator configs. The
+    # operator renders neutron.conf and ml2_conf.ini, which the server loads
+    # into one oslo CONF, and neutron_ovn_metadata_agent.ini for the metadata
+    # agent, so the catalog is the union of those three files' namespaces.
+    # oslo.log appears in all three and is kept once. 10 is the same loose
+    # floor keystone, glance and barbican use; a full neutron extraction
+    # registers well over 10 sections.
+    # The catalog format carries no per-section provenance, so the union is
+    # flat: a metadata-agent-only section ([metadata_rate_limiting], [agent],
+    # [ovs]) validates the same as a server-only one ([ml2], [ovn_nb_global],
+    # [service_providers]), and an option placed in the wrong process' config
+    # passes validation while oslo.config silently ignores it at runtime.
+    # #904 has to decide before it embeds these files whether to emit one
+    # catalog per rendered file or to add a provenance field, because the
+    # catalog shape becomes an API at that point.
+    GEN_CONFIG_PATHS="etc/oslo-config-generator/neutron.conf etc/oslo-config-generator/ml2_conf.ini etc/oslo-config-generator/neutron_ovn_metadata_agent.ini"
+    MIN_SECTIONS=10
     ;;
   *)
     echo "unsupported service ${SERVICE}: no oslo-config-generator config mapping" >&2
@@ -118,34 +139,39 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
 chmod 755 "${WORK_DIR}"
 
 # ---------------------------------------------------------------------------
-# 4. Obtain the upstream generator config. SOURCE_DIR points at a local source
-#    checkout; otherwise fetch the file from the pinned ref on GitHub.
+# 4. Obtain the upstream generator configs. SOURCE_DIR points at a local source
+#    checkout; otherwise fetch each file from the pinned ref on GitHub. Each
+#    file is appended to upstream.conf in GEN_CONFIG_PATHS order.
 # ---------------------------------------------------------------------------
-if [[ -n "${SOURCE_DIR:-}" ]]; then
-  SRC_CONFIG="${SOURCE_DIR}/${GEN_CONFIG_PATH}"
-  if [[ ! -f "${SRC_CONFIG}" ]]; then
-    echo "generator config not found: ${SRC_CONFIG}" >&2
-    exit 1
+for GEN_CONFIG_PATH in ${GEN_CONFIG_PATHS}; do
+  if [[ -n "${SOURCE_DIR:-}" ]]; then
+    SRC_CONFIG="${SOURCE_DIR}/${GEN_CONFIG_PATH}"
+    if [[ ! -f "${SRC_CONFIG}" ]]; then
+      echo "generator config not found: ${SRC_CONFIG}" >&2
+      exit 1
+    fi
+    cat "${SRC_CONFIG}" >> "${WORK_DIR}/upstream.conf"
+  else
+    if ! curl -fsSL \
+      "https://raw.githubusercontent.com/openstack/${SERVICE}/${SERVICE_REF}/${GEN_CONFIG_PATH}" \
+      >> "${WORK_DIR}/upstream.conf"; then
+      echo "fetching generator config for ${SERVICE} at ${SERVICE_REF} (${GEN_CONFIG_PATH}) failed" >&2
+      exit 1
+    fi
   fi
-  cp "${SRC_CONFIG}" "${WORK_DIR}/upstream.conf"
-else
-  if ! curl -fsSL \
-    "https://raw.githubusercontent.com/openstack/${SERVICE}/${SERVICE_REF}/${GEN_CONFIG_PATH}" \
-    -o "${WORK_DIR}/upstream.conf"; then
-    echo "fetching generator config for ${SERVICE} at ${SERVICE_REF} failed" >&2
-    exit 1
-  fi
-fi
+done
 
 # ---------------------------------------------------------------------------
 # 5. Build the generator config: a [DEFAULT] header plus only the namespace
-#    lines from the upstream config (dropping output_file/wrap_width so the
-#    generator writes JSON to stdout). Commented namespaces are excluded, and so
+#    lines from the upstream configs (dropping output_file/wrap_width so the
+#    generator writes JSON to stdout). The first occurrence of each identical
+#    namespace line wins, in GEN_CONFIG_PATHS order, so a namespace several
+#    files list is registered once. Commented namespaces are excluded, and so
 #    are the DROP_NAMESPACES entries: a namespace the image registers but cannot
 #    import aborts the whole generator run. A namespace the image does not
 #    register at all is left in and reaches the stevedore warning path in step 7.
 # ---------------------------------------------------------------------------
-NAMESPACE_LINES="$(grep -E '^[[:space:]]*namespace[[:space:]]*=' "${WORK_DIR}/upstream.conf" || true)"
+NAMESPACE_LINES="$(grep -E '^[[:space:]]*namespace[[:space:]]*=' "${WORK_DIR}/upstream.conf" | awk '!seen[$0]++' || true)"
 for NAMESPACE in ${DROP_NAMESPACES}; do
   NAMESPACE_LINES="$(printf '%s\n' "${NAMESPACE_LINES}" |
     grep -vE "^[[:space:]]*namespace[[:space:]]*=[[:space:]]*${NAMESPACE}[[:space:]]*$" || true)"
