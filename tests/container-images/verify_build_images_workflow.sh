@@ -144,6 +144,8 @@ test_all_jobs_defined() {
   assert_file_contains "verify-service-images job defined" "$WORKFLOW" "verify-service-images:"
   assert_file_contains "build-keystone-federation-proxy job defined" "$WORKFLOW" "build-keystone-federation-proxy:"
   assert_file_contains "merge-keystone-federation-proxy-image job defined" "$WORKFLOW" "merge-keystone-federation-proxy-image:"
+  assert_file_contains "build-backup-shifter job defined" "$WORKFLOW" "build-backup-shifter:"
+  assert_file_contains "merge-backup-shifter-image job defined" "$WORKFLOW" "merge-backup-shifter-image:"
   assert_file_contains "build-ovn job defined" "$WORKFLOW" "build-ovn:"
   assert_file_contains "merge-ovn-image job defined" "$WORKFLOW" "merge-ovn-image:"
   assert_file_contains "verify-ovn-image job defined" "$WORKFLOW" "verify-ovn-image:"
@@ -246,6 +248,48 @@ test_keystone_federation_proxy_jobs() {
   merge_tags=$(yq_raw '.jobs["merge-keystone-federation-proxy-image"]["steps"][] | select(.id == "merge-keystone-federation-proxy") | .with["tags"]' "$WORKFLOW" || echo "null")
   assert_contains "merge tags include :latest" "$merge_tags" "keystone-federation-proxy:latest"
   assert_contains "merge tags include the commit SHA" "$merge_tags" 'keystone-federation-proxy:${{ github.sha }}'
+}
+
+# --- backup-shifter build/merge job structure ---
+test_backup_shifter_jobs() {
+  echo "Test: backup-shifter job structure"
+
+  local needs
+  needs=$(yq_raw '.jobs["build-backup-shifter"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "build-backup-shifter needs lint-dockerfiles" "$needs" "lint-dockerfiles"
+  assert_contains "build-backup-shifter needs prepare" "$needs" "prepare"
+
+  # Release-independent: no release axis, a static multi-arch include matrix.
+  local matrix_platforms
+  matrix_platforms=$(yq_raw '.jobs["build-backup-shifter"]["strategy"]["matrix"]["include"][]["platform"]' "$WORKFLOW" || true)
+  assert_contains "build-backup-shifter matrix includes linux/amd64" "$matrix_platforms" "linux/amd64"
+  assert_contains "build-backup-shifter matrix includes linux/arm64" "$matrix_platforms" "linux/arm64"
+
+  # PR-inline verification wiring (the tempest pattern).
+  local verify_script
+  verify_script=$(yq_raw '.jobs["build-backup-shifter"]["steps"][] | select(.id == "build-backup-shifter") | .with["verify-script"]' "$WORKFLOW" || echo "null")
+  assert_eq "build step wires the verify script" \
+    "tests/container-images/verify_backup_shifter.sh" "$verify_script"
+
+  # The lint matrix covers the new Dockerfile.
+  local lint_matrix
+  lint_matrix=$(yq_raw '.jobs["lint-dockerfiles"]["strategy"]["matrix"]["dockerfile"][]' "$WORKFLOW" || true)
+  assert_contains "lint-dockerfiles covers the backup-shifter Dockerfile" \
+    "$lint_matrix" "images/backup-shifter/Dockerfile"
+
+  # Merge job: PR-skipped, needs the build, tags :latest + :<sha>.
+  local merge_if
+  merge_if=$(yq_raw '.jobs["merge-backup-shifter-image"]["if"]' "$WORKFLOW" || echo "null")
+  assert_contains "merge job skipped on PRs" "$merge_if" "github.event_name != 'pull_request'"
+
+  local merge_needs
+  merge_needs=$(yq_raw '.jobs["merge-backup-shifter-image"]["needs"][]' "$WORKFLOW" || true)
+  assert_contains "merge job needs the build job" "$merge_needs" "build-backup-shifter"
+
+  local merge_tags
+  merge_tags=$(yq_raw '.jobs["merge-backup-shifter-image"]["steps"][] | select(.id == "merge-backup-shifter") | .with["tags"]' "$WORKFLOW" || echo "null")
+  assert_contains "merge tags include :latest" "$merge_tags" "backup-shifter:latest"
+  assert_contains "merge tags include the commit SHA" "$merge_tags" 'backup-shifter:${{ github.sha }}'
 }
 
 # --- ovn build/merge/verify job structure ---
@@ -632,6 +676,26 @@ test_timeout_minutes_on_all_jobs() {
     FAIL=$((FAIL + 1))
   fi
 
+  local shifter_timeout shifter_merge_timeout
+  shifter_timeout=$(yq_raw '.jobs["build-backup-shifter"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
+  shifter_merge_timeout=$(yq_raw '.jobs["merge-backup-shifter-image"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
+
+  if [ "$shifter_timeout" != "null" ] && [ -n "$shifter_timeout" ]; then
+    echo "  PASS: build-backup-shifter has timeout-minutes: $shifter_timeout"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: build-backup-shifter missing timeout-minutes"
+    FAIL=$((FAIL + 1))
+  fi
+
+  if [ "$shifter_merge_timeout" != "null" ] && [ -n "$shifter_merge_timeout" ]; then
+    echo "  PASS: merge-backup-shifter-image has timeout-minutes: $shifter_merge_timeout"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: merge-backup-shifter-image missing timeout-minutes"
+    FAIL=$((FAIL + 1))
+  fi
+
   local ovn_timeout ovn_merge_timeout ovn_verify_timeout
   ovn_timeout=$(yq_raw '.jobs["build-ovn"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
   ovn_merge_timeout=$(yq_raw '.jobs["merge-ovn-image"]["timeout-minutes"]' "$WORKFLOW" || echo "null")
@@ -692,6 +756,13 @@ test_runs_on_ubuntu_latest() {
 
   assert_contains "build-keystone-federation-proxy uses matrix runner expression" "$fedproxy_runner" "matrix.runner"
   assert_eq "merge-keystone-federation-proxy-image uses ubuntu-latest" "ubuntu-latest" "$fedproxy_merge_runner"
+
+  local shifter_runner shifter_merge_runner
+  shifter_runner=$(yq_raw '.jobs["build-backup-shifter"]["runs-on"]' "$WORKFLOW" || echo "null")
+  shifter_merge_runner=$(yq_raw '.jobs["merge-backup-shifter-image"]["runs-on"]' "$WORKFLOW" || echo "null")
+
+  assert_contains "build-backup-shifter uses matrix runner expression" "$shifter_runner" "matrix.runner"
+  assert_eq "merge-backup-shifter-image uses ubuntu-latest" "ubuntu-latest" "$shifter_merge_runner"
 
   local ovn_runner ovn_merge_runner ovn_verify_runner
   ovn_runner=$(yq_raw '.jobs["build-ovn"]["runs-on"]' "$WORKFLOW" || echo "null")
@@ -1888,6 +1959,8 @@ echo ""
 test_base_image_digest_outputs
 echo ""
 test_keystone_federation_proxy_jobs
+echo ""
+test_backup_shifter_jobs
 echo ""
 test_ovn_jobs
 echo ""
