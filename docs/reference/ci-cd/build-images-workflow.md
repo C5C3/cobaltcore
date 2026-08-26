@@ -258,11 +258,14 @@ debugging failed tests.
 
 ## Jobs
 
-The workflow defines seventeen jobs with a dependency graph:
+The workflow defines nineteen jobs with a dependency graph:
 
 ```text
 lint-dockerfiles ─┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
 prepare ──────────┤      └──> merge-keystone-federation-proxy-image (push only)
+                  │
+                  ├──> build-backup-shifter (matrix: amd64 + arm64)
+                  │      └──> merge-backup-shifter-image (push only)
                   │
                   ├──> build-ovn (matrix: amd64 + arm64)
                   │      └──> merge-ovn-image (push only) ──> verify-ovn-image (push only)
@@ -316,6 +319,19 @@ the amd64 image locally for the inline Grype scan and the
 script), and a PR-skipped merge job assembling the multi-arch manifest with
 the `:latest` + `:<sha>` tag scheme the base images use, followed by the
 supply-chain pipeline (SBOM, attestation, cosign).
+
+### build-backup-shifter / merge-backup-shifter-image
+
+The rclone shifter that copies OVN database backups from a PVC to S3
+(`images/backup-shifter/`, single-stage `ubuntu:noble` + distro `rclone`). It
+runs as the `shifter` container of the `OVNCentral` backup CronJob, which the
+operator renders only when `spec.backup.s3` is set. Like the federation proxy,
+the image carries no OpenStack code, so the job pair follows the base-image
+shape: a two-platform build job depending only on `lint-dockerfiles` and
+`prepare` (PR mode loads the amd64 image locally for the inline Grype scan and
+the `tests/container-images/verify_backup_shifter.sh` verify script), and a
+PR-skipped merge job assembling the multi-arch manifest with the `:latest` +
+`:<sha>` tags, followed by the supply-chain pipeline.
 
 ### build-ovn / merge-ovn-image / verify-ovn-image
 
@@ -744,11 +760,13 @@ systems.
 
 ### Release-independent images
 
-`keystone-federation-proxy` and `ovn` have no OpenStack version to tag with:
+`keystone-federation-proxy`, `backup-shifter` and `ovn` have no OpenStack
+version to tag with:
 
 | Image | Tags | Branches |
 | --- | --- | --- |
 | `keystone-federation-proxy` | `latest`, `<sha>` | all |
+| `backup-shifter` | `latest`, `<sha>` | all |
 | `ovn` | `<ovn-version>-<sha>` | all |
 | `ovn` | `<ovn-version>`, `latest` | `main` only |
 
@@ -1530,6 +1548,7 @@ The following table summarizes which test scripts run where:
 | `verify_venv_builder.sh` | — | verify-base-images | Yes |
 | `verify_<service>.sh` | — | build-service-images (PR) / verify-service-images (push) | Yes |
 | `verify_ovn.sh` | — | build-ovn (PR) / verify-ovn-image (push) | Yes |
+| `verify_backup_shifter.sh` | — | build-backup-shifter (PR) | Yes |
 
 ## SPDX Header
 
