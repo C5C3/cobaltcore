@@ -25,14 +25,11 @@ import (
 // OVNCentral of the same name projects into the same namespace.
 const chassisAppName = "ovnchassis"
 
-// The condition types of the three chassis steps that project or drive
-// workloads: the two DaemonSets and the maintenance Jobs. The two steps that
-// resolve inputs declare their own constant in the file that sets it.
-const (
-	conditionTypeOVSReady         = "OVSReady"
-	conditionTypeControllerReady  = "ControllerReady"
-	conditionTypeMaintenanceReady = "MaintenanceReady"
-)
+// conditionTypeMaintenanceReady is the condition the maintenance step reports
+// under: the Jobs that evacuate a gateway node and deregister a leaving
+// chassis. The other four chassis condition types are declared in the file of
+// the step that sets them.
+const conditionTypeMaintenanceReady = "MaintenanceReady"
 
 // chassisSubConditionTypes lists the condition types set by the individual
 // OVNChassis sub-reconcilers. The aggregate Ready condition is True only when

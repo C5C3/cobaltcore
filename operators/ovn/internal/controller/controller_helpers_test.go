@@ -211,15 +211,17 @@ func testOVNChassis() *ovnv1alpha1.OVNChassis {
 }
 
 // ovnChassisFakeClientBuilder returns a fake client builder with the package
-// scheme and the status subresources the chassis reconciler writes: the CR's
-// own, which every sub-reconciler stamps its conditions and its node list on.
+// scheme and the status subresources the chassis reconciler reads or writes: the
+// CR's own, which every sub-reconciler stamps its conditions and its node list
+// on, and the DaemonSet's, whose node counters the two DaemonSet steps judge a
+// rollout by.
 func ovnChassisFakeClientBuilder(t *testing.T, objs ...client.Object) *fake.ClientBuilder {
 	t.Helper()
 
 	return fake.NewClientBuilder().
 		WithScheme(newTestScheme(t)).
 		WithObjects(objs...).
-		WithStatusSubresource(&ovnv1alpha1.OVNChassis{})
+		WithStatusSubresource(&ovnv1alpha1.OVNChassis{}, &appsv1.DaemonSet{})
 }
 
 // newTestOVNChassisReconciler builds an OVNChassisReconciler over a fake client
