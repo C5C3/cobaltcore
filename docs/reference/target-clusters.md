@@ -340,6 +340,12 @@ platform team owns installs in. Read the posture off the cluster instead:
 kubectl get namespace <ns> -o jsonpath='{.metadata.labels}'
 ```
 
+Placing an `OVNCentral` needs the chart revision that grants `statefulsets` and
+`persistentvolumeclaims`. Without the first, the write of the Northbound
+StatefulSet comes back forbidden and `NorthboundReady` holds the API server's
+message under reason `StatefulSetError`. Without the second, the write of the
+`<name>-backup` claim comes back forbidden and `BackupReady` holds it.
+
 A placed CR's API health probe does not resolve over Service DNS from the
 management cluster, so it runs through the target's API server instead. The same
 credentials therefore need `get` on `services/proxy` in every namespace a
@@ -485,9 +491,9 @@ is recorded in three labels the operator stamps on every remote child:
 
 | Label | Value |
 | --- | --- |
-| `openstack.c5c3.io/owner-kind` | The owning CR's kind: `Keystone`, `Barbican`, `Horizon`, `Glance`, `Placement`, or `ControlPlane` |
+| `openstack.c5c3.io/owner-kind` | The owning CR's kind: `Keystone`, `Barbican`, `Horizon`, `Glance`, `Placement`, `OVNCentral`, `OVNChassis`, or `ControlPlane` |
 | `openstack.c5c3.io/owner-name` | The owning CR's name |
-| `openstack.c5c3.io/owner-namespace` | The owning CR's namespace. For the five workload CRDs that is also the namespace the child lands in. A ControlPlane's remote children land in the namespace of the service it placed, so for them the label names the ControlPlane's namespace and the child sits elsewhere |
+| `openstack.c5c3.io/owner-namespace` | The owning CR's namespace. For the seven workload CRDs that is also the namespace the child lands in. A ControlPlane's remote children land in the namespace of the service it placed, so for them the label names the ControlPlane's namespace and the child sits elsewhere |
 
 The kind is part of the key because a Keystone and a Barbican of the same name
 in the same namespace project into one target namespace, and each has to select
