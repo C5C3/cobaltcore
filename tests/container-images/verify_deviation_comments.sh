@@ -18,7 +18,7 @@ FAIL=0
 # python-base is checked separately: it is where the user is created. ovn
 # creates the user itself because it does not derive from python-base, so it
 # has its own function below.
-SERVICES="keystone horizon glance placement barbican"
+SERVICES="keystone horizon glance placement barbican neutron"
 
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"

@@ -62,6 +62,7 @@ jobs:
           - images/glance/Dockerfile
           - images/placement/Dockerfile
           - images/barbican/Dockerfile
+          - images/neutron/Dockerfile
           - images/tempest/Dockerfile
           - images/keystone-federation-proxy/Dockerfile
           - images/ovn/Dockerfile
