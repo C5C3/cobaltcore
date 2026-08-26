@@ -396,12 +396,15 @@ spec:
                 x-kubernetes-validations:
                 - message: 'replicas is immutable: Raft membership changes are not
                     supported'
-                  rule: self.replicas == oldSelf.replicas
+                  rule: '!has(self.replicas) || !has(oldSelf.replicas) || self.replicas
+                    == oldSelf.replicas'
                 - message: 'electionTimerMs is immutable: it is applied when the clustered
                     database is created'
-                  rule: self.electionTimerMs == oldSelf.electionTimerMs
+                  rule: '!has(self.electionTimerMs) || !has(oldSelf.electionTimerMs)
+                    || self.electionTimerMs == oldSelf.electionTimerMs'
                 - message: 'storage is immutable: volumeClaimTemplates cannot change'
-                  rule: self.storage == oldSelf.storage
+                  rule: '!has(self.storage) || !has(oldSelf.storage) || self.storage
+                    == oldSelf.storage'
               northd:
                 default: {}
                 description: |-
@@ -1001,12 +1004,15 @@ spec:
                 x-kubernetes-validations:
                 - message: 'replicas is immutable: Raft membership changes are not
                     supported'
-                  rule: self.replicas == oldSelf.replicas
+                  rule: '!has(self.replicas) || !has(oldSelf.replicas) || self.replicas
+                    == oldSelf.replicas'
                 - message: 'electionTimerMs is immutable: it is applied when the clustered
                     database is created'
-                  rule: self.electionTimerMs == oldSelf.electionTimerMs
+                  rule: '!has(self.electionTimerMs) || !has(oldSelf.electionTimerMs)
+                    || self.electionTimerMs == oldSelf.electionTimerMs'
                 - message: 'storage is immutable: volumeClaimTemplates cannot change'
-                  rule: self.storage == oldSelf.storage
+                  rule: '!has(self.storage) || !has(oldSelf.storage) || self.storage
+                    == oldSelf.storage'
               targetClusterRef:
                 description: |-
                   TargetClusterRef selects the registered target cluster the children are
