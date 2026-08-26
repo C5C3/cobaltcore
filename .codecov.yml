@@ -62,6 +62,10 @@ flag_management:
       paths:
         - operators/barbican/
       carryforward: true
+    - name: unit-ovn
+      paths:
+        - operators/ovn/
+      carryforward: true
     - name: integration-common
       paths:
         - internal/common/
@@ -89,6 +93,10 @@ flag_management:
     - name: integration-barbican
       paths:
         - operators/barbican/
+      carryforward: true
+    - name: integration-ovn
+      paths:
+        - operators/ovn/
       carryforward: true
 
 # Component-level thresholds: each component is tracked independently on the

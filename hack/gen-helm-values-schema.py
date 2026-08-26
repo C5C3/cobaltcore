@@ -487,6 +487,7 @@ WEBHOOK_ENABLED_DESCRIPTIONS = {
     "glance-operator": "Enable admission webhooks for Glance and GlanceBackend CR validation and defaulting",
     "placement-operator": "Enable admission webhooks for Placement CR validation and defaulting",
     "barbican-operator": "Enable admission webhooks for Barbican and BarbicanSecretStore CR validation and defaulting",
+    "ovn-operator": "Enable admission webhooks for OVNCentral and OVNChassis CR validation and defaulting",
 }
 
 

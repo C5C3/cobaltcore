@@ -81,4 +81,5 @@ operators/horizon/helm/horizon-operator/charts/
 operators/glance/helm/glance-operator/charts/
 operators/placement/helm/placement-operator/charts/
 operators/barbican/helm/barbican-operator/charts/
+operators/ovn/helm/ovn-operator/charts/
 __pycache__/
