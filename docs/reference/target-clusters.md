@@ -5,14 +5,15 @@ quadrant: operator
 
 # Target Clusters
 
-Five workload CRDs carry an optional `spec.targetClusterRef`:
+Seven workload CRDs carry an optional `spec.targetClusterRef`:
 [Keystone](./keystone/keystone-crd.md), [Barbican](./barbican/barbican-crd.md),
-[Horizon](./horizon/horizon-crd.md), [Glance](./glance/glance-crd.md), and
-[Placement](./placement/placement-crd.md). The field names a registered target
-cluster that receives every child the CR projects: Deployments, ConfigMaps,
-Secrets, and, for the services that have one, the database CRs. The CR itself
-does not move. It is created, reconciled, and deleted on the management cluster,
-and so are its status, its finalizers, and the webhooks that admit it.
+[Horizon](./horizon/horizon-crd.md), [Glance](./glance/glance-crd.md),
+[Placement](./placement/placement-crd.md), `OVNCentral`, and `OVNChassis`. The
+field names a registered target cluster that receives every child the CR
+projects: Deployments, ConfigMaps, Secrets, and, for the services that have one,
+the database CRs. The CR itself does not move. It is created, reconciled, and
+deleted on the management cluster, and so are its status, its finalizers, and
+the webhooks that admit it.
 
 Omitting the field selects the local cluster, the one the operator runs on. The
 children are created there and the deployment behaves like a single-cluster one,
@@ -230,7 +231,7 @@ cluster.
 
 ## Prerequisites on the target cluster
 
-For the five workload CRDs, the CR's namespace must already exist on the target.
+For the seven workload CRDs, the CR's namespace must already exist on the target.
 Their operators do not create it, and a child write into a missing namespace
 fails. A ControlPlane is the exception: it ensures the namespaces it places
 services in, on both clusters (see
@@ -417,11 +418,11 @@ provider logs the reason and builds no cluster, so every CR naming it reports
 A CR whose namespace is outside a declared set fails differently, on a cluster
 that engaged perfectly well. Its first cached read on the target returns
 controller-runtime's `unknown namespace for the cache`, which the credential
-gate records on the CR's first gate condition, `SecretsReady` for the five
-workload CRDs, carrying that message. Nothing is created on the target: the
-reconciler writes nothing it could not first read. Neither retrying nor waiting
-changes a cache's scope, so the condition holds until the registration or the CR
-moves.
+gate records on the CR's first gate condition, `SecretsReady` on a Keystone,
+Barbican, Horizon, Glance or Placement, carrying that message. Nothing is
+created on the target: the reconciler writes nothing it could not first read.
+Neither retrying nor waiting changes a cache's scope, so the condition holds
+until the registration or the CR moves.
 
 ## Prerequisites on the management cluster
 
