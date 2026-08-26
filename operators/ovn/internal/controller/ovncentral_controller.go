@@ -35,12 +35,12 @@ import (
 // constant for it; the rest reference that constant, so a rename cannot leave a
 // stale literal behind here.
 var centralSubConditionTypes = []string{
-	"TLSReady",
+	conditionTypeTLSReady,
 	conditionTypeNorthboundReady,
 	conditionTypeSouthboundReady,
 	conditionTypeEndpointsReady,
-	"NorthdReady",
-	"RelayReady",
+	conditionTypeNorthdReady,
+	conditionTypeRelayReady,
 	"BackupReady",
 }
 
@@ -75,6 +75,16 @@ type OVNCentralReconciler struct {
 	// <= 0 falls back to bootstrap.DefaultMaxConcurrentReconciles inside
 	// bootstrap.ControllerOptions, so the zero value is safe.
 	MaxConcurrentReconciles int
+
+	// certManagerAvailable is set during SetupWithManager from the management
+	// cluster's RESTMapper and says whether the cert-manager.io/v1 Certificate
+	// CRD is installed there. commonmulticluster.ChildrenServeKind answers with
+	// it for local children while probing the target cluster's RESTMapper for
+	// remote ones, and reconcileTLS turns a negative verdict into a
+	// TLSReady=False/CertManagerUnavailable wait instead of applying a
+	// Certificate the cluster would reject with "no matches for kind
+	// Certificate".
+	certManagerAvailable bool
 
 	// Resolver resolves the target cluster an OVNCentral CR names in
 	// spec.targetClusterRef into the client its children are read and written

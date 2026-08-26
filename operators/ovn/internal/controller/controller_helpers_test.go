@@ -50,6 +50,31 @@ func testOVNCentral() *ovnv1alpha1.OVNCentral {
 	}
 }
 
+// The addresses the endpoint step publishes for the two databases. northd and
+// the relay both refuse to project anything before they are set, so a fixture
+// that leaves them empty exercises only the wait.
+const (
+	testNorthboundAddress = "ssl:10.96.0.11:6641"
+	testSouthboundAddress = "ssl:10.96.0.21:6642"
+)
+
+// publishEndpoints stamps the two published addresses on cr and returns it, so
+// a fixture reaches the steps that consume them in one expression.
+func publishEndpoints(cr *ovnv1alpha1.OVNCentral) *ovnv1alpha1.OVNCentral {
+	cr.Status.Northbound.InternalDbAddress = testNorthboundAddress
+	cr.Status.Southbound.InternalDbAddress = testSouthboundAddress
+	return cr
+}
+
+// publishOnNodePorts turns the node-port publication on for both databases and
+// returns cr, so a test that exercises the address outside the cluster reads as
+// one that asked for it. The CRD default is off.
+func publishOnNodePorts(cr *ovnv1alpha1.OVNCentral) *ovnv1alpha1.OVNCentral {
+	cr.Spec.Northbound.ExternallyReachable = true
+	cr.Spec.Southbound.ExternallyReachable = true
+	return cr
+}
+
 // defaultedDatabaseSpec is one database block as the CRD defaults it.
 func defaultedDatabaseSpec() ovnv1alpha1.OVNDatabaseSpec {
 	return ovnv1alpha1.OVNDatabaseSpec{
@@ -80,27 +105,33 @@ func newTestScheme(t *testing.T) *runtime.Scheme {
 }
 
 // ovnCentralFakeClientBuilder returns a fake client builder with the package
-// scheme and the status subresources the reconciler reads: the CR's own, and the
+// scheme and the status subresources the reconciler reads: the CR's own, the
 // StatefulSet's, whose ready-member count the database step judges a Raft
-// cluster by.
+// cluster by, the Deployment's, which northd and the relay are judged by, and
+// the Certificate's, which carries the Ready condition the TLS step waits on.
 func ovnCentralFakeClientBuilder(t *testing.T, objs ...client.Object) *fake.ClientBuilder {
 	t.Helper()
 
 	return fake.NewClientBuilder().
 		WithScheme(newTestScheme(t)).
 		WithObjects(objs...).
-		WithStatusSubresource(&ovnv1alpha1.OVNCentral{}, &appsv1.StatefulSet{})
+		WithStatusSubresource(&ovnv1alpha1.OVNCentral{}, &appsv1.StatefulSet{},
+			&appsv1.Deployment{}, &certmanagerv1.Certificate{})
 }
 
 // newTestOVNCentralReconciler builds an OVNCentralReconciler over a fake client
-// pre-loaded with objs.
+// pre-loaded with objs. cert-manager counts as installed, which is the only
+// configuration an OVNCentral runs in: spec.tls is required, so a cluster
+// without it serves no OVNCentral at all. The tests of the unavailable path
+// build their own reconciler.
 func newTestOVNCentralReconciler(t *testing.T, objs ...client.Object) *OVNCentralReconciler {
 	t.Helper()
 
 	return &OVNCentralReconciler{
-		Client:   ovnCentralFakeClientBuilder(t, objs...).Build(),
-		Scheme:   newTestScheme(t),
-		Recorder: record.NewFakeRecorder(50),
+		Client:               ovnCentralFakeClientBuilder(t, objs...).Build(),
+		Scheme:               newTestScheme(t),
+		Recorder:             record.NewFakeRecorder(50),
+		certManagerAvailable: true,
 	}
 }
 
