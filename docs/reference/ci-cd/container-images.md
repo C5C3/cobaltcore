@@ -38,17 +38,18 @@ Service images (e.g., `keystone`) use a multi-stage build: stage 1 extends `venv
 to install the service, then stage 2 extends `python-base` and copies only the virtualenv
 from stage 1. This ensures the final image contains no build tools.
 
-Two images sit outside that lineage. They carry no OpenStack code and build
+Three images sit outside that lineage. They carry no OpenStack code and build
 straight on `ubuntu:noble`:
 
 ```text
 ubuntu:noble
 ├── ovn                        Stage 1 (build): compile OVS + OVN from pinned upstream git
 ├── ovn                        Stage 2 (runtime): copy binaries, schemas and ctl scripts, add runtime apt packages
-└── keystone-federation-proxy  Single stage: distro apache2 + mod_auth_openidc + mod_auth_mellon
+├── keystone-federation-proxy  Single stage: distro apache2 + mod_auth_openidc + mod_auth_mellon
+└── backup-shifter             Single stage: distro rclone
 ```
 
-Both are described under [Release-independent images](#release-independent-images).
+All three are described under [Release-independent images](#release-independent-images).
 
 ## Base Images
 
@@ -665,6 +666,30 @@ follows the `noble` package set. Its build, verification and tag scheme are
 described in
 [build-keystone-federation-proxy / merge-keystone-federation-proxy-image](./build-images-workflow.md#build-keystone-federation-proxy-merge-keystone-federation-proxy-image).
 
+### backup-shifter
+
+**Location:** `images/backup-shifter/Dockerfile`
+
+The rclone shifter for the OVN database backups: a single stage on
+`ubuntu:noble` with the distro `rclone` and `ca-certificates`. It is the
+`shifter` container of the `OVNCentral` backup CronJob and runs only when
+`spec.backup.s3` is set, copying the northbound and southbound snapshots the
+`backup` init container left on the PVC to the configured bucket. rclone comes
+from the Ubuntu archive, so the image has no version pin of its own and follows
+the `noble` package set. The Dockerfile sets no `ENTRYPOINT`: the operator
+renders the `rclone copy` command and the `RCLONE_S3_*` environment onto the
+CronJob container.
+
+```bash
+docker build -t c5c3/backup-shifter:latest images/backup-shifter/
+
+# Run the full image contract check
+bash tests/container-images/verify_backup_shifter.sh c5c3/backup-shifter:latest
+```
+
+Its build, verification and tag scheme are described in
+[build-backup-shifter / merge-backup-shifter-image](./build-images-workflow.md#build-backup-shifter-merge-backup-shifter-image).
+
 ## Named Build Contexts
 
 Service Dockerfiles use Docker's named build context feature (`--build-context`) to inject
@@ -980,8 +1005,12 @@ per-service user (`images/keystone/Dockerfile`, `images/horizon/Dockerfile`,
 `images/glance/Dockerfile`, `images/placement/Dockerfile`,
 `images/barbican/Dockerfile`, `images/neutron/Dockerfile`).
 
-`images/ovn/Dockerfile` carries the comment for the other half of the same
-decision. That image does not derive from `python-base`, so it creates the
-`openstack` user and group itself. The distro packages would install separate
-`openvswitch` and `ovn` users, and the source build carries no such packaging;
-one identity across all images keeps the pod security contexts uniform.
+`images/ovn/Dockerfile` and `images/backup-shifter/Dockerfile` carry the comment
+for the other half of the same decision. Neither derives from `python-base`, so
+each creates the `openstack` user and group itself. For `ovn` the distro
+packages would install separate `openvswitch` and `ovn` users, and the source
+build carries no such packaging. The `rclone` package that `backup-shifter`
+installs brings no service account at all. One identity across all images keeps
+the pod security contexts uniform, and in the `OVNCentral` backup CronJob it
+lets the `backup` init container and the `shifter` container share a single pod
+security context.
