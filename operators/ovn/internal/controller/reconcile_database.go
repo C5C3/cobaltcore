@@ -264,7 +264,9 @@ func markDatabaseFailed(cr *ovnv1alpha1.OVNCentral, db raftDB, err error) error 
 
 // centralScriptsConfigMap builds the ConfigMap holding the scripts the database
 // pods run. It carries both databases' scripts, so the two database steps apply
-// the same object.
+// the same object, plus the backup script, which the backup CronJob mounts from
+// here: the backup runs against both databases, so a ConfigMap of its own would
+// be a second object with the same owner and the same lifetime.
 func centralScriptsConfigMap(cr *ovnv1alpha1.OVNCentral) *corev1.ConfigMap {
 	nb, sb := northboundDB(cr), southboundDB(cr)
 	return &corev1.ConfigMap{
@@ -278,6 +280,7 @@ func centralScriptsConfigMap(cr *ovnv1alpha1.OVNCentral) *corev1.ConfigMap {
 			runScriptKey(sb):           runScript(cr, sb),
 			setConnectionScriptKey(nb): setConnectionScript(nb),
 			setConnectionScriptKey(sb): setConnectionScript(sb),
+			backupScriptKey:            backupScript,
 		},
 	}
 }

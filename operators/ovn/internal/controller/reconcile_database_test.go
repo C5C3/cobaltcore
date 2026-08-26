@@ -154,7 +154,7 @@ func TestReconcileRaftDatabase_ApplyErrorIsStatefulSetError(t *testing.T) {
 	g.Expect(r.Get(ctx, centralKey("ovn-nb-0"), &corev1.Service{})).To(Succeed())
 }
 
-func TestReconcileRaftDatabase_ScriptsConfigMapCarriesTheFourKeys(t *testing.T) {
+func TestReconcileRaftDatabase_ScriptsConfigMapCarriesTheFiveKeys(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	cr := testOVNCentral()
@@ -169,11 +169,14 @@ func TestReconcileRaftDatabase_ScriptsConfigMapCarriesTheFourKeys(t *testing.T) 
 
 	var scripts corev1.ConfigMap
 	g.Expect(r.Get(ctx, centralKey("ovn-central-scripts"), &scripts)).To(Succeed())
-	g.Expect(scripts.Data).To(HaveLen(4))
+	g.Expect(scripts.Data).To(HaveLen(5))
 	g.Expect(scripts.Data).To(HaveKey("run-nb.sh"))
 	g.Expect(scripts.Data).To(HaveKey("run-sb.sh"))
 	g.Expect(scripts.Data).To(HaveKey("set-connection-nb.sh"))
 	g.Expect(scripts.Data).To(HaveKey("set-connection-sb.sh"))
+	// The backup CronJob mounts the same ConfigMap, so a database step that
+	// dropped this key would leave every backup run without its script.
+	g.Expect(scripts.Data).To(HaveKey(backupScriptKey))
 
 	// Member 0 creates the cluster and every other member joins through it, so
 	// the remote address is the one thing the run script must not carry
