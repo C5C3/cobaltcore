@@ -65,3 +65,18 @@ barbican:
     # is otherwise pure Python at runtime. Without this, uwsgi fails to load
     # (python-base ships no libpython3.12.so.1.0).
     - libpython3.12t64
+neutron:
+  pip_extras: []
+  pip_packages: []
+  apt_packages:
+    # uWSGI is compiled in venv-builder against the shared libpython; without
+    # this, uwsgi fails to load (python-base ships no libpython3.12.so.1.0).
+    - libpython3.12t64
+    # neutron shells out to `ovsdb-client transact` in pre_fork_initialize
+    # (neutron/common/ovn/utils.py) and dies without the binary.
+    - openvswitch-common
+    # neutron-ovn-metadata-agent spawns `haproxy -f <cfg>` per network
+    # (neutron/agent/metadata/driver_base.py) through `ip netns exec`
+    # (neutron/agent/linux/ip_lib.py).
+    - haproxy
+    - iproute2

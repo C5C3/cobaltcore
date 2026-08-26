@@ -17,7 +17,7 @@ FAIL=0
 
 # Services that every release must register in source-refs.yaml and
 # extra-packages.yaml, each with a matching images/<service>/Dockerfile.
-SERVICES="keystone horizon glance placement barbican"
+SERVICES="keystone horizon glance placement barbican neutron"
 
 # ovn is deliberately absent from this list. The image is release-independent:
 # it has no source-refs.yaml key, no extra-packages.yaml entry and no PIP_* or
