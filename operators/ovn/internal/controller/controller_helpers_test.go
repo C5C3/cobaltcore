@@ -247,3 +247,21 @@ func ovnChassisCondition(cr *ovnv1alpha1.OVNChassis, conditionType string) *meta
 func chassisKey(name string) client.ObjectKey {
 	return client.ObjectKey{Namespace: testNamespace, Name: name}
 }
+
+// ovnChassisRequest is the reconcile request for the shared OVNChassis fixture.
+var ovnChassisRequest = reconcile.Request{
+	NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: testOVNChassisName},
+}
+
+// getOVNChassis re-reads the OVNChassis CR from the given client, so an
+// assertion reads what a pass persisted rather than the in-memory copy it
+// mutated.
+func getOVNChassis(t *testing.T, c client.Client, name string) *ovnv1alpha1.OVNChassis {
+	t.Helper()
+
+	var cr ovnv1alpha1.OVNChassis
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: testNamespace, Name: name}, &cr); err != nil {
+		t.Fatalf("re-reading OVNChassis %s: %v", name, err)
+	}
+	return &cr
+}
