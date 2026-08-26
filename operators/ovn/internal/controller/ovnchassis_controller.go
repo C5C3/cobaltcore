@@ -25,12 +25,6 @@ import (
 // OVNCentral of the same name projects into the same namespace.
 const chassisAppName = "ovnchassis"
 
-// conditionTypeMaintenanceReady is the condition the maintenance step reports
-// under: the Jobs that evacuate a gateway node and deregister a leaving
-// chassis. The other four chassis condition types are declared in the file of
-// the step that sets them.
-const conditionTypeMaintenanceReady = "MaintenanceReady"
-
 // chassisSubConditionTypes lists the condition types set by the individual
 // OVNChassis sub-reconcilers. The aggregate Ready condition is True only when
 // all of them are True, so every sub-reconciler has to set its condition on
