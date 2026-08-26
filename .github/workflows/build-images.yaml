@@ -19,6 +19,7 @@ name: Build Images
       - hack/gen-option-catalog.sh
       - operators/keystone/api/v1alpha1/catalogs/**
       - operators/glance/api/v1alpha1/catalogs/**
+      - operators/neutron/api/v1alpha1/catalogs/**
       - .github/actions/**
       - tests/container-images/**
       - .github/workflows/build-images.yaml
@@ -34,6 +35,7 @@ name: Build Images
       - hack/gen-option-catalog.sh
       - operators/keystone/api/v1alpha1/catalogs/**
       - operators/glance/api/v1alpha1/catalogs/**
+      - operators/neutron/api/v1alpha1/catalogs/**
       - .github/actions/**
       - tests/container-images/**
       - .github/workflows/build-images.yaml
@@ -746,7 +748,7 @@ jobs:
           verify-image-ref: ${{ steps.tags.outputs.composite }}
 
       - name: Verify option catalog
-        if: github.event_name == 'pull_request' && (matrix.service == 'keystone' || matrix.service == 'glance')
+        if: github.event_name == 'pull_request' && (matrix.service == 'keystone' || matrix.service == 'glance' || matrix.service == 'neutron')
         env:
           MATRIX_SERVICE: ${{ matrix.service }}
           MATRIX_RELEASE: ${{ matrix.release }}
@@ -909,7 +911,7 @@ jobs:
           bash "tests/container-images/verify_${SERVICE_NAME}.sh" "$IMAGE_REF"
 
       - name: Verify option catalog
-        if: matrix.service == 'keystone' || matrix.service == 'glance'
+        if: matrix.service == 'keystone' || matrix.service == 'glance' || matrix.service == 'neutron'
         env:
           MATRIX_SERVICE: ${{ matrix.service }}
           MATRIX_RELEASE: ${{ matrix.release }}

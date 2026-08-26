@@ -1,0 +1,786 @@
+{
+  "release": "2026.1",
+  "sections": {
+    "DEFAULT": {
+      "deprecated": {
+        "log_config": "[DEFAULT] log_config_append",
+        "logdir": "[DEFAULT] log_dir",
+        "logfile": "[DEFAULT] log_file",
+        "rpc_thread_pool_size": "[DEFAULT] executor_thread_pool_size"
+      },
+      "opts": [
+        "agent_down_time",
+        "allow_automatic_dhcp_failover",
+        "allow_automatic_l3agent_failover",
+        "allow_bulk",
+        "allowed_conntrack_helpers",
+        "api_extensions_path",
+        "api_paste_config",
+        "api_workers",
+        "auth_ca_cert",
+        "auth_strategy",
+        "backdoor_port",
+        "backdoor_socket",
+        "backlog",
+        "base_mac",
+        "bind_host",
+        "bind_port",
+        "client_socket_timeout",
+        "control_exchange",
+        "core_plugin",
+        "debug",
+        "default_availability_zones",
+        "default_log_levels",
+        "dhcp_agent_notification",
+        "dhcp_agents_per_network",
+        "dhcp_lease_duration",
+        "dhcp_load_type",
+        "dns_domain",
+        "dvr_base_mac",
+        "enable_default_route_bfd",
+        "enable_default_route_ecmp",
+        "enable_dvr",
+        "enable_new_agents",
+        "enable_services_on_agents_with_admin_state_down",
+        "enable_snat_by_default",
+        "enable_traditional_dhcp",
+        "executor_thread_pool_size",
+        "external_dns_driver",
+        "fatal_deprecations",
+        "filter_validation",
+        "global_physnet_mtu",
+        "graceful_shutdown_timeout",
+        "host",
+        "host_dvr_for_dhcp",
+        "http_retries",
+        "instance_format",
+        "instance_uuid_format",
+        "interface_driver",
+        "ipam_driver",
+        "ipv6_pd_enabled",
+        "l3_ha",
+        "l3_ha_net_cidr",
+        "l3_ha_network_physical_name",
+        "l3_ha_network_type",
+        "log_color",
+        "log_config_append",
+        "log_date_format",
+        "log_dir",
+        "log_file",
+        "log_options",
+        "log_rotate_interval",
+        "log_rotate_interval_type",
+        "log_rotation_type",
+        "logging_context_format_string",
+        "logging_debug_format_suffix",
+        "logging_default_format_string",
+        "logging_exception_prefix",
+        "logging_user_identity_format",
+        "max_allowed_address_pair",
+        "max_dns_nameservers",
+        "max_header_line",
+        "max_l3_agents_per_router",
+        "max_logfile_count",
+        "max_logfile_size_mb",
+        "max_routes",
+        "max_subnet_host_routes",
+        "metadata_backlog",
+        "metadata_proxy_group",
+        "metadata_proxy_shared_secret",
+        "metadata_proxy_socket",
+        "metadata_proxy_socket_mode",
+        "metadata_proxy_user",
+        "metadata_workers",
+        "my_ip",
+        "my_ipv6",
+        "network_auto_schedule",
+        "network_link_prefix",
+        "network_scheduler_driver",
+        "notify_nova_on_port_data_changes",
+        "notify_nova_on_port_status_changes",
+        "nova_client_cert",
+        "nova_client_priv_key",
+        "nova_metadata_host",
+        "nova_metadata_insecure",
+        "nova_metadata_port",
+        "nova_metadata_protocol",
+        "pagination_max_limit",
+        "periodic_fuzzy_delay",
+        "periodic_interval",
+        "publish_errors",
+        "rate_limit_burst",
+        "rate_limit_except_level",
+        "rate_limit_interval",
+        "retry_until_window",
+        "router_auto_schedule",
+        "router_distributed",
+        "router_scheduler_driver",
+        "rpc_ping_enabled",
+        "rpc_resources_processing_step",
+        "rpc_response_max_timeout",
+        "rpc_response_timeout",
+        "rpc_state_report_workers",
+        "rpc_workers",
+        "run_external_periodic_tasks",
+        "send_events_interval",
+        "service_plugins",
+        "setproctitle",
+        "state_path",
+        "syslog_log_facility",
+        "tcp_keepidle",
+        "transport_url",
+        "use_journal",
+        "use_json",
+        "use_ssl",
+        "use_stderr",
+        "use_syslog",
+        "vlan_qinq",
+        "vlan_transparent",
+        "wsgi_default_pool_size",
+        "wsgi_keep_alive",
+        "wsgi_log_format",
+        "wsgi_server_debug"
+      ]
+    },
+    "agent": {
+      "deprecated": {},
+      "opts": [
+        "availability_zone",
+        "check_child_processes_action",
+        "check_child_processes_interval",
+        "comment_iptables_rules",
+        "debug_iptables_rules",
+        "kill_scripts_path",
+        "log_agent_heartbeats",
+        "report_interval",
+        "root_helper",
+        "root_helper_daemon",
+        "use_helper_for_ns_read",
+        "use_random_fully"
+      ]
+    },
+    "cache": {
+      "deprecated": {
+        "dead_timeout": "[cache] hashclient_dead_timeout",
+        "hashclient_retry_delay": "[cache] hashclient_retry_timeout",
+        "memcache_password": "[cache] password",
+        "memcache_socket_timeout": "[cache] socket_timeout",
+        "memcache_username": "[cache] username",
+        "redis_password": "[cache] password",
+        "redis_socket_timeout": "[cache] socket_timeout",
+        "redis_username": "[cache] username"
+      },
+      "opts": [
+        "backend",
+        "backend_argument",
+        "backend_expiration_time",
+        "config_prefix",
+        "debug_cache_backend",
+        "enable_retry_client",
+        "enable_socket_keepalive",
+        "enabled",
+        "enforce_fips_mode",
+        "expiration_time",
+        "hashclient_dead_timeout",
+        "hashclient_retry_attempts",
+        "hashclient_retry_timeout",
+        "memcache_dead_retry",
+        "memcache_pool_connection_get_timeout",
+        "memcache_pool_flush_on_reconnect",
+        "memcache_pool_maxsize",
+        "memcache_pool_unused_timeout",
+        "memcache_sasl_enabled",
+        "memcache_servers",
+        "password",
+        "proxies",
+        "redis_db",
+        "redis_sentinel_service_name",
+        "redis_sentinels",
+        "redis_server",
+        "retry_attempts",
+        "retry_delay",
+        "socket_keepalive_count",
+        "socket_keepalive_idle",
+        "socket_keepalive_interval",
+        "socket_timeout",
+        "tls_allowed_ciphers",
+        "tls_cafile",
+        "tls_certfile",
+        "tls_enabled",
+        "tls_keyfile",
+        "username"
+      ]
+    },
+    "cors": {
+      "deprecated": {},
+      "opts": [
+        "allow_credentials",
+        "allow_headers",
+        "allow_methods",
+        "allowed_origin",
+        "expose_headers",
+        "max_age"
+      ]
+    },
+    "database": {
+      "deprecated": {},
+      "opts": [
+        "asyncio_connection",
+        "asyncio_slave_connection",
+        "backend",
+        "connection",
+        "connection_debug",
+        "connection_parameters",
+        "connection_recycle_time",
+        "connection_trace",
+        "db_inc_retry_interval",
+        "db_max_retries",
+        "db_max_retry_interval",
+        "db_retry_interval",
+        "engine",
+        "max_overflow",
+        "max_pool_size",
+        "max_retries",
+        "mysql_sql_mode",
+        "mysql_wsrep_sync_wait",
+        "pool_timeout",
+        "retry_interval",
+        "slave_connection",
+        "sqlite_synchronous",
+        "synchronous_reader",
+        "use_db_reconnect"
+      ]
+    },
+    "designate": {
+      "deprecated": {
+        "auth_plugin": "[designate] auth_type",
+        "user_name": "[designate] username"
+      },
+      "opts": [
+        "allow_reverse_dns_lookup",
+        "auth_type",
+        "auth_url",
+        "cafile",
+        "certfile",
+        "collect_timing",
+        "default_domain_id",
+        "default_domain_name",
+        "domain_id",
+        "domain_name",
+        "insecure",
+        "ipv4_ptr_zone_prefix_size",
+        "ipv6_ptr_zone_prefix_size",
+        "keyfile",
+        "password",
+        "project_domain_id",
+        "project_domain_name",
+        "project_id",
+        "project_name",
+        "ptr_zone_email",
+        "split_loggers",
+        "system_scope",
+        "tenant_id",
+        "tenant_name",
+        "timeout",
+        "trust_id",
+        "url",
+        "user_domain_id",
+        "user_domain_name",
+        "user_id",
+        "username"
+      ]
+    },
+    "experimental": {
+      "deprecated": {},
+      "opts": [
+        "ipv6_pd_enabled"
+      ]
+    },
+    "healthcheck": {
+      "deprecated": {},
+      "opts": [
+        "allowed_source_ranges",
+        "backends",
+        "detailed",
+        "disable_by_file_path",
+        "disable_by_file_paths",
+        "enable_by_file_paths",
+        "ignore_proxied_requests"
+      ]
+    },
+    "ironic": {
+      "deprecated": {
+        "auth_plugin": "[ironic] auth_type",
+        "user_name": "[ironic] username"
+      },
+      "opts": [
+        "auth_type",
+        "auth_url",
+        "cafile",
+        "certfile",
+        "collect_timing",
+        "default_domain_id",
+        "default_domain_name",
+        "domain_id",
+        "domain_name",
+        "enable_notifications",
+        "insecure",
+        "keyfile",
+        "password",
+        "project_domain_id",
+        "project_domain_name",
+        "project_id",
+        "project_name",
+        "split_loggers",
+        "system_scope",
+        "tenant_id",
+        "tenant_name",
+        "timeout",
+        "trust_id",
+        "user_domain_id",
+        "user_domain_name",
+        "user_id",
+        "username"
+      ]
+    },
+    "keystone_authtoken": {
+      "deprecated": {
+        "auth_plugin": "[keystone_authtoken] auth_type",
+        "memcache_servers": "[keystone_authtoken] memcached_servers"
+      },
+      "opts": [
+        "auth_section",
+        "auth_type",
+        "auth_uri",
+        "auth_version",
+        "cache",
+        "cafile",
+        "certfile",
+        "delay_auth_decision",
+        "enforce_token_bind",
+        "http_connect_timeout",
+        "http_request_max_retries",
+        "include_service_catalog",
+        "insecure",
+        "interface",
+        "keyfile",
+        "memcache_password",
+        "memcache_pool_conn_get_timeout",
+        "memcache_pool_dead_retry",
+        "memcache_pool_maxsize",
+        "memcache_pool_socket_timeout",
+        "memcache_pool_unused_timeout",
+        "memcache_sasl_enabled",
+        "memcache_secret_key",
+        "memcache_security_strategy",
+        "memcache_tls_allowed_ciphers",
+        "memcache_tls_cafile",
+        "memcache_tls_certfile",
+        "memcache_tls_enabled",
+        "memcache_tls_keyfile",
+        "memcache_use_advanced_pool",
+        "memcache_username",
+        "memcached_servers",
+        "region_name",
+        "service_token_roles",
+        "service_token_roles_required",
+        "service_type",
+        "token_cache_time",
+        "www_authenticate_uri"
+      ]
+    },
+    "metadata_rate_limiting": {
+      "deprecated": {},
+      "opts": [
+        "base_query_rate_limit",
+        "base_window_duration",
+        "burst_query_rate_limit",
+        "burst_window_duration",
+        "ip_versions",
+        "rate_limit_enabled"
+      ]
+    },
+    "ml2": {
+      "deprecated": {
+        "tenant_network_types": "[ml2] project_network_types"
+      },
+      "opts": [
+        "extension_drivers",
+        "external_network_type",
+        "mechanism_drivers",
+        "overlay_ip_version",
+        "path_mtu",
+        "physical_network_mtus",
+        "project_network_types",
+        "tunnelled_network_rp_name",
+        "type_drivers"
+      ]
+    },
+    "ml2_type_flat": {
+      "deprecated": {},
+      "opts": [
+        "flat_networks"
+      ]
+    },
+    "ml2_type_geneve": {
+      "deprecated": {},
+      "opts": [
+        "max_header_size",
+        "vni_ranges"
+      ]
+    },
+    "ml2_type_gre": {
+      "deprecated": {},
+      "opts": [
+        "tunnel_id_ranges"
+      ]
+    },
+    "ml2_type_vlan": {
+      "deprecated": {},
+      "opts": [
+        "network_vlan_ranges"
+      ]
+    },
+    "ml2_type_vxlan": {
+      "deprecated": {},
+      "opts": [
+        "vni_ranges",
+        "vxlan_group"
+      ]
+    },
+    "nova": {
+      "deprecated": {
+        "auth_plugin": "[nova] auth_type",
+        "user_name": "[nova] username"
+      },
+      "opts": [
+        "auth_type",
+        "auth_url",
+        "cafile",
+        "certfile",
+        "collect_timing",
+        "default_domain_id",
+        "default_domain_name",
+        "domain_id",
+        "domain_name",
+        "endpoint_type",
+        "insecure",
+        "keyfile",
+        "password",
+        "project_domain_id",
+        "project_domain_name",
+        "project_id",
+        "project_name",
+        "region_name",
+        "split_loggers",
+        "system_scope",
+        "tenant_id",
+        "tenant_name",
+        "timeout",
+        "trust_id",
+        "user_domain_id",
+        "user_domain_name",
+        "user_id",
+        "username"
+      ]
+    },
+    "oslo_concurrency": {
+      "deprecated": {},
+      "opts": [
+        "disable_process_locking",
+        "lock_path"
+      ]
+    },
+    "oslo_messaging_kafka": {
+      "deprecated": {},
+      "opts": [
+        "compression_codec",
+        "consumer_group",
+        "enable_auto_commit",
+        "kafka_consumer_timeout",
+        "kafka_max_fetch_bytes",
+        "max_poll_records",
+        "producer_batch_size",
+        "producer_batch_timeout",
+        "sasl_mechanism",
+        "security_protocol",
+        "ssl_cafile",
+        "ssl_client_cert_file",
+        "ssl_client_key_file",
+        "ssl_client_key_password"
+      ]
+    },
+    "oslo_messaging_notifications": {
+      "deprecated": {},
+      "opts": [
+        "driver",
+        "retry",
+        "topics",
+        "transport_url"
+      ]
+    },
+    "oslo_messaging_rabbit": {
+      "deprecated": {
+        "kombu_reconnect_timeout": "[oslo_messaging_rabbit] kombu_missing_consumer_retry_timeout"
+      },
+      "opts": [
+        "amqp_auto_delete",
+        "amqp_durable_queues",
+        "conn_pool_min_size",
+        "conn_pool_ttl",
+        "direct_mandatory_flag",
+        "enable_cancel_on_failover",
+        "heartbeat_in_pthread",
+        "heartbeat_rate",
+        "heartbeat_timeout_threshold",
+        "hostname",
+        "kombu_compression",
+        "kombu_failover_strategy",
+        "kombu_missing_consumer_retry_timeout",
+        "kombu_reconnect_delay",
+        "kombu_reconnect_splay",
+        "processname",
+        "rabbit_ha_queues",
+        "rabbit_interval_max",
+        "rabbit_login_method",
+        "rabbit_qos_prefetch_count",
+        "rabbit_quorum_delivery_limit",
+        "rabbit_quorum_max_memory_bytes",
+        "rabbit_quorum_max_memory_length",
+        "rabbit_quorum_queue",
+        "rabbit_retry_backoff",
+        "rabbit_retry_interval",
+        "rabbit_stream_fanout",
+        "rabbit_transient_queues_ttl",
+        "rabbit_transient_quorum_queue",
+        "rpc_conn_pool_size",
+        "ssl",
+        "ssl_ca_file",
+        "ssl_cert_file",
+        "ssl_enforce_fips_mode",
+        "ssl_key_file",
+        "ssl_version",
+        "use_queue_manager"
+      ]
+    },
+    "oslo_middleware": {
+      "deprecated": {},
+      "opts": [
+        "enable_proxy_headers_parsing"
+      ]
+    },
+    "oslo_policy": {
+      "deprecated": {},
+      "opts": [
+        "enforce_new_defaults",
+        "enforce_scope",
+        "policy_default_rule",
+        "policy_dirs",
+        "policy_file",
+        "remote_content_type",
+        "remote_ssl_ca_crt_file",
+        "remote_ssl_client_crt_file",
+        "remote_ssl_client_key_file",
+        "remote_ssl_verify_server_crt",
+        "remote_timeout"
+      ]
+    },
+    "oslo_reports": {
+      "deprecated": {},
+      "opts": [
+        "file_event_handler",
+        "file_event_handler_interval",
+        "log_dir"
+      ]
+    },
+    "oslo_versionedobjects": {
+      "deprecated": {},
+      "opts": [
+        "fatal_exception_format_errors"
+      ]
+    },
+    "ovn": {
+      "deprecated": {},
+      "opts": [
+        "bfd_min_rx",
+        "bfd_min_tx",
+        "bfd_mult",
+        "broadcast_arps_to_all_routers",
+        "dhcp_default_lease_time",
+        "disable_ovn_dhcp_for_baremetal_ports",
+        "dns_records_ovn_owned",
+        "dns_servers",
+        "enable_distributed_floating_ip",
+        "fdb_age_threshold",
+        "ha_failover_strategy",
+        "live_migration_activation_strategy",
+        "localnet_learn_fdb",
+        "mac_binding_age_threshold",
+        "neutron_sync_mode",
+        "ovn_dhcp4_global_options",
+        "ovn_dhcp6_global_options",
+        "ovn_l3_scheduler",
+        "ovn_metadata_enabled",
+        "ovn_nb_ca_cert",
+        "ovn_nb_certificate",
+        "ovn_nb_connection",
+        "ovn_nb_private_key",
+        "ovn_router_indirect_snat",
+        "ovn_sb_ca_cert",
+        "ovn_sb_certificate",
+        "ovn_sb_connection",
+        "ovn_sb_private_key",
+        "ovs_create_tap",
+        "ovsdb_connection_timeout",
+        "ovsdb_log_level",
+        "ovsdb_probe_interval",
+        "ovsdb_retry_max_interval",
+        "stateless_nat_enabled",
+        "vhost_sock_dir"
+      ]
+    },
+    "ovn_nb_global": {
+      "deprecated": {},
+      "opts": [
+        "fdb_removal_limit",
+        "ignore_lsp_down",
+        "mac_binding_removal_limit"
+      ]
+    },
+    "ovs": {
+      "deprecated": {},
+      "opts": [
+        "bridge_mac_table_size",
+        "igmp_flood",
+        "igmp_flood_reports",
+        "igmp_flood_unregistered",
+        "igmp_snooping_enable",
+        "ovsdb_connection",
+        "ovsdb_connection_timeout",
+        "ovsdb_timeout"
+      ]
+    },
+    "ovs_driver": {
+      "deprecated": {},
+      "opts": [
+        "vnic_type_prohibit_list"
+      ]
+    },
+    "placement": {
+      "deprecated": {
+        "auth_plugin": "[placement] auth_type",
+        "user_name": "[placement] username"
+      },
+      "opts": [
+        "auth_type",
+        "auth_url",
+        "cafile",
+        "certfile",
+        "collect_timing",
+        "default_domain_id",
+        "default_domain_name",
+        "domain_id",
+        "domain_name",
+        "endpoint_type",
+        "insecure",
+        "keyfile",
+        "password",
+        "project_domain_id",
+        "project_domain_name",
+        "project_id",
+        "project_name",
+        "region_name",
+        "split_loggers",
+        "system_scope",
+        "tenant_id",
+        "tenant_name",
+        "timeout",
+        "trust_id",
+        "user_domain_id",
+        "user_domain_name",
+        "user_id",
+        "username"
+      ]
+    },
+    "privsep": {
+      "deprecated": {},
+      "opts": [
+        "capabilities",
+        "group",
+        "helper_command",
+        "log_daemon_traceback",
+        "logger_name",
+        "thread_pool_size",
+        "user"
+      ]
+    },
+    "profiler": {
+      "deprecated": {
+        "profiler_enabled": "[profiler] enabled"
+      },
+      "opts": [
+        "connection_string",
+        "enabled",
+        "es_doc_type",
+        "es_scroll_size",
+        "es_scroll_time",
+        "filter_error_trace",
+        "hmac_keys",
+        "sentinel_service_name",
+        "socket_timeout",
+        "trace_requests",
+        "trace_sqlalchemy"
+      ]
+    },
+    "profiler_jaeger": {
+      "deprecated": {},
+      "opts": [
+        "process_tags",
+        "service_name_prefix"
+      ]
+    },
+    "profiler_otlp": {
+      "deprecated": {},
+      "opts": [
+        "service_name_prefix"
+      ]
+    },
+    "quotas": {
+      "deprecated": {},
+      "opts": [
+        "default_quota",
+        "quota_driver",
+        "quota_floatingip",
+        "quota_network",
+        "quota_port",
+        "quota_router",
+        "quota_security_group",
+        "quota_security_group_rule",
+        "quota_subnet",
+        "track_quota_usage"
+      ]
+    },
+    "securitygroup": {
+      "deprecated": {},
+      "opts": [
+        "enable_ipset",
+        "enable_security_group",
+        "firewall_driver",
+        "permitted_ethertypes"
+      ]
+    },
+    "service_providers": {
+      "deprecated": {},
+      "opts": [
+        "service_provider"
+      ]
+    },
+    "sriov_driver": {
+      "deprecated": {},
+      "opts": [
+        "vnic_type_prohibit_list"
+      ]
+    }
+  },
+  "service": "neutron"
+}
