@@ -8,6 +8,8 @@ require (
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/mariadb-operator/mariadb-operator v0.38.1
 	github.com/onsi/gomega v1.42.1
+	github.com/prometheus/client_golang v1.24.1
+	github.com/prometheus/client_model v0.6.2
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.0
 	k8s.io/client-go v0.37.0
@@ -52,8 +54,6 @@ require (
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/prometheus/client_golang v1.24.1 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
 	github.com/prometheus/procfs v0.21.1 // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
