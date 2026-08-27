@@ -1,0 +1,183 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for Neutron CRD webhook + CEL validation rejection.
+# Pins the implemented CEL XValidation, kubebuilder-marker, and
+# webhook.validate() rejection paths in operators/neutron/api/v1alpha1/ to a
+# deterministic admission failure. Each step applies an otherwise-valid Neutron
+# CR with a single aspect violating the rule under test, captures the admission
+# $error, and asserts the field path plus message substring.
+#
+# The API server validates against the structural schema and its CEL rules
+# before it calls the validating webhook, so a rule carried by both layers is
+# answered by the schema and the assertions below quote the schema message. The
+# webhook message is asserted only where the rule has no schema counterpart: the
+# cron grammar of spec.ovnDBSync.schedule, the two spec.extraConfig checks (the
+# map is preserve-unknown-fields, which CEL cannot constrain), and the
+# metadata.name bound, which comes from the name of a child object.
+#
+# The test runs in an ephemeral namespace: the fixtures reference an OVNCentral,
+# a RabbitmqCluster, a MariaDB, a Memcached and two Secrets that do not exist
+# there, which admission deliberately tolerates (GitOps ordering), so no
+# dangling reference competes with the rule a fixture pins.
+#
+# All fixtures are generated from the single canonical scaffold in
+# `_generate.py`. After editing the scaffold or any per-fixture override,
+# regenerate via:
+#   python3 tests/e2e/neutron/invalid-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes
+# `_generate.py --check` (drift mode, both directions incl. orphans) and
+# `test_generate.py` (FIXTURES count + chainsaw-test.yaml cross-reference)
+# so any hand-edit to a generated fixture fails the build before the
+# cluster-bound e2e-operator job runs.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-invalid-cr
+spec:
+  steps:
+  # spec.openStackRelease with a non-cadence minor must be rejected by the CRD
+  # pattern.
+  - try:
+    - apply:
+        file: 00-openstackrelease-pattern.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'openStackRelease')): true
+            (contains($error, 'should match')): true
+  # spec.image with both tag and digest must be rejected by the ImageSpec XOR
+  # CEL rule, which answers before the webhook's validateImage twin.
+  - try:
+    - apply:
+        file: 01-image-tag-and-digest.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'image')): true
+            (contains($error, 'exactly one of image.tag or image.digest')): true
+  # spec.database with both clusterRef and host must be rejected.
+  - try:
+    - apply:
+        file: 02-database-clusterref-and-host.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'database')): true
+            (contains($error, 'exactly one of clusterRef or host')): true
+  # spec.cache with both clusterRef and servers must be rejected.
+  - try:
+    - apply:
+        file: 03-cache-clusterref-and-servers.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'cache')): true
+            (contains($error, 'exactly one of clusterRef or servers')): true
+  # spec.messaging with both clusterRef and secretRef must be rejected: the two
+  # modes resolve the transport URL differently.
+  - try:
+    - apply:
+        file: 04-messaging-clusterref-and-secretref.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'messaging')): true
+            (contains($error, 'exactly one of clusterRef or secretRef')): true
+  # spec.messaging naming neither mode must be rejected by the same rule from
+  # the other side. The block is required, so an empty object is what reaches
+  # the XOR.
+  - try:
+    - apply:
+        file: 05-messaging-neither-mode.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'messaging')): true
+            (contains($error, 'exactly one of clusterRef or secretRef')): true
+  # spec.messaging.tls with an unnamed CA bundle Secret must be rejected by the
+  # MinLength=1 marker on the shared SecretRefSpec, which answers before the
+  # webhook's field.Required twin.
+  - try:
+    - apply:
+        file: 06-messaging-tls-without-cabundle-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'messaging.tls.caBundleSecretRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
+  # spec.ovn.centralRef.name empty must be rejected by the MinLength=1 marker on
+  # OVNCentralRef: the mechanism driver would have no Northbound database to
+  # write the logical network model into.
+  - try:
+    - apply:
+        file: 07-ovn-centralref-name-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'ovn.centralRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
+  # spec.ovnDBSync.schedule outside the cron grammar must be rejected by the
+  # validating webhook: the field carries no CRD pattern because the grammar
+  # includes descriptors such as @daily.
+  - try:
+    - apply:
+        file: 08-ovndbsync-schedule-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'ovnDBSync.schedule')): true
+            (contains($error, 'invalid cron expression')): true
+  # spec.ovnDBSync.syncMode outside the CRD enum must be rejected: log and
+  # repair are the two modes neutron-ovn-db-sync-util has.
+  - try:
+    - apply:
+        file: 09-ovndbsync-syncmode-invalid.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'syncMode')): true
+            (contains($error, 'Unsupported value')): true
+  # spec.extraConfig setting [ovn] ovn_nb_connection must be rejected by the
+  # webhook: the connection string is resolved from spec.ovn.centralRef, so an
+  # override points the mechanism driver at another deployment's logical model.
+  - try:
+    - apply:
+        file: 10-extraconfig-rejected-owned-key.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'ovn_nb_connection is managed via spec.ovn.centralRef')): true
+            (contains($error, 'points the mechanism driver at a logical model it does not own')): true
+  # spec.extraConfig setting an unknown option in a known section must be
+  # rejected: it is absent from the neutron 2025.2 option catalog.
+  - try:
+    - apply:
+        file: 11-extraconfig-unknown-option.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'no such option in the neutron 2025.2 option catalog')): true
+  # A metadata.name past 40 characters must be rejected by the validating
+  # webhook: the {name}-ovn-db-sync CronJob would exceed the 52-character cap
+  # Kubernetes puts on a CronJob name, so the CR would admit cleanly and then
+  # fail to create the sync job on every reconcile.
+  - try:
+    - apply:
+        file: 12-name-too-long.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'metadata.name')): true
+            (contains($error, 'name must be at most 40 characters')): true
+  # spec.targetClusterRef.name empty must be rejected by the MinLength=1 marker
+  # on the shared TargetClusterRefSpec, which answers before the webhook twin.
+  - try:
+    - apply:
+        file: 13-targetclusterref-empty-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'targetClusterRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true

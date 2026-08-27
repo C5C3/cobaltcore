@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.extraConfig setting [ovn] ovn_nb_connection is rejected by the
+# validating webhook: extraConfig is a preserve-unknown-fields map, so CEL
+# cannot constrain its keys and admission is the only gate. The key is
+# Rejected rather than merely owned because the connection string is
+# resolved from spec.ovn.centralRef, and another address points the
+# mechanism driver at a logical model this Neutron does not own.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-invalid-extraconfig-owned
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: openstack-rabbitmq
+  ovn:
+    centralRef:
+      name: ovn-central
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: neutron-service-password
+  extraConfig:
+    ovn:
+      ovn_nb_connection: "tcp:1.2.3.4:6641"

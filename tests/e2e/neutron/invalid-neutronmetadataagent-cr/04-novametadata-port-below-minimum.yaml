@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.novaMetadata.port below the CRD Minimum=1 marker. The value is -1
+# rather than 0 because the defaulting webhook fills a zero port with
+# DefaultNovaMetadataPort before schema validation sees it, so a CR asking
+# for port 0 is admitted and proxies to 8775. Only a negative port survives
+# defaulting and reaches the marker.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: neutron-metadata-agent
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  chassisRef:
+    name: ovn-chassis
+  novaMetadata:
+    port: -1

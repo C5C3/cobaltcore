@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.ovnDBSync.syncMode outside the CRD enum (log, repair) is answered by
+# the schema. The two values are the two modes
+# neutron-ovn-db-sync-util has, so a third names no behaviour the CronJob
+# could run.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-invalid-ovndbsync-syncmode
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    clusterRef:
+      name: openstack-rabbitmq
+  ovn:
+    centralRef:
+      name: ovn-central
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    secretRef:
+      name: neutron-service-password
+  ovnDBSync:
+    syncMode: wipe

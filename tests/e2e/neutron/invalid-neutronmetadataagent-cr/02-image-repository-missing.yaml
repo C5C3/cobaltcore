@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.image without a repository. What answers is the MinLength=1 marker,
+# not the required-properties list: the defaulting webhook marshals the
+# whole typed object back into its admission patch, and ImageSpec.Repository
+# carries no omitempty tag, so the patch materializes the field as an empty
+# string. By the time the schema is checked the property is present and the
+# empty value fails the marker. The webhook repeats it as field.Required.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: neutron-metadata-agent
+spec:
+  openStackRelease: "2025.2"
+  image:
+    tag: "2025.2"
+  chassisRef:
+    name: ovn-chassis
