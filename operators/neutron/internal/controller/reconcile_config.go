@@ -8,12 +8,10 @@ import (
 	"context"
 	"fmt"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/cobaltcore/internal/common/cache"
-	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/config"
 	"github.com/c5c3/cobaltcore/internal/common/keystoneauth"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
@@ -126,13 +124,7 @@ const conditionReasonConfigError = "ConfigError"
 // cannot leave the aggregate Ready condition stale-True at the new
 // ObservedGeneration. It mirrors the sibling operators' markConfigFailed helper.
 func markConfigFailed(neutron *neutronv1alpha1.Neutron, err error) {
-	conditions.SetCondition(&neutron.Status.Conditions, metav1.Condition{
-		Type:               "SecretsReady",
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: neutron.Generation,
-		Reason:             conditionReasonConfigError,
-		Message:            err.Error(),
-	})
+	neutronSkeleton.MarkFailed(neutron, "SecretsReady", conditionReasonConfigError, err)
 }
 
 // reconcileConfig renders neutron.conf and ml2_conf.ini into one immutable
