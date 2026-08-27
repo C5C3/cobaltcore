@@ -1,0 +1,496 @@
+# ClusterRole RBAC rules unit tests.
+#
+# The rule set is the manual mirror of the kubebuilder RBAC markers at the top
+# of operators/neutron/internal/controller/neutron_controller.go, plus the
+# leases rule the manager's leader election needs. These assertions are the pin
+# for that sync: a marker added or a verb widened without the matching edit in
+# templates/_helpers.tpl fails here.
+suite: ClusterRole
+templates:
+  - templates/clusterrole.yaml
+tests:
+  - it: should have 23 rules
+    asserts:
+      - lengthEqual:
+          path: rules
+          count: 23
+
+  - it: should grant full CRUD on the Neutron CRs
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - neutron.openstack.c5c3.io
+            resources:
+              - neutrons
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant get/update/patch on the Neutron status subresource
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - neutron.openstack.c5c3.io
+            resources:
+              - neutrons/status
+            verbs:
+              - get
+              - update
+              - patch
+
+  - it: should grant update on the Neutron finalizers subresource
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - neutron.openstack.c5c3.io
+            resources:
+              - neutrons/finalizers
+            verbs:
+              - update
+
+  - it: should grant full CRUD on the NeutronMetadataAgent CRs
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - neutron.openstack.c5c3.io
+            resources:
+              - neutronmetadataagents
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant get/update/patch on the NeutronMetadataAgent status subresource
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - neutron.openstack.c5c3.io
+            resources:
+              - neutronmetadataagents/status
+            verbs:
+              - get
+              - update
+              - patch
+
+  - it: should grant update on the NeutronMetadataAgent finalizers subresource
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - neutron.openstack.c5c3.io
+            resources:
+              - neutronmetadataagents/finalizers
+            verbs:
+              - update
+
+  # Both OVN kinds belong to ovn-operator. This operator reads the OVNCentral
+  # for the connection strings and the OVNChassis a metadata agent runs beside.
+  - it: should grant read-only on the OVN CRs
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ovn.openstack.c5c3.io
+            resources:
+              - ovncentrals
+              - ovnchassis
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should not grant write verbs on the OVN CRs
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - ovn.openstack.c5c3.io
+            resources:
+              - ovncentrals
+              - ovnchassis
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - ovn.openstack.c5c3.io
+            resources:
+              - ovncentrals
+              - ovnchassis
+            verbs:
+              - get
+              - list
+              - watch
+              - update
+              - patch
+
+  - it: should grant full CRUD on core resources
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - services
+              - configmaps
+              - secrets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should restrict events to create and patch only
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - events
+            verbs:
+              - create
+              - patch
+
+  # No controller in this binary mints a bound ServiceAccount token, and a
+  # cluster-wide grant would let anyone reaching the operator ServiceAccount
+  # act as any ServiceAccount in scope. This is the barbican piece the chart
+  # deliberately drops.
+  - it: should not grant serviceaccounts/token cluster-wide
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - serviceaccounts/token
+            verbs:
+              - create
+
+  # No code path lists pods or reaches a Service through the API server proxy,
+  # so neither grant is in the marker block and neither may appear here.
+  - it: should not grant pods or services/proxy
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - pods
+            verbs:
+              - get
+              - list
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - ""
+            resources:
+              - services/proxy
+            verbs:
+              - get
+
+  # deployments carry the Neutron API server, daemonsets the per-node metadata
+  # agent.
+  - it: should grant full CRUD on the workload kinds
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resources:
+              - deployments
+              - daemonsets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should not narrow the workload rule to deployments alone
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups:
+              - apps
+            resources:
+              - deployments
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  # The db-sync Job shares the batch rule with the recurring ovn-db-sync
+  # CronJob.
+  - it: should grant full CRUD on batch jobs and cronjobs
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - batch
+            resources:
+              - jobs
+              - cronjobs
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on the mariadb-operator database kinds
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - k8s.mariadb.com
+            resources:
+              - databases
+              - users
+              - grants
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant read-only on mariadbs
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - k8s.mariadb.com
+            resources:
+              - mariadbs
+            verbs:
+              - get
+              - list
+              - watch
+
+  # Managed messaging derives the transport URL from the named RabbitmqCluster,
+  # which the operator reads and never writes.
+  - it: should grant read-only on rabbitmqclusters
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rabbitmq.com
+            resources:
+              - rabbitmqclusters
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant read-only on externalsecrets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - externalsecrets
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant read-only on both secret store kinds
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - clustersecretstores
+              - secretstores
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant full CRUD on poddisruptionbudgets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - policy
+            resources:
+              - poddisruptionbudgets
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on horizontalpodautoscalers
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - autoscaling
+            resources:
+              - horizontalpodautoscalers
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on networkpolicies
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - networking.k8s.io
+            resources:
+              - networkpolicies
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  - it: should grant full CRUD on httproutes
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - gateway.networking.k8s.io
+            resources:
+              - httproutes
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  # The Accepted condition is written by the upstream Gateway controller, so
+  # get is all the operator needs on the status subresource.
+  - it: should grant get on the httproutes status subresource
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - gateway.networking.k8s.io
+            resources:
+              - httproutes/status
+            verbs:
+              - get
+
+  # The webhook resolves spec.priorityClassName at admission time.
+  - it: should grant read-only on priorityclasses
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - scheduling.k8s.io
+            resources:
+              - priorityclasses
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant full CRUD on leases for leader election
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - coordination.k8s.io
+            resources:
+              - leases
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  # ClusterRole must not render in namespace-scoped mode.
+  - it: should not render ClusterRole when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0
