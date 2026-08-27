@@ -1,0 +1,14 @@
+{{- include "operator-library.webhookConfiguration" (dict
+      "root" .
+      "mutatingWebhookName" "mneutron.kb.io"
+      "validatingWebhookName" "vneutron.kb.io"
+      "mutatePath" "/mutate-neutron-openstack-c5c3-io-v1alpha1-neutron"
+      "validatePath" "/validate-neutron-openstack-c5c3-io-v1alpha1-neutron"
+      "apiGroup" "neutron.openstack.c5c3.io"
+      "resource" "neutrons"
+      "additionalWebhooks" (list (dict
+        "mutatingWebhookName" "mneutronmetadataagent.kb.io"
+        "validatingWebhookName" "vneutronmetadataagent.kb.io"
+        "mutatePath" "/mutate-neutron-openstack-c5c3-io-v1alpha1-neutronmetadataagent"
+        "validatePath" "/validate-neutron-openstack-c5c3-io-v1alpha1-neutronmetadataagent"
+        "resource" "neutronmetadataagents"))) }}

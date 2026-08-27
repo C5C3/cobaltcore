@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The namespace-scoped Role is not rendered by this chart. A NeutronMetadataAgent
+# runs beside its OVNChassis in a privileged namespace that the Neutron API
+# namespace must not share, and the operator reads OVNCentral status in whichever
+# namespace the OVN control plane lives, so a Role bound to one namespace grants
+# none of the reads the operator makes. The rules themselves are pinned by
+# clusterrole_test.yaml, which covers the one scope this chart supports.
+suite: Role
+templates:
+  - templates/role.yaml
+tests:
+  - it: should fail when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - failedTemplate:
+          errorPattern: "privileged namespace"
+
+  - it: should fail when rbac.namespaceScoped is true and webhook.enabled is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "webhook/enabled"
+
+  - it: should render nothing when rbac.namespaceScoped is false
+    asserts:
+      - hasDocuments:
+          count: 0

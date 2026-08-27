@@ -1,0 +1,6 @@
+{{- if and .Values.rbac.namespaceScoped .Values.webhook.enabled }}
+{{- fail "rbac.namespaceScoped=true requires webhook.enabled=false — namespace-scoped operators cannot manage cluster-scoped webhook configurations" }}
+{{- end }}
+{{- if .Values.rbac.namespaceScoped }}
+{{- fail "rbac.namespaceScoped=true is not supported by neutron-operator — a NeutronMetadataAgent lives beside its OVNChassis in a privileged namespace the Neutron API namespace must not share, and the operator reads OVNCentral status across namespaces" }}
+{{- end }}
