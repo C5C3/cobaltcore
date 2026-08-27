@@ -45,6 +45,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	"github.com/c5c3/cobaltcore/internal/common/testutil/simulators"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
@@ -434,7 +435,7 @@ func simulateRabbitmqClusterReadyWhenPresent(t testing.TB, ctx context.Context, 
 	g := NewGomegaWithT(t)
 
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(rabbitmqClusterGVK)
+	u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 	g.Eventually(func() error {
 		return c.Get(ctx, key, u)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "RabbitmqCluster child should be created")
@@ -5780,7 +5781,7 @@ func TestIntegration_Messaging_ManagedProjectsRabbitmqCluster(t *testing.T) {
 	busKey := client.ObjectKey{Name: "openstack-rabbitmq", Namespace: ns.Name}
 
 	bus := &unstructured.Unstructured{}
-	bus.SetGroupVersionKind(rabbitmqClusterGVK)
+	bus.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 	g.Eventually(func() error {
 		return c.Get(ctx, busKey, bus)
 	}, itEventuallyTimeout, itPollInterval).Should(Succeed(),

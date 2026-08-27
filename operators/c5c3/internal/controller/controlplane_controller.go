@@ -46,6 +46,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/bootstrap"
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -1057,11 +1058,11 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 	certificate.SetGroupVersionKind(certificateGVK)
 
 	// The RabbitmqCluster kind is watched as an *unstructured.Unstructured
-	// carrying rabbitmqClusterGVK (the c5c3 operator takes no dependency on the
-	// RabbitMQ Cluster Operator's Go module), and its legs sit under the
-	// discovery guard below because the CRD is opt-in infrastructure.
+	// carrying messaging.RabbitmqClusterGVK (the c5c3 operator takes no
+	// dependency on the RabbitMQ Cluster Operator's Go module), and its legs sit
+	// under the discovery guard below because the CRD is opt-in infrastructure.
 	rabbitmq := &unstructured.Unstructured{}
-	rabbitmq.SetGroupVersionKind(rabbitmqClusterGVK)
+	rabbitmq.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 
 	// Every leg watching the management cluster carries both engage options
 	// below; see their definition for why an unpinned leg would quietly stop

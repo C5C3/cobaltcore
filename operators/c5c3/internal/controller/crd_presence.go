@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
@@ -93,7 +94,7 @@ type serverResourcesLister interface {
 // unstructured object's GVK off the object itself, so it needs no scheme entry.
 func optionalWatchObjects() []client.Object {
 	rabbitmq := &unstructured.Unstructured{}
-	rabbitmq.SetGroupVersionKind(rabbitmqClusterGVK)
+	rabbitmq.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 
 	return []client.Object{
 		&keystonev1alpha1.Keystone{},
