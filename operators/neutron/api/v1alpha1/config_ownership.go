@@ -14,11 +14,13 @@ import "github.com/c5c3/cobaltcore/internal/common/config"
 //
 //   - The registry is static. A conditionally rendered key — the
 //     [keystone_authtoken] region_name / memcached_servers pair, which
-//     keystoneauth.Section emits only for a CR that configures them, or the
-//     [DEFAULT] nova_metadata_* pair the agent renders only while
-//     spec.novaMetadata is set — is registered unconditionally, because the
-//     registry documents "this key is not the user's to set", not "this key is
-//     currently rendered".
+//     keystoneauth.Section emits only for a CR that configures them, the
+//     [DEFAULT] default_log_levels / log_config_append pair, which the renderer
+//     emits only for a CR that sets spec.logging.perLoggerLevels or selects the
+//     json format, or the [DEFAULT] nova_metadata_* pair the agent renders only
+//     while spec.novaMetadata is set — is registered unconditionally, because
+//     the registry documents "this key is not the user's to set", not "this key
+//     is currently rendered".
 //
 //   - An entry is Reported (honored-but-surfaced through the ExtraConfigHealthy
 //     condition) unless honoring the override would already have done the damage
@@ -50,8 +52,8 @@ var OwnedConfigKeys = []config.OwnedKey{
 	// ExtraConfigHealthy condition could report it.
 	{Section: "DEFAULT", Key: "auth_strategy", Rejected: true, OwnedBy: "operator-computed", Impact: "an override puts the API on the selected auth middleware; anything but keystone disables token validation entirely"},
 	{Section: "DEFAULT", Key: "state_path", OwnedBy: "operator-computed", Impact: "the operator mounts a writable volume at this path; another path names a directory the container cannot write"},
-	{Section: "DEFAULT", Key: "rpc_workers", OwnedBy: "spec.workers.deployment.replicas", Impact: "the worker count is derived from the worker Deployment, so a file override runs a different number of processes than the pod is sized for"},
-	{Section: "DEFAULT", Key: "rpc_state_report_workers", OwnedBy: "operator-computed", Impact: "the state-report workers are sized against the same Deployment as rpc_workers"},
+	{Section: "DEFAULT", Key: "rpc_workers", OwnedBy: "operator-computed", Impact: "the count is fixed at zero because nothing in this deployment consumes RPC (OVN answers DHCP and metadata from the logical model and no agent talks RPC) and neutron-rpc-server is not projected"},
+	{Section: "DEFAULT", Key: "rpc_state_report_workers", OwnedBy: "operator-computed", Impact: "the count is fixed at zero for the same reason as rpc_workers, since without an RPC consumer there are no agent state reports to serve"},
 	{Section: "DEFAULT", Key: "dhcp_agent_notification", OwnedBy: "operator-computed", Impact: "OVN serves DHCP from the logical model and no DHCP agent is deployed, so enabling the notifications queues RPC casts nothing consumes"},
 	{Section: "DEFAULT", Key: "notify_nova_on_port_status_changes", OwnedBy: "operator-computed", Impact: "the notification is what tells Nova a port is wired; disabling it leaves instances waiting for a vif-plugged event that never arrives"},
 	{Section: "DEFAULT", Key: "notify_nova_on_port_data_changes", OwnedBy: "operator-computed", Impact: "the notification is what tells Nova a port is wired; disabling it leaves instances waiting for a vif-plugged event that never arrives"},

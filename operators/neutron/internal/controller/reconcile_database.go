@@ -111,10 +111,11 @@ func neutronMaxUserConnections(neutron *neutronv1alpha1.Neutron) int32 {
 // been rendered yet, so the step waits rather than migrating against an empty
 // mount.
 //
-// The image/release agreement is enforced ahead of the upgrade branch rather
-// than beside it: aborting an upgrade by reverting spec.openStackRelease
-// therefore requires reverting spec.image in lockstep, which is the same
-// contract the message of the mismatch condition states.
+// The image/release agreement is enforced on both paths, but mid-upgrade only
+// while spec.openStackRelease still names a release other than the installed
+// one. Reverting it to the installed release is the shared flow's abort
+// trigger, which stays reachable while spec.image still names the target
+// release.
 func (r *NeutronReconciler) reconcileDatabase(ctx context.Context, children client.Client,
 	neutron *neutronv1alpha1.Neutron, configMapName string,
 ) (ctrl.Result, error) {
@@ -154,17 +155,31 @@ func (r *NeutronReconciler) reconcileDatabase(ctx context.Context, children clie
 		return ctrl.Result{RequeueAfter: RequeueDatabaseWait}, nil
 	}
 
-	// Enforce the decoupled-field contract before release tracking advances (see
-	// checkImageReleaseMismatch).
-	if res, blocked := checkImageReleaseMismatch(neutron); blocked {
-		return res, nil
-	}
-
 	// Active upgrade: the shared flow handles the abort (spec.openStackRelease
 	// reverted to the installed release), the target-changed guard, and the phase
 	// dispatch.
 	if neutron.Status.UpgradePhase != "" {
+		// Enforce the decoupled-field contract mid-upgrade too. The shared flow's
+		// target-changed guard only watches spec.openStackRelease, so a lone
+		// spec.image.tag edit to an inconsistent release would otherwise slip
+		// through and dispatch phase Jobs built from the wrong image (every phase
+		// Job runs spec.image). Skip the check when spec.openStackRelease has been
+		// reverted to the installed release: that is the shared flow's abort
+		// trigger (SpecRelease == InstalledRelease in ReconcileUpgrade), which must
+		// stay reachable even while the two fields disagree so a wedged upgrade can
+		// always be unstuck.
+		if neutron.Spec.OpenStackRelease != neutron.Status.InstalledRelease {
+			if res, blocked := checkImageReleaseMismatch(neutron); blocked {
+				return res, nil
+			}
+		}
 		return database.ReconcileUpgrade(ctx, r.upgradeFlowParams(ctx, children, neutron, configMapName))
+	}
+
+	// Enforce the decoupled-field contract before either the upgrade or the
+	// steady-state path advances release tracking (see checkImageReleaseMismatch).
+	if res, blocked := checkImageReleaseMismatch(neutron); blocked {
+		return res, nil
 	}
 
 	if err := r.gateReleaseTransition(neutron); err != nil {
