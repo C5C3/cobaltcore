@@ -395,6 +395,8 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/barbican/invalid-barbicansecretstore-cr/_generate.py --check
 	@python3 tests/e2e/ovn/invalid-cr/_generate.py --check
 	@python3 tests/e2e/ovn/invalid-ovnchassis-cr/_generate.py --check
+	@python3 tests/e2e/neutron/invalid-cr/_generate.py --check
+	@python3 tests/e2e/neutron/invalid-neutronmetadataagent-cr/_generate.py --check
 	@echo "Running invalid-CR fixture unit tests..."
 	@python3 tests/e2e/keystone/invalid-cr/test_generate.py
 	@python3 tests/e2e/keystone/invalid-identitybackend-cr/test_generate.py
@@ -408,6 +410,8 @@ verify-invalid-cr-fixtures:
 	@python3 tests/e2e/barbican/invalid-barbicansecretstore-cr/test_generate.py
 	@python3 tests/e2e/ovn/invalid-cr/test_generate.py
 	@python3 tests/e2e/ovn/invalid-ovnchassis-cr/test_generate.py
+	@python3 tests/e2e/neutron/invalid-cr/test_generate.py
+	@python3 tests/e2e/neutron/invalid-neutronmetadataagent-cr/test_generate.py
 
 .PHONY: gen-option-catalogs
 # gen-option-catalogs regenerates the per-release option catalogs the

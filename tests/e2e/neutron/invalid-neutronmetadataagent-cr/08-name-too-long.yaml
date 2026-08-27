@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# A metadata.name of 64 characters is rejected by the validating webhook
+# alone. The bound is 63: the name is the app.kubernetes.io/instance label
+# value on every child, and Kubernetes caps a label value at 63 characters.
+# The name is a valid DNS-1123 subdomain apart from its length, so the bound
+# is the only rule it breaks. The rule runs in ValidateCreate only, so the
+# finalizer-removal update never trips over it.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: NeutronMetadataAgent
+metadata:
+  name: neutron-metadata-agent-invalid-name-past-the-63-char-label-bound
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  chassisRef:
+    name: ovn-chassis

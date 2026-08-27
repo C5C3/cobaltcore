@@ -1,0 +1,144 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E tests for NeutronMetadataAgent CRD + webhook validation
+# rejection. Pins every implemented kubebuilder-marker, CEL XValidation, and
+# webhook.validate() rejection path in
+# operators/neutron/api/v1alpha1/neutronmetadataagent_* to a deterministic
+# admission failure. Each step applies an otherwise-valid NeutronMetadataAgent
+# CR with a single aspect violating the rule under test, captures the admission
+# $error, and asserts the field path plus message substring.
+#
+# The API server validates against the structural schema and its CEL rules
+# before it calls the validating webhook, so a rule carried by both layers is
+# answered by the schema and the assertions below quote the schema message. The
+# webhook message is asserted only where the rule has no schema counterpart: the
+# two spec.extraConfig checks (the map is preserve-unknown-fields, which CEL
+# cannot constrain) and the metadata.name bound, which comes from a label value.
+#
+# The test runs in an ephemeral namespace: the fixtures reference an OVNChassis
+# that does not exist there, which admission deliberately tolerates (GitOps
+# ordering), so the dangling reference never competes with the rule a fixture
+# pins.
+#
+# All fixtures are generated from the single canonical scaffold in
+# `_generate.py`. After editing the scaffold or any per-fixture override,
+# regenerate via:
+#   python3 tests/e2e/neutron/invalid-neutronmetadataagent-cr/_generate.py
+# CI runs `make verify-invalid-cr-fixtures`, which invokes
+# `_generate.py --check` (drift mode, both directions incl. orphans) and
+# `test_generate.py` (FIXTURES count + chainsaw-test.yaml cross-reference)
+# so any hand-edit to a generated fixture fails the build before the
+# cluster-bound e2e-operator job runs.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-invalid-neutronmetadataagent-cr
+spec:
+  steps:
+  # spec.chassisRef.name empty must be rejected by the MinLength=1 marker on
+  # OVNChassisRef, which answers before the webhook's field.Required twin.
+  - try:
+    - apply:
+        file: 00-chassisref-name-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'chassisRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
+  # spec.image with both tag and digest must be rejected by the ImageSpec XOR
+  # CEL rule, which answers before the webhook's validateImage twin.
+  - try:
+    - apply:
+        file: 01-image-tag-and-digest.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'image')): true
+            (contains($error, 'exactly one of image.tag or image.digest')): true
+  # spec.image without a repository must be rejected by the MinLength=1 marker:
+  # the defaulting webhook materializes the field as an empty string, so the
+  # marker answers rather than the required-properties list.
+  - try:
+    - apply:
+        file: 02-image-repository-missing.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'image.repository')): true
+            (contains($error, 'should be at least 1 chars long')): true
+  # spec.messaging with both clusterRef and secretRef must be rejected: the two
+  # modes resolve the transport URL differently.
+  - try:
+    - apply:
+        file: 03-messaging-clusterref-and-secretref.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'messaging')): true
+            (contains($error, 'exactly one of clusterRef or secretRef')): true
+  # spec.novaMetadata.port below the Minimum=1 marker must be rejected. The
+  # value is -1, not 0: the defaulting webhook fills a zero port with 8775
+  # before schema validation sees it.
+  - try:
+    - apply:
+        file: 04-novametadata-port-below-minimum.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'novaMetadata.port')): true
+            (contains($error, 'should be greater than or equal to 1')): true
+  # spec.novaMetadata.sharedSecretRef.name empty must be rejected by the
+  # MinLength=1 marker on the shared SecretRefSpec: an unnamed Secret carries no
+  # shared secret to sign forwarded requests with.
+  - try:
+    - apply:
+        file: 05-novametadata-sharedsecretref-name-empty.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'novaMetadata.sharedSecretRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
+  # spec.extraConfig setting an unknown option in a known section must be
+  # rejected: it is absent from the neutron 2025.2 option catalog.
+  - try:
+    - apply:
+        file: 06-extraconfig-unknown-option.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'no such option in the neutron 2025.2 option catalog')): true
+  # spec.extraConfig setting [ovs] ovsdb_connection must be rejected by the
+  # webhook: the agent reads the local OVS database over the socket the chassis
+  # pods share, so an override points it at another node's database.
+  - try:
+    - apply:
+        file: 07-extraconfig-rejected-owned-key.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'ovsdb_connection is managed via spec.chassisRef')): true
+            (contains($error, 'points it at a node whose ports it is not answering for')): true
+  # A metadata.name past 63 characters must be rejected by the validating
+  # webhook: the name is the app.kubernetes.io/instance label value on every
+  # child, and Kubernetes caps a label value at 63 characters, so the CR would
+  # admit cleanly and then fail to label its children.
+  - try:
+    - apply:
+        file: 08-name-too-long.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'metadata.name')): true
+            (contains($error, 'name must be at most 63 characters')): true
+  # spec.targetClusterRef.name empty must be rejected by the MinLength=1 marker
+  # on the shared TargetClusterRefSpec, which answers before the webhook twin.
+  - try:
+    - apply:
+        file: 09-targetclusterref-empty-name.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'targetClusterRef.name')): true
+            (contains($error, 'should be at least 1 chars long')): true
