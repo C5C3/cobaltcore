@@ -9,7 +9,7 @@
 # manifests for each operator module that has an api/ directory.
 
 # Default operators to build and test
-OPERATORS ?= keystone c5c3 horizon glance placement barbican ovn
+OPERATORS ?= keystone c5c3 horizon glance placement barbican ovn neutron
 
 # Allow single operator override: make build OPERATOR=keystone
 ifdef OPERATOR

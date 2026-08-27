@@ -66,6 +66,10 @@ flag_management:
       paths:
         - operators/ovn/
       carryforward: true
+    - name: unit-neutron
+      paths:
+        - operators/neutron/
+      carryforward: true
     - name: integration-common
       paths:
         - internal/common/
@@ -97,6 +101,10 @@ flag_management:
     - name: integration-ovn
       paths:
         - operators/ovn/
+      carryforward: true
+    - name: integration-neutron
+      paths:
+        - operators/neutron/
       carryforward: true
 
 # Component-level thresholds: each component is tracked independently on the

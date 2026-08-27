@@ -11,6 +11,7 @@ use (
 	./operators/glance
 	./operators/horizon
 	./operators/keystone
+	./operators/neutron
 	./operators/ovn
 	./operators/placement
 )

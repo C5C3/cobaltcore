@@ -488,6 +488,7 @@ WEBHOOK_ENABLED_DESCRIPTIONS = {
     "placement-operator": "Enable admission webhooks for Placement CR validation and defaulting",
     "barbican-operator": "Enable admission webhooks for Barbican and BarbicanSecretStore CR validation and defaulting",
     "ovn-operator": "Enable admission webhooks for OVNCentral and OVNChassis CR validation and defaulting",
+    "neutron-operator": "Enable admission webhooks for Neutron and NeutronMetadataAgent CR validation and defaulting",
 }
 
 
