@@ -10,6 +10,7 @@ import (
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -78,15 +79,23 @@ var neutronRequest = reconcile.Request{
 }
 
 // neutronFakeClientBuilder returns a fake client builder with the package scheme,
-// the field indexes the watch mappers resolve against, and the status
-// subresources the reconciler reads and writes.
+// the field indexes the watch mappers of both kinds resolve against, and the
+// status subresources the two reconcilers read and write. The DaemonSet's is
+// among them because the agent step judges a rollout by counters the DaemonSet
+// controller writes on the status subresource.
 func neutronFakeClientBuilder(objs ...client.Object) *fake.ClientBuilder {
 	return fake.NewClientBuilder().
 		WithScheme(testScheme()).
 		WithObjects(objs...).
-		WithStatusSubresource(&neutronv1alpha1.Neutron{}, &ovnv1alpha1.OVNCentral{}).
+		WithStatusSubresource(&neutronv1alpha1.Neutron{}, &neutronv1alpha1.NeutronMetadataAgent{},
+			&ovnv1alpha1.OVNCentral{}, &appsv1.DaemonSet{}).
 		WithIndex(&neutronv1alpha1.Neutron{}, NeutronSecretNameIndexKey, neutronSecretNameExtractor).
-		WithIndex(&neutronv1alpha1.Neutron{}, NeutronOVNCentralRefIndexKey, neutronOVNCentralRefExtractor)
+		WithIndex(&neutronv1alpha1.Neutron{}, NeutronOVNCentralRefIndexKey, neutronOVNCentralRefExtractor).
+		WithIndex(&neutronv1alpha1.NeutronMetadataAgent{}, NeutronMetadataAgentSecretNameIndexKey,
+			agentSecretNameExtractor).
+		WithIndex(&neutronv1alpha1.NeutronMetadataAgent{}, NeutronMetadataAgentChassisRefIndexKey,
+			agentChassisRefExtractor).
+		WithIndex(&ovnv1alpha1.OVNChassis{}, OVNChassisCentralRefIndexKey, ovnChassisCentralRefExtractor)
 }
 
 // newNeutronTestReconciler builds a NeutronReconciler over a fake client
@@ -276,4 +285,97 @@ func collectEvents(rec *record.FakeRecorder) []string {
 			return out
 		}
 	}
+}
+
+// The shared NeutronMetadataAgent fixture coordinates. The agent, the OVNChassis
+// it runs alongside and that chassis's OVNCentral live in one namespace, which is
+// the privileged networking namespace a real deployment puts them in.
+const (
+	testAgentName      = "neutron-metadata"
+	testOVNChassisName = "chassis"
+
+	// testChassisNodeLabel is the label the chassis fixture selects its nodes by
+	// and the agent copies verbatim.
+	testChassisNodeLabel = "openstack.c5c3.io/chassis"
+)
+
+// agentRequest is the reconcile request for the shared validAgent fixture.
+var agentRequest = reconcile.Request{
+	NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: testAgentName},
+}
+
+// validAgent returns the shared NeutronMetadataAgent fixture, carrying the values
+// the defaulting webhook materializes and neither optional block: an agent that
+// proxies to no Nova and names no bus is the smallest CR the operator projects.
+// A CR the operator reads has been through admission, so a fixture that left the
+// defaults off would exercise a spec no reconcile ever sees.
+func validAgent() *neutronv1alpha1.NeutronMetadataAgent {
+	return &neutronv1alpha1.NeutronMetadataAgent{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       testAgentName,
+			Namespace:  testNamespace,
+			UID:        "agent-uid",
+			Generation: 1,
+		},
+		Spec: neutronv1alpha1.NeutronMetadataAgentSpec{
+			OpenStackRelease: "2026.1",
+			Image:            commonv1.ImageSpec{Repository: "ghcr.io/c5c3/neutron", Tag: "2026.1"},
+			ChassisRef:       neutronv1alpha1.OVNChassisRef{Name: testOVNChassisName},
+			Logging:          &neutronv1alpha1.LoggingSpec{Format: "text", Level: "INFO", Debug: ptr.To(false)},
+		},
+	}
+}
+
+// readyOVNChassis returns the OVNChassis fixture as the agent needs to find it:
+// attached to the named OVNCentral and carrying the node selection the agent
+// copies onto its own DaemonSet.
+func readyOVNChassis(name, namespace, centralName string) *ovnv1alpha1.OVNChassis {
+	return &ovnv1alpha1.OVNChassis{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: ovnv1alpha1.OVNChassisSpec{
+			CentralRef:   ovnv1alpha1.OVNCentralRef{Name: centralName},
+			NodeSelector: map[string]string{testChassisNodeLabel: "true"},
+			Tolerations: []corev1.Toleration{{
+				Key:      "openstack.c5c3.io/network",
+				Operator: corev1.TolerationOpExists,
+				Effect:   corev1.TaintEffectNoSchedule,
+			}},
+		},
+	}
+}
+
+// newAgentTestReconciler builds a NeutronMetadataAgentReconciler over a fake
+// client pre-loaded with objs. The Resolver stays nil, which is the always-local
+// mode every single-cluster test runs in: the children land on the same fake
+// client the CRs live on.
+func newAgentTestReconciler(objs ...client.Object) *NeutronMetadataAgentReconciler {
+	return &NeutronMetadataAgentReconciler{
+		Client:   neutronFakeClientBuilder(objs...).Build(),
+		Scheme:   testScheme(),
+		Recorder: record.NewFakeRecorder(50),
+	}
+}
+
+// getAgent re-reads the NeutronMetadataAgent CR from the given client, so an
+// assertion reads what a pass persisted rather than the in-memory copy it
+// mutated.
+func getAgent(t *testing.T, c client.Client) *neutronv1alpha1.NeutronMetadataAgent {
+	t.Helper()
+	var agent neutronv1alpha1.NeutronMetadataAgent
+	if err := c.Get(context.Background(), agentRequest.NamespacedName, &agent); err != nil {
+		t.Fatalf("re-reading NeutronMetadataAgent %s: %v", agentRequest.NamespacedName, err)
+	}
+	return &agent
+}
+
+// agentCondition returns one of the NeutronMetadataAgent's conditions, or nil.
+func agentCondition(agent *neutronv1alpha1.NeutronMetadataAgent, conditionType string) *metav1.Condition {
+	return conditions.GetCondition(agent.Status.Conditions, conditionType)
+}
+
+// agentDaemonSetKey is the key of the DaemonSet the shared agent fixture
+// projects.
+var agentDaemonSetKey = client.ObjectKey{
+	Namespace: testNamespace,
+	Name:      testAgentName + "-" + metadataAgentComponent,
 }
