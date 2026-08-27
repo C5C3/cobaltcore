@@ -6,6 +6,7 @@ package controller
 
 import (
 	"context"
+	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
@@ -13,12 +14,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/cluster"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
@@ -69,13 +72,21 @@ func testScheme() *runtime.Scheme {
 	return s
 }
 
-// neutronFakeClientBuilder returns a fake client builder with the package scheme
-// and the status subresources the reconciler reads and writes.
+// neutronRequest is the reconcile request for the shared validNeutron fixture.
+var neutronRequest = reconcile.Request{
+	NamespacedName: types.NamespacedName{Namespace: testNamespace, Name: testNeutronName},
+}
+
+// neutronFakeClientBuilder returns a fake client builder with the package scheme,
+// the field indexes the watch mappers resolve against, and the status
+// subresources the reconciler reads and writes.
 func neutronFakeClientBuilder(objs ...client.Object) *fake.ClientBuilder {
 	return fake.NewClientBuilder().
 		WithScheme(testScheme()).
 		WithObjects(objs...).
-		WithStatusSubresource(&neutronv1alpha1.Neutron{}, &ovnv1alpha1.OVNCentral{})
+		WithStatusSubresource(&neutronv1alpha1.Neutron{}, &ovnv1alpha1.OVNCentral{}).
+		WithIndex(&neutronv1alpha1.Neutron{}, NeutronSecretNameIndexKey, neutronSecretNameExtractor).
+		WithIndex(&neutronv1alpha1.Neutron{}, NeutronOVNCentralRefIndexKey, neutronOVNCentralRefExtractor)
 }
 
 // newNeutronTestReconciler builds a NeutronReconciler over a fake client
@@ -237,6 +248,16 @@ func rabbitmqDefaultUserSecret(port string) *corev1.Secret {
 			"port":     []byte(port),
 		},
 	}
+}
+
+// getNeutron re-reads the Neutron CR from the given client.
+func getNeutron(t *testing.T, c client.Client) *neutronv1alpha1.Neutron {
+	t.Helper()
+	var neutron neutronv1alpha1.Neutron
+	if err := c.Get(context.Background(), neutronRequest.NamespacedName, &neutron); err != nil {
+		t.Fatalf("re-reading Neutron %s: %v", neutronRequest.NamespacedName, err)
+	}
+	return &neutron
 }
 
 // neutronCondition returns one of the Neutron CR's conditions, or nil.

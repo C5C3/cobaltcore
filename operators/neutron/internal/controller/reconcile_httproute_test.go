@@ -10,7 +10,6 @@ import (
 
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -18,14 +17,6 @@ import (
 	mctestutil "github.com/c5c3/cobaltcore/internal/common/testutil/multicluster"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 )
-
-// testHTTPRouteGVK is the kind a cluster has to serve for the route to be
-// projected onto it, the same GroupVersionKind the shared route flow probes for.
-var testHTTPRouteGVK = schema.GroupVersionKind{
-	Group:   gatewayv1.GroupVersion.Group,
-	Version: gatewayv1.GroupVersion.Version,
-	Kind:    "HTTPRoute",
-}
 
 // neutronGatewaySpec returns the external-exposure block the route tests and the
 // health-check probe test share.
@@ -123,7 +114,7 @@ func TestBuildNeutronHTTPRoute_TargetsAPIService(t *testing.T) {
 // API CRDs from one without them.
 func hrTargetFake(servesHTTPRoute bool, objs ...client.Object) client.Client {
 	if servesHTTPRoute {
-		return mctestutil.TargetFake(neutronFakeClientBuilder(objs...), testHTTPRouteGVK)
+		return mctestutil.TargetFake(neutronFakeClientBuilder(objs...), httpRouteGVK)
 	}
 	return mctestutil.TargetFake(neutronFakeClientBuilder(objs...))
 }
