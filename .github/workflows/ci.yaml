@@ -124,6 +124,12 @@ jobs:
               - 'operators/Dockerfile'
               - 'images/ovn/**'
               - 'images/backup-shifter/**'
+            # neutron ships one image, the service daemons the CRs project. Its
+            # chart under operators/neutron/helm rides the helm filter below.
+            neutron:
+              - 'operators/neutron/**'
+              - 'operators/Dockerfile'
+              - 'images/neutron/**'
             docs:
               - 'docs/**'
               - 'package.json'
@@ -142,6 +148,7 @@ jobs:
               - 'operators/placement/helm/**'
               - 'operators/barbican/helm/**'
               - 'operators/ovn/helm/**'
+              - 'operators/neutron/helm/**'
               - 'operators/shared/helm/**'
               - 'deploy/target-cluster/**'
               - 'hack/gen-helm-values-schema.py'
@@ -235,7 +242,7 @@ jobs:
       - name: Resolve effective changes
         id: result
         env:
-          ALL_OPERATORS: keystone c5c3 horizon glance placement barbican ovn
+          ALL_OPERATORS: keystone c5c3 horizon glance placement barbican ovn neutron
           FILTER_keystone: ${{ steps.filter.outputs.keystone }}
           FILTER_c5c3: ${{ steps.filter.outputs.c5c3 }}
           FILTER_horizon: ${{ steps.filter.outputs.horizon }}
@@ -243,6 +250,7 @@ jobs:
           FILTER_placement: ${{ steps.filter.outputs.placement }}
           FILTER_barbican: ${{ steps.filter.outputs.barbican }}
           FILTER_ovn: ${{ steps.filter.outputs.ovn }}
+          FILTER_neutron: ${{ steps.filter.outputs.neutron }}
           FILTER_docs: ${{ steps.filter.outputs.docs }}
           FILTER_helm: ${{ steps.filter.outputs.helm }}
           FILTER_target_cluster_chart: ${{ steps.filter.outputs.target_cluster_chart }}
@@ -434,7 +442,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [common, keystone, c5c3, horizon, glance, placement, barbican, ovn]
+        target: [common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -472,7 +480,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [common, keystone, c5c3, horizon, glance, placement, barbican, ovn]
+        target: [common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -620,13 +628,13 @@ jobs:
         run: make helm-deps
       - name: Helm lint
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator operators/barbican/helm/barbican-operator operators/ovn/helm/ovn-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator operators/barbican/helm/barbican-operator operators/ovn/helm/ovn-operator operators/neutron/helm/neutron-operator; do
             echo "--- lint $chart ---"
             helm lint "$chart"
           done
       - name: Helm template
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator operators/barbican/helm/barbican-operator operators/ovn/helm/ovn-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator operators/barbican/helm/barbican-operator operators/ovn/helm/ovn-operator operators/neutron/helm/neutron-operator; do
             echo "=== $chart ==="
             echo "--- Scenario 1: default values ---"
             helm template test "$chart"
@@ -636,18 +644,22 @@ jobs:
             helm template test "$chart" --set serviceAccount.create=false --set serviceAccount.name=existing-sa
             echo "--- Scenario 4: custom resources ---"
             helm template test "$chart" --set resources.limits.cpu=100m --set resources.limits.memory=64Mi
-            # ovn-operator refuses the mode by design: the OVNChassis controller
-            # watches cluster-scoped Nodes, which a namespaced Role cannot grant.
-            # Its templates/role.yaml fails the render, and role_test.yaml pins
-            # that message, so rendering it here would fail the job instead.
-            if [ "$chart" != "operators/ovn/helm/ovn-operator" ]; then
+            # Two charts refuse the mode by design. ovn-operator: the
+            # OVNChassis controller watches cluster-scoped Nodes, which a
+            # namespaced Role cannot grant. neutron-operator: a
+            # NeutronMetadataAgent lives beside its OVNChassis in a privileged
+            # namespace the Neutron API namespace must not share, and the
+            # operator reads OVNCentral status across namespaces. Each chart's
+            # templates/role.yaml fails the render and its role_test.yaml pins
+            # that message, so rendering them here would fail the job instead.
+            if [ "$chart" != "operators/ovn/helm/ovn-operator" ] && [ "$chart" != "operators/neutron/helm/neutron-operator" ]; then
               echo "--- Scenario 5: namespace-scoped RBAC ---"
               helm template test "$chart" --set rbac.namespaceScoped=true --set webhook.enabled=false
             fi
           done
       - name: Helm unittest
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator operators/barbican/helm/barbican-operator operators/ovn/helm/ovn-operator; do
+          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator operators/barbican/helm/barbican-operator operators/ovn/helm/ovn-operator operators/neutron/helm/neutron-operator; do
             echo "--- unittest $chart ---"
             helm unittest "$chart"
           done
@@ -1084,6 +1096,16 @@ jobs:
           kubectl apply -f operators/glance/helm/glance-operator/crds/
           kubectl apply -f operators/placement/helm/placement-operator/crds/
           hack/ci-deploy-korc.sh
+      # Both neutron reconcilers Watches() an OVN kind: the Neutron controller
+      # reads the OVNCentral's published Northbound and Southbound addresses,
+      # and the NeutronMetadataAgent controller resolves its OVNChassis.
+      # controller-runtime informers for a kind whose CRD is absent never sync,
+      # so without the OVN CRDs the elected leader dies on the cache-sync
+      # timeout and the neutron reconcilers never run on this leg. Install the
+      # OVN CRDs only; the OVN controllers stay undeployed.
+      - name: Install CRDs watched by the neutron-operator
+        if: matrix.operator == 'neutron'
+        run: kubectl apply -f operators/ovn/helm/ovn-operator/crds/
       # Use shared operator deployment script. NAMESPACE mirrors what
       # hack/ci-dump-diagnostics.sh derives (${OPERATOR}-system) so the
       # diagnostics of a failed run actually find the operator's pods and logs
