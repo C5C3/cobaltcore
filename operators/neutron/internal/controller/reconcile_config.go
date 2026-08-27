@@ -231,8 +231,9 @@ func operatorDefaults(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpoints
 			"auth_strategy":    "keystone",
 			"api_paste_config": apiPasteConfigPath,
 			"state_path":       neutronStatePath,
-			// The API pods serve HTTP alone: the RPC side runs in the worker
-			// Deployment, which overrides both counts through its own env vars.
+			// Both counts are zero because nothing in this deployment consumes
+			// RPC: OVN answers DHCP and metadata out of the logical model and no
+			// agent talks RPC, and neutron-rpc-server is not projected.
 			"rpc_workers":              "0",
 			"rpc_state_report_workers": "0",
 			// OVN serves DHCP out of the logical model and no DHCP agent is

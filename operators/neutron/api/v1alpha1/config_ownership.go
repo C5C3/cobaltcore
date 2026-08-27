@@ -55,7 +55,10 @@ var OwnedConfigKeys = []config.OwnedKey{
 	{Section: "DEFAULT", Key: "dhcp_agent_notification", OwnedBy: "operator-computed", Impact: "OVN serves DHCP from the logical model and no DHCP agent is deployed, so enabling the notifications queues RPC casts nothing consumes"},
 	{Section: "DEFAULT", Key: "notify_nova_on_port_status_changes", OwnedBy: "operator-computed", Impact: "the notification is what tells Nova a port is wired; disabling it leaves instances waiting for a vif-plugged event that never arrives"},
 	{Section: "DEFAULT", Key: "notify_nova_on_port_data_changes", OwnedBy: "operator-computed", Impact: "the notification is what tells Nova a port is wired; disabling it leaves instances waiting for a vif-plugged event that never arrives"},
+	{Section: "DEFAULT", Key: "use_stderr", OwnedBy: "operator-computed"},
 	{Section: "DEFAULT", Key: "debug", OwnedBy: "spec.logging.debug"},
+	{Section: "DEFAULT", Key: "default_log_levels", OwnedBy: "operator-computed"},
+	{Section: "DEFAULT", Key: "log_config_append", OwnedBy: "operator-computed"},
 	// api_paste_config names the WSGI pipeline definition. The operator mounts
 	// its own api-paste.ini, and the pipeline is what puts keystonemiddleware in
 	// front of the API. It is Rejected rather than reported: a path that names a

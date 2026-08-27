@@ -424,6 +424,65 @@ func TestReconcileConfig_ApplyFailureMarksSecretsReady(t *testing.T) {
 	g.Expect(cond.Message).To(ContainSubstring(boom.Error()))
 }
 
+// TestOperatorDefaults_RegistryDriftGuard is the completeness check tying
+// operatorDefaults to neutronv1alpha1.OwnedConfigKeys: every key the operator
+// renders must be registered (forward) and every registered key must be
+// rendered (reverse), so the registry and the renderer cannot drift apart.
+func TestOperatorDefaults_RegistryDriftGuard(t *testing.T) {
+	neutron := neutronForConfig()
+	// neutronForConfig already sets Region (emits region_name) and validNeutron
+	// sets Cache.Servers (emits memcached_servers). Add the broker TLS block so
+	// [oslo_messaging_rabbit] ssl and ssl_ca_file render, and json logging with
+	// per-logger levels so log_config_append and default_log_levels render too.
+	neutron.Spec.Messaging.TLS = &commonv1.MessagingTLSSpec{
+		CABundleSecretRef: commonv1.SecretRefSpec{Name: "rabbitmq-ca", Key: "ca.crt"},
+	}
+	neutron.Spec.Logging = &neutronv1alpha1.LoggingSpec{
+		Format:          "json",
+		Debug:           ptr.To(true),
+		PerLoggerLevels: map[string]string{"neutron": "DEBUG"},
+	}
+
+	defaults := operatorDefaults(neutron, resolvedForConfig())
+
+	registered := make(map[[2]string]struct{}, len(neutronv1alpha1.OwnedConfigKeys))
+	for _, o := range neutronv1alpha1.OwnedConfigKeys {
+		registered[[2]string{o.Section, o.Key}] = struct{}{}
+	}
+
+	// Forward check: every rendered (section, key) is registered — no exceptions.
+	for section, kvs := range defaults {
+		for key := range kvs {
+			if _, ok := registered[[2]string{section, key}]; ok {
+				continue
+			}
+			t.Errorf("operatorDefaults renders unregistered key [%s] %s: add it to "+
+				"neutronv1alpha1.OwnedConfigKeys", section, key)
+		}
+	}
+
+	// Reverse check: every registered key is rendered by operatorDefaults or on
+	// the extras list. Both extras are credential material the renderer never
+	// emits — [DEFAULT] transport_url and [keystone_authtoken] password arrive
+	// through their env overrides — and both are registered because a user
+	// putting them in spec.extraConfig would copy the credential into the
+	// rendered config.
+	reverseExtras := map[[2]string]struct{}{
+		{"DEFAULT", "transport_url"}:       {},
+		{"keystone_authtoken", "password"}: {},
+	}
+	for _, o := range neutronv1alpha1.OwnedConfigKeys {
+		if _, ok := defaults[o.Section][o.Key]; ok {
+			continue
+		}
+		if _, ok := reverseExtras[[2]string{o.Section, o.Key}]; ok {
+			continue
+		}
+		t.Errorf("registry key [%s] %s is not rendered by operatorDefaults: remove it "+
+			"from neutronv1alpha1.OwnedConfigKeys or extend the drift-guard extras list", o.Section, o.Key)
+	}
+}
+
 // TestEffectiveLogging pins the render-time resolution of spec.logging: a CR
 // that bypassed the defaulting webhook still renders the production baseline,
 // and the resolver hands back a copy so nothing is written into the CR.
