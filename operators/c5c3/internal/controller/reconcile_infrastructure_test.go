@@ -29,6 +29,7 @@ import (
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
@@ -1548,7 +1549,7 @@ func managedMessagingControlPlane() *c5c3v1alpha1.ControlPlane {
 // readiness test exercises the read path without the ensure pass writing first.
 func rabbitmqWithConditions(name, ns string, conds []interface{}) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(rabbitmqClusterGVK)
+	u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 	u.SetName(name)
 	u.SetNamespace(ns)
 	_ = unstructured.SetNestedField(u.Object, int64(1), "spec", "replicas")
@@ -1682,11 +1683,11 @@ func TestEnsureRabbitMQ_CreatesOwnedClusterFromSpec(t *testing.T) {
 			g.Expect(ready).To(BeFalse(), "a cluster without conditions is not ready")
 
 			u := &unstructured.Unstructured{}
-			u.SetGroupVersionKind(rabbitmqClusterGVK)
+			u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 			g.Expect(c.Get(ctx, types.NamespacedName{
 				Name: "openstack-rabbitmq", Namespace: cp.Namespace,
 			}, u)).To(Succeed(), "the RabbitmqCluster must be created in the ControlPlane's namespace")
-			g.Expect(u.GroupVersionKind()).To(Equal(rabbitmqClusterGVK))
+			g.Expect(u.GroupVersionKind()).To(Equal(messaging.RabbitmqClusterGVK))
 
 			replicas, found, nerr := unstructured.NestedInt64(u.Object, "spec", "replicas")
 			g.Expect(nerr).NotTo(HaveOccurred())
@@ -1711,7 +1712,7 @@ func TestEnsureRabbitMQ_OwnedReconcilesReplicasOnly(t *testing.T) {
 	cp.Spec.Infrastructure.Messaging.Replicas = 3
 
 	owned := &unstructured.Unstructured{}
-	owned.SetGroupVersionKind(rabbitmqClusterGVK)
+	owned.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 	owned.SetName("openstack-rabbitmq")
 	owned.SetNamespace(cp.Namespace)
 	g.Expect(unstructured.SetNestedField(owned.Object, int64(1), "spec", "replicas")).To(Succeed())
@@ -1727,7 +1728,7 @@ func TestEnsureRabbitMQ_OwnedReconcilesReplicasOnly(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(rabbitmqClusterGVK)
+	u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 	g.Expect(c.Get(ctx, types.NamespacedName{
 		Name: "openstack-rabbitmq", Namespace: cp.Namespace,
 	}, u)).To(Succeed())
@@ -1776,7 +1777,7 @@ func TestEnsureRabbitMQ_OwnedScaleDownRecreates(t *testing.T) {
 		"readiness must not be gated on the cluster that is going away, even though it still reports AllReplicasReady")
 
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(rabbitmqClusterGVK)
+	u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 	err = c.Get(ctx, types.NamespacedName{Name: "openstack-rabbitmq", Namespace: cp.Namespace}, u)
 	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
 		"the oversized owned cluster must be deleted, not updated to a count the operator ignores")
@@ -1837,7 +1838,7 @@ func TestEnsureRabbitMQ_OwnedScaleDownRefusedWithoutOptIn(t *testing.T) {
 				"the error must name the annotation that authorises the recreate")
 
 			u := &unstructured.Unstructured{}
-			u.SetGroupVersionKind(rabbitmqClusterGVK)
+			u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 			g.Expect(c.Get(ctx, types.NamespacedName{
 				Name: "openstack-rabbitmq", Namespace: cp.Namespace,
 			}, u)).To(Succeed(), "the broker must survive an unauthorised shrink")
@@ -1906,7 +1907,7 @@ func TestEnsureRabbitMQ_AdoptsForeignReadOnly(t *testing.T) {
 	g.Expect(ready).To(BeTrue(), "an adopted cluster is still read for readiness")
 
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(rabbitmqClusterGVK)
+	u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 	g.Expect(c.Get(ctx, types.NamespacedName{
 		Name: "openstack-rabbitmq", Namespace: cp.Namespace,
 	}, u)).To(Succeed())
@@ -2052,7 +2053,7 @@ func TestReconcileInfrastructure_MessagingReadinessOnAllReplicasReady(t *testing
 func TestUnstructuredConditionTrue(t *testing.T) {
 	withConditions := func(conds []interface{}) *unstructured.Unstructured {
 		u := &unstructured.Unstructured{}
-		u.SetGroupVersionKind(rabbitmqClusterGVK)
+		u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 		if conds != nil {
 			_ = unstructured.SetNestedSlice(u.Object, conds, "status", "conditions")
 		}

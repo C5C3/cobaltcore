@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 	horizonv1alpha1 "github.com/c5c3/cobaltcore/operators/horizon/api/v1alpha1"
@@ -37,8 +38,9 @@ import (
 // is built from; orc is the hard-dependency group TestOptionalWatchObjects_ExcludesKORC
 // asserts never appears in the optional set. rabbitmq is the RabbitMQ Cluster
 // Operator's group, carrying the one broker kind the ControlPlane projects for a
-// managed spec.infrastructure.messaging block. Verified against the api packages'
-// GroupVersion / GroupName (and rabbitmqClusterGVK) before hardcoding here.
+// managed spec.infrastructure.messaging block. Verified against the api
+// packages' GroupVersion / GroupName (and messaging.RabbitmqClusterGVK) before
+// hardcoding here.
 var (
 	keystoneGV  = schema.GroupVersion{Group: "keystone.openstack.c5c3.io", Version: "v1alpha1"}
 	horizonGV   = schema.GroupVersion{Group: "horizon.openstack.c5c3.io", Version: "v1alpha1"}
@@ -332,9 +334,9 @@ func TestProbeOptionalWatches_RabbitmqClusterMissing(t *testing.T) {
 	served, missing, err := probeOptionalWatches(disco, optionalWatchTestScheme(t))
 	g.Expect(err).NotTo(HaveOccurred(),
 		"an uninstalled rabbitmq-cluster-operator is a NotFound, not a probe failure")
-	g.Expect(missing).To(ConsistOf(rabbitmqClusterGVK),
+	g.Expect(missing).To(ConsistOf(messaging.RabbitmqClusterGVK),
 		"only the RabbitmqCluster kind may be reported missing")
-	g.Expect(served[rabbitmqClusterGVK]).To(BeFalse())
+	g.Expect(served[messaging.RabbitmqClusterGVK]).To(BeFalse())
 	g.Expect(served[keystoneGV.WithKind("Keystone")]).To(BeTrue(),
 		"the sibling-service legs must still register when only the broker CRD is absent")
 }
@@ -418,8 +420,8 @@ func TestOptionalWatchObjects_ExcludesKORC(t *testing.T) {
 // broker leg is guarded: the kind is in the optional set, and it resolves off the
 // object itself. optionalWatchTestScheme registers no rabbitmq.com type, so a
 // typed object would fail GVKForObject here; the *unstructured.Unstructured
-// carrying rabbitmqClusterGVK resolves without a scheme entry, which is
-// what lets the c5c3 operator watch the kind without importing its Go module.
+// carrying messaging.RabbitmqClusterGVK resolves without a scheme entry, which
+// is what lets the c5c3 operator watch the kind without importing its Go module.
 func TestOptionalWatchObjects_IncludesRabbitmqCluster(t *testing.T) {
 	g := NewGomegaWithT(t)
 
@@ -429,7 +431,7 @@ func TestOptionalWatchObjects_IncludesRabbitmqCluster(t *testing.T) {
 		gvk, err := apiutil.GVKForObject(obj, scheme)
 		g.Expect(err).NotTo(HaveOccurred(),
 			"every optional watch object must resolve its GVK, %T did not", obj)
-		if gvk == rabbitmqClusterGVK {
+		if gvk == messaging.RabbitmqClusterGVK {
 			matches++
 		}
 	}

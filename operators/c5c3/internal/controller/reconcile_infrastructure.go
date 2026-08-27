@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	c5c3v1alpha1 "github.com/c5c3/cobaltcore/operators/c5c3/api/v1alpha1"
@@ -97,16 +98,6 @@ var memcachedGVK = schema.GroupVersionKind{
 	Group:   "memcached.c5c3.io",
 	Version: "v1beta1",
 	Kind:    "Memcached",
-}
-
-// rabbitmqClusterGVK is the GroupVersionKind of the RabbitmqCluster CR projected
-// in managed messaging mode. Like memcachedGVK it is addressed unstructured:
-// this repository takes no dependency on the RabbitMQ Cluster Operator's Go
-// module.
-var rabbitmqClusterGVK = schema.GroupVersionKind{
-	Group:   "rabbitmq.com",
-	Version: "v1beta1",
-	Kind:    "RabbitmqCluster",
 }
 
 // messagingRecreateAllowedAnnotation, when set to a truthy value on a
@@ -733,11 +724,12 @@ func (r *ControlPlaneReconciler) ensureMemcached(ctx context.Context, c client.C
 // messaging on such a cluster therefore fails closed with InfrastructureReady
 // False and reason RabbitMQError instead of quietly provisioning nothing.
 //
-// Like ensureMemcached it is unstructured (this repository takes no dependency on
-// the RabbitMQ Cluster Operator's Go module, see rabbitmqClusterGVK) and
-// read-modify-write: the write is gated on the LIVE object's ownership, so an
-// owned CR has its replica count re-projected while an externally-provisioned CR
-// sharing the name is adopted read-only and never has ownership claimed.
+// Like ensureMemcached it is unstructured (this repository takes no dependency
+// on the RabbitMQ Cluster Operator's Go module, see
+// messaging.RabbitmqClusterGVK) and read-modify-write: the write is gated on the
+// LIVE object's ownership, so an owned CR has its replica count re-projected
+// while an externally-provisioned CR sharing the name is adopted read-only and
+// never has ownership claimed.
 //
 // Unlike ensureMemcached the re-projection is not symmetric. Growing an owned
 // cluster is an in-place Update; SHRINKING one is a delete-and-recreate, because
@@ -761,7 +753,7 @@ func (r *ControlPlaneReconciler) ensureRabbitMQ(ctx context.Context, c client.Cl
 		Namespace: namespace,
 	}
 	u := &unstructured.Unstructured{}
-	u.SetGroupVersionKind(rabbitmqClusterGVK)
+	u.SetGroupVersionKind(messaging.RabbitmqClusterGVK)
 	err := c.Get(ctx, key, u)
 	switch {
 	case apierrors.IsNotFound(err):
