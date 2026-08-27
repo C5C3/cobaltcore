@@ -65,4 +65,19 @@ type NeutronReconciler struct {
 	// with. Nil means always-local: every CR keeps its children on the management
 	// cluster, which is what single-cluster tests and deployments want.
 	Resolver commonmulticluster.ClusterResolver
+
+	// gatewayAPIAvailable is set during SetupWithManager from the management
+	// cluster's RESTMapper and indicates whether the
+	// gateway.networking.k8s.io/v1 HTTPRoute CRD is installed there. Two
+	// consumers read it: the local HTTPRoute watch leg, which SetupWithManager
+	// skips when false so the controller does not crash on a missing kind, and
+	// commonmulticluster.ChildrenServeKind, which answers with it for local
+	// children while probing the target cluster's RESTMapper for remote ones.
+	gatewayAPIAvailable bool
+
+	// healthProbeCache memoizes the last successful Neutron API probe per CR
+	// (shared TTL probe cache) so a steady-state reconcile does not fire a
+	// synchronous HTTP GET on every pass. The cache's internal mutex guards
+	// concurrent access under MaxConcurrentReconciles > 1.
+	healthProbeCache healthcheck.ProbeCache
 }
