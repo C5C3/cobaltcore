@@ -90,13 +90,18 @@ applies and which decisions need a Phase-0 spike:
 - **Message bus?** The shared bus exists: `commonv1.MessagingSpec` at
   `spec.infrastructure.messaging` (opt-in, managed `clusterRef` or brownfield
   `secretRef`), the `RabbitmqCluster` the ControlPlane provisions in its own
-  namespace, and the rabbitmq-cluster-operator delivered through Flux. The
-  consumer side does not: the **first** RabbitMQ consumer builds the shared
-  resolver that turns either mode into the derived `<instance>-transport-url`
-  Secret, the `OS_DEFAULT__TRANSPORT_URL` env override that sources it, and the
-  `[oslo_messaging_rabbit]` posture it renders. It also has to answer whether it
-  shares that bus or wants a **dedicated** one, which is a per-service slot
-  nobody has built yet. The recipe for it is
+  namespace, and the rabbitmq-cluster-operator delivered through Flux. So does
+  the consumer side, in `internal/common/messaging`:
+  `ReconcileTransportURLSecret` turns either mode into the derived
+  `<instance>-transport-url` Secret, `TransportURLEnvVar` is the
+  `OS_DEFAULT__TRANSPORT_URL` override that sources it, `RabbitSection`
+  renders the `[oslo_messaging_rabbit]` posture, and `EgressPort` gives the
+  NetworkPolicy port. Neutron is its first consumer (issue #904). The helper
+  reads and writes in the consumer's own namespace through the consumer's own
+  client, so a consumer on another cluster or in another namespace than the
+  bus is handed a brownfield `secretRef` by whoever projects it. A new service
+  still has to answer whether it shares that bus or wants a **dedicated** one,
+  which is a per-service slot nobody has built yet. The recipe for it is
   `### Adding a backing-service class` in
   `docs/reference/c5c3/controlplane-crd.md`; Neutron is its first host
   (issue #906).
