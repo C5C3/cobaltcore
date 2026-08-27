@@ -539,3 +539,71 @@ func TestReconcileDatabase_UpgradePhaseFailureIsAHardError(t *testing.T) {
 	g.Expect(ok).To(BeTrue())
 	g.Expect(collectEvents(recorder)).To(ContainElement(ContainSubstring("Warning ExpandFailed")))
 }
+
+// TestReconcileDatabase_AbortReachableWhileTheImageNamesTheTarget covers the
+// escape hatch out of a wedged upgrade. Reverting spec.openStackRelease to the
+// installed release is the shared flow's abort trigger, and the operator does
+// that before touching spec.image, so the mismatch guard must stand aside: the
+// pass has to delete the phase Jobs and clear the phase rather than requeue on
+// ImageReleaseMismatch forever.
+func TestReconcileDatabase_AbortReachableWhileTheImageNamesTheTarget(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	neutron := upgradingNeutron()
+	neutron.Status.TargetRelease = "2026.1"
+	neutron.Status.UpgradePhase = commonv1.UpgradePhaseExpanding
+	r := newNeutronTestReconciler(neutron)
+
+	// One mid-upgrade pass creates the expand Job the abort has to clean up.
+	_, err := r.reconcileDatabase(ctx, r.Client, neutron, dbConfigMapName)
+	g.Expect(err).NotTo(HaveOccurred())
+	getJob(t, r, neutron, "db-expand")
+
+	// The abort edit: only spec.openStackRelease goes back to the installed
+	// release, while spec.image.tag still names the target the upgrade was
+	// heading for.
+	neutron.Spec.OpenStackRelease = "2025.2"
+
+	res, err := r.reconcileDatabase(ctx, r.Client, neutron, dbConfigMapName)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res).To(Equal(ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}))
+	g.Expect(neutron.Status.UpgradePhase).To(BeEmpty())
+	g.Expect(neutron.Status.TargetRelease).To(BeEmpty())
+	g.Expect(neutron.Status.InstalledRelease).To(Equal("2025.2"))
+	expectNoJob(t, r, neutron, "db-expand")
+	if cond := neutronCondition(neutron, "DatabaseReady"); cond != nil {
+		g.Expect(cond.Reason).NotTo(Equal(conditionReasonImageReleaseMismatch),
+			"the mismatch guard must not block a revert-to-installed abort")
+	}
+	recorder, ok := r.Recorder.(*record.FakeRecorder)
+	g.Expect(ok).To(BeTrue())
+	g.Expect(collectEvents(recorder)).To(ContainElement(ContainSubstring("Normal UpgradeAborted")))
+}
+
+// TestReconcileDatabase_MidUpgradeImageDriftBlocks is the twin of the abort
+// case: spec.openStackRelease still requests the target, so reverting
+// spec.image.tag alone is drift rather than an abort. The shared flow's
+// target-changed guard only watches spec.openStackRelease and would let it
+// through, dispatching phase Jobs built from the previous release's binary.
+func TestReconcileDatabase_MidUpgradeImageDriftBlocks(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	neutron := upgradingNeutron()
+	neutron.Status.TargetRelease = "2026.1"
+	neutron.Status.UpgradePhase = commonv1.UpgradePhaseExpanding
+	neutron.Spec.Image.Tag = "2025.2"
+	r := newNeutronTestReconciler(neutron)
+
+	res, err := r.reconcileDatabase(ctx, r.Client, neutron, dbConfigMapName)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(RequeueDatabaseWait))
+	cond := neutronCondition(neutron, "DatabaseReady")
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonImageReleaseMismatch))
+	// The upgrade state is untouched and no phase Job was dispatched.
+	g.Expect(neutron.Status.UpgradePhase).To(Equal(commonv1.UpgradePhaseExpanding))
+	g.Expect(neutron.Status.TargetRelease).To(Equal("2026.1"))
+	expectNoJob(t, r, neutron, "db-expand")
+}
