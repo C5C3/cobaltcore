@@ -37,38 +37,44 @@ func TestSubReconcilerConditionTypesCoversAllNames(t *testing.T) {
 }
 
 // TestPipelineStepNamesAreMapped is the other half of the drift guard, walking
-// the mapping in the opposite direction: every step name the Neutron pipeline
+// the mapping in the opposite direction: every step name either pipeline
 // actually runs must be a key in subReconcilerConditionTypes, otherwise its
-// error series carries condition_type=UNKNOWN. The names come from the pipeline
-// itself (pipelineSteps plus the parallel group's members), so a step added to
-// Reconcile without a mapping entry fails here rather than in a Prometheus query.
+// error series carries condition_type=UNKNOWN. The names come from the pipelines
+// themselves (pipelineSteps of both kinds plus the Neutron parallel group's
+// members), so a step added to either Reconcile without a mapping entry fails
+// here rather than in a Prometheus query.
 //
-// The map also serves the NeutronMetadataAgent pipeline, whose steps this
-// reconciler does not run, so "Chassis" and "DaemonSet" are the only keys the
-// reverse direction admits without a Neutron step behind them. The agent's third
-// step, "Secrets", shares its name with the Neutron one and is covered here.
+// One map serves both kinds, so the check runs against the union of the two step
+// sets. "Secrets" and "Config" are in both, and each is counted once: the map
+// holds one entry per sub_reconciler label value, not one per pipeline.
 func TestPipelineStepNamesAreMapped(t *testing.T) {
 	g := NewGomegaWithT(t)
 	r := &NeutronReconciler{}
-
-	agentOnlySteps := []string{"Chassis", "DaemonSet"}
+	agent := &NeutronMetadataAgentReconciler{}
 
 	var names []string
+	add := func(name string) {
+		if name != "" && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+
 	// The parallel-group step carries no name of its own by design: it
 	// self-instruments its members (see commonreconcile.Step), which are collected
 	// from parallelSteps below. The arguments of both methods are the outputs of
 	// earlier steps, and none of them is read here: only the step names and the
 	// members' condition types are.
 	for _, step := range r.pipelineSteps(r.Client, validNeutron()) {
-		if step.Name != "" {
-			names = append(names, step.Name)
-		}
+		add(step.Name)
 	}
 	for _, sub := range r.parallelSteps(r.Client, resolvedOVNEndpoints{}, 0) {
-		names = append(names, sub.Name)
+		add(sub.Name)
 		g.Expect(subReconcilerConditionTypes[sub.Name]).To(Equal(sub.ConditionType),
 			"parallel member %q reports condition %q but the metrics map says %q",
 			sub.Name, sub.ConditionType, subReconcilerConditionTypes[sub.Name])
+	}
+	for _, step := range agent.pipelineSteps(agent.Client, validAgent()) {
+		add(step.Name)
 	}
 
 	for _, name := range names {
@@ -77,15 +83,11 @@ func TestPipelineStepNamesAreMapped(t *testing.T) {
 				"would be attributed to condition_type=UNKNOWN", name)
 	}
 
-	g.Expect(names).To(HaveLen(len(subReconcilerConditionTypes)-len(agentOnlySteps)),
-		"every mapped sub_reconciler must correspond to exactly one pipeline step "+
-			"of one of the two kinds")
+	g.Expect(names).To(HaveLen(len(subReconcilerConditionTypes)),
+		"every mapped sub_reconciler must correspond to a pipeline step of one of the two kinds")
 	for name := range subReconcilerConditionTypes {
-		if slices.Contains(agentOnlySteps, name) {
-			continue
-		}
 		g.Expect(names).To(ContainElement(name),
-			"subReconcilerConditionTypes maps sub_reconciler %q, which no Neutron "+
-				"pipeline step and no NeutronMetadataAgent step runs", name)
+			"subReconcilerConditionTypes maps sub_reconciler %q, which no Neutron and no "+
+				"NeutronMetadataAgent pipeline step runs", name)
 	}
 }
