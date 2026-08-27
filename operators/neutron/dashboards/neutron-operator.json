@@ -1,0 +1,367 @@
+{
+  "uid": "neutron-operator",
+  "title": "Neutron Operator",
+  "tags": ["neutron", "operator", "c5c3"],
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "timezone": "",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Reconcile duration p50/p95/p99 per sub_reconciler",
+      "description": "p50/p95/p99 wall-clock duration of Neutron sub-reconciler invocations, derived from neutron_operator_reconcile_duration_seconds_bucket. The sub_reconciler label spans both kinds: the Neutron pipeline and the NeutronMetadataAgent one share the histogram. p50 tracks the steady-state hot path; p99 surfaces the tail a speedup roadmap must watch.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, sub_reconciler) (rate(neutron_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{sub_reconciler}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, sub_reconciler) (rate(neutron_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{sub_reconciler}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le, sub_reconciler) (rate(neutron_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{sub_reconciler}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Reconcile error rate per condition_type",
+      "description": "Rate of neutron_operator_reconcile_errors_total grouped by condition_type. A condition_type of UNKNOWN means a sub-reconciler name reached the instrumenter without an entry in subReconcilerConditionTypes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (condition_type) (rate(neutron_operator_reconcile_errors_total[5m]))",
+          "legendFormat": "{{condition_type}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "db_sync duration p95 and failure rate",
+      "description": "Target A: p95 of neutron_operator_db_sync_duration_seconds_bucket per Neutron CR. Target B: failure rate of neutron_operator_db_sync_total{result=\"failed\"}. The series cover the schema jobs: db-sync, db-expand, db-migrate, and db-contract.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^failures .*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ops"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, namespace, neutron) (rate(neutron_operator_db_sync_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{namespace}}/{{neutron}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (namespace, neutron) (rate(neutron_operator_db_sync_total{result=\"failed\"}[5m]))",
+          "legendFormat": "failures {{namespace}}/{{neutron}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "ovn_db_sync duration p95 and failure rate",
+      "description": "Target A: p95 of neutron_operator_ovn_db_sync_duration_seconds_bucket per Neutron CR. Target B: failure rate of neutron_operator_ovn_db_sync_total{result=\"failed\"}. The series cover the recurring neutron-ovn-db-sync-util run of the ovn-db-sync CronJob, which reconciles the Neutron database into the OVN northbound database.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^failures .*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ops"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, namespace, neutron) (rate(neutron_operator_ovn_db_sync_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{namespace}}/{{neutron}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (namespace, neutron) (rate(neutron_operator_ovn_db_sync_total{result=\"failed\"}[5m]))",
+          "legendFormat": "failures {{namespace}}/{{neutron}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "db_sync and ovn_db_sync runs per result",
+      "description": "Rate of terminated schema and OVN synchronisation jobs per result. Both counters increment once per terminated Job, so a rising failed series with a flat succeeded one means the phase is stuck rather than slow.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (rate(neutron_operator_db_sync_total[5m]))",
+          "legendFormat": "db_sync {{result}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (result) (rate(neutron_operator_ovn_db_sync_total[5m]))",
+          "legendFormat": "ovn_db_sync {{result}}"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (namespace, neutron, result) (rate(neutron_operator_ovn_db_sync_total[5m]))",
+          "legendFormat": "ovn_db_sync {{namespace}}/{{neutron}} {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "End-to-end reconcile duration (controller-runtime)",
+      "description": "p50/p95/p99 of controller_runtime_reconcile_time_seconds_bucket for the neutron and neutronmetadataagent controllers. neutron_operator_reconcile_duration_seconds samples only the sub-reconcilers, while this built-in histogram covers the whole Reconcile call: orchestration, status update, and watch handling. It is the SLO signal for end-to-end reconcile latency.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, controller) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=~\"neutron|neutronmetadataagent\"}[5m])))",
+          "legendFormat": "p50 {{controller}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, controller) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=~\"neutron|neutronmetadataagent\"}[5m])))",
+          "legendFormat": "p95 {{controller}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le, controller) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=~\"neutron|neutronmetadataagent\"}[5m])))",
+          "legendFormat": "p99 {{controller}}"
+        }
+      ]
+    }
+  ]
+}
