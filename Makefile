@@ -5,7 +5,7 @@
 # Makefile for Go Workspace
 # Manages build, test, lint, and deployment operations for operators and common modules
 #
-# generate/manifests use controller-gen to produce deepcopy functions and CRD/webhook
+# generate/manifests use controller-gen to produce deepcopy functions and CRD/webhook/RBAC
 # manifests for each operator module that has an api/ directory.
 
 # Default operators to build and test
@@ -237,15 +237,19 @@ generate-common:
 
 .PHONY: manifests
 # manifests runs controller-gen crd and webhook to produce CRD YAML and webhook
-# configuration for each operator that has an api/ directory.
-# Output is written to operators/<op>/config/crd/bases/ and operators/<op>/config/webhook/.
+# configuration for each operator that has an api/ directory, plus the RBAC
+# ClusterRole assembled from the +kubebuilder:rbac markers across the module.
+# Output is written to operators/<op>/config/crd/bases/, operators/<op>/config/webhook/
+# and operators/<op>/config/rbac/role.yaml (the source of the chart's RBAC rules,
+# see sync-helm-rbac).
 manifests:
 	@for op in $(OPERATORS); do \
 		if [ -d "operators/$$op/api" ]; then \
-			echo "Generating CRD and webhook manifests for operators/$$op..."; \
-			mkdir -p operators/$$op/config/crd/bases operators/$$op/config/webhook; \
+			echo "Generating CRD, webhook and RBAC manifests for operators/$$op..."; \
+			mkdir -p operators/$$op/config/crd/bases operators/$$op/config/webhook operators/$$op/config/rbac; \
 			(cd operators/$$op && $(CONTROLLER_GEN) crd paths=./api/... output:crd:artifacts:config=config/crd/bases); \
 			(cd operators/$$op && $(CONTROLLER_GEN) webhook paths=./api/... output:webhook:artifacts:config=config/webhook); \
+			(cd operators/$$op && $(CONTROLLER_GEN) rbac:roleName=$$op-operator paths=./... output:rbac:artifacts:config=config/rbac); \
 		fi; \
 	done
 
@@ -308,6 +312,21 @@ verify-crd-sync:
 		exit 1; \
 	fi; \
 	echo "CRD sync check passed."
+
+.PHONY: sync-helm-rbac
+# sync-helm-rbac regenerates every operator chart's templates/_rbac-rules.tpl
+# from the controller-gen ClusterRole in operators/<op>/config/rbac/role.yaml
+# (itself generated from the +kubebuilder:rbac markers by manifests). The chart
+# RBAC rules are never edited by hand: change the markers, then run this.
+sync-helm-rbac: manifests
+	python3 hack/gen-helm-rbac-rules.py
+
+.PHONY: verify-helm-rbac
+# verify-helm-rbac fails if any committed templates/_rbac-rules.tpl has drifted
+# from the committed config/rbac/role.yaml (run in CI; mirrors verify-crd-sync).
+# It reads the committed role.yaml, so it needs no controller-gen.
+verify-helm-rbac:
+	python3 hack/gen-helm-rbac-rules.py --check
 
 .PHONY: gen-helm-schema
 # gen-helm-schema regenerates both operator charts' values.schema.json from the

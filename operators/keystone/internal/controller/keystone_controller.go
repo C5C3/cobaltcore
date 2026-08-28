@@ -365,26 +365,50 @@ var KeystoneRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystones/finalizers,verbs=update
+// create/delete are intentionally NOT granted: users create backend CRs; the
+// operator only reads them and updates the object (finalizer add/remove).
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=keystone.openstack.c5c3.io,resources=keystoneidentitybackends/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets;serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+// Required for getValidationErrorMessage to list pods of failed policy
+// validation Jobs and extract error details from terminated container state.
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete
+// Required for the operator to observe the referenced MariaDB cluster's
+// Ready condition and reflect outages in DatabaseReady.
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
+// Required so the operator can issue the per-Keystone database client
+// Certificate (Spec.Database.TLS) and have cert-manager rotate the keypair
+// Secret consumed by the Keystone workloads.
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
+// delete is intentionally NOT granted: the operator only manages externalsecret
+// lifecycles via owner-references, it never calls r.Delete on them directly.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch;create;update;patch
+// delete is required so the openbao-finalizer can tear down the fernet-keys
+// and credential-keys backup PushSecrets on Keystone CR deletion and rely on
+// ESO DeletionPolicy=Delete to purge the kv-v2 paths.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=pushsecrets,verbs=get;list;watch;create;update;patch;delete
+// Required so the operator can observe the selected store's Ready condition
+// and reflect upstream secret-backend (OpenBao) outages in SecretsReady. A
+// Keystone selects either the shared cluster-scoped ClusterSecretStore
+// (default) or a namespaced SecretStore via spec.secretStoreRef, so both kinds
+// must be watchable.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores;secretstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// Required to create/update/delete HTTPRoutes that expose Keystone API externally.
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+// Required so the operator can observe the Accepted condition set by the
+// upstream Gateway controller and reflect it in HTTPRouteReady.
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=get
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=roles;rolebindings,verbs=get;list;watch;create;update;patch;delete
+// Required for the webhook to validate that spec.priorityClassName references
+// an existing PriorityClass at admission time.
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
 
 // Reconcile is the main reconciliation loop for the Keystone CR.
