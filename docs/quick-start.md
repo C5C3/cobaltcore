@@ -10,8 +10,8 @@ SPDX-License-Identifier: Apache-2.0
 # Quick Start
 
 This macOS quick start gets you from `git clone` to an authenticated Keystone
-API call on kind host port **`8443`** — no `vmnetd` helper, no privileged port
-binding. For the Keystone identity service reference, see
+API call on kind host port `8443`. It needs no `vmnetd` helper and binds no
+privileged port. For the Keystone identity service reference, see
 [Keystone Operator](./reference/keystone/index.md). For UI tours, fallbacks,
 the local-build path, the production HelmRelease, E2E and Tempest, see
 [Quick Start (Extended)](./quick-start-extended.md).
@@ -54,19 +54,19 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
 KIND_HOST_PORT=8443 make deploy-infra
 ```
 
-Creates the `cobaltcore` kind cluster with `host:8443 → nodePort 31443`,
+The command creates the `cobaltcore` kind cluster with `host:8443 → nodePort 31443`,
 then installs Flux, cert-manager, the Gateway API CRDs,
 prometheus-operator-crds, OpenBao (initialised, unsealed and bootstrapped),
 MariaDB operator + `openstack-db`, External Secrets, Memcached operator +
 `openstack-memcached`, Envoy Gateway and the shared `openstack-gw`. Expect
-**5–10 minutes** on first run.
+5 to 10 minutes on first run.
 
-`make deploy-infra` is safe to re-run: a run with the same parameters detects
-the existing cluster and the steps already completed and converges without
-redoing them, so an interrupted bootstrap can simply be re-executed. Optional
-components can be enabled later by re-running with the flag set — see the
-opt-in tips in the [Extended Quick Start](./quick-start-extended.md). Removing a
-flag does not uninstall that component — that is `make teardown-infra`'s job.
+`make deploy-infra` is safe to re-run. A run with the same parameters detects
+the existing cluster and the steps that already completed, then converges
+without redoing them, so you can repeat an interrupted bootstrap. To enable an
+optional component later, re-run with its flag set; the opt-in tips are in the
+[Extended Quick Start](./quick-start-extended.md). Removing a flag does not
+uninstall that component. That is `make teardown-infra`'s job.
 
 If the first run fails because a download or image pull flakes out, run
 `make teardown-infra` and then repeat Step 2.
@@ -214,8 +214,8 @@ kubectl port-forward svc/openbao -n shared-services 8200:8200
 The listener enforces mutual TLS, so the browser must present a client
 certificate before it reaches the UI. Build a PKCS#12 bundle from the
 `openbao-client-tls` Secret, import it into Firefox, and sign in with the
-token — see [Extended Quick Start — Step 4b](./quick-start-extended.md#step-4b-openbao-ui)
-for the exact commands, CA trust, and browser notes.
+token. [Extended Quick Start — Step 4b](./quick-start-extended.md#step-4b-openbao-ui)
+has the commands, CA trust, and browser notes.
 
 > **Grafana (kind-only, opt-in):** for the keystone-operator metrics dashboard, run `WITH_PROMETHEUS=true make deploy-infra` and follow [Extended Quick Start — Step 4c](./quick-start-extended.md#step-4c-grafana-ui). The compact path stays Grafana-free by default.
 

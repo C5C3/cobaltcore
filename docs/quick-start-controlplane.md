@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Quick Start (ControlPlane): C5C3 + K-ORC on Kind
 
-This guide takes a single **c5c3 ControlPlane** CR from `git clone` to an authenticated
+This guide takes a single c5c3 `ControlPlane` CR from `git clone` to an authenticated
 Keystone API call. Compared with the [Quick Start](./quick-start.md), the
 c5c3-operator now provisions the `MariaDB`, `Memcached`, `Keystone`, `Horizon`,
 `Glance`, `Placement`, and `Barbican` children, mints the admin application
@@ -42,7 +42,7 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
   `cache.replicas: 1` a single Memcached pod. The CRD default for both is `3`,
   which matches the production baseline but OOM-kills a laptop-sized kind.
 - On a bigger box, set `CONTROLPLANE_DB_REPLICAS=3` and/or
-  `CONTROLPLANE_CACHE_REPLICAS=N` for Step 2. `2` is rejected for the database —
+  `CONTROLPLANE_CACHE_REPLICAS=N` for Step 2. `2` is rejected for the database:
   Galera needs a quorum.
 - `database.replicas` is immutable after the CR is created, so change it on a
   fresh environment (`make teardown-infra` first).
@@ -76,11 +76,12 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 `WITH_CONTROLPLANE=true` brings up the shared infrastructure and then the
 ControlPlane operator stack (keystone-operator, horizon-operator,
 glance-operator, placement-operator, barbican-operator, K-ORC, c5c3-operator)
-from the published charts — but **not** the `ControlPlane` CR
-itself; you create and apply that in Step 3. In this mode the ControlPlane provisions its own MariaDB/Memcached
-(managed mode), so deploy-infra does not create the shared ones. `KIND_HOST_PORT=8443`
-maps the Gateway to a non-privileged host port for macOS; on Linux with rootful
-Docker drop the override and use port `443`. Expect **5–10 minutes**.
+from the published charts. It does not create the `ControlPlane` CR itself;
+you create and apply that in Step 3. In this mode the ControlPlane provisions
+its own MariaDB/Memcached (managed mode), so deploy-infra does not create the
+shared ones. `KIND_HOST_PORT=8443` maps the Gateway to a non-privileged host
+port for macOS; on Linux with rootful Docker drop the override and use port
+`443`. Expect 5 to 10 minutes.
 
 If a download or image pull fails, run `make teardown-infra` and repeat Step 2.
 
@@ -90,9 +91,9 @@ deploy-infra pins them to the digest current at deploy time (per-operator
 image-digest ConfigMaps consumed by the HelmReleases via `valuesFrom`). After
 a feature merges to `main`, run `make refresh-operator-digests` against the
 running cluster: it re-resolves the digests, updates the ConfigMaps, and
-requests a Flux reconcile so the operators roll to the freshly built images —
-no redeploy needed. The helper prefers `docker buildx`, but falls back to `curl`
-if Docker is unavailable.
+requests a Flux reconcile so the operators roll to the freshly built images.
+You do not need to redeploy. The helper prefers `docker buildx`, but falls back
+to `curl` if Docker is unavailable.
 :::
 
 ## Step 3 — Create the ControlPlane CR
@@ -106,8 +107,8 @@ admin-credential references with their well-known names:
   operator replaces with per-ControlPlane Secrets in managed mode
 - `k-orc-clouds-yaml` with the `admin` cloud entry
 
-The c5c3-operator seeds the K-ORC bootstrap `clouds.yaml` per CR, deriving the
-in-cluster Keystone auth URL from the CR name. To use a different name, pass
+The c5c3-operator seeds the K-ORC bootstrap `clouds.yaml` per CR and derives
+the in-cluster Keystone auth URL from the CR name. To use a different name, pass
 `CONTROLPLANE_NAME=foo` to Step 2; it renames the bundled CR and seeds the
 matching admin password. The defaulting only fills the names and references;
 the operator still consumes the pre-seeded Secret content and materialises the
@@ -215,26 +216,26 @@ joins the chain (after `KeystoneReady`) and `status.services` gains a second
 entry.
 
 The `glance` block makes the reconciler project the OpenStack Image service and
-one `GlanceBackend` child per `backends` entry — here a single S3 store on the
+one `GlanceBackend` child per `backends` entry, here a single S3 store on the
 in-cluster Garage object store. Garage runs in `shared-services`; the Step 2
 stack also syncs a `garage-s3-credentials` Secret into `openstack`, which is
 where the Glance child resolves `credentialsSecretRef`. The `gateway` block
 exposes the image API through the same shared Envoy Gateway as Keystone and
 Horizon, on the third HTTPS listener the kind overlay adds for
-`glance.127-0-0-1.nip.io`, and `publicEndpoint` makes the public image catalog
-row advertise the actually reachable host URL — the `:8443` host port — instead
-of the default-443 form the operator would otherwise derive from the gateway
-hostname. The operator projects a `KeystoneService` registration
-`controlplane-glance` carrying the image catalog entry and the `glance` service
-account (user `glance`, project `service-glance`, role `service`), so Glance can
-validate the Keystone tokens it receives; its database and cache derive from
-`spec.infrastructure`, exactly like Keystone's. On the managed
-shared database its DB credential is engine-issued and auto-rotated exactly like
-Keystone's — short-lived leases from the OpenBao database engine, and the Step 4
+`glance.127-0-0-1.nip.io`. `publicEndpoint` makes the public image catalog row
+advertise the reachable host URL with its `:8443` host port, instead of the
+default-443 form the operator would otherwise derive from the gateway hostname.
+The operator projects a `KeystoneService` registration `controlplane-glance`
+carrying the image catalog entry and the `glance` service account (user
+`glance`, project `service-glance`, role `service`), so Glance can validate the
+Keystone tokens it receives. Its database and cache derive from
+`spec.infrastructure` the same way Keystone's do. On the managed shared
+database its DB credential is engine-issued and auto-rotated like Keystone's,
+as short-lived leases from the OpenBao database engine, and the Step 4
 onboarding provisions the engine tenant for all four database services
 (keystone, glance, placement, and barbican). A `GlanceReady` condition joins
-the chain — gating on `KeystoneReady` plus that registration having provisioned
-the account — and `status.services` gains a third entry.
+the chain, gated on `KeystoneReady` plus that registration having provisioned
+the account, and `status.services` gains a third entry.
 
 The `placement` block projects a Placement child, `controlplane-placement`: the
 API deployment, its own logical schema on the shared MariaDB, and a Keystone
@@ -243,11 +244,11 @@ carries the placement catalog entry and the `placement` account (user
 `placement`, role `service`) with a project of its own, `service-placement`;
 each registration creates its project, so two naming one project would collide.
 Database and cache derive from `spec.infrastructure` the same way Glance's do,
-and on the managed
-shared database the DB credential is engine-issued too, from the tenant Step 4
-onboards. The `gateway` block puts the API on the sixth HTTPS listener the kind
-overlay adds, `placement.127-0-0-1.nip.io`, and `publicEndpoint` carries the
-`:8443` host port into the public placement catalog row. A `PlacementReady`
+and on the managed shared database the DB credential is engine-issued too, from
+the tenant Step 4 onboards. The `gateway` block puts the API on the sixth HTTPS
+listener the kind overlay adds, `placement.127-0-0-1.nip.io`, and
+`publicEndpoint` carries the `:8443` host port into the public placement
+catalog row. A `PlacementReady`
 condition joins the chain next to `GlanceReady`, gated the same way, and
 `status.services` gains a fourth entry.
 
@@ -259,19 +260,18 @@ attaches the two. A `KeystoneService` registration `controlplane-barbican`
 carries the key-manager catalog entry and the `barbican` account (user
 `barbican`, role `service`) with a project of its own, `service-barbican`. Its
 database credential is engine-issued from the tenant Step 4 onboards, like
-Glance's and Placement's. The `gateway` block puts the
-key-manager API on the seventh HTTPS listener, `barbican.127-0-0-1.nip.io`, and
-`publicEndpoint` carries the `:8443` host port into the public key-manager
-catalog row. A `BarbicanReady` condition joins the chain beside `GlanceReady`
+Glance's and Placement's. The `gateway` block puts the key-manager API on the
+seventh HTTPS listener, `barbican.127-0-0-1.nip.io`, and `publicEndpoint`
+carries the `:8443` host port into the public key-manager catalog row. A `BarbicanReady` condition joins the chain beside `GlanceReady`
 and `PlacementReady`, gated the same way, and `status.services` gains a fifth
 entry. The projected instance is proving-grade: one replica, no
 PodDisruptionBudget, sealed by a static key in a plain Secret beside its volume.
 [Run Barbican on a Dedicated OpenBao](./guides/barbican/barbican-dedicated-openbao.md)
 covers the same service step by step, including the external-server alternative.
 
-Applying the CR is not the end of the manual work: a hand-applied ControlPlane
-needs the one-time OpenBao onboarding in Step 4 before the chain can progress
-past its database credentials.
+Manual work remains after the apply: a hand-applied ControlPlane needs the
+one-time OpenBao onboarding in Step 4 before the chain can progress past its
+database credentials.
 
 <details>
 <summary>Equivalent fully-expanded form (what the webhook defaults to)</summary>
@@ -371,14 +371,14 @@ spec:
 
 ## Step 4 — Onboard the OpenBao database-engine tenant
 
-In managed mode the ControlPlane defaults to engine-issued (**Dynamic**) Keystone
+In managed mode the ControlPlane defaults to engine-issued (`Dynamic`) Keystone
 DB credentials: ESO draws short-lived MySQL users from the OpenBao
 database engine at `database/mariadb/creds/keystone-<namespace>`. The
-c5c3-operator only **reads** from that path — the engine connection and the
+c5c3-operator only reads from that path. The engine connection and the
 per-tenant role are provisioned out-of-band, once per ControlPlane, by
 `deploy/openbao/bootstrap/setup-database-tenant.sh`.
 
-Here `<namespace>` is the **Keystone service namespace** — the ControlPlane's own
+Here `<namespace>` is the Keystone service namespace: the ControlPlane's own
 namespace (`openstack`) in this quick start, and only different when
 `spec.services.keystone.namespace` places the Keystone service in a namespace of
 its own. The onboarding script resolves it from the live ControlPlane spec, so
@@ -401,14 +401,15 @@ unset BAO_TOKEN
 The two arguments are the ControlPlane **namespace** and **name** (`openstack
 controlplane` here; adjust the second one if you renamed the CR via
 `CONTROLPLANE_NAME` in Step 2). `BAO_TOKEN` is read from the `openbao-init-keys`
-Secret where deploy-infra stores the root token — kind-only plumbing; against a
-production OpenBao use a token with write access to `database/mariadb/*`. The
-script is idempotent: re-running it refreshes the connection and role in place.
+Secret where deploy-infra stores the root token, which is kind-only plumbing;
+against a production OpenBao use a token with write access to
+`database/mariadb/*`. The script is idempotent: re-running it refreshes the
+connection and role in place.
 
 Skip this step only when:
 
-- Step 2 ran with `WITH_CONTROLPLANE_CR=true` — deploy-infra then onboards the
-  bundled ControlPlane automatically, or
+- Step 2 ran with `WITH_CONTROLPLANE_CR=true`, in which case deploy-infra
+  onboards the bundled ControlPlane automatically, or
 - the ControlPlane opts out of Dynamic credentials with
   `spec.infrastructure.database.credentialsMode: Static` (see
   [Migrate Keystone DB to Dynamic Credentials](./guides/keystone/migrate-keystone-db-to-dynamic-credentials.md)).
@@ -418,7 +419,7 @@ The reconcile chain stalls before any Keystone or Horizon child is created: the
 ControlPlane reports `DBCredentialsReady=False` (reason
 `WaitingForDBCredentialSecret`), the `controlplane-keystone-db-credentials`
 ExternalSecret sits in `SecretSyncedError`, and the external-secrets controller
-logs `unknown role: keystone-<namespace>`. Nothing is lost — run the onboarding
+logs `unknown role: keystone-<namespace>`. Nothing is lost: run the onboarding
 script and ESO syncs the credential on its next retry.
 :::
 
@@ -466,8 +467,8 @@ kubectl wait controlplane/controlplane -n openstack \
 ## Step 6 — Verify
 
 The ControlPlane exposes the projected Keystone through the shared Envoy Gateway
-at `https://keystone.127-0-0-1.nip.io:8443/v3` — the same path as the per-service
-[Quick Start](./quick-start.md), no port-forward.
+at `https://keystone.127-0-0-1.nip.io:8443/v3`, the same path as the per-service
+[Quick Start](./quick-start.md), and no port-forward is needed.
 
 ```bash
 curl -k https://keystone.127-0-0-1.nip.io:8443/v3
@@ -487,21 +488,19 @@ The command returns the following error:
 curl: (6) Could not resolve host: keystone.127-0-0-1.nip.io
 ```
 
-`nip.io` deliberately resolves hostnames like `keystone.127-0-0-1.nip.io` to
-the loopback address `127.0.0.1`. Some routers ship **DNS rebind
-protection**, a security feature that silently drops any DNS response
-resolving a public hostname to a private or loopback address, which is
-this pattern. When your machine's resolver does this, `nip.io`
-never resolves. Confirm the cause by comparing your
-router against a public resolver:
+`nip.io` resolves hostnames like `keystone.127-0-0-1.nip.io` to the loopback
+address `127.0.0.1` by design. Some routers ship **DNS rebind protection**, a
+security feature that silently drops any DNS response resolving a public
+hostname to a private or loopback address, which is this pattern. When your
+machine's resolver does this, `nip.io` never resolves. Confirm the cause by
+comparing your router against a public resolver:
 
 ```bash
 dig +short keystone.127-0-0-1.nip.io @<your-router-ip>   # empty: blocked
 dig +short keystone.127-0-0-1.nip.io @1.1.1.1            # 127.0.0.1: as expected
 ```
 
-The most reliable fix is host-local: add loopback
-entries to `/etc/hosts`:
+The most reliable fix is host-local: add loopback entries to `/etc/hosts`:
 
 ```bash
 sudo sh -c 'cat >> /etc/hosts <<EOF
@@ -514,7 +513,7 @@ EOF'
 ```
 
 For a one-off `curl` check without touching `/etc/hosts`, use `--resolve` to
-override DNS for a single host/port pair — `curl` still sends the original
+override DNS for a single host/port pair. `curl` still sends the original
 hostname in the request and TLS handshake, but connects directly to
 `127.0.0.1`:
 
@@ -543,7 +542,7 @@ openstack --insecure token issue
 > The admin password is read from the operator-owned per-ControlPlane Secret
 > `controlplane-keystone-admin-credentials` (named `{ControlPlane name}-keystone-admin-credentials`).
 > In managed mode the c5c3-operator always projects this Secret, so the command holds
-> for any identity — if you set `CONTROLPLANE_NAME=foo` in Step 2, read
+> for any identity. If you set `CONTROLPLANE_NAME=foo` in Step 2, read
 > `foo-keystone-admin-credentials` instead.
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
@@ -563,7 +562,7 @@ An `image` row proves Glance registered its endpoints. The public image catalog
 row now carries the gateway URL (`https://glance.127-0-0-1.nip.io:8443`, the
 `publicEndpoint` from Step 3), and the `openstack` CLI resolves the `public`
 interface by default, so the upload runs directly from the host through the
-shared Gateway — no in-cluster pod needed. `--insecure` accepts the listener's
+shared Gateway, with no in-cluster pod involved. `--insecure` accepts the listener's
 self-signed certificate, as with the Keystone calls above.
 
 Create a throwaway 1 KiB image, upload it through the gateway, wait for it to
@@ -583,7 +582,7 @@ openstack --insecure image delete first-image
 ```
 
 The poll loop matters because `image create` returns as soon as Glance accepts
-the upload, while the store write completes asynchronously — a cold S3
+the upload, while the store write completes asynchronously: a cold S3
 connection or a contended Garage backend can leave the image in `saving` for a
 few seconds.
 
@@ -593,7 +592,7 @@ A run aborted before the final `delete` leaves `first-image` behind; delete it
 
 ::: warning Leave OS_REGION_NAME unset
 Do **not** add `OS_REGION_NAME` to the host exports: the projected K-ORC
-catalog rows carry no region, image, placement, and key-manager alike, so a
+catalog rows for image, placement, and key-manager alike carry no region, so a
 region-scoped lookup finds no endpoint. The upload fails with `public endpoint
 for image service in RegionOne region not found`, the placement and secret calls
 with the same message under their own service names. Keystone's own bootstrap
@@ -683,13 +682,13 @@ its own `horizon.127-0-0-1.nip.io` listener:
 open https://horizon.127-0-0-1.nip.io:8443/
 ```
 
-Your browser will warn that the certificate is not trusted — expected for a kind
-cluster (the listener terminates with a self-signed certificate). Log in with
-`admin` / the password from the `controlplane-keystone-admin-credentials` Secret
-above (domain `Default`).
+Your browser will warn that the certificate is not trusted. That is expected for
+a kind cluster, where the listener terminates with a self-signed certificate.
+Log in with `admin` / the password from the
+`controlplane-keystone-admin-credentials` Secret above (domain `Default`).
 
 After login the dashboard redirects to `/project/`, which reports
-"Unauthorized" — the default landing page needs Compute/Network services this
+"Unauthorized": the default landing page needs Compute/Network services this
 control plane does not serve yet. Open the Identity panel instead:
 
 ```bash
