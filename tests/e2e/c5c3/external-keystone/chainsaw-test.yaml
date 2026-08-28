@@ -213,6 +213,25 @@ spec:
               sleep 5
             done
           }
+          # Poll until <want> entries of status.catalog.imports report resolved=true.
+          # CatalogReady=True is gated on the REQUIRED imports only (the identity
+          # Service and the endpointType interface; reconcile_catalog_external.go).
+          # The other interfaces are best-effort: K-ORC resolves them a few seconds
+          # after the Service becomes Available, so the projection lags the Ready
+          # edge and a single sample there races K-ORC.
+          wait_cp_imports_resolved() { # <name> <ns> <want> <timeout>
+            local name="$1" ns="$2" want="$3" timeout="$4" deadline n
+            deadline=$(( $(date +%s) + timeout ))
+            while true; do
+              n="$(kubectl get controlplane "$name" -n "$ns" -o json 2>/dev/null \
+                | jq '[.status.catalog.imports[]? | select(.resolved==true)] | length' 2>/dev/null || true)"
+              if [ "${n:-0}" = "$want" ]; then echo "OK: ${ns}/${name} ${want} catalog import(s) resolved"; return 0; fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "ERROR: ${ns}/${name} only ${n:-0} of ${want} catalog import(s) resolved within ${timeout}s (last: $(kubectl get controlplane "$name" -n "$ns" -o jsonpath='{.status.catalog.imports}' 2>/dev/null || true))"; return 1
+              fi
+              sleep 5
+            done
+          }
           # Poll until a condition reaches <want-status> with a reason in a set.
           wait_cp_cond_reason() { # <name> <ns> <ctype> <want> <timeout> <reason...>
             local name="$1" ns="$2" ctype="$3" want="$4" timeout="$5"; shift 5
@@ -470,6 +489,10 @@ spec:
           assert_eq "AdminCredentialReady status" "True" "$(cp_status "${CP}" "${CP_NS}" AdminCredentialReady)"
           assert_eq "CatalogReady status" "True" "$(cp_status "${CP}" "${CP_NS}" CatalogReady)"
           assert_eq "CatalogReady reason" "CatalogImported" "$(cp_reason "${CP}" "${CP_NS}" CatalogReady)"
+          # The fixture publishes all three interfaces, so all four imports resolve;
+          # give the best-effort Endpoint imports the operator's own import grace
+          # (externalImportStallGrace, 2m) to settle before sampling the projection.
+          wait_cp_imports_resolved "${CP}" "${CP_NS}" 4 120
           cp_json="$(kubectl get controlplane "${CP}" -n "${CP_NS}" -o json)"
           assert_eq "catalog import count" "4" \
             "$(printf '%s' "$cp_json" | jq '.status.catalog.imports | length')"
