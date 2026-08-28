@@ -6,11 +6,11 @@ quadrant: backend
 # Helm Values Schema
 
 Reference documentation for the `values.schema.json` JSON Schema that validates
-the Helm chart values of every CobaltCore operator — **keystone-operator** and
-**c5c3-operator**, plus the glance-operator, horizon-operator, and
-placement-operator siblings. Helm
-enforces this schema automatically during `helm install`, `helm upgrade`,
-`helm lint`, and `helm template`.
+the Helm chart values of every CobaltCore operator chart — keystone-operator,
+c5c3-operator, glance-operator, horizon-operator, placement-operator,
+barbican-operator, ovn-operator and neutron-operator. Helm enforces this schema
+automatically during `helm install`, `helm upgrade`, `helm lint`, and
+`helm template`.
 
 All charts share one schema source, so the value tables below apply to every
 operator unchanged. The few keys that exist on only some charts are called out
@@ -30,16 +30,25 @@ Each chart ships its own generated copy of the schema:
 | glance-operator | `operators/glance/helm/glance-operator/values.schema.json` |
 | horizon-operator | `operators/horizon/helm/horizon-operator/values.schema.json` |
 | placement-operator | `operators/placement/helm/placement-operator/values.schema.json` |
+| barbican-operator | `operators/barbican/helm/barbican-operator/values.schema.json` |
+| ovn-operator | `operators/ovn/helm/ovn-operator/values.schema.json` |
+| neutron-operator | `operators/neutron/helm/neutron-operator/values.schema.json` |
+| operator-library-testbed | `operators/shared/helm/operator-library-testbed/values.schema.json` (the library's test consumer, never published) |
 
 ::: warning Generated file
 This schema is generated from the shared source in
-`hack/gen-helm-values-schema.py`, which discovers every chart under
-`operators/*/helm/*-operator/` and emits each chart's schema from the same
-definitions so they cannot drift (a new operator only needs a
-`WEBHOOK_ENABLED_DESCRIPTIONS` entry naming its CR kind). Edit the generator
-and run
-`make gen-helm-schema`; do not hand-edit `values.schema.json` —
-`make verify-helm-schema` (run in CI) fails on drift.
+`hack/gen-helm-values-schema.py`, which discovers every application chart under
+`operators/*/helm/` and emits each chart's schema from the same definitions so
+they cannot drift. The generator names no operator: the image repository
+default comes from the chart's `values.yaml`, the `webhook.enabled`
+description lists the CR kinds found in the operator's `config/webhook`
+manifests, and `networkPolicy` is included when the chart ships
+`templates/networkpolicy.yaml`. What a single chart adds on top lives next to
+that chart in `values.schema.extras.json`, a partial schema that is deep-merged
+into the shared one (objects merge recursively, lists concatenate). Edit the
+generator or a chart's extras file and run `make gen-helm-schema`; do not
+hand-edit `values.schema.json` — `make verify-helm-schema` (run in CI) fails
+on drift.
 :::
 
 ## Schema Overview
@@ -58,20 +67,21 @@ to a chart version, so it is not repeated here.
 
 ## Per-Operator Applicability
 
-Every chart exposes the same core value keys. Three keys are conditional on what
-a chart actually ships, so they are present only where they apply:
+Every chart exposes the same core value keys — `image`, `replicas`,
+`resources`, `rbac`, `leaderElection`, `controller`, `webhook`, `metrics`,
+`logging`, `monitoring`, `serviceAccount`, `extraArgs`, `extraEnv`,
+`nameOverride`, `fullnameOverride`. A few keys are conditional on what a chart
+ships, so they are present only where they apply:
 
-| Key | keystone-operator | c5c3-operator | glance-operator | horizon-operator | placement-operator |
-| --- | :---: | :---: | :---: | :---: | :---: |
-| `image`, `replicas`, `resources`, `rbac`, `leaderElection`, `webhook`, `metrics`, `logging`, `monitoring`, `serviceAccount`, `controller`, `nameOverride`, `fullnameOverride` | Yes | Yes | Yes | Yes | Yes |
-| `networkPolicy` | Yes | — | Yes | Yes | Yes |
-| `federation` | Yes | — | — | — | — |
+| Key | Charts | Source |
+| --- | --- | --- |
+| `networkPolicy` | every chart that ships `templates/networkpolicy.yaml` — all but the c5c3-operator | shared generator |
+| `networkPolicy.openBao` | barbican-operator | `values.schema.extras.json` |
+| `rbac.secretStoreNamespaces` | barbican-operator | `values.schema.extras.json` |
+| `federation` | keystone-operator | `values.schema.extras.json` |
+| `barbicanOperator` | c5c3-operator | `values.schema.extras.json` |
 
-- `networkPolicy` is emitted for every chart that ships a
-  `templates/networkpolicy.yaml` (all service operators); the c5c3-operator does
-  not, so the key is rejected there.
-- `federation` is keystone-only — only the keystone-operator registers the
-  SSRF-guarded federation-metadata client flag.
+- A key a chart does not carry is rejected there (`additionalProperties: false`).
 - `controller.maxConcurrentReconciles` is accepted by every chart, but only the
   controllers that opt in consume it (see [controller](#controller)).
 
@@ -173,9 +183,11 @@ See [How to enable the Keystone operator metrics endpoint](../../guides/keystone
 
 The `networkPolicy` block (default-off operator pod hardening with fail-closed
 render guards) is validated by the schema on every chart that ships a
-`templates/networkpolicy.yaml` — keystone-operator, glance-operator,
-horizon-operator, and placement-operator. The c5c3-operator does not ship the
-template, so the key is rejected there. Its fields are documented in
+`templates/networkpolicy.yaml` — every operator chart but the c5c3-operator,
+which does not ship the template, so the key is rejected there. The template
+itself is the shared `operator-library.networkPolicy`; the barbican-operator
+adds an OpenBao egress rule (`networkPolicy.openBao`) through the
+`operator-library.chart.networkPolicyEgress` hook. Its fields are documented in
 [Keystone Operator NetworkPolicy](../keystone/keystone-operator-networkpolicy.md).
 
 ### federation
@@ -185,12 +197,25 @@ template, so the key is rejected there. Its fields are documented in
 | `federation.metadataAllowCidrs` | `array` | each item matches the shared `cidr` pattern definition | `[]` |
 
 The `federation` block is keystone-only — it is layered onto the
-keystone-operator schema alone (unlike `networkPolicy`, which every service
-operator registers; the sibling operators do not register the federation flag).
+keystone-operator schema by that chart's `values.schema.extras.json` (unlike
+`networkPolicy`, which the shared generator emits for every chart that ships
+the template).
 Each `metadataAllowCidrs` entry is validated against the same shared
 `cidr` pattern definition the `networkPolicy` block reuses. The rendered
 `--federation-metadata-allow-cidrs` flag and its runtime semantics are covered in
 the [keystone-operator packaging reference](./keystone-operator-packaging.md#federation).
+
+### extraArgs and extraEnv
+
+| Field | Type | Constraint | Default |
+| --- | --- | --- | --- |
+| `extraArgs` | `array` | non-empty strings | `[]` |
+| `extraEnv` | `array` | objects with a non-empty `name` (Kubernetes `EnvVar`) | `[]` |
+
+Both are appended verbatim to the manager container — `extraArgs` after the
+flags the chart renders itself, `extraEnv` after the variables the chart
+derives from its own values — for a flag or variable the operator binary
+accepts but the chart exposes no value for.
 
 ### operator-library
 
@@ -260,8 +285,10 @@ rejecting malformed strings like `cpu: "not-valid"` and negative numbers like `c
 
 ## Test Coverage
 
-Schema validation is tested with helm-unittest in
-`operators/keystone/helm/keystone-operator/tests/schema_validation_test.yaml`.
+Schema validation is tested with helm-unittest once for the shared schema, in
+`operators/shared/helm/operator-library-testbed/tests/schema_validation_test.yaml`;
+each operator chart's own `tests/schema_validation_test.yaml` proves the chart
+ships an enforced schema and covers the keys its extras file adds.
 
 ### Negative Tests (rejection)
 
@@ -292,8 +319,9 @@ Schema validation is tested with helm-unittest in
 
 The schema above is shared; the shipped **defaults** differ only where a chart
 does not carry a key. The table below is the practical values summary for the
-two operators this reference centres on. The glance-operator, horizon-operator, and
-placement-operator follow the keystone-operator defaults — including `controller.maxConcurrentReconciles: 2`
+two operators this reference centres on. The glance-operator, horizon-operator,
+placement-operator, barbican-operator, ovn-operator and neutron-operator follow
+the keystone-operator defaults — including `controller.maxConcurrentReconciles: 2`
 — and differ only by their own `image.repository`, their `webhook.enabled`
 description, and by carrying no `federation` key (see the
 [applicability matrix](#per-operator-applicability)).

@@ -470,8 +470,8 @@ Timeout: 15 minutes.
 
 ### verify-codegen
 
-Verifies that generated code (CRD manifests, deepcopy functions) is committed and
-up-to-date. This is a gate job — it blocks merge alongside `lint`,
+Verifies that generated code (CRD, webhook and RBAC manifests, deepcopy
+functions, the chart RBAC rules templates) is committed and up-to-date. This is a gate job — it blocks merge alongside `lint`,
 `test`, and `shellcheck`.
 
 | Step | Action | Details |
@@ -479,9 +479,10 @@ up-to-date. This is a gate job — it blocks merge alongside `lint`,
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `go install controller-gen@${{ env.CONTROLLER_GEN_VERSION }}` | Installs the pinned code generator |
-| 4 | `make manifests && make generate` | Regenerates CRD manifests and deepcopy functions |
+| 4 | `make manifests && make generate` | Regenerates CRD, webhook and RBAC (`config/rbac/role.yaml`) manifests and deepcopy functions |
 | 5 | `make verify-crd-sync` | Verifies Helm chart CRD copies match controller-gen output |
-| 6 | `git diff --exit-code` | Fails if any files changed (stale generated code) |
+| 6 | `make verify-helm-rbac` | Verifies each chart's `templates/_rbac-rules.tpl` matches the regenerated `config/rbac/role.yaml` |
+| 7 | `git diff --exit-code` | Fails if any files changed (stale generated code) |
 
 When the diff check fails, the job produces a GitHub Actions `::error::` annotation with
 instructions to run `make manifests && make generate` locally and commit the result.
@@ -503,29 +504,32 @@ Builds the VitePress documentation site to catch broken links and build errors.
 
 ### helm-validate
 
-Validates Helm chart structure, template rendering, and unit tests for both
-operator charts without requiring a cluster. Verifies the generated
-`values.schema.json` is in sync with its shared source, vendors the shared
-`operator-library` subchart, then runs `helm lint`, `helm template` with five
-value override scenarios, and `helm unittest` for each chart to catch
-regressions at PR time.
+Validates Helm chart structure, template rendering, and unit tests for every
+operator chart and the operator-library testbed without requiring a cluster.
+Verifies the generated `values.schema.json` and `_rbac-rules.tpl` files are in
+sync with their sources, vendors the shared `operator-library` subchart, then
+runs `helm lint`, `helm template` with five value override scenarios, and
+`helm unittest` for each chart to catch regressions at PR time. The chart list
+is the `operators/*/helm/*-operator` and `operators/*/helm/*-testbed` globs, so
+a new operator chart in that layout is validated without editing the job.
 
 **Dependencies:** `needs: [changes]`
 **Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true'`
-**Path filter:** `operators/keystone/helm/**`, `operators/c5c3/helm/**`, `operators/shared/helm/**`, `hack/gen-helm-values-schema.py`, `Makefile` (forced `true` on `v*` tag pushes)
+**Path filter:** `operators/*/helm/**`, `deploy/target-cluster/**`, `hack/gen-helm-values-schema.py`, `hack/gen-helm-rbac-rules.py`, `Makefile` (forced `true` on `v*` tag pushes)
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `azure/setup-helm@v5` | Installs Helm CLI (SHA-pinned) |
 | 3 | `helm plugin install helm-unittest` | Installs helm-unittest plugin (pinned to `v1.0.3`) |
-| 4 | `make verify-helm-schema` | Fails if either chart's `values.schema.json` has drifted from the shared generator |
-| 5 | `make helm-deps` | Vendors the `operator-library` subchart into each chart's `charts/` |
-| 6 | `helm lint` | Validates chart structure and syntax for both operator charts |
-| 7 | `helm template` (5 scenarios) | Renders each chart with value overrides to catch broken conditionals and invalid YAML |
-| 8 | `helm unittest` | Runs the unit test suites under each chart's `tests/` directory |
+| 4 | `make verify-helm-schema` | Fails if any chart's `values.schema.json` has drifted from the shared generator |
+| 5 | `make verify-helm-rbac` | Fails if any chart's `templates/_rbac-rules.tpl` has drifted from its committed `config/rbac/role.yaml` |
+| 6 | `make helm-deps` | Vendors the `operator-library` subchart into each consumer chart's `charts/` |
+| 7 | `helm lint` | Validates chart structure and syntax for every chart |
+| 8 | `helm template` (5 scenarios) | Renders each chart with value overrides to catch broken conditionals and invalid YAML |
+| 9 | `helm unittest` | Runs the unit test suites under each chart's `tests/` directory |
 
-**Template scenarios (step 7), run against each operator chart:**
+**Template scenarios (step 8), run against each chart:**
 
 | Scenario | Values | Purpose |
 | --- | --- | --- |
@@ -533,20 +537,22 @@ regressions at PR time.
 | 2 — webhook disabled | `webhook.enabled=false` | Validates conditional exclusion of webhook resources |
 | 3 — external service account | `serviceAccount.create=false`, `serviceAccount.name=existing-sa` | Validates ServiceAccount conditional logic |
 | 4 — custom resources | `resources.limits.cpu=100m`, `resources.limits.memory=64Mi` | Validates resource override wiring |
-| 5 — namespace-scoped RBAC | `rbac.namespaceScoped=true`, `webhook.enabled=false` | Validates Role/RoleBinding rendering instead of ClusterRole/ClusterRoleBinding |
+| 5 — namespace-scoped RBAC | `rbac.namespaceScoped=true`, `webhook.enabled=false` | Validates Role/RoleBinding rendering instead of ClusterRole/ClusterRoleBinding. A chart that refuses the mode by design (ovn-operator, neutron-operator) fails the render with the documented `is not supported by <chart>` message, which the job accepts; any other failure fails the job |
 
-**Unit test suites (step 8):** each operator chart runs its own `tests/`
-suites; the keystone-operator suites are listed below as representative.
+**Unit test suites (step 9):** the shared templates are tested once, in the
+operator-library testbed (`operators/shared/helm/operator-library-testbed/tests/`);
+each operator chart's own `tests/` suites cover what that chart adds.
 
-| Test File | Template Under Test | Key Assertions |
+| Chart | Test File | Key Assertions |
 | --- | --- | --- |
-| `deployment_test.yaml` | `deployment.yaml` | Image, replicas, resources, securityContext, probes, args, conditional webhook volume mount |
-| `clusterrole_test.yaml` | `clusterrole.yaml` | All 14 RBAC rule blocks with correct verbs |
-| `clusterrolebinding_test.yaml` | `clusterrolebinding.yaml` | roleRef and ServiceAccount subject binding |
-| `service_test.yaml` | `service.yaml` | Metrics port (8080), conditional webhook port (443→9443) |
-| `serviceaccount_test.yaml` | `serviceaccount.yaml` | Conditional creation (create=true/false), custom name override, standard labels |
-| `webhook_test.yaml` | `webhook-configuration.yaml` | Mutating/Validating configs when enabled, absent when disabled, cert-manager annotation |
-| `certificate_test.yaml` | `certificate.yaml` | Issuer and Certificate when enabled, absent when disabled, DNS names, issuer reference |
+| testbed | `deployment_test.yaml` | Image, replicas, resources, securityContext, probes, args, `extraArgs`/`extraEnv`, conditional webhook volume mount |
+| testbed | `networkpolicy_test.yaml`, `certificate_test.yaml`, `service_test.yaml`, `serviceaccount_test.yaml`, `clusterrolebinding_test.yaml`, `rolebinding_test.yaml`, `pdb_test.yaml`, `servicemonitor_test.yaml`, `release_namespace_test.yaml` | The shared manifests, their conditionals and the release-namespace threading |
+| testbed | `clusterrole_test.yaml`, `role_test.yaml` | The shared RBAC templates: rendering per scope, the webhook guard, the hook-less default |
+| testbed | `schema_validation_test.yaml` | The shared values schema: type, enum, range, quantity and conditional constraints |
+| operator | `clusterrole_test.yaml`, `role_test.yaml` | Wiring of the generated rules, the grants whose restriction is deliberate, a chart's refusal of namespace-scoped mode |
+| operator | `deployment_test.yaml` | The chart's image default and what the chart adds through its hooks (keystone federation flag, c5c3 barbican-operator identity) |
+| operator | `webhook_test.yaml` | Mutating/Validating configs for the chart's CR kinds when enabled, absent when disabled |
+| operator | `schema_validation_test.yaml` | The chart ships an enforced schema; the keys its `values.schema.extras.json` adds |
 
 Timeout: 15 minutes.
 
