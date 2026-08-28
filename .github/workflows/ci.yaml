@@ -135,23 +135,17 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
               - '.github/workflows/ci.yaml'
-            # Helm chart changes trigger the helm-validate job. Both
-            # operator charts share the operator-library library chart and a
-            # values.schema.json generator, so a change to either chart, the
+            # Helm chart changes trigger the helm-validate job. The operator
+            # charts share the operator-library library chart and a
+            # values.schema.json generator, so a change to any chart, the
             # shared library, the generator, or the Makefile targets it backs
-            # must re-run Helm validation.
+            # must re-run Helm validation. The glob covers every chart under
+            # operators/<op>/helm/ and the library under operators/shared/helm/.
             helm:
-              - 'operators/keystone/helm/**'
-              - 'operators/c5c3/helm/**'
-              - 'operators/horizon/helm/**'
-              - 'operators/glance/helm/**'
-              - 'operators/placement/helm/**'
-              - 'operators/barbican/helm/**'
-              - 'operators/ovn/helm/**'
-              - 'operators/neutron/helm/**'
-              - 'operators/shared/helm/**'
+              - 'operators/*/helm/**'
               - 'deploy/target-cluster/**'
               - 'hack/gen-helm-values-schema.py'
+              - 'hack/gen-helm-rbac-rules.py'
               - 'Makefile'
             # The target-cluster-access chart is published on its own, outside
             # the per-operator helm-push matrix, so it needs a filter of its own
@@ -580,6 +574,14 @@ jobs:
       # Verify Helm chart CRD copies match controller-gen output.
       - name: Verify CRD sync
         run: make verify-crd-sync
+      # Verify the chart RBAC rules templates match the controller-gen
+      # ClusterRole that make manifests just regenerated from the markers.
+      - name: Verify Helm RBAC rules sync
+        # The generator reads controller-gen YAML with PyYAML, which the
+        # ubuntu runner image ships; the fallback covers an image without it.
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
+          make verify-helm-rbac
       - name: Check for uncommitted changes
         run: |
           if ! git diff --exit-code; then
@@ -607,10 +609,12 @@ jobs:
 
   # Validate Helm chart structure, template rendering, and unit tests.
   # Runs helm lint, helm template with multiple value override scenarios, and
-  # helm-unittest for both operator charts to catch regressions early without a
-  # cluster. Both charts share the operator-library subchart and a generated
+  # helm-unittest for every operator chart to catch regressions early without a
+  # cluster. The charts share the operator-library subchart and a generated
   # values.schema.json, so the job verifies the schema is in sync and vendors
-  # the subchart (make helm-deps) before rendering.
+  # the subchart (make helm-deps) before rendering. The chart list is the
+  # operators/*/helm/*-operator glob, so a new operator chart that follows the
+  # directory convention is validated without editing this job.
   helm-validate:
     needs: [changes]
     if: github.event_name == 'pull_request' && needs.changes.outputs.helm == 'true'
@@ -624,17 +628,21 @@ jobs:
         run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.0.3 --verify=false
       - name: Verify values.schema.json is generated from the shared source
         run: make verify-helm-schema
+      - name: Verify the RBAC rules templates are generated from config/rbac
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --user pyyaml
+          make verify-helm-rbac
       - name: Build chart dependencies (vendor operator-library)
         run: make helm-deps
       - name: Helm lint
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator operators/barbican/helm/barbican-operator operators/ovn/helm/ovn-operator operators/neutron/helm/neutron-operator; do
+          for chart in operators/*/helm/*-operator operators/*/helm/*-testbed; do
             echo "--- lint $chart ---"
             helm lint "$chart"
           done
       - name: Helm template
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator operators/barbican/helm/barbican-operator operators/ovn/helm/ovn-operator operators/neutron/helm/neutron-operator; do
+          for chart in operators/*/helm/*-operator operators/*/helm/*-testbed; do
             echo "=== $chart ==="
             echo "--- Scenario 1: default values ---"
             helm template test "$chart"
@@ -644,22 +652,27 @@ jobs:
             helm template test "$chart" --set serviceAccount.create=false --set serviceAccount.name=existing-sa
             echo "--- Scenario 4: custom resources ---"
             helm template test "$chart" --set resources.limits.cpu=100m --set resources.limits.memory=64Mi
-            # Two charts refuse the mode by design. ovn-operator: the
-            # OVNChassis controller watches cluster-scoped Nodes, which a
-            # namespaced Role cannot grant. neutron-operator: a
-            # NeutronMetadataAgent lives beside its OVNChassis in a privileged
-            # namespace the Neutron API namespace must not share, and the
-            # operator reads OVNCentral status across namespaces. Each chart's
-            # templates/role.yaml fails the render and its role_test.yaml pins
-            # that message, so rendering them here would fail the job instead.
-            if [ "$chart" != "operators/ovn/helm/ovn-operator" ] && [ "$chart" != "operators/neutron/helm/neutron-operator" ]; then
-              echo "--- Scenario 5: namespace-scoped RBAC ---"
-              helm template test "$chart" --set rbac.namespaceScoped=true --set webhook.enabled=false
+            # A chart may refuse the mode by design (ovn-operator watches
+            # cluster-scoped Nodes; neutron-operator reads across namespaces):
+            # it overrides the operator-library.chart.namespaceScopedUnsupported
+            # hook, the shared Role template fails the render with the
+            # documented "is not supported by <chart>" message, and the chart's
+            # role_test.yaml pins that message. Such a refusal passes here;
+            # any other render failure still fails the job.
+            echo "--- Scenario 5: namespace-scoped RBAC ---"
+            if ! out=$(helm template test "$chart" --set rbac.namespaceScoped=true --set webhook.enabled=false 2>&1); then
+              if grep -q "rbac.namespaceScoped=true is not supported by" <<<"$out"; then
+                echo "chart refuses namespace-scoped RBAC by design:"
+                grep "is not supported by" <<<"$out"
+              else
+                echo "$out"
+                exit 1
+              fi
             fi
           done
       - name: Helm unittest
         run: |
-          for chart in operators/keystone/helm/keystone-operator operators/c5c3/helm/c5c3-operator operators/horizon/helm/horizon-operator operators/glance/helm/glance-operator operators/placement/helm/placement-operator operators/barbican/helm/barbican-operator operators/ovn/helm/ovn-operator operators/neutron/helm/neutron-operator; do
+          for chart in operators/*/helm/*-operator operators/*/helm/*-testbed; do
             echo "--- unittest $chart ---"
             helm unittest "$chart"
           done

@@ -145,6 +145,13 @@ Step 4 ── Wait for HelmReleases Ready
      │         cert-manager, openbao, mariadb-operator,
      │         external-secrets, memcached-operator
      │
+     ├── Phase 1 → 2: cert-manager webhook admits a dry-run
+     │         HelmRelease Ready covers the rollout, not the admission
+     │         path: the webhook's TLS listener and the caBundle that
+     │         cainjector copies into its webhook configurations trail
+     │         it by seconds. A server-side dry-run of cluster-issuer.yaml
+     │         (WEBHOOK_TIMEOUT) gates the TLS-prerequisite applies.
+     │
      ├── Phase 3b: kustomization/rabbitmq-cluster-operator Ready
      │         The RabbitMQ Cluster Operator arrives as a Flux
      │         Kustomization, which the HelmRelease wait above cannot
@@ -271,6 +278,7 @@ The deployment script supports configurable timeouts via environment variables:
 | `HELMRELEASE_TIMEOUT` | `600` | Seconds to wait for HelmReleases Ready (also bounds the `wait_for_fluxinstance` poll in Step 2) |
 | `POD_TIMEOUT` | `300` | Seconds to wait for OpenBao pods Ready |
 | `EXTERNALSECRET_TIMEOUT` | `120` | Seconds to wait for ExternalSecrets synced |
+| `WEBHOOK_TIMEOUT` | `120` | Seconds to wait, after cert-manager is Ready, for its webhook to admit a server-side dry-run of the ClusterIssuer before the Phase-2 TLS prerequisites are applied |
 | `SKIP_KIND_CREATE` | `false` | Skip kind cluster creation (CI mode where cluster is pre-created) |
 | `KIND_CONFIG` | `hack/kind-config.yaml` | The kind config `render_kind_config` starts from. Set it to `hack/kind-config-multinode.yaml` (1 control-plane node + 2 workers) for suites that need more than one schedulable node. Both configs bind the same host ports, so two clusters created from them cannot coexist on one host. A custom config must keep its control-plane node at `nodes[0]`, which is the only node the `KIND_HOST_PORT` override rewrites. Read only on the run that creates the cluster: with `SKIP_KIND_CREATE=true` or an existing cluster of that name the value is ignored and the script warns |
 | `OPENBAO_NAMESPACE` | `shared-services` | OpenBao namespace (propagated to the bootstrap scripts, which resolve the same variable in `common.sh`). The generic `NAMESPACE` variable is deliberately ignored — chainsaw injects `NAMESPACE=<test namespace>` into e2e script steps |

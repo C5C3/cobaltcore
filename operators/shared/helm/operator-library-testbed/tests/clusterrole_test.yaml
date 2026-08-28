@@ -1,0 +1,46 @@
+# ClusterRole unit tests for the shared operator-library.clusterrole template.
+# The rules come from the consuming chart's "<chart name>.rbacRules" template,
+# resolved via .Chart.Name; the testbed's rule set is the small one in
+# templates/_helpers.tpl.
+suite: ClusterRole
+templates:
+  - templates/clusterrole.yaml
+tests:
+  - it: should render a ClusterRole with the chart rules by default
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ClusterRole
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-operator-library-testbed
+      - isSubset:
+          path: metadata.labels
+          content:
+            app.kubernetes.io/name: operator-library-testbed
+            app.kubernetes.io/instance: RELEASE-NAME
+      - lengthEqual:
+          path: rules
+          count: 2
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - testbed.c5c3.io
+            resources:
+              - testbeds
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should not render a ClusterRole when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

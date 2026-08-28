@@ -172,7 +172,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Enable admission webhooks for Keystone CR validation and defaulting",
+          "description": "Enable admission webhooks for Keystone and KeystoneIdentityBackend CR validation and defaulting",
           "default": true
         }
       }
@@ -260,6 +260,32 @@
           "default": ""
         }
       }
+    },
+    "extraArgs": {
+      "type": "array",
+      "description": "Extra manager container arguments appended verbatim after the flags the chart renders itself, for a flag the operator binary accepts but the chart exposes no value for",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "extraEnv": {
+      "type": "array",
+      "description": "Extra environment variables for the manager container, each a Kubernetes EnvVar (name plus value or valueFrom), appended verbatim",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "default": []
     },
     "networkPolicy": {
       "type": "object",
@@ -473,5 +499,6 @@
         }
       }
     }
-  ]
+  ],
+  "$comment": "Chart-specific additions to the shared values schema, deep-merged by hack/gen-helm-values-schema.py (make gen-helm-schema)."
 }

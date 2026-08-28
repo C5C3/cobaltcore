@@ -1,0 +1,40 @@
+{
+  "$comment": "Chart-specific additions to the shared values schema, deep-merged by hack/gen-helm-values-schema.py (make gen-helm-schema).",
+  "properties": {
+    "rbac": {
+      "properties": {
+        "secretStoreNamespaces": {
+          "type": "object",
+          "description": "Namespaces the operator may mint bound ServiceAccount tokens in, keyed by namespace and valued with the ServiceAccount names that namespace's grant is restricted to (RBAC resourceNames on the serviceaccounts/token subresource). Rendered as one Role/RoleBinding pair per key. A managed BarbicanSecretStore has the operator authenticate to its OpenBaoCluster as that instance's '<instance>-provisioner' ServiceAccount, which needs create on the serviceaccounts/token subresource in the account's namespace. Never granted cluster-wide: a ClusterRole grant would let anyone reaching the operator ServiceAccount mint a token for a ServiceAccount in any namespace. Accounts are nested under their namespace rather than listed flat alongside it, so adding a second namespace cannot widen the grant in the first. Brownfield stores need no entry",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "propertyNames": {
+            "minLength": 1
+          },
+          "default": {}
+        }
+      }
+    },
+    "networkPolicy": {
+      "properties": {
+        "openBao": {
+          "type": "object",
+          "description": "OpenBao API egress for the operator pod. Rendered as a ports-only egress rule (TCP 8200) with no peer, because a brownfield BarbicanSecretStore names a user-supplied server whose address the chart cannot know",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Permit TCP/8200 egress so the BarbicanSecretStore controller can reach the OpenBao server of every store it reconciles. Disable when no store uses a non-standard posture",
+              "default": true
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -91,34 +91,41 @@ test_neutron_change_produces_an_e2e_leg() {
 test_helm_filter_covers_the_neutron_chart() {
   echo "Test: a neutron chart change re-runs helm-validate"
 
-  assert_contains "the helm filter lists the neutron chart" \
-    "$(filter_block helm)" "operators/neutron/helm/**"
+  # The helm filter is the operators/*/helm/** glob; the chart directory
+  # under it is what makes the glob cover this operator.
+  assert_contains "the helm filter covers every operators/<op>/helm/ tree" \
+    "$(filter_block helm)" "operators/*/helm/**"
+  assert_eq "the neutron chart lives under that glob" "yes" \
+    "$([ -d "$PROJECT_ROOT/operators/neutron/helm/neutron-operator" ] && echo yes || echo no)"
 }
 
 test_helm_validate_renders_the_neutron_chart() {
   echo "Test: helm-validate lints, templates and unit-tests the neutron chart"
 
-  # The three `for chart in ...` loops of helm-validate: lint, template and
-  # unittest. Matching the loop headers rather than every mention keeps the
-  # count off the scenario-5 exclusion the chart also carries.
+  # The three `for chart in ...` loops of helm-validate — lint, template and
+  # unittest — iterate the operators/*/helm/*-operator glob, so the chart is
+  # covered by living in that layout (asserted above).
   local loops
-  loops=$(grep -c "for chart in .*operators/neutron/helm/neutron-operator" "$CI_YAML")
-  assert_eq "the chart is in the lint, template and unittest loops" "3" "$loops"
+  loops=$(grep -cF 'for chart in operators/*/helm/*-operator' "$CI_YAML")
+  assert_eq "the lint, template and unittest loops iterate the chart glob" "3" "$loops"
 }
 
-test_scenario_five_skips_the_neutron_chart() {
-  echo "Test: helm-validate skips Scenario 5 for the neutron chart"
+test_scenario_five_accepts_the_neutron_refusal() {
+  echo "Test: helm-validate accepts the neutron chart's refusal of Scenario 5"
 
-  # neutron-operator's templates/role.yaml fails the render under
-  # rbac.namespaceScoped=true on purpose, and role_test.yaml pins the message.
-  # Reading the guard line itself keeps the assertion off the scenario echoes
-  # around it.
-  local guard
-  guard=$(grep -F 'if [ "$chart" != ' "$CI_YAML")
-  assert_contains "the guard skips the neutron chart" "$guard" \
-    "operators/neutron/helm/neutron-operator"
-  assert_contains "the guard still skips the ovn chart" "$guard" \
-    "operators/ovn/helm/ovn-operator"
+  # neutron-operator refuses rbac.namespaceScoped=true on purpose: its
+  # _helpers.tpl overrides the operator-library.chart.namespaceScopedUnsupported
+  # hook, the shared Role template fails the render with the documented
+  # "is not supported by <chart>" message (role_test.yaml pins it), and
+  # Scenario 5 treats that message as a pass instead of carrying a name list.
+  assert_contains "scenario 5 accepts the documented refusal" \
+    "$(grep -F 'is not supported by' "$CI_YAML")" \
+    'rbac.namespaceScoped=true is not supported by'
+  local hook='define "operator-library.chart.namespaceScopedUnsupported"'
+  assert_eq "the neutron chart overrides the refusal hook" "1" \
+    "$(grep -cF "$hook" "$PROJECT_ROOT/operators/neutron/helm/neutron-operator/templates/_helpers.tpl")"
+  assert_eq "the ovn chart still overrides the refusal hook" "1" \
+    "$(grep -cF "$hook" "$PROJECT_ROOT/operators/ovn/helm/ovn-operator/templates/_helpers.tpl")"
 }
 
 test_e2e_leg_installs_the_ovn_crds() {
@@ -142,7 +149,7 @@ test_neutron_filter_is_wired
 test_neutron_change_produces_an_e2e_leg
 test_helm_filter_covers_the_neutron_chart
 test_helm_validate_renders_the_neutron_chart
-test_scenario_five_skips_the_neutron_chart
+test_scenario_five_accepts_the_neutron_refusal
 test_e2e_leg_installs_the_ovn_crds
 
 echo ""

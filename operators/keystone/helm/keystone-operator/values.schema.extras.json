@@ -1,0 +1,23 @@
+{
+  "$comment": "Chart-specific additions to the shared values schema, deep-merged by hack/gen-helm-values-schema.py (make gen-helm-schema).",
+  "properties": {
+    "federation": {
+      "type": "object",
+      "description": "Federation identity-provider metadata fetch (OIDC discovery documents and SAML IdP metadata) settings for the operator",
+      "additionalProperties": false,
+      "properties": {
+        "metadataAllowCidrs": {
+          "type": "array",
+          "description": "CIDRs the SSRF-guarded federation-metadata client may additionally dial to fetch identity-provider metadata (e.g. the cluster's Service CIDR '10.96.0.0/12' to reach a trusted in-cluster identity provider). Rendered as --federation-metadata-allow-cidrs; empty (default) keeps the operator refusing every non-public address. Loopback, link-local (cloud IMDS), multicast, and unspecified addresses stay blocked even when covered by an entry.",
+          "items": {
+            "allOf": [
+              {
+                "$ref": "#/definitions/cidr"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

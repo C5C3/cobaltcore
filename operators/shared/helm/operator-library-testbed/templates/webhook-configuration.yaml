@@ -1,0 +1,14 @@
+{{- include "operator-library.webhookConfiguration" (dict
+      "root" .
+      "mutatingWebhookName" "mtestbed.kb.io"
+      "validatingWebhookName" "vtestbed.kb.io"
+      "mutatePath" "/mutate-testbed-c5c3-io-v1alpha1-testbed"
+      "validatePath" "/validate-testbed-c5c3-io-v1alpha1-testbed"
+      "apiGroup" "testbed.c5c3.io"
+      "resource" "testbeds"
+      "additionalWebhooks" (list (dict
+        "mutatingWebhookName" "mtestbedbackend.kb.io"
+        "validatingWebhookName" "vtestbedbackend.kb.io"
+        "mutatePath" "/mutate-testbed-c5c3-io-v1alpha1-testbedbackend"
+        "validatePath" "/validate-testbed-c5c3-io-v1alpha1-testbedbackend"
+        "resource" "testbedbackends"))) }}

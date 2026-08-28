@@ -17,6 +17,18 @@
           "minimum": 0
         }
       ]
+    },
+    "cidr": {
+      "description": "IPv4 or IPv6 CIDR block (e.g., '10.96.0.1/32', '2001:db8::/32'). IPv4 octets are bounded 0-255 to surface obvious typos (e.g. '999.0.0.1/32') at helm render time rather than as opaque kubectl apply admission errors. The IPv6 half of the pattern is intentionally loose — it matches any hex+colon sequence and does not enforce valid RFC 4291 group counts or '::' rules — because a schema-complete IPv6 regex is disproportionately complex for the stated goal of catching obvious typos; final IPv6 validation is delegated to kubectl/apiserver admission of the rendered NetworkPolicy.",
+      "type": "string",
+      "pattern": "^(((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)/([0-9]|[12][0-9]|3[0-2])|[0-9a-fA-F:]+/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))$"
+    },
+    "stringMap": {
+      "description": "Map of string keys to string values (Kubernetes labels/selectors)",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
     }
   },
   "properties": {
@@ -160,7 +172,7 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Enable admission webhooks for ControlPlane CR validation and defaulting",
+          "description": "Enable admission webhooks for ControlPlane and KeystoneService CR validation and defaulting",
           "default": true
         }
       }
@@ -249,6 +261,32 @@
         }
       }
     },
+    "extraArgs": {
+      "type": "array",
+      "description": "Extra manager container arguments appended verbatim after the flags the chart renders itself, for a flag the operator binary accepts but the chart exposes no value for",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "extraEnv": {
+      "type": "array",
+      "description": "Extra environment variables for the manager container, each a Kubernetes EnvVar (name plus value or valueFrom), appended verbatim",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "default": []
+    },
     "barbicanOperator": {
       "type": "object",
       "description": "Identity of the barbican-operator, rendered as the BARBICAN_OPERATOR_NAMESPACE and BARBICAN_OPERATOR_SERVICE_ACCOUNT environment variables on the manager container. It is the subject of the TokenRequest grant (Role/RoleBinding) the operator projects next to every dedicated OpenBao instance, and the NetworkPolicy peer that instance admits, so both fields must match the release the barbican-operator chart is installed as",
@@ -312,5 +350,6 @@
         }
       }
     }
-  ]
+  ],
+  "$comment": "Chart-specific additions to the shared values schema, deep-merged by hack/gen-helm-values-schema.py (make gen-helm-schema)."
 }

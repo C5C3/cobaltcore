@@ -6,7 +6,11 @@ Consuming charts render it with a one-line template that passes the root context
     {{- include "operator-library.deployment" . }}
 
 All settings (image, replicas, resources, webhook, leaderElection, metrics,
-rbac.namespaceScoped, logging) are read from the consuming chart's .Values.
+rbac.namespaceScoped, logging, extraArgs, extraEnv) are read from the consuming
+chart's .Values. What only the chart knows — an operator-specific flag derived
+from its own values, an environment variable — comes through the
+"operator-library.chart.args" and "operator-library.chart.env" hooks (see
+_helpers.tpl), so the library names no operator.
 */}}
 {{- define "operator-library.deployment" -}}
 apiVersion: apps/v1
@@ -70,10 +74,8 @@ spec:
             - --max-concurrent-reconciles={{ . }}
             {{- end }}
             {{- end }}
-            {{- with .Values.federation }}
-            {{- with .metadataAllowCidrs }}
-            - --federation-metadata-allow-cidrs={{ join "," . }}
-            {{- end }}
+            {{- with include "operator-library.chart.args" . }}
+            {{- . | trim | nindent 12 }}
             {{- end }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}
             - --health-probe-bind-address=:8081
@@ -86,12 +88,18 @@ spec:
             {{- with .Values.logging.encoder }}
             - --zap-encoder={{ . }}
             {{- end }}
-          {{- with .Values.barbicanOperator }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- $chartEnv := include "operator-library.chart.env" . | trim }}
+          {{- if or $chartEnv .Values.extraEnv }}
           env:
-            - name: BARBICAN_OPERATOR_NAMESPACE
-              value: {{ .namespace | quote }}
-            - name: BARBICAN_OPERATOR_SERVICE_ACCOUNT
-              value: {{ .serviceAccount | quote }}
+            {{- with $chartEnv }}
+            {{- . | nindent 12 }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           ports:
             - name: metrics

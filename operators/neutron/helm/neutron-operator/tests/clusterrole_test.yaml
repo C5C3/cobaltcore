@@ -1,20 +1,15 @@
-# ClusterRole RBAC rules unit tests.
+# ClusterRole unit tests.
 #
-# The rule set is the manual mirror of the kubebuilder RBAC markers at the top
-# of operators/neutron/internal/controller/neutron_controller.go, plus the
-# leases rule the manager's leader election needs. These assertions are the pin
-# for that sync: a marker added or a verb widened without the matching edit in
-# templates/_helpers.tpl fails here.
+# The rules come from templates/_rbac-rules.tpl, generated from the operator's
+# +kubebuilder:rbac markers (make sync-helm-rbac); the rule shape follows
+# controller-gen (resources with identical verbs merged, verbs sorted). This
+# suite pins the rendering, the wiring of the generated rules into the
+# ClusterRole, and the grants whose restriction is deliberate; it does not
+# re-assert every generated rule.
 suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
 tests:
-  - it: should have 23 rules
-    asserts:
-      - lengthEqual:
-          path: rules
-          count: 23
-
   - it: should grant full CRUD on the Neutron CRs
     asserts:
       - contains:
@@ -23,15 +18,16 @@ tests:
             apiGroups:
               - neutron.openstack.c5c3.io
             resources:
+              - neutronmetadataagents
               - neutrons
             verbs:
+              - create
+              - delete
               - get
               - list
-              - watch
-              - create
-              - update
               - patch
-              - delete
+              - update
+              - watch
 
   - it: should grant get/update/patch on the Neutron status subresource
     asserts:
@@ -41,11 +37,12 @@ tests:
             apiGroups:
               - neutron.openstack.c5c3.io
             resources:
+              - neutronmetadataagents/status
               - neutrons/status
             verbs:
               - get
-              - update
               - patch
+              - update
 
   - it: should grant update on the Neutron finalizers subresource
     asserts:
@@ -55,51 +52,8 @@ tests:
             apiGroups:
               - neutron.openstack.c5c3.io
             resources:
-              - neutrons/finalizers
-            verbs:
-              - update
-
-  - it: should grant full CRUD on the NeutronMetadataAgent CRs
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - neutron.openstack.c5c3.io
-            resources:
-              - neutronmetadataagents
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant get/update/patch on the NeutronMetadataAgent status subresource
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - neutron.openstack.c5c3.io
-            resources:
-              - neutronmetadataagents/status
-            verbs:
-              - get
-              - update
-              - patch
-
-  - it: should grant update on the NeutronMetadataAgent finalizers subresource
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - neutron.openstack.c5c3.io
-            resources:
               - neutronmetadataagents/finalizers
+              - neutrons/finalizers
             verbs:
               - update
 
@@ -131,13 +85,13 @@ tests:
               - ovncentrals
               - ovnchassis
             verbs:
+              - create
+              - delete
               - get
               - list
-              - watch
-              - create
-              - update
               - patch
-              - delete
+              - update
+              - watch
       - notContains:
           path: rules
           content:
@@ -149,29 +103,9 @@ tests:
             verbs:
               - get
               - list
-              - watch
-              - update
               - patch
-
-  - it: should grant full CRUD on core resources
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - ""
-            resources:
-              - services
-              - configmaps
-              - secrets
-            verbs:
-              - get
-              - list
-              - watch
-              - create
               - update
-              - patch
-              - delete
+              - watch
 
   - it: should restrict events to create and patch only
     asserts:
@@ -179,7 +113,7 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - events
             verbs:
@@ -196,7 +130,7 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - serviceaccounts/token
             verbs:
@@ -210,7 +144,7 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - pods
             verbs:
@@ -220,32 +154,11 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - services/proxy
             verbs:
               - get
-
-  # deployments carry the Neutron API server, daemonsets the per-node metadata
-  # agent.
-  - it: should grant full CRUD on the workload kinds
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - apps
-            resources:
-              - deployments
-              - daemonsets
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
 
   - it: should not narrow the workload rule to deployments alone
     asserts:
@@ -257,54 +170,13 @@ tests:
             resources:
               - deployments
             verbs:
+              - create
+              - delete
               - get
               - list
-              - watch
-              - create
-              - update
               - patch
-              - delete
-
-  # The db-sync Job shares the batch rule with the recurring ovn-db-sync
-  # CronJob.
-  - it: should grant full CRUD on batch jobs and cronjobs
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - batch
-            resources:
-              - jobs
-              - cronjobs
-            verbs:
-              - get
-              - list
-              - watch
-              - create
               - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on the mariadb-operator database kinds
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - k8s.mariadb.com
-            resources:
-              - databases
-              - users
-              - grants
-            verbs:
-              - get
-              - list
               - watch
-              - create
-              - update
-              - patch
-              - delete
 
   - it: should grant read-only on mariadbs
     asserts:
@@ -344,98 +216,13 @@ tests:
             apiGroups:
               - external-secrets.io
             resources:
-              - externalsecrets
-            verbs:
-              - get
-              - list
-              - watch
-
-  - it: should grant read-only on both secret store kinds
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - external-secrets.io
-            resources:
               - clustersecretstores
+              - externalsecrets
               - secretstores
             verbs:
               - get
               - list
               - watch
-
-  - it: should grant full CRUD on poddisruptionbudgets
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - policy
-            resources:
-              - poddisruptionbudgets
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on horizontalpodautoscalers
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - autoscaling
-            resources:
-              - horizontalpodautoscalers
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on networkpolicies
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - networking.k8s.io
-            resources:
-              - networkpolicies
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on httproutes
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - gateway.networking.k8s.io
-            resources:
-              - httproutes
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
 
   # The Accepted condition is written by the upstream Gateway controller, so
   # get is all the operator needs on the status subresource.

@@ -20,7 +20,7 @@ tests:
         enabled: false
     asserts:
       - failedTemplate:
-          errorPattern: "privileged namespace"
+          errorPattern: privileged namespace
 
   - it: should fail when rbac.namespaceScoped is true and webhook.enabled is true
     set:
@@ -30,7 +30,7 @@ tests:
         enabled: true
     asserts:
       - failedTemplate:
-          errorPattern: "webhook/enabled"
+          errorPattern: webhook/enabled
 
   - it: should render nothing when rbac.namespaceScoped is false
     asserts:

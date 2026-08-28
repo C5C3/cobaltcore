@@ -1,23 +1,15 @@
-# ClusterRole RBAC rules unit tests.
-# Rules mirror the +kubebuilder:rbac markers on the ControlPlane,
-# CredentialRotation and KeystoneService reconcilers (deduplicated), plus the
-# leases rule for leader election — 35 rules total (clustersecretstores
-# read-only and secretstores read-write are separate rules since the operator
-# provisions the per-tenant SecretStore; the namespaces rule lets
-# reconcileNamespaces ensure the per-service dedicated namespaces; the
-# clusterroles rule is bind-only on the single name system:auth-delegator; the
-# endpointslices rule is get-only, for the API-server addresses a dedicated
-# OpenBao instance needs egress to).
+# ClusterRole unit tests.
+#
+# The rules come from templates/_rbac-rules.tpl, generated from the operator's
+# +kubebuilder:rbac markers (make sync-helm-rbac); the rule shape follows
+# controller-gen (resources with identical verbs merged, verbs sorted). This
+# suite pins the rendering, the wiring of the generated rules into the
+# ClusterRole, and the grants whose restriction is deliberate; it does not
+# re-assert every generated rule.
 suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
 tests:
-  - it: should have the correct number of rules
-    asserts:
-      - lengthEqual:
-          path: rules
-          count: 35
-
   - it: should grant full CRUD on controlplanes
     asserts:
       - contains:
@@ -27,116 +19,16 @@ tests:
               - c5c3.io
             resources:
               - controlplanes
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant get/update/patch on controlplanes/status
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - c5c3.io
-            resources:
-              - controlplanes/status
-            verbs:
-              - get
-              - update
-              - patch
-
-  - it: should grant update on controlplanes/finalizers
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - c5c3.io
-            resources:
-              - controlplanes/finalizers
-            verbs:
-              - update
-
-  - it: should grant full CRUD on credentialrotations
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - c5c3.io
-            resources:
               - credentialrotations
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant get/update/patch on credentialrotations/status
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - c5c3.io
-            resources:
-              - credentialrotations/status
-            verbs:
-              - get
-              - update
-              - patch
-
-  - it: should grant read/write on keystoneservices
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - c5c3.io
-            resources:
               - keystoneservices
             verbs:
+              - create
+              - delete
               - get
               - list
+              - patch
+              - update
               - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant get/update/patch on keystoneservices/status
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - c5c3.io
-            resources:
-              - keystoneservices/status
-            verbs:
-              - get
-              - update
-              - patch
-
-  - it: should grant update on keystoneservices/finalizers
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - c5c3.io
-            resources:
-              - keystoneservices/finalizers
-            verbs:
-              - update
 
   - it: should grant read-only on secretaggregates
     asserts:
@@ -152,78 +44,6 @@ tests:
               - list
               - watch
 
-  - it: should grant full CRUD on mariadbs
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - k8s.mariadb.com
-            resources:
-              - mariadbs
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on memcacheds
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - memcached.c5c3.io
-            resources:
-              - memcacheds
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on rabbitmqclusters
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - rabbitmq.com
-            resources:
-              - rabbitmqclusters
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on keystones
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - keystone.openstack.c5c3.io
-            resources:
-              - keystones
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
   - it: should grant read-only access on keystoneidentitybackends
     asserts:
       - contains:
@@ -237,8 +57,6 @@ tests:
               - get
               - list
               - watch
-      # The reconciler only WATCHES the backends; the write verbs would be an
-      # unnecessary privilege grant on a resource it never authors.
       - notContains:
           path: rules
           content:
@@ -247,109 +65,13 @@ tests:
             resources:
               - keystoneidentitybackends
             verbs:
+              - create
+              - delete
               - get
               - list
-              - watch
-              - create
-              - update
               - patch
-              - delete
-
-  - it: should grant full CRUD on horizons
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - horizon.openstack.c5c3.io
-            resources:
-              - horizons
-            verbs:
-              - get
-              - list
-              - watch
-              - create
               - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on glances and glancebackends
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - glance.openstack.c5c3.io
-            resources:
-              - glances
-              - glancebackends
-            verbs:
-              - get
-              - list
               - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on placements
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - placement.openstack.c5c3.io
-            resources:
-              - placements
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on barbicans and barbicansecretstores
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - barbican.openstack.c5c3.io
-            resources:
-              - barbicans
-              - barbicansecretstores
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  # A managed Barbican secret store gets a dedicated OpenBao instance: the
-  # OpenBaoCluster it reads and writes through, plus the OpenBaoTenant that
-  # admits the Barbican service namespace to it.
-  - it: should grant full CRUD on openbaoclusters and openbaotenants
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - openbao.org
-            resources:
-              - openbaoclusters
-              - openbaotenants
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
 
   # The dedicated OpenBao instance needs a Role/RoleBinding pair for the
   # barbican-operator's TokenRequest and a ClusterRoleBinding for the instance
@@ -365,13 +87,14 @@ tests:
             apiGroups:
               - rbac.authorization.k8s.io
             resources:
-              - roles
+              - clusterrolebindings
               - rolebindings
+              - roles
             verbs:
-              - get
               - create
-              - patch
               - delete
+              - get
+              - patch
 
   - it: should grant get/create/patch/delete on clusterrolebindings
     asserts:
@@ -382,14 +105,13 @@ tests:
               - rbac.authorization.k8s.io
             resources:
               - clusterrolebindings
+              - rolebindings
+              - roles
             verbs:
-              - get
               - create
-              - patch
               - delete
-      # list and watch would only ever feed an informer, and a cluster-wide
-      # ClusterRoleBinding informer in a 128Mi operator is what the uncached
-      # reader exists to avoid.
+              - get
+              - patch
       - notContains:
           path: rules
           content:
@@ -398,13 +120,13 @@ tests:
             resources:
               - clusterrolebindings
             verbs:
+              - create
+              - delete
               - get
               - list
-              - watch
-              - create
-              - update
               - patch
-              - delete
+              - update
+              - watch
 
   - it: should grant bind on system:auth-delegator only
     asserts:
@@ -419,9 +141,6 @@ tests:
               - system:auth-delegator
             verbs:
               - bind
-      # bind without resourceNames would let the operator bind ANY ClusterRole,
-      # including cluster-admin. That is the escalation the resourceNames scope
-      # exists to prevent.
       - notContains:
           path: rules
           content:
@@ -431,50 +150,6 @@ tests:
               - clusterroles
             verbs:
               - bind
-
-  - it: should grant full CRUD on k-orc applicationcredentials, services, endpoints, users, domains, projects, roles, roleassignments
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - openstack.k-orc.cloud
-            resources:
-              - applicationcredentials
-              - services
-              - endpoints
-              - users
-              - domains
-              - projects
-              - roles
-              - roleassignments
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on externalsecrets and pushsecrets
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - external-secrets.io
-            resources:
-              - externalsecrets
-              - pushsecrets
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
 
   # reconcileDBCredentials uses CreateOrUpdate on a
   # per-ControlPlane externalsecret, which requires both create and update.
@@ -490,14 +165,15 @@ tests:
             resources:
               - externalsecrets
               - pushsecrets
+              - secretstores
             verbs:
+              - create
+              - delete
               - get
               - list
-              - watch
-              - create
-              - update
               - patch
-              - delete
+              - update
+              - watch
 
   - it: should grant read-only on clustersecretstores
     asserts:
@@ -513,86 +189,6 @@ tests:
               - list
               - watch
 
-  # reconcileESOTenantStore provisions the per-tenant namespaced SecretStore
-  # every ControlPlane defaults onto, so secretstores need the write verbs.
-  - it: should grant full CRUD on secretstores
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - external-secrets.io
-            resources:
-              - secretstores
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  # reconcileDBCredentials projects a per-ControlPlane VaultDynamicSecret
-  # generator in Dynamic credentials mode to issue short-lived DB credentials.
-  - it: should grant full CRUD on generators vaultdynamicsecrets
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - generators.external-secrets.io
-            resources:
-              - vaultdynamicsecrets
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  # reconcileDBCredentials projects a per-ControlPlane mTLS client Certificate
-  # for the VaultDynamicSecret generator's OpenBao connection.
-  - it: should grant full CRUD on cert-manager certificates
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - cert-manager.io
-            resources:
-              - certificates
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  # reconcileDBCredentials projects (and cleans up on a Static flip) the
-  # per-ControlPlane ServiceAccount whose token the generator presents to OpenBao.
-  - it: should grant full CRUD on core serviceaccounts
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - ""
-            resources:
-              - serviceaccounts
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
   # Kubernetes only lets an author grant permissions it holds itself, so the
   # operator needs create on the subresource to write the TokenRequest Role the
   # barbican-operator binds to.
@@ -602,49 +198,11 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - serviceaccounts/token
             verbs:
               - create
-
-  - it: should grant full CRUD on core secrets
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - ""
-            resources:
-              - secrets
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  # reconcileNamespaces ensures the per-service dedicated namespaces declared via
-  # spec.services.<svc>.namespace: create for the Managed lifecycle, delete for the
-  # teardown that follows it, get/list/watch for both lifecycles. No update/patch —
-  # a namespace is only created, verified, or deleted, never mutated in place.
-  - it: should grant get/list/watch/create/delete on core namespaces
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - ""
-            resources:
-              - namespaces
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - delete
 
   - it: should grant get-only on endpointslices
     asserts:
@@ -657,8 +215,6 @@ tests:
               - endpointslices
             verbs:
               - get
-      # list and watch would cover every EndpointSlice in the cluster, and the
-      # operator reads exactly one object under a well-known name.
       - notContains:
           path: rules
           content:
@@ -677,7 +233,7 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - events
             verbs:

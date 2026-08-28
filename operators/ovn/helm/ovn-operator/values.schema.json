@@ -261,6 +261,32 @@
         }
       }
     },
+    "extraArgs": {
+      "type": "array",
+      "description": "Extra manager container arguments appended verbatim after the flags the chart renders itself, for a flag the operator binary accepts but the chart exposes no value for",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "extraEnv": {
+      "type": "array",
+      "description": "Extra environment variables for the manager container, each a Kubernetes EnvVar (name plus value or valueFrom), appended verbatim",
+      "items": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "default": []
+    },
     "networkPolicy": {
       "type": "object",
       "description": "NetworkPolicy for operator pod egress/ingress restriction. Opt-in via enabled=true.",

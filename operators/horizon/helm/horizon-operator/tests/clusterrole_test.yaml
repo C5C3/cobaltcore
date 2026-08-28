@@ -1,14 +1,15 @@
-# ClusterRole RBAC rules unit tests.
+# ClusterRole unit tests.
+#
+# The rules come from templates/_rbac-rules.tpl, generated from the operator's
+# +kubebuilder:rbac markers (make sync-helm-rbac); the rule shape follows
+# controller-gen (resources with identical verbs merged, verbs sorted). This
+# suite pins the rendering, the wiring of the generated rules into the
+# ClusterRole, and the grants whose restriction is deliberate; it does not
+# re-assert every generated rule.
 suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
 tests:
-  - it: should have the correct number of rules
-    asserts:
-      - lengthEqual:
-          path: rules
-          count: 16
-
   - it: should grant full CRUD on horizons
     asserts:
       - contains:
@@ -19,76 +20,13 @@ tests:
             resources:
               - horizons
             verbs:
+              - create
+              - delete
               - get
               - list
+              - patch
+              - update
               - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant get/update/patch on horizons/status
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - horizon.openstack.c5c3.io
-            resources:
-              - horizons/status
-            verbs:
-              - get
-              - update
-              - patch
-
-  - it: should grant update on horizons/finalizers
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - horizon.openstack.c5c3.io
-            resources:
-              - horizons/finalizers
-            verbs:
-              - update
-
-  - it: should grant full CRUD on apps/deployments
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - apps
-            resources:
-              - deployments
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on services and configmaps
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - ""
-            resources:
-              - services
-              - configmaps
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
 
   - it: should grant read-only on secrets
     asserts:
@@ -96,7 +34,7 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - secrets
             verbs:
@@ -110,7 +48,7 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - events
             verbs:
@@ -125,98 +63,13 @@ tests:
             apiGroups:
               - external-secrets.io
             resources:
-              - externalsecrets
-            verbs:
-              - get
-              - list
-              - watch
-
-  - it: should grant read-only on clustersecretstores and secretstores
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - external-secrets.io
-            resources:
               - clustersecretstores
+              - externalsecrets
               - secretstores
             verbs:
               - get
               - list
               - watch
-
-  - it: should grant full CRUD on poddisruptionbudgets
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - policy
-            resources:
-              - poddisruptionbudgets
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on horizontalpodautoscalers
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - autoscaling
-            resources:
-              - horizontalpodautoscalers
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on networkpolicies
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - networking.k8s.io
-            resources:
-              - networkpolicies
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
-
-  - it: should grant full CRUD on httproutes
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - gateway.networking.k8s.io
-            resources:
-              - httproutes
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
 
   - it: should grant read-only get on httproutes/status
     asserts:

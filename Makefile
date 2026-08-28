@@ -329,14 +329,15 @@ verify-helm-rbac:
 	python3 hack/gen-helm-rbac-rules.py --check
 
 .PHONY: gen-helm-schema
-# gen-helm-schema regenerates both operator charts' values.schema.json from the
+# gen-helm-schema regenerates every operator chart's values.schema.json from the
 # single shared source in hack/gen-helm-values-schema.py. Edit the shared schema
-# there, then run this target so keystone-operator and c5c3-operator stay in sync.
+# there (or a chart's values.schema.extras.json), then run this target so the
+# charts stay in sync.
 gen-helm-schema:
 	python3 hack/gen-helm-values-schema.py
 
 .PHONY: verify-helm-schema
-# verify-helm-schema fails if either committed values.schema.json has drifted
+# verify-helm-schema fails if any committed values.schema.json has drifted
 # from the shared generator source (run in CI; mirrors verify-crd-sync).
 verify-helm-schema:
 	python3 hack/gen-helm-values-schema.py --check
@@ -359,16 +360,38 @@ docker-build:
 		$(if $(DOCKER_CACHE_TO),--cache-to $(DOCKER_CACHE_TO)) \
 		.
 
+# HELM_LIBRARY_CONSUMERS lists every chart that depends on the operator-library
+# library chart: one operator chart per operator, plus the library's own test
+# consumer under operators/shared/helm/, which runs the shared template suites.
+HELM_LIBRARY_CONSUMERS = $(foreach op,$(OPERATORS),operators/$(op)/helm/$(op)-operator) operators/shared/helm/operator-library-testbed
+
 .PHONY: helm-deps
-# helm-deps vendors the operator-library library subchart into each operator
+# helm-deps vendors the operator-library library subchart into each consumer
 # chart's charts/ directory (helm dependency build reads the committed
 # Chart.lock). Run before helm lint/template/unittest locally; CI helm-validate
 # runs it too. --skip-refresh: the dependency is local, so no chart-repository
 # refresh is needed (and it avoids failing on a stale repo cache).
 helm-deps:
-	@for op in $(OPERATORS); do \
-		echo "Building Helm dependencies for operators/$$op..."; \
-		helm dependency build --skip-refresh operators/$$op/helm/$$op-operator/; \
+	@for chart in $(HELM_LIBRARY_CONSUMERS); do \
+		echo "Building Helm dependencies for $$chart..."; \
+		helm dependency build --skip-refresh "$$chart"; \
+	done
+
+.PHONY: helm-bump-library
+# helm-bump-library releases a new operator-library version to every consumer
+# chart in one step: it rewrites the library's Chart.yaml version and the
+# dependency pin in each consumer's Chart.yaml, then regenerates each Chart.lock
+# (helm dependency update against the local file:// source, so no repository
+# refresh). Bump the library whenever one of its templates changes; the
+# consumer charts' own versions are bumped by hand, as before.
+# Usage: make helm-bump-library VERSION=0.8.0
+helm-bump-library:
+	$(if $(VERSION),,$(error helm-bump-library requires VERSION, e.g. make helm-bump-library VERSION=0.8.0))
+	@sed -i.bak -E 's/^version: .*/version: $(VERSION)/' operators/shared/helm/operator-library/Chart.yaml && rm -f operators/shared/helm/operator-library/Chart.yaml.bak
+	@for chart in $(HELM_LIBRARY_CONSUMERS); do \
+		echo "Pinning operator-library $(VERSION) in $$chart..."; \
+		sed -i.bak -E '/- name: operator-library$$/{n;s/version: .*/version: $(VERSION)/;}' "$$chart/Chart.yaml" && rm -f "$$chart/Chart.yaml.bak"; \
+		helm dependency update --skip-refresh "$$chart" >/dev/null; \
 	done
 
 .PHONY: helm-package
