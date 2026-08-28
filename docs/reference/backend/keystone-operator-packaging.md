@@ -15,16 +15,19 @@ operator for deployment into Kubernetes clusters via the GitOps pipeline.
 ```text
 operators/keystone/
 ├── Dockerfile                          Multi-stage operator image build
+├── config/rbac/role.yaml               controller-gen ClusterRole from the RBAC markers (make manifests)
 ├── helm/
 │   └── keystone-operator/
-│       ├── Chart.yaml                  Helm chart metadata (v0.5.0)
+│       ├── Chart.yaml                  Helm chart metadata
 │       ├── Chart.lock                  Pinned operator-library dependency
 │       ├── values.yaml                 Default configuration values
-│       ├── values.schema.json          JSON Schema for values validation
+│       ├── values.schema.json          JSON Schema for values validation (generated)
+│       ├── values.schema.extras.json   Chart-specific schema additions (federation)
 │       ├── crds/
 │       │   └── keystone.openstack.c5c3.io_keystones.yaml   CRD (auto-installed by Helm)
 │       └── templates/
-│           ├── _helpers.tpl            Template helper functions
+│           ├── _helpers.tpl            Chart-specific helpers: the operator-library.chart.* hook overrides
+│           ├── _rbac-rules.tpl         RBAC rules, generated from config/rbac/role.yaml (make sync-helm-rbac)
 │           ├── serviceaccount.yaml     ServiceAccount (conditional)
 │           ├── clusterrole.yaml        ClusterRole (cluster-scoped RBAC, default)
 │           ├── clusterrolebinding.yaml ClusterRoleBinding (default)
@@ -37,6 +40,9 @@ operators/keystone/
 │           ├── networkpolicy.yaml      Operator pod NetworkPolicy (opt-in)
 │           ├── servicemonitor.yaml     Prometheus ServiceMonitor (opt-in)
 │           └── webhook-configuration.yaml  Mutating + Validating webhooks (conditional)
+operators/shared/helm/
+├── operator-library/                   Library chart: every manifest template above, defined once
+└── operator-library-testbed/           Test consumer of the library; runs the shared helm-unittest suites
 deploy/flux-system/
 ├── kustomization.yaml                  Base kustomization (includes keystone-operator release)
 └── releases/
@@ -174,9 +180,27 @@ dependencies:
 The library holds, in one place, the naming and label helpers
 (`operator-library.fullname`, `operator-library.labels`,
 `operator-library.selectorLabels`, `operator-library.serviceAccountName`) and
-the operator `Deployment` skeleton (`operator-library.deployment`) that both the
-keystone-operator and c5c3-operator charts render. The chart-specific RBAC rule
-template (`keystone-operator.rbacRules`) stays in this chart.
+every manifest template the operator charts render — the `Deployment`
+skeleton, the ClusterRole and Role, the NetworkPolicy, certificate, Service,
+ServiceAccount, bindings, PDB, ServiceMonitor and webhook configurations. Each
+`templates/*.yaml` in this chart is a one-line `include`. What only this chart
+knows goes through the `operator-library.chart.*` hooks: the library defines
+each hook empty, and a chart overrides it by defining a template of the same
+name in its `_helpers.tpl` (Helm loads the parent chart's templates last, so
+its definition wins). The keystone-operator overrides
+`operator-library.chart.args` to render `--federation-metadata-allow-cidrs`.
+
+The RBAC rules are not written by hand: `make manifests` has controller-gen
+assemble `config/rbac/role.yaml` from the `+kubebuilder:rbac` markers in the
+Go sources, and `make sync-helm-rbac` copies its rules into
+`templates/_rbac-rules.tpl` as the `keystone-operator.rbacRules` template the
+library's ClusterRole and Role include (plus the leader-election leases rule).
+`make verify-helm-rbac` fails on drift; the rationale for each grant lives as
+a comment next to its marker. The operator-library's own helm-unittest suites
+run once against `operators/shared/helm/operator-library-testbed`, a test
+consumer that renders every shared template with the values contract the
+operator charts share; this chart's suites cover only what it adds. A library
+change is released to every consumer with `make helm-bump-library VERSION=x`.
 
 `Chart.lock` pins the dependency and is committed; the vendored copy under
 `charts/` is a build artifact (git-ignored). `helm dependency build` vendors it
@@ -410,10 +434,13 @@ The Service is type `ClusterIP` with two ports:
 
 ### RBAC Configuration
 
-The ClusterRole includes permissions derived from kubebuilder RBAC markers spread
-across the reconciler files in `operators/keystone/internal/controller/`. These are
-the minimum permissions required for the operator to manage Keystone resources and
-their dependencies:
+The ClusterRole includes permissions generated from the kubebuilder RBAC markers
+spread across the reconciler files in `operators/keystone/internal/controller/`
+(see the RBAC paragraph under [Helm Chart](#helm-chart)). controller-gen merges
+resources that share a verb set into one rule and sorts the verbs, so the
+rendered rules group differently from the table below; the grants are the same.
+These are the minimum permissions required for the operator to manage Keystone
+resources and their dependencies:
 
 | API Group | Resources | Verbs |
 | --- | --- | --- |
@@ -453,8 +480,8 @@ their dependencies:
 
 The ClusterRoleBinding binds the ClusterRole to the operator's ServiceAccount in the
 release namespace only. With `rbac.namespaceScoped=true` the identical rule set is
-rendered as a namespaced Role/RoleBinding instead (the templates share the
-`keystone-operator.rbacRules` partial).
+rendered as a namespaced Role/RoleBinding instead (both library templates
+include the generated `keystone-operator.rbacRules` partial).
 
 ### Webhook Configuration
 
