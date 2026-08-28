@@ -89,19 +89,23 @@ test_ovn_change_produces_an_e2e_leg() {
 test_helm_filter_covers_the_ovn_chart() {
   echo "Test: an ovn chart change re-runs helm-validate"
 
-  assert_contains "the helm filter lists the ovn chart" \
-    "$(filter_block helm)" "operators/ovn/helm/**"
+  # The helm filter is the operators/*/helm/** glob; the chart directory
+  # under it is what makes the glob cover this operator.
+  assert_contains "the helm filter covers every operators/<op>/helm/ tree" \
+    "$(filter_block helm)" "operators/*/helm/**"
+  assert_eq "the ovn chart lives under that glob" "yes" \
+    "$([ -d "$PROJECT_ROOT/operators/ovn/helm/ovn-operator" ] && echo yes || echo no)"
 }
 
 test_helm_validate_renders_the_ovn_chart() {
   echo "Test: helm-validate lints, templates and unit-tests the ovn chart"
 
-  # The three `for chart in ...` loops of helm-validate: lint, template and
-  # unittest. Matching the loop headers rather than every mention keeps the
-  # count off the scenario-5 exclusion the chart also carries.
+  # The three `for chart in ...` loops of helm-validate — lint, template and
+  # unittest — iterate the operators/*/helm/*-operator glob, so the chart is
+  # covered by living in that layout (asserted above).
   local loops
-  loops=$(grep -c "for chart in .*operators/ovn/helm/ovn-operator" "$CI_YAML")
-  assert_eq "the chart is in the lint, template and unittest loops" "3" "$loops"
+  loops=$(grep -cF 'for chart in operators/*/helm/*-operator' "$CI_YAML")
+  assert_eq "the lint, template and unittest loops iterate the chart glob" "3" "$loops"
 }
 
 # ---------------------------------------------------------------------------

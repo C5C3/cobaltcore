@@ -1,0 +1,6 @@
+dependencies:
+- name: operator-library
+  repository: file://../operator-library
+  version: 0.8.0
+digest: sha256:176b9bcddba8f6cf7f5f55fd16050bcb8e864497400ba89dc0b951e3d991cae3
+generated: "2026-08-28T12:11:03.86946+02:00"

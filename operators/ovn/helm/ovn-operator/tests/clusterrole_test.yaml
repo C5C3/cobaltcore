@@ -1,41 +1,15 @@
-# ClusterRole RBAC rules unit tests.
+# ClusterRole unit tests.
 #
-# The rule set is the manual mirror of the kubebuilder RBAC markers in
-# operators/ovn/internal/controller/ovncentral_controller.go and
-# ovnchassis_controller.go, plus the leases rule the manager's leader election
-# needs. These assertions are the pin for that sync: a marker added or a verb
-# widened in either controller without the matching edit in
-# templates/_helpers.tpl fails here.
+# The rules come from templates/_rbac-rules.tpl, generated from the operator's
+# +kubebuilder:rbac markers (make sync-helm-rbac); the rule shape follows
+# controller-gen (resources with identical verbs merged, verbs sorted). This
+# suite pins the rendering, the wiring of the generated rules into the
+# ClusterRole, and the grants whose restriction is deliberate; it does not
+# re-assert every generated rule.
 suite: ClusterRole
 templates:
   - templates/clusterrole.yaml
 tests:
-  - it: should have the correct number of rules
-    asserts:
-      - lengthEqual:
-          path: rules
-          count: 10
-
-  # Both CR kinds share one rule. The operator reads them, stamps their status
-  # and manages their finalizers; the CRs themselves are authored by whoever
-  # deploys the control plane.
-  - it: should grant read plus update and patch on the OVN CRs
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - ovn.openstack.c5c3.io
-            resources:
-              - ovncentrals
-              - ovnchassis
-            verbs:
-              - get
-              - list
-              - watch
-              - update
-              - patch
-
   - it: should not grant create or delete on the OVN CRs
     asserts:
       - notContains:
@@ -47,13 +21,13 @@ tests:
               - ovncentrals
               - ovnchassis
             verbs:
+              - create
+              - delete
               - get
               - list
-              - watch
-              - create
-              - update
               - patch
-              - delete
+              - update
+              - watch
 
   - it: should grant get/update/patch on the OVN status subresources
     asserts:
@@ -67,8 +41,8 @@ tests:
               - ovnchassis/status
             verbs:
               - get
-              - update
               - patch
+              - update
 
   - it: should grant update on the OVN finalizers subresources
     asserts:
@@ -91,7 +65,7 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - nodes
               - pods
@@ -107,7 +81,7 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - nodes
               - pods
@@ -116,26 +90,24 @@ tests:
               - get
               - list
               - watch
-      # secrets hold the certificate material cert-manager writes; the operator
-      # reads them and must never join them to the writable core rule.
       - notContains:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
-              - services
               - configmaps
               - persistentvolumeclaims
               - secrets
+              - services
             verbs:
+              - create
+              - delete
               - get
               - list
-              - watch
-              - create
-              - update
               - patch
-              - delete
+              - update
+              - watch
 
   # A read-only grant on nodes is what keeps the operator from cordoning,
   # labelling or deleting one; the chassis layer only reads their addresses.
@@ -145,74 +117,32 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - nodes
               - pods
               - secrets
             verbs:
+              - create
+              - delete
               - get
               - list
-              - watch
-              - create
-              - update
               - patch
-              - delete
+              - update
+              - watch
       - notContains:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - nodes
             verbs:
               - get
               - list
-              - watch
-              - update
               - patch
-
-  - it: should grant full CRUD on core resources
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - ""
-            resources:
-              - services
-              - configmaps
-              - persistentvolumeclaims
-            verbs:
-              - get
-              - list
-              - watch
-              - create
               - update
-              - patch
-              - delete
-
-  # The backup volume is a PersistentVolumeClaim the operator creates and
-  # removes itself, so it shares the writable core rule.
-  - it: should grant full CRUD on persistentvolumeclaims
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - ""
-            resources:
-              - services
-              - configmaps
-              - persistentvolumeclaims
-            verbs:
-              - get
-              - list
               - watch
-              - create
-              - update
-              - patch
-              - delete
 
   - it: should restrict events to create and patch only
     asserts:
@@ -220,7 +150,7 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - events
             verbs:
@@ -236,33 +166,11 @@ tests:
           path: rules
           content:
             apiGroups:
-              - ""
+              - ''
             resources:
               - serviceaccounts/token
             verbs:
               - create
-
-  # statefulsets carry the databases, deployments the northd and relay tiers,
-  # daemonsets the per-node chassis pods.
-  - it: should grant full CRUD on the workload kinds
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - apps
-            resources:
-              - statefulsets
-              - deployments
-              - daemonsets
-            verbs:
-              - get
-              - list
-              - watch
-              - create
-              - update
-              - patch
-              - delete
 
   - it: should not narrow the workload rule to deployments alone
     asserts:
@@ -274,33 +182,13 @@ tests:
             resources:
               - deployments
             verbs:
+              - create
+              - delete
               - get
               - list
-              - watch
-              - create
-              - update
               - patch
-              - delete
-
-  # The chassis maintenance Jobs share the batch rule with the backup CronJob.
-  - it: should grant full CRUD on batch jobs and cronjobs
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - batch
-            resources:
-              - jobs
-              - cronjobs
-            verbs:
-              - get
-              - list
-              - watch
-              - create
               - update
-              - patch
-              - delete
+              - watch
 
   - it: should not narrow the batch rule to jobs alone
     asserts:
@@ -312,31 +200,13 @@ tests:
             resources:
               - jobs
             verbs:
+              - create
+              - delete
               - get
               - list
-              - watch
-              - create
-              - update
               - patch
-              - delete
-
-  - it: should grant full CRUD on certificates
-    asserts:
-      - contains:
-          path: rules
-          content:
-            apiGroups:
-              - cert-manager.io
-            resources:
-              - certificates
-            verbs:
-              - get
-              - list
-              - watch
-              - create
               - update
-              - patch
-              - delete
+              - watch
 
   - it: should grant full CRUD on leases for leader election
     asserts:

@@ -256,7 +256,11 @@ for svc in ${SERVICES}; do
   check "${svc}" P5 "test-matrix" "${t}" \
     "every ci.yaml unit/integration test matrix lists ${svc}"
 
-  t=0; grep -qF "operators/${svc}/helm/${svc}-operator" "${CI}" || t=1
+  # helm-validate iterates the operators/*/helm/*-operator glob, so any chart
+  # in that layout is covered; an explicit path is accepted for a chart that
+  # deviates from it.
+  t=0; { grep -qF 'operators/*/helm/*-operator' "${CI}" && [[ -d "operators/${svc}/helm/${svc}-operator" ]]; } \
+    || grep -qF "operators/${svc}/helm/${svc}-operator" "${CI}" || t=1
   check "${svc}" P5 "helm-validate" "${t}" \
     "ci.yaml helm-validate loop covers the ${svc} chart"
 
@@ -397,7 +401,9 @@ done
 hdr "P9: ControlPlane integration (ServicesSpec, reconciler, condition, RBAC)"
 TYPES="operators/c5c3/api/v1alpha1/controlplane_types.go"
 CTRL="operators/c5c3/internal/controller/controlplane_controller.go"
-HELPERS="operators/c5c3/helm/c5c3-operator/templates/_helpers.tpl"
+# The c5c3 chart RBAC rules are generated from its kubebuilder markers
+# (make sync-helm-rbac), so the grant shows up here once the marker exists.
+RBAC_RULES="operators/c5c3/helm/c5c3-operator/templates/_rbac-rules.tpl"
 for svc in ${SERVICES}; do
   t=0; grep -qi "Service${svc}Spec" "${TYPES}" || t=1
   check "${svc}" P9 "ServicesSpec" "${t}" \
@@ -411,7 +417,7 @@ for svc in ${SERVICES}; do
   check "${svc}" P9 "condition" "${t}" \
     "controlplane_controller.go mirrors a ${svc}Ready condition"
 
-  t=0; grep -qi "${svc}\.openstack\.c5c3\.io" "${HELPERS}" || t=1
+  t=0; grep -qi "${svc}\.openstack\.c5c3\.io" "${RBAC_RULES}" || t=1
   check "${svc}" P9 "rbac" "${t}" \
     "c5c3 chart RBAC helper grants the ${svc}.openstack.c5c3.io group"
 done

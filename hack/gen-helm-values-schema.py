@@ -5,25 +5,30 @@
 
 """Generate values.schema.json for the operator Helm charts from one source.
 
-The keystone-operator and c5c3-operator charts share the bulk of their Helm
-values schema: the resourceQuantity definition, the image / replicas /
-resources / rbac / leaderElection / webhook / metrics / logging / monitoring /
-serviceAccount / name-override properties, the operator-library subchart-values
-property, and the rbac->webhook constraint. This script holds that shared
-schema once and emits each chart's values.schema.json, layering the
-chart-specific pieces on top: the image repository default, the webhook
-description, and -- for keystone only -- the cidr/stringMap definitions, the
-NetworkPolicy property and its fail-closed constraint, and the federation
-metadata-allowlist property -- plus, for barbican only, the OpenBao egress
-block nested under the NetworkPolicy property and the per-namespace
-TokenRequest grant nested under rbac, and, for c5c3 only, the barbican-operator
-identity property.
+The operator charts share the bulk of their Helm values schema: the
+resourceQuantity/cidr/stringMap definitions, the image / replicas / resources /
+rbac / leaderElection / controller / webhook / metrics / logging / monitoring /
+serviceAccount / extraArgs / extraEnv / name-override properties, the
+operator-library subchart-values property, the rbac->webhook constraint, and —
+for every chart that ships templates/networkpolicy.yaml — the NetworkPolicy
+property with its fail-closed constraint. This script holds that shared schema
+once and emits each chart's values.schema.json.
 
-Editing a shared field here regenerates both charts, so the two schemas cannot
+What a single chart adds on top lives next to that chart, in
+<chart>/values.schema.extras.json: a partial schema that is deep-merged into
+the shared one (objects merge recursively, lists concatenate, scalars override),
+so a chart can add a top-level property (keystone's federation), nest one into
+a shared property (barbican's rbac.secretStoreNamespaces and
+networkPolicy.openBao) or add an allOf constraint. The generator names no
+operator: charts are discovered from the repository layout, the image
+repository default is read from values.yaml, and the webhook.enabled
+description lists the CR kinds the chart's config/webhook manifests admit.
+
+Editing a shared field here regenerates every chart, so the schemas cannot
 drift. Run via the Makefile:
 
-  make gen-helm-schema     # write both values.schema.json files
-  make verify-helm-schema  # exit non-zero if either committed file is stale
+  make gen-helm-schema     # write every values.schema.json
+  make verify-helm-schema  # exit non-zero if any committed file is stale
 """
 
 import argparse
@@ -34,19 +39,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # --- Shared definitions -----------------------------------------------------
-
-RESOURCE_QUANTITY = {
-    "description": "Kubernetes resource quantity (e.g., '500m', '128Mi', '1Gi', '0.5', '1e3')",
-    "anyOf": [
-        {
-            "type": "string",
-            "pattern": r"^(\.[0-9]+|[0-9]+(\.[0-9]*)?)((e[0-9]+)|(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei))?$",
-        },
-        {"type": "number", "minimum": 0},
-    ],
-}
-
-# --- keystone-only definitions ----------------------------------------------
 
 CIDR = {
     "description": "IPv4 or IPv6 CIDR block (e.g., '10.96.0.1/32', '2001:db8::/32'). IPv4 octets are bounded 0-255 to surface obvious typos (e.g. '999.0.0.1/32') at helm render time rather than as opaque kubectl apply admission errors. The IPv6 half of the pattern is intentionally loose — it matches any hex+colon sequence and does not enforce valid RFC 4291 group counts or '::' rules — because a schema-complete IPv6 regex is disproportionately complex for the stated goal of catching obvious typos; final IPv6 validation is delegated to kubectl/apiserver admission of the rendered NetworkPolicy.",
@@ -60,8 +52,16 @@ STRING_MAP = {
     "additionalProperties": {"type": "string"},
 }
 
-# --- Shared property blocks -------------------------------------------------
-
+RESOURCE_QUANTITY = {
+    "description": "Kubernetes resource quantity (e.g., '500m', '128Mi', '1Gi', '0.5', '1e3')",
+    "anyOf": [
+        {
+            "type": "string",
+            "pattern": r"^(\.[0-9]+|[0-9]+(\.[0-9]*)?)((e[0-9]+)|(m|k|M|G|T|P|E|Ki|Mi|Gi|Ti|Pi|Ei))?$",
+        },
+        {"type": "number", "minimum": 0},
+    ],
+}
 
 def image_property(repository_default):
     return {
@@ -182,7 +182,14 @@ CONTROLLER = {
 }
 
 
-def webhook_property(enabled_description):
+def webhook_property(kinds):
+    """The webhook.enabled property; kinds are the CR kinds the chart's admission
+    webhooks cover, read from its config/webhook manifests."""
+    if kinds:
+        covered = " and ".join([", ".join(kinds[:-1]), kinds[-1]]) if len(kinds) > 1 else kinds[0]
+        description = f"Enable admission webhooks for {covered} CR validation and defaulting"
+    else:
+        description = "Enable admission webhooks for CR validation and defaulting"
     return {
         "type": "object",
         "description": "Admission webhook configuration",
@@ -190,7 +197,7 @@ def webhook_property(enabled_description):
         "properties": {
             "enabled": {
                 "type": "boolean",
-                "description": enabled_description,
+                "description": description,
                 "default": True,
             }
         },
@@ -281,6 +288,24 @@ SERVICE_ACCOUNT = {
     },
 }
 
+EXTRA_ARGS = {
+    "type": "array",
+    "description": "Extra manager container arguments appended verbatim after the flags the chart renders itself, for a flag the operator binary accepts but the chart exposes no value for",
+    "items": {"type": "string", "minLength": 1},
+    "default": [],
+}
+
+EXTRA_ENV = {
+    "type": "array",
+    "description": "Extra environment variables for the manager container, each a Kubernetes EnvVar (name plus value or valueFrom), appended verbatim",
+    "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {"name": {"type": "string", "minLength": 1}},
+    },
+    "default": [],
+}
+
 NAME_OVERRIDE = {
     "type": "string",
     "description": "Override the chart name used in resource names",
@@ -298,7 +323,7 @@ OPERATOR_LIBRARY = {
     "description": "Reserved values namespace for the operator-library library subchart. The library carries no configurable values; Helm injects this (empty) key during values coalescing, so additionalProperties:false at the root must permit it.",
 }
 
-# --- keystone-only property + constraints -----------------------------------
+# --- NetworkPolicy (charts that ship templates/networkpolicy.yaml) ----------
 
 NETWORK_POLICY = {
     "type": "object",
@@ -375,64 +400,6 @@ NETWORK_POLICY = {
     },
 }
 
-OPEN_BAO_EGRESS = {
-    "type": "object",
-    "description": "OpenBao API egress for the operator pod. Rendered as a ports-only egress rule (TCP 8200) with no peer, because a brownfield BarbicanSecretStore names a user-supplied server whose address the chart cannot know",
-    "additionalProperties": False,
-    "properties": {
-        "enabled": {
-            "type": "boolean",
-            "description": "Permit TCP/8200 egress so the BarbicanSecretStore controller can reach the OpenBao server of every store it reconciles. Disable when no store uses a non-standard posture",
-            "default": True,
-        }
-    },
-}
-
-SECRET_STORE_NAMESPACES = {
-    "type": "object",
-    "description": "Namespaces the operator may mint bound ServiceAccount tokens in, keyed by namespace and valued with the ServiceAccount names that namespace's grant is restricted to (RBAC resourceNames on the serviceaccounts/token subresource). Rendered as one Role/RoleBinding pair per key. A managed BarbicanSecretStore has the operator authenticate to its OpenBaoCluster as that instance's '<instance>-provisioner' ServiceAccount, which needs create on the serviceaccounts/token subresource in the account's namespace. Never granted cluster-wide: a ClusterRole grant would let anyone reaching the operator ServiceAccount mint a token for a ServiceAccount in any namespace. Accounts are nested under their namespace rather than listed flat alongside it, so adding a second namespace cannot widen the grant in the first. Brownfield stores need no entry",
-    "additionalProperties": {
-        "type": "array",
-        "items": {"type": "string", "minLength": 1},
-    },
-    # The key is a Namespace name, so an empty key is never valid: helm would
-    # default the namespaced Role/RoleBinding into the release Namespace and
-    # grant TokenRequest there instead of where the store lives.
-    "propertyNames": {"minLength": 1},
-    "default": {},
-}
-
-FEDERATION = {
-    "type": "object",
-    "description": "Federation identity-provider metadata fetch (OIDC discovery documents and SAML IdP metadata) settings for the operator",
-    "additionalProperties": False,
-    "properties": {
-        "metadataAllowCidrs": {
-            "type": "array",
-            "description": "CIDRs the SSRF-guarded federation-metadata client may additionally dial to fetch identity-provider metadata (e.g. the cluster's Service CIDR '10.96.0.0/12' to reach a trusted in-cluster identity provider). Rendered as --federation-metadata-allow-cidrs; empty (default) keeps the operator refusing every non-public address. Loopback, link-local (cloud IMDS), multicast, and unspecified addresses stay blocked even when covered by an entry.",
-            "items": {"allOf": [{"$ref": "#/definitions/cidr"}]},
-        }
-    },
-}
-
-BARBICAN_OPERATOR = {
-    "type": "object",
-    "description": "Identity of the barbican-operator, rendered as the BARBICAN_OPERATOR_NAMESPACE and BARBICAN_OPERATOR_SERVICE_ACCOUNT environment variables on the manager container. It is the subject of the TokenRequest grant (Role/RoleBinding) the operator projects next to every dedicated OpenBao instance, and the NetworkPolicy peer that instance admits, so both fields must match the release the barbican-operator chart is installed as",
-    "additionalProperties": False,
-    "properties": {
-        "namespace": {
-            "type": "string",
-            "description": "Namespace the barbican-operator runs in",
-            "default": "barbican-system",
-        },
-        "serviceAccount": {
-            "type": "string",
-            "description": "ServiceAccount the barbican-operator pod runs as",
-            "default": "barbican-operator",
-        },
-    },
-}
-
 RBAC_WEBHOOK_RULE = {
     "if": {
         "properties": {
@@ -474,41 +441,60 @@ NETWORK_POLICY_RULE = {
     },
 }
 
-# --- Per-chart configuration ------------------------------------------------
+def webhook_kinds(chart_dir):
+    """Return the CR kinds the chart's admission webhooks cover, in CRD order.
 
-# The webhook.enabled description names the chart's CR kind, which is not
-# discoverable from the chart directory - every operator chart must have an
-# entry here (discover_charts fails loudly on a missing one, so adding a new
-# operator surfaces this file in the touch list).
-WEBHOOK_ENABLED_DESCRIPTIONS = {
-    "keystone-operator": "Enable admission webhooks for Keystone CR validation and defaulting",
-    "c5c3-operator": "Enable admission webhooks for ControlPlane CR validation and defaulting",
-    "horizon-operator": "Enable admission webhooks for Horizon CR validation and defaulting",
-    "glance-operator": "Enable admission webhooks for Glance and GlanceBackend CR validation and defaulting",
-    "placement-operator": "Enable admission webhooks for Placement CR validation and defaulting",
-    "barbican-operator": "Enable admission webhooks for Barbican and BarbicanSecretStore CR validation and defaulting",
-    "ovn-operator": "Enable admission webhooks for OVNCentral and OVNChassis CR validation and defaulting",
-    "neutron-operator": "Enable admission webhooks for Neutron and NeutronMetadataAgent CR validation and defaulting",
-}
+    controller-gen writes the webhook configurations to config/webhook/ and the
+    CRDs to the chart's crds/; a kind counts when its plural appears in a
+    webhook rule. Both are plain YAML, and the fields needed are shallow, so a
+    targeted scan avoids a YAML dependency.
+    """
+    op_dir = chart_dir.parent.parent
+    plurals = set()
+    for manifest in sorted((op_dir / "config" / "webhook").glob("*.yaml")):
+        in_resources = False
+        for line in manifest.read_text().splitlines():
+            stripped = line.strip()
+            if stripped == "resources:":
+                in_resources = True
+                continue
+            if in_resources and stripped.startswith("- "):
+                plurals.add(stripped[2:].strip())
+                continue
+            in_resources = False
+    kinds = []
+    for crd in sorted((chart_dir / "crds").glob("*.yaml")):
+        kind = plural = None
+        for line in crd.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("kind: ") and kind is None and not stripped.startswith("kind: CustomResourceDefinition"):
+                kind = stripped.split(":", 1)[1].strip()
+            elif stripped.startswith("plural: ") and plural is None:
+                plural = stripped.split(":", 1)[1].strip()
+        if kind and plural in plurals:
+            kinds.append(kind)
+    # The operator's namesake kind (the shortest name) leads the list.
+    return sorted(kinds, key=lambda k: (len(k), k))
 
 
 def discover_charts():
     """Discover the operator charts from the repository layout.
 
-    Every chart under operators/<op>/helm/<op>-operator/ participates. The
-    image repository default is read from the chart's values.yaml, and the
+    Every application chart under operators/*/helm/ participates — the operator
+    charts and the operator-library test consumer; the library chart itself
+    carries no values and is skipped. The
+    image repository default is read from the chart's values.yaml, the
     NetworkPolicy schema pieces are included exactly when the chart ships a
-    templates/networkpolicy.yaml. A new operator following the directory
-    convention is picked up without editing a hardcoded chart list.
+    templates/networkpolicy.yaml, the webhook kinds come from config/webhook,
+    and the chart's own additions from its values.schema.extras.json when
+    present. A new operator following the directory convention is picked up
+    without editing this file.
     """
     charts = []
-    for chart_dir in sorted(REPO_ROOT.glob("operators/*/helm/*-operator")):
-        name = chart_dir.name
-        if name not in WEBHOOK_ENABLED_DESCRIPTIONS:
-            sys.exit(
-                f"error: chart {name} has no WEBHOOK_ENABLED_DESCRIPTIONS entry "
-                f"in {Path(__file__).name}; add one for the new operator"
-            )
+    for chart_yaml in sorted(REPO_ROOT.glob("operators/*/helm/*/Chart.yaml")):
+        chart_dir = chart_yaml.parent
+        if "\ntype: library\n" in chart_yaml.read_text():
+            continue  # operator-library itself carries no values
         repository = None
         # values.yaml is flat enough that a targeted scan beats a YAML
         # dependency: the first `repository:` key under `image:` is the one.
@@ -524,17 +510,16 @@ def discover_charts():
                 break
         if repository is None:
             sys.exit(f"error: could not find image.repository in {chart_dir}/values.yaml")
+        extras_path = chart_dir / "values.schema.extras.json"
+        extras = json.loads(extras_path.read_text(encoding="utf-8")) if extras_path.exists() else {}
         charts.append(
             {
                 "path": str((chart_dir / "values.schema.json").relative_to(REPO_ROOT)),
-                "name": name,
+                "name": chart_dir.name,
                 "image_repository_default": repository,
-                "webhook_enabled_description": WEBHOOK_ENABLED_DESCRIPTIONS[name],
+                "webhook_kinds": webhook_kinds(chart_dir),
                 "network_policy": (chart_dir / "templates" / "networkpolicy.yaml").exists(),
-                "federation": name == "keystone-operator",
-                "openbao_egress": name == "barbican-operator",
-                "secret_store_namespaces": name == "barbican-operator",
-                "barbican_operator": name == "c5c3-operator",
+                "extras": extras,
             }
         )
     return charts
@@ -543,58 +528,55 @@ def discover_charts():
 CHARTS = discover_charts()
 
 
-def build_schema(chart):
-    """Assemble one chart's full values schema from the shared blocks."""
-    definitions = {"resourceQuantity": RESOURCE_QUANTITY}
+def deep_merge(base, extra):
+    """Merge extra into base: objects recurse, lists concatenate, scalars override.
 
-    rbac = RBAC
-    if chart["secret_store_namespaces"]:
-        # Copy rather than mutate: RBAC is shared across charts, and only this
-        # chart renders the per-namespace TokenRequest Role/RoleBinding.
-        rbac = dict(
-            RBAC,
-            properties=dict(RBAC["properties"], secretStoreNamespaces=SECRET_STORE_NAMESPACES),
-        )
+    Both inputs are left untouched; the shared blocks above are module-level
+    constants that every chart's schema is assembled from.
+    """
+    if isinstance(base, dict) and isinstance(extra, dict):
+        merged = dict(base)
+        for key, value in extra.items():
+            merged[key] = deep_merge(base[key], value) if key in base else value
+        return merged
+    if isinstance(base, list) and isinstance(extra, list):
+        return base + extra
+    return extra
+
+
+def build_schema(chart):
+    """Assemble one chart's full values schema from the shared blocks and its extras."""
+    definitions = {"resourceQuantity": RESOURCE_QUANTITY, "cidr": CIDR, "stringMap": STRING_MAP}
 
     properties = {
         "image": image_property(chart["image_repository_default"]),
         "replicas": REPLICAS,
         "resources": RESOURCES,
-        "rbac": rbac,
+        "rbac": RBAC,
         "leaderElection": LEADER_ELECTION,
         "controller": CONTROLLER,
-        "webhook": webhook_property(chart["webhook_enabled_description"]),
+        "webhook": webhook_property(chart["webhook_kinds"]),
         "metrics": METRICS,
         "logging": LOGGING,
         "monitoring": MONITORING,
         "serviceAccount": SERVICE_ACCOUNT,
+        "extraArgs": EXTRA_ARGS,
+        "extraEnv": EXTRA_ENV,
     }
     all_of = [RBAC_WEBHOOK_RULE]
 
     if chart["network_policy"]:
-        definitions["cidr"] = CIDR
-        definitions["stringMap"] = STRING_MAP
-        network_policy = NETWORK_POLICY
-        if chart["openbao_egress"]:
-            # Copy rather than mutate: NETWORK_POLICY is shared across charts,
-            # and only this chart's template renders the OpenBao egress rule.
-            network_policy = dict(
-                NETWORK_POLICY,
-                properties=dict(NETWORK_POLICY["properties"], openBao=OPEN_BAO_EGRESS),
-            )
-        properties["networkPolicy"] = network_policy
+        properties["networkPolicy"] = NETWORK_POLICY
         all_of.append(NETWORK_POLICY_RULE)
 
-    if chart["federation"]:
-        definitions["cidr"] = CIDR
-        properties["federation"] = FEDERATION
-
-    if chart["barbican_operator"]:
-        properties["barbicanOperator"] = BARBICAN_OPERATOR
-
-    properties["nameOverride"] = NAME_OVERRIDE
-    properties["fullnameOverride"] = FULLNAME_OVERRIDE
-    properties["operator-library"] = OPERATOR_LIBRARY
+    schema = deep_merge(
+        {"definitions": definitions, "properties": properties, "allOf": all_of},
+        chart["extras"],
+    )
+    # The overrides and the subchart namespace close the property list.
+    schema["properties"]["nameOverride"] = NAME_OVERRIDE
+    schema["properties"]["fullnameOverride"] = FULLNAME_OVERRIDE
+    schema["properties"]["operator-library"] = OPERATOR_LIBRARY
 
     return {
         "$schema": "http://json-schema.org/draft-07/schema#",
@@ -602,9 +584,7 @@ def build_schema(chart):
         "description": f"Schema for the {chart['name']} Helm chart values",
         "type": "object",
         "additionalProperties": False,
-        "definitions": definitions,
-        "properties": properties,
-        "allOf": all_of,
+        **schema,
     }
 
 

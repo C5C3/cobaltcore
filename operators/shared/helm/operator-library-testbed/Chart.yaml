@@ -1,0 +1,10 @@
+apiVersion: v2
+name: operator-library-testbed
+description: Test consumer of the operator-library library chart. Never published or installed — it renders every shared template with the values contract the operator charts share, so the library's helm-unittest suites run once here instead of once per operator chart.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: operator-library
+    version: 0.8.0
+    repository: "file://../operator-library"

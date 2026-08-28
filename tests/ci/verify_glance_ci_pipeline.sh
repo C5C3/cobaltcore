@@ -118,7 +118,10 @@ test_glance_helm_validate_loops() {
   echo "Test: helm-validate loops include the glance-operator chart"
 
   local loop_count
-  loop_count=$(grep -c "operators/glance/helm/glance-operator" "$CI_YAML")
+  # helm-validate iterates the operators/*/helm/*-operator glob in its three
+  # loops; the chart is covered by living in that layout.
+  loop_count=$(grep -cF 'for chart in operators/*/helm/*-operator' "$CI_YAML")
+  [ -d "operators/glance/helm/glance-operator" ] || loop_count=0
 
   if [ "$loop_count" -ge 3 ]; then
     echo "  PASS: helm-validate references the glance-operator chart in $loop_count loops"

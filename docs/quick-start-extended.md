@@ -196,7 +196,7 @@ Internally this performs the following steps:
 | 2a | **Install Gateway API CRDs** — `kubectl apply --server-side` of the upstream `standard-install.yaml` for the version in `GATEWAY_API_VERSION` (default matches `sigs.k8s.io/gateway-api` in `operators/keystone/go.mod`). Required by the keystone-operator's HTTPRoute watch — without it the operator logs `no matches for kind HTTPRoute` at startup. |
 | 2b | **Install Envoy Gateway + `openstack-gw` Gateway** (kind-only) — base overlay installs the `envoy-gateway` HelmRelease and creates `GatewayClass/envoy`, `Certificate/keystone-nip-io-tls`, and `Gateway/openstack-gw` so `https://keystone.127-0-0-1.nip.io/v3` becomes reachable from the developer's host once Keystone attaches an HTTPRoute in Step 7. Production overlays exclude this. |
 | 3 | Apply base kustomize overlay — namespaces, `HelmRepository` sources, `HelmRelease` objects (the Flux toolkit CRDs they depend on were registered by Step 2) |
-| 4 | Wait for HelmReleases to become `Ready`: cert-manager → OpenBao TLS prerequisites → prometheus-operator-crds, openbao, mariadb-operator, external-secrets, memcached-operator |
+| 4 | Wait for HelmReleases to become `Ready`: cert-manager (and its webhook admitting a dry-run) → OpenBao TLS prerequisites → prometheus-operator-crds, openbao, mariadb-operator, external-secrets, memcached-operator |
 | 5 | Apply infrastructure kustomize overlay — `ClusterSecretStore`, `ExternalSecret` objects, `MariaDB` and `Memcached` cluster CRs |
 | 6 | Wait for the OpenBao pod to reach `Running` phase |
 | 7 | **Bootstrap OpenBao** — initialize, unseal (5 shares, 3-of-5 threshold), configure secret engines, auth methods, policies, and seed the bootstrap secrets |

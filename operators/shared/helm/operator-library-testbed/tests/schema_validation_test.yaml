@@ -1,0 +1,536 @@
+# Values schema validation unit tests.
+# Verifies that values.schema.json correctly rejects invalid inputs.
+suite: Values Schema Validation
+templates:
+  - templates/deployment.yaml
+tests:
+  # ---------------------------------------------------------------------------
+  # Type constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject non-integer replicas
+    set:
+      replicas: "notanumber"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/replicas.*got string, want integer"
+
+  - it: should reject non-string image.repository
+    set:
+      image:
+        repository: 123
+    asserts:
+      - failedTemplate:
+          errorPattern: "/image/repository.*got number, want string"
+
+  - it: should reject non-string image.tag
+    set:
+      image:
+        tag: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "/image/tag.*want string"
+
+  - it: should reject non-boolean leaderElection.enabled
+    set:
+      leaderElection:
+        enabled: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/leaderElection/enabled.*got string, want boolean"
+
+  - it: should reject non-boolean webhook.enabled
+    set:
+      webhook:
+        enabled: 42
+    asserts:
+      - failedTemplate:
+          errorPattern: "/webhook/enabled.*got number, want boolean"
+
+  - it: should reject non-boolean serviceAccount.create
+    set:
+      serviceAccount:
+        create: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/serviceAccount/create.*got string, want boolean"
+
+  - it: should reject non-boolean rbac.namespaceScoped
+    set:
+      rbac:
+        namespaceScoped: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/rbac/namespaceScoped.*got string, want boolean"
+
+  - it: should reject non-string nameOverride
+    set:
+      nameOverride: 42
+    asserts:
+      - failedTemplate:
+          errorPattern: "/nameOverride.*got number, want string"
+
+  - it: should reject non-string fullnameOverride
+    set:
+      fullnameOverride: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "/fullnameOverride.*want string"
+
+  - it: should reject non-integer metrics.port
+    set:
+      metrics:
+        port: "http"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/metrics/port.*got string, want integer"
+
+  # ---------------------------------------------------------------------------
+  # Enum constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject invalid image.pullPolicy enum value
+    set:
+      image:
+        pullPolicy: InvalidPolicy
+    asserts:
+      - failedTemplate:
+          errorPattern: "/image/pullPolicy.*must be one of"
+
+  # ---------------------------------------------------------------------------
+  # Minimum/maximum constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject replicas below minimum of 1
+    set:
+      replicas: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: "/replicas.*minimum.*got 0, want 1"
+
+  - it: should reject metrics.port below minimum of 1
+    set:
+      metrics:
+        port: 0
+    asserts:
+      - failedTemplate:
+          errorPattern: "/metrics/port.*minimum.*got 0, want 1"
+
+  - it: should reject metrics.port above maximum of 65535
+    set:
+      metrics:
+        port: 65536
+    asserts:
+      - failedTemplate:
+          errorPattern: "/metrics/port.*maximum.*got 65.536, want 65.535"
+
+  # ---------------------------------------------------------------------------
+  # additionalProperties: false
+  # ---------------------------------------------------------------------------
+  - it: should reject unknown top-level property
+    set:
+      unknownField: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "additional properties.*not allowed"
+
+  - it: should reject unknown property in image
+    set:
+      image:
+        registry: ghcr.io
+    asserts:
+      - failedTemplate:
+          errorPattern: "/image.*additional properties.*not allowed"
+
+  - it: should reject malformed image.digest
+    set:
+      image:
+        digest: "sha256:abc"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/image/digest.*does not match pattern"
+
+  - it: should accept a well-formed image.digest
+    set:
+      image:
+        digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should reject unknown property in resources
+    set:
+      resources:
+        gpu: 1
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources.*additional properties.*not allowed"
+
+  - it: should reject unknown property in resources.limits
+    set:
+      resources:
+        limits:
+          gpu: "1"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/limits.*additional properties.*not allowed"
+
+  - it: should reject unknown property in metrics
+    set:
+      metrics:
+        enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "/metrics.*additional properties.*not allowed"
+
+  - it: should reject unknown property in leaderElection
+    set:
+      leaderElection:
+        leaseDuration: "15s"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/leaderElection.*additional properties.*not allowed"
+
+  - it: should reject unknown property in serviceAccount
+    set:
+      serviceAccount:
+        annotations: {}
+    asserts:
+      - failedTemplate:
+          errorPattern: "/serviceAccount.*additional properties.*not allowed"
+
+  - it: should reject unknown property in rbac
+    set:
+      rbac:
+        extraField: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "/rbac.*additional properties.*not allowed"
+
+  - it: should reject unknown property in webhook
+    set:
+      webhook:
+        port: 9443
+    asserts:
+      - failedTemplate:
+          errorPattern: "/webhook.*additional properties.*not allowed"
+
+  - it: should reject unknown property in resources.requests
+    set:
+      resources:
+        requests:
+          gpu: "1"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/requests.*additional properties.*not allowed"
+
+  # ---------------------------------------------------------------------------
+  # Resource quantity pattern validation
+  # ---------------------------------------------------------------------------
+  - it: should reject invalid CPU resource format
+    set:
+      resources:
+        limits:
+          cpu: "not-valid"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/limits/cpu.*does not match pattern"
+
+  - it: should reject invalid memory resource format
+    set:
+      resources:
+        limits:
+          memory: "bad!"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/limits/memory.*does not match pattern"
+
+  - it: should reject negative CPU resource quantity
+    set:
+      resources:
+        limits:
+          cpu: -1
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/limits/cpu.*minimum.*got -1, want 0"
+
+  - it: should reject invalid request CPU format
+    set:
+      resources:
+        requests:
+          cpu: "abc!"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/requests/cpu.*does not match pattern"
+
+  - it: should reject invalid request memory format
+    set:
+      resources:
+        requests:
+          memory: "xyz"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/requests/memory.*does not match pattern"
+
+  - it: should reject exponent combined with SI suffix in CPU
+    set:
+      resources:
+        limits:
+          cpu: "1e3m"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/limits/cpu.*does not match pattern"
+
+  - it: should reject exponent combined with binary suffix in memory
+    set:
+      resources:
+        limits:
+          memory: "1e3Ki"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/resources/limits/memory.*does not match pattern"
+
+  # ---------------------------------------------------------------------------
+  # Conditional constraint — namespaceScoped requires webhook disabled
+  # ---------------------------------------------------------------------------
+  - it: should reject rbac.namespaceScoped=true when webhook.enabled is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "webhook/enabled"
+
+  # ---------------------------------------------------------------------------
+  # Positive tests: valid non-default values pass schema validation
+  # ---------------------------------------------------------------------------
+  - it: should accept custom replicas
+    set:
+      replicas: 5
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept custom metrics port
+    set:
+      metrics:
+        port: 9090
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept string resource quantities
+    set:
+      resources:
+        limits:
+          cpu: "2"
+          memory: "1Gi"
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept numeric resource quantities
+    set:
+      resources:
+        limits:
+          cpu: 0.5
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept exponent-only resource quantity
+    set:
+      resources:
+        limits:
+          cpu: "1e3"
+    asserts:
+      - isKind:
+          of: Deployment
+
+  - it: should accept rbac.namespaceScoped=true when webhook.enabled is false
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - isKind:
+          of: Deployment
+
+  # ---------------------------------------------------------------------------
+  # networkPolicy schema constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject non-boolean networkPolicy.enabled
+    set:
+      networkPolicy:
+        enabled: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy/enabled.*want boolean"
+
+  - it: should reject invalid CIDR in networkPolicy.kubeApiServer.cidrs
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs:
+            - "not-a-cidr"
+          ports: [6443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy/kubeApiServer/cidrs.*does not match pattern"
+
+  - it: should reject CIDR with out-of-range prefix length
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs:
+            - "10.0.0.0/33"
+          ports: [6443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy/kubeApiServer/cidrs.*does not match pattern"
+
+  - it: should reject kube-apiserver port above maximum of 65535
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [65536]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy/kubeApiServer/ports.*maximum"
+
+  - it: should reject kube-apiserver port below minimum of 1
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: [0]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy/kubeApiServer/ports.*minimum"
+
+  - it: should reject networkPolicy.enabled=true with empty cidrs
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: []
+          ports: [6443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "cidrs"
+
+  - it: should reject networkPolicy.enabled=true with empty ports
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs: ["10.96.0.1/32"]
+          ports: []
+    asserts:
+      - failedTemplate:
+          errorPattern: "ports"
+
+  - it: should reject unknown property in networkPolicy
+    set:
+      networkPolicy:
+        unknownField: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "/networkPolicy.*additional properties.*not allowed"
+
+  # Note: the schema guards `networkPolicy.dns.namespaceSelector` and
+  # `networkPolicy.dns.podSelector` with `minProperties: 1` as defense-in-depth,
+  # but that constraint is not reachable through `set:` in this suite. Helm's
+  # value-coalescing treats a `{}` override as "nothing to merge" and preserves
+  # the non-empty defaults from values.yaml (`kubernetes.io/metadata.name:
+  # kube-system` / `k8s-app: kube-dns`), so the rendered selector is never
+  # empty and the schema constraint never fires. The guard still matters for a
+  # future maintainer who changes the values.yaml default to `{}`.
+
+  - it: should reject CIDR with out-of-range IPv4 octet
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs:
+            - "999.0.0.1/32"
+          ports: [6443]
+    asserts:
+      - failedTemplate:
+          errorPattern: "networkPolicy/kubeApiServer/cidrs.*does not match pattern"
+
+  - it: should accept a fully configured networkPolicy
+    set:
+      networkPolicy:
+        enabled: true
+        kubeApiServer:
+          cidrs:
+            - "10.96.0.1/32"
+            - "2001:db8::/32"
+          ports: [443, 6443]
+        dns:
+          enabled: true
+          namespaceSelector:
+            kubernetes.io/metadata.name: kube-system
+          podSelector:
+            k8s-app: kube-dns
+        allowMetricsFrom:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+        webhookClients:
+          cidrs:
+            - "10.96.0.1/32"
+    asserts:
+      - isKind:
+          of: Deployment
+
+  # ---------------------------------------------------------------------------
+  # logging schema constraints
+  # ---------------------------------------------------------------------------
+  - it: should reject non-boolean logging.development
+    set:
+      logging:
+        development: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/logging/development.*want boolean"
+
+  - it: should reject invalid logging.encoder enum value
+    set:
+      logging:
+        encoder: xml
+    asserts:
+      - failedTemplate:
+          errorPattern: "/logging/encoder.*must be one of"
+
+  - it: should reject invalid logging.level value
+    set:
+      logging:
+        level: verbose
+    asserts:
+      - failedTemplate:
+          errorPattern: "/logging/level.*does not match pattern"
+
+  - it: should reject unknown property in logging
+    set:
+      logging:
+        timeEncoding: iso8601
+    asserts:
+      - failedTemplate:
+          errorPattern: "/logging.*additional properties.*not allowed"
+
+  - it: should accept valid logging overrides
+    set:
+      logging:
+        development: true
+        level: debug
+        encoder: console
+    asserts:
+      - isKind:
+          of: Deployment

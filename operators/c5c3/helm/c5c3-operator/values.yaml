@@ -58,6 +58,16 @@ logging:
   # production).
   encoder: ""
 
+# Extra manager container arguments and environment variables, appended
+# verbatim after the flags the chart renders itself. For a flag the operator
+# binary accepts but the chart exposes no value for; leave empty otherwise.
+#   extraArgs: ["--some-flag=value"]
+#   extraEnv:
+#     - name: HTTPS_PROXY
+#       value: http://proxy.example:3128
+extraArgs: []
+extraEnv: []
+
 # Prometheus ServiceMonitor integration.
 # When enabled, renders a monitoring.coreos.com/v1 ServiceMonitor targeting the
 # operator's metrics port; prometheus-operator CRDs must be installed in-cluster.

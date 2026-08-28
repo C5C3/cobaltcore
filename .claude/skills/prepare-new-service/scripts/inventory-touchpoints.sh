@@ -106,8 +106,8 @@ check "ServicesSpec has Service…Spec for '${SERVICE}'" \
   grep -qi "Service${SERVICE}Spec" operators/c5c3/api/v1alpha1/controlplane_types.go
 check "operators/c5c3/internal/controller/reconcile_${SERVICE}.go" \
   test -f "operators/c5c3/internal/controller/reconcile_${SERVICE}.go"
-check "c5c3 helm _helpers.tpl rbacRules mention '${SERVICE}'" \
-  grep -q "${SERVICE}" operators/c5c3/helm/c5c3-operator/templates/_helpers.tpl
+check "c5c3 helm _rbac-rules.tpl (generated from the c5c3 RBAC markers) mentions '${SERVICE}'" \
+  grep -q "${SERVICE}" operators/c5c3/helm/c5c3-operator/templates/_rbac-rules.tpl
 check "controlplane_controller.go mirrors a ${SERVICE}Ready condition" \
   grep -qi "${SERVICE}Ready" operators/c5c3/internal/controller/controlplane_controller.go
 check "desired${SVC_KIND}Registration builder in builtin_registrations.go (skip if the service has neither a catalog entry nor a service user)" \

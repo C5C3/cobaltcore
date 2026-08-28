@@ -19,7 +19,7 @@ tests:
         enabled: false
     asserts:
       - failedTemplate:
-          errorPattern: "cluster-scoped Nodes"
+          errorPattern: cluster-scoped Nodes
 
   - it: should fail when rbac.namespaceScoped is true and webhook.enabled is true
     set:
@@ -29,7 +29,7 @@ tests:
         enabled: true
     asserts:
       - failedTemplate:
-          errorPattern: "webhook/enabled"
+          errorPattern: webhook/enabled
 
   - it: should render nothing when rbac.namespaceScoped is false
     asserts:

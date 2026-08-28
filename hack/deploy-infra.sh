@@ -12,8 +12,9 @@
 #      namespaces.yaml + fluxinstance.yaml, then waits for FluxInstance/flux
 #      Ready so the Flux toolkit CRDs are registered before Step 3.
 #   3. Apply base kustomize overlay (namespaces, HelmRepositories, HelmReleases)
-#   4. Wait for HelmReleases to become Ready (cert-manager first, then TLS
-#      prerequisites for OpenBao, then remaining releases)
+#   4. Wait for HelmReleases to become Ready (cert-manager first, then its
+#      webhook admitting a dry-run, then TLS prerequisites for OpenBao,
+#      then remaining releases)
 #   5. Apply infrastructure kustomize overlay (CRD-dependent resources)
 #   6. Wait for OpenBao pods to become Ready
 #   7. Bootstrap OpenBao (init, unseal, configure)
@@ -65,6 +66,7 @@ CLUSTER_NAME="${CLUSTER_NAME:-cobaltcore}"
 HELMRELEASE_TIMEOUT="${HELMRELEASE_TIMEOUT:-600}"
 POD_TIMEOUT="${POD_TIMEOUT:-300}"
 EXTERNALSECRET_TIMEOUT="${EXTERNALSECRET_TIMEOUT:-120}"
+WEBHOOK_TIMEOUT="${WEBHOOK_TIMEOUT:-120}"
 
 # Host port that kind binds to forward into the Envoy data-plane NodePort
 # (containerPort 31443). Defaults to 443 so the documented Quick Start URL
@@ -441,6 +443,79 @@ wait_for_helmreleases() {
     fi
 
     sleep 10
+  done
+}
+
+# ---------------------------------------------------------------------------
+# wait_for_cert_manager_webhook — Wait until the cert-manager webhook admits
+# a request.
+#
+# HelmRelease/cert-manager Ready means helm-controller saw the chart's
+# Deployments roll out. It says nothing about the admission path that the
+# first ClusterIssuer create takes: the webhook pod opens its TLS listener
+# after the readiness probe passes, and cainjector copies the serving CA
+# into the cert-manager-webhook Validating/MutatingWebhookConfigurations on
+# its own reconcile pass. Until both have happened the apiserver answers
+#   failed calling webhook "webhook.cert-manager.io": ... connection refused
+#   failed calling webhook "webhook.cert-manager.io": ... x509: certificate
+#     signed by unknown authority
+# and a plain `kubectl apply` aborts a deploy that would have succeeded a
+# few seconds later (e2e-operator/neutron in run 33166067165 hit the x509
+# variant in the same second the HelmRelease turned Ready).
+#
+# Polls every 5s up to the supplied timeout with a server-side dry-run of
+# the supplied manifest: the apiserver runs the full admission chain for a
+# dry-run, so a success proves the webhook is dialable and its caBundle
+# matches the serving certificate, without creating anything. On timeout,
+# reports whether the caBundles are injected, lists the cert-manager pods
+# and dumps their logs, then exits 1 — the diagnostic shape of
+# wait_for_gateway_programmed.
+#
+# Arguments:
+#   $1 — manifest of a cert-manager kind to dry-run (cluster-issuer.yaml)
+#   $2 — timeout in seconds
+# ---------------------------------------------------------------------------
+wait_for_cert_manager_webhook() {
+  local manifest="$1"
+  local timeout="$2"
+  local deadline=$(( $(date +%s) + timeout ))
+
+  log "Waiting up to ${timeout}s for the cert-manager webhook to admit a server-side dry-run of $(basename "${manifest}")..."
+
+  while true; do
+    local err
+    if err=$(kubectl apply --dry-run=server -f "${manifest}" 2>&1 >/dev/null); then
+      log "cert-manager webhook admits requests."
+      return 0
+    fi
+    log "  cert-manager webhook is not admitting yet."
+    log "    ${err}"
+
+    if [[ $(date +%s) -ge ${deadline} ]]; then
+      log "ERROR: Timed out waiting for the cert-manager webhook after ${timeout}s."
+      log "Webhook configurations:"
+      local cfg bundle
+      for cfg in validatingwebhookconfiguration/cert-manager-webhook mutatingwebhookconfiguration/cert-manager-webhook; do
+        bundle=$(kubectl get "${cfg}" -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>/dev/null) || true
+        if [[ -n "${bundle}" ]]; then
+          log "  ${cfg}: caBundle injected (${#bundle} bytes)"
+        else
+          log "  ${cfg}: caBundle missing"
+        fi
+      done
+      log "cert-manager pods:"
+      kubectl get pods -n cert-manager -o wide 2>/dev/null || true
+      log "cert-manager pod logs (last 10m, tail 200):"
+      local cm_pods
+      cm_pods=$(kubectl get pods -n cert-manager -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
+      for pod in ${cm_pods}; do
+        log "--- logs for pod ${pod} ---"
+        kubectl logs "${pod}" -n cert-manager --all-containers=true --since=10m --tail=200 2>/dev/null || true
+      done
+      exit 1
+    fi
+
+    sleep 5
   done
 }
 
@@ -2105,6 +2180,7 @@ main() {
   log "HelmRelease timeout : ${HELMRELEASE_TIMEOUT}s"
   log "Pod timeout         : ${POD_TIMEOUT}s"
   log "ExternalSecret timeout : ${EXTERNALSECRET_TIMEOUT}s"
+  log "Webhook timeout     : ${WEBHOOK_TIMEOUT}s"
   log "Kind host port      : ${KIND_HOST_PORT} → 31443 (override via KIND_HOST_PORT)"
   log "Kind config         : ${KIND_CONFIG} (override via KIND_CONFIG)"
   log "Node RLIMIT_NOFILE  : ${NODE_NOFILE_LIMIT:-<unset — skip cap>} (override via NODE_NOFILE_LIMIT)"
@@ -2409,6 +2485,10 @@ main() {
   # Phase 1: cert-manager must be Ready before we can create TLS resources.
   log "Phase 1: Waiting for cert-manager..."
   wait_for_helmreleases "${HELMRELEASE_TIMEOUT}" cert-manager
+  # Ready covers the rollout, not the admission path the Phase 2 applies
+  # take: the webhook's listener and its injected caBundle trail it by
+  # seconds. Probe with the manifest Phase 2 applies first.
+  wait_for_cert_manager_webhook "${REPO_ROOT}/deploy/flux-system/infrastructure/cluster-issuer.yaml" "${WEBHOOK_TIMEOUT}"
 
   # Phase 2: Apply TLS prerequisites that OpenBao and MariaDB need to start.
   # The openbao-tls Certificate creates the Secret mounted by the OpenBao

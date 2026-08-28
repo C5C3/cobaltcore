@@ -1,0 +1,88 @@
+# ServiceMonitor template unit tests.
+suite: ServiceMonitor
+templates:
+  - templates/servicemonitor.yaml
+tests:
+  - it: should not render when monitoring is disabled
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should render a ServiceMonitor with the operator metrics endpoint when enabled
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: ServiceMonitor
+      - isAPIVersion:
+          of: monitoring.coreos.com/v1
+      - equal:
+          path: spec.endpoints[0].port
+          value: metrics
+      - equal:
+          path: spec.endpoints[0].path
+          value: /metrics
+      - equal:
+          path: spec.endpoints[0].interval
+          value: 30s
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: operator-library-testbed
+
+  - it: should honour a custom scrape interval
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+          interval: 15s
+    asserts:
+      - equal:
+          path: spec.endpoints[0].interval
+          value: 15s
+
+  # Prometheus operator's `Duration` type accepts the literal "0" to mean
+  # "use the global default scrape interval", so the schema regex allows the
+  # bare-zero form.
+  - it: should accept "0" as the scrape interval
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+          interval: "0"
+    asserts:
+      - equal:
+          path: spec.endpoints[0].interval
+          value: "0"
+
+  - it: should reject a non-duration scrape interval
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+          interval: "not-a-duration"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/monitoring/serviceMonitor/interval.*does not match pattern"
+
+  - it: should reject non-boolean monitoring.serviceMonitor.enabled
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: "yes"
+    asserts:
+      - failedTemplate:
+          errorPattern: "/monitoring/serviceMonitor/enabled.*got string, want boolean"
+
+  - it: should reject unknown property under monitoring.serviceMonitor
+    set:
+      monitoring:
+        serviceMonitor:
+          enabled: true
+          scheme: https
+    asserts:
+      - failedTemplate:
+          errorPattern: "/monitoring/serviceMonitor.*additional properties.*not allowed"
