@@ -261,21 +261,47 @@ var NeutronRemoteChildKinds = []schema.GroupVersionKind{
 // +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutronmetadataagents,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutronmetadataagents/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=neutron.openstack.c5c3.io,resources=neutronmetadataagents/finalizers,verbs=update
+// Both kinds belong to ovn-operator. The Neutron OVN step reads the OVNCentral
+// for the two connection strings and the client certificate the [ovn] config
+// section needs; the agent chassis step reads the OVNChassis a
+// NeutronMetadataAgent runs beside. Neither is written.
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals;ovnchassis,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=services;configmaps;secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+// deployments carry the Neutron API server, daemonsets the per-node metadata
+// agent.
 // +kubebuilder:rbac:groups=apps,resources=deployments;daemonsets,verbs=get;list;watch;create;update;patch;delete
+// jobs covers the db-sync Job that runs neutron-db-manage upgrade head;
+// cronjobs covers the recurring ovn-db-sync run.
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=databases;users;grants,verbs=get;list;watch;create;update;patch;delete
+// Required for the operator to observe the referenced MariaDB cluster's
+// Ready condition and reflect outages in DatabaseReady.
 // +kubebuilder:rbac:groups=k8s.mariadb.com,resources=mariadbs,verbs=get;list;watch
+// In managed messaging mode the transport URL is derived from the named
+// RabbitmqCluster instead of read from a Secret, so the operator reads and
+// watches the cluster.
 // +kubebuilder:rbac:groups=rabbitmq.com,resources=rabbitmqclusters,verbs=get;list;watch
+// The database, service-user and messaging credential Secrets are ESO-managed;
+// the operator only reads the ExternalSecrets to attribute a not-synced Secret
+// in SecretsReady messages.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets,verbs=get;list;watch
+// Required so the operator can observe the selected store's Ready condition and
+// reflect upstream secret-backend outages in SecretsReady. A CR selects either
+// the shared cluster-scoped ClusterSecretStore (default) or a namespaced
+// SecretStore, so both kinds must be watchable.
 // +kubebuilder:rbac:groups=external-secrets.io,resources=clustersecretstores;secretstores,verbs=get;list;watch
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete
+// Required to create/update/delete HTTPRoutes that expose the Neutron API
+// externally.
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch;create;update;patch;delete
+// Required so the operator can observe the Accepted condition set by the
+// upstream Gateway controller and reflect it in HTTPRouteReady.
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes/status,verbs=get
+// Required for the webhook to validate that spec.priorityClassName references
+// an existing PriorityClass at admission time.
 // +kubebuilder:rbac:groups=scheduling.k8s.io,resources=priorityclasses,verbs=get;list;watch
 
 // Reconcile is the main reconciliation loop for the Neutron CR. It fetches the

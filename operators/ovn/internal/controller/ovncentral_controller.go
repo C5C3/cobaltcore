@@ -179,16 +179,30 @@ var OVNCentralRemoteChildKinds = []schema.GroupVersionKind{
 // for the addresses the endpoint step publishes, and secrets for the
 // certificate material cert-manager writes.
 
+// No create and no delete: both CR kinds are written by whoever deploys the
+// control plane. The operator reads them, stamps their status and manages their
+// finalizers, and never brings one into being or takes it away.
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals;ovnchassis,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovncentrals/finalizers,verbs=update
 // +kubebuilder:rbac:groups=ovn.openstack.c5c3.io,resources=ovnchassis/finalizers,verbs=update
+// The three inputs the operator reads and never writes: nodes and pods for the
+// addresses the endpoint step publishes to the chassis layer, secrets for the
+// certificate material cert-manager writes.
 // +kubebuilder:rbac:groups=core,resources=nodes;pods;secrets,verbs=get;list;watch
+// persistentvolumeclaims covers the backup volume; the database volumes come
+// from the StatefulSet volumeClaimTemplates.
 // +kubebuilder:rbac:groups=core,resources=services;configmaps;persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+// statefulsets carry the northbound and southbound databases, deployments the
+// northd and relay tiers, daemonsets the per-node chassis pods.
 // +kubebuilder:rbac:groups=apps,resources=statefulsets;deployments;daemonsets,verbs=get;list;watch;create;update;patch;delete
+// jobs covers the chassis maintenance Jobs; cronjobs covers the recurring
+// database backup.
 // +kubebuilder:rbac:groups=batch,resources=jobs;cronjobs,verbs=get;list;watch;create;update;patch;delete
+// The operator issues the OVN client and server certificates through
+// cert-manager and reads back the Secrets they write.
 // +kubebuilder:rbac:groups=cert-manager.io,resources=certificates,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is the main reconciliation loop for the OVNCentral CR. It fetches
