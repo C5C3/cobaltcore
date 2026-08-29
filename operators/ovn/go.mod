@@ -5,7 +5,7 @@ go 1.26.6
 require (
 	github.com/c5c3/cobaltcore/internal/common v0.0.0
 	github.com/cert-manager/cert-manager v1.20.2
-	github.com/onsi/gomega v1.42.1
+	github.com/onsi/gomega v1.43.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
 	k8s.io/api v0.37.0

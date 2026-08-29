@@ -7,7 +7,7 @@ require (
 	github.com/dc-tec/openbao-operator v0.0.0-20260825192026-2a69a9f11841
 	github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8
 	github.com/mariadb-operator/mariadb-operator v0.38.1
-	github.com/onsi/gomega v1.42.1
+	github.com/onsi/gomega v1.43.0
 	github.com/openbao/openbao/api/v2 v2.6.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
