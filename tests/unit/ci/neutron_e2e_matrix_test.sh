@@ -11,8 +11,8 @@
 # produces a leg and its Chainsaw suites under tests/e2e/neutron/ are
 # lint-checked and never applied to a cluster. The helm filter is the sole gate
 # on helm-validate, so a PR touching only operators/neutron/helm/ renders,
-# lints and unit-tests nothing. The Scenario-5 skip and the OVN-CRD install
-# step are the two places where the neutron leg departs from the shared shape:
+# lints and unit-tests nothing. The Scenario-5 skip and the ovn-operator deploy
+# are the two places where the neutron leg departs from the shared shape:
 # dropping either turns a green pipeline red for a reason that has nothing to
 # do with the change under test.
 #
@@ -47,6 +47,29 @@ filter_block() {
     in_block && /^            [a-z0-9_]+:$/ { exit }
     in_block { print }
   ' "$CI_YAML"
+}
+
+# Echo the body of the top-level ci.yaml job <name>. The block ends at the next
+# 2-space line that is not part of the body — the next job key, or the comment
+# header introducing it.
+job_block() {
+  awk -v key="  $1:" '
+    $0 == key { in_block = 1; next }
+    in_block && /^  [#a-z0-9-]/ { exit }
+    in_block { print }
+  ' "$CI_YAML"
+}
+
+# Echo the body of the named step of the e2e-operator job. Steps sit at 6-space
+# indent, so the next line at that indent ends the block: the following step,
+# or the comment introducing it. Scoping to the job keeps a step of the same
+# name in another job from satisfying an assertion here.
+e2e_operator_step() {
+  job_block e2e-operator | awk -v key="      - name: $1" '
+    $0 == key { in_block = 1; next }
+    in_block && /^      [-#]/ { exit }
+    in_block { print }
+  '
 }
 
 # ---------------------------------------------------------------------------
@@ -135,17 +158,84 @@ test_scenario_five_accepts_the_neutron_refusal() {
     "$(grep -cF "$hook" "$PROJECT_ROOT/operators/ovn/helm/ovn-operator/templates/_helpers.tpl")"
 }
 
-test_e2e_leg_installs_the_ovn_crds() {
-  echo "Test: the neutron e2e leg installs the OVN CRDs"
+test_e2e_leg_deploys_the_ovn_operator() {
+  echo "Test: the neutron e2e leg deploys the ovn-operator, not only its CRDs"
 
-  # Both neutron reconcilers watch an OVN kind. Without those CRDs the manager
-  # never finishes its cache sync and the leg fails on every suite at once.
-  assert_file_contains "the install step exists" "$CI_YAML" \
-    "name: Install CRDs watched by the neutron-operator"
-  assert_file_contains "the step runs on the neutron leg only" "$CI_YAML" \
+  # A Neutron never reaches Ready without a live OVNCentral: the Neutron
+  # controller reads its published Northbound and Southbound addresses, and the
+  # NeutronMetadataAgent controller resolves an OVNChassis. Applying the OVN
+  # CRDs alone keeps the manager's cache sync from timing out and leaves every
+  # suite waiting on objects nothing reconciles.
+  local deploy
+  deploy=$(e2e_operator_step "Deploy ovn-operator")
+
+  assert_not_empty "the deploy step exists" "$deploy"
+  assert_contains "it runs on the neutron leg only" "$deploy" \
     "if: matrix.operator == 'neutron'"
-  assert_file_contains "the step applies the OVN CRDs" "$CI_YAML" \
-    "kubectl apply -f operators/ovn/helm/ovn-operator/crds/"
+  assert_contains "it goes through the shared deploy script" "$deploy" \
+    "run: hack/ci-deploy-operator.sh"
+  assert_contains "it deploys the ovn operator" "$deploy" "OPERATOR: ovn"
+  assert_contains "it uses the run-tagged ovn-operator image" "$deploy" \
+    "IMAGE_PREFIX }}/ovn-operator"
+  assert_contains "it lands in its own Namespace" "$deploy" \
+    "NAMESPACE: ovn-system"
+
+  assert_file_not_contains "the CRD-only step it replaced is gone" "$CI_YAML" \
+    "name: Install CRDs watched by the neutron-operator"
+
+  # The OVNCentral has to be reconcilable before the neutron-operator's own
+  # suites start, so the ovn deploy comes first.
+  local job ovn_at neutron_at
+  job=$(job_block e2e-operator)
+  ovn_at=$(printf '%s\n' "$job" | grep -nF "name: Deploy ovn-operator" | head -1 | cut -d: -f1)
+  neutron_at=$(printf '%s\n' "$job" | grep -nF "name: Deploy operator" | head -1 | cut -d: -f1)
+  assert_eq "the ovn deploy runs before the matrix operator's own" "yes" \
+    "$([ -n "$ovn_at" ] && [ -n "$neutron_at" ] && [ "$ovn_at" -lt "$neutron_at" ] && echo yes || echo no)"
+
+  # Its pods live in ovn-system, which the first dump never looks at: that one
+  # derives its Namespace from the matrix operator.
+  local dump
+  dump=$(e2e_operator_step "Dump diagnostic info (ovn)")
+  assert_not_empty "the second diagnostics dump exists" "$dump"
+  assert_contains "it dumps even when the suites failed" "$dump" \
+    "if: always() && matrix.operator == 'neutron'"
+  assert_contains "it dumps the ovn Namespace" "$dump" "OPERATOR: ovn"
+}
+
+test_e2e_leg_loads_the_ovn_images() {
+  echo "Test: the neutron e2e leg loads both images the ovn-operator needs"
+
+  # kind pulls nothing the run did not load: the operator image the deploy runs
+  # and the daemon image its OVNCentral rolls out both have to be on the node.
+  local resolve load ovn_branch neutron_branch
+  resolve=$(e2e_operator_step "Resolve E2E images")
+  load=$(e2e_operator_step "Load images into kind")
+  neutron_branch=$(printf '%s\n' "$resolve" | awk '
+    /= "neutron" \]; then/ { in_b = 1; next }
+    in_b && /^ *fi$/ { exit }
+    in_b { print }
+  ')
+
+  assert_not_empty "the resolve step branches on the neutron leg" "$neutron_branch"
+  assert_contains "it pulls the ovn-operator image" "$neutron_branch" \
+    '${IMAGE_PREFIX}/ovn-operator:dev'
+  assert_contains "it pulls the OVN daemon image at the resolved pin" \
+    "$neutron_branch" '${IMAGE_PREFIX}/ovn:${OVN_VERSION}'
+  assert_contains "the load step mirrors the operator image" "$load" \
+    'kind load docker-image "${IMAGE_PREFIX}/ovn-operator:dev"'
+  assert_contains "the load step mirrors the daemon image" "$load" \
+    'kind load docker-image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"'
+
+  # The ovn leg already gets ovn-operator:dev from the generic
+  # ${OPERATOR}-operator:dev line; naming it again there would load it twice.
+  ovn_branch=$(printf '%s\n' "$resolve" | awk '
+    /= "ovn" \]; then/ { in_b = 1; next }
+    in_b && /^ *fi$/ { exit }
+    in_b { print }
+  ')
+  assert_not_empty "the resolve step branches on the ovn leg too" "$ovn_branch"
+  assert_not_contains "the ovn branch does not repeat the operator image" \
+    "$ovn_branch" "ovn-operator:dev"
 }
 
 test_build_e2e_images_builds_the_neutron_images() {
@@ -176,7 +266,8 @@ test_neutron_change_produces_an_e2e_leg
 test_helm_filter_covers_the_neutron_chart
 test_helm_validate_renders_the_neutron_chart
 test_scenario_five_accepts_the_neutron_refusal
-test_e2e_leg_installs_the_ovn_crds
+test_e2e_leg_deploys_the_ovn_operator
+test_e2e_leg_loads_the_ovn_images
 test_build_e2e_images_builds_the_neutron_images
 
 echo ""

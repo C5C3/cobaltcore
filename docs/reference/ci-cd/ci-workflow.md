@@ -767,12 +767,14 @@ Chainsaw E2E test suites.
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
-| 5 | `kind load docker-image` | Loads operator, 2025.2 service, 2025.2-upgraded, and 2026.1 service images into kind |
-| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
-| 7 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
-| 8 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` |
-| 9 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs |
-| 10 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
+| 5 | `kind load docker-image` | Loads operator, 2025.2 service, 2025.2-upgraded, and 2026.1 service images into kind, plus `ovn:<pin>` on the `ovn` and `neutron` legs |
+| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack; the `ovn` and `neutron` legs pass `WITH_OVN_KERNEL_MODULES: true` |
+| 7 | `hack/ci-deploy-operator.sh` (`neutron` leg) | Deploys the ovn-operator into `ovn-system` |
+| 8 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
+| 9 | `chainsaw test` | Runs E2E tests from `tests/e2e/<operator>/` |
+| 10 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs |
+| 11 | `hack/ci-dump-diagnostics.sh` (always, `neutron` leg) | Same dump for `ovn-system` |
+| 12 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
 
 **Matrix strategy:**
 
@@ -785,6 +787,24 @@ strategy:
 The operator matrix is dynamically constructed by the `changes` job, including only operators
 whose code (or shared code) changed. The `imagePullPolicy: Never` Helm value ensures the
 kind-loaded image is used instead of attempting a registry pull. Timeout: 68 minutes.
+
+**The two OVN legs.** `ovn` ships no per-release service image. Its Pods all
+run `ghcr.io/c5c3/ovn:<pin>`, where `<pin>` is what
+`hack/ci-resolve-ovn-version.sh` reads out of `images/ovn/Dockerfile`. The
+`Resolve E2E images` step appends that ref and `Load images into kind` loads it.
+
+The `neutron` leg loads the same image plus `ovn-operator:dev`, and deploys the
+ovn-operator into `ovn-system` ahead of the neutron-operator. A Neutron stays
+out of `Ready` until an OVNCentral publishes its Northbound and Southbound
+addresses, and a NeutronMetadataAgent resolves an OVNChassis. That second
+operator gets a diagnostics dump of its own with `OPERATOR: ovn`, since the
+first dump derives its Namespace from the matrix operator and never looks at
+`ovn-system`.
+
+Both legs set `WITH_OVN_KERNEL_MODULES: true` on the `setup-e2e-infra` step,
+which loads `openvswitch` and `geneve` on the kind node for the chassis
+DaemonSets. See
+[Kernel-module-dependent suites](#kernel-module-dependent-suites).
 
 ### e2e-operator-upgrade
 
