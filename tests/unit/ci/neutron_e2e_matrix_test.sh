@@ -14,7 +14,9 @@
 # lints and unit-tests nothing. The Scenario-5 skip and the ovn-operator deploy
 # are the two places where the neutron leg departs from the shared shape:
 # dropping either turns a green pipeline red for a reason that has nothing to
-# do with the change under test.
+# do with the change under test. The last test covers the e2e-chaos network
+# leg, which the e2e-operators matrix never produces and whose test_dirs are
+# enumerated by hand because chainsaw's regex filters are no-ops.
 #
 # Usage: bash tests/unit/ci/neutron_e2e_matrix_test.sh
 
@@ -68,6 +70,28 @@ e2e_operator_step() {
   job_block e2e-operator | awk -v key="      - name: $1" '
     $0 == key { in_block = 1; next }
     in_block && /^      [-#]/ { exit }
+    in_block { print }
+  '
+}
+
+# Echo the body of the named step of the e2e-chaos job. Same shape as
+# e2e_operator_step above; scoping matters because e2e-chaos and e2e-operator
+# both carry a "Load E2E images" and a "Setup E2E infrastructure" step.
+e2e_chaos_step() {
+  job_block e2e-chaos | awk -v key="      - name: $1" '
+    $0 == key { in_block = 1; next }
+    in_block && /^      [-#]/ { exit }
+    in_block { print }
+  '
+}
+
+# Echo the e2e-chaos matrix entry whose suite key is $1. Entries sit at 10-space
+# indent and their keys deeper, so the next line at that indent ends the block:
+# the following entry, or the comment introducing it.
+e2e_chaos_matrix_entry() {
+  job_block e2e-chaos | awk -v key="          - suite: $1" '
+    $0 == key { in_block = 1; next }
+    in_block && /^          [-#]/ { exit }
     in_block { print }
   '
 }
@@ -257,6 +281,68 @@ test_build_e2e_images_builds_the_neutron_images() {
     "$(OPERATOR=neutron "$PROJECT_ROOT/hack/ci-service-image-releases.sh")"
 }
 
+test_chaos_network_leg_runs_the_neutron_suites() {
+  echo "Test: the e2e-chaos network leg runs both neutron outage suites"
+
+  # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
+  # flags are no-ops in v0.2.14), so a suite missing from the list is
+  # lint-checked and never applied to a cluster. The images and the operator
+  # deploy are the rest of what the two suites need: kind pulls nothing the run
+  # did not load, and a Neutron whose operator never deployed sits without
+  # status until the suite times out.
+  local entry
+  entry=$(e2e_chaos_matrix_entry network)
+
+  assert_not_empty "the network leg exists" "$entry"
+  assert_contains "it runs the MariaDB outage suite" "$entry" \
+    "tests/e2e-chaos/neutron-mariadb-outage"
+  assert_contains "it runs the broker outage suite" "$entry" \
+    "tests/e2e-chaos/neutron-broker-outage"
+
+  local load
+  load=$(e2e_chaos_step "Load E2E images")
+  assert_contains "the leg pulls the neutron-operator image" "$load" \
+    "matrix.suite == 'network' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX)"
+  assert_contains "the leg pulls the neutron service image" "$load" \
+    "matrix.suite == 'network' && format('{0}/neutron:2025.2', env.IMAGE_PREFIX)"
+
+  local kind_load
+  kind_load=$(e2e_chaos_step "Load neutron images into kind")
+  assert_not_empty "both images reach the node" "$kind_load"
+  assert_contains "the load runs on the network leg alone" "$kind_load" \
+    "if: matrix.suite == 'network'"
+  assert_contains "the operator image is loaded" "$kind_load" \
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/neutron-operator:dev"
+  assert_contains "the service image is loaded" "$kind_load" \
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/neutron:2025.2"
+
+  local deploy
+  deploy=$(e2e_chaos_step "Deploy neutron operator")
+  assert_not_empty "the neutron-operator is deployed" "$deploy"
+  assert_contains "the deploy runs on the network leg alone" "$deploy" \
+    "if: matrix.suite == 'network'"
+  assert_contains "it goes through the shared deploy script" "$deploy" \
+    "run: hack/ci-deploy-operator.sh"
+  assert_contains "it deploys the neutron operator" "$deploy" "OPERATOR: neutron"
+  assert_contains "it uses the run-tagged neutron-operator image" "$deploy" \
+    "IMAGE_PREFIX }}/neutron-operator"
+  assert_contains "it lands in its own Namespace" "$deploy" \
+    "NAMESPACE: neutron-system"
+
+  # Both suites create their own Keystone and their own OVNCentral, so the
+  # neutron-operator deploy has to come after the operators that reconcile
+  # those two kinds.
+  local job keystone_at ovn_at neutron_at
+  job=$(job_block e2e-chaos)
+  keystone_at=$(printf '%s\n' "$job" | grep -nF "name: Deploy operator" | head -1 | cut -d: -f1)
+  ovn_at=$(printf '%s\n' "$job" | grep -nF "name: Deploy ovn operator" | head -1 | cut -d: -f1)
+  neutron_at=$(printf '%s\n' "$job" | grep -nF "name: Deploy neutron operator" | head -1 | cut -d: -f1)
+  assert_eq "the keystone and ovn deploys run first" "yes" \
+    "$([ -n "$keystone_at" ] && [ -n "$ovn_at" ] && [ -n "$neutron_at" ] &&
+       [ "$keystone_at" -lt "$neutron_at" ] && [ "$ovn_at" -lt "$neutron_at" ] &&
+       echo yes || echo no)"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -269,6 +355,7 @@ test_scenario_five_accepts_the_neutron_refusal
 test_e2e_leg_deploys_the_ovn_operator
 test_e2e_leg_loads_the_ovn_images
 test_build_e2e_images_builds_the_neutron_images
+test_chaos_network_leg_runs_the_neutron_suites
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
