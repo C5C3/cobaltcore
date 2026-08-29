@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR with spec.networkPolicy for the NetworkPolicy lifecycle test.
+#
+# Managed mode (clusterRef openstack-db, schema neutron_netpol), same shape as
+# the basic-deployment fixture. One API replica: the policy is a function of the
+# spec and the resolved backends, not of the replica count, and a second pod
+# would only lengthen the bring-up.
+#
+# The single ingress source selects the openstack namespace. The operator
+# appends one peer for its own namespace on top of it, which is the peer
+# arithmetic step 4 patches against.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-netpol
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_netpol
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-netpol-messaging
+  ovn:
+    centralRef:
+      name: neutron-netpol-ovn
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  networkPolicy:
+    ingress:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: openstack

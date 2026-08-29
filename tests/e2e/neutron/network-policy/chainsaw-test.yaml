@@ -1,0 +1,191 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the NetworkPolicy sub-reconciler.
+#
+# SCOPE CAVEAT: the default CI CNI (kindnet) does NOT enforce NetworkPolicy,
+# so this suite validates the rendered policy object (ingress on the Neutron
+# API port 9696, auto-derived DNS/database/keystone/cache/OVN/messaging egress)
+# and its lifecycle, not actual traffic enforcement — the same scope as the
+# keystone/horizon/glance/placement network-policy suites.
+#
+# The auto-derived egress order is deterministic (DNS, database, keystone,
+# cache, OVN, messaging):
+#   - DNS       UDP+TCP 53
+#   - database  TCP 3306 (spec.database default port)
+#   - keystone  TCP 5000 (parsed from spec.keystoneEndpoint)
+#   - cache     TCP 11211 (managed memcached)
+#   - OVN       TCP 6641 + 6642, one port per distinct member port of the two
+#               addresses the OVNCentral published
+#   - messaging TCP 5672 (the port of the transport URL in the broker Secret)
+# The last two rules are what separates Neutron from the sibling suites: an
+# ML2/OVN Neutron writes the logical network model to the Northbound database
+# and its maintenance worker reads the Southbound one, and every Neutron process
+# publishes on the RPC bus. Neither destination is reachable by a label
+# selector, so both rules are port-only and both disappear from the rendered
+# policy while their input is unresolved.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-network-policy
+spec:
+  namespace: openstack
+  timeouts:
+    # The OVNCentral has to issue three certificates and bootstrap two Raft
+    # databases before the Neutron reconciler renders anything, and the schema
+    # migration and the API cold start follow. That does not fit the 120s the
+    # shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the broker Secret, the OVNCentral and the Neutron CR ──
+  - try:
+    - apply:
+        file: 00-messaging-secret.yaml
+    - apply:
+        file: 01-ovncentral-cr.yaml
+    - apply:
+        file: 02-neutron-cr.yaml
+  # ── Step 2: Assert the NetworkPolicy carries the expected rules ─────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyReady
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: neutron-netpol
+            namespace: openstack
+          spec:
+            # The selector carries no component key, so one policy covers the
+            # API pods, both worker Deployments and the db-sync pods alike. All
+            # of them read the same database, publish on the same broker and
+            # dial the same two OVN databases.
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: neutron
+                app.kubernetes.io/instance: neutron-netpol
+            policyTypes:
+            - Ingress
+            - Egress
+            ingress:
+            - ports:
+              - protocol: TCP
+                port: 9696
+            egress:
+            - ports:
+              - protocol: UDP
+                port: 53
+              - protocol: TCP
+                port: 53
+            - ports:
+              - protocol: TCP
+                port: 3306
+            - ports:
+              - protocol: TCP
+                port: 5000
+            - ports:
+              - protocol: TCP
+                port: 11211
+            # The two OVN databases, sorted ascending: the addresses come from
+            # an unordered pair of status fields, so the rule is sorted to stay
+            # deterministic.
+            - ports:
+              - protocol: TCP
+                port: 6641
+              - protocol: TCP
+                port: 6642
+            - ports:
+              - protocol: TCP
+                port: 5672
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-netpol-ovn -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== NetworkPolicy ==="
+          kubectl get networkpolicy neutron-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Add a second ingress source and assert it lands ────────────
+  # Peer arithmetic: the operator appends one peer per declared ingress source
+  # plus one for its own Namespace (so the operator's health check reaches the
+  # API). One source therefore renders 2 peers and the patched two sources
+  # render 3 — `>= 3` is what distinguishes "the patch landed" from "the policy
+  # is unchanged".
+  - try:
+    - patch:
+        file: 03-patch-update-ingress.yaml
+    - assert:
+        resource:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: neutron-netpol
+            namespace: openstack
+          spec:
+            ingress:
+            - (length(from) >= `3`): true
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== NetworkPolicy ==="
+          kubectl get networkpolicy neutron-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Disable networkPolicy and assert deletion ──────────────────
+  - try:
+    - patch:
+        file: 04-patch-disable-networkpolicy.yaml
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-netpol
+            namespace: openstack
+          status:
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+    - script:
+        content: |
+          if kubectl get networkpolicy neutron-netpol -n $NAMESPACE 2>/dev/null; then
+            echo "FAIL: NetworkPolicy should have been deleted"
+            exit 1
+          fi
+          echo "PASS: NetworkPolicy correctly deleted"
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-netpol -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== NetworkPolicies ==="
+          kubectl get networkpolicy -n $NAMESPACE 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

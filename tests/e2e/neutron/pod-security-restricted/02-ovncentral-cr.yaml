@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVN control plane for the PSS-restricted E2E test, in the labelled test
+# namespace.
+#
+# It runs here rather than in `openstack` for the reason the suite exists: D9
+# claims the OVN database pods run under the Restricted profile, and the only
+# way to assert that against admission is to put them in a namespace that
+# enforces it. The Neutron CR beside it resolves `ovn.centralRef` in its own
+# namespace anyway, so a central in `openstack` would not serve this CR.
+#
+# The issuer is the cluster-scoped one the kind overlay ships, so it is
+# reachable from any namespace. Single-member Raft clusters, a single northd and
+# a suspended backup CronJob keep the bring-up inside the suite's assert budget;
+# the pods under test are the same ones either way.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: neutron-pss-ovn
+  namespace: neutron-pss-restricted-test
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true

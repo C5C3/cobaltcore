@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVN control plane the neutron-scale CR programs.
+#
+# The Neutron reconciler gates on this CR's status: it needs both
+# internalDbAddress values and the published clientSecretName before it renders
+# ml2_conf.ini, so the API pods this suite scales do not start without it.
+#
+# Single-member Raft clusters, a single northd and a suspended backup CronJob
+# keep the scaffolding as small as the suite allows: the replica arithmetic
+# under test belongs to the Neutron API Deployment, not to the control plane.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: neutron-scale-ovn
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true

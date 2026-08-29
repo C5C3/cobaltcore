@@ -1,0 +1,311 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a NeutronMetadataAgent on the one node of the kind
+# cluster. Validates what only a real node can answer:
+#   - all 3 sub-conditions progress to True with their expected reasons, and
+#     the aggregate Ready=True with reason AllReady
+#   - the DaemonSet lands on the node the OVNChassis selects, with the chassis's
+#     own nodeSelector copied verbatim and hostNetwork on, and runs a ready pod
+#   - the wait-for-chassis init container exited 0, which means it found this
+#     node's system-id in the local Open vSwitch database over the socket the
+#     chassis pods create, and the agent container is ready without a restart
+#   - the rendered neutron_ovn_metadata_agent.ini points the agent at that local
+#     database and at the Southbound address the OVNCentral published, and
+#     carries no transport_url line
+#
+# That last assertion is what #904 owes this suite: an agent with spec.messaging
+# unset opens no broker connection, and the decision that the transport URL
+# never reaches the ConfigMap (it is an env override when a bus is configured at
+# all) was until now pinned only by the operator's unit tests.
+#
+# spec.concurrent is false because the agent pods run with hostNetwork and share
+# /run/openvswitch and /run/netns on the node with the OVNChassis pods.
+# hack/kind-config.yaml declares a single node, so a second suite rendering an
+# OVNChassis or a NeutronMetadataAgent at the same time would contend with this
+# one over the same host paths.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-metadata-agent
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # The control plane, the two chassis DaemonSets, the chassis registration
+    # and the agent DaemonSet in sequence take longer than the 120s the shared
+    # config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Label the node the chassis selects ─────────────────────────
+  # The suite labels the node itself rather than relying on the cluster
+  # bring-up, so it runs against any kind cluster the CI job hands it. The
+  # step cleanup takes the label off again, which is what keeps a later suite
+  # from finding a node advertising a chassis role nothing serves.
+  - try:
+    - script:
+        content: |
+          set -eu
+          NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          kubectl label node "$NODE" openstack.c5c3.io/chassis=true --overwrite
+          echo "OK: labelled node $NODE with openstack.c5c3.io/chassis=true"
+    cleanup:
+    - script:
+        content: |
+          set -eu
+          for node in $(kubectl get nodes -l openstack.c5c3.io/chassis=true -o name); do
+            kubectl label "$node" openstack.c5c3.io/chassis- || true
+          done
+          echo "OK: removed openstack.c5c3.io/chassis from every node"
+  # ── Step 2: Bring up the control plane and the chassis ─────────────────
+  # The agent's first gate resolves both CRs, so neither can be skipped: the
+  # nodeSelector and the tolerations come from the chassis, the Southbound
+  # address and the client Secret from the central the chassis attaches to.
+  - try:
+    - apply:
+        file: 01-ovncentral-cr.yaml
+    - apply:
+        file: 02-ovnchassis-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: neutron-agent-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            clientSecretName: neutron-agent-ovn-client
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNChassis
+          metadata:
+            name: neutron-agent-chassis
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            desiredNumberScheduled: 1
+            numberReady: 1
+    catch:
+    - script:
+        content: |
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-agent-ovn -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNChassis CR status ==="
+          kubectl get ovnchassis neutron-agent-chassis -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Control-plane and chassis pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent-ovn -o name 2>/dev/null) \
+                     $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent-chassis -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Node labels ==="
+          kubectl get nodes --show-labels 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Apply the agent and assert its conditions ──────────────────
+  # The agent runs no optional step, so all three sub-conditions are set on
+  # every pass. SecretsAvailable is the reason a CR that references no Secret at
+  # all reports: with neither spec.messaging nor spec.novaMetadata there is
+  # nothing to gate on, and the step must still say so rather than stay silent.
+  - try:
+    - apply:
+        file: 03-neutronmetadataagent-cr.yaml
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: NeutronMetadataAgent
+          metadata:
+            name: neutron-agent
+            namespace: openstack
+          status:
+            (conditions[?type == 'ChassisReady']):
+            - status: "True"
+              reason: ChassisResolved
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'DaemonSetReady']):
+            - status: "True"
+              reason: DaemonSetReady
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== NeutronMetadataAgent CR status ==="
+          kubectl get neutronmetadataagent neutron-agent -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNChassis CR status ==="
+          kubectl get ovnchassis neutron-agent-chassis -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-agent-ovn -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Agent DaemonSet ==="
+          kubectl describe ds neutron-agent-metadata-agent -n $NAMESPACE 2>&1 || true
+          echo "=== Agent pod logs (init containers included) ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert the DaemonSet and its pod ───────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: neutron-agent-metadata-agent
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                # Copied from the OVNChassis rather than declared on the agent:
+                # a selector of its own could put the agent on a node where no
+                # chassis creates the local database socket it waits for.
+                nodeSelector:
+                  openstack.c5c3.io/chassis: "true"
+                # The agent answers the 169.254.169.254 requests arriving on the
+                # node's own interfaces, so it runs in the node's network
+                # namespace.
+                hostNetwork: true
+          status:
+            desiredNumberScheduled: 1
+            numberReady: 1
+    # A ready pod says nothing about how it got there. The init container polls
+    # the local Open vSwitch database until the chassis on this node has written
+    # its system-id, and an agent container that crash-looped its way to
+    # readiness would have spent that time not answering instances.
+    - script:
+        content: |
+          set -eu
+          PODS="$(kubectl get pods -n openstack \
+            -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent \
+            -o name)"
+          if [ -z "${PODS}" ]; then
+            echo "FAIL: no pod of the metadata-agent DaemonSet found"
+            exit 1
+          fi
+          STATUS=0
+          for pod in ${PODS}; do
+            POD_STATUS=0
+            INIT_EXIT="$(kubectl get "${pod}" -n openstack -o \
+              "jsonpath={.status.initContainerStatuses[?(@.name=='wait-for-chassis')].state.terminated.exitCode}")"
+            if [ "${INIT_EXIT}" != "0" ]; then
+              echo "FAIL: ${pod} wait-for-chassis terminated exit code '${INIT_EXIT}', want 0"
+              POD_STATUS=1
+            fi
+            READY="$(kubectl get "${pod}" -n openstack -o \
+              "jsonpath={.status.containerStatuses[?(@.name=='metadata-agent')].ready}")"
+            if [ "${READY}" != "true" ]; then
+              echo "FAIL: ${pod} container metadata-agent ready is '${READY}', want true"
+              POD_STATUS=1
+            fi
+            RESTARTS="$(kubectl get "${pod}" -n openstack -o \
+              "jsonpath={.status.containerStatuses[?(@.name=='metadata-agent')].restartCount}")"
+            if [ "${RESTARTS}" != "0" ]; then
+              echo "FAIL: ${pod} container metadata-agent restarted ${RESTARTS} time(s)"
+              POD_STATUS=1
+            fi
+            if [ "${POD_STATUS}" -eq 0 ]; then
+              echo "OK: ${pod} wait-for-chassis exited 0, metadata-agent ready, no restart"
+            else
+              STATUS=1
+            fi
+          done
+          exit "${STATUS}"
+    catch:
+    - script:
+        content: |
+          echo "=== NeutronMetadataAgent CR status ==="
+          kubectl get neutronmetadataagent neutron-agent -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Agent DaemonSet ==="
+          kubectl describe ds neutron-agent-metadata-agent -n $NAMESPACE 2>&1 || true
+          echo "=== Agent pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o wide 2>&1 || true
+          echo "=== Agent pod logs (init containers included) ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== Chassis pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent-chassis -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+          done
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Assert the rendered agent config ───────────────────────────
+  # The ConfigMap is content-hashed, so it is resolved through the DaemonSet's
+  # config volume rather than guessed by name.
+  #
+  # Three lines carry the whole assertion. ovsdb_connection is the local socket
+  # the chassis pods create on the node, which is why the two workloads share
+  # one; ovn_sb_connection has to be the address this OVNCentral published,
+  # not a default the operator invented; and transport_url must not appear at
+  # all — the agent names no bus, and even one that did would receive the URL as
+  # an env override rather than in a ConfigMap every pod mounts.
+  - try:
+    - script:
+        content: |
+          set -eu
+          CM=$(kubectl get ds neutron-agent-metadata-agent -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          test -n "$CM"
+          kubectl get cm "$CM" -n openstack \
+            -o 'jsonpath={.data.neutron_ovn_metadata_agent\.ini}' > /tmp/neutron-agent.ini
+          grep -Fxq 'ovsdb_connection = unix:/run/openvswitch/db.sock' /tmp/neutron-agent.ini
+          SB=$(kubectl get ovncentral neutron-agent-ovn -n openstack \
+            -o 'jsonpath={.status.southbound.internalDbAddress}')
+          test -n "$SB"
+          grep -Fxq "ovn_sb_connection = ${SB}" /tmp/neutron-agent.ini
+          if grep -q '^transport_url' /tmp/neutron-agent.ini; then
+            echo "ERROR: neutron_ovn_metadata_agent.ini carries a transport_url line"
+            exit 1
+          fi
+          echo "OK: $CM reads the local database and ${SB}, and renders no transport_url"
+    catch:
+    - script:
+        content: |
+          echo "=== Config ConfigMaps ==="
+          kubectl get cm -n $NAMESPACE -o name 2>&1 | grep neutron-agent-config- || true
+          echo "=== Rendered config ==="
+          CM=$(kubectl get ds neutron-agent-metadata-agent -n $NAMESPACE -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}' 2>/dev/null || true)
+          kubectl get cm "$CM" -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-agent-ovn -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== NeutronMetadataAgent CR status ==="
+          kubectl get neutronmetadataagent neutron-agent -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Agent pod logs (init containers included) ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-agent,app.kubernetes.io/component=metadata-agent -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+          done
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true

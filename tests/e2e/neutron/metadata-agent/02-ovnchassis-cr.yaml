@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNChassis fixture for the metadata-agent E2E test.
+#
+# The selector matches the label step 1 puts on the one kind node. The agent
+# copies this selector verbatim into its own DaemonSet, which is what the
+# nodeSelector assertion checks: the agent answers the metadata requests of the
+# instances on the nodes this chassis programs, so it has to run on exactly
+# those nodes and read the local Open vSwitch database the chassis pods create
+# there.
+#
+# No bridge mappings and no gateway: there is no provider network on a kind node
+# to map. spec.image is left unset so the operator resolves the same OVN image
+# the control plane runs.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: neutron-agent-chassis
+  namespace: openstack
+spec:
+  centralRef:
+    name: neutron-agent-ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"

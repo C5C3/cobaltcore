@@ -1,0 +1,256 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for replica scaling and PDB policy.
+# Verifies that patching spec.deployment.replicas propagates to the API
+# Deployment and its PDB:
+#   - Initial deployment with replicas: 3 (PDB: minAvailable=1)
+#   - Scale up to 5 replicas — updatedReplicas proves new pods started
+#   - Scale down to 1 replica (PDB: maxUnavailable=1)
+#
+# Every step also asserts both worker Deployments still run one available
+# replica. spec.workers.deployment.replicas is a separate field and the workers
+# are separate Deployments, so a builder that read the API replica count for
+# every workload would scale them along and only this assertion would catch it.
+#
+# spec.concurrent is false because of the CPU the scale-up requests, not
+# because of host paths. Every Neutron API and worker pod carries the shared
+# 100m request (internal/common/types/workload.go), so step 3 holds 700m on the
+# single node hack/kind-config.yaml declares: five API pods and the two workers.
+# The e2e-operator neutron leg runs at --parallel 2, and beside the
+# release-upgrade suite (one API pod, two workers and its db-expand Job) the
+# last one or two API pods stayed Pending on "Insufficient cpu" for the whole
+# 5m assert window. Run alone, before the concurrent suites start, the peak
+# fits the node.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-scale
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # The OVNCentral bring-up, the schema migration and three API cold starts
+    # precede the first assertion, and two rollouts follow it. That does not fit
+    # the 120s the shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the broker Secret, the OVNCentral and the Neutron CR ──
+  - try:
+    - apply:
+        file: 00-messaging-secret.yaml
+    - apply:
+        file: 01-ovncentral-cr.yaml
+    - apply:
+        file: 02-neutron-cr.yaml
+  # ── Step 2: Assert Ready and the initial replica count ─────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-scale
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-scale
+            namespace: openstack
+          spec:
+            replicas: 3
+          status:
+            readyReplicas: 3
+            availableReplicas: 3
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: neutron-scale
+            namespace: openstack
+          spec:
+            minAvailable: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-scale-periodic-workers
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-scale-ovn-maintenance-worker
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-scale -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-scale-ovn -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Deployments and PDB ==="
+          kubectl get deploy,pdb -n $NAMESPACE -l app.kubernetes.io/instance=neutron-scale -o wide 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Neutron pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-scale -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Scale up to 5 and assert the rollout completed ─────────────
+  - try:
+    - patch:
+        file: 03-patch-scale-up.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-scale
+            namespace: openstack
+          spec:
+            replicas: 5
+          status:
+            availableReplicas: 5
+            updatedReplicas: 5
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-scale
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-scale-periodic-workers
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-scale-ovn-maintenance-worker
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-scale -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Deployments and PDB ==="
+          kubectl get deploy,pdb -n $NAMESPACE -l app.kubernetes.io/instance=neutron-scale -o wide 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Neutron pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-scale -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Scale down to 1 and assert the PDB flips ───────────────────
+  - try:
+    - patch:
+        file: 04-patch-scale-to-one.yaml
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-scale
+            namespace: openstack
+          spec:
+            replicas: 1
+          status:
+            availableReplicas: 1
+            updatedReplicas: 1
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: neutron-scale
+            namespace: openstack
+          spec:
+            maxUnavailable: 1
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-scale
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-scale-periodic-workers
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-scale-ovn-maintenance-worker
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-scale -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Deployments and PDB ==="
+          kubectl get deploy,pdb -n $NAMESPACE -l app.kubernetes.io/instance=neutron-scale -o wide 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Neutron pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-scale -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
