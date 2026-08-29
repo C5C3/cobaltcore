@@ -10,6 +10,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -178,4 +179,25 @@ func TestReconcileOVS_ReadBackErrorIsDaemonSetError(t *testing.T) {
 		"ensuring ovs DaemonSet: getting DaemonSet " + chassisOVSDaemonSet.Namespace + "/" + chassisOVSDaemonSet.Name)))
 	g.Expect(apierrors.IsForbidden(err)).To(BeTrue())
 	g.Expect(ovnChassisCondition(cr, conditionTypeOVSReady).Reason).To(Equal(conditionReasonDaemonSetError))
+}
+
+// Both datapath daemons reach ovsdb-server over a socket the unprivileged user
+// owns, and dropping ALL takes CAP_DAC_OVERRIDE with it, so uid 0 alone cannot
+// open it. The shared group is what gets them in. A pin test would notice the
+// field going missing only for whoever regenerates the golden; this states the
+// requirement.
+func TestBuildOVSDaemonSet_DatapathContainersJoinTheDatabaseGroup(t *testing.T) {
+	g := NewWithT(t)
+	ds := buildOVSDaemonSet(testOVNChassis())
+
+	for _, c := range ds.Spec.Template.Spec.Containers {
+		if c.Name == "ovsdb-server" {
+			continue
+		}
+		g.Expect(c.SecurityContext.RunAsUser).To(HaveValue(BeEquivalentTo(0)), c.Name)
+		g.Expect(c.SecurityContext.RunAsGroup).To(HaveValue(BeEquivalentTo(42424)), c.Name)
+		g.Expect(c.SecurityContext.Capabilities.Drop).To(ContainElement(corev1.Capability("ALL")), c.Name)
+		g.Expect(c.SecurityContext.Capabilities.Add).NotTo(
+			ContainElement(corev1.Capability("DAC_OVERRIDE")), c.Name)
+	}
 }

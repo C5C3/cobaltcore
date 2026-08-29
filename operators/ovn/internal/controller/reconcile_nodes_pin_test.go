@@ -78,8 +78,9 @@ const pinChassisScriptsConfigMapGolden = `data:
     ovs-vsctl --timeout=15 set open . \
       external_ids:system-id="${SYSTEM_ID}" external_ids:hostname="${NODE_NAME}" \
       external_ids:ovn-encap-type="${ENCAP_TYPE}" external_ids:ovn-encap-ip="${NODE_IP}" \
-      external_ids:ovn-remote="${OVN_REMOTE}" external_ids:ovn-remote-probe-interval="${OVN_REMOTE_PROBE_INTERVAL_MS}" \
-      external_ids:ovn-bridge-mappings="${BRIDGE_MAPPINGS}"
+      external_ids:ovn-remote="${OVN_REMOTE}" external_ids:ovn-remote-probe-interval="${OVN_REMOTE_PROBE_INTERVAL_MS}"
+    if [ -n "${BRIDGE_MAPPINGS}" ]; then ovs-vsctl --timeout=15 set open . external_ids:ovn-bridge-mappings="${BRIDGE_MAPPINGS}"
+    else ovs-vsctl --timeout=15 remove open . external_ids ovn-bridge-mappings; fi
     if [ "${GATEWAY}" = "true" ]; then ovs-vsctl --timeout=15 set open . external_ids:ovn-cms-options=enable-chassis-as-gw
     else ovs-vsctl --timeout=15 remove open . external_ids ovn-cms-options; fi
     for m in ${BRIDGE_MAPPINGS//,/ }; do ovs-vsctl --timeout=15 --may-exist add-br "${m#*:}"; done
@@ -101,13 +102,25 @@ const pinChassisScriptsConfigMapGolden = `data:
     #!/bin/bash
     set -eu
     modprobe openvswitch && modprobe geneve
-    install -d -o 42424 -g 42424 /run/openvswitch /run/ovn
+    install -d -m 0775 -o 42424 -g 42424 /run/openvswitch /run/ovn
     schema=/usr/share/openvswitch/vswitch.ovsschema
     [ -f /run/openvswitch/conf.db ] || ovsdb-tool create /run/openvswitch/conf.db "$schema"
     if [ "$(ovsdb-tool needs-conversion /run/openvswitch/conf.db "$schema")" = yes ]; then
       ovsdb-tool convert /run/openvswitch/conf.db "$schema"
     fi
     chown 42424:42424 /run/openvswitch/conf.db
+    if [ -e /run/openvswitch/.conf.db.~lock~ ]; then
+      chown 42424:42424 /run/openvswitch/.conf.db.~lock~
+    fi
+  run-ovsdb.sh: |
+    #!/bin/bash
+    set -eu
+    umask 002
+    exec ovsdb-server /run/openvswitch/conf.db \
+      --remote=punix:/run/openvswitch/db.sock \
+      --remote=db:Open_vSwitch,Open_vSwitch,manager_options \
+      --pidfile=/run/openvswitch/ovsdb-server.pid \
+      --unixctl=/run/openvswitch/ovsdb-server.ctl
   run-vswitchd.sh: |
     #!/bin/bash
     set -eu

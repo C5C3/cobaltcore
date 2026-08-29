@@ -149,9 +149,10 @@ func buildControllerDaemonSet(cr *ovnv1alpha1.OVNChassis, central resolvedCentra
 	containers := []corev1.Container{{
 		Name:  componentOVNController,
 		Image: image,
-		// NET_ADMIN and uid 0: the daemon programs the datapath through netlink
-		// and opens the local database socket the privileged init container
-		// created.
+		// NET_ADMIN and uid 0: the daemon programs the datapath through netlink.
+		// It reaches the local database over the socket ovsdb-server creates, and
+		// that socket belongs to the unprivileged user, which is why the posture
+		// puts this container in its group.
 		SecurityContext: rootCapabilitySecurityContext("NET_ADMIN"),
 		Resources:       chassisResources(cr.Spec.Controller),
 		Env:             env,

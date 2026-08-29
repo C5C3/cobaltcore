@@ -56,6 +56,7 @@ const (
 const (
 	hostPrepareScriptKey = "host-prepare.sh"
 	applyNodeScriptKey   = "apply-node.sh"
+	runOVSDBScriptKey    = "run-ovsdb.sh"
 	runVswitchdScriptKey = "run-vswitchd.sh"
 	evacuateScriptKey    = "evacuate.sh"
 	chassisDelScriptKey  = "chassis-del.sh"
@@ -72,9 +73,25 @@ const configHashLength = 8
 // the unprivileged containers write to, and initialises the local Open vSwitch
 // database when the node carries none yet.
 //
+// The run directories are group-writable, and gid 42424 owns them. ovsdb-server
+// runs as that user and the two datapath daemons run as uid 0 with CAP_DAC_
+// OVERRIDE dropped, so uid 0 gets no relief from the ordinary permission check:
+// the group is what lets ovs-vswitchd and ovn-controller write their pid files
+// and control sockets into a directory the database user owns. The default 0755
+// leaves them unable to create a single file there.
+//
 // The database is created here rather than by ovsdb-server itself because the
 // file has to end up owned by the unprivileged user the ovsdb-server container
 // runs as, and only this container can chown it.
+//
+// Its lock file is handed over with it. ovsdb-tool takes an fcntl lock on
+// .conf.db.~lock~ beside the database and leaves the file behind owned by root
+// with mode 0600, and ovsdb-server locks the same file before it opens the
+// database: without the second chown the open fails with EACCES, which OVS
+// reports as "failed to lock lockfile", and the container never serves the
+// socket. The chown is guarded because ovsdb-tool only creates the lock file
+// when it creates or converts the database, so a node whose database is already
+// current has none.
 //
 // An existing database is converted to the schema of the image that is now
 // running, which is what upstream's ovs-ctl does before it starts the server.
@@ -86,13 +103,16 @@ const configHashLength = 8
 const hostPrepareScript = `#!/bin/bash
 set -eu
 modprobe openvswitch && modprobe geneve
-install -d -o 42424 -g 42424 /run/openvswitch /run/ovn
+install -d -m 0775 -o 42424 -g 42424 /run/openvswitch /run/ovn
 schema=/usr/share/openvswitch/vswitch.ovsschema
 [ -f /run/openvswitch/conf.db ] || ovsdb-tool create /run/openvswitch/conf.db "$schema"
 if [ "$(ovsdb-tool needs-conversion /run/openvswitch/conf.db "$schema")" = yes ]; then
   ovsdb-tool convert /run/openvswitch/conf.db "$schema"
 fi
 chown 42424:42424 /run/openvswitch/conf.db
+if [ -e /run/openvswitch/.conf.db.~lock~ ]; then
+  chown 42424:42424 /run/openvswitch/.conf.db.~lock~
+fi
 `
 
 // applyNodeScript writes this node's values into the local Open vSwitch
@@ -107,6 +127,13 @@ chown 42424:42424 /run/openvswitch/conf.db
 // attaches patch ports to them but never creates them, so a mapping pointing at
 // a bridge that does not exist silently drops every packet on that physical
 // network.
+//
+// spec.bridgeMappings is optional, and an empty one is removed rather than set:
+// ovs-vsctl rejects "external_ids:ovn-bridge-mappings=" with "argument does not
+// end in \"=\" followed by a value", which under set -eu fails the whole init
+// container. A chassis with no mappings is the ordinary case, so the key gets
+// the same treatment ovn-cms-options already gets below, and a mapping list
+// emptied in the spec is cleared from the node rather than left behind.
 const applyNodeScript = `#!/bin/bash
 set -eu
 f="/etc/ovn-chassis/nodes/${NODE_NAME}"
@@ -117,11 +144,33 @@ until ovs-vsctl --timeout=5 --no-wait show >/dev/null 2>&1; do sleep 2; done
 ovs-vsctl --timeout=15 set open . \
   external_ids:system-id="${SYSTEM_ID}" external_ids:hostname="${NODE_NAME}" \
   external_ids:ovn-encap-type="${ENCAP_TYPE}" external_ids:ovn-encap-ip="${NODE_IP}" \
-  external_ids:ovn-remote="${OVN_REMOTE}" external_ids:ovn-remote-probe-interval="${OVN_REMOTE_PROBE_INTERVAL_MS}" \
-  external_ids:ovn-bridge-mappings="${BRIDGE_MAPPINGS}"
+  external_ids:ovn-remote="${OVN_REMOTE}" external_ids:ovn-remote-probe-interval="${OVN_REMOTE_PROBE_INTERVAL_MS}"
+if [ -n "${BRIDGE_MAPPINGS}" ]; then ovs-vsctl --timeout=15 set open . external_ids:ovn-bridge-mappings="${BRIDGE_MAPPINGS}"
+else ovs-vsctl --timeout=15 remove open . external_ids ovn-bridge-mappings; fi
 if [ "${GATEWAY}" = "true" ]; then ovs-vsctl --timeout=15 set open . external_ids:ovn-cms-options=enable-chassis-as-gw
 else ovs-vsctl --timeout=15 remove open . external_ids ovn-cms-options; fi
 for m in ${BRIDGE_MAPPINGS//,/ }; do ovs-vsctl --timeout=15 --may-exist add-br "${m#*:}"; done
+`
+
+// runOVSDBScript is the entrypoint of the ovsdb-server container. The daemon is
+// wrapped in a script for one line: the umask decides the mode of the socket it
+// creates, and Open vSwitch offers no option for it.
+//
+// ovsdb-server creates /run/openvswitch/db.sock at 0770 before the umask is
+// applied, and it runs as the unprivileged user, so the default 0022 would clear
+// the group's write bit and leave the socket 0750. Connecting to a Unix socket
+// needs write permission on it, so ovs-vswitchd and ovn-controller beside it
+// would be refused: they run as uid 0 with every capability dropped but the two
+// they are named for, and CAP_DAC_OVERRIDE is not among them. The symptom is
+// silent, because the loop that waits for this socket discards its own output.
+const runOVSDBScript = `#!/bin/bash
+set -eu
+umask 002
+exec ovsdb-server /run/openvswitch/conf.db \
+  --remote=punix:/run/openvswitch/db.sock \
+  --remote=db:Open_vSwitch,Open_vSwitch,manager_options \
+  --pidfile=/run/openvswitch/ovsdb-server.pid \
+  --unixctl=/run/openvswitch/ovsdb-server.ctl
 `
 
 // runVswitchdScript is the entrypoint of the ovs-vswitchd container. The daemon
@@ -538,6 +587,7 @@ func chassisScriptsConfigMap(cr *ovnv1alpha1.OVNChassis) *corev1.ConfigMap {
 		Data: map[string]string{
 			hostPrepareScriptKey: hostPrepareScript,
 			applyNodeScriptKey:   applyNodeScript,
+			runOVSDBScriptKey:    runOVSDBScript,
 			runVswitchdScriptKey: runVswitchdScript,
 			evacuateScriptKey:    evacuateScript,
 			chassisDelScriptKey:  chassisDelScript,
