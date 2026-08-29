@@ -165,8 +165,9 @@ if [[ "${noop}" == "true" ]]; then
   emit noop true
   for out in go docs helm target-cluster-chart has-e2e-operators e2e-infra \
     e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso \
-    e2e-external-keystone e2e-multicluster e2e-operator-upgrade tempest \
-    changed-tempest changed-proxy build-e2e-images actionlint; do
+    e2e-external-keystone e2e-multicluster e2e-ovn-overlay \
+    e2e-operator-upgrade tempest changed-tempest changed-proxy \
+    build-e2e-images actionlint; do
     emit "$out" false
   done
   for out in changed-operators changed-services tempest-services; do
@@ -278,6 +279,18 @@ e2e_external_keystone=$(or_force "$cond")
 cond=false
 if filter_on tests_multicluster || has_label "ci:multicluster"; then cond=true; fi
 e2e_multicluster=$(or_force "$cond")
+
+# The multi-node OVN overlay job. Its inputs are the suite, the ovn-operator
+# and the OVN daemon image: the datapath it proves is built by the chassis
+# DaemonSets those two ship, and nothing else reaches it.
+#
+# Deliberately FILTER_ovn rather than membership of op_changed, for the reason
+# the ControlPlane trio gives above: the job brings up a second kind cluster
+# shape of its own on a self-hosted runner, so a shared Go change must not
+# schedule it. ci:full is how you ask for it anyway.
+cond=false
+if filter_on tests_ovn_overlay || filter_on ovn || filter_on image_ovn; then cond=true; fi
+e2e_ovn_overlay=$(or_force "$cond")
 
 cond=false
 if filter_on tests_operator_upgrade || op_is_changed keystone; then cond=true; fi
@@ -396,8 +409,8 @@ build_e2e_images=false
 if [[ "$has_e2e_operators" == "true" || "$e2e_chaos" == "true" ||
   "$e2e_prometheus" == "true" || "$e2e_controlplane" == "true" ||
   "$e2e_controlplane_sso" == "true" || "$e2e_external_keystone" == "true" ||
-  "$e2e_multicluster" == "true" || "$e2e_operator_upgrade" == "true" ||
-  "$tempest" == "true" ]]; then
+  "$e2e_multicluster" == "true" || "$e2e_ovn_overlay" == "true" ||
+  "$e2e_operator_upgrade" == "true" || "$tempest" == "true" ]]; then
   build_e2e_images=true
 fi
 # The build job only runs on pull requests; a push resolves it away so the
@@ -419,6 +432,7 @@ emit e2e-controlplane "$e2e_controlplane"
 emit e2e-controlplane-sso "$e2e_controlplane_sso"
 emit e2e-external-keystone "$e2e_external_keystone"
 emit e2e-multicluster "$e2e_multicluster"
+emit e2e-ovn-overlay "$e2e_ovn_overlay"
 emit e2e-operator-upgrade "$e2e_operator_upgrade"
 emit tempest "$tempest"
 emit actionlint "$actionlint"
