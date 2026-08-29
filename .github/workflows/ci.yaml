@@ -1497,10 +1497,13 @@ jobs:
   #
   # Gating is split by matrix leg (see continue-on-error below): the pod-chaos
   # leg is blocking — an operator-restart/PDB/rotation regression fails the
-  # build — while the network-chaos leg stays non-blocking because its
-  # ip_set/xt_set/sch_netem dependency makes it prone to environment flakiness.
-  # On-demand pre-validation of either leg is available via the run-chaos PR
-  # label.
+  # build — while the network-chaos and ovn legs stay non-blocking. The
+  # network leg's ip_set/xt_set/sch_netem dependency makes it prone to
+  # environment flakiness, and the ovn leg builds an OVN datapath out of the
+  # host's openvswitch/geneve modules, which puts it under the non-blocking
+  # entry rule of `### Kernel-module-dependent suites` in
+  # docs/reference/ci-cd/ci-workflow.md. On-demand pre-validation of any leg is
+  # available via the run-chaos PR label.
   e2e-chaos:
     needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]
     # always(): allow the job to run when upstream Go jobs are skipped
@@ -1515,9 +1518,10 @@ jobs:
       !contains(needs.*.result, 'cancelled')
     # The pod leg is pinned back to Blacksmith for now: it is the blocking leg
     # and has not been stable on the self-hosted runners since they took over.
-    # The network leg stays self-hosted. The split into two matrix entries is
-    # kept so PodChaos and NetworkChaos stay independently gated (see
-    # continue-on-error below) and so the two suites run in parallel.
+    # The network and ovn legs stay self-hosted. The split into three matrix
+    # entries is kept so PodChaos, NetworkChaos and the OVN datapath suite stay
+    # independently gated (see continue-on-error below) and so the suites run
+    # in parallel.
     #
     # test_dirs lists the per-suite test directories explicitly. chainsaw
     # v0.2.14 accepts --{include,exclude}-test-regex flags but does not apply
@@ -1529,9 +1533,9 @@ jobs:
       matrix:
         include:
           # tests/e2e/infrastructure/chaos-mesh-health is included in
-          # both matrix entries so the kind-only chaos-mesh installation is
-          # health-checked against the cluster each runner spins up. Both
-          # runners set WITH_CHAOS_MESH=true via setup-e2e-infra (env block
+          # every matrix entry so the kind-only chaos-mesh installation is
+          # health-checked against the cluster each runner spins up. Every
+          # runner sets WITH_CHAOS_MESH=true via setup-e2e-infra (env block
           # below), so the test's runtime presence guard never SKIPs here.
           - suite: pod
             runner: blacksmith-4vcpu-ubuntu-2404
@@ -1559,11 +1563,30 @@ jobs:
               tests/e2e-chaos/mariadb-network-partition
               tests/e2e-chaos/glance-garage-outage
               tests/e2e-chaos/barbican-openbao-outage
+              tests/e2e-chaos/neutron-mariadb-outage
+              tests/e2e-chaos/neutron-broker-outage
+          # ovn-southbound-outage kills the Southbound Pod and asserts the
+          # chassis datapath keeps forwarding, so the leg needs the openvswitch
+          # and geneve modules on the runner host (WITH_OVN_KERNEL_MODULES
+          # below). That kernel-module dependency is what keeps the leg
+          # non-blocking. No suite here touches Keystone, so this leg deploys
+          # the ovn-operator alone and skips the keystone stack.
+          - suite: ovn
+            runner: self-hosted
+            test_dirs: >-
+              tests/e2e/infrastructure/chaos-mesh-health
+              tests/e2e-chaos/ovn-southbound-outage
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
-    # Pod-chaos is blocking; network-chaos stays non-blocking (its kernel-module
-    # dependency keeps it flakiness-prone). See the gating note above the job.
-    continue-on-error: ${{ matrix.suite == 'network' }}
+    # Pod-chaos is blocking; network-chaos and ovn stay non-blocking (their
+    # kernel-module dependency keeps them flakiness-prone). See the gating note
+    # above the job.
+    #
+    # The two non-blocking legs are named, rather than negating the blocking
+    # one: a fourth leg added to the matrix above then gates merges by default
+    # and has to be argued out of it here, instead of arriving silently
+    # non-blocking and passing green while it fails.
+    continue-on-error: ${{ matrix.suite == 'network' || matrix.suite == 'ovn' }}
     permissions:
       contents: read
       packages: read
@@ -1575,8 +1598,16 @@ jobs:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
           cluster_name: ${{ env.KIND_CLUSTER }}
+      # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
+      # out of this workflow.
+      - name: Resolve OVN version
+        run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
       # GH-310: Pull pre-built images from GHCR (run-scoped tag).
-      - name: Load E2E images
+      # The keystone stack is skipped on the ovn leg, whose suites bring up no
+      # Keystone, Horizon, Glance or Barbican, so it loads through a step of its
+      # own rather than repeating the leg gate on every image.
+      - name: Load E2E images (keystone stack)
+        if: matrix.suite != 'ovn'
         uses: ./.github/actions/load-e2e-images
         with:
           image-map: ${{ needs.build-e2e-images.outputs.image-map }}
@@ -1590,12 +1621,26 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/glance:2025.2
             ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
             ${{ env.IMAGE_PREFIX }}/barbican:2025.2
+      # Every entry below is gated on the legs that deploy it; the action skips
+      # the blank lines the other legs render here.
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          images: |
             # placement is exercised by the pod leg alone (see the pod-leg-only
-            # load and deploy steps below); the action skips the blank lines the
-            # network leg renders here.
+            # load and deploy steps below).
             ${{ matrix.suite == 'pod' && format('{0}/placement-operator:dev', env.IMAGE_PREFIX) || '' }}
             ${{ matrix.suite == 'pod' && format('{0}/placement:2025.2', env.IMAGE_PREFIX) || '' }}
+            # Both the ovn leg and the network leg's neutron suites bring up an
+            # OVNCentral, so both need the operator image and the OVN daemon
+            # image that operator rolls out.
+            ${{ matrix.suite != 'pod' && format('{0}/ovn-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite != 'pod' && format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION) || '' }}
+            # The two neutron outage suites run on the network leg alone.
+            ${{ matrix.suite == 'network' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.suite == 'network' && format('{0}/neutron:2025.2', env.IMAGE_PREFIX) || '' }}
       - name: Load images into kind
+        if: matrix.suite != 'ovn'
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone:2025.2 --name ${{ env.KIND_CLUSTER }}
@@ -1616,14 +1661,34 @@ jobs:
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/placement:2025.2 --name ${{ env.KIND_CLUSTER }}
+      # kubelet only skips the registry for a tag already on the node, so both
+      # legs that run an OVNCentral load the daemon image the operator rolls
+      # out alongside the operator image itself.
+      - name: Load OVN images into kind
+        if: matrix.suite != 'pod'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name ${{ env.KIND_CLUSTER }}
+      - name: Load neutron images into kind
+        if: matrix.suite == 'network'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:2025.2 --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
-      # Opt in to Chaos Mesh - required for the chaos suites; covers both matrix entries.
+      # Opt in to Chaos Mesh - required for the chaos suites; covers every matrix entry.
+      # The ovn leg's chassis DaemonSet opens a Geneve tunnel from the kind
+      # node, which needs the openvswitch and geneve modules on the host. Empty
+      # on the other two legs, where deploy-infra.sh keeps its default of not
+      # touching the host's modules.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
         env:
           WITH_CHAOS_MESH: "true"
-      # Use shared operator deployment script.
+          WITH_OVN_KERNEL_MODULES: ${{ matrix.suite == 'ovn' && 'true' || '' }}
+      # Use shared operator deployment script. The ovn leg skips it along with
+      # the rest of the keystone stack: no suite there creates a Keystone.
       - name: Deploy operator
+        if: matrix.suite != 'ovn'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: keystone
@@ -1637,6 +1702,7 @@ jobs:
       # horizon-system. Without this the operator installs into keystone-system,
       # the pod selector finds nothing, and the recovery assertion fails.
       - name: Deploy horizon operator
+        if: matrix.suite != 'ovn'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: horizon
@@ -1651,6 +1717,7 @@ jobs:
       # the operator installs into keystone-system, the pod selector finds
       # nothing, and the recovery assertion fails.
       - name: Deploy glance operator
+        if: matrix.suite != 'ovn'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: glance
@@ -1671,11 +1738,13 @@ jobs:
           NAMESPACE: placement-system
       # Both barbican chaos suites need the barbican-operator, one per leg
       # (barbican-operator-pod-kill on pod, barbican-openbao-outage on network),
-      # so unlike placement this deploy is unconditional. Like horizon and glance
-      # it must land in its own barbican-system namespace, not the script's
-      # keystone-system default: that is where the Flux/deploy-infra path
-      # installs it and where the pod-kill suite's selector and PodChaos look.
+      # so unlike placement this deploy runs on both keystone-stack legs. Like
+      # horizon and glance it must land in its own barbican-system namespace,
+      # not the script's keystone-system default: that is where the
+      # Flux/deploy-infra path installs it and where the pod-kill suite's
+      # selector and PodChaos look.
       - name: Deploy barbican operator
+        if: matrix.suite != 'ovn'
         run: hack/ci-deploy-operator.sh
         env:
           OPERATOR: barbican
@@ -1686,17 +1755,41 @@ jobs:
           # provisioner token where the chart granted it a TokenRequest Role,
           # restricted to the provisioner account of the proving instance.
           BARBICAN_SECRET_STORE_GRANTS: openstack=openbao-instance-provisioner
+      # ovn-southbound-outage drives an OVNCentral and an OVNChassis directly,
+      # and both neutron suites need a live OVNCentral before their Neutron can
+      # reach Ready. The deploy script installs the OVN CRDs on the way. Like
+      # the sibling operators it lands in its own ovn-system namespace, which is
+      # also where the ovn leg's diagnostics dump looks.
+      - name: Deploy ovn operator
+        if: matrix.suite != 'pod'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ovn
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
+          NAMESPACE: ovn-system
+      # The two neutron outage suites run on the network leg alone, so the
+      # neutron-operator deploys there alone. It follows the keystone and ovn
+      # deploys above: each suite creates a Keystone and an OVNCentral its
+      # Neutron depends on.
+      - name: Deploy neutron operator
+        if: matrix.suite == 'network'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: neutron
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
+          NAMESPACE: neutron-system
       - name: Run chaos E2E tests
         run: |
           mkdir -p _output/reports
           chainsaw test --config tests/e2e-chaos/chainsaw-config.yaml \
             ${{ matrix.test_dirs }}
-      # Use shared diagnostic dump script.
+      # Use shared diagnostic dump script. It derives the operator namespace
+      # from OPERATOR, and the ovn leg has no keystone-system to dump.
       - name: Dump diagnostic info
         if: always()
         run: hack/ci-dump-diagnostics.sh
         env:
-          OPERATOR: keystone
+          OPERATOR: ${{ matrix.suite == 'ovn' && 'ovn' || 'keystone' }}
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -19,10 +19,11 @@
 # beyond the shared shape: without either one the chassis Pods never start and
 # every suite fails at once, for a reason unrelated to the change under test.
 #
-# The last test covers the separate e2e-ovn-overlay job, which the e2e-operators
-# matrix never produces: it needs the two-worker cluster of
+# The last two tests cover jobs the e2e-operators matrix never produces:
+# e2e-ovn-overlay, which needs the two-worker cluster of
 # hack/kind-config-multinode.yaml instead of the single-node config every matrix
-# leg creates.
+# leg creates, and the ovn leg of e2e-chaos, whose test_dirs are enumerated by
+# hand because chainsaw's regex filters are no-ops.
 #
 # Usage: bash tests/unit/ci/ovn_e2e_matrix_test.sh
 
@@ -76,6 +77,28 @@ e2e_operator_step() {
   job_block e2e-operator | awk -v key="      - name: $1" '
     $0 == key { in_block = 1; next }
     in_block && /^      [-#]/ { exit }
+    in_block { print }
+  '
+}
+
+# Echo the body of the named step of the e2e-chaos job. Same shape as
+# e2e_operator_step above; scoping matters because e2e-chaos and e2e-operator
+# both carry a "Setup E2E infrastructure" and a "Dump diagnostic info" step.
+e2e_chaos_step() {
+  job_block e2e-chaos | awk -v key="      - name: $1" '
+    $0 == key { in_block = 1; next }
+    in_block && /^      [-#]/ { exit }
+    in_block { print }
+  '
+}
+
+# Echo the e2e-chaos matrix entry whose suite key is $1. Entries sit at 10-space
+# indent and their keys deeper, so the next line at that indent ends the block:
+# the following entry, or the comment introducing it.
+e2e_chaos_matrix_entry() {
+  job_block e2e-chaos | awk -v key="          - suite: $1" '
+    $0 == key { in_block = 1; next }
+    in_block && /^          [-#]/ { exit }
     in_block { print }
   '
 }
@@ -272,6 +295,80 @@ test_overlay_job_is_wired() {
     "$(job_block cleanup-e2e-tags)" "e2e-ovn-overlay"
 }
 
+test_chaos_ovn_leg_is_wired() {
+  echo "Test: the e2e-chaos ovn leg runs the southbound-outage suite alone"
+
+  # e2e-chaos enumerates test_dirs per leg (chainsaw's include/exclude-regex
+  # flags are no-ops in v0.2.14), so a suite absent from a leg is lint-checked
+  # and never applied to a cluster. Every other assertion here is a silent
+  # failure too: a wrong runner label leaves the leg queued forever, a missing
+  # continue-on-error turns a kernel-module gap on the host into a red PR, an
+  # unloaded daemon image leaves the OVNCentral Pods pulling from GHCR, an unset
+  # WITH_OVN_KERNEL_MODULES leaves the chassis Pod unable to open its Geneve
+  # tunnel, and a diagnostics dump pointed at keystone-system collects nothing
+  # about the operator that failed.
+  local job entry
+  job=$(job_block e2e-chaos)
+  entry=$(e2e_chaos_matrix_entry ovn)
+
+  assert_not_empty "the matrix carries an ovn leg" "$entry"
+  assert_contains "it runs on the self-hosted runners" "$entry" \
+    "runner: self-hosted"
+  assert_contains "it runs the southbound-outage suite" "$entry" \
+    "tests/e2e-chaos/ovn-southbound-outage"
+  assert_contains "it health-checks the chaos-mesh install first" "$entry" \
+    "tests/e2e/infrastructure/chaos-mesh-health"
+  assert_contains "only the pod leg stays blocking" "$job" \
+    "continue-on-error: \${{ matrix.suite != 'pod' }}"
+
+  # images/ovn/Dockerfile holds the pin, so the leg resolves it at runtime
+  # rather than repeating the tag here (asserted globally further up).
+  local load
+  load=$(e2e_chaos_step "Load E2E images")
+  assert_contains "the leg resolves the pin into the env" "$job" \
+    'OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)'
+  assert_contains "it pulls the ovn-operator image" "$load" \
+    "format('{0}/ovn-operator:dev', env.IMAGE_PREFIX)"
+  assert_contains "it pulls the OVN daemon image at the resolved pin" "$load" \
+    "format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION)"
+
+  local kind_load
+  kind_load=$(e2e_chaos_step "Load OVN images into kind")
+  assert_not_empty "both images reach the node" "$kind_load"
+  assert_contains "the load runs on every leg with an OVNCentral" "$kind_load" \
+    "if: matrix.suite != 'pod'"
+
+  local deploy
+  deploy=$(e2e_chaos_step "Deploy ovn operator")
+  assert_not_empty "the ovn-operator is deployed" "$deploy"
+  assert_contains "the deploy runs on every leg with an OVNCentral" "$deploy" \
+    "if: matrix.suite != 'pod'"
+  assert_contains "it goes through the shared deploy script" "$deploy" \
+    "run: hack/ci-deploy-operator.sh"
+  assert_contains "it deploys the ovn operator" "$deploy" "OPERATOR: ovn"
+  assert_contains "it lands in its own Namespace" "$deploy" \
+    "NAMESPACE: ovn-system"
+
+  local setup dump
+  setup=$(e2e_chaos_step "Setup E2E infrastructure")
+  assert_contains "the ovn leg alone asks for the OVN kernel modules" "$setup" \
+    "WITH_OVN_KERNEL_MODULES: \${{ matrix.suite == 'ovn' && 'true' || '' }}"
+  assert_contains "Chaos Mesh stays on for every leg" "$setup" \
+    'WITH_CHAOS_MESH: "true"'
+  dump=$(e2e_chaos_step "Dump diagnostic info")
+  assert_contains "the dump follows the leg's operator" "$dump" \
+    "OPERATOR: \${{ matrix.suite == 'ovn' && 'ovn' || 'keystone' }}"
+
+  # The ovn leg brings up no Keystone, so deploying the keystone-operator there
+  # would only add a `helm install --wait` for an operator nothing reconciles.
+  local keystone_deploy
+  keystone_deploy=$(e2e_chaos_step "Deploy operator")
+  assert_contains "the keystone deploy is gated off the ovn leg" \
+    "$keystone_deploy" "if: matrix.suite != 'ovn'"
+  assert_contains "and it is still the keystone one" "$keystone_deploy" \
+    "OPERATOR: keystone"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -284,6 +381,7 @@ test_build_e2e_images_builds_the_ovn_images
 test_e2e_leg_loads_the_ovn_image
 test_e2e_leg_opts_into_kernel_modules
 test_overlay_job_is_wired
+test_chaos_ovn_leg_is_wired
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

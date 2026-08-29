@@ -836,10 +836,11 @@ minutes.
 ### e2e-chaos
 
 End-to-end chaos tests using kind cluster, Chaos Mesh, and Chainsaw. Pulls the
-keystone operator and service images from GHCR via the `load-e2e-images` composite
-action, deploys them alongside Chaos Mesh infrastructure, and runs the chaos test
-suites (MariaDB pod kill, Memcached pod kill, OpenBao pod kill, MariaDB network
-partition, MariaDB network latency). See
+operator and service images its leg needs from GHCR via the `load-e2e-images`
+composite action, deploys them alongside Chaos Mesh infrastructure, and runs the
+chaos test suites (MariaDB pod kill, Memcached pod kill, OpenBao pod kill,
+MariaDB network partition, MariaDB network latency, the two Neutron outage
+suites, OVN Southbound outage). See
 [Chaos E2E Test Suites](../testing/chaos-e2e-tests.md) for test suite details.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]`
@@ -848,44 +849,66 @@ partition, MariaDB network latency). See
 
 The `e2e-chaos` job depends on the standard gate jobs plus `e2e-operator`, so chaos
 tests run after the happy-path operator E2E suite has passed. Gating is set per
-matrix leg via `continue-on-error: ${{ matrix.suite == 'network' }}`: the `pod`
+matrix leg via `continue-on-error: ${{ matrix.suite != 'pod' }}`: the `pod`
 leg is **blocking** — an operator-restart, PDB, or rotation regression fails the
-build — while the `network` leg stays **non-blocking**, because its
-`ip_set`/`sch_netem` kernel-module dependency keeps it prone to environment
-flakiness. On-demand pre-validation of either leg is available via the
-`ci:chaos` PR label, with `run-chaos` kept as an alias.
+build — while the `network` and `ovn` legs stay **non-blocking**. The `network`
+leg's `ip_set`/`sch_netem` kernel-module dependency keeps it prone to
+environment flakiness, and the `ovn` leg builds an OVN datapath out of the
+host's `openvswitch` and `geneve` modules, which places it under
+[Kernel-module-dependent suites](#kernel-module-dependent-suites). On-demand
+pre-validation of any leg is available via the `ci:chaos` PR label, with
+`run-chaos` kept as an alias.
 
-The job runs as a two-entry matrix split by chaos type: the `pod` suite
-(PodChaos tests) and the `network` suite (NetworkChaos tests). The `pod` leg is
-pinned to the `blacksmith-4vcpu-ubuntu-2404` runner for now, because it is the
-blocking leg and has not been stable on the self-hosted runners; the `network`
-leg runs on the `self-hosted` runners. The split keeps the two suites
-independently gated and lets them run in parallel. Each matrix entry lists its
-per-suite test directories explicitly.
+The job runs as a three-entry matrix, split by chaos type and by the stack each
+leg needs:
+
+| Leg | Runner | Operators deployed | Suites |
+| --- | --- | --- | --- |
+| `pod` | `blacksmith-4vcpu-ubuntu-2404` | keystone, horizon, glance, placement, barbican | the PodChaos suites |
+| `network` | `self-hosted` | keystone, horizon, glance, barbican, ovn, neutron | the NetworkChaos suites, `neutron-mariadb-outage` and `neutron-broker-outage` among them |
+| `ovn` | `self-hosted` | ovn | `ovn-southbound-outage` |
+
+The `pod` leg is pinned to the `blacksmith-4vcpu-ubuntu-2404` runner for now,
+because it is the blocking leg and has not been stable on the self-hosted
+runners. The split keeps the legs independently gated and lets them run in
+parallel. Each matrix entry lists its per-suite test directories explicitly.
+
+A `Resolve OVN version` step reads the pin from `images/ovn/Dockerfile` through
+`hack/ci-resolve-ovn-version.sh` and writes `OVN_VERSION` into `$GITHUB_ENV`, so
+the tag itself never appears in the workflow. The `network` and `ovn` legs load
+`ovn-operator:dev` and `ovn:$OVN_VERSION` into kind, the `network` leg adds
+`neutron-operator:dev` and `neutron:2025.2`, and the `ovn` leg loads none of the
+keystone stack. `Setup E2E infrastructure` passes
+`WITH_OVN_KERNEL_MODULES: ${{ matrix.suite == 'ovn' && 'true' || '' }}`, which is
+what makes `hack/deploy-infra.sh` load `openvswitch` and `geneve` for the chassis
+DaemonSet. The diagnostics dump follows the leg through
+`OPERATOR: ${{ matrix.suite == 'ovn' && 'ovn' || 'keystone' }}`, because the
+`ovn` leg has no `keystone-system` namespace to dump.
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `helm/kind-action@v1.14.0` | Creates kind cluster (`cobaltcore`) at `KIND_VERSION` |
-| 3 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
-| 4 | `kind load docker-image` | Loads keystone operator and 2025.2 service images into kind |
-| 5 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true` |
-| 6 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys keystone operator via Helm |
-| 7 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml` |
-| 8 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone` |
-| 9 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report-<suite>` artifact (14-day retention) |
+| 3 | `hack/ci-resolve-ovn-version.sh` | Writes the `images/ovn/Dockerfile` pin to `$GITHUB_ENV` as `OVN_VERSION` |
+| 4 | `load-e2e-images` composite action | Pulls the run-scoped GHCR tags this leg needs and re-tags to canonical local refs |
+| 5 | `kind load docker-image` | Loads the keystone stack (all but `ovn`), placement (`pod`), the OVN images (all but `pod`), the neutron images (`network`) |
+| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack with `WITH_CHAOS_MESH=true`, plus `WITH_OVN_KERNEL_MODULES=true` on the `ovn` leg |
+| 7 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys this leg's operators via Helm |
+| 8 | `chainsaw test` | Runs chaos E2E tests from `tests/e2e-chaos/` with `tests/e2e-chaos/chainsaw-config.yaml` |
+| 9 | `hack/ci-dump-diagnostics.sh` (always) | Dumps operator pods, all pods, events, operator logs with `OPERATOR=keystone`, or `OPERATOR=ovn` on the `ovn` leg |
+| 10 | Upload JUnit report | Uploads `_output/reports/` as `e2e-chaos-junit-report-<suite>` artifact (14-day retention) |
 
 **Key differences from `e2e-operator`:**
 
 | Aspect | `e2e-operator` | `e2e-chaos` |
 | --- | --- | --- |
-| Matrix | Dynamic per-operator | Two suites (`pod` / `network`) on different runners |
+| Matrix | Dynamic per-operator | Three suites (`pod` / `network` / `ovn`) on different runners |
 | Test config | `tests/e2e/chainsaw-config.yaml` | `tests/e2e-chaos/chainsaw-config.yaml` |
 | Test directory | `tests/e2e/<operator>/` | per-suite `test_dirs` under `tests/e2e-chaos/` |
 | Timeout | 68 minutes | 90 minutes |
-| Blocking | Yes | `pod` leg blocking; `network` leg non-blocking (`continue-on-error: ${{ matrix.suite == 'network' }}`) |
+| Blocking | Yes | `pod` leg blocking; `network` and `ovn` legs non-blocking (`continue-on-error: ${{ matrix.suite != 'pod' }}`) |
 | Dependencies | Gate jobs | Gate jobs + `e2e-operator` |
-| Service images | 2025.2 + 2025.2-upgraded + 2026.1 | 2025.2 only |
+| Service images | 2025.2 + 2025.2-upgraded + 2026.1 | 2025.2 only, plus the pinned OVN daemon image |
 
 The chaos test Chainsaw config uses `parallel: 1` (serial execution) because chaos tests
 mutate shared infrastructure pod availability. The assert timeout is 300s (vs 120s for
