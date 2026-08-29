@@ -129,10 +129,20 @@ test_placement_helm_filter() {
   local helm_block
   helm_block=$(extract_paths_filter_block "$CI_YAML" "helm")
 
+  # The filter globs every chart under operators/<op>/helm/, so the
+  # placement-operator chart is covered by living in that layout.
   assert_contains \
-    "helm filter includes operators/placement/helm/**" \
+    "helm filter globs operators/*/helm/**" \
     "$helm_block" \
-    "operators/placement/helm/**"
+    "- 'operators/*/helm/**'"
+
+  if [ -d "$PROJECT_ROOT/operators/placement/helm/placement-operator" ]; then
+    echo "  PASS: the placement-operator chart lives under the globbed layout"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: operators/placement/helm/placement-operator is not where the glob looks"
+    FAIL=$((FAIL + 1))
+  fi
 }
 
 test_placement_all_operators() {

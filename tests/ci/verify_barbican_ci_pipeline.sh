@@ -149,10 +149,20 @@ test_barbican_helm_filter() {
   local helm_block
   helm_block=$(extract_paths_filter_block "$CI_YAML" "helm")
 
+  # The filter globs every chart under operators/<op>/helm/, so the
+  # barbican-operator chart is covered by living in that layout.
   assert_contains \
-    "helm filter includes operators/barbican/helm/**" \
+    "helm filter globs operators/*/helm/**" \
     "$helm_block" \
-    "- 'operators/barbican/helm/**'"
+    "- 'operators/*/helm/**'"
+
+  if [ -d "$PROJECT_ROOT/operators/barbican/helm/barbican-operator" ]; then
+    echo "  PASS: the barbican-operator chart lives under the globbed layout"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: operators/barbican/helm/barbican-operator is not where the glob looks"
+    FAIL=$((FAIL + 1))
+  fi
 }
 
 test_barbican_all_operators() {
@@ -213,14 +223,18 @@ test_barbican_helm_validate_loops() {
   echo "Test: helm-validate loops include the barbican-operator chart"
 
   local loop_count
-  # `|| true`: grep exits 1 on no match, which under `set -e` killed the whole
-  # run here and hid every assertion below this point.
-  loop_count=$(grep -c " operators/barbican/helm/barbican-operator" "$CI_YAML") || true
+  # helm-validate iterates the operators/*/helm/*-operator glob in its three
+  # loops; the chart is covered by living in that layout.
+  loop_count=$(grep -cF 'for chart in operators/*/helm/*-operator' "$CI_YAML")
+  [ -d "$PROJECT_ROOT/operators/barbican/helm/barbican-operator" ] || loop_count=0
 
-  assert_eq \
-    "all three helm-validate loops list the barbican-operator chart" \
-    "3" \
-    "$loop_count"
+  if [ "$loop_count" -ge 3 ]; then
+    echo "  PASS: helm-validate references the barbican-operator chart in $loop_count loops"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: expected >=3 helm-validate references to the barbican-operator chart, found $loop_count"
+    FAIL=$((FAIL + 1))
+  fi
 }
 
 test_cleanup_matrices_include_barbican() {
@@ -334,11 +348,10 @@ test_barbican_chaos_wiring() {
   # e2e-chaos image-load and deploy steps deleted — leaving both barbican
   # suites to run against a cluster with no barbican-operator and an empty pod
   # selector.
-  # The keystone stack loads through a step of its own, skipped on the ovn leg
-  # whose suites create no Keystone, Horizon, Glance or Barbican; barbican rides
-  # with it. The sibling "Load E2E images" step carries the per-leg images.
   local chaos_section pull_step kind_load_step deploy_step
   chaos_section=$(extract_yaml_job_section "$CI_YAML" "e2e-chaos")
+  # barbican rides along with the rest of the keystone stack, which the ovn leg
+  # skips through the step-level gate rather than a per-image one.
   pull_step=$(extract_yaml_step "$chaos_section" "Load E2E images (keystone stack)")
 
   assert_contains \
@@ -351,14 +364,24 @@ test_barbican_chaos_wiring() {
     "$pull_step" \
     "IMAGE_PREFIX }}/barbican:2025.2"
 
-  # Unlike placement, barbican has a suite on each leg, so neither image may be
-  # wrapped in a `matrix.suite == 'pod'` format() expression — the network leg
-  # would then pull nothing and barbican-openbao-outage would fail on a missing
-  # image.
-  assert_not_contains \
-    "the barbican images are pulled on both legs, not through a leg gate" \
+  # Unlike placement, barbican has a suite on each keystone-stack leg, so the
+  # gate above may only take the ovn leg out. A single-leg gate copied from the
+  # placement entries would leave the other leg pulling nothing and fail
+  # barbican-openbao-outage or barbican-operator-pod-kill on a missing image.
+  assert_contains \
+    "the keystone-stack pull runs on both legs that deploy barbican" \
     "$pull_step" \
-    "format('{0}/barbican"
+    "if: matrix.suite != 'ovn'"
+
+  assert_not_contains \
+    "the barbican images are not gated onto the pod leg alone" \
+    "$pull_step" \
+    "if: matrix.suite == 'pod'"
+
+  assert_not_contains \
+    "the barbican images are not gated onto the network leg alone" \
+    "$pull_step" \
+    "if: matrix.suite == 'network'"
 
   kind_load_step=$(extract_yaml_step "$chaos_section" "Load images into kind")
 
@@ -390,13 +413,14 @@ test_barbican_chaos_wiring() {
     "BARBICAN_SECRET_STORE_GRANTS: openstack=openbao-instance-provisioner"
 
   # barbican-operator-pod-kill runs on the pod leg and barbican-openbao-outage
-  # on the network leg, so the deploy may only skip the third one. A gate
-  # copied from the placement deploy, which names a single leg, would leave one
-  # of the two suites without an operator.
-  assert_not_contains \
-    "the barbican operator deploy is not narrowed to one chaos leg" \
+  # on the network leg, so the deploy covers both of them and only skips the
+  # ovn leg, which brings up no keystone stack at all. A single-leg gate copied
+  # from the placement deploy would leave one of the two suites without an
+  # operator.
+  assert_contains \
+    "the barbican operator deploy runs on both keystone-stack legs" \
     "$deploy_step" \
-    "matrix.suite =="
+    "if: matrix.suite != 'ovn'"
 }
 
 # ── e2e-controlplane wiring ─────────────────────────────────────────────────
