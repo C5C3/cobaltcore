@@ -414,7 +414,8 @@ Timeout: 8 minutes.
 
 ### test
 
-Runs unit tests with a matrix strategy over `[common, keystone, c5c3, horizon, glance, placement, barbican]`.
+Runs unit tests with a matrix strategy resolved per pull request out of
+`[common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron]`.
 Each matrix leg tests a single target — either `internal/common` or one operator — producing
 a single coverage profile uploaded to Codecov under a dedicated flag.
 
@@ -454,7 +455,8 @@ coverage data is not lost.
 
 ### test-integration
 
-Runs envtest-based integration tests with a matrix strategy over `[common, keystone, c5c3, horizon, glance, placement, barbican]`
+Runs envtest-based integration tests with a matrix strategy resolved per pull
+request out of `[common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron]`
 and coverage uploaded to Codecov. Requires `setup-envtest` to
 download kubebuilder assets (kube-apiserver, etcd) for the test API server.
 
@@ -960,7 +962,7 @@ chassis baseline (`tests/e2e/ovn/chassis-single-node`) and the Neutron
 metadata-agent suite (`tests/e2e/neutron/metadata-agent`) run blocking, inside
 the `e2e-operator` legs for `ovn` and `neutron`. Both assert what one node can
 answer. The `e2e-ovn-overlay` job takes the non-blocking entry described above,
-and the `ovn` leg of `e2e-chaos` takes it as well once that leg is added.
+and so does the `ovn` leg of `e2e-chaos`.
 
 ### e2e-ovn-overlay
 
@@ -1274,7 +1276,7 @@ per-platform manifests untagged via `push-by-digest` and needs those digests
 intact for `merge-operator-images` (GH-312).
 
 **Dependencies:** `needs: [changes, build-e2e-images, e2e-operator,
-e2e-operator-upgrade, e2e-chaos, tempest]`
+e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, tempest]`
 **Permissions:** `contents: read`, `packages: write`
 
 The job is `continue-on-error`: pruning is housekeeping, and a package whose only
