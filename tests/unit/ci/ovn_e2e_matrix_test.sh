@@ -42,78 +42,8 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-# Echo the paths-filter block of the given filter key. Filter keys sit at
-# 12-space indent and their entries deeper, so the next key at that indent ends
-# the block. Scoping matters for shared entries such as operators/Dockerfile,
-# which every operator filter lists.
-filter_block() {
-  awk -v key="            $1:" '
-    $0 == key { in_block = 1; next }
-    in_block && /^            [a-z0-9_]+:$/ { exit }
-    in_block { print }
-  ' "$CI_YAML"
-}
-
-# Echo the body of the top-level ci.yaml job <name>. The block ends at the next
-# 2-space line that is not part of the body — the next job key, or the comment
-# header introducing it.
-job_block() {
-  awk -v key="  $1:" '
-    $0 == key { in_block = 1; next }
-    in_block && /^  [#a-z0-9-]/ { exit }
-    in_block { print }
-  ' "$CI_YAML"
-}
-
-# Echo the body of the named step of the e2e-operator job. Steps sit at 6-space
-# indent, so the next line at that indent ends the block: the following step,
-# or the comment introducing it. Scoping to the job keeps a step of the same
-# name in another job from satisfying an assertion here.
-e2e_operator_step() {
-  job_block e2e-operator | awk -v key="      - name: $1" '
-    $0 == key { in_block = 1; next }
-    in_block && /^      [-#]/ { exit }
-    in_block { print }
-  '
-}
-
-# Echo the body of the named step of the e2e-chaos job. Same shape as
-# e2e_operator_step above; scoping matters because e2e-chaos and e2e-operator
-# both carry a "Setup E2E infrastructure" and a "Dump diagnostic info" step.
-e2e_chaos_step() {
-  job_block e2e-chaos | awk -v key="      - name: $1" '
-    $0 == key { in_block = 1; next }
-    in_block && /^      [-#]/ { exit }
-    in_block { print }
-  '
-}
-
-# Echo the body of the named step of the tempest job. Same shape as
-# e2e_operator_step above; scoping matters because tempest, e2e-operator and
-# e2e-chaos all carry a "Load E2E images" step.
-tempest_step() {
-  job_block tempest | awk -v key="      - name: $1" '
-    $0 == key { in_block = 1; next }
-    in_block && /^      [-#]/ { exit }
-    in_block { print }
-  '
-}
-
-# Echo the e2e-chaos matrix entry whose suite key is $1. Entries sit at 10-space
-# indent and their keys deeper, so the next line at that indent ends the block:
-# the following entry, or the comment introducing it.
-e2e_chaos_matrix_entry() {
-  job_block e2e-chaos | awk -v key="          - suite: $1" '
-    $0 == key { in_block = 1; next }
-    in_block && /^          [-#]/ { exit }
-    in_block { print }
-  '
-}
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -185,6 +115,64 @@ test_helm_validate_renders_the_ovn_chart() {
   assert_eq "the lint, template and unittest loops iterate the chart glob" "3" "$loops"
 }
 
+test_go_matrices_list_ovn() {
+  echo "Test: the unit and integration test matrices include ovn"
+
+  # Both matrices are resolved per pull request rather than hand-written, so an
+  # operator reaches them in two steps: the jobs read the resolver's list, and
+  # the resolver puts the operator in it when its own code changes. An operator
+  # missing from either half compiles and ships with its `go test` leg never
+  # run, and the pipeline stays green because no job failed.
+  local matrix_count
+  matrix_count=$(grep -c \
+    'matrix: ${{ fromJson(needs.changes.outputs.test-targets) }}' "$CI_YAML") || true
+
+  assert_eq "both the test and the test-integration matrix read test-targets" \
+    "2" "$matrix_count"
+
+  local all_operators="keystone c5c3 horizon glance placement barbican ovn"
+  assert_contains "an ovn change puts ovn in the test matrix" \
+    "$(resolve_output test-targets refs/heads/main "$all_operators" FILTER_ovn=true)" \
+    '"ovn"'
+}
+
+test_cleanup_matrices_cover_the_ovn_images() {
+  echo "Test: the derived cleanup package lists cover the ovn images"
+
+  # cleanup-images.yaml and ci.yaml's cleanup-e2e-tags both build their package
+  # matrix from this generator, so coverage is a property of its output rather
+  # than of a list someone has to remember to extend. An uncovered package
+  # leaks its run-scoped GHCR tags on every pull request.
+  local matrix all_packages e2e_packages
+  matrix=$(cd "$PROJECT_ROOT" && bash hack/ci-generate-cleanup-matrix.sh)
+  all_packages=$(echo "$matrix" | sed -n 's/^cleanup-packages=//p')
+  e2e_packages=$(echo "$matrix" | sed -n 's/^cleanup-e2e-packages=//p')
+
+  assert_contains "the nightly sweep covers ovn-operator" \
+    "$all_packages" '"ovn-operator"'
+  assert_contains "the per-run sweep covers ovn-operator" \
+    "$e2e_packages" '"ovn-operator"'
+  assert_contains "the nightly sweep covers ovn" \
+    "$all_packages" '"ovn"'
+  assert_contains "the per-run sweep covers ovn" \
+    "$e2e_packages" '"ovn"'
+}
+
+test_a_keystone_only_change_produces_no_ovn_leg() {
+  echo "Test: a keystone-only change keeps ovn out of the e2e-operators matrix"
+
+  # The positive case above proves the filter reaches the matrix; this one
+  # proves it still gates. A filter wired to a constant would satisfy the
+  # positive assertion and put every operator on every pull request.
+  local all_operators="keystone c5c3 horizon glance placement barbican ovn neutron"
+  local matrix
+  matrix=$(resolve_output e2e-operators refs/heads/main "$all_operators" \
+    FILTER_keystone=true)
+
+  assert_contains "the matrix carries the keystone leg" "$matrix" '"keystone"'
+  assert_not_contains "and no ovn leg" "$matrix" '"ovn"'
+}
+
 test_build_e2e_images_builds_the_ovn_images() {
   echo "Test: build-e2e-images reaches both ovn images on every run"
 
@@ -211,6 +199,17 @@ test_build_e2e_images_builds_the_ovn_images() {
     "name: Build OVN image"
   assert_contains "the step resolves the pin instead of repeating it" "$job" \
     "hack/ci-resolve-ovn-version.sh"
+
+  # The OVN build compiles Open vSwitch and OVN from source, which build-ovn in
+  # build-images.yaml budgets 60 minutes for on its own, and this job's cache
+  # scope (e2e-ovn) has no default-branch entry to warm the first run of a pull
+  # request. Under a budget sized for the job before the OVN build joined it,
+  # the run is killed before the Tempest images are pushed and every E2E job,
+  # which gates on this one succeeding, is skipped.
+  local budget
+  budget=$(echo "$job" | sed -n 's/^ *timeout-minutes: //p' | head -1)
+  assert_eq "the budget covers the uncached OVN build on top of the rest" \
+    "120" "$budget"
   assert_contains "the step builds through the shared script" "$job" \
     "hack/ci-build-ovn-image.sh"
   assert_contains "the daemon image is pushed under the run tag" "$job" \
@@ -233,8 +232,8 @@ test_e2e_leg_loads_the_ovn_image() {
   # resolves, and kubelet only skips the registry for a tag already on the
   # node. A leg that never loads it waits on a pull instead of running.
   local resolve load
-  resolve=$(e2e_operator_step "Resolve E2E images")
-  load=$(e2e_operator_step "Load images into kind")
+  resolve=$(job_step e2e-operator "Resolve E2E images")
+  load=$(job_step e2e-operator "Load images into kind")
 
   assert_not_empty "the resolve step is still named that" "$resolve"
   assert_contains "the resolve step branches on the ovn leg" "$resolve" \
@@ -263,7 +262,7 @@ test_e2e_leg_opts_into_kernel_modules() {
   # false and setup-e2e-infra reads it from env, so the value has to sit in
   # this step's own env block; anywhere else it never reaches modprobe.
   local setup
-  setup=$(e2e_operator_step "Setup E2E infrastructure")
+  setup=$(job_step e2e-operator "Setup E2E infrastructure")
 
   assert_contains "the step still uses the shared composite action" "$setup" \
     "uses: ./.github/actions/setup-e2e-infra"
@@ -316,7 +315,7 @@ test_tempest_neutron_leg_loads_the_ovn_image() {
   # test_build_e2e_images_builds_the_ovn_images).
   local job load
   job=$(job_block tempest)
-  load=$(tempest_step "Load E2E images")
+  load=$(job_step tempest "Load E2E images")
 
   assert_contains "the job resolves the pin into the env" "$job" \
     'OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)'
@@ -347,13 +346,18 @@ test_chaos_ovn_leg_is_wired() {
     "tests/e2e-chaos/ovn-southbound-outage"
   assert_contains "it health-checks the chaos-mesh install first" "$entry" \
     "tests/e2e/infrastructure/chaos-mesh-health"
-  assert_contains "only the pod leg stays blocking" "$job" \
+  # The expression names the two non-blocking legs instead of negating the
+  # blocking one, so a fourth leg gates merges until someone argues it out of
+  # that here rather than arriving silently non-blocking.
+  assert_contains "the non-blocking legs are named, not derived" "$job" \
+    "continue-on-error: \${{ matrix.suite == 'network' || matrix.suite == 'ovn' }}"
+  assert_not_contains "the gate is an allowlist, not a denylist" "$job" \
     "continue-on-error: \${{ matrix.suite != 'pod' }}"
 
   # images/ovn/Dockerfile holds the pin, so the leg resolves it at runtime
   # rather than repeating the tag here (asserted globally further up).
   local load
-  load=$(e2e_chaos_step "Load E2E images")
+  load=$(job_step e2e-chaos "Load E2E images")
   assert_contains "the leg resolves the pin into the env" "$job" \
     'OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)'
   assert_contains "it pulls the ovn-operator image" "$load" \
@@ -362,13 +366,13 @@ test_chaos_ovn_leg_is_wired() {
     "format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION)"
 
   local kind_load
-  kind_load=$(e2e_chaos_step "Load OVN images into kind")
+  kind_load=$(job_step e2e-chaos "Load OVN images into kind")
   assert_not_empty "both images reach the node" "$kind_load"
   assert_contains "the load runs on every leg with an OVNCentral" "$kind_load" \
     "if: matrix.suite != 'pod'"
 
   local deploy
-  deploy=$(e2e_chaos_step "Deploy ovn operator")
+  deploy=$(job_step e2e-chaos "Deploy ovn operator")
   assert_not_empty "the ovn-operator is deployed" "$deploy"
   assert_contains "the deploy runs on every leg with an OVNCentral" "$deploy" \
     "if: matrix.suite != 'pod'"
@@ -379,19 +383,19 @@ test_chaos_ovn_leg_is_wired() {
     "NAMESPACE: ovn-system"
 
   local setup dump
-  setup=$(e2e_chaos_step "Setup E2E infrastructure")
+  setup=$(job_step e2e-chaos "Setup E2E infrastructure")
   assert_contains "the ovn leg alone asks for the OVN kernel modules" "$setup" \
     "WITH_OVN_KERNEL_MODULES: \${{ matrix.suite == 'ovn' && 'true' || '' }}"
   assert_contains "Chaos Mesh stays on for every leg" "$setup" \
     'WITH_CHAOS_MESH: "true"'
-  dump=$(e2e_chaos_step "Dump diagnostic info")
+  dump=$(job_step e2e-chaos "Dump diagnostic info")
   assert_contains "the dump follows the leg's operator" "$dump" \
     "OPERATOR: \${{ matrix.suite == 'ovn' && 'ovn' || 'keystone' }}"
 
   # The ovn leg brings up no Keystone, so deploying the keystone-operator there
   # would only add a `helm install --wait` for an operator nothing reconciles.
   local keystone_deploy
-  keystone_deploy=$(e2e_chaos_step "Deploy operator")
+  keystone_deploy=$(job_step e2e-chaos "Deploy operator")
   assert_contains "the keystone deploy is gated off the ovn leg" \
     "$keystone_deploy" "if: matrix.suite != 'ovn'"
   assert_contains "and it is still the keystone one" "$keystone_deploy" \
@@ -406,6 +410,9 @@ test_ovn_filter_is_wired
 test_ovn_change_produces_an_e2e_leg
 test_helm_filter_covers_the_ovn_chart
 test_helm_validate_renders_the_ovn_chart
+test_go_matrices_list_ovn
+test_cleanup_matrices_cover_the_ovn_images
+test_a_keystone_only_change_produces_no_ovn_leg
 test_build_e2e_images_builds_the_ovn_images
 test_e2e_leg_loads_the_ovn_image
 test_e2e_leg_opts_into_kernel_modules

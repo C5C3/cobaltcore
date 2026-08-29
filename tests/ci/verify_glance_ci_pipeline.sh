@@ -38,9 +38,9 @@ extract_yaml_job_section() {
 
 # Run ci-resolve-changes.sh with the supplied env and echo the GITHUB_OUTPUT
 # contents. ALL_OPERATORS deliberately mirrors the ci.yaml value ("keystone
-# c5c3 horizon glance") so the behavioural assertions exercise the real
-# resolution codepath. Args are passed as KEY=VALUE pairs through the caller's
-# env block.
+# c5c3 horizon glance placement barbican ovn neutron") so the behavioural
+# assertions exercise the real resolution codepath. Args are passed as KEY=VALUE
+# pairs through the caller's env block.
 run_resolve() {
   local out
   out=$(mktemp)
@@ -278,7 +278,7 @@ test_resolve_emits_glance_on_operator_change() {
 
   local resolved operators has
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance" \
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
     GITHUB_REF="refs/heads/main" \
     FILTER_keystone="false" \
     FILTER_c5c3="false" \
@@ -311,11 +311,11 @@ test_resolve_emits_glance_on_operator_change() {
 }
 
 test_resolve_emits_all_on_go_common_change() {
-  echo "Test: ci-resolve-changes.sh emits all four operators on a go_common change"
+  echo "Test: ci-resolve-changes.sh emits all eight operators on a go_common change"
 
   local resolved operators
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance" \
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
     GITHUB_REF="refs/heads/main" \
     FILTER_keystone="false" \
     FILTER_c5c3="false" \
@@ -351,7 +351,7 @@ test_resolve_emits_glance_on_tag_push() {
 
   local resolved operators
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance" \
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
     GITHUB_REF="refs/tags/v1.0.0" \
     FILTER_keystone="false" \
     FILTER_c5c3="false" \
@@ -377,7 +377,7 @@ test_resolve_excludes_glance_on_keystone_only_change() {
 
   local resolved operators
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance" \
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
     GITHUB_REF="refs/heads/main" \
     FILTER_keystone="true" \
     FILTER_c5c3="false" \

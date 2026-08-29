@@ -1629,6 +1629,7 @@ jobs:
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             # placement is exercised by the pod leg alone (see the pod-leg-only
             # load and deploy steps below).
@@ -2605,6 +2606,7 @@ jobs:
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
             ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
