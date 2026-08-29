@@ -1,0 +1,619 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for an OVN overlay across the two workers of
+# hack/kind-config-multinode.yaml. Validates what a single node cannot answer:
+#   - the chassis DaemonSets land on both workers and status.nodes carries two
+#     entries with two different system-ids, so two chassis registered rather
+#     than one node reporting twice
+#   - a logical switch with one port per worker reaches Ready in the Northbound
+#     database over the client certificate the OVNCentral published
+#   - a packet sent from a network namespace on worker 1 to the port on worker
+#     2 is answered, which only happens if ovn-controller programmed the flows
+#     on both nodes and the Geneve tunnel between them carries traffic
+#   - the Southbound database agrees: lsp-a is bound to a chassis, and the two
+#     chassis announce two different Geneve tunnel endpoints
+#
+# The datapath is built the way OVN's own tutorial builds one: an internal OVS
+# port on br-int carrying external_ids:iface-id of the logical switch port,
+# moved into a network namespace that configures the MAC and IP the logical
+# port advertises.
+#
+# spec.concurrent is false because the probe Pods run with hostNetwork and own
+# /run/openvswitch and /run/netns on both workers. A second suite rendering an
+# OVNChassis or a NeutronMetadataAgent at the same time would contend with this
+# one over the same host paths.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-geneve-datapath
+spec:
+  namespace: openstack
+  concurrent: false
+  steps:
+  # ── Step 1: Label both workers the chassis selects ─────────────────────
+  # The suite labels the nodes itself rather than relying on the cluster
+  # bring-up, so it runs against any multi-node cluster the CI job hands it.
+  # The control plane keeps kind's NoSchedule taint on a multi-node cluster,
+  # so the two workers are the schedulable set and the chassis DaemonSet gets
+  # one pod on each. The step cleanup takes the label off again, which is what
+  # keeps a later suite from finding a node advertising a chassis role nothing
+  # serves.
+  - try:
+    - script:
+        content: |
+          set -eu
+          NODES="$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' \
+            -o jsonpath='{.items[*].metadata.name}')"
+          COUNT="$(echo "${NODES}" | wc -w | tr -d ' ')"
+          if [ "${COUNT}" -lt 2 ]; then
+            echo "ERROR: the overlay suite needs two schedulable nodes, found ${COUNT}"
+            kubectl get nodes -o wide
+            exit 1
+          fi
+          for node in ${NODES}; do
+            kubectl label node "${node}" openstack.c5c3.io/chassis=true --overwrite
+          done
+          echo "OK: labelled ${NODES} with openstack.c5c3.io/chassis=true"
+    cleanup:
+    - script:
+        content: |
+          set -eu
+          kubectl label nodes -l openstack.c5c3.io/chassis openstack.c5c3.io/chassis- || true
+          echo "OK: removed openstack.c5c3.io/chassis from every node"
+  # ── Step 2: Bring up the control plane the chassis attach to ───────────
+  - try:
+    - apply:
+        file: 01-ovncentral-cr.yaml
+    - apply:
+        file: 03-probe-scripts.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: ovn-overlay-central
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            clientSecretName: ovn-overlay-central-client
+    catch:
+    - script:
+        content: |
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral ovn-overlay-central -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Control-plane pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-overlay-central -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Apply the OVNChassis and assert it covers both workers ─────
+  - try:
+    - apply:
+        file: 02-ovnchassis-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNChassis
+          metadata:
+            name: ovn-overlay
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            desiredNumberScheduled: 2
+            numberReady: 2
+    catch:
+    - script:
+        content: |
+          echo "=== OVNChassis CR status ==="
+          kubectl get ovnchassis ovn-overlay -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== DaemonSets ==="
+          kubectl describe ds -n $NAMESPACE -l app.kubernetes.io/instance=ovn-overlay 2>&1 || true
+          echo "=== Chassis pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-overlay -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Node labels ==="
+          kubectl get nodes --show-labels 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert two nodes registered with two system-ids ────────────
+  # numberReady above says two pods are running; it does not say they became
+  # two chassis. Two entries carrying the same system-id would be one chassis
+  # the control plane sees twice, and every packet between the ports would stay
+  # on one node without the tunnel ever being used.
+  - try:
+    - script:
+        content: |
+          set -eu
+          NODES="$(kubectl get nodes -l openstack.c5c3.io/chassis=true \
+            -o jsonpath='{.items[*].metadata.name}')"
+          COUNT="$(kubectl get ovnchassis ovn-overlay -n "$NAMESPACE" \
+            -o jsonpath='{.status.nodes[*].name}' | wc -w | tr -d ' ')"
+          if [ "${COUNT}" -ne 2 ]; then
+            echo "FAIL: status.nodes carries ${COUNT} entries, want 2"
+            kubectl get ovnchassis ovn-overlay -n "$NAMESPACE" -o jsonpath='{.status.nodes}'
+            exit 1
+          fi
+          NAMES="$(kubectl get ovnchassis ovn-overlay -n "$NAMESPACE" \
+            -o jsonpath='{.status.nodes[*].name}' | tr ' ' '\n' | sort | tr '\n' ' ')"
+          WANT="$(echo "${NODES}" | tr ' ' '\n' | sort | tr '\n' ' ')"
+          if [ "${NAMES}" != "${WANT}" ]; then
+            echo "FAIL: status.nodes names '${NAMES}', want the labelled nodes '${WANT}'"
+            exit 1
+          fi
+          IDS="$(kubectl get ovnchassis ovn-overlay -n "$NAMESPACE" \
+            -o jsonpath='{.status.nodes[*].systemID}')"
+          for id in ${IDS}; do
+            if ! echo "${id}" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+              echo "FAIL: system-id '${id}' is not a UUID"
+              exit 1
+            fi
+          done
+          DISTINCT="$(echo "${IDS}" | tr ' ' '\n' | sort -u | grep -c .)"
+          if [ "${DISTINCT}" -ne 2 ]; then
+            echo "FAIL: the two nodes report ${DISTINCT} distinct system-ids, want 2: ${IDS}"
+            exit 1
+          fi
+          echo "OK: ${NODES} registered with system-ids ${IDS}"
+    catch:
+    - script:
+        content: |
+          echo "=== OVNChassis CR status ==="
+          kubectl get ovnchassis ovn-overlay -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Nodes ConfigMap ==="
+          kubectl get cm -n $NAMESPACE -l app.kubernetes.io/instance=ovn-overlay -o yaml 2>&1 || true
+          echo "=== Chassis pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-overlay -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+          done
+  # ── Step 5: Write the logical model over the client certificate ────────
+  # One logical switch, one port per worker. The probe reads its verdict from
+  # the pod log after a terminal phase rather than from an attached stream:
+  # `kubectl run -i` carries only what the container writes after the attach is
+  # established, so a probe that reaches its sentinel first would leave the
+  # captured output empty. That costs --rm, and the trap removes the pod
+  # instead.
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          POD=ovn-overlay-nb-setup
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          # The image comes from the running StatefulSet, so no fixture in this
+          # suite has to spell the OVN tag the operator resolved.
+          IMG="$(kubectl get sts ovn-overlay-central-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          NB="$(kubectl get ovncentral ovn-overlay-central -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-overlay-central-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-overlay-probe-scripts"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/nb-setup.sh"],
+                  "env": [
+                    {"name": "NB_ADDRESS", "value": "${NB}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'NB-SETUP-OK'
+          echo "OK: overlay-sw carries lsp-a and lsp-b"
+    catch:
+    - script:
+        content: |
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral ovn-overlay-central -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Probe pod ==="
+          kubectl describe pod ovn-overlay-nb-setup -n $NAMESPACE 2>&1 || true
+          kubectl logs -n $NAMESPACE ovn-overlay-nb-setup --tail=200 2>&1 || true
+          echo "=== Northbound pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-overlay-central -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          POD=ovn-overlay-nb-cleanup
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          IMG="$(kubectl get sts ovn-overlay-central-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+          NB="$(kubectl get ovncentral ovn-overlay-central -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}' 2>/dev/null || true)"
+          if [ -z "$IMG" ] || [ -z "$NB" ]; then
+            echo "OK: no reachable northbound database left, nothing to delete"
+            exit 0
+          fi
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-overlay-central-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-overlay-probe-scripts"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/nb-cleanup.sh"],
+                  "env": [
+                    {"name": "NB_ADDRESS", "value": "${NB}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES" || true
+
+          phase=""
+          for _ in $(seq 1 40); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true
+          echo "pod phase: ${phase:-<none>}"
+  # ── Step 6: Build the datapath on both workers ─────────────────────────
+  # One long-lived Pod per worker, pinned by nodeName so each lands where its
+  # logical switch port has to appear. Both need the node's own network
+  # namespace and its /run/openvswitch to reach ovs-vsctl, and /run/netns with
+  # Bidirectional propagation so the namespace one Pod creates is visible to
+  # the ping probe that follows on the same node. runAsUser 0 because the OVN
+  # image's default user is openstack, which drives neither OVS nor netns.
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          IMG="$(kubectl get sts ovn-overlay-central-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          NODES="$(kubectl get nodes -l openstack.c5c3.io/chassis=true \
+            -o jsonpath='{.items[*].metadata.name}')"
+          WORKER_A="$(echo "${NODES}" | cut -d' ' -f1)"
+          WORKER_B="$(echo "${NODES}" | cut -d' ' -f2)"
+          test -n "$WORKER_A"
+          test -n "$WORKER_B"
+
+          # render_probe <name> <node>
+          render_probe() {
+          cat <<YAML
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: $1
+            namespace: ${NAMESPACE}
+            labels:
+              app.kubernetes.io/name: ovn-overlay-probe
+          spec:
+            nodeName: $2
+            hostNetwork: true
+            restartPolicy: Never
+            terminationGracePeriodSeconds: 1
+            containers:
+            - name: probe
+              image: ${IMG}
+              command: ["sleep", "infinity"]
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              volumeMounts:
+              - name: run-ovs
+                mountPath: /run/openvswitch
+              - name: run-netns
+                mountPath: /run/netns
+                mountPropagation: Bidirectional
+            volumes:
+            - name: run-ovs
+              hostPath:
+                path: /run/openvswitch
+                type: DirectoryOrCreate
+            - name: run-netns
+              hostPath:
+                path: /run/netns
+                type: DirectoryOrCreate
+          YAML
+          }
+
+          {
+            render_probe ovn-overlay-probe-a "$WORKER_A"
+            echo "---"
+            render_probe ovn-overlay-probe-b "$WORKER_B"
+          } | kubectl apply -f -
+
+          kubectl wait --for=condition=Ready --timeout=180s -n "$NAMESPACE" \
+            pod/ovn-overlay-probe-a pod/ovn-overlay-probe-b
+
+          # attach_port <pod> <port> <netns> <mac> <ip> <lsp>
+          #
+          # Every command tolerates the state a previous attempt left behind,
+          # so a retried step converges instead of failing on its own work.
+          attach_port() {
+            kubectl exec -n "$NAMESPACE" "$1" -- bash -c '
+              set -eu
+              port="$1"; ns="$2"; mac="$3"; addr="$4"; lsp="$5"
+              ovs-vsctl --may-exist add-port br-int "$port" \
+                -- set Interface "$port" type=internal "external_ids:iface-id=$lsp"
+              [ -e "/run/netns/$ns" ] || ip netns add "$ns"
+              ip netns exec "$ns" ip link show "$port" >/dev/null 2>&1 \
+                || ip link set "$port" netns "$ns"
+              ip netns exec "$ns" ip link set "$port" address "$mac"
+              ip netns exec "$ns" ip addr replace "$addr/24" dev "$port"
+              ip netns exec "$ns" ip link set "$port" up
+              ip netns exec "$ns" ip addr show dev "$port"
+            ' bash "$2" "$3" "$4" "$5" "$6"
+          }
+
+          attach_port ovn-overlay-probe-a ovl-pa ovl-a 0a:00:00:00:00:0a 10.99.0.10 lsp-a
+          attach_port ovn-overlay-probe-b ovl-pb ovl-b 0a:00:00:00:00:0b 10.99.0.11 lsp-b
+          echo "DATAPATH-SETUP-OK"
+    catch:
+    - script:
+        content: |
+          echo "=== Datapath probe pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/name=ovn-overlay-probe -o wide 2>&1 || true
+          kubectl describe pod ovn-overlay-probe-a -n $NAMESPACE 2>&1 || true
+          kubectl describe pod ovn-overlay-probe-b -n $NAMESPACE 2>&1 || true
+          echo "=== Open vSwitch state on both workers ==="
+          for pod in ovn-overlay-probe-a ovn-overlay-probe-b; do
+            echo "--- $pod ---"
+            kubectl exec -n $NAMESPACE "$pod" -- ovs-vsctl show 2>&1 || true
+            kubectl exec -n $NAMESPACE "$pod" -- ip netns list 2>&1 || true
+          done
+          echo "=== Chassis pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-overlay -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -u
+          # teardown <pod> <port> <netns>
+          teardown() {
+            kubectl exec -n "$NAMESPACE" "$1" -- bash -c '
+              ip netns del "$1" >/dev/null 2>&1 || true
+              ovs-vsctl --if-exists del-port br-int "$2" || true
+            ' bash "$3" "$2" || true
+          }
+          teardown ovn-overlay-probe-a ovl-pa ovl-a
+          teardown ovn-overlay-probe-b ovl-pb ovl-b
+          kubectl delete pod ovn-overlay-probe-a ovn-overlay-probe-b \
+            -n "$NAMESPACE" --ignore-not-found --wait=false
+          echo "OK: removed both network namespaces, both OVS ports and both probes"
+  # ── Step 7: Ping across the tunnel ─────────────────────────────────────
+  # The one assertion the single-node baseline cannot make. The probe runs on
+  # worker 1 in the namespace step 6 built there, and 10.99.0.11 only answers
+  # from worker 2.
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          POD=ovn-overlay-ping
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          IMG="$(kubectl get sts ovn-overlay-central-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          WORKER_A="$(kubectl get nodes -l openstack.c5c3.io/chassis=true \
+            -o jsonpath='{.items[*].metadata.name}' | cut -d' ' -f1)"
+          test -n "$WORKER_A"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "nodeName": "${WORKER_A}",
+              "hostNetwork": true,
+              "volumes": [
+                {"name": "probe", "configMap": {"name": "ovn-overlay-probe-scripts"}},
+                {"name": "run-ovs", "hostPath": {"path": "/run/openvswitch", "type": "DirectoryOrCreate"}},
+                {"name": "run-netns", "hostPath": {"path": "/run/netns", "type": "DirectoryOrCreate"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/ping.sh"],
+                  "securityContext": {"privileged": true, "runAsUser": 0},
+                  "env": [
+                    {"name": "NS_NAME", "value": "ovl-a"},
+                    {"name": "PEER_IP", "value": "10.99.0.11"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true},
+                    {"name": "run-ovs", "mountPath": "/run/openvswitch"},
+                    {"name": "run-netns", "mountPath": "/run/netns", "mountPropagation": "Bidirectional"}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'PING-OK'
+          echo "OK: 10.99.0.11 on the other worker answered from netns ovl-a"
+    catch:
+    - script:
+        content: |
+          echo "=== Ping probe pod ==="
+          kubectl describe pod ovn-overlay-ping -n $NAMESPACE 2>&1 || true
+          kubectl logs -n $NAMESPACE ovn-overlay-ping --tail=200 2>&1 || true
+          echo "=== Datapath probe pods ==="
+          kubectl describe pod ovn-overlay-probe-a -n $NAMESPACE 2>&1 || true
+          kubectl describe pod ovn-overlay-probe-b -n $NAMESPACE 2>&1 || true
+          echo "=== Open vSwitch state on both workers ==="
+          for pod in ovn-overlay-probe-a ovn-overlay-probe-b; do
+            echo "--- $pod ---"
+            kubectl exec -n $NAMESPACE "$pod" -- ovs-vsctl show 2>&1 || true
+            kubectl exec -n $NAMESPACE "$pod" -- ovs-ofctl dump-flows br-int 2>&1 | head -40 || true
+          done
+          echo "=== Chassis pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-overlay -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 8: Assert the Southbound database agrees ──────────────────────
+  # The ping proves packets flow; these two rows say through what. A binding on
+  # lsp-a names the chassis that claimed the port, and two Geneve endpoints on
+  # two addresses are the tunnel the packets took.
+  - try:
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          POD=ovn-overlay-sb-verify
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          IMG="$(kubectl get sts ovn-overlay-central-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          SB="$(kubectl get ovncentral ovn-overlay-central -n "$NAMESPACE" \
+            -o jsonpath='{.status.southbound.internalDbAddress}')"
+          test -n "$SB"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-overlay-central-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-overlay-probe-scripts"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/sb-verify.sh"],
+                  "env": [
+                    {"name": "SB_ADDRESS", "value": "${SB}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 200); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'BINDING-OK'
+          echo "${OUT}" | grep -q 'ENCAP-OK'
+          echo "OK: lsp-a is bound to a chassis and two geneve endpoints are registered"
+    catch:
+    - script:
+        content: |
+          echo "=== Verify probe pod ==="
+          kubectl describe pod ovn-overlay-sb-verify -n $NAMESPACE 2>&1 || true
+          kubectl logs -n $NAMESPACE ovn-overlay-sb-verify --tail=200 2>&1 || true
+          echo "=== OVNChassis CR status ==="
+          kubectl get ovnchassis ovn-overlay -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Chassis pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-overlay -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+          done
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

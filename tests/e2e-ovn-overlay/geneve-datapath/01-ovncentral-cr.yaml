@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNCentral fixture for the geneve-datapath E2E test.
+#
+# The control plane is scaffolding for the datapath under test, so it runs one
+# Raft member per database and one northd replica. The backup is suspended: a
+# snapshot of the two logical switch ports this suite creates proves nothing it
+# is about, and the CronJob would only compete for disk.
+#
+# The databases stay unpublished (externallyReachable defaults to false). Both
+# workers have cluster networking, so the chassis on each of them reaches the
+# Southbound database over its ClusterIP, and the client probes reach the
+# Northbound database the same way.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-overlay-central
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true

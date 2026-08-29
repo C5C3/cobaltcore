@@ -200,8 +200,10 @@ E2E Jobs (pull requests only, depend on build-e2e-images):
                      if: needs.changes.outputs.e2e-controlplane == 'true'
   e2e-external-keystone > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-controlplane == 'true'
+  e2e-ovn-overlay > needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+                     if: needs.changes.outputs.e2e-ovn-overlay == 'true'
   tempest ────────> needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]
-  cleanup-e2e-tags > needs: [build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, tempest]
+  cleanup-e2e-tags > needs: [build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, tempest]
 
 Publish Jobs (push events only — main and v* tags; publish-only-on-merge):
   build-and-push (matrix: operator × platform) ──> needs: [changes], if: push && has-e2e-operators == 'true'
@@ -929,6 +931,46 @@ load is best-effort, through the helper that also loads the chaos suite's
 `ip_set` and `sch_netem` modules. On a host without root or passwordless sudo
 it logs a warning and continues, and the suite then fails on its own
 assertions.
+
+**Where each OVN suite sits (author's decision, 2026-08-27).** The single-node
+chassis baseline (`tests/e2e/ovn/chassis-single-node`) and the Neutron
+metadata-agent suite (`tests/e2e/neutron/metadata-agent`) run blocking, inside
+the `e2e-operator` legs for `ovn` and `neutron`. Both assert what one node can
+answer. The `e2e-ovn-overlay` job takes the non-blocking entry described above,
+and the `ovn` leg of `e2e-chaos` takes it as well once that leg is added.
+
+### e2e-ovn-overlay
+
+Runs the `tests/e2e-ovn-overlay/geneve-datapath/` Chainsaw suite on a two-worker
+kind cluster: an `OVNCentral`, an `OVNChassis` selecting both workers, one
+logical switch port per worker, and a ping between two network namespaces that
+can only reach each other across the Geneve tunnel. The suite asserts
+`numberReady: 2` on the chassis, two `status.nodes` entries carrying two
+different system-ids, a `Port_Binding` for `lsp-a` bound to a chassis, and two
+Geneve `Encap` rows on two addresses. A single node answers none of those
+questions, so the suite lives outside `tests/e2e/` and gets a job of its own.
+
+**Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]`
+**Condition:** Runs only when `e2e-ovn-overlay == 'true'`, the upstream
+`build-e2e-images` job succeeded, and no dependency failed or was cancelled.
+
+The job runs on `self-hosted` with `continue-on-error: true` under the
+kernel-module rule above, and creates its cluster from
+`config: hack/kind-config-multinode.yaml`. `setup-e2e-infra` receives
+`WITH_OVN_KERNEL_MODULES: "true"`, `hack/ci-deploy-operator.sh` installs the
+ovn-operator into `ovn-system`, and the suite runs through
+`make e2e-ovn-overlay`, the same target a developer calls locally. The OVN
+daemon image is loaded at the tag `hack/ci-resolve-ovn-version.sh` reads from
+`images/ovn/Dockerfile`, so the workflow spells no version of its own.
+Diagnostics run with `OPERATOR: ovn`, and `_output/reports/` is uploaded as the
+`e2e-ovn-overlay-junit-report` artifact (14-day retention). `cleanup-e2e-tags`
+lists the job in its `needs`, so the run-scoped image tags survive until it
+finishes.
+
+**Path filter:** `tests/e2e-ovn-overlay/**`, `operators/ovn/**`, `images/ovn/**`,
+`hack/**`, `deploy/**`, `.github/actions/**`, `.github/workflows/ci.yaml`. Any Go
+code change and any E2E test-definition change also force the job on, through
+`go_changed` and `any_e2e_tests` in `ci-resolve-changes.sh`.
 
 ### e2e-prometheus
 

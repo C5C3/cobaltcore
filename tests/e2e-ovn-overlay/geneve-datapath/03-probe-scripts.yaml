@@ -1,0 +1,225 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The scripts the one-shot probe Pods of this suite run inside the OVN image.
+#
+# They live in a ConfigMap rather than in the `kubectl run --overrides`
+# payloads so they stay reviewable, shellcheck-able shell scripts instead of
+# JSON-escaped one-liners. Every probe Pod mounts this ConfigMap at /probe; the
+# two that speak to a database also mount the client certificate the OVNCentral
+# published at /certs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ovn-overlay-probe-scripts
+  namespace: openstack
+data:
+  common.sh: |
+    # Sourced by every script below that speaks to a database. The client
+    # identity, the retry vocabulary and the northbound retry loop are one
+    # piece of knowledge, and four scripts across this suite need it, so a
+    # tenth retryable ovsdb error is added here rather than in each of them.
+    # Every probe Pod mounts this ConfigMap at /probe, so the scripts reach it
+    # as /probe/common.sh.
+
+    # The client keypair and the CA the database authenticates peers against.
+    readonly CERT=(-p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt)
+
+    # Only a connection-level failure is retried. A TLS failure reports a
+    # certificate, an SSL routine or a protocol error instead, and retrying it
+    # would burn the budget on a misconfiguration that cannot resolve itself.
+    readonly RETRYABLE='Connection refused|Connection timed out|Network is unreachable|No route to host|Host is unreachable|Name or service not known|timeout exceeded'
+
+    readonly INTERVAL=5
+
+    # retry_nbctl <attempts> <exhausted-message> <ovn-nbctl arguments...>
+    #
+    # Runs ovn-nbctl against NB_ADDRESS with the client certificate until it
+    # exits 0, retrying connection-level failures alone. Returns 0 on success;
+    # exits the script on a non-retryable failure or once the budget is spent,
+    # after printing what went wrong.
+    retry_nbctl() {
+      local attempts="$1" exhausted="$2"
+      shift 2
+      local attempt=0 out rc
+
+      while [ "${attempt}" -lt "${attempts}" ]; do
+        attempt=$((attempt + 1))
+        out="$(ovn-nbctl --db="${NB_ADDRESS}" "${CERT[@]}" --timeout=10 "$@" 2>&1)"
+        rc=$?
+        if [ "${rc}" -eq 0 ]; then
+          return 0
+        fi
+        if grep -Eq "${RETRYABLE}" <<< "${out}"; then
+          echo "retry ${attempt}/${attempts}: northbound database not reachable yet: ${out}"
+          sleep "${INTERVAL}"
+          continue
+        fi
+        echo "FAIL: ovn-nbctl exited ${rc}: ${out}"
+        exit 1
+      done
+
+      echo "FAIL: ${exhausted}"
+      exit 1
+    }
+  nb-setup.sh: |
+    #!/bin/bash
+    # Writes the logical model the datapath probes attach to: one logical
+    # switch with a port per worker, each carrying the MAC and IP the
+    # corresponding network namespace configures on its OVS port. OVN forwards
+    # on the addresses recorded here, so a mismatch between them and the
+    # interface silently drops every packet.
+    #
+    # NB_ADDRESS arrives as an environment variable.
+    set -u
+
+    # Fail closed: these scripts run under `set -u` without `set -e`, so an
+    # unmounted ConfigMap would otherwise leave the sentinel below printed
+    # by a probe that never reached a database.
+    . /probe/common.sh || { echo "FAIL: /probe/common.sh is not mounted"; exit 1; }
+
+    # --may-exist on both create commands keeps a retried attempt from failing
+    # on the model the previous one already wrote.
+    retry_nbctl 30 "the northbound database never accepted the logical model" \
+      -- --may-exist ls-add overlay-sw \
+      -- --may-exist lsp-add overlay-sw lsp-a \
+      -- lsp-set-addresses lsp-a "0a:00:00:00:00:0a 10.99.0.10" \
+      -- --may-exist lsp-add overlay-sw lsp-b \
+      -- lsp-set-addresses lsp-b "0a:00:00:00:00:0b 10.99.0.11"
+
+    echo "overlay-sw carries lsp-a 10.99.0.10 and lsp-b 10.99.0.11"
+    echo "NB-SETUP-OK"
+  nb-cleanup.sh: |
+    #!/bin/bash
+    # Removes the logical switch nb-setup.sh created, with it both ports. Runs
+    # in the suite teardown, where the switch may already be gone. Hence
+    # --if-exists, and hence the shorter budget: a database that is on its way
+    # out with the rest of the namespace is not worth waiting five minutes for.
+    #
+    # NB_ADDRESS arrives as an environment variable.
+    set -u
+
+    # Fail closed: these scripts run under `set -u` without `set -e`, so an
+    # unmounted ConfigMap would otherwise leave the sentinel below printed
+    # by a probe that never reached a database.
+    . /probe/common.sh || { echo "FAIL: /probe/common.sh is not mounted"; exit 1; }
+
+    retry_nbctl 6 "the northbound database never dropped overlay-sw" \
+      -- --if-exists ls-del overlay-sw
+
+    echo "NB-CLEANUP-OK"
+  sb-verify.sh: |
+    #!/bin/bash
+    # Reports what the Southbound database knows about the overlay after the
+    # ping crossed it. Two questions, both answered over TLS with the client
+    # certificate: which chassis claimed lsp-a, and how many Geneve tunnel
+    # endpoints the chassis announce between them.
+    #
+    # SB_ADDRESS arrives as an environment variable.
+    set -u
+
+    # Fail closed: these scripts run under `set -u` without `set -e`, so an
+    # unmounted ConfigMap would otherwise leave the sentinel below printed
+    # by a probe that never reached a database.
+    . /probe/common.sh || { echo "FAIL: /probe/common.sh is not mounted"; exit 1; }
+
+    readonly ATTEMPTS=30
+
+    # The rows the last sb_find call matched, for the caller to inspect.
+    ROWS=""
+
+    # sb_find <label> <want-rows> <ovn-sbctl arguments...>
+    #
+    # Runs the find until exactly <want-rows> non-empty rows come back and
+    # leaves them in ROWS. An empty row is a column the database has not filled
+    # in yet (an unbound Port_Binding prints one), so counting non-empty rows
+    # is what separates "not there yet" from "there".
+    sb_find() {
+      local label="$1" want="$2"
+      shift 2
+      local attempt=0 out rc count
+
+      while [ "${attempt}" -lt "${ATTEMPTS}" ]; do
+        attempt=$((attempt + 1))
+        out="$(ovn-sbctl --db="${SB_ADDRESS}" "${CERT[@]}" --timeout=10 \
+          --format=csv --no-headings "$@" 2>&1)"
+        rc=$?
+        if [ "${rc}" -ne 0 ]; then
+          if grep -Eq "${RETRYABLE}" <<< "${out}"; then
+            echo "retry ${attempt}/${ATTEMPTS}: southbound database not reachable yet: ${out}"
+            sleep "${INTERVAL}"
+            continue
+          fi
+          echo "FAIL: ovn-sbctl ${label} exited ${rc}: ${out}"
+          exit 1
+        fi
+
+        count="$(grep -c . <<< "${out}")"
+        if [ "${count}" -gt "${want}" ]; then
+          echo "FAIL: ${label} returned ${count} filled rows, want ${want}: ${out}"
+          exit 1
+        fi
+        if [ "${count}" -eq "${want}" ]; then
+          ROWS="$(grep . <<< "${out}")"
+          echo "${label}: ${ROWS}"
+          return 0
+        fi
+        echo "retry ${attempt}/${ATTEMPTS}: ${label} returned ${count} filled rows, want ${want}"
+        sleep "${INTERVAL}"
+      done
+
+      echo "FAIL: ${label} never returned ${want} filled rows"
+      exit 1
+    }
+
+    # A Port_Binding row exists as soon as northd translates the logical port.
+    # The chassis column stays empty until ovn-controller on a node claims it,
+    # and an unclaimed port is one no packet ever leaves.
+    sb_find "chassis of lsp-a" 1 --columns=chassis find Port_Binding logical_port=lsp-a
+    echo "BINDING-OK"
+
+    # One Geneve endpoint per chassis, on two different node addresses. Two
+    # rows carrying one address would mean both chassis registered the same
+    # node, and the ping would have stayed on one worker.
+    sb_find "geneve encap addresses" 2 --columns=ip find Encap type=geneve
+    distinct="$(sort -u <<< "${ROWS}" | grep -c .)"
+    if [ "${distinct}" -ne 2 ]; then
+      echo "FAIL: the two geneve encap rows carry ${distinct} distinct IPs, want 2: ${ROWS}"
+      exit 1
+    fi
+    echo "ENCAP-OK"
+  ping.sh: |
+    #!/bin/bash
+    # Pings the peer port across the Geneve tunnel from the network namespace
+    # the datapath step built on this node. This is the assertion the whole
+    # suite exists for: the packet leaves an OVS internal port on one worker,
+    # is encapsulated by ovn-controller, and is answered from a namespace on
+    # the other.
+    #
+    # NS_NAME and PEER_IP arrive as environment variables.
+    set -u
+
+    # ovn-controller programs the flows for a port it has just claimed a few
+    # seconds after the binding appears, so the first ping can legitimately go
+    # unanswered. Retrying the whole ping rather than raising -c keeps a
+    # failure readable: every attempt prints its own output.
+    readonly ATTEMPTS=10
+    readonly INTERVAL=3
+
+    attempt=0
+    while [ "${attempt}" -lt "${ATTEMPTS}" ]; do
+      attempt=$((attempt + 1))
+      out="$(ip netns exec "${NS_NAME}" ping -c 3 -W 2 "${PEER_IP}" 2>&1)"
+      rc=$?
+      if [ "${rc}" -eq 0 ]; then
+        echo "${out}"
+        echo "PING-OK"
+        exit 0
+      fi
+      echo "retry ${attempt}/${ATTEMPTS}: ping from ${NS_NAME} to ${PEER_IP} exited ${rc}: ${out}"
+      sleep "${INTERVAL}"
+    done
+
+    echo "FAIL: ${PEER_IP} never answered from ${NS_NAME}"
+    exit 1

@@ -668,6 +668,33 @@ e2e-multicluster:
 	@test -f _output/cobaltcore-target.kubeconfig || { echo 'chainsaw has no kubeconfig for the target cluster; run `kind get kubeconfig --name cobaltcore-target > _output/cobaltcore-target.kubeconfig`' >&2; exit 1; }
 	chainsaw test --config tests/e2e-multicluster/chainsaw-config.yaml tests/e2e-multicluster/
 
+.PHONY: e2e-ovn-overlay
+# e2e-ovn-overlay runs the Geneve datapath suite across the two workers of a
+# multi-node kind cluster (hack/kind-config-multinode.yaml): it programs one
+# logical switch port per worker, pings from a network namespace on the first
+# to the port on the second, and asserts the Southbound database bound the port
+# and registered two Geneve tunnel endpoints. The suite lives OUTSIDE tests/e2e/
+# because every suite there runs against the single-node hack/kind-config.yaml
+# cluster that `make e2e` sweeps, where both ports would land on one node and no
+# packet would ever enter a tunnel.
+#
+# The two preflights are kept separate so a kubectl/cluster reachability failure
+# is not conflated with a single-node cluster. See review pattern
+# .planwerk/review_patterns/distinguish-collapsed-failure-modes-in-preflight-checks.md
+# This target satisfies the CI-to-Makefile parity expected by
+# .planwerk/review_patterns/maintain-ci-to-makefile-parity-for-new-jobs.md so
+# developers can reproduce the e2e-ovn-overlay CI job locally.
+#
+# The suite labels and unlabels the workers itself, so the only thing it asks of
+# the cluster is that two schedulable nodes exist and the ovn-operator is
+# deployed (`OPERATOR=ovn IMAGE_REPO=ghcr.io/c5c3/ovn-operator NAMESPACE=ovn-system
+# hack/ci-deploy-operator.sh`). The chassis pods need the openvswitch and geneve
+# modules on the host, which `WITH_OVN_KERNEL_MODULES=true` loads at deploy time.
+e2e-ovn-overlay:
+	@kubectl version --request-timeout=2s >/dev/null 2>&1 || { echo 'kubectl is not configured or no cluster is reachable' >&2; exit 1; }
+	@[ "$$(kubectl get nodes -l '!node-role.kubernetes.io/control-plane' -o name | wc -l | tr -d ' ')" -ge 2 ] || { echo 'the overlay suite needs a multi-node cluster; run KIND_CONFIG=hack/kind-config-multinode.yaml make deploy-infra first' >&2; exit 1; }
+	chainsaw test --config tests/e2e-ovn-overlay/chainsaw-config.yaml tests/e2e-ovn-overlay/
+
 .PHONY: tempest-test
 # tempest-test runs Tempest API tests against a deployed OpenStack service.
 # Requires a running kind cluster with the service deployed.

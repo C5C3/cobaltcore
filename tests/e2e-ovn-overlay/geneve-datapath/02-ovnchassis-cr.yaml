@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNChassis fixture for the geneve-datapath E2E test.
+#
+# The selector matches the label step 1 puts on both workers of
+# hack/kind-config-multinode.yaml, so the two DaemonSets land on both of them
+# and status.nodes carries two entries with two system-ids. That is the whole
+# point of the suite: one chassis per node is what makes a Geneve tunnel
+# between them exist.
+#
+# No bridge mappings and no gateway: there is no provider network on a kind
+# node to map, and a gateway chassis without an uplink would announce
+# connectivity it does not have. The overlay this suite builds is
+# east-west only. spec.image is left unset so the operator resolves the same
+# OVN image the control plane runs.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: ovn-overlay
+  namespace: openstack
+spec:
+  centralRef:
+    name: ovn-overlay-central
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
