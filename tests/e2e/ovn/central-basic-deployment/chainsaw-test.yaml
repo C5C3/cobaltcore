@@ -1,0 +1,505 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a happy-path OVNCentral deployment.
+# Validates the full reconciliation cycle of the control plane:
+#   - all 7 sub-conditions progress to True with their expected reasons, and
+#     the aggregate Ready=True with reason AllReady
+#   - both Raft databases run three ready members, each behind a headless
+#     Service that publishes not-ready addresses (a member joins through peers
+#     it can resolve, so a Service that waited for readiness would deadlock the
+#     cluster) and behind one NodePort Service per member
+#   - northd, the three cert-manager Certificates and their Secrets, the
+#     scripts ConfigMap, the backup CronJob and its volume all exist
+#   - status.<db>.internalDbAddress names three ssl: members, and every
+#     status.<db>.dbAddress entry names the node its member actually runs on
+#   - both Raft clusters really formed: each member's built-in _Server database
+#     reports the schema as clustered and connected, and exactly one of the
+#     three reports itself the leader
+#
+# The last point is what separates this suite from the envtest coverage under
+# operators/ovn/internal/controller/: a StatefulSet with three ready pods says
+# nothing about whether ovsdb-server negotiated a Raft cluster over TLS.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-central-basic-deployment
+spec:
+  namespace: openstack
+  timeouts:
+    # Two three-member Raft clusters plus three issued certificates take longer
+    # than the 120s the shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the OVNCentral CR and the probe script ────────────────
+  - try:
+    - apply:
+        file: 00-ovncentral-cr.yaml
+    - apply:
+        file: 01-probe-script.yaml
+  # ── Step 2: Assert all sub-conditions, Ready, and the status addresses ──
+  - try:
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: ovn-basic
+            namespace: openstack
+          status:
+            (conditions[?type == 'TLSReady']):
+            - status: "True"
+              reason: CertificatesIssued
+            (conditions[?type == 'NorthboundReady']):
+            - status: "True"
+              reason: StatefulSetReady
+            (conditions[?type == 'SouthboundReady']):
+            - status: "True"
+              reason: StatefulSetReady
+            (conditions[?type == 'EndpointsReady']):
+            - status: "True"
+              reason: EndpointsPublished
+            (conditions[?type == 'NorthdReady']):
+            - status: "True"
+              reason: DeploymentReady
+            # No spec.relay, so the relay step reports the absence rather than
+            # a pending rollout.
+            (conditions[?type == 'RelayReady']):
+            - status: "True"
+              reason: RelayNotRequired
+            (conditions[?type == 'BackupReady']):
+            - status: "True"
+              reason: BackupScheduled
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            # The Secret an OVNChassis mounts. It is the field that connects
+            # the two kinds, so a rename would break every chassis silently.
+            clientSecretName: ovn-basic-client
+            northbound:
+              readyReplicas: 3
+            southbound:
+              readyReplicas: 3
+    catch:
+    - script:
+        content: |
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral ovn-basic -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== OVN control-plane pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert the projected children ──────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: ovn-basic-nb
+            namespace: openstack
+          spec:
+            # Ordinal-by-ordinal start would deadlock a fresh cluster: member 0
+            # waits for the quorum the later members are what forms.
+            podManagementPolicy: Parallel
+            replicas: 3
+          status:
+            readyReplicas: 3
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: ovn-basic-sb
+            namespace: openstack
+          spec:
+            podManagementPolicy: Parallel
+            replicas: 3
+          status:
+            readyReplicas: 3
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-basic-nb
+            namespace: openstack
+          spec:
+            clusterIP: None
+            publishNotReadyAddresses: true
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-basic-sb
+            namespace: openstack
+          spec:
+            clusterIP: None
+            publishNotReadyAddresses: true
+    # One NodePort Service per Raft member, assigned in ordinal order from the
+    # per-database base. A Raft client addresses the members individually, so a
+    # single load-balanced port would send half the writes to a follower.
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-basic-nb-0
+            namespace: openstack
+          spec:
+            type: NodePort
+            (ports[?name == 'client'].port | [0]): 6641
+            (ports[?name == 'client'].nodePort | [0]): 30641
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-basic-nb-1
+            namespace: openstack
+          spec:
+            type: NodePort
+            (ports[?name == 'client'].nodePort | [0]): 30642
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-basic-nb-2
+            namespace: openstack
+          spec:
+            type: NodePort
+            (ports[?name == 'client'].nodePort | [0]): 30643
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-basic-sb-0
+            namespace: openstack
+          spec:
+            type: NodePort
+            (ports[?name == 'client'].port | [0]): 6642
+            (ports[?name == 'client'].nodePort | [0]): 30651
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-basic-sb-1
+            namespace: openstack
+          spec:
+            type: NodePort
+            (ports[?name == 'client'].nodePort | [0]): 30652
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-basic-sb-2
+            namespace: openstack
+          spec:
+            type: NodePort
+            (ports[?name == 'client'].nodePort | [0]): 30653
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ovn-basic-northd
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ovn-basic-central-scripts
+            namespace: openstack
+    catch:
+    - script:
+        content: |
+          echo "=== OVNCentral children ==="
+          kubectl get statefulset,svc,deploy,cm -n $NAMESPACE -l app.kubernetes.io/instance=ovn-basic -o wide 2>&1 || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral ovn-basic -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert the certificates and the backup ─────────────────────
+  # Every OVN connection is authenticated, and the issuer has to be the
+  # cluster-scoped one: a namespaced Issuer cannot reach the chassis
+  # namespaces that mount the same CA.
+  - try:
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: ovn-basic-nb-server
+            namespace: openstack
+          spec:
+            secretName: ovn-basic-nb-server
+            issuerRef:
+              name: openstack-ovn-ca-issuer
+              kind: ClusterIssuer
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: ovn-basic-sb-server
+            namespace: openstack
+          spec:
+            secretName: ovn-basic-sb-server
+            issuerRef:
+              name: openstack-ovn-ca-issuer
+              kind: ClusterIssuer
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: ovn-basic-client
+            namespace: openstack
+          spec:
+            secretName: ovn-basic-client
+            issuerRef:
+              name: openstack-ovn-ca-issuer
+              kind: ClusterIssuer
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ovn-basic-nb-server
+            namespace: openstack
+          type: kubernetes.io/tls
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ovn-basic-sb-server
+            namespace: openstack
+          type: kubernetes.io/tls
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ovn-basic-client
+            namespace: openstack
+          type: kubernetes.io/tls
+    # The CR carries no spec.backup, so the CronJob runs on the operator's own
+    # resolved schedule and is not suspended.
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: ovn-basic-backup
+            namespace: openstack
+          spec:
+            schedule: "0 2 * * *"
+            suspend: false
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: ovn-basic-backup
+            namespace: openstack
+    catch:
+    - script:
+        content: |
+          echo "=== Certificates ==="
+          kubectl get certificate -n $NAMESPACE -o wide 2>&1 || true
+          kubectl describe certificate -n $NAMESPACE -l app.kubernetes.io/instance=ovn-basic 2>&1 || true
+          echo "=== ClusterIssuer ==="
+          kubectl get clusterissuer openstack-ovn-ca-issuer -o yaml 2>&1 || true
+          echo "=== Backup ==="
+          kubectl get cronjob,pvc -n $NAMESPACE 2>&1 | grep ovn-basic || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 5: Assert the published addresses ─────────────────────────────
+  # The internal list is what every in-cluster client dials, and the node-facing
+  # one what an OVNChassis on a node without cluster networking dials. Both are
+  # IP literals in ordinal order, so a list that names fewer members than the
+  # database has, or an entry pointing at a node the member does not run on,
+  # leaves a client addressing something that cannot serve it.
+  - try:
+    - script:
+        content: |
+          set -eu
+          for db in northbound southbound; do
+            case "${db}" in
+              northbound) port=6641 ;;
+              southbound) port=6642 ;;
+            esac
+            list="$(kubectl get ovncentral ovn-basic -n "$NAMESPACE" \
+              -o "jsonpath={.status.${db}.internalDbAddress}")"
+            count=0
+            for addr in $(echo "${list}" | tr ',' ' '); do
+              if ! echo "${addr}" | grep -Eq "^ssl:[0-9.]+:${port}\$"; then
+                echo "FAIL: ${db}.internalDbAddress entry ${addr} is not ssl:<ip>:${port} (list: ${list})"
+                exit 1
+              fi
+              count=$((count + 1))
+            done
+            if [ "${count}" -ne 3 ]; then
+              echo "FAIL: ${db}.internalDbAddress names ${count} members, want 3 (list: ${list})"
+              exit 1
+            fi
+            echo "OK: ${db}.internalDbAddress names three ssl: members: ${list}"
+          done
+    - script:
+        content: |
+          set -eu
+          for db in northbound southbound; do
+            case "${db}" in
+              northbound) suffix=nb; base=30641 ;;
+              southbound) suffix=sb; base=30651 ;;
+            esac
+            list="$(kubectl get ovncentral ovn-basic -n "$NAMESPACE" \
+              -o "jsonpath={.status.${db}.dbAddress}")"
+            i=0
+            while [ "${i}" -lt 3 ]; do
+              entry="$(echo "${list}" | cut -d, -f$((i + 1)))"
+              ip="$(echo "${entry}" | cut -d: -f2)"
+              port="$(echo "${entry}" | cut -d: -f3)"
+              hostip="$(kubectl get pod "ovn-basic-${suffix}-${i}" -n "$NAMESPACE" \
+                -o jsonpath='{.status.hostIP}')"
+              if [ "${ip}" != "${hostip}" ]; then
+                echo "FAIL: ${db}.dbAddress entry ${i} names IP '${ip}', but pod ovn-basic-${suffix}-${i} runs on ${hostip} (list: ${list})"
+                exit 1
+              fi
+              want=$((base + i))
+              if [ "${port}" != "${want}" ]; then
+                echo "FAIL: ${db}.dbAddress entry ${i} names port '${port}', want ${want} (list: ${list})"
+                exit 1
+              fi
+              i=$((i + 1))
+            done
+            echo "OK: ${db}.dbAddress names every member on its own node IP and port: ${list}"
+          done
+    catch:
+    - script:
+        content: |
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral ovn-basic -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Member pods and their nodes ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-basic -o wide 2>&1 || true
+          echo "=== Per-member Services ==="
+          kubectl get svc -n $NAMESPACE -l app.kubernetes.io/instance=ovn-basic -o wide 2>&1 || true
+  # ── Step 6: Assert both Raft clusters formed over TLS ──────────────────
+  # The probe runs the OVN client tools inside the OVN image, with the client
+  # certificate the OVNCentral published. It reads its verdict from the pod log
+  # after a terminal phase rather than from an attached stream: `kubectl run -i`
+  # carries only what the container writes after the attach is established, so a
+  # probe that reaches its sentinel first would leave the captured output empty.
+  # That costs --rm, and the trap removes the pod instead.
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          POD=ovn-basic-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          # The image comes from the running StatefulSet, so no fixture in this
+          # suite has to spell the OVN tag the operator resolved.
+          IMG="$(kubectl get sts ovn-basic-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          NB="$(kubectl get ovncentral ovn-basic -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          SB="$(kubectl get ovncentral ovn-basic -n "$NAMESPACE" \
+            -o jsonpath='{.status.southbound.internalDbAddress}')"
+          test -n "$NB"
+          test -n "$SB"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-basic-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-basic-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "ovn-basic-probe",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh"],
+                  "env": [
+                    {"name": "NB_ADDRESSES", "value": "${NB}"},
+                    {"name": "SB_ADDRESSES", "value": "${SB}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          # Poll for a terminal phase rather than for Succeeded alone: a probe
+          # that fails its assertion ends in Failed, and waiting only for
+          # Succeeded would burn the step timeout and throw away the log that
+          # says why. The sentinels below, not the phase, are the verdict.
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'NB-RAFT-OK'
+          echo "${OUT}" | grep -q 'SB-RAFT-OK'
+          echo "OK: both Raft clusters report three clustered members and one leader"
+    catch:
+    - script:
+        content: |
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral ovn-basic -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Probe pod ==="
+          kubectl describe pod ovn-basic-probe -n $NAMESPACE 2>&1 || true
+          kubectl logs -n $NAMESPACE ovn-basic-probe --tail=200 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== OVN control-plane pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

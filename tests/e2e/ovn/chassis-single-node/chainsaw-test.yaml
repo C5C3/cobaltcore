@@ -1,0 +1,353 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for an OVNChassis on the one node of the kind cluster.
+# Validates what only a real node can answer:
+#   - the two DaemonSets land on the selected node and both run a ready pod,
+#     which means the privileged host-prepare init container loaded the
+#     datapath modules and created the host run directories
+#   - no container restarted, so neither ovsdb-server nor ovs-vswitchd nor
+#     ovn-controller crash-looped its way to readiness
+#   - all 5 sub-conditions progress to True with their expected reasons, and
+#     the aggregate Ready=True with reason AllReady
+#   - status.nodes carries the node with the UUID system-id the chassis
+#     deletion Job would later address
+#   - ovn-controller really registered: the Southbound database holds one
+#     Chassis row for the node and one Geneve tunnel endpoint for it
+#
+# spec.concurrent is false because the chassis pods run with hostNetwork and
+# own /run/openvswitch and /run/ovn on the node. hack/kind-config.yaml declares
+# a single node, so a second suite rendering an OVNChassis or a
+# NeutronMetadataAgent at the same time would contend with this one over the
+# same host paths.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-chassis-single-node
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # The control plane, the two DaemonSets and the chassis registration in
+    # sequence take longer than the 120s the shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Label the node the chassis selects ─────────────────────────
+  # The suite labels the node itself rather than relying on the cluster
+  # bring-up, so it runs against any kind cluster the CI job hands it. The
+  # step cleanup takes the label off again, which is what keeps a later suite
+  # from finding a node advertising a chassis role nothing serves.
+  - try:
+    - script:
+        content: |
+          set -eu
+          NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          kubectl label node "$NODE" openstack.c5c3.io/chassis=true --overwrite
+          echo "OK: labelled node $NODE with openstack.c5c3.io/chassis=true"
+    cleanup:
+    - script:
+        content: |
+          set -eu
+          for node in $(kubectl get nodes -l openstack.c5c3.io/chassis=true -o name); do
+            kubectl label "$node" openstack.c5c3.io/chassis- || true
+          done
+          echo "OK: removed openstack.c5c3.io/chassis from every node"
+  # ── Step 2: Bring up the control plane the chassis attaches to ─────────
+  - try:
+    - apply:
+        file: 01-ovncentral-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: ovn-chassis-central
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            clientSecretName: ovn-chassis-central-client
+    catch:
+    - script:
+        content: |
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral ovn-chassis-central -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Control-plane pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-chassis-central -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Apply the OVNChassis and assert its conditions ─────────────
+  - try:
+    - apply:
+        file: 02-ovnchassis-cr.yaml
+    - apply:
+        file: 03-probe-script.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNChassis
+          metadata:
+            name: ovn-chassis
+            namespace: openstack
+          status:
+            (conditions[?type == 'CentralReady']):
+            - status: "True"
+              reason: CentralResolved
+            (conditions[?type == 'NodesReady']):
+            - status: "True"
+              reason: NodesRendered
+            (conditions[?type == 'OVSReady']):
+            - status: "True"
+              reason: DaemonSetReady
+            (conditions[?type == 'ControllerReady']):
+            - status: "True"
+              reason: DaemonSetReady
+            # No node is leaving and none is being evacuated, so the
+            # maintenance step has no Job to run.
+            (conditions[?type == 'MaintenanceReady']):
+            - status: "True"
+              reason: MaintenanceIdle
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            desiredNumberScheduled: 1
+            numberReady: 1
+    catch:
+    - script:
+        content: |
+          echo "=== OVNChassis CR status ==="
+          kubectl get ovnchassis ovn-chassis -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== DaemonSets ==="
+          kubectl describe ds -n $NAMESPACE -l app.kubernetes.io/instance=ovn-chassis 2>&1 || true
+          echo "=== Chassis pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-chassis -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== Operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Node labels ==="
+          kubectl get nodes --show-labels 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert the per-node registration record ────────────────────
+  # status.nodes is what the chassis-deletion Job addresses, so a node without
+  # a UUID system-id here is a chassis registration nothing could ever remove.
+  - try:
+    - script:
+        content: |
+          set -eu
+          NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          COUNT="$(kubectl get ovnchassis ovn-chassis -n "$NAMESPACE" \
+            -o jsonpath='{.status.nodes[*].name}' | wc -w | tr -d ' ')"
+          if [ "${COUNT}" -ne 1 ]; then
+            echo "FAIL: status.nodes carries ${COUNT} entries, want 1"
+            kubectl get ovnchassis ovn-chassis -n "$NAMESPACE" -o jsonpath='{.status.nodes}'
+            exit 1
+          fi
+          NAME="$(kubectl get ovnchassis ovn-chassis -n "$NAMESPACE" \
+            -o jsonpath='{.status.nodes[0].name}')"
+          if [ "${NAME}" != "${NODE}" ]; then
+            echo "FAIL: status.nodes[0].name is '${NAME}', want the labelled node ${NODE}"
+            exit 1
+          fi
+          SYSTEM_ID="$(kubectl get ovnchassis ovn-chassis -n "$NAMESPACE" \
+            -o jsonpath='{.status.nodes[0].systemID}')"
+          if ! echo "${SYSTEM_ID}" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+            echo "FAIL: status.nodes[0].systemID is '${SYSTEM_ID}', want a UUID"
+            exit 1
+          fi
+          echo "OK: ${NODE} registered with system-id ${SYSTEM_ID}"
+    catch:
+    - script:
+        content: |
+          echo "=== OVNChassis CR status ==="
+          kubectl get ovnchassis ovn-chassis -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Nodes ConfigMap ==="
+          kubectl get cm -n $NAMESPACE -l app.kubernetes.io/instance=ovn-chassis -o yaml 2>&1 || true
+  # ── Step 5: Assert both DaemonSets run a ready, unrestarted pod ────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: ovn-chassis-ovs
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                hostNetwork: true
+          status:
+            desiredNumberScheduled: 1
+            numberReady: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: ovn-chassis-ovn-controller
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                hostNetwork: true
+          status:
+            desiredNumberScheduled: 1
+            numberReady: 1
+    # A ready pod says nothing about how it got there. ovsdb-server,
+    # ovs-vswitchd and ovn-controller each wait on the daemon before them, and
+    # a container that exited while waiting would restart its way to readiness
+    # and leave the datapath programming behind by however long the backoff
+    # took.
+    - script:
+        content: |
+          set -eu
+          PODS="$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=ovn-chassis -o name)"
+          if [ -z "${PODS}" ]; then
+            echo "FAIL: no pod carries app.kubernetes.io/instance=ovn-chassis"
+            exit 1
+          fi
+          STATUS=0
+          for pod in ${PODS}; do
+            RESTARTS="$(kubectl get "${pod}" -n "$NAMESPACE" \
+              -o jsonpath='{.status.containerStatuses[*].restartCount}')"
+            if [ -z "${RESTARTS}" ]; then
+              echo "FAIL: ${pod} reports no container statuses"
+              STATUS=1
+              continue
+            fi
+            CLEAN=0
+            for count in ${RESTARTS}; do
+              if [ "${count}" -ne 0 ]; then
+                CLEAN=1
+              fi
+            done
+            if [ "${CLEAN}" -ne 0 ]; then
+              echo "FAIL: ${pod} restarted a container, restart counts: ${RESTARTS}"
+              STATUS=1
+            else
+              echo "OK: ${pod} restart counts: ${RESTARTS}"
+            fi
+          done
+          exit "${STATUS}"
+    catch:
+    - script:
+        content: |
+          echo "=== DaemonSets ==="
+          kubectl describe ds -n $NAMESPACE -l app.kubernetes.io/instance=ovn-chassis 2>&1 || true
+          echo "=== Chassis pods ==="
+          kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-chassis -o wide 2>&1 || true
+          echo "=== Chassis pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-chassis -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 6: Assert the chassis registered in the Southbound database ───
+  # The probe runs the OVN client tools inside the OVN image, with the client
+  # certificate the OVNCentral published. It reads its verdict from the pod log
+  # after a terminal phase rather than from an attached stream: `kubectl run -i`
+  # carries only what the container writes after the attach is established, so a
+  # probe that reaches its sentinel first would leave the captured output empty.
+  # That costs --rm, and the trap removes the pod instead.
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          POD=ovn-chassis-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          # The image comes from the running StatefulSet, so no fixture in this
+          # suite has to spell the OVN tag the operator resolved.
+          IMG="$(kubectl get sts ovn-chassis-central-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          SB="$(kubectl get ovncentral ovn-chassis-central -n "$NAMESPACE" \
+            -o jsonpath='{.status.southbound.internalDbAddress}')"
+          test -n "$SB"
+          NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-chassis-central-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-chassis-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "ovn-chassis-probe",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh"],
+                  "env": [
+                    {"name": "SB_ADDRESS", "value": "${SB}"},
+                    {"name": "NODE_NAME", "value": "${NODE}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          # Poll for a terminal phase rather than for Succeeded alone: a probe
+          # that fails its assertion ends in Failed, and waiting only for
+          # Succeeded would burn the step timeout and throw away the log that
+          # says why. The sentinels below, not the phase, are the verdict.
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'CHASSIS-OK'
+          echo "${OUT}" | grep -q 'ENCAP-OK'
+          echo "OK: the node is registered as a chassis with a geneve tunnel endpoint"
+    catch:
+    - script:
+        content: |
+          echo "=== OVNChassis CR status ==="
+          kubectl get ovnchassis ovn-chassis -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Probe pod ==="
+          kubectl describe pod ovn-chassis-probe -n $NAMESPACE 2>&1 || true
+          kubectl logs -n $NAMESPACE ovn-chassis-probe --tail=200 2>&1 || true
+          echo "=== DaemonSets ==="
+          kubectl describe ds -n $NAMESPACE -l app.kubernetes.io/instance=ovn-chassis 2>&1 || true
+          echo "=== Chassis pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-chassis -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=80 2>&1 || true
+          done
+          echo "=== Operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

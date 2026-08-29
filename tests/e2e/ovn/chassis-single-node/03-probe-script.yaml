@@ -1,0 +1,92 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The script the Southbound client probe of the last step runs inside the OVN
+# image.
+#
+# It lives in a ConfigMap rather than in the `kubectl run --overrides` payload
+# so it stays a reviewable, shellcheck-able shell script instead of a
+# JSON-escaped one-liner. The pod mounts it at /probe and the client
+# certificate the OVNCentral published at /certs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ovn-chassis-probe-script
+  namespace: openstack
+data:
+  probe.sh: |
+    #!/bin/bash
+    # Reports whether ovn-controller registered the node as a chassis in the
+    # Southbound database. Two questions, both answered over TLS with the
+    # client certificate: the Chassis row carrying the node's hostname, and the
+    # Geneve tunnel endpoint that row announces.
+    #
+    # SB_ADDRESS and NODE_NAME arrive as environment variables.
+    set -u
+
+    # The client keypair and the CA the database authenticates peers against.
+    readonly CERT=(-p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt)
+
+    # Only a connection-level failure is retried. A TLS failure reports a
+    # certificate, an SSL routine or a protocol error instead, and retrying it
+    # would burn the budget on a misconfiguration that cannot resolve itself.
+    readonly RETRYABLE='Connection refused|Connection timed out|Network is unreachable|No route to host|Host is unreachable|Name or service not known|timeout exceeded'
+
+    readonly ATTEMPTS=30
+    readonly INTERVAL=5
+
+    # find_one <label> <needle> <ovn-sbctl arguments...>
+    #
+    # Runs the find until exactly one output row contains the needle. The row
+    # count is what carries the assertion, so the column order ovn-sbctl picks
+    # does not matter.
+    find_one() {
+      local label="$1" needle="$2"
+      shift 2
+      local attempt=0 out rc rows
+
+      while [ "${attempt}" -lt "${ATTEMPTS}" ]; do
+        attempt=$((attempt + 1))
+        out="$(ovn-sbctl --db="${SB_ADDRESS}" "${CERT[@]}" --timeout=10 \
+          --format=csv --no-headings "$@" 2>&1)"
+        rc=$?
+        if [ "${rc}" -ne 0 ]; then
+          if grep -Eq "${RETRYABLE}" <<< "${out}"; then
+            echo "retry ${attempt}/${ATTEMPTS}: southbound database not reachable yet: ${out}"
+            sleep "${INTERVAL}"
+            continue
+          fi
+          echo "FAIL: ovn-sbctl ${label} exited ${rc}: ${out}"
+          exit 1
+        fi
+
+        rows="$(grep -cF -- "${needle}" <<< "${out}")"
+        if [ "${rows}" -gt 1 ]; then
+          echo "FAIL: ${label} matched ${rows} rows, want exactly 1: ${out}"
+          exit 1
+        fi
+        if [ "${rows}" -eq 1 ]; then
+          echo "${label}: ${out}"
+          return 0
+        fi
+        # ovn-controller writes the row once it has read the node's system-id
+        # from the local database, which trails the pod becoming ready.
+        echo "retry ${attempt}/${ATTEMPTS}: ${label} matched no row yet"
+        sleep "${INTERVAL}"
+      done
+
+      echo "FAIL: ${label} never matched exactly one row"
+      exit 1
+    }
+
+    find_one "chassis row for ${NODE_NAME}" "${NODE_NAME}" \
+      --columns=hostname,name find Chassis "hostname=${NODE_NAME}"
+    echo "CHASSIS-OK"
+
+    # The tunnel endpoint the chassis announces. Geneve is what carries OVN's
+    # variable-length logical metadata; a chassis that registered without one
+    # can be seen by the control plane but cannot reach another chassis.
+    find_one "geneve encap row" geneve \
+      --columns=type,ip find Encap type=geneve
+    echo "ENCAP-OK"

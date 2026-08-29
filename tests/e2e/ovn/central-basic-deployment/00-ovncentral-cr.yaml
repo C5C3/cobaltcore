@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNCentral fixture for the central-basic-deployment E2E test.
+#
+# Both databases keep the default three Raft members, which is what makes the
+# suite a cluster test rather than a single-pod one: the probe in step 5 asks
+# each member's _Server database whether it joined and which of them is the
+# leader.
+#
+# externallyReachable publishes every member on its own node port
+# (30641..30643 for the Northbound, 30651..30653 for the Southbound). It is what
+# fills status.<db>.dbAddress, and step 4 checks each entry against the node the
+# matching pod runs on.
+#
+# spec.image is left unset so the operator resolves its own default OVN image;
+# no fixture in this suite spells the OVN tag.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-basic
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    externallyReachable: true
+  southbound:
+    externallyReachable: true
+  northd:
+    deployment:
+      replicas: 1
