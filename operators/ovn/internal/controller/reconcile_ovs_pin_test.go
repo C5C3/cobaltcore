@@ -93,12 +93,8 @@ spec:
     spec:
       containers:
       - command:
-        - ovsdb-server
-        - /run/openvswitch/conf.db
-        - --remote=punix:/run/openvswitch/db.sock
-        - --remote=db:Open_vSwitch,Open_vSwitch,manager_options
-        - --pidfile=/run/openvswitch/ovsdb-server.pid
-        - --unixctl=/run/openvswitch/ovsdb-server.ctl
+        - /bin/bash
+        - /etc/ovn-chassis/bin/run-ovsdb.sh
         image: ghcr.io/c5c3/ovn:26.03.2
         lifecycle:
           preStop:
@@ -138,6 +134,8 @@ spec:
           name: log-ovs
         - mountPath: /tmp
           name: tmp
+        - mountPath: /etc/ovn-chassis/bin
+          name: scripts
       - command:
         - /bin/bash
         - /etc/ovn-chassis/bin/run-vswitchd.sh
@@ -172,6 +170,7 @@ spec:
             - ALL
           privileged: false
           readOnlyRootFilesystem: true
+          runAsGroup: 42424
           runAsNonRoot: false
           runAsUser: 0
           seccompProfile:
@@ -270,12 +269,8 @@ spec:
     spec:
       containers:
       - command:
-        - ovsdb-server
-        - /run/openvswitch/conf.db
-        - --remote=punix:/run/openvswitch/db.sock
-        - --remote=db:Open_vSwitch,Open_vSwitch,manager_options
-        - --pidfile=/run/openvswitch/ovsdb-server.pid
-        - --unixctl=/run/openvswitch/ovsdb-server.ctl
+        - /bin/bash
+        - /etc/ovn-chassis/bin/run-ovsdb.sh
         image: registry.example.com/ovn@sha256:1111111111111111111111111111111111111111111111111111111111111111
         lifecycle:
           preStop:
@@ -315,6 +310,8 @@ spec:
           name: log-ovs
         - mountPath: /tmp
           name: tmp
+        - mountPath: /etc/ovn-chassis/bin
+          name: scripts
       - command:
         - /bin/bash
         - /etc/ovn-chassis/bin/run-vswitchd.sh
@@ -355,6 +352,7 @@ spec:
             - ALL
           privileged: false
           readOnlyRootFilesystem: true
+          runAsGroup: 42424
           runAsNonRoot: false
           runAsUser: 0
           seccompProfile:

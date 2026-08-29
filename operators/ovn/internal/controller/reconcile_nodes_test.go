@@ -476,7 +476,7 @@ func TestReconcileNodes_ConfigMapApplyErrorIsNodesError(t *testing.T) {
 // The scripts ConfigMap carries every script the chassis containers and the
 // maintenance Jobs run. A missing key is a container that cannot start or a Job
 // that cannot deregister a chassis.
-func TestReconcileNodes_ScriptsConfigMapCarriesFiveKeys(t *testing.T) {
+func TestReconcileNodes_ScriptsConfigMapCarriesSixKeys(t *testing.T) {
 	g := NewGomegaWithT(t)
 	ctx := context.Background()
 	cr := testOVNChassis()
@@ -487,14 +487,91 @@ func TestReconcileNodes_ScriptsConfigMapCarriesFiveKeys(t *testing.T) {
 
 	var cm corev1.ConfigMap
 	g.Expect(r.Get(ctx, chassisKey(testOVNChassisName+"-chassis-scripts"), &cm)).To(Succeed())
-	g.Expect(cm.Data).To(HaveLen(5))
+	g.Expect(cm.Data).To(HaveLen(6))
 	for _, key := range []string{
-		hostPrepareScriptKey, applyNodeScriptKey, runVswitchdScriptKey,
-		evacuateScriptKey, chassisDelScriptKey,
+		hostPrepareScriptKey, applyNodeScriptKey, runOVSDBScriptKey,
+		runVswitchdScriptKey, evacuateScriptKey, chassisDelScriptKey,
 	} {
 		g.Expect(cm.Data).To(HaveKey(key))
 		g.Expect(cm.Data[key]).To(HavePrefix("#!/bin/bash\n"), key)
 	}
+}
+
+// ovsdb-server runs as the unprivileged openstack user and locks
+// .conf.db.~lock~ before it opens the database beside it. ovsdb-tool creates
+// that lock file as root, so host-prepare.sh has to hand over both files: with
+// only the database chowned, every ovsdb-server start fails with "failed to
+// lock lockfile" and the chassis DaemonSet never reports a ready pod.
+func TestReconcileNodes_HostPrepareChownsTheDatabaseAndItsLockFile(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := testOVNChassis()
+	r := newTestOVNChassisReconciler(t, cr, chassisNode(testNodeA, selectedLabels()))
+
+	_, _, err := r.reconcileNodes(ctx, r.Client, cr)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cm corev1.ConfigMap
+	g.Expect(r.Get(ctx, chassisKey(testOVNChassisName+"-chassis-scripts"), &cm)).To(Succeed())
+	script := cm.Data[hostPrepareScriptKey]
+	g.Expect(script).To(ContainSubstring("chown 42424:42424 /run/openvswitch/conf.db"))
+	g.Expect(script).To(ContainSubstring("chown 42424:42424 /run/openvswitch/.conf.db.~lock~"))
+	// Guarded, because ovsdb-tool writes the lock file only when it creates or
+	// converts the database. An unguarded chown would abort the script under
+	// "set -eu" on every node whose database is already current.
+	g.Expect(script).To(ContainSubstring("if [ -e /run/openvswitch/.conf.db.~lock~ ]; then"))
+}
+
+// The datapath daemons run as uid 0 with every capability dropped but the ones
+// they are named for, so CAP_DAC_OVERRIDE is gone and uid 0 is an ordinary user
+// against the file mode. Everything they need under /run/openvswitch belongs to
+// the unprivileged user ovsdb-server runs as, so the run directories must be
+// group-writable and ovsdb-server must create its socket group-writable too.
+// Without either, ovs-vswitchd cannot connect to the database or write its pid
+// file, and the wait loop in run-vswitchd.sh spins forever without logging.
+func TestReconcileNodes_ScriptsShareTheRunDirsWithTheDatapathGroup(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := testOVNChassis()
+	r := newTestOVNChassisReconciler(t, cr, chassisNode(testNodeA, selectedLabels()))
+
+	_, _, err := r.reconcileNodes(ctx, r.Client, cr)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cm corev1.ConfigMap
+	g.Expect(r.Get(ctx, chassisKey(testOVNChassisName+"-chassis-scripts"), &cm)).To(Succeed())
+	g.Expect(cm.Data[hostPrepareScriptKey]).To(
+		ContainSubstring("install -d -m 0775 -o 42424 -g 42424 /run/openvswitch /run/ovn"),
+		"a 0755 run directory lets no other user create a pid file or a socket in it")
+	g.Expect(cm.Data[runOVSDBScriptKey]).To(ContainSubstring("umask 002"),
+		"the default umask clears the group write bit ovsdb-server puts on db.sock")
+	g.Expect(cm.Data[runOVSDBScriptKey]).To(ContainSubstring("exec ovsdb-server /run/openvswitch/conf.db"))
+}
+
+// spec.bridgeMappings is optional, and the overwhelming majority of chassis
+// carry none. ovs-vsctl rejects an empty value outright, so setting the key
+// unconditionally fails apply-node.sh under set -eu and the ovn-controller
+// container never starts on any node of the CR.
+func TestReconcileNodes_ApplyNodeRemovesEmptyBridgeMappingsRatherThanSettingThem(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	cr := testOVNChassis()
+	r := newTestOVNChassisReconciler(t, cr, chassisNode(testNodeA, selectedLabels()))
+
+	_, _, err := r.reconcileNodes(ctx, r.Client, cr)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	var cm corev1.ConfigMap
+	g.Expect(r.Get(ctx, chassisKey(testOVNChassisName+"-chassis-scripts"), &cm)).To(Succeed())
+	script := cm.Data[applyNodeScriptKey]
+	// The unguarded form is a continuation line of the unconditional set.
+	g.Expect(script).NotTo(ContainSubstring("\\\n  external_ids:ovn-bridge-mappings="),
+		"the key must never be set unguarded; ovs-vsctl rejects an empty value")
+	g.Expect(script).To(ContainSubstring(
+		`if [ -n "${BRIDGE_MAPPINGS}" ]; then ovs-vsctl --timeout=15 set open . external_ids:ovn-bridge-mappings="${BRIDGE_MAPPINGS}"`))
+	g.Expect(script).To(ContainSubstring(
+		"else ovs-vsctl --timeout=15 remove open . external_ids ovn-bridge-mappings; fi"),
+		"an emptied mapping list must clear the key on the node rather than leave it behind")
 }
 
 // configHash records what a node has applied, not what was rendered for it. A

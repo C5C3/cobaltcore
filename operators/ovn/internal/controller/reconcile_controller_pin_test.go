@@ -140,6 +140,7 @@ spec:
             - ALL
           privileged: false
           readOnlyRootFilesystem: true
+          runAsGroup: 42424
           runAsNonRoot: false
           runAsUser: 0
           seccompProfile:
@@ -317,6 +318,7 @@ spec:
             - ALL
           privileged: false
           readOnlyRootFilesystem: true
+          runAsGroup: 42424
           runAsNonRoot: false
           runAsUser: 0
           seccompProfile:

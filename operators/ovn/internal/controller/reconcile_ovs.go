@@ -171,17 +171,11 @@ func buildOVSDaemonSet(cr *ovnv1alpha1.OVNChassis) *appsv1.DaemonSet {
 		{
 			Name:  "ovsdb-server",
 			Image: image,
-			Command: []string{
-				"ovsdb-server",
-				path.Join(ovsRunDir, "conf.db"),
-				"--remote=punix:" + ovsDBSocket,
-				// The manager_options remote is what lets ovs-vsctl set-manager
-				// work on this node; without it the database serves the socket
-				// above and nothing else.
-				"--remote=db:Open_vSwitch,Open_vSwitch,manager_options",
-				"--pidfile=" + path.Join(ovsRunDir, "ovsdb-server.pid"),
-				"--unixctl=" + ovsdbCtlSocket,
-			},
+			// The daemon is behind a script so that its umask is set before it
+			// creates the socket the two datapath containers connect to. The
+			// script carries the flags, including the manager_options remote that
+			// lets ovs-vsctl set-manager work on this node.
+			Command: []string{"/bin/bash", path.Join(chassisScriptDir, runOVSDBScriptKey)},
 			// The probe asks the database the same question every client asks
 			// first, so a pod counts as ready once the socket answers rather than
 			// once the process exists.
@@ -207,6 +201,7 @@ func buildOVSDaemonSet(cr *ovnv1alpha1.OVNChassis) *appsv1.DaemonSet {
 				{Name: runOVSVolumeName, MountPath: ovsRunDir},
 				{Name: logOVSVolumeName, MountPath: ovsLogDir},
 				{Name: tmpVolumeName, MountPath: "/tmp"},
+				{Name: scriptsVolumeName, MountPath: chassisScriptDir},
 			},
 		},
 		{
@@ -357,15 +352,22 @@ func chassisResources(spec *ovnv1alpha1.OVNChassisContainerSpec) corev1.Resource
 
 // rootCapabilitySecurityContext is the posture of a container that programs the
 // node's datapath: the Restricted profile with the named capabilities added, run
-// as uid 0.
+// as uid 0 in the group that owns the Open vSwitch run directories.
 //
 // The capabilities alone are not enough for either daemon. Both open the netlink
 // families and the device nodes the kernel restricts to root, so RunAsNonRoot is
 // spelled out as false rather than left unset, which keeps the container from
 // being rejected by a cluster that defaults it the other way.
+//
+// The group is what gets them to the local database. Dropping ALL takes
+// CAP_DAC_OVERRIDE with it, so uid 0 here is an ordinary user as far as file
+// permissions go, and every socket and directory under ovsRunDir belongs to the
+// unprivileged user ovsdb-server runs as. Sharing that group is what the two
+// daemons need rather than the capability that would bypass the check.
 func rootCapabilitySecurityContext(caps ...corev1.Capability) *corev1.SecurityContext {
 	sc := deployment.CapabilitySecurityContext(caps...)
 	sc.RunAsUser = ptr.To(int64(0))
+	sc.RunAsGroup = ptr.To(deployment.OpenStackUID)
 	sc.RunAsNonRoot = ptr.To(false)
 	return sc
 }

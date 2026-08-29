@@ -590,7 +590,7 @@ func TestIntegrationOVNChassis_ProjectsDaemonSetsAndReachesReady(t *testing.T) {
 	scripts := &corev1.ConfigMap{}
 	g.Expect(c.Get(ctx, client.ObjectKey{Namespace: ns, Name: chassisScriptsName(chassis)}, scripts)).
 		To(Succeed(), "the chassis scripts ConfigMap should exist")
-	g.Expect(scripts.Data).To(HaveLen(5))
+	g.Expect(scripts.Data).To(HaveLen(6))
 
 	// Both DaemonSets are projected while nothing is selected, in the pipeline's
 	// own order: ovn-controller writes its chassis record into the local Open
