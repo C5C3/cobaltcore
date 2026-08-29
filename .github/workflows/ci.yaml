@@ -980,7 +980,16 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     runs-on: self-hosted
-    timeout-minutes: 45
+    # 120 minutes: the 45 the job needed before the OVN build was added, plus
+    # the 60 the build-ovn job of .github/workflows/build-images.yaml budgets
+    # for an uncached compile of Open vSwitch and OVN from source, plus slack.
+    # The cache does not shorten the first run of a PR: this job writes the
+    # scope e2e-ovn, which nothing on the default branch populates (build-ovn
+    # writes ovn-<platform-pair> from a different builder and build-args), and
+    # Actions caches are isolated per PR ref. Under the previous 60 the job was
+    # killed before the Tempest images were built, and every E2E job gates on
+    # its success, so the PR would have shipped with no E2E coverage at all.
+    timeout-minutes: 120
     permissions:
       contents: read
       packages: write
@@ -1077,6 +1086,23 @@ jobs:
             echo "::endgroup::"
           done <<<"$BUILD_SERVICE_IMAGES"
 
+      # The OVN daemon image carries no OpenStack release: its version is
+      # pinned in images/ovn/Dockerfile and resolved by
+      # hack/ci-resolve-ovn-version.sh, so the loop above never builds it.
+      # OVN_VERSION goes to $GITHUB_ENV because the push step below and the
+      # consumer jobs address the image by that tag and the workflow must not
+      # carry a second copy of the pin.
+      - name: Build OVN image
+        run: |
+          OVN_VERSION="$(hack/ci-resolve-ovn-version.sh)"
+          echo "::group::Building ovn:${OVN_VERSION}"
+          OVN_IMAGE="${IMAGE_PREFIX}/ovn:${OVN_VERSION}" \
+            DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-ovn" \
+            DOCKER_BUILD_CACHE_TO="type=gha,mode=max,scope=e2e-ovn" \
+            hack/ci-build-ovn-image.sh
+          echo "::endgroup::"
+          echo "OVN_VERSION=${OVN_VERSION}" >> "$GITHUB_ENV"
+
       # Build the Tempest images for the releases the map marked as built.
       - name: Build Tempest images
         run: |
@@ -1143,6 +1169,7 @@ jobs:
           for release in $BUILD_TEMPEST_RELEASES; do
             push_image "${IMAGE_PREFIX}/tempest:${release}"
           done
+          push_image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
 
   # End-to-end operator tests using kind cluster and Chainsaw.
   # Loads pre-built images from the build-e2e-images artifact, deploys via Helm,

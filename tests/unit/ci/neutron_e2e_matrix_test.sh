@@ -148,6 +148,25 @@ test_e2e_leg_installs_the_ovn_crds() {
     "kubectl apply -f operators/ovn/helm/ovn-operator/crds/"
 }
 
+test_build_e2e_images_builds_the_neutron_images() {
+  echo "Test: build-e2e-images reaches the neutron images on every run"
+
+  # The tempest neutron legs and the e2e-chaos network leg pull
+  # neutron-operator:dev and neutron:<release>, and their triggers are
+  # independent of an operators/neutron change. Both are keys
+  # hack/ci-resolve-e2e-images.sh derives from the tree — the operator image
+  # from operators/neutron/go.mod, the service images from the neutron entries
+  # of releases/*/source-refs.yaml — so the job hands those legs a reference
+  # whether or not this pull request touched the operator: the run-scoped tag
+  # when it built the image, the digest main published when it did not.
+  assert_file_contains "the job resolves its images through the shared script" \
+    "$CI_YAML" "hack/ci-resolve-e2e-images.sh"
+  assert_eq "the neutron operator is one of the tree-derived image keys" "yes" \
+    "$([ -f "$PROJECT_ROOT/operators/neutron/go.mod" ] && echo yes || echo no)"
+  assert_not_empty "neutron ships a service image per release" \
+    "$(OPERATOR=neutron "$PROJECT_ROOT/hack/ci-service-image-releases.sh")"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -158,6 +177,7 @@ test_helm_filter_covers_the_neutron_chart
 test_helm_validate_renders_the_neutron_chart
 test_scenario_five_accepts_the_neutron_refusal
 test_e2e_leg_installs_the_ovn_crds
+test_build_e2e_images_builds_the_neutron_images
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

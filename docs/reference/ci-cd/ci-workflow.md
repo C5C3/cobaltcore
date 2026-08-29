@@ -710,8 +710,9 @@ guard.
 | 6 | Build federation proxy image | Builds `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, only when `BUILD_PROXY` is true |
 | 7 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS` |
 | 8 | Build service images | Builds `<IMAGE_PREFIX>/<svc>:<release>` for each pair in `BUILD_SERVICE_IMAGES`; passes `GITHUB_TOKEN` so the source clones from `github.com` are authenticated |
-| 9 | Build Tempest images | Builds `<IMAGE_PREFIX>/tempest:<release>` for each release in `BUILD_TEMPEST_RELEASES` |
-| 10 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push` |
+| 9 | Build OVN image | Builds `<IMAGE_PREFIX>/ovn:<version>` from `images/ovn/Dockerfile`, with the version resolved by `hack/ci-resolve-ovn-version.sh` |
+| 10 | Build Tempest images | Builds `<IMAGE_PREFIX>/tempest:<release>` for each release in `BUILD_TEMPEST_RELEASES` |
+| 11 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push` |
 
 `hack/ci-resolve-e2e-images.sh` derives the image set from the tree: an operator image
 per `operators/<op>/` with a `go.mod`, a service image per (operator, release) pair in
@@ -722,6 +723,12 @@ its published tag (`<op>-operator:latest`, `<svc>:<release>`, `tempest:<release>
 `keystone-federation-proxy:latest`), which the run pulls instead of rebuilding.
 A source that has never been published, the state of a new operator before its first
 merge, is built instead of failing the run.
+
+The OVN daemon image is the one image outside that set: it carries no OpenStack
+release and no `go.mod`, so nothing derives it from the tree. Its own step builds it
+on every run of this job and pushes it under the run-scoped tag, and the consumers
+reach it through `load-e2e-images`, which falls back to that tag for a reference the
+map does not carry.
 
 Only the service and Tempest images build `FROM python-base` and `venv-builder`, so a
 run that reuses both skips the base-image step. A reused image is never tagged in the
@@ -735,7 +742,13 @@ GHCR push/pull because the 355 MB single-blob artifact intermittently timed out 
 the 5-minute `actions/download-artifact` window. Layer-level pull retries plus the
 GHCR CDN dramatically reduce the failure rate.
 
-Timeout: 45 minutes.
+Timeout: 120 minutes. The job needed 45 before the OVN build joined it, and an
+uncached OVN build compiles Open vSwitch and OVN from source, which is what the
+`build-ovn` job of `build-images.yaml` budgets 60 minutes for. The GHA cache
+does not shorten the first run of a pull request: this job writes the scope
+`e2e-ovn`, which nothing on the default branch populates, and Actions caches are
+isolated per PR ref. Every E2E job gates on `build-e2e-images` succeeding, so a
+job killed at its timeout costs the pull request its whole E2E coverage.
 
 ### e2e-operator
 
@@ -1467,7 +1480,7 @@ hack/ci-build-ovn-image.sh
 OVN_IMAGE=ghcr.io/c5c3/ovn:$(hack/ci-resolve-ovn-version.sh) hack/ci-build-ovn-image.sh
 ```
 
-Issue #905 wires the script into the `build-e2e-images` job.
+The `build-e2e-images` job wires the script into its `Build OVN image` step.
 
 ### hack/ci-run-tempest.sh
 

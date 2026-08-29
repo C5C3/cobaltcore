@@ -4,14 +4,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the ovn operator reaches the e2e-operators matrix and the helm filter
-# in .github/workflows/ci.yaml.
+# in .github/workflows/ci.yaml, and that build-e2e-images builds both of its
+# images.
 #
-# Both signals fail silently when they are missing. ALL_OPERATORS is the sole
+# Every signal here fails silently when it is missing. ALL_OPERATORS is the sole
 # source of the e2e-operators matrix, so an operator absent from it never
 # produces a leg and its Chainsaw suites under tests/e2e/ovn/ are lint-checked
 # and never applied to a cluster. The helm filter is the sole gate on
 # helm-validate, so a PR touching only operators/ovn/helm/ renders, lints and
-# unit-tests nothing.
+# unit-tests nothing. build-e2e-images is the sole producer of the run-tagged
+# images the E2E jobs pull, so an image it skips fails those jobs an hour into
+# the run.
 #
 # Usage: bash tests/unit/ci/ovn_e2e_matrix_test.sh
 
@@ -42,6 +45,17 @@ filter_block() {
   awk -v key="            $1:" '
     $0 == key { in_block = 1; next }
     in_block && /^            [a-z0-9_]+:$/ { exit }
+    in_block { print }
+  ' "$CI_YAML"
+}
+
+# Echo the body of the top-level ci.yaml job <name>. The block ends at the next
+# 2-space line that is not part of the body — the next job key, or the comment
+# header introducing it.
+job_block() {
+  awk -v key="  $1:" '
+    $0 == key { in_block = 1; next }
+    in_block && /^  [#a-z0-9-]/ { exit }
     in_block { print }
   ' "$CI_YAML"
 }
@@ -116,6 +130,45 @@ test_helm_validate_renders_the_ovn_chart() {
   assert_eq "the lint, template and unittest loops iterate the chart glob" "3" "$loops"
 }
 
+test_build_e2e_images_builds_the_ovn_images() {
+  echo "Test: build-e2e-images reaches both ovn images on every run"
+
+  # The ovn-operator image and the OVN daemon image are consumed by jobs whose
+  # triggers have nothing to do with an operators/ovn change, so neither may
+  # sit behind a copy of another job's `if:`.
+  local job
+  job=$(job_block build-e2e-images)
+
+  # The operator image is one of the keys hack/ci-resolve-e2e-images.sh derives
+  # from the tree — every operators/<op>/ with a go.mod gets a map entry, built
+  # when its own sources changed and reused from main's digest otherwise — so a
+  # consumer always has an ovn-operator:dev to pull.
+  assert_contains "the job resolves its images through the shared script" "$job" \
+    "hack/ci-resolve-e2e-images.sh"
+  assert_eq "the ovn operator is one of the tree-derived image keys" "yes" \
+    "$([ -f "$PROJECT_ROOT/operators/ovn/go.mod" ] && echo yes || echo no)"
+
+  # The daemon image carries no OpenStack release and no go.mod, so nothing
+  # derives it and the map never names it. It keeps a build step of its own,
+  # which runs on every run of this job; load-e2e-images falls back to the
+  # run-scoped tag for a reference the map does not carry.
+  assert_contains "the daemon image has its own build step" "$job" \
+    "name: Build OVN image"
+  assert_contains "the step resolves the pin instead of repeating it" "$job" \
+    "hack/ci-resolve-ovn-version.sh"
+  assert_contains "the step builds through the shared script" "$job" \
+    "hack/ci-build-ovn-image.sh"
+  assert_contains "the daemon image is pushed under the run tag" "$job" \
+    'push_image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"'
+
+  # images/ovn/Dockerfile holds the pin. A copy in the workflow would keep
+  # pointing at the old tag the next time the Dockerfile is bumped.
+  local pin
+  pin=$("$PROJECT_ROOT/hack/ci-resolve-ovn-version.sh")
+  assert_eq "the workflow never spells the pinned version" "0" \
+    "$(grep -cF "$pin" "$CI_YAML")"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -124,6 +177,7 @@ test_ovn_filter_is_wired
 test_ovn_change_produces_an_e2e_leg
 test_helm_filter_covers_the_ovn_chart
 test_helm_validate_renders_the_ovn_chart
+test_build_e2e_images_builds_the_ovn_images
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
