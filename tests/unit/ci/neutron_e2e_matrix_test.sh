@@ -14,9 +14,11 @@
 # lints and unit-tests nothing. The Scenario-5 skip and the ovn-operator deploy
 # are the two places where the neutron leg departs from the shared shape:
 # dropping either turns a green pipeline red for a reason that has nothing to
-# do with the change under test. The last test covers the e2e-chaos network
-# leg, which the e2e-operators matrix never produces and whose test_dirs are
-# enumerated by hand because chainsaw's regex filters are no-ops.
+# do with the change under test. The last two tests cover jobs the
+# e2e-operators matrix never produces: the e2e-chaos network leg, whose
+# test_dirs are enumerated by hand because chainsaw's regex filters are no-ops,
+# and the tempest neutron legs, which run the neutron-tempest-plugin against a
+# Neutron the job has to bring up itself.
 #
 # Usage: bash tests/unit/ci/neutron_e2e_matrix_test.sh
 
@@ -79,6 +81,17 @@ e2e_operator_step() {
 # both carry a "Load E2E images" and a "Setup E2E infrastructure" step.
 e2e_chaos_step() {
   job_block e2e-chaos | awk -v key="      - name: $1" '
+    $0 == key { in_block = 1; next }
+    in_block && /^      [-#]/ { exit }
+    in_block { print }
+  '
+}
+
+# Echo the body of the named step of the tempest job. Same shape as
+# e2e_operator_step above; scoping matters because tempest, e2e-operator and
+# e2e-chaos all carry a "Load E2E images" step.
+tempest_step() {
+  job_block tempest | awk -v key="      - name: $1" '
     $0 == key { in_block = 1; next }
     in_block && /^      [-#]/ { exit }
     in_block { print }
@@ -343,6 +356,98 @@ test_chaos_network_leg_runs_the_neutron_suites() {
        echo yes || echo no)"
 }
 
+test_tempest_neutron_leg_is_wired() {
+  echo "Test: the tempest neutron leg brings up the stack its suites need"
+
+  # Each assertion below guards a silent failure on the two neutron legs. The
+  # four image refs are what the run tag makes available: an entry missing here
+  # leaves the leg pulling the published tag instead of this PR's build, or
+  # waiting on a pull that never resolves. The two operator deploys are what
+  # reconciles the OVNCentral and the Neutron; without them the CRs sit without
+  # status until the wait times out. The catalog Job registers the network
+  # service and its endpoints in Keystone, which the Neutron reconciler
+  # authenticates against. NEUTRON_K8S_NAME is the sole gate on the 9696
+  # port-forward in ci-run-tempest.sh: unset, every network test fails to reach
+  # the API.
+  local load
+  load=$(tempest_step "Load E2E images")
+
+  assert_contains "the leg pulls the neutron-operator image" "$load" \
+    "matrix.service == 'neutron' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX)"
+  assert_contains "the leg pulls the neutron service image" "$load" \
+    "matrix.service == 'neutron' && format('{0}/neutron:{1}', env.IMAGE_PREFIX, matrix.release)"
+  assert_contains "the leg pulls the ovn-operator image" "$load" \
+    "matrix.service == 'neutron' && format('{0}/ovn-operator:dev', env.IMAGE_PREFIX)"
+  assert_contains "the leg pulls the OVN daemon image at the resolved pin" "$load" \
+    "matrix.service == 'neutron' && format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION)"
+
+  # The catalog Job runs in-cluster, so the tempest image has to be on the node.
+  local kind_load
+  kind_load=$(tempest_step "Load neutron images into kind")
+  assert_contains "the load runs on the neutron leg alone" "$kind_load" \
+    "if: matrix.service == 'neutron'"
+  assert_contains "the tempest image reaches the node for the catalog Job" \
+    "$kind_load" \
+    "kind load docker-image \${{ env.IMAGE_PREFIX }}/tempest:\${{ matrix.release }}"
+
+  local ovn_deploy neutron_deploy
+  ovn_deploy=$(tempest_step "Deploy ovn operator")
+  neutron_deploy=$(tempest_step "Deploy neutron operator")
+
+  assert_not_empty "the ovn-operator is deployed" "$ovn_deploy"
+  assert_contains "the ovn deploy runs on the neutron leg alone" "$ovn_deploy" \
+    "if: matrix.service == 'neutron'"
+  assert_contains "it deploys the ovn operator" "$ovn_deploy" "OPERATOR: ovn"
+  assert_contains "it lands in its own Namespace" "$ovn_deploy" \
+    "NAMESPACE: ovn-system"
+
+  assert_not_empty "the neutron-operator is deployed" "$neutron_deploy"
+  assert_contains "the neutron deploy runs on the neutron leg alone" \
+    "$neutron_deploy" "if: matrix.service == 'neutron'"
+  assert_contains "it deploys the neutron operator" "$neutron_deploy" \
+    "OPERATOR: neutron"
+  assert_contains "it lands in its own Namespace" "$neutron_deploy" \
+    "NAMESPACE: neutron-system"
+
+  local catalog ovncentral neutron_cr
+  catalog=$(tempest_step "Bootstrap network catalog")
+  assert_contains "the catalog Job is applied" "$catalog" \
+    "01-catalog-setup-job.yaml"
+  assert_contains "the leg waits for it to complete" "$catalog" \
+    "job/neutron-tempest-catalog-setup"
+
+  ovncentral=$(tempest_step "Deploy OVNCentral for Tempest")
+  assert_contains "the messaging Secret is applied" "$ovncentral" \
+    "02-messaging-secret.yaml"
+  assert_contains "the OVNCentral is applied" "$ovncentral" \
+    "03-ovncentral-cr.yaml"
+  assert_contains "the leg waits for it to go Ready" "$ovncentral" \
+    "kubectl wait \"ovncentral/ovn-neutron-tempest-\${slug}\""
+
+  neutron_cr=$(tempest_step "Deploy Neutron CR for Tempest")
+  assert_contains "the Neutron CR is applied" "$neutron_cr" "04-neutron-cr.yaml"
+  assert_contains "the leg waits on the CR the matrix names" "$neutron_cr" \
+    "kubectl wait neutron/\${{ matrix.neutron-cr-name }}"
+  assert_contains "the db-sync fits inside the wait" "$neutron_cr" \
+    "--timeout=600s"
+
+  local run_step
+  run_step=$(tempest_step "Run Tempest API tests")
+  assert_contains "the runner learns the Neutron Service name" "$run_step" \
+    "NEUTRON_K8S_NAME: \${{ matrix.neutron-cr-name }}"
+
+  # The catalog Job authenticates against Keystone and creates the network
+  # service, but the Neutron that consumes it needs an operator watching by
+  # then, so both deploys come first.
+  local job neutron_at catalog_at
+  job=$(job_block tempest)
+  neutron_at=$(printf '%s\n' "$job" | grep -nF "name: Deploy neutron operator" | head -1 | cut -d: -f1)
+  catalog_at=$(printf '%s\n' "$job" | grep -nF "name: Bootstrap network catalog" | head -1 | cut -d: -f1)
+  assert_eq "the operator deploys run before the catalog bootstrap" "yes" \
+    "$([ -n "$neutron_at" ] && [ -n "$catalog_at" ] &&
+       [ "$neutron_at" -lt "$catalog_at" ] && echo yes || echo no)"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -356,6 +461,7 @@ test_e2e_leg_deploys_the_ovn_operator
 test_e2e_leg_loads_the_ovn_images
 test_build_e2e_images_builds_the_neutron_images
 test_chaos_network_leg_runs_the_neutron_suites
+test_tempest_neutron_leg_is_wired
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

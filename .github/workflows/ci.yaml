@@ -2683,6 +2683,11 @@ jobs:
           version: ${{ env.KIND_VERSION }}
           config: hack/kind-config.yaml
           cluster_name: ${{ env.KIND_CLUSTER }}
+      # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag out
+      # of this workflow. The step runs on every leg because only the neutron
+      # one reads OVN_VERSION, and a grep costs nothing on the others.
+      - name: Resolve OVN version
+        run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
       # -- Keystone --------------------------------------------------------
       # GH-310: Pull pre-built images from GHCR (run-scoped tag).
       - name: Load E2E images
@@ -2693,6 +2698,13 @@ jobs:
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}
             ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }}
+            # The neutron leg brings up an OVNCentral next to its Neutron, so it
+            # pulls both operator images and both service images. The other legs
+            # render blank lines here, which the action skips.
+            ${{ matrix.service == 'neutron' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.service == 'neutron' && format('{0}/neutron:{1}', env.IMAGE_PREFIX, matrix.release) || '' }}
+            ${{ matrix.service == 'neutron' && format('{0}/ovn-operator:dev', env.IMAGE_PREFIX) || '' }}
+            ${{ matrix.service == 'neutron' && format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION) || '' }}
       - name: Load images into kind
         run: |
           kind load docker-image ${{ env.IMAGE_PREFIX }}/keystone-operator:dev --name ${{ env.KIND_CLUSTER }}
@@ -2741,6 +2753,20 @@ jobs:
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican-operator:dev --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/barbican:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
           kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+      # -- Neutron ---------------------------------------------------------
+      # kubelet only skips the registry for a tag already on the node, so the
+      # OVN daemon image the OVNCentral rolls out is loaded next to the two
+      # operator images and the neutron service image. The tempest image is
+      # kind-loaded here for the same reason as on the glance and barbican legs:
+      # the catalog-setup Job runs it in-cluster.
+      - name: Load neutron images into kind
+        if: matrix.service == 'neutron'
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/neutron:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name ${{ env.KIND_CLUSTER }}
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/tempest:${{ matrix.release }} --name ${{ env.KIND_CLUSTER }}
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
@@ -2773,6 +2799,24 @@ jobs:
           IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/barbican-operator
           NAMESPACE: barbican-system
           BARBICAN_SECRET_STORE_GRANTS: openstack=openbao-instance-provisioner
+      # A Neutron never reaches Ready without a live OVNCentral: its controller
+      # reads the published Northbound and Southbound addresses off that CR
+      # before it renders ml2_conf.ini. The neutron leg therefore deploys both
+      # operators, each into its own namespace.
+      - name: Deploy ovn operator
+        if: matrix.service == 'neutron'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ovn
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
+          NAMESPACE: ovn-system
+      - name: Deploy neutron operator
+        if: matrix.service == 'neutron'
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: neutron
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/neutron-operator
+          NAMESPACE: neutron-system
       # Every service deploys the Keystone CR from its own config-dir (the
       # glance and barbican legs run against their own
       # keystone-<service>-tempest identity CR).
@@ -2819,6 +2863,38 @@ jobs:
             --for=condition=Ready --timeout=300s
           kubectl wait barbican/${{ matrix.barbican-cr-name }} -n openstack \
             --for=condition=Ready --timeout=300s
+      # The neutron leg bootstraps the network catalog (Keystone service +
+      # endpoints via a setup Job) before its OVNCentral and Neutron CRs: the
+      # Neutron reconciler authenticates against that catalog entry.
+      - name: Bootstrap network catalog
+        if: matrix.service == 'neutron'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/01-catalog-setup-job.yaml
+          kubectl wait --for=condition=complete job/neutron-tempest-catalog-setup -n openstack \
+            --timeout=300s
+      # The OVNCentral goes Ready first: Neutron renders no ml2_conf.ini without
+      # the published database addresses and the client identity, so waiting on
+      # it separately keeps an OVN-side failure from surfacing as an opaque
+      # Neutron timeout. Its name arrives as the ovn-cr-name matrix key, like
+      # every other CR this job waits on, so no copy of it lives here; the
+      # generator and the fixture that carry it are held in agreement by
+      # tests/unit/ci/neutron_e2e_matrix_test.sh.
+      - name: Deploy OVNCentral for Tempest
+        if: matrix.service == 'neutron'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/02-messaging-secret.yaml
+          kubectl apply -f ${{ matrix.config-dir }}/03-ovncentral-cr.yaml
+          kubectl wait ovncentral/${{ matrix.ovn-cr-name }} -n openstack \
+            --for=condition=Ready --timeout=300s
+      # 600s rather than the 300s the other legs use: the Neutron brings up an
+      # api Deployment, an rpc-worker Deployment and a db-sync Job, and the
+      # db-sync alone takes minutes against the alembic head.
+      - name: Deploy Neutron CR for Tempest
+        if: matrix.service == 'neutron'
+        run: |
+          kubectl apply -f ${{ matrix.config-dir }}/04-neutron-cr.yaml
+          kubectl wait neutron/${{ matrix.neutron-cr-name }} -n openstack \
+            --for=condition=Ready --timeout=600s
       # Use shared Tempest wrapper script.
       - name: Run Tempest API tests
         run: hack/ci-run-tempest.sh
@@ -2834,6 +2910,15 @@ jobs:
           # glance legs (matrix key absent → ""), which disables the 9311
           # port-forward in ci-run-tempest.sh.
           BARBICAN_K8S_NAME: ${{ matrix.barbican-cr-name }}
+          # The Neutron Service carries the CR name. Empty for the keystone,
+          # glance and barbican legs (matrix key absent → ""), which disables
+          # the 9696 port-forward in ci-run-tempest.sh.
+          NEUTRON_K8S_NAME: ${{ matrix.neutron-cr-name }}
+          # stestr worker count. Set by hack/ci-generate-tempest-matrix.sh for
+          # the neutron legs (2), whose node also hosts OVN and Neutron; empty
+          # for the other legs (matrix key absent → ""), which leaves
+          # ci-run-tempest.sh on its default of 4.
+          TEMPEST_CONCURRENCY: ${{ matrix.tempest-concurrency }}
       - name: Upload Tempest results
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

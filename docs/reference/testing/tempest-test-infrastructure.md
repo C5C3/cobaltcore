@@ -27,10 +27,12 @@ and `build-images.yaml` dynamically discovers releases for the Tempest image pip
 | `tests/tempest/glance-2026-1/` | Glance 2026.1 Tempest configuration (same file set; identity CR `keystone-glance-tempest-2026-1`) |
 | `tests/tempest/barbican-2025-2/` | Barbican 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-barbican-tempest-2025-2`, and three extra fixtures the CI job applies (`01-catalog-setup-job.yaml`, the key-manager catalog bootstrap Job; `02-barbican-cr.yaml`, the Barbican CR; `03-barbicansecretstore-cr.yaml`, the default BarbicanSecretStore the job waits on before the Barbican CR) |
 | `tests/tempest/barbican-2026-1/` | Barbican 2026.1 Tempest configuration (same file set; identity CR `keystone-barbican-tempest-2026-1`) |
+| `tests/tempest/neutron-2025-2/` | Neutron 2025.2 Tempest configuration: the `tempest.conf` / `include-tests.txt` / `exclude-tests.txt` triplet, a `00-keystone-cr.yaml` identity CR named `keystone-neutron-tempest-2025-2`, and four extra fixtures the CI job applies (`01-catalog-setup-job.yaml`, the network catalog bootstrap Job; `02-messaging-secret.yaml`, the RabbitMQ credentials the Neutron mounts; `03-ovncentral-cr.yaml`, the OVNCentral the job waits on before the Neutron CR; `04-neutron-cr.yaml`, the Neutron CR) |
+| `tests/tempest/neutron-2026-1/` | Neutron 2026.1 Tempest configuration (same file set; identity CR `keystone-neutron-tempest-2026-1`) |
 | `tests/container-images/verify_tempest.sh` | Image verification script (PASS/FAIL counters) |
 | `hack/run-tempest.sh` | Local orchestration script for running Tempest against a kind cluster |
 | `hack/ci-run-tempest.sh` | CI-specific Tempest wrapper with port-forwarding and config generation |
-| `hack/ci-generate-tempest-matrix.sh` | Generates the `tempest` job matrix from `releases/*/`, emitting one leg per service (`keystone`, `glance`, `barbican`) per release |
+| `hack/ci-generate-tempest-matrix.sh` | Generates the `tempest` job matrix from `releases/*/`, emitting one leg per service (`keystone`, `glance`, `barbican`, `neutron`) per release |
 | `hack/tempest/extract-failed.py` | Print anchored regex patterns for failed testcases in a JUnit report (used to build the retry include-list) |
 | `hack/tempest/merge-retry-junit.py` | Merge a retry subunit stream into a JUnit report, rewriting resolved failures as flakes |
 | `hack/tempest/run-tests.sh` | Shared in-container runner invoked by both runners; holds the phase + retry + exit-code logic so it stays identical between CI and local runs |
@@ -113,17 +115,19 @@ in three ways: (1) it installs from PyPI instead of mounting a git source tree,
 
 **Stage 1 (`build`)** — extends `venv-builder`:
 
-- Declares `ARG TEMPEST_VERSION`, `ARG BARBICAN_TEMPEST_PLUGIN_VERSION`, and
-  `ARG KEYSTONE_TEMPEST_PLUGIN_VERSION` for build-time version injection
+- Declares `ARG TEMPEST_VERSION`, `ARG BARBICAN_TEMPEST_PLUGIN_VERSION`,
+  `ARG KEYSTONE_TEMPEST_PLUGIN_VERSION`, and
+  `ARG NEUTRON_TEMPEST_PLUGIN_VERSION` for build-time version injection
   (resolved from `test-refs.yaml` by CI)
 - Mounts `upper-constraints.txt` from the release directory via named build context
-- Installs eight packages into the shared virtualenv via `uv pip install --constraint`:
+- Installs these packages into the shared virtualenv via `uv pip install --constraint`:
 
 | Package | Purpose |
 | --- | --- |
 | `tempest` | OpenStack Tempest testing framework |
 | `barbican-tempest-plugin` | Barbican-specific Tempest test plugins; pinned per release (`4.4.0` for 2025.2, `4.5.0` for 2026.1) |
 | `keystone-tempest-plugin` | Keystone-specific Tempest test plugins |
+| `neutron-tempest-plugin` | Neutron-specific Tempest test plugins; pinned per release (`3.0.0` for 2025.2, `3.2.0` for 2026.1). Version 3.1.0 and later need `testtools>=2.8.4`, and 2025.2's `upper-constraints.txt` pins `testtools===2.7.2`, so `3.0.0` is the newest version that resolves there |
 | `python-openstackclient` | `openstack` CLI, used by the full-chain ControlPlane E2E verify Job (`token issue` / `catalog list`); version pinned by `upper-constraints.txt` |
 | `osc-placement` | `openstack` CLI placement plugin, used by the full-chain ControlPlane E2E placement round-trip (`resource class list`); version pinned by `upper-constraints.txt` |
 | `python-subunit` | Subunit test result streaming protocol |
@@ -162,6 +166,7 @@ in three ways: (1) it installs from PyPI instead of mounting a git source tree,
 | `TEMPEST_VERSION` | `46.3.0` | `test-refs.yaml` → `.tempest` |
 | `BARBICAN_TEMPEST_PLUGIN_VERSION` | `4.4.0` | `test-refs.yaml` → `.["barbican-tempest-plugin"]` |
 | `KEYSTONE_TEMPEST_PLUGIN_VERSION` | `0.19.0` | `test-refs.yaml` → `.["keystone-tempest-plugin"]` |
+| `NEUTRON_TEMPEST_PLUGIN_VERSION` | `3.2.0` | `test-refs.yaml` → `.["neutron-tempest-plugin"]` |
 
 ### Local Build
 
@@ -178,12 +183,14 @@ RELEASE=2025.2   # or 2026.1
 TEMPEST_VERSION=$(yq -r '.tempest' releases/${RELEASE}/test-refs.yaml)
 BTP_VERSION=$(yq -r '.["barbican-tempest-plugin"]' releases/${RELEASE}/test-refs.yaml)
 KTP_VERSION=$(yq -r '.["keystone-tempest-plugin"]' releases/${RELEASE}/test-refs.yaml)
+NTP_VERSION=$(yq -r '.["neutron-tempest-plugin"]' releases/${RELEASE}/test-refs.yaml)
 
 docker build images/tempest \
   -t c5c3/tempest:${RELEASE} \
   --build-arg TEMPEST_VERSION=${TEMPEST_VERSION} \
   --build-arg BARBICAN_TEMPEST_PLUGIN_VERSION=${BTP_VERSION} \
   --build-arg KEYSTONE_TEMPEST_PLUGIN_VERSION=${KTP_VERSION} \
+  --build-arg NEUTRON_TEMPEST_PLUGIN_VERSION=${NTP_VERSION} \
   --build-context python-base=docker-image://python-base \
   --build-context venv-builder=docker-image://venv-builder \
   --build-context upper-constraints=releases/${RELEASE}/
@@ -214,7 +221,7 @@ Keystone service:
 | `[identity-feature-enabled]` | `api_v3` | `true` | Enable v3 identity API tests |
 | `[service_available]` | `identity` | `true` | Identity service is deployed |
 | `[service_available]` | `compute` | `false` | Nova is not deployed |
-| `[service_available]` | `network` | `false` | Neutron is not deployed |
+| `[service_available]` | `network` | `false` / `true` | Neutron is deployed on the neutron legs; the keystone, glance and barbican legs set `false` |
 | `[service_available]` | `volume` | `false` | Cinder is not deployed |
 | `[service_available]` | `image` | `false` | Glance is not deployed |
 | `[service_available]` | `object-storage` | `false` | Swift is not deployed |
@@ -238,6 +245,13 @@ For Keystone, two patterns include all identity-related tests:
 | --- | --- |
 | `tempest.api.identity` | Core Tempest identity API tests |
 | `keystone_tempest_plugin.tests` | Keystone-specific plugin tests |
+
+The neutron legs select the core `tempest.api.network` CRUD modules
+(networks, ports, security groups, subnet pools) and the matching
+`neutron_tempest_plugin.api` ones. The router, floating-IP and
+provider-network suites stay out until the devstack has an external
+provider network; `include-tests.txt` records that reason next to the
+patterns it keeps.
 
 #### Scope-split invariant
 
@@ -358,8 +372,8 @@ the plugin pinned in that release's `test-refs.yaml`.
 
 Tempest coverage is keyed per **service × release**. `glance` is the worked
 example: `hack/ci-generate-tempest-matrix.sh` emits a `keystone`, a `glance`,
-and a `barbican` leg for every release, so a new service needs one config
-directory per release, not a single directory. To add another service:
+a `barbican`, and a `neutron` leg for every release, so a new service needs
+one config directory per release, not a single directory. To add another service:
 
 1. Create a `tests/tempest/<service>-<slug>/` directory for each release (e.g.
    `<service>-2025-2` and `<service>-2026-1`), each with `tempest.conf`,
@@ -378,9 +392,10 @@ directory per release, not a single directory. To add another service:
 3. Extend `hack/ci-generate-tempest-matrix.sh` to emit the new `service` leg. If
    the service needs an extra port-forward, thread it through
    `hack/ci-run-tempest.sh` the way glance uses the optional `GLANCE_K8S_NAME`
-   env (9292 forward + `/healthcheck` poll + host mappings) and barbican the
-   optional `BARBICAN_K8S_NAME` (the same three steps on 9311), then add the
-   conditional deploy steps to the `tempest` job in `ci.yaml`, gated on
+   env (9292 forward + `/healthcheck` poll + host mappings), barbican the
+   optional `BARBICAN_K8S_NAME` (the same three steps on 9311) and neutron
+   the optional `NEUTRON_K8S_NAME` (the same three steps on 9696), then add
+   the conditional deploy steps to the `tempest` job in `ci.yaml`, gated on
    `matrix.service == '<service>'`.
 
 The scope-split needs no edit for a new plugin: `phase-2-plugin.txt` is filled
@@ -392,7 +407,8 @@ allow.
 A service tested through core `tempest.api.*` alone needs no image change. One
 that brings its own Tempest plugin adds a build arg and an install line to
 `images/tempest/Dockerfile` plus a version pin to every release's
-`test-refs.yaml`, the way `barbican-tempest-plugin` is wired.
+`test-refs.yaml`, the way `barbican-tempest-plugin` and
+`neutron-tempest-plugin` are wired.
 `hack/run-tempest.sh` (local execution) runs a single keystone leg and accepts
 `SERVICE`, `RELEASE`, and `ADMIN_SECRET` overrides.
 
@@ -418,6 +434,7 @@ bash tests/container-images/verify_tempest.sh [image_name]
 | `test_tempest_version` | `tempest --version` exits 0 with non-empty output | Tempest CLI is installed and functional |
 | `test_keystone_tempest_plugin_importable` | `python3 -c 'import keystone_tempest_plugin'` exits 0 | Plugin is installed in the virtualenv |
 | `test_barbican_tempest_plugin_importable` | `python3 -c 'import barbican_tempest_plugin'` exits 0 | Plugin is installed in the virtualenv |
+| `test_neutron_tempest_plugin_importable` | `python3 -c 'import neutron_tempest_plugin'` exits 0 | Plugin is installed in the virtualenv |
 | `test_subunit2junitxml_available` | `which subunit2junitxml` exits 0 with non-empty path | JUnit XML converter is on PATH |
 | `test_runs_as_openstack_user` | `whoami` outputs `openstack` | Container runs as non-root user |
 | `test_no_build_tools_in_final_image` | `which gcc`, `dpkg -s python3-dev`, `which uv` all fail | Build tools are not in the runtime image |
@@ -503,30 +520,36 @@ Omitting `SERVICE` produces an error message:
 The `tempest` job is a dedicated job that deploys services into a kind
 cluster and runs the OpenStack Tempest test suite. `hack/ci-generate-tempest-matrix.sh`
 fans the matrix out over two dimensions — a `release` and a `service` — so each
-OpenStack release is validated independently for `keystone`, `glance`, and
-`barbican`, each leg with its own Tempest configuration and identity CR (and,
-for glance, an image CR and backend; for barbican, a key-manager CR and its
-secret store).
+OpenStack release is validated independently for `keystone`, `glance`,
+`barbican`, and `neutron`, each leg with its own Tempest configuration and
+identity CR (and, for glance, an image CR and backend; for barbican, a
+key-manager CR and its secret store; for neutron, an OVNCentral and a network
+CR).
 
 **Release matrix:**
 
-The generator scans `releases/*/` and emits one `keystone`, one `glance`, and
-one `barbican` leg per release; each service requires a matching
+The generator scans `releases/*/` and emits one `keystone`, one `glance`, one
+`barbican`, and one `neutron` leg per release; each service requires a matching
 `tests/tempest/<service>-<slug>` directory or the job hard-fails.
 `service-k8s-name` always equals `cr-name` (the Keystone identity CR the job
 waits on and port-forwards on 5000). The glance legs additionally carry
-`glance-cr-name` (the Glance CR the job waits on and port-forwards on 9292) and
+`glance-cr-name` (the Glance CR the job waits on and port-forwards on 9292),
 the barbican legs `barbican-cr-name` (the Barbican CR, waited on and
-port-forwarded on 9311).
+port-forwarded on 9311) and the neutron legs `neutron-cr-name` (the Neutron CR,
+waited on and port-forwarded on 9696) plus `ovn-cr-name` (the OVNCentral the
+Neutron needs Ready before it renders `ml2_conf.ini`, waited on but not
+port-forwarded).
 
-| Service | Release | Config directory | Keystone CR (`cr-name` = `service-k8s-name`) | Glance CR (`glance-cr-name`) | Barbican CR (`barbican-cr-name`) |
-| --- | --- | --- | --- | --- | --- |
-| `keystone` | `2025.2` | `tests/tempest/keystone-2025-2` | `keystone-tempest-2025-2` | — | — |
-| `keystone` | `2026.1` | `tests/tempest/keystone-2026-1` | `keystone-tempest-2026-1` | — | — |
-| `glance` | `2025.2` | `tests/tempest/glance-2025-2` | `keystone-glance-tempest-2025-2` | `glance-tempest-2025-2` | — |
-| `glance` | `2026.1` | `tests/tempest/glance-2026-1` | `keystone-glance-tempest-2026-1` | `glance-tempest-2026-1` | — |
-| `barbican` | `2025.2` | `tests/tempest/barbican-2025-2` | `keystone-barbican-tempest-2025-2` | — | `barbican-tempest-2025-2` |
-| `barbican` | `2026.1` | `tests/tempest/barbican-2026-1` | `keystone-barbican-tempest-2026-1` | — | `barbican-tempest-2026-1` |
+| Service | Release | Config directory | Keystone CR (`cr-name` = `service-k8s-name`) | Glance CR (`glance-cr-name`) | Barbican CR (`barbican-cr-name`) | Neutron CR (`neutron-cr-name`) |
+| --- | --- | --- | --- | --- | --- | --- |
+| `keystone` | `2025.2` | `tests/tempest/keystone-2025-2` | `keystone-tempest-2025-2` | — | — | — |
+| `keystone` | `2026.1` | `tests/tempest/keystone-2026-1` | `keystone-tempest-2026-1` | — | — | — |
+| `glance` | `2025.2` | `tests/tempest/glance-2025-2` | `keystone-glance-tempest-2025-2` | `glance-tempest-2025-2` | — | — |
+| `glance` | `2026.1` | `tests/tempest/glance-2026-1` | `keystone-glance-tempest-2026-1` | `glance-tempest-2026-1` | — | — |
+| `barbican` | `2025.2` | `tests/tempest/barbican-2025-2` | `keystone-barbican-tempest-2025-2` | — | `barbican-tempest-2025-2` | — |
+| `barbican` | `2026.1` | `tests/tempest/barbican-2026-1` | `keystone-barbican-tempest-2026-1` | — | `barbican-tempest-2026-1` | — |
+| `neutron` | `2025.2` | `tests/tempest/neutron-2025-2` | `keystone-neutron-tempest-2025-2` | — | — | `neutron-tempest-2025-2` |
+| `neutron` | `2026.1` | `tests/tempest/neutron-2026-1` | `keystone-neutron-tempest-2026-1` | — | — | `neutron-tempest-2026-1` |
 
 **Step sequence:**
 
@@ -537,12 +560,16 @@ port-forwarded on 9311).
 | Load images into kind | Loads operator and release-specific service images |
 | Deploy Glance operator *(glance leg only)* | `hack/ci-deploy-operator.sh` with `OPERATOR=glance`, `NAMESPACE=glance-system` (before the Keystone CR reconciles) |
 | Deploy Barbican operator *(barbican leg only)* | `hack/ci-deploy-operator.sh` with `OPERATOR=barbican`, `NAMESPACE=barbican-system`, and `BARBICAN_SECRET_STORE_GRANTS=openstack=openbao-instance-provisioner` (the managed store lives in `openstack`, and the operator mints its provisioner token only where the chart granted it a TokenRequest Role — restricted to that one account, because `openstack` also hosts the accounts that read credentials out of OpenBao) |
+| Deploy OVN and Neutron operators *(neutron leg only)* | Two `hack/ci-deploy-operator.sh` runs: `OPERATOR=ovn`, `NAMESPACE=ovn-system` and `OPERATOR=neutron`, `NAMESPACE=neutron-system`. A Neutron never reaches Ready without a live OVNCentral, whose published database addresses its controller reads before it renders `ml2_conf.ini` |
 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml`, waits for `matrix.cr-name` Ready |
 | Bootstrap image catalog *(glance leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits for the `glance-tempest-catalog-setup` Job to complete (registers the image service + endpoints in Keystone that the Glance CR needs to reconcile) |
 | Deploy Glance CR *(glance leg only)* | Applies `matrix.config-dir/02-glance-cr.yaml`, `03-glancebackend-cr.yaml`, and `04-glancebackend2-cr.yaml`, waits for `matrix.glance-cr-name` Ready |
 | Bootstrap key-manager catalog *(barbican leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits for the `barbican-tempest-catalog-setup` Job to complete (registers the key-manager service + endpoints in Keystone that the Barbican CR needs to reconcile, plus the `key-manager:service-admin` role the plugin's quota tests assign via dynamic credentials) |
 | Deploy Barbican CR *(barbican leg only)* | Applies `matrix.config-dir/02-barbican-cr.yaml` and `03-barbicansecretstore-cr.yaml`, waits for `barbicansecretstore/<barbican-cr-name>-store` Ready first, then for `matrix.barbican-cr-name` Ready. Barbican renders no config and never starts without a credential-ready default store, so the separate wait keeps a store-side failure from surfacing as an opaque Barbican timeout |
-| Run Tempest API tests | `hack/ci-run-tempest.sh` with `CONFIG_DIR`, `TEMPEST_IMAGE`, and `SERVICE_K8S_NAME` from matrix; the glance leg also passes `GLANCE_K8S_NAME` and the barbican leg `BARBICAN_K8S_NAME` (each empty on the other legs, which disables the matching 9292 or 9311 port-forward) |
+| Bootstrap network catalog *(neutron leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml`, waits 300 s for the `neutron-tempest-catalog-setup` Job to complete (registers the network service + endpoints in Keystone that the Neutron CR authenticates against) |
+| Deploy OVNCentral *(neutron leg only)* | Applies `matrix.config-dir/02-messaging-secret.yaml` and `03-ovncentral-cr.yaml`, waits 300 s for `ovncentral/<matrix.ovn-cr-name>` Ready. `ovn-cr-name` is emitted by the matrix generator, like every other CR name this job waits on |
+| Deploy Neutron CR *(neutron leg only)* | Applies `matrix.config-dir/04-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready. The longer timeout covers the db-sync Job on top of the api and rpc-worker Deployments |
+| Run Tempest API tests | `hack/ci-run-tempest.sh` with `CONFIG_DIR`, `TEMPEST_IMAGE`, and `SERVICE_K8S_NAME` from matrix; the glance leg also passes `GLANCE_K8S_NAME`, the barbican leg `BARBICAN_K8S_NAME` and the neutron leg `NEUTRON_K8S_NAME` (each empty on the other legs, which disables the matching 9292, 9311 or 9696 port-forward) |
 | Upload Tempest results | Uploads `_output/tempest/` (minus the rendered `tempest.conf`, which carries the substituted admin password) as artifact with 14-day retention |
 
 **CI-specific adaptations** (compared to local execution):
@@ -552,6 +579,7 @@ port-forwarded on 9311).
 | Service endpoint | In-cluster DNS (`<service-k8s-name>.openstack.svc:5000`) | Port-forwarded to `localhost:5000` |
 | Glance endpoint | Not supported (local runs are keystone-only) | When `GLANCE_K8S_NAME` is set (glance legs), additionally forwards `svc/<glance-cr-name>` on 9292, polls its `/healthcheck`, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's image endpoint resolves to the forwarded port |
 | Barbican endpoint | Not supported (local runs are keystone-only) | When `BARBICAN_K8S_NAME` is set (barbican legs), additionally forwards `svc/<barbican-cr-name>` on 9311, polls its `/healthcheck`, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's key-manager endpoint resolves to the forwarded port |
+| Neutron endpoint | Not supported (local runs are keystone-only) | When `NEUTRON_K8S_NAME` is set (neutron legs), additionally forwards `svc/<neutron-cr-name>` on 9696, polls its root path, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's network endpoint resolves to the forwarded port |
 | Credential injection | Environment variable passed to container | `sed` substitution into generated config copy |
 | Base images | Pulled from GHCR (`docker-image://ghcr.io/...`) | Built locally in prior CI steps (no `--build-context` for bases) |
 | Artifact upload | Manual inspection of `_output/` | `actions/upload-artifact` with `tempest-<service>-<release>-results` name |
