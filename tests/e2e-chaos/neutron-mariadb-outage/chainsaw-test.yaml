@@ -1,0 +1,493 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a MariaDB outage under the Neutron API.
+# The partition severs neutron-api <-> MariaDB traffic. It is enforced on the
+# MariaDB (server) side so it catches the ClusterIP-routed connection the API
+# actually uses (see 04-networkchaos.yaml for why a client-side rule would be a
+# no-op). The suite proves the API fails closed on writes while it keeps
+# serving and keeps reporting itself healthy:
+#   - baseline: an authenticated POST /v2.0/networks creates a network
+#   - under partition: GET / stays 200 and a fresh POST FAILS the way a
+#     database outage fails (5xx or a bounded timeout, never a 4xx). A 4xx is
+#     not accepted: the suite exists to prove the DATABASE write fails closed,
+#     and an auth-pipeline regression that turns every write into a 401 would
+#     otherwise read as proof
+#   - under partition: NeutronAPIReady and DeploymentReady stay True. All three
+#     container probes GET the API root, which serves the version document
+#     without a token and without touching the database, so a database outage is
+#     invisible to readiness. That is the contract this suite pins: the pod
+#     stays pooled and answers, and only database-backed requests fail
+#   - after the partition is lifted the failed write is absent from the network
+#     list, and a fresh POST answers 201 again
+#
+# The Neutron API rejects an unauthenticated request, so this suite brings its
+# own Keystone (00-keystone-cr.yaml) and every probe asks it for a
+# project-scoped admin token before touching the Neutron API.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-mariadb-outage
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone CR the probes authenticate against ────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-neutron-outage
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-neutron-outage
+  # ── Step 2: Apply the broker Secret, the OVN control plane and Neutron ───
+  - try:
+    - apply:
+        file: 01-messaging-secret.yaml
+    - apply:
+        file: 02-ovncentral-cr.yaml
+    - apply:
+        file: 03-neutron-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: neutron-db-chaos-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-db-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline neutron-db-chaos --cr-kind=neutron --dep-label=app.kubernetes.io/name=mariadb --dep-ns=openstack
+    - script:
+        content: kubectl get ovncentral neutron-db-chaos-ovn -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+  # ── Step 3: Baseline — an authenticated network creation answers 201 ─────
+  # Runs an in-cluster python client (the neutron image ships python3): it asks
+  # Keystone for a project-scoped admin token and POSTs a network. Connection
+  # errors are retried; an HTTP error fails fast with the body. The WRITE-OK
+  # sentinel is grepped so a swallowed pod exit code still fails.
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          # Every probe in this suite reads its verdict from the pod log, not
+          # from an attached stream. `kubectl run -i` carries only what the
+          # container writes after the attach is established, so a probe that
+          # reaches its sentinel first leaves the captured output holding
+          # nothing but the deletion notice — the sentinel grep then fails on a
+          # run where the assertion itself held. The kubelet writes the
+          # container log to disk as it is produced, so reading it after
+          # termination cannot race. That costs --rm: the pod has to outlive
+          # the run to stay readable, and the trap removes it.
+          POD=neutron-db-outage-baseline-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          # The bootstrap admin password travels as a pod env var, the same way
+          # the c5c3 suites hand credentials to their openstack-client probes.
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/neutron:2025.2 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -c '
+          import json, os, sys, time, urllib.request, urllib.error
+
+          KEYSTONE = "http://keystone-neutron-outage.openstack.svc.cluster.local:5000/v3"
+          NEUTRON = "http://neutron-db-chaos.openstack.svc.cluster.local:9696"
+          NAME = "db-outage-baseline"
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=30):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def do(fn, what, tries=30):
+              err = None
+              for i in range(tries):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          def token():
+              body = json.dumps({"auth": {
+                  "identity": {"methods": ["password"], "password": {"user": {
+                      "name": "admin", "domain": {"id": "default"},
+                      "password": os.environ["OS_PASSWORD"]}}},
+                  "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+              resp = do(lambda: call("POST", KEYSTONE + "/auth/tokens", data=body,
+                                     headers={"Content-Type": "application/json"}), "keystone token")
+              return resp.headers["X-Subject-Token"]
+
+          tok = token()
+          print("obtained a project-scoped admin token")
+
+          body = json.dumps({"network": {"name": NAME}}).encode()
+          resp = do(lambda: call("POST", NEUTRON + "/v2.0/networks", data=body,
+                                 headers={"X-Auth-Token": tok, "Content-Type": "application/json"}),
+                    "create network")
+          created = json.loads(resp.read())
+          if resp.status != 201:
+              fail("POST /v2.0/networks -> %d, want 201" % resp.status)
+          print("created network %s named %r" % (created["network"]["id"], created["network"]["name"]))
+          print("WRITE-OK")
+          '
+          # Poll for a terminal phase instead of waiting for Succeeded alone: a
+          # probe that fails its assertion ends in Failed, and waiting only for
+          # Succeeded would burn the step timeout and then throw away the log
+          # that says why. The sentinel below, not the phase, is the verdict.
+          phase=""
+          for _ in $(seq 1 100); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          # || true so a log read that fails is echoed and grepped like any
+          # other output rather than aborting the step under set -e with the
+          # diagnosis unprinted.
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'WRITE-OK'
+          echo "OK: the baseline network was created through the API"
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline neutron-db-chaos --cr-kind=neutron --dep-label=app.kubernetes.io/name=mariadb --dep-ns=openstack
+    - script:
+        content: kubectl get keystone keystone-neutron-outage -n openstack -o yaml 2>&1 || true
+  # ── Step 4: Inject NetworkChaos to partition MariaDB traffic ─────────────
+  - try:
+    - apply:
+        file: 04-networkchaos.yaml
+    cleanup:
+    - script:
+        content: |
+          set -eu
+          kubectl delete -f 04-networkchaos.yaml --ignore-not-found
+          echo "OK: the MariaDB partition is lifted"
+  # ── Step 5: Assert NetworkChaos injection is active ──────────────────────
+  # Uses `kubectl wait --for=condition=AllInjected` instead of a chainsaw
+  # resource assert because NetworkChaos.status.conditions is a fixed 4-item
+  # list (Selected/AllInjected/AllRecovered/Paused); chainsaw's list-merge
+  # rejects any shorter expected slice with "lengths of slices don't match".
+  # Asserting the negative conditions instead would be worse than verbose:
+  # chaos-mesh writes ALL four False before the selector has run, so a
+  # Selected=False assertion passes on an experiment that never injected
+  # anything.
+  - try:
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          kubectl wait networkchaos/partition-mariadb-neutron -n openstack \
+            --for=condition=AllInjected --timeout=60s
+    catch:
+    - script:
+        content: kubectl get networkchaos -n openstack -o yaml 2>&1 || true
+    - script:
+        content: ../diagnostics.sh chaos neutron-db-chaos --cr-kind=neutron --dep-label=app.kubernetes.io/name=mariadb --dep-ns=openstack --log-label=app.kubernetes.io/instance=neutron-db-chaos
+  # ── Step 6: Assert fail-closed — writes fail while the API stays up ──────
+  # The in-cluster probe proves three things at once while MariaDB is
+  # partitioned: (1) GET / stays 200 (the API keeps serving the version
+  # document), (2) a Keystone token is still obtainable (the partition is
+  # scoped to the database traffic of one Deployment, not to identity traffic),
+  # and (3) POST /v2.0/networks does NOT return a 2xx — neutron fails closed
+  # rather than claiming a network it could not persist. The resource assert
+  # then confirms NeutronAPIReady and DeploymentReady stay True: the container
+  # probes GET the API root, which never touches the database.
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          # Log-based verdict, not an attached stream — see step 3 for why.
+          POD=neutron-db-outage-failclosed-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/neutron:2025.2 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -c '
+          import json, os, sys, time, urllib.request, urllib.error
+
+          KEYSTONE = "http://keystone-neutron-outage.openstack.svc.cluster.local:5000/v3"
+          NEUTRON = "http://neutron-db-chaos.openstack.svc.cluster.local:9696"
+          NAME = "db-outage-failclosed"
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=30):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def do(fn, what, tries=12):
+              err = None
+              for i in range(tries):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          def version_document(what):
+              resp = do(lambda: call("GET", NEUTRON + "/", timeout=15), what)
+              if resp.status != 200:
+                  fail("%s -> %d during partition, want 200" % (what, resp.status))
+
+          # The API must keep serving: GET / renders the version document from
+          # the plugin registry, touches no table, and is the request all three
+          # container probes make. Checked before the write attempt parks a
+          # uWSGI worker.
+          version_document("GET /")
+          print("GET / answered 200 during partition (API up)")
+
+          # Identity traffic is outside the partition, so a token is still
+          # obtainable and a failing write below is about the database alone.
+          body = json.dumps({"auth": {
+              "identity": {"methods": ["password"], "password": {"user": {
+                  "name": "admin", "domain": {"id": "default"},
+                  "password": os.environ["OS_PASSWORD"]}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          tok = do(lambda: call("POST", KEYSTONE + "/auth/tokens", data=body,
+                                headers={"Content-Type": "application/json"}),
+                   "keystone token").headers["X-Subject-Token"]
+          print("keystone token still obtainable during partition")
+
+          # Fail-closed contract: creating a network writes rows through the
+          # partitioned database, so the POST must NOT return a 2xx. A 5xx (the
+          # database failed) or a bounded timeout / connection error is the
+          # expected, correct outcome; a 2xx would mean neutron reported a
+          # network it could not have persisted. A 4xx is NOT accepted: the
+          # suite exists to prove the DATABASE fails closed, and a regression
+          # that breaks the auth pipeline (a bad serviceUser, a misrendered
+          # [keystone_authtoken]) turns every write into a 401 that would
+          # otherwise read as proof. One attempt only, bounded at 90s — a retry
+          # could land a second network under the same name and blur what the
+          # recovery step reads.
+          network = json.dumps({"network": {"name": NAME}}).encode()
+          try:
+              resp = call("POST", NEUTRON + "/v2.0/networks", data=network,
+                          headers={"X-Auth-Token": tok, "Content-Type": "application/json"},
+                          timeout=90)
+              if 200 <= resp.status < 300:
+                  fail("POST /v2.0/networks returned %d during partition -- the write did NOT fail closed" % resp.status)
+              print("POST non-2xx %d during partition (fail-closed OK)" % resp.status)
+          except urllib.error.HTTPError as e:
+              if e.code < 500:
+                  body = e.read().decode("utf-8", "replace")
+                  fail("POST -> HTTP %d during partition: a client error does not prove the database failed closed: %s"
+                       % (e.code, body))
+              print("POST -> HTTP %d during partition (fail-closed OK)" % e.code)
+          except (urllib.error.URLError, ConnectionError, OSError) as e:
+              print("POST -> %r during partition (fail-closed OK)" % e)
+
+          # The failed write must not have taken the API down with it.
+          version_document("GET / after the failed write")
+          print("GET / answered 200 after the failed write (API still up)")
+          print("FAILCLOSED-OK")
+          '
+          phase=""
+          for _ in $(seq 1 100); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'FAILCLOSED-OK'
+          echo "OK: the network write failed closed while the API stayed up"
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-db-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'NeutronAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos neutron-db-chaos --cr-kind=neutron --dep-label=app.kubernetes.io/name=mariadb --dep-ns=openstack --log-label=app.kubernetes.io/instance=neutron-db-chaos
+    - script:
+        content: kubectl get networkchaos -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+  # ── Step 7: Delete NetworkChaos to lift the partition ────────────────────
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: NetworkChaos
+          name: partition-mariadb-neutron
+    catch:
+    - script:
+        content: kubectl get networkchaos -n openstack -o yaml 2>&1 || true
+  # ── Step 8: Assert recovery, and that the failed write stayed failed ─────
+  # The fail-closed step accepts a bounded timeout, but a timeout only proves
+  # the CLIENT gave up: the request could still have been completed by the
+  # worker it was parked in. Listing by name once the database is reachable
+  # again is what separates the two. The fresh POST after it proves the API
+  # recovers autonomously, with no operator intervention and no pod restart.
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          # Log-based verdict, not an attached stream — see step 3 for why.
+          POD=neutron-db-outage-recovery-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/neutron:2025.2 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -c '
+          import json, os, sys, time, urllib.request, urllib.error
+
+          KEYSTONE = "http://keystone-neutron-outage.openstack.svc.cluster.local:5000/v3"
+          NEUTRON = "http://neutron-db-chaos.openstack.svc.cluster.local:9696"
+          FAILED = "db-outage-failclosed"
+          NAME = "db-outage-recovered"
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=30):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def do(fn, what, tries=30):
+              err = None
+              for i in range(tries):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          def settle(fn, what, tries=24):
+              # Like do(), but a 5xx is retried too: the SQLAlchemy pool holds
+              # connections that died in the partition and hands them out once
+              # more before it reconnects, so the first requests after the
+              # partition can still fail on the database. A 4xx stays fatal --
+              # that is a client error, not a pool that has not caught up.
+              err = None
+              for i in range(tries):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      if e.code < 500:
+                          body = e.read().decode("utf-8", "replace")
+                          fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                      err = e
+                      print("retry %d for %s: HTTP %d" % (i, what, e.code))
+                      time.sleep(5)
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          body = json.dumps({"auth": {
+              "identity": {"methods": ["password"], "password": {"user": {
+                  "name": "admin", "domain": {"id": "default"},
+                  "password": os.environ["OS_PASSWORD"]}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          tok = do(lambda: call("POST", KEYSTONE + "/auth/tokens", data=body,
+                                headers={"Content-Type": "application/json"}),
+                   "keystone token").headers["X-Subject-Token"]
+
+          listing = json.loads(settle(lambda: call("GET", NEUTRON + "/v2.0/networks?name=" + FAILED,
+                                                   headers={"X-Auth-Token": tok}),
+                                      "list networks").read())
+          networks = listing.get("networks", [])
+          print("listing returned %d network(s) named %r" % (len(networks), FAILED))
+          if networks:
+              fail("the write that failed closed left %d network(s) behind: %s"
+                   % (len(networks), json.dumps(networks)))
+
+          network = json.dumps({"network": {"name": NAME}}).encode()
+          resp = settle(lambda: call("POST", NEUTRON + "/v2.0/networks", data=network,
+                                     headers={"X-Auth-Token": tok, "Content-Type": "application/json"}),
+                        "create network")
+          created = json.loads(resp.read())
+          if resp.status != 201:
+              fail("POST /v2.0/networks -> %d after recovery, want 201" % resp.status)
+          print("created network %s named %r" % (created["network"]["id"], created["network"]["name"]))
+          print("RECOVERY-OK")
+          '
+          phase=""
+          for _ in $(seq 1 130); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'RECOVERY-OK'
+          echo "OK: the failed write is absent and the API creates networks again"
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos neutron-db-chaos --cr-kind=neutron --dep-label=app.kubernetes.io/name=mariadb --dep-ns=openstack --log-label=app.kubernetes.io/instance=neutron-db-chaos
+    - script:
+        content: kubectl get networkchaos -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true

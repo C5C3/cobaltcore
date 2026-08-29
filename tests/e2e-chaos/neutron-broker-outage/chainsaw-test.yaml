@@ -1,0 +1,502 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a message-bus outage under the Neutron API.
+# The partition severs neutron <-> RabbitMQ traffic on the broker side (see
+# 04-networkchaos.yaml for why a client-side rule would be a no-op). The suite
+# pins the property that makes the outage a non-event: a pure-OVN Neutron never
+# opens a broker connection at all. The operator renders rpc_workers = 0 and
+# the noop notification driver, so the transport URL it builds from the
+# RabbitmqCluster's default-user Secret is configuration that nothing dials.
+#
+#   - baseline: the CR is Ready, an authenticated POST /v2.0/networks answers
+#     201, and rabbitmqctl list_connections on the broker lists nothing
+#   - under partition: the same POST still answers 201, the CR stays
+#     Ready/AllReady, and the connection list is still empty
+#   - after the partition is lifted the connection list is still empty, so
+#     nothing reconnected either
+#
+# The empty connection list carries the suite. Without it the test would only
+# show that a partition changed nothing, which a Neutron whose transport URL
+# pointed at the wrong host would show too. With it, the absence of a
+# connection is stated on the broker's own accounting.
+#
+# The Neutron API rejects an unauthenticated request, so this suite brings its
+# own Keystone (00-keystone-cr.yaml) and every probe asks it for a
+# project-scoped admin token before touching the Neutron API.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-broker-outage
+spec:
+  namespace: openstack
+  timeouts:
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the Keystone CR the probes authenticate against ────────
+  - try:
+    - apply:
+        file: 00-keystone-cr.yaml
+    - assert:
+        resource:
+          apiVersion: keystone.openstack.c5c3.io/v1alpha1
+          kind: Keystone
+          metadata:
+            name: keystone-neutron-broker
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline keystone-neutron-broker
+  # ── Step 2: Bring up the broker ──────────────────────────────────────────
+  # The RabbitMQ Cluster Operator publishes no Ready condition, so the wait
+  # follows AllReplicasReady, which is the condition the messaging helper and
+  # tests/e2e/c5c3/messaging/ gate on too. Ten minutes: the broker pulls its own
+  # image, binds a PersistentVolumeClaim and runs its boot sequence before it
+  # reports a ready replica.
+  - try:
+    - apply:
+        file: 01-rabbitmqcluster.yaml
+    - script:
+        timeout: 11m
+        content: |
+          set -eu
+          BUS=neutron-chaos-rabbitmq
+          DEADLINE=$(( $(date +%s) + 600 ))
+          while true; do
+            STATUS="$(kubectl get rabbitmqcluster "${BUS}" -n "$NAMESPACE" \
+              -o "jsonpath={.status.conditions[?(@.type=='AllReplicasReady')].status}" 2>/dev/null || true)"
+            if [ "${STATUS}" = "True" ]; then
+              echo "OK: rabbitmqcluster/${BUS} AllReplicasReady=True"
+              break
+            fi
+            if [ "$(date +%s)" -ge "${DEADLINE}" ]; then
+              echo "FAIL: rabbitmqcluster/${BUS} AllReplicasReady not True within 600s (last: '${STATUS:-<none>}')"
+              kubectl get pods,pvc -n "$NAMESPACE" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+    catch:
+    - script:
+        content: kubectl get rabbitmqcluster -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl describe pod -n openstack -l app.kubernetes.io/name=neutron-chaos-rabbitmq 2>&1 || true
+    - script:
+        content: kubectl logs -n rabbitmq-system -l app.kubernetes.io/name=rabbitmq-cluster-operator --all-containers --tail=100 2>&1 || true
+  # ── Step 3: Apply the OVN control plane and the Neutron CR ───────────────
+  - try:
+    - apply:
+        file: 02-ovncentral-cr.yaml
+    - apply:
+        file: 03-neutron-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: neutron-broker-ovn
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-broker-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline neutron-broker-chaos --cr-kind=neutron --dep-label=app.kubernetes.io/name=neutron-chaos-rabbitmq --dep-ns=openstack
+    - script:
+        content: kubectl get ovncentral neutron-broker-ovn -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl get rabbitmqcluster -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+  # ── Step 4: Baseline — a network is created and the broker is idle ───────
+  # Runs an in-cluster python client (the neutron image ships python3): it asks
+  # Keystone for a project-scoped admin token and POSTs a network. Connection
+  # errors are retried; an HTTP error fails fast with the body. The WRITE-OK
+  # sentinel is grepped so a swallowed pod exit code still fails.
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          # Every probe in this suite reads its verdict from the pod log, not
+          # from an attached stream. `kubectl run -i` carries only what the
+          # container writes after the attach is established, so a probe that
+          # reaches its sentinel first leaves the captured output holding
+          # nothing but the deletion notice — the sentinel grep then fails on a
+          # run where the assertion itself held. The kubelet writes the
+          # container log to disk as it is produced, so reading it after
+          # termination cannot race. That costs --rm: the pod has to outlive
+          # the run to stay readable, and the trap removes it.
+          POD=neutron-broker-baseline-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/neutron:2025.2 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -c '
+          import json, os, sys, time, urllib.request, urllib.error
+
+          KEYSTONE = "http://keystone-neutron-broker.openstack.svc.cluster.local:5000/v3"
+          NEUTRON = "http://neutron-broker-chaos.openstack.svc.cluster.local:9696"
+          NAME = "broker-outage-baseline"
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=30):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def do(fn, what, tries=30):
+              err = None
+              for i in range(tries):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          body = json.dumps({"auth": {
+              "identity": {"methods": ["password"], "password": {"user": {
+                  "name": "admin", "domain": {"id": "default"},
+                  "password": os.environ["OS_PASSWORD"]}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          tok = do(lambda: call("POST", KEYSTONE + "/auth/tokens", data=body,
+                                headers={"Content-Type": "application/json"}),
+                   "keystone token").headers["X-Subject-Token"]
+          print("obtained a project-scoped admin token")
+
+          network = json.dumps({"network": {"name": NAME}}).encode()
+          resp = do(lambda: call("POST", NEUTRON + "/v2.0/networks", data=network,
+                                 headers={"X-Auth-Token": tok, "Content-Type": "application/json"}),
+                    "create network")
+          created = json.loads(resp.read())
+          if resp.status != 201:
+              fail("POST /v2.0/networks -> %d, want 201" % resp.status)
+          print("created network %s named %r" % (created["network"]["id"], created["network"]["name"]))
+          print("WRITE-OK")
+          '
+          # Poll for a terminal phase instead of waiting for Succeeded alone: a
+          # probe that fails its assertion ends in Failed, and waiting only for
+          # Succeeded would burn the step timeout and then throw away the log
+          # that says why. The sentinel below, not the phase, is the verdict.
+          phase=""
+          for _ in $(seq 1 100); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'WRITE-OK'
+          echo "OK: the baseline network was created through the API"
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          # The broker's own accounting of who is connected to it. A pure-OVN
+          # Neutron opens no AMQP connection: the operator renders
+          # rpc_workers = 0 and the noop notification driver, so an entry here
+          # would mean a code change started dialling the bus and the outage
+          # below would stop being a non-event.
+          # -c rabbitmq: without it kubectl prints a 'Defaulted container'
+          # notice onto the captured stream, and the counter below tallies
+          # that line as a live connection.
+          OUT="$(kubectl exec neutron-chaos-rabbitmq-server-0 -c rabbitmq \
+            -n "$NAMESPACE" -- rabbitmqctl list_connections 2>&1)" || {
+            echo "FAIL: rabbitmqctl list_connections could not be run: ${OUT}"
+            exit 1
+          }
+          echo "${OUT}"
+          # rabbitmqctl prints a "Listing connections ..." banner and a
+          # tab-separated column header before the rows; whatever is left after
+          # dropping those and the blank lines is a live connection.
+          CONNS="$(printf '%s\n' "${OUT}" \
+            | grep -v '^Listing ' \
+            | grep -v '^user[[:space:]]' \
+            | grep -c '[^[:space:]]' || true)"
+          if [ "${CONNS}" -ne 0 ]; then
+            echo "FAIL: the broker reports ${CONNS} connection(s); a pure-OVN neutron opens none"
+            exit 1
+          fi
+          echo "NO-CONN-OK"
+          echo "OK: the broker has no connection before the partition"
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline neutron-broker-chaos --cr-kind=neutron --dep-label=app.kubernetes.io/name=neutron-chaos-rabbitmq --dep-ns=openstack
+    - script:
+        content: kubectl logs -n openstack -l app.kubernetes.io/name=neutron-chaos-rabbitmq --all-containers --tail=100 2>&1 || true
+  # ── Step 5: Inject NetworkChaos to partition the broker ──────────────────
+  - try:
+    - apply:
+        file: 04-networkchaos.yaml
+    - script:
+        timeout: 60s
+        content: |
+          set -eu
+          # `kubectl wait --for=condition=AllInjected` instead of a chainsaw
+          # resource assert: NetworkChaos.status.conditions is a fixed 4-item
+          # list (Selected/AllInjected/AllRecovered/Paused) and chainsaw's
+          # list-merge rejects a shorter expected slice with "lengths of slices
+          # don't match". Asserting the negative conditions instead would be
+          # worse than verbose: chaos-mesh writes ALL four False before the
+          # selector has run, so a Selected=False assertion passes on an
+          # experiment that never injected anything.
+          kubectl wait networkchaos/partition-rabbitmq-neutron -n openstack \
+            --for=condition=AllInjected --timeout=60s
+    catch:
+    - script:
+        content: kubectl get networkchaos -n openstack -o yaml 2>&1 || true
+    - script:
+        content: ../diagnostics.sh chaos neutron-broker-chaos --cr-kind=neutron --dep-label=app.kubernetes.io/name=neutron-chaos-rabbitmq --dep-ns=openstack --log-label=app.kubernetes.io/instance=neutron-broker-chaos
+    cleanup:
+    - script:
+        content: |
+          set -eu
+          kubectl delete -f 04-networkchaos.yaml --ignore-not-found
+          echo "OK: the broker partition is lifted"
+  # ── Step 6: Under the partition — the API is unaffected ──────────────────
+  # A network is created while the bus is unreachable, the CR stays Ready, and
+  # the broker still reports no connection. The three together are the claim:
+  # nothing on the request path goes through the message bus.
+  - try:
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          # Log-based verdict, not an attached stream — see step 4 for why.
+          POD=neutron-broker-outage-probe
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          PW="$(kubectl get secret keystone-admin -n "$NAMESPACE" -o jsonpath='{.data.password}' | base64 -d)"
+          kubectl run "$POD" -n "$NAMESPACE" \
+            --image=ghcr.io/c5c3/neutron:2025.2 --restart=Never \
+            --env "OS_PASSWORD=${PW}" \
+            --command -- python3 -c '
+          import json, os, sys, time, urllib.request, urllib.error
+
+          KEYSTONE = "http://keystone-neutron-broker.openstack.svc.cluster.local:5000/v3"
+          NEUTRON = "http://neutron-broker-chaos.openstack.svc.cluster.local:9696"
+          NAME = "broker-outage-partitioned"
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+          def call(method, url, data=None, headers=None, timeout=30):
+              req = urllib.request.Request(url, data=data, method=method, headers=dict(headers or {}))
+              return urllib.request.urlopen(req, timeout=timeout)
+
+          def do(fn, what, tries=12):
+              err = None
+              for i in range(tries):
+                  try:
+                      return fn()
+                  except urllib.error.HTTPError as e:
+                      body = e.read().decode("utf-8", "replace")
+                      fail("%s -> HTTP %d: %s" % (what, e.code, body))
+                  except (urllib.error.URLError, ConnectionError, OSError) as e:
+                      err = e
+                      print("retry %d for %s: %s" % (i, what, e))
+                      time.sleep(5)
+              fail("%s -> gave up after retries: %s" % (what, err))
+
+          body = json.dumps({"auth": {
+              "identity": {"methods": ["password"], "password": {"user": {
+                  "name": "admin", "domain": {"id": "default"},
+                  "password": os.environ["OS_PASSWORD"]}}},
+              "scope": {"project": {"name": "admin", "domain": {"id": "default"}}}}}).encode()
+          tok = do(lambda: call("POST", KEYSTONE + "/auth/tokens", data=body,
+                                headers={"Content-Type": "application/json"}),
+                   "keystone token").headers["X-Subject-Token"]
+
+          # A create is the request that would block on the bus if anything on
+          # the path published to it: neutron sends its port and network
+          # notifications from the API worker that serves the call.
+          network = json.dumps({"network": {"name": NAME}}).encode()
+          resp = do(lambda: call("POST", NEUTRON + "/v2.0/networks", data=network,
+                                 headers={"X-Auth-Token": tok, "Content-Type": "application/json"},
+                                 timeout=60),
+                    "create network during the partition")
+          created = json.loads(resp.read())
+          if resp.status != 201:
+              fail("POST /v2.0/networks -> %d during the partition, want 201" % resp.status)
+          print("created network %s named %r during the partition"
+                % (created["network"]["id"], created["network"]["name"]))
+          print("WRITE-OK")
+          '
+          phase=""
+          for _ in $(seq 1 100); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'WRITE-OK'
+          echo "OK: the API creates networks with the broker partitioned away"
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-broker-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          # kubectl exec is unaffected by the fault: the drop rule matches the
+          # neutron pod IPs, and this call arrives from the kubelet.
+          # -c rabbitmq: without it kubectl prints a 'Defaulted container'
+          # notice onto the captured stream, and the counter below tallies
+          # that line as a live connection.
+          OUT="$(kubectl exec neutron-chaos-rabbitmq-server-0 -c rabbitmq \
+            -n "$NAMESPACE" -- rabbitmqctl list_connections 2>&1)" || {
+            echo "FAIL: rabbitmqctl list_connections could not be run: ${OUT}"
+            exit 1
+          }
+          echo "${OUT}"
+          CONNS="$(printf '%s\n' "${OUT}" \
+            | grep -v '^Listing ' \
+            | grep -v '^user[[:space:]]' \
+            | grep -c '[^[:space:]]' || true)"
+          if [ "${CONNS}" -ne 0 ]; then
+            echo "FAIL: the broker reports ${CONNS} connection(s) during the partition"
+            exit 1
+          fi
+          echo "NO-CONN-OK"
+          echo "OK: the broker has no connection during the partition"
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos neutron-broker-chaos --cr-kind=neutron --dep-label=app.kubernetes.io/name=neutron-chaos-rabbitmq --dep-ns=openstack --log-label=app.kubernetes.io/instance=neutron-broker-chaos
+    - script:
+        content: kubectl get networkchaos -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl get rabbitmqcluster -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl logs -n openstack -l app.kubernetes.io/name=neutron-chaos-rabbitmq --all-containers --tail=100 2>&1 || true
+  # ── Step 7: Lift the partition, and nothing reconnects ───────────────────
+  # An empty list here rules out the reading that a connection existed, was
+  # severed by the partition, and would have come back: there was none.
+  - try:
+    - delete:
+        ref:
+          apiVersion: chaos-mesh.org/v1alpha1
+          kind: NetworkChaos
+          name: partition-rabbitmq-neutron
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          # Give a reconnect the chance to happen before reading the list.
+          sleep 30
+          # -c rabbitmq: without it kubectl prints a 'Defaulted container'
+          # notice onto the captured stream, and the counter below tallies
+          # that line as a live connection.
+          OUT="$(kubectl exec neutron-chaos-rabbitmq-server-0 -c rabbitmq \
+            -n "$NAMESPACE" -- rabbitmqctl list_connections 2>&1)" || {
+            echo "FAIL: rabbitmqctl list_connections could not be run: ${OUT}"
+            exit 1
+          }
+          echo "${OUT}"
+          CONNS="$(printf '%s\n' "${OUT}" \
+            | grep -v '^Listing ' \
+            | grep -v '^user[[:space:]]' \
+            | grep -c '[^[:space:]]' || true)"
+          if [ "${CONNS}" -ne 0 ]; then
+            echo "FAIL: the broker reports ${CONNS} connection(s) after the partition was lifted"
+            exit 1
+          fi
+          echo "NO-CONN-OK"
+          echo "OK: the broker has no connection after the partition"
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos neutron-broker-chaos --cr-kind=neutron --dep-label=app.kubernetes.io/name=neutron-chaos-rabbitmq --dep-ns=openstack --log-label=app.kubernetes.io/instance=neutron-broker-chaos
+    - script:
+        content: kubectl get networkchaos -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl logs -n openstack -l app.kubernetes.io/name=neutron-chaos-rabbitmq --all-containers --tail=100 2>&1 || true
+  # ── Step 8: Tear the broker down through its own operator ────────────────
+  # Chainsaw's cleanup deletes what the suite applied, under the 120s the chaos
+  # config allows. The broker pod carries the RabbitMQ Cluster Operator's
+  # default terminationGracePeriodSeconds of 604800s (seven days, so its preStop
+  # drain can finish), and the path that gets it to exit promptly is the
+  # RabbitmqCluster delete: the operator labels the pod skipPreStopChecks and
+  # releases its finalizer. So the suite performs that delete itself and waits
+  # for the pod, the way tests/e2e/c5c3/messaging/ tears its bus down, rather
+  # than leaving a seven-day grace period inside a two-minute budget.
+  #
+  # The Neutron CR goes first: it is the only consumer of the bus here, and a
+  # reconcile that ran between the two deletes would find a RabbitmqCluster
+  # mid-teardown and report the CR unready for a bus that is meant to be gone.
+  - try:
+    - script:
+        timeout: 8m
+        content: |
+          set -eu
+          BUS=neutron-chaos-rabbitmq
+          kubectl delete neutron neutron-broker-chaos -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=300s
+
+          POD_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=neutron-broker-chaos -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${POD_DEADLINE}" ]; then
+              echo "FAIL: a neutron pod outlived its CR by 180s"
+              kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-broker-chaos -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the Neutron CR and its pods are gone"
+
+          kubectl delete rabbitmqcluster "${BUS}" -n "$NAMESPACE" \
+            --ignore-not-found --wait=true --timeout=180s
+          BUS_DEADLINE=$(( $(date +%s) + 180 ))
+          while [ -n "$(kubectl get pod "${BUS}-server-0" -n "$NAMESPACE" -o name 2>/dev/null)" ]; do
+            if [ "$(date +%s)" -ge "${BUS_DEADLINE}" ]; then
+              echo "FAIL: ${BUS}-server-0 outlived its RabbitmqCluster by 180s; chainsaw's cleanup cannot wait it out"
+              kubectl get pods -n "$NAMESPACE" -l "app.kubernetes.io/name=${BUS}" -o wide 2>&1 || true
+              exit 1
+            fi
+            sleep 5
+          done
+          echo "OK: the RabbitmqCluster and its broker pod are gone"
+    catch:
+    - script:
+        content: kubectl get rabbitmqcluster,neutron -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl get pods -n openstack -o wide 2>&1 || true
+    - script:
+        content: kubectl logs -n rabbitmq-system -l app.kubernetes.io/name=rabbitmq-cluster-operator --all-containers --tail=100 2>&1 || true

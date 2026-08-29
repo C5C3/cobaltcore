@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# PodChaos CR that takes the Southbound database away.
+#
+# action pod-failure, not pod-kill: a killed pod is replaced by the StatefulSet
+# within seconds, and the suite needs the database gone for as long as it takes
+# to run the probes that prove the datapath does not need it. pod-failure swaps
+# the container for a pause image, so the pod stays scheduled, serves nothing,
+# and its endpoint leaves the member Service.
+#
+# The selector narrows to the Southbound component of this suite's OVNCentral.
+# The three labels are what reconcile_database.go stamps on the member pods
+# (naming.ComponentLabels("ovncentral", <cr>, "sb")); without the component key
+# the Northbound member would go down too, and the northd deployment would then
+# be the thing the probes observe rather than the Southbound outage.
+# mode all covers every member: the fixture runs one, and a spec with more
+# members must lose all of them for "the Southbound database is gone" to hold.
+#
+# The duration is a bounded window, not the assertion: the test lifts the fault
+# explicitly once the checks under it have run, and the duration only keeps an
+# interrupted run from leaving a broken database behind. It must therefore
+# *exceed* the budget of everything asserted under it, as the NetworkChaos
+# fixtures of the two neutron suites do: step 8 grants its two probes 4m and 6m
+# and then runs two DaemonSet asserts under the config's 300s assert window. A
+# duration inside that budget self-heals mid-assertion: ovn-controller
+# reconnects to the Southbound and reprograms flows, the ping answers, and
+# PING-OK is recorded against a live control plane, which is the opposite of
+# what the suite claims. 900s sits above the whole window with margin.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: sb-outage
+  namespace: openstack
+spec:
+  action: pod-failure
+  mode: all
+  duration: "900s"
+  selector:
+    namespaces:
+    - openstack
+    labelSelectors:
+      app.kubernetes.io/name: ovncentral
+      app.kubernetes.io/instance: ovn-sb-chaos
+      app.kubernetes.io/component: sb

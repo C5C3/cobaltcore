@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR for the MariaDB partition chaos test.
+#
+# Managed mode throughout: the schema neutron_db_chaos on the openstack-db
+# MariaDB cluster, the openstack-memcached cache, the ESO-synced neutron-db
+# credentials and the pre-seeded keystone-admin service-user password (both from
+# deploy/kind/infrastructure). The broker Secret and the OVN control plane come
+# from the two sibling fixtures.
+#
+# One API replica and one worker: the suite asserts what a partitioned database
+# does to a request, and a second replica would only lengthen the bring-up
+# without changing the answer.
+#
+# keystoneEndpoint points at the Keystone this suite brings up in
+# 00-keystone-cr.yaml, and serviceUser is that Keystone's bootstrap admin, whose
+# password the pre-seeded keystone-admin Secret carries. The probes authenticate
+# as the same identity, so the token the API validates and the token the probe
+# presents come from one Keystone.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-db-chaos
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_db_chaos
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-db-chaos-messaging
+  ovn:
+    centralRef:
+      name: neutron-db-chaos-ovn
+  keystoneEndpoint: http://keystone-neutron-outage.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

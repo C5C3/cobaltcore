@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNCentral fixture for the Southbound outage chaos test.
+#
+# One Raft member per database and one northd replica: the fault this suite
+# injects takes the Southbound database away entirely, and a single member is
+# what makes "every member is down" reachable on a one-node cluster. A
+# three-member cluster would survive the loss of one pod, which is a different
+# scenario and not this one.
+#
+# The backup is suspended. A snapshot of the two logical switch ports this
+# suite creates proves nothing it is about, and the CronJob would only compete
+# for the node's disk while the fault is active.
+#
+# The databases stay unpublished (externallyReachable defaults to false); the
+# chassis and the client probes reach them over their cluster IPs.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-sb-chaos
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true
