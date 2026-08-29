@@ -4,8 +4,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Verify the ovn operator reaches the e2e-operators matrix and the helm filter
-# in .github/workflows/ci.yaml, and that build-e2e-images builds both of its
-# images.
+# in .github/workflows/ci.yaml, that build-e2e-images builds both of its
+# images, and that the e2e-operator leg loads the OVN daemon image and asks for
+# the OVN kernel modules.
 #
 # Every signal here fails silently when it is missing. ALL_OPERATORS is the sole
 # source of the e2e-operators matrix, so an operator absent from it never
@@ -14,7 +15,9 @@
 # helm-validate, so a PR touching only operators/ovn/helm/ renders, lints and
 # unit-tests nothing. build-e2e-images is the sole producer of the run-tagged
 # images the E2E jobs pull, so an image it skips fails those jobs an hour into
-# the run.
+# the run. The daemon image and the kernel modules are what the leg needs
+# beyond the shared shape: without either one the chassis Pods never start and
+# every suite fails at once, for a reason unrelated to the change under test.
 #
 # Usage: bash tests/unit/ci/ovn_e2e_matrix_test.sh
 
@@ -58,6 +61,18 @@ job_block() {
     in_block && /^  [#a-z0-9-]/ { exit }
     in_block { print }
   ' "$CI_YAML"
+}
+
+# Echo the body of the named step of the e2e-operator job. Steps sit at 6-space
+# indent, so the next line at that indent ends the block: the following step,
+# or the comment introducing it. Scoping to the job keeps a step of the same
+# name in another job from satisfying an assertion here.
+e2e_operator_step() {
+  job_block e2e-operator | awk -v key="      - name: $1" '
+    $0 == key { in_block = 1; next }
+    in_block && /^      [-#]/ { exit }
+    in_block { print }
+  '
 }
 
 # ---------------------------------------------------------------------------
@@ -169,6 +184,53 @@ test_build_e2e_images_builds_the_ovn_images() {
     "$(grep -cF "$pin" "$CI_YAML")"
 }
 
+test_e2e_leg_loads_the_ovn_image() {
+  echo "Test: the ovn e2e leg pulls and loads the OVN daemon image"
+
+  # ovn ships no per-release service image, so the generic per-release loop
+  # leaves this leg with the operator image alone. Every OVNCentral and
+  # OVNChassis Pod runs ghcr.io/c5c3/ovn:<pin>, the default effectiveImage()
+  # resolves, and kubelet only skips the registry for a tag already on the
+  # node. A leg that never loads it waits on a pull instead of running.
+  local resolve load
+  resolve=$(e2e_operator_step "Resolve E2E images")
+  load=$(e2e_operator_step "Load images into kind")
+
+  assert_not_empty "the resolve step is still named that" "$resolve"
+  assert_contains "the resolve step branches on the ovn leg" "$resolve" \
+    '[ "${OPERATOR}" = "ovn" ]'
+  assert_contains "it appends the daemon image" "$resolve" \
+    '${IMAGE_PREFIX}/ovn:${OVN_VERSION}'
+  assert_contains "the pin comes from the shared resolver" "$resolve" \
+    'OVN_VERSION="$(hack/ci-resolve-ovn-version.sh)"'
+  assert_contains "the pin is published for the load step" "$resolve" \
+    'echo "ovn-version=${OVN_VERSION}"'
+
+  assert_not_empty "the load step is still named that" "$load"
+  assert_contains "the load step reads the published pin" "$load" \
+    "OVN_VERSION: \${{ steps.e2e-images.outputs.ovn-version }}"
+  assert_contains "the load step branches on the ovn leg too" "$load" \
+    '[ "${OPERATOR}" = "ovn" ]'
+  assert_contains "it loads the same ref into kind" "$load" \
+    'kind load docker-image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}"'
+}
+
+test_e2e_leg_opts_into_kernel_modules() {
+  echo "Test: the ovn and neutron e2e legs ask for the OVN kernel modules"
+
+  # The chassis DaemonSet opens a Geneve tunnel from the kind node, which needs
+  # openvswitch and geneve on the host. deploy-infra.sh defaults the flag to
+  # false and setup-e2e-infra reads it from env, so the value has to sit in
+  # this step's own env block; anywhere else it never reaches modprobe.
+  local setup
+  setup=$(e2e_operator_step "Setup E2E infrastructure")
+
+  assert_contains "the step still uses the shared composite action" "$setup" \
+    "uses: ./.github/actions/setup-e2e-infra"
+  assert_contains "both OVN legs opt in, the others keep the default" "$setup" \
+    "WITH_OVN_KERNEL_MODULES: \${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron') && 'true' || '' }}"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -178,6 +240,8 @@ test_ovn_change_produces_an_e2e_leg
 test_helm_filter_covers_the_ovn_chart
 test_helm_validate_renders_the_ovn_chart
 test_build_e2e_images_builds_the_ovn_images
+test_e2e_leg_loads_the_ovn_image
+test_e2e_leg_opts_into_kernel_modules
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

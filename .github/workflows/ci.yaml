@@ -1220,6 +1220,7 @@ jobs:
           IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
         run: |
           releases="$(OPERATOR="${OPERATOR}" hack/ci-service-image-releases.sh)"
+          OVN_VERSION="$(hack/ci-resolve-ovn-version.sh)"
           refs="${IMAGE_PREFIX}/${OPERATOR}-operator:dev"
           for release in ${releases}; do
             refs="${refs}"$'\n'"${IMAGE_PREFIX}/${OPERATOR}:${release}"
@@ -1229,9 +1230,22 @@ jobs:
           if [ "${OPERATOR}" = "keystone" ]; then
             refs="${refs}"$'\n'"${IMAGE_PREFIX}/keystone-federation-proxy:dev"
           fi
+          # ovn ships no per-release service image: its DaemonSets and Pods all
+          # run the one OVN daemon image the operator hard-codes at the pin
+          # hack/ci-resolve-ovn-version.sh reads from images/ovn/Dockerfile.
+          if [ "${OPERATOR}" = "ovn" ]; then
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
+          fi
+          # A Neutron never reaches Ready without a live OVNCentral, so the
+          # neutron leg deploys the ovn-operator as well and needs both the
+          # operator image and the daemon image that operator rolls out.
+          if [ "${OPERATOR}" = "neutron" ]; then
+            refs="${refs}"$'\n'"${IMAGE_PREFIX}/ovn-operator:dev"$'\n'"${IMAGE_PREFIX}/ovn:${OVN_VERSION}"
+          fi
           {
             echo "releases<<EOF"; echo "${releases}"; echo "EOF"
             echo "refs<<EOF"; echo "${refs}"; echo "EOF"
+            echo "ovn-version=${OVN_VERSION}"
           } >> "$GITHUB_OUTPUT"
       # GH-310: Pull pre-built images from GHCR (run-scoped tag).
       - name: Load E2E images
@@ -1244,6 +1258,7 @@ jobs:
           OPERATOR: ${{ matrix.operator }}
           IMAGE_PREFIX: ${{ env.IMAGE_PREFIX }}
           SERVICE_RELEASES: ${{ steps.e2e-images.outputs.releases }}
+          OVN_VERSION: ${{ steps.e2e-images.outputs.ovn-version }}
           KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
         run: |
           kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}-operator:dev" --name "${KIND_CLUSTER}"
@@ -1254,6 +1269,13 @@ jobs:
           if [ "${OPERATOR}" = "keystone" ]; then
             kind load docker-image "${IMAGE_PREFIX}/keystone-federation-proxy:dev" --name "${KIND_CLUSTER}"
           fi
+          if [ "${OPERATOR}" = "ovn" ]; then
+            kind load docker-image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}" --name "${KIND_CLUSTER}"
+          fi
+          if [ "${OPERATOR}" = "neutron" ]; then
+            kind load docker-image "${IMAGE_PREFIX}/ovn-operator:dev" --name "${KIND_CLUSTER}"
+            kind load docker-image "${IMAGE_PREFIX}/ovn:${OVN_VERSION}" --name "${KIND_CLUSTER}"
+          fi
           # The image-upgrade E2E test re-tags the 2025.2 service image; only
           # operators that ship a 2025.2 service image need it loaded.
           # shellcheck disable=SC2086 # deliberate: split the release list
@@ -1263,8 +1285,14 @@ jobs:
             kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:2025.2-upgraded" --name "${KIND_CLUSTER}"
           fi
       # Use composite action for shared Flux CLI + test deps + deploy-infra sequence.
+      # The ovn and neutron chassis DaemonSets open a Geneve tunnel from the
+      # kind node, which needs the openvswitch and geneve modules loaded on the
+      # host. Empty on every other leg, where deploy-infra.sh keeps its default
+      # of not touching the host's modules.
       - name: Setup E2E infrastructure
         uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_OVN_KERNEL_MODULES: ${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron') && 'true' || '' }}
       # The c5c3 ControlPlane controller Owns()/Watches() the Keystone,
       # KeystoneIdentityBackend, Horizon, Glance, GlanceBackend, and K-ORC kinds
       # (ControlPlaneReconciler.SetupWithManager). controller-runtime informers
@@ -1288,14 +1316,18 @@ jobs:
           hack/ci-deploy-korc.sh
       # Both neutron reconcilers Watches() an OVN kind: the Neutron controller
       # reads the OVNCentral's published Northbound and Southbound addresses,
-      # and the NeutronMetadataAgent controller resolves its OVNChassis.
-      # controller-runtime informers for a kind whose CRD is absent never sync,
-      # so without the OVN CRDs the elected leader dies on the cache-sync
-      # timeout and the neutron reconcilers never run on this leg. Install the
-      # OVN CRDs only; the OVN controllers stay undeployed.
-      - name: Install CRDs watched by the neutron-operator
+      # and the NeutronMetadataAgent controller resolves its OVNChassis. The
+      # CRDs alone would only keep the manager's cache sync from timing out;
+      # the objects those reconcilers read still have to exist and be Ready, so
+      # this leg deploys the ovn-operator itself into ovn-system. The deploy
+      # script installs the OVN CRDs on the way.
+      - name: Deploy ovn-operator
         if: matrix.operator == 'neutron'
-        run: kubectl apply -f operators/ovn/helm/ovn-operator/crds/
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ovn
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
+          NAMESPACE: ovn-system
       # Use shared operator deployment script. NAMESPACE mirrors what
       # hack/ci-dump-diagnostics.sh derives (${OPERATOR}-system) so the
       # diagnostics of a failed run actually find the operator's pods and logs
@@ -1339,6 +1371,13 @@ jobs:
         run: hack/ci-dump-diagnostics.sh
         env:
           OPERATOR: ${{ matrix.operator }}
+      # The neutron leg runs a second operator, in ovn-system. The dump above
+      # derives its Namespace from the matrix operator and never looks there.
+      - name: Dump diagnostic info (ovn)
+        if: always() && matrix.operator == 'neutron'
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: ovn
       - name: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
