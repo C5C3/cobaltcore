@@ -9,3 +9,8 @@
 tempest: "46.3.0"
 barbican-tempest-plugin: "4.5.0"
 keystone-tempest-plugin: "0.21.0"
+# neutron-tempest-plugin is branchless like tempest and the keystone plugin.
+# 3.2.0 requires testtools>=2.8.4, which this release's upper-constraints.txt
+# satisfies (testtools===2.8.5); 2025.2 constrains testtools to 2.7.2 and stays
+# on 3.0.0.
+neutron-tempest-plugin: "3.2.0"

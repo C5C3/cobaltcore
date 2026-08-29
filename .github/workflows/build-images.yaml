@@ -475,6 +475,7 @@ jobs:
           echo "tempest=$(hack/resolve-test-ref.sh "releases/${MATRIX_RELEASE}/test-refs.yaml" tempest)" >> "$GITHUB_OUTPUT"
           echo "barbican-tempest-plugin=$(hack/resolve-test-ref.sh "releases/${MATRIX_RELEASE}/test-refs.yaml" barbican-tempest-plugin)" >> "$GITHUB_OUTPUT"
           echo "keystone-tempest-plugin=$(hack/resolve-test-ref.sh "releases/${MATRIX_RELEASE}/test-refs.yaml" keystone-tempest-plugin)" >> "$GITHUB_OUTPUT"
+          echo "neutron-tempest-plugin=$(hack/resolve-test-ref.sh "releases/${MATRIX_RELEASE}/test-refs.yaml" neutron-tempest-plugin)" >> "$GITHUB_OUTPUT"
 
       - name: Prepare platform pair
         id: platform-pair
@@ -502,6 +503,7 @@ jobs:
             TEMPEST_VERSION=${{ steps.versions.outputs.tempest }}
             BARBICAN_TEMPEST_PLUGIN_VERSION=${{ steps.versions.outputs.barbican-tempest-plugin }}
             KEYSTONE_TEMPEST_PLUGIN_VERSION=${{ steps.versions.outputs.keystone-tempest-plugin }}
+            NEUTRON_TEMPEST_PLUGIN_VERSION=${{ steps.versions.outputs.neutron-tempest-plugin }}
           build-contexts: |
             python-base=docker-image://ghcr.io/${{ needs.prepare.outputs.image-owner }}/python-base@${{ needs.merge-base-images.outputs.python-base-digest }}
             venv-builder=docker-image://${{ needs.merge-base-images.outputs.venv-builder-image }}

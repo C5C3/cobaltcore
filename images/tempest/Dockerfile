@@ -14,6 +14,7 @@ FROM venv-builder AS build
 ARG TEMPEST_VERSION=46.3.0
 ARG BARBICAN_TEMPEST_PLUGIN_VERSION=4.4.0
 ARG KEYSTONE_TEMPEST_PLUGIN_VERSION=0.19.0
+ARG NEUTRON_TEMPEST_PLUGIN_VERSION=3.2.0
 
 # Install Tempest and plugins into the shared virtualenv.
 # upper-constraints.txt is passed as a named build context from the release dir.
@@ -30,6 +31,7 @@ RUN --mount=type=bind,from=upper-constraints,source=upper-constraints.txt,target
         tempest==${TEMPEST_VERSION} \
         barbican-tempest-plugin==${BARBICAN_TEMPEST_PLUGIN_VERSION} \
         keystone-tempest-plugin==${KEYSTONE_TEMPEST_PLUGIN_VERSION} \
+        neutron-tempest-plugin==${NEUTRON_TEMPEST_PLUGIN_VERSION} \
         python-openstackclient \
         osc-placement \
         python-barbicanclient \

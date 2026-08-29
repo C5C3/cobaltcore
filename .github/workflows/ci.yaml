@@ -196,6 +196,8 @@ jobs:
               - 'tests/tempest/glance-*/**'
             tempest_barbican:
               - 'tests/tempest/barbican-*/**'
+            tempest_neutron:
+              - 'tests/tempest/neutron-*/**'
             # ---------------------------------------------------------------
             # Per-operator e2e suites. Editing one operator's suite runs that
             # operator's leg, not all eight.
@@ -367,6 +369,7 @@ jobs:
           FILTER_tempest_keystone: ${{ steps.filter.outputs.tempest_keystone }}
           FILTER_tempest_glance: ${{ steps.filter.outputs.tempest_glance }}
           FILTER_tempest_barbican: ${{ steps.filter.outputs.tempest_barbican }}
+          FILTER_tempest_neutron: ${{ steps.filter.outputs.tempest_neutron }}
           FILTER_tests_e2e_keystone: ${{ steps.filter.outputs.tests_e2e_keystone }}
           FILTER_tests_e2e_c5c3: ${{ steps.filter.outputs.tests_e2e_c5c3 }}
           FILTER_tests_e2e_horizon: ${{ steps.filter.outputs.tests_e2e_horizon }}
