@@ -1,0 +1,333 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the garbage collection of an OVNCentral's children.
+#
+# Deploys an OVNCentral, waits for Ready=True, then:
+#   - asserts every object the control plane owns exists (two StatefulSets,
+#     the two headless and the two per-member Services, the northd Deployment,
+#     the scripts ConfigMap, the three Certificates and their Secrets, the
+#     backup CronJob and volume, and the per-member database volumes);
+#   - deletes the CR and asserts all of them are gone within the 3m cleanup
+#     bound of tests/e2e/chainsaw-config.yaml.
+#
+# The two database volumes are the interesting case: nothing sets an owner
+# reference on a volumeClaimTemplate's claims, so they only disappear because
+# the StatefulSets carry persistentVolumeClaimRetentionPolicy whenDeleted:
+# Delete. A control plane that left them behind would hand the next OVNCentral
+# of the same name a stale Raft log.
+#
+# The three cert-manager Secrets are asserted before the deletion but not after
+# it: cert-manager only owns the Secret it writes when it runs with
+# --enable-certificate-owner-ref, which the cert-manager HelmRelease in
+# deploy/flux-system/releases/cert-manager.yaml does not set. Deleting the
+# Certificates therefore leaves their Secrets behind, and asserting otherwise
+# would pin an expectation this cluster cannot meet.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-central-deletion-cleanup
+spec:
+  namespace: openstack
+  timeouts:
+    # One Raft member per database plus three issued certificates still takes
+    # longer than the 120s the shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the OVNCentral CR ────────────────────────────────────
+  - try:
+    - apply:
+        file: 00-ovncentral-cr.yaml
+  # ── Step 2: Wait for Ready=True ────────────────────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: ovn-deletion
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral ovn-deletion -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== OVN control-plane pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=ovn-deletion -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert the owned children exist before the deletion ────────
+  # Asserting them here is what gives step 5 its meaning: an absence assertion
+  # on a resource that never existed passes for the wrong reason.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: ovn-deletion-nb
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: ovn-deletion-sb
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-deletion-nb
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-deletion-nb-0
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-deletion-sb
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-deletion-sb-0
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ovn-deletion-northd
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ovn-deletion-central-scripts
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: ovn-deletion-nb-server
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: ovn-deletion-sb-server
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: ovn-deletion-client
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ovn-deletion-nb-server
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ovn-deletion-sb-server
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: ovn-deletion-client
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: ovn-deletion-backup
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: ovn-deletion-backup
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: db-ovn-deletion-nb-0
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: db-ovn-deletion-sb-0
+            namespace: openstack
+  # ── Step 4: Delete the OVNCentral CR ───────────────────────────────────
+  # Bounded timeout (<= 2m) to keep deletion responsive; fails the test if the
+  # removal takes longer than this.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          name: ovn-deletion
+          namespace: openstack
+  # ── Step 5: Assert every owned object is gone ──────────────────────────
+  - try:
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: ovn-deletion-nb
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: StatefulSet
+          metadata:
+            name: ovn-deletion-sb
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-deletion-nb
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-deletion-nb-0
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-deletion-sb
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: ovn-deletion-sb-0
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: ovn-deletion-northd
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: ovn-deletion-central-scripts
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: ovn-deletion-nb-server
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: ovn-deletion-sb-server
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: ovn-deletion-client
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: ovn-deletion-backup
+            namespace: openstack
+    # The backup volume is a child of the CR like any other. It holds the only
+    # copy of the snapshots unless spec.backup.s3 was configured, so its
+    # removal is the documented consequence of deleting the control plane
+    # rather than an accident of ownership.
+    - error:
+        resource:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: ovn-deletion-backup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: db-ovn-deletion-nb-0
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: db-ovn-deletion-sb-0
+            namespace: openstack
+    catch:
+    - script:
+        content: |
+          echo "=== remaining ovn-deletion objects ==="
+          kubectl get all,cm,pvc,cronjob,certificate -n $NAMESPACE 2>&1 | grep ovn-deletion || true
+          echo "=== OVNCentral CRs ==="
+          kubectl get ovncentral -n $NAMESPACE 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

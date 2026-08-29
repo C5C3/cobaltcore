@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNCentral fixture for the chassis-single-node E2E test.
+#
+# The control plane here is scaffolding for the chassis under test, so it runs
+# one Raft member per database and one northd replica. The backup is suspended:
+# a snapshot of an empty logical model proves nothing this suite is about, and
+# the CronJob would only compete for the single node's disk.
+#
+# The databases stay unpublished (externallyReachable defaults to false); the
+# chassis on this node reaches the Southbound database over its ClusterIP.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-chassis-central
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true

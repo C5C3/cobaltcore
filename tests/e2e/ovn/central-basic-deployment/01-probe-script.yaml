@@ -1,0 +1,127 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The script the OVN client probe of step 5 runs inside the OVN image.
+#
+# It lives in a ConfigMap rather than in the `kubectl run --overrides` payload
+# so it stays a reviewable, shellcheck-able shell script instead of a
+# JSON-escaped one-liner. The pod mounts it at /probe and the client
+# certificate the OVNCentral published at /certs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ovn-basic-probe-script
+  namespace: openstack
+data:
+  probe.sh: |
+    #!/bin/bash
+    # Reports whether both OVN Raft clusters formed. For each database it asks
+    # every member's built-in _Server database for the Database row of that
+    # schema and requires all three to report a clustered, connected member
+    # with exactly one leader between them.
+    #
+    # NB_ADDRESSES and SB_ADDRESSES arrive as environment variables holding the
+    # comma-separated ssl: lists from status.<db>.internalDbAddress.
+    set -u
+
+    # The client keypair and the CA the databases authenticate peers against.
+    readonly CERT=(--private-key=/certs/tls.key
+                   --certificate=/certs/tls.crt
+                   --ca-cert=/certs/ca.crt)
+
+    # Only a connection-level failure is retried. A TLS failure reports a
+    # certificate, an SSL routine or a protocol error instead, and retrying it
+    # would burn the budget on a misconfiguration that cannot resolve itself.
+    readonly RETRYABLE='Connection refused|Connection timed out|Network is unreachable|No route to host|Host is unreachable|Name or service not known|timeout exceeded'
+
+    readonly ATTEMPTS=30
+    readonly INTERVAL=5
+
+    # check_db <schema> <comma-separated ssl: addresses>
+    check_db() {
+      local db="$1" list="$2"
+      local addrs=() addr out rc attempt=0 leaders pending
+      local connected leader model
+      local f_connected f_leader f_model f_name
+
+      IFS=, read -ra addrs <<< "${list}"
+      if [ "${#addrs[@]}" -ne 3 ]; then
+        echo "FAIL: ${db} address list names ${#addrs[@]} members, want 3: ${list}"
+        exit 1
+      fi
+
+      while [ "${attempt}" -lt "${ATTEMPTS}" ]; do
+        attempt=$((attempt + 1))
+        leaders=0
+        pending=""
+
+        for addr in "${addrs[@]}"; do
+          out="$(ovsdb-client --timeout=15 "${CERT[@]}" --format=csv --no-headings \
+            dump "${addr}" _Server Database connected leader model name 2>&1)"
+          rc=$?
+          if [ "${rc}" -ne 0 ]; then
+            if grep -Eq "${RETRYABLE}" <<< "${out}"; then
+              pending="${addr} is not reachable yet: ${out}"
+              break
+            fi
+            echo "FAIL: ovsdb-client dump ${addr} exited ${rc}: ${out}"
+            exit 1
+          fi
+
+          # ovsdb-client sorts the dumped columns by name, and the four asked
+          # for are already in that order, so the fields are connected, leader,
+          # model, name whichever way the client orders them. The row is picked
+          # by its name field, which skips the _Server row and any caption line.
+          model=""
+          while IFS=, read -r f_connected f_leader f_model f_name; do
+            if [ "${f_name}" = "${db}" ]; then
+              connected="${f_connected}"
+              leader="${f_leader}"
+              model="${f_model}"
+              break
+            fi
+          done <<< "${out}"
+
+          if [ -z "${model}" ]; then
+            echo "FAIL: ${addr} reports no ${db} row in _Server Database: ${out}"
+            exit 1
+          fi
+          # A standalone or relay model means the member never joined a Raft
+          # cluster, which no amount of waiting turns into one.
+          if [ "${model}" != "clustered" ]; then
+            echo "FAIL: ${addr} reports ${db} model ${model}, want clustered"
+            exit 1
+          fi
+          if [ "${connected}" != "true" ]; then
+            pending="${addr} reports ${db} connected=${connected}"
+            break
+          fi
+          if [ "${leader}" = "true" ]; then
+            leaders=$((leaders + 1))
+          fi
+        done
+
+        if [ -n "${pending}" ]; then
+          echo "retry ${attempt}/${ATTEMPTS}: ${pending}"
+          sleep "${INTERVAL}"
+          continue
+        fi
+        if [ "${leaders}" -eq 1 ]; then
+          echo "${db}: three clustered members connected, exactly one leader"
+          return 0
+        fi
+        # Zero leaders is an election in flight, two would be a split cluster;
+        # both are retried, and the budget running out is what fails the probe.
+        echo "retry ${attempt}/${ATTEMPTS}: ${db} reports ${leaders} leaders among ${#addrs[@]} members"
+        sleep "${INTERVAL}"
+      done
+
+      echo "FAIL: ${db} never reported three connected clustered members with exactly one leader"
+      exit 1
+    }
+
+    check_db OVN_Northbound "${NB_ADDRESSES}"
+    echo "NB-RAFT-OK"
+    check_db OVN_Southbound "${SB_ADDRESSES}"
+    echo "SB-RAFT-OK"
