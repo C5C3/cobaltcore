@@ -102,6 +102,21 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  # ovn-system hosts the ovn-operator controller; the OVNCentral and OVNChassis
+  # CRs and their payload live in the tenant Namespace they are created in.
+  name: ovn-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  # neutron-system hosts the neutron-operator controller; the Neutron and
+  # NeutronMetadataAgent CRs and their payload live in the tenant Namespace
+  # they are created in.
+  name: neutron-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: c5c3-system
 ---
 apiVersion: v1

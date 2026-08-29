@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The neutron-operator controller runs in its own dedicated neutron-system
+# Namespace; the Neutron and NeutronMetadataAgent CRs and the operator-managed
+# payload (Deployment, DaemonSet, ConfigMaps, Secrets, HTTPRoute,
+# NetworkPolicy) live in the tenant Namespace the CRs are created in, the
+# agent alongside the OVNChassis its spec.chassisRef names.
+# dependsOn: keystone-operator is ordered so the networking service's identity
+# backend exists before Neutron is projected; mariadb-operator is required
+# because Neutron has a database and memcached-operator because it caches
+# Keystone tokens. That is the dependency set of placement-operator plus
+# ovn-operator, whose OVNChassis and OVNCentral CRs the metadata agent reads
+# (internal/controller/reconcile_chassis.go), so the OVN CRDs have to be
+# registered before this operator starts.
+# rabbitmq-cluster-operator is absent from the list although the Neutron
+# agents talk over the shared message bus: it is applied by a Flux
+# Kustomization, and a HelmRelease dependsOn can only reference other
+# HelmReleases. See the "Dependency Order" section of
+# docs/reference/infrastructure/infrastructure-manifests.md.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: neutron-operator
+  namespace: neutron-system
+spec:
+  interval: 30m
+  dependsOn:
+    - name: cert-manager
+      namespace: cert-manager
+    - name: mariadb-operator
+      namespace: mariadb-system
+    - name: memcached-operator
+      namespace: memcached-system
+    - name: external-secrets
+      namespace: external-secrets
+    - name: keystone-operator
+      namespace: keystone-system
+    - name: ovn-operator
+      namespace: ovn-system
+  chart:
+    spec:
+      chart: neutron-operator
+      # Floor 0.1.0: the first published chart, whose values schema already
+      # accepts image.digest. Older charts do not exist — this operator is
+      # first published to GHCR when this release lands on main.
+      version: ">=0.1.0 <1.0.0"
+      sourceRef:
+        kind: HelmRepository
+        name: c5c3-charts
+        namespace: flux-system
+  values:
+    replicas: 2
+    leaderElection:
+      enabled: true
+    image:
+      # Use latest until a versioned release (v* git tag) publishes a semver image tag.
+      # The chart default (appVersion) only works once 0.1.0 has been released.
+      tag: latest
+  # image.digest is injected from a ConfigMap that
+  # hack/refresh-operator-image-digests.sh (re)applies at deploy time on the
+  # WITH_CONTROLPLANE flux path, pinning the mutable :latest tag to the digest
+  # current at deploy. optional: true — when the ConfigMap is absent (default
+  # Quick Start and CI paths) the release renders exactly as before. Flux
+  # merges valuesFrom first, then spec.values on top per-key (deep merge), so
+  # image.tag stays from spec.values and image.digest comes only from here.
+  valuesFrom:
+    - kind: ConfigMap
+      name: neutron-operator-image-digest
+      valuesKey: values.yaml
+      optional: true
+  install:
+    crds: CreateReplace
+    createNamespace: true
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
