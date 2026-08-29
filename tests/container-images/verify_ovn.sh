@@ -195,14 +195,16 @@ test_user_posture() {
   done
 }
 
-# --- Test 8: the helpers the chassis DaemonSets call ---
+# --- Test 8: the helpers the chassis DaemonSets and datapath probes call ---
 test_chassis_helpers() {
-  echo "Test: modprobe and ip are available"
+  echo "Test: modprobe, ip and ping are available"
   # The chassis DaemonSets of #903 load host kernel modules with modprobe
   # (kmod) and inspect interfaces with ip (iproute2) from inside this image.
+  # The datapath probes of the OVN overlay and southbound-outage e2e suites
+  # ping across the Geneve tunnel with ping (iputils-ping).
   local tool exit_code
 
-  for tool in modprobe ip; do
+  for tool in modprobe ip ping; do
     exit_code=0
     docker run --rm "$IMAGE" sh -c "command -v $tool" > /dev/null 2>&1 || exit_code=$?
     assert_eq "$tool resolves on PATH" "0" "$exit_code"

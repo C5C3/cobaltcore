@@ -600,6 +600,7 @@ two-stage build. Both stages start from the same digest-pinned `ubuntu:noble`.
 | --- | --- |
 | `ca-certificates` | TLS trust store |
 | `iproute2` | `ip`, which the chassis DaemonSets of issue #903 use to inspect interfaces |
+| `iputils-ping` | `ping`, which the OVN datapath e2e probes send across the Geneve tunnel |
 | `kmod` | `modprobe`, which those DaemonSets use to load host kernel modules |
 | `libcap-ng0` | Privilege-drop library the daemons link against |
 | `libssl3t64` | OpenSSL 3 runtime for the TLS-protected OVSDB connections |
@@ -652,7 +653,8 @@ and `vswitch.ovsschema` — the schemas are the runtime artifact this image
 exists to serve, and no other assertion here reads them. The other four cover
 the packaging: `ldd` free of unresolved libraries with `libssl.so.3` linked
 into the TLS-speaking daemons, no build toolchain and no development headers,
-UID 42424 with writable state directories, and `modprobe` and `ip` on `PATH`.
+UID 42424 with writable state directories, and `modprobe`, `ip` and `ping` on
+`PATH`.
 
 ### keystone-federation-proxy
 
