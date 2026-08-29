@@ -50,7 +50,7 @@ make_tree() {
   for release in "$@"; do
     slug="${release//./-}"
     mkdir -p "$tree/releases/$release"
-    for service in keystone glance barbican; do
+    for service in keystone glance barbican neutron; do
       mkdir -p "$tree/tests/tempest/${service}-${slug}"
     done
   done
@@ -93,7 +93,7 @@ require_jq() {
 # ---------------------------------------------------------------------------
 
 test_unset_selection_emits_every_service() {
-  echo "Test: an unset or empty TEMPEST_SERVICES emits all three services"
+  echo "Test: an unset or empty TEMPEST_SERVICES emits every service"
 
   require_jq 4 || return
   local tree
@@ -102,14 +102,14 @@ test_unset_selection_emits_every_service() {
   run_matrix "$tree"
   assert_eq "the generator succeeds" "0" "$RC"
   assert_eq "every service is emitted for every release" \
-    "barbican barbican glance glance keystone keystone" "$(services_in_matrix)"
+    "barbican barbican glance glance keystone keystone neutron neutron" "$(services_in_matrix)"
 
   # A skipped job still evaluates its matrix expression, so an empty include
   # would fail the run rather than skip it. Empty has to mean "all", not "none".
   run_matrix "$tree" ""
   assert_eq "an empty selection succeeds" "0" "$RC"
   assert_eq "an empty selection is not an empty matrix" \
-    "barbican barbican glance glance keystone keystone" "$(services_in_matrix)"
+    "barbican barbican glance glance keystone keystone neutron neutron" "$(services_in_matrix)"
 }
 
 test_selection_narrows_the_matrix() {

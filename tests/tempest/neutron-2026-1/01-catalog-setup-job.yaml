@@ -1,0 +1,84 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Registers the Neutron network service and its public/internal endpoints in the
+# keystone-neutron-tempest-2026-1 catalog so Tempest's network client can
+# discover the neutron-tempest-2026-1 API. keystone-manage bootstrap only
+# creates the identity service, so both must be added out-of-band.
+#
+# No role is created here. The network suites run on dynamic credentials that
+# carry the admin, member and reader roles keystone-manage bootstrap already
+# seeds, and Neutron's default policies grant project-member CRUD on networks,
+# subnets, ports, security groups and subnet pools. The barbican leg needs an
+# extra key-manager:service-admin role because devstack's barbican plugin
+# creates one that bootstrap does not; Neutron has no such role.
+#
+# It authenticates as the bootstrap admin (keystone-admin Secret) and is written
+# idempotently so a Job retry converges rather than duplicating or erroring.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: neutron-tempest-catalog-setup
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: ghcr.io/c5c3/tempest:2026.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-neutron-tempest-2026-1.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # Each step is idempotent so a Job retry re-converges instead of
+              # failing on AlreadyExists.
+              #
+              # Service create is guarded by a name-list grep (mirroring the
+              # external-keystone fixture): `openstack service show` of a missing
+              # resource can exit 0 on this image, so a show-guard would skip the
+              # create; listing + an exact-match grep is unambiguous.
+              if ! openstack service list --format value -c Name | grep -qx neutron; then
+                openstack service create --name neutron \
+                  --description "OpenStack Networking" network
+              fi
+
+              # Endpoints are guarded by listing the neutron service's existing
+              # endpoints for the interface and matching the exact URL (fixed
+              # string, so the dotted FQDN is not treated as a regex).
+              create_endpoint() {
+                interface="$1"
+                url="$2"
+                if ! openstack endpoint list --service neutron --interface "${interface}" \
+                     --format value -c URL | grep -qxF "${url}"; then
+                  openstack endpoint create --region RegionOne network "${interface}" "${url}"
+                fi
+              }
+
+              NEUTRON_URL="http://neutron-tempest-2026-1.openstack.svc:9696"
+              create_endpoint public "${NEUTRON_URL}"
+              create_endpoint internal "${NEUTRON_URL}"
+
+              echo "OK: neutron service and endpoints registered"
+              openstack endpoint list --service neutron --format value -c Interface -c URL

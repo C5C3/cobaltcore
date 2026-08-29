@@ -116,7 +116,16 @@ test_barbican_tempest_plugin_importable() {
   assert_eq "import barbican_tempest_plugin exits 0" "0" "$exit_code"
 }
 
-# --- Test 9: python-barbicanclient is importable ---
+# --- Test 9: neutron-tempest-plugin is importable ---
+test_neutron_tempest_plugin_importable() {
+  echo "Test: neutron-tempest-plugin is importable"
+  local exit_code=0
+  docker run --rm "$IMAGE" python3 -c 'import neutron_tempest_plugin' > /dev/null 2>&1 || exit_code=$?
+
+  assert_eq "import neutron_tempest_plugin exits 0" "0" "$exit_code"
+}
+
+# --- Test 10: python-barbicanclient is importable ---
 test_barbicanclient_importable() {
   echo "Test: python-barbicanclient is importable"
   local exit_code=0
@@ -144,6 +153,8 @@ echo ""
 test_osc_placement_cli_registered
 echo ""
 test_barbican_tempest_plugin_importable
+echo ""
+test_neutron_tempest_plugin_importable
 echo ""
 test_barbicanclient_importable
 echo ""

@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Dedicated Neutron CR for the Neutron Tempest leg (2025.2 release).
+# Uses a separate database (neutron_tempest_2025_2) to avoid stale state from
+# prior Chainsaw E2E tests that reuse the same kind cluster. It authenticates
+# against the dedicated keystone-neutron-tempest-2025-2 identity service with
+# the real admin credentials so the tempest.api.network and
+# neutron_tempest_plugin.api suites exercise the production auth path
+# end-to-end. The database credentials come from the ESO-synced neutron-db
+# Secret and the service-user password from the pre-seeded keystone-admin
+# Secret. The broker Secret and the OVN control plane come from the two sibling
+# fixtures.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-tempest-2025-2
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 2
+    # Mirror tests/tempest/glance-2025-2/02-glance-cr.yaml: with resources unset
+    # the webhook fills in the shared defaults (500m CPU, 512Mi memory,
+    # internal/common/types/workload.go), which puts the four uWSGI workers
+    # below into half a core and one 512Mi cgroup. The port-forward pins every
+    # stestr worker to a single pod, so that pod's budget has to cover the whole
+    # suite and the second replica takes no traffic.
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 1536Mi
+  # neutron-server serves its API from uWSGI, so this pod's request capacity is
+  # replicas x processes. The webhook default (2) is below the stestr worker
+  # count ci-run-tempest.sh runs (TEMPEST_CONCURRENCY, default 4), and the
+  # port-forward pins every worker to a single pod, so raise the process count
+  # to 4: one pod alone then serves the four workers.
+  apiServer:
+    uwsgi:
+      processes: 4
+  # The RPC workers serve no request the suite makes; one is enough to keep the
+  # Deployment Ready without lengthening the bring-up.
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_tempest_2025_2
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-tempest-2025-2-messaging
+  ovn:
+    centralRef:
+      name: ovn-neutron-tempest-2025-2
+  keystoneEndpoint: http://keystone-neutron-tempest-2025-2.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

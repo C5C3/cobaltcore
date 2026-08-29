@@ -46,10 +46,18 @@
 #                   add-host treatment, so the catalog's key-manager endpoint
 #                   resolves to the forwarded port. Used by the barbican leg
 #                   (barbican_tempest_plugin.tests.api against a real Barbican).
+#   NEUTRON_K8S_NAME — K8s Service name of a Neutron API to port-forward on
+#                   9696 (default: empty). The neutron counterpart of
+#                   GLANCE_K8S_NAME: same forward, readiness poll and add-host
+#                   treatment, so the catalog's network endpoint resolves to the
+#                   forwarded port. Neutron answers its root path with the
+#                   version document and no /healthcheck, so that is what the
+#                   poll asks for. Used by the neutron leg (tempest.api.network
+#                   and neutron_tempest_plugin.api against a real Neutron).
 #   TEMPEST_CONCURRENCY — stestr worker count (default: 4). Must not exceed the
 #                   request capacity (replicas × uwsgi.processes) of ANY target
-#                   it drives — the Keystone target, and on the glance and
-#                   barbican legs their service target too. Every port-forward
+#                   it drives — the Keystone target, and on the glance, barbican
+#                   and neutron legs their service target too. Every port-forward
 #                   pins to a single pod, so capacity is raised via
 #                   uwsgi.processes in the target CR, not via replicas.
 #
@@ -86,13 +94,19 @@ TEMPEST_CONCURRENCY="${TEMPEST_CONCURRENCY:-4}"
 SERVICE_K8S_NAME="${SERVICE_K8S_NAME:-${SERVICE}-tempest-2025-2}"
 CATALOG_SVC="${SERVICE_K8S_NAME}.${NAMESPACE}.svc.cluster.local"
 
-# Optional Glance API to port-forward on 9292 (glance leg). Empty for the
-# keystone-only scenario.
+# Optional service APIs port-forwarded alongside Keystone, one row per leg as
+# "<display name>:<env var>:<port>:<readiness path>". Each var is empty in the
+# keystone-only scenario, which skips that leg's forward, poll and add-host.
+# Neutron serves no /healthcheck; its root path returns the version document
+# unauthenticated, so that is its readiness signal.
 GLANCE_K8S_NAME="${GLANCE_K8S_NAME:-}"
-
-# Optional Barbican API to port-forward on 9311 (barbican leg). Empty for the
-# keystone-only scenario.
 BARBICAN_K8S_NAME="${BARBICAN_K8S_NAME:-}"
+NEUTRON_K8S_NAME="${NEUTRON_K8S_NAME:-}"
+OPTIONAL_TARGETS=(
+  "Glance:GLANCE_K8S_NAME:9292:/healthcheck"
+  "Barbican:BARBICAN_K8S_NAME:9311:/healthcheck"
+  "Neutron:NEUTRON_K8S_NAME:9696:/"
+)
 
 # ---------------------------------------------------------------------------
 # 1. Prepare output directories
@@ -119,31 +133,25 @@ ADMIN_PASSWORD=$(echo "${ADMIN_PASSWORD_B64}" | base64 -d)
 # ---------------------------------------------------------------------------
 kubectl port-forward "svc/${SERVICE_K8S_NAME}" -n "${NAMESPACE}" 5000:5000 >/dev/null 2>&1 &
 PF_PID=$!
-GLANCE_PF_PID=""
-BARBICAN_PF_PID=""
+OPTIONAL_PF_PIDS=()
 cleanup() {
   kill "${PF_PID}" 2>/dev/null || true
-  if [[ -n "${GLANCE_PF_PID}" ]]; then
-    kill "${GLANCE_PF_PID}" 2>/dev/null || true
-  fi
-  if [[ -n "${BARBICAN_PF_PID}" ]]; then
-    kill "${BARBICAN_PF_PID}" 2>/dev/null || true
+  local pid
+  if [[ ${#OPTIONAL_PF_PIDS[@]} -gt 0 ]]; then
+    for pid in "${OPTIONAL_PF_PIDS[@]}"; do
+      kill "${pid}" 2>/dev/null || true
+    done
   fi
 }
 trap cleanup EXIT
 
-# Forward the Glance API alongside Keystone when a glance target is configured.
-if [[ -n "${GLANCE_K8S_NAME}" ]]; then
-  kubectl port-forward "svc/${GLANCE_K8S_NAME}" -n "${NAMESPACE}" 9292:9292 >/dev/null 2>&1 &
-  GLANCE_PF_PID=$!
-fi
-
-# Forward the Barbican API alongside Keystone when a barbican target is
-# configured.
-if [[ -n "${BARBICAN_K8S_NAME}" ]]; then
-  kubectl port-forward "svc/${BARBICAN_K8S_NAME}" -n "${NAMESPACE}" 9311:9311 >/dev/null 2>&1 &
-  BARBICAN_PF_PID=$!
-fi
+# Forward every configured optional API alongside Keystone.
+for target in "${OPTIONAL_TARGETS[@]}"; do
+  IFS=: read -r name var port path <<<"${target}"
+  [[ -n "${!var}" ]] || continue
+  kubectl port-forward "svc/${!var}" -n "${NAMESPACE}" "${port}:${port}" >/dev/null 2>&1 &
+  OPTIONAL_PF_PIDS+=("$!")
+done
 
 ready=false
 for _ in $(seq 1 10); do
@@ -158,35 +166,22 @@ if [[ "${ready}" != "true" ]]; then
   exit 1
 fi
 
-if [[ -n "${GLANCE_K8S_NAME}" ]]; then
-  glance_ready=false
+for target in "${OPTIONAL_TARGETS[@]}"; do
+  IFS=: read -r name var port path <<<"${target}"
+  [[ -n "${!var}" ]] || continue
+  target_ready=false
   for _ in $(seq 1 10); do
-    if curl -sf http://localhost:9292/healthcheck >/dev/null 2>&1; then
-      glance_ready=true
+    if curl -sf "http://localhost:${port}${path}" >/dev/null 2>&1; then
+      target_ready=true
       break
     fi
     sleep 1
   done
-  if [[ "${glance_ready}" != "true" ]]; then
-    echo "::error::Glance API at http://localhost:9292 did not become reachable after 10 attempts"
+  if [[ "${target_ready}" != "true" ]]; then
+    echo "::error::${name} API at http://localhost:${port} did not become reachable after 10 attempts"
     exit 1
   fi
-fi
-
-if [[ -n "${BARBICAN_K8S_NAME}" ]]; then
-  barbican_ready=false
-  for _ in $(seq 1 10); do
-    if curl -sf http://localhost:9311/healthcheck >/dev/null 2>&1; then
-      barbican_ready=true
-      break
-    fi
-    sleep 1
-  done
-  if [[ "${barbican_ready}" != "true" ]]; then
-    echo "::error::Barbican API at http://localhost:9311 did not become reachable after 10 attempts"
-    exit 1
-  fi
-fi
+done
 
 # ---------------------------------------------------------------------------
 # 4. Generate Tempest config from template
@@ -268,21 +263,20 @@ fi
 WORKSPACE_ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
 
 # Point the catalog's service DNS names at the forwarded ports inside the
-# container. The keystone names are always present; the glance and barbican
-# names are added only when the matching target is configured so their image
-# and key-manager endpoints resolve to the forwarded 9292 and 9311.
+# container. The keystone names are always present; the glance, barbican and
+# neutron names are added only when the matching target is configured so their
+# image, key-manager and network endpoints resolve to the forwarded 9292, 9311
+# and 9696.
 ADD_HOST_ARGS=(
   --add-host "${CATALOG_SVC}:127.0.0.1"
   --add-host "${SERVICE_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1"
 )
-if [[ -n "${GLANCE_K8S_NAME}" ]]; then
-  ADD_HOST_ARGS+=(--add-host "${GLANCE_K8S_NAME}.${NAMESPACE}.svc.cluster.local:127.0.0.1")
-  ADD_HOST_ARGS+=(--add-host "${GLANCE_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1")
-fi
-if [[ -n "${BARBICAN_K8S_NAME}" ]]; then
-  ADD_HOST_ARGS+=(--add-host "${BARBICAN_K8S_NAME}.${NAMESPACE}.svc.cluster.local:127.0.0.1")
-  ADD_HOST_ARGS+=(--add-host "${BARBICAN_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1")
-fi
+for target in "${OPTIONAL_TARGETS[@]}"; do
+  IFS=: read -r name var port path <<<"${target}"
+  [[ -n "${!var}" ]] || continue
+  ADD_HOST_ARGS+=(--add-host "${!var}.${NAMESPACE}.svc.cluster.local:127.0.0.1")
+  ADD_HOST_ARGS+=(--add-host "${!var}.${NAMESPACE}.svc:127.0.0.1")
+done
 
 docker run --rm \
   --network host \

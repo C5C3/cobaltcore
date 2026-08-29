@@ -66,7 +66,7 @@ EVENT_NAME="${EVENT_NAME:-pull_request}"
 
 # Services that have a Tempest configuration directory under tests/tempest/.
 # Mirrors the service loop in hack/ci-generate-tempest-matrix.sh.
-TEMPEST_ALL_SERVICES="keystone glance barbican"
+TEMPEST_ALL_SERVICES="keystone glance barbican neutron"
 
 # ---------------------------------------------------------------------------
 # Helpers

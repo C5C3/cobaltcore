@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVN control plane the neutron-tempest-2025-2 CR programs.
+#
+# The Neutron reconciler gates on this CR's status: it needs both
+# internalDbAddress values and the published clientSecretName before it renders
+# ml2_conf.ini. Every network, subnet and port the suite creates lands in the
+# Northbound database here, so the leg fails if it is not up. Single-member Raft
+# clusters and a single northd keep the bring-up inside the job's timeout; the
+# multi-member cluster is what tests/e2e/ovn/central-basic-deployment/ covers.
+#
+# The backup CronJob is suspended: the Tempest leg asserts nothing about it, and
+# a suspended schedule keeps the hourly database dump off the test cluster.
+#
+# The issuer is the cluster-scoped one the kind overlay ships. OVN authenticates
+# every connection, so both databases and the client identity the Neutron pods
+# mount are issued from the same CA.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-neutron-tempest-2025-2
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true

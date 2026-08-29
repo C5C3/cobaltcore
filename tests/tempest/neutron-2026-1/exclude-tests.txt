@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Tempest exclude list for Neutron network API tests.
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+# Follows the same format as releases/2026.1/test-excludes/keystone.txt.
+#
+# Every group of patterns added here carries a tracked-by/re-evaluate-on pair
+# directly above it so an exclusion does not silently outlive its cause:
+#   tracked-by:      link to the issue that owns the exclusion
+#   re-evaluate-on:  the condition that retires it, e.g. neutron-tempest-plugin
+#                    > <the version the mismatch was observed on>
+# Re-check every group on each plugin bump and drop the patterns upstream has
+# fixed.
+#
+# No exclusions yet. The first CI run records which tests the environment
+# cannot serve, and those land here with their tracked-by/re-evaluate-on pair.

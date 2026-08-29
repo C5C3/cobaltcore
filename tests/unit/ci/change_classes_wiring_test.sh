@@ -95,7 +95,7 @@ test_every_filter_steers_something() {
   # Two classes cannot move an output on their own, and are checked below
   # instead: publish_legacy is read on push events only, and the per-service
   # Tempest filters narrow a matrix that tempest_src has to switch on first.
-  local exempt=" publish_legacy tempest_keystone tempest_glance tempest_barbican "
+  local exempt=" publish_legacy tempest_keystone tempest_glance tempest_barbican tempest_neutron "
 
   local name inert=""
   for name in $(declared_filters); do
@@ -118,9 +118,9 @@ test_every_filter_steers_something() {
   # what CI ever sees; what the per-service filter has to do is narrow.
   assert_contains "tempest_src alone runs every service" \
     "$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_tempest_src=true)" \
-    'tempest-services=["keystone","glance","barbican"]'
+    'tempest-services=["keystone","glance","barbican","neutron"]'
   local svc
-  for svc in keystone glance barbican; do
+  for svc in keystone glance barbican neutron; do
     assert_contains "tempest_${svc} narrows the matrix to ${svc}" \
       "$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_tempest_src=true "FILTER_tempest_${svc}=true")" \
       "tempest-services=[\"${svc}\"]"
