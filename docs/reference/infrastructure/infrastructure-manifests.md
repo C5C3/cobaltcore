@@ -52,6 +52,7 @@ deploy/
         ├── kustomization.yaml            Infrastructure kustomize overlay
         ├── cluster-issuer.yaml           Self-signed ClusterIssuer (requires cert-manager CRDs)
         ├── db-ca-issuer.yaml             OpenStack DB CA Certificate + ClusterIssuer
+        ├── ovn-ca-issuer.yaml            OVN CA Certificate + ClusterIssuer
         ├── mariadb.yaml                  MariaDB Galera cluster for OpenStack (with TLS)
         └── memcached.yaml                Memcached cluster for OpenStack
 ```
@@ -893,6 +894,35 @@ to render its server certificate. The infrastructure kustomization still referen
 For the end-to-end TLS path the issuer participates in, see the
 [Enable Keystone Database TLS](../../guides/keystone/enable-keystone-database-tls.md) how-to.
 
+### OVN CA Issuer
+
+**File:** `deploy/flux-system/infrastructure/ovn-ca-issuer.yaml`
+
+Provisions the cert-manager CA that anchors the OVN database trust domain. The file
+declares two resources:
+
+| Resource | API version | Kind | Name | Namespace |
+| --- | --- | --- | --- | --- |
+| CA keypair Certificate | `cert-manager.io/v1` | `Certificate` | `openstack-ovn-ca` | `cert-manager` |
+| CA ClusterIssuer | `cert-manager.io/v1` | `ClusterIssuer` | `openstack-ovn-ca-issuer` | Cluster-scoped |
+
+The bootstrap path matches the DB CA above. `selfsigned-cluster-issuer` mints a
+self-signed CA `Certificate` (`isCA: true`, ECDSA P-256, 3-year lifetime, 30-day
+`renewBefore`) into the `openstack-ovn-ca` Secret in the `cert-manager` namespace, and
+`openstack-ovn-ca-issuer` signs the leaves from it: the Northbound and Southbound
+ovsdb-server certificates, plus the client certificates ovn-northd, the relays, and the
+chassis agents present to those databases.
+
+OVN keeps a CA of its own instead of sharing `openstack-db-ca-issuer`. OVS/OVN
+authenticates a peer with a single check: the peer certificate must chain to the
+configured CA. Every leaf this issuer signs is therefore a valid OVSDB client, so it
+signs OVN database and client certificates and nothing else.
+
+The `OVNCentral` CR names the ClusterIssuer in `spec.tls.issuerRef`. That field defaults
+to `kind: ClusterIssuer` because the chassis agents run outside the OVNCentral's
+namespace, which a namespaced `Issuer` cannot reach. An issuer that exposes no `ca.crt`
+is rejected by the ovn-operator's TLS sub-reconciler.
+
 ### MariaDB Galera Cluster
 
 **File:** `deploy/flux-system/infrastructure/mariadb.yaml`
@@ -1348,19 +1378,19 @@ The infrastructure kustomization includes CRD-dependent resources that require t
 operator CRDs to be installed first. This kustomization must be applied after the base
 kustomization and after operators have finished installing their CRDs.
 
-**Resource count:** 6 manifests producing 11 Kubernetes resources (the
-`db-ca-issuer.yaml` and `openbao-ca-issuer.yaml` manifests declare two resources each: a
-CA Certificate and the CA-type ClusterIssuer that signs from it; `garage.yaml` declares
-four).
+**Resource count:** 7 manifests producing 13 Kubernetes resources (the
+`db-ca-issuer.yaml`, `ovn-ca-issuer.yaml`, and `openbao-ca-issuer.yaml` manifests declare
+two resources each: a CA Certificate and the CA-type ClusterIssuer that signs from it;
+`garage.yaml` declares four).
 
 | Category | Count | Resources |
 | --- | --- | --- |
-| ClusterIssuer | 3 | `selfsigned-cluster-issuer`, `openstack-db-ca-issuer`, `openbao-ca-issuer` (all require cert-manager CRDs) |
-| Certificate (CA keypairs) | 2 | `openstack-db-ca`, `openbao-ca` — both CA keypair Secrets in the `cert-manager` namespace, signed by `selfsigned-cluster-issuer` |
+| ClusterIssuer | 4 | `selfsigned-cluster-issuer`, `openstack-db-ca-issuer`, `openstack-ovn-ca-issuer`, `openbao-ca-issuer` (all require cert-manager CRDs) |
+| Certificate (CA keypairs) | 3 | `openstack-db-ca`, `openstack-ovn-ca`, `openbao-ca` — all three CA keypair Secrets in the `cert-manager` namespace, signed by `selfsigned-cluster-issuer` |
 | MariaDB | 1 | `openstack-db` (requires mariadb-operator CRDs; TLS enabled per [MariaDB Galera Cluster](#mariadb-galera-cluster)) |
 | Memcached | 1 | `openstack-memcached` (requires memcached-operator CRDs) |
 | GarageCluster / GarageBucket / GarageKey | 4 | `garage`, `glance-images`, `glance-images-2`, `glance-s3` (require garage-operator CRDs; see [Garage Object Store](#garage-object-store)) |
-| **Total** | **11** | |
+| **Total** | **13** | |
 
 The proving instance's own five resources (two Certificates, a ServiceAccount, a
 ClusterRoleBinding, and the `OpenBaoCluster`) are not counted here: they ship in the kind
@@ -1396,6 +1426,7 @@ kubectl apply -k deploy/flux-system/infrastructure/
 
 This applies the CRD-dependent resources: the `selfsigned-cluster-issuer`
 ClusterIssuer, the `openstack-db-ca-issuer` ClusterIssuer plus its backing CA
+`Certificate`, the `openstack-ovn-ca-issuer` ClusterIssuer plus its backing CA
 `Certificate`, the `openbao-ca-issuer` ClusterIssuer plus
 its backing CA `Certificate`, the MariaDB Galera cluster, the
 Memcached cluster, and the Garage object store (`GarageCluster` / `GarageBucket` /

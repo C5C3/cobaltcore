@@ -105,6 +105,17 @@ spec:
           status:
             (conditions[?type == 'Ready']):
             - status: "True"
+    # The OVNCentral fixtures under tests/e2e/ovn and tests/e2e/neutron
+    # name this CA issuer in spec.tls.issuerRef.
+    - assert:
+        resource:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: openstack-ovn-ca-issuer
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
     - assert:
         resource:
           apiVersion: k8s.mariadb.com/v1alpha1
