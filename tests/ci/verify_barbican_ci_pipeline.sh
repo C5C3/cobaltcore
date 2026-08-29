@@ -79,9 +79,9 @@ extract_codecov_flag_block() {
 
 # Run ci-resolve-changes.sh with the supplied env and echo the GITHUB_OUTPUT
 # contents. ALL_OPERATORS deliberately mirrors the ci.yaml value ("keystone
-# c5c3 horizon glance placement barbican") so the behavioural assertions
-# exercise the real resolution codepath. Args are passed as KEY=VALUE pairs
-# through the caller's env block.
+# c5c3 horizon glance placement barbican ovn neutron") so the behavioural
+# assertions exercise the real resolution codepath. Args are passed as KEY=VALUE
+# pairs through the caller's env block.
 run_resolve() {
   local out
   out=$(mktemp)
@@ -334,9 +334,12 @@ test_barbican_chaos_wiring() {
   # e2e-chaos image-load and deploy steps deleted — leaving both barbican
   # suites to run against a cluster with no barbican-operator and an empty pod
   # selector.
+  # The keystone stack loads through a step of its own, skipped on the ovn leg
+  # whose suites create no Keystone, Horizon, Glance or Barbican; barbican rides
+  # with it. The sibling "Load E2E images" step carries the per-leg images.
   local chaos_section pull_step kind_load_step deploy_step
   chaos_section=$(extract_yaml_job_section "$CI_YAML" "e2e-chaos")
-  pull_step=$(extract_yaml_step "$chaos_section" "Load E2E images")
+  pull_step=$(extract_yaml_step "$chaos_section" "Load E2E images (keystone stack)")
 
   assert_contains \
     "the GHCR pull step lists the barbican-operator image" \
@@ -387,12 +390,13 @@ test_barbican_chaos_wiring() {
     "BARBICAN_SECRET_STORE_GRANTS: openstack=openbao-instance-provisioner"
 
   # barbican-operator-pod-kill runs on the pod leg and barbican-openbao-outage
-  # on the network leg, so the deploy stays ungated. A leg gate copied from the
-  # placement deploy would leave one of the two suites without an operator.
+  # on the network leg, so the deploy may only skip the third one. A gate
+  # copied from the placement deploy, which names a single leg, would leave one
+  # of the two suites without an operator.
   assert_not_contains \
-    "the barbican operator deploy step carries no chaos-leg gate" \
+    "the barbican operator deploy is not narrowed to one chaos leg" \
     "$deploy_step" \
-    "if:"
+    "matrix.suite =="
 }
 
 # ── e2e-controlplane wiring ─────────────────────────────────────────────────
@@ -591,7 +595,7 @@ test_resolve_emits_barbican_on_operator_change() {
 
   local resolved operators has
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican" \
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
     GITHUB_REF="refs/heads/main" \
     FILTER_keystone="false" \
     FILTER_c5c3="false" \
@@ -630,7 +634,7 @@ test_resolve_excludes_barbican_on_keystone_only_change() {
 
   local resolved operators
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican" \
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
     GITHUB_REF="refs/heads/main" \
     FILTER_keystone="true" \
     FILTER_c5c3="false" \
@@ -659,11 +663,11 @@ test_resolve_excludes_barbican_on_keystone_only_change() {
 }
 
 test_resolve_emits_all_on_go_common_change() {
-  echo "Test: ci-resolve-changes.sh emits all six operators on a go_common change"
+  echo "Test: ci-resolve-changes.sh emits all eight operators on a go_common change"
 
   local resolved operators op
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican" \
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
     GITHUB_REF="refs/heads/main" \
     FILTER_keystone="false" \
     FILTER_c5c3="false" \
@@ -680,7 +684,7 @@ test_resolve_emits_all_on_go_common_change() {
 
   operators=$(output_value "$resolved" "e2e-operators")
 
-  for op in keystone c5c3 horizon glance placement barbican; do
+  for op in keystone c5c3 horizon glance placement barbican ovn neutron; do
     assert_contains \
       "go_common change includes $op" \
       "$operators" \
@@ -689,11 +693,11 @@ test_resolve_emits_all_on_go_common_change() {
 }
 
 test_resolve_emits_all_on_tag_push() {
-  echo "Test: ci-resolve-changes.sh emits all six operators on a tag push"
+  echo "Test: ci-resolve-changes.sh emits all eight operators on a tag push"
 
   local resolved operators op
   resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican" \
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
     GITHUB_REF="refs/tags/v1.0.0" \
     FILTER_keystone="false" \
     FILTER_c5c3="false" \
@@ -710,7 +714,7 @@ test_resolve_emits_all_on_tag_push() {
 
   operators=$(output_value "$resolved" "e2e-operators")
 
-  for op in keystone c5c3 horizon glance placement barbican; do
+  for op in keystone c5c3 horizon glance placement barbican ovn neutron; do
     assert_contains \
       "tag push forces $op into the e2e-operators matrix" \
       "$operators" \

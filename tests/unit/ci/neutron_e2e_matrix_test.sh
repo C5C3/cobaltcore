@@ -36,78 +36,8 @@ SKIP=0
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
 # shellcheck source=tests/lib/ci_resolve.sh
 source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-# Echo the paths-filter block of the given filter key. Filter keys sit at
-# 12-space indent and their entries deeper, so the next key at that indent ends
-# the block. Scoping matters for shared entries such as operators/Dockerfile,
-# which every operator filter lists.
-filter_block() {
-  awk -v key="            $1:" '
-    $0 == key { in_block = 1; next }
-    in_block && /^            [a-z0-9_]+:$/ { exit }
-    in_block { print }
-  ' "$CI_YAML"
-}
-
-# Echo the body of the top-level ci.yaml job <name>. The block ends at the next
-# 2-space line that is not part of the body — the next job key, or the comment
-# header introducing it.
-job_block() {
-  awk -v key="  $1:" '
-    $0 == key { in_block = 1; next }
-    in_block && /^  [#a-z0-9-]/ { exit }
-    in_block { print }
-  ' "$CI_YAML"
-}
-
-# Echo the body of the named step of the e2e-operator job. Steps sit at 6-space
-# indent, so the next line at that indent ends the block: the following step,
-# or the comment introducing it. Scoping to the job keeps a step of the same
-# name in another job from satisfying an assertion here.
-e2e_operator_step() {
-  job_block e2e-operator | awk -v key="      - name: $1" '
-    $0 == key { in_block = 1; next }
-    in_block && /^      [-#]/ { exit }
-    in_block { print }
-  '
-}
-
-# Echo the body of the named step of the e2e-chaos job. Same shape as
-# e2e_operator_step above; scoping matters because e2e-chaos and e2e-operator
-# both carry a "Load E2E images" and a "Setup E2E infrastructure" step.
-e2e_chaos_step() {
-  job_block e2e-chaos | awk -v key="      - name: $1" '
-    $0 == key { in_block = 1; next }
-    in_block && /^      [-#]/ { exit }
-    in_block { print }
-  '
-}
-
-# Echo the body of the named step of the tempest job. Same shape as
-# e2e_operator_step above; scoping matters because tempest, e2e-operator and
-# e2e-chaos all carry a "Load E2E images" step.
-tempest_step() {
-  job_block tempest | awk -v key="      - name: $1" '
-    $0 == key { in_block = 1; next }
-    in_block && /^      [-#]/ { exit }
-    in_block { print }
-  '
-}
-
-# Echo the e2e-chaos matrix entry whose suite key is $1. Entries sit at 10-space
-# indent and their keys deeper, so the next line at that indent ends the block:
-# the following entry, or the comment introducing it.
-e2e_chaos_matrix_entry() {
-  job_block e2e-chaos | awk -v key="          - suite: $1" '
-    $0 == key { in_block = 1; next }
-    in_block && /^          [-#]/ { exit }
-    in_block { print }
-  '
-}
+# shellcheck source=tests/lib/ci_yaml.sh
+source "$PROJECT_ROOT/tests/lib/ci_yaml.sh"
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -204,7 +134,7 @@ test_e2e_leg_deploys_the_ovn_operator() {
   # CRDs alone keeps the manager's cache sync from timing out and leaves every
   # suite waiting on objects nothing reconciles.
   local deploy
-  deploy=$(e2e_operator_step "Deploy ovn-operator")
+  deploy=$(job_step e2e-operator "Deploy ovn-operator")
 
   assert_not_empty "the deploy step exists" "$deploy"
   assert_contains "it runs on the neutron leg only" "$deploy" \
@@ -232,7 +162,7 @@ test_e2e_leg_deploys_the_ovn_operator() {
   # Its pods live in ovn-system, which the first dump never looks at: that one
   # derives its Namespace from the matrix operator.
   local dump
-  dump=$(e2e_operator_step "Dump diagnostic info (ovn)")
+  dump=$(job_step e2e-operator "Dump diagnostic info (ovn)")
   assert_not_empty "the second diagnostics dump exists" "$dump"
   assert_contains "it dumps even when the suites failed" "$dump" \
     "if: always() && matrix.operator == 'neutron'"
@@ -245,8 +175,8 @@ test_e2e_leg_loads_the_ovn_images() {
   # kind pulls nothing the run did not load: the operator image the deploy runs
   # and the daemon image its OVNCentral rolls out both have to be on the node.
   local resolve load ovn_branch neutron_branch
-  resolve=$(e2e_operator_step "Resolve E2E images")
-  load=$(e2e_operator_step "Load images into kind")
+  resolve=$(job_step e2e-operator "Resolve E2E images")
+  load=$(job_step e2e-operator "Load images into kind")
   neutron_branch=$(printf '%s\n' "$resolve" | awk '
     /= "neutron" \]; then/ { in_b = 1; next }
     in_b && /^ *fi$/ { exit }
@@ -273,6 +203,64 @@ test_e2e_leg_loads_the_ovn_images() {
   assert_not_empty "the resolve step branches on the ovn leg too" "$ovn_branch"
   assert_not_contains "the ovn branch does not repeat the operator image" \
     "$ovn_branch" "ovn-operator:dev"
+}
+
+test_go_matrices_list_neutron() {
+  echo "Test: the unit and integration test matrices include neutron"
+
+  # Both matrices are resolved per pull request rather than hand-written, so an
+  # operator reaches them in two steps: the jobs read the resolver's list, and
+  # the resolver puts the operator in it when its own code changes. An operator
+  # missing from either half compiles and ships with its `go test` leg never
+  # run, and the pipeline stays green because no job failed.
+  local matrix_count
+  matrix_count=$(grep -c \
+    'matrix: ${{ fromJson(needs.changes.outputs.test-targets) }}' "$CI_YAML") || true
+
+  assert_eq "both the test and the test-integration matrix read test-targets" \
+    "2" "$matrix_count"
+
+  local all_operators="keystone c5c3 horizon glance placement barbican ovn neutron"
+  assert_contains "a neutron change puts neutron in the test matrix" \
+    "$(resolve_output test-targets refs/heads/main "$all_operators" FILTER_neutron=true)" \
+    '"neutron"'
+}
+
+test_cleanup_matrices_cover_the_neutron_images() {
+  echo "Test: the derived cleanup package lists cover the neutron images"
+
+  # cleanup-images.yaml and ci.yaml's cleanup-e2e-tags both build their package
+  # matrix from this generator, so coverage is a property of its output rather
+  # than of a list someone has to remember to extend. An uncovered package
+  # leaks its run-scoped GHCR tags on every pull request.
+  local matrix all_packages e2e_packages
+  matrix=$(cd "$PROJECT_ROOT" && bash hack/ci-generate-cleanup-matrix.sh)
+  all_packages=$(echo "$matrix" | sed -n 's/^cleanup-packages=//p')
+  e2e_packages=$(echo "$matrix" | sed -n 's/^cleanup-e2e-packages=//p')
+
+  assert_contains "the nightly sweep covers neutron-operator" \
+    "$all_packages" '"neutron-operator"'
+  assert_contains "the per-run sweep covers neutron-operator" \
+    "$e2e_packages" '"neutron-operator"'
+  assert_contains "the nightly sweep covers neutron" \
+    "$all_packages" '"neutron"'
+  assert_contains "the per-run sweep covers neutron" \
+    "$e2e_packages" '"neutron"'
+}
+
+test_a_keystone_only_change_produces_no_neutron_leg() {
+  echo "Test: a keystone-only change keeps neutron out of the e2e-operators matrix"
+
+  # The positive case above proves the filter reaches the matrix; this one
+  # proves it still gates. A filter wired to a constant would satisfy the
+  # positive assertion and put every operator on every pull request.
+  local all_operators="keystone c5c3 horizon glance placement barbican ovn neutron"
+  local matrix
+  matrix=$(resolve_output e2e-operators refs/heads/main "$all_operators" \
+    FILTER_keystone=true)
+
+  assert_contains "the matrix carries the keystone leg" "$matrix" '"keystone"'
+  assert_not_contains "and no neutron leg" "$matrix" '"neutron"'
 }
 
 test_build_e2e_images_builds_the_neutron_images() {
@@ -313,14 +301,14 @@ test_chaos_network_leg_runs_the_neutron_suites() {
     "tests/e2e-chaos/neutron-broker-outage"
 
   local load
-  load=$(e2e_chaos_step "Load E2E images")
+  load=$(job_step e2e-chaos "Load E2E images")
   assert_contains "the leg pulls the neutron-operator image" "$load" \
     "matrix.suite == 'network' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX)"
   assert_contains "the leg pulls the neutron service image" "$load" \
     "matrix.suite == 'network' && format('{0}/neutron:2025.2', env.IMAGE_PREFIX)"
 
   local kind_load
-  kind_load=$(e2e_chaos_step "Load neutron images into kind")
+  kind_load=$(job_step e2e-chaos "Load neutron images into kind")
   assert_not_empty "both images reach the node" "$kind_load"
   assert_contains "the load runs on the network leg alone" "$kind_load" \
     "if: matrix.suite == 'network'"
@@ -330,7 +318,7 @@ test_chaos_network_leg_runs_the_neutron_suites() {
     "kind load docker-image \${{ env.IMAGE_PREFIX }}/neutron:2025.2"
 
   local deploy
-  deploy=$(e2e_chaos_step "Deploy neutron operator")
+  deploy=$(job_step e2e-chaos "Deploy neutron operator")
   assert_not_empty "the neutron-operator is deployed" "$deploy"
   assert_contains "the deploy runs on the network leg alone" "$deploy" \
     "if: matrix.suite == 'network'"
@@ -370,7 +358,7 @@ test_tempest_neutron_leg_is_wired() {
   # port-forward in ci-run-tempest.sh: unset, every network test fails to reach
   # the API.
   local load
-  load=$(tempest_step "Load E2E images")
+  load=$(job_step tempest "Load E2E images")
 
   assert_contains "the leg pulls the neutron-operator image" "$load" \
     "matrix.service == 'neutron' && format('{0}/neutron-operator:dev', env.IMAGE_PREFIX)"
@@ -383,7 +371,7 @@ test_tempest_neutron_leg_is_wired() {
 
   # The catalog Job runs in-cluster, so the tempest image has to be on the node.
   local kind_load
-  kind_load=$(tempest_step "Load neutron images into kind")
+  kind_load=$(job_step tempest "Load neutron images into kind")
   assert_contains "the load runs on the neutron leg alone" "$kind_load" \
     "if: matrix.service == 'neutron'"
   assert_contains "the tempest image reaches the node for the catalog Job" \
@@ -391,8 +379,8 @@ test_tempest_neutron_leg_is_wired() {
     "kind load docker-image \${{ env.IMAGE_PREFIX }}/tempest:\${{ matrix.release }}"
 
   local ovn_deploy neutron_deploy
-  ovn_deploy=$(tempest_step "Deploy ovn operator")
-  neutron_deploy=$(tempest_step "Deploy neutron operator")
+  ovn_deploy=$(job_step tempest "Deploy ovn operator")
+  neutron_deploy=$(job_step tempest "Deploy neutron operator")
 
   assert_not_empty "the ovn-operator is deployed" "$ovn_deploy"
   assert_contains "the ovn deploy runs on the neutron leg alone" "$ovn_deploy" \
@@ -410,21 +398,33 @@ test_tempest_neutron_leg_is_wired() {
     "NAMESPACE: neutron-system"
 
   local catalog ovncentral neutron_cr
-  catalog=$(tempest_step "Bootstrap network catalog")
+  catalog=$(job_step tempest "Bootstrap network catalog")
   assert_contains "the catalog Job is applied" "$catalog" \
     "01-catalog-setup-job.yaml"
   assert_contains "the leg waits for it to complete" "$catalog" \
     "job/neutron-tempest-catalog-setup"
 
-  ovncentral=$(tempest_step "Deploy OVNCentral for Tempest")
+  ovncentral=$(job_step tempest "Deploy OVNCentral for Tempest")
   assert_contains "the messaging Secret is applied" "$ovncentral" \
     "02-messaging-secret.yaml"
   assert_contains "the OVNCentral is applied" "$ovncentral" \
     "03-ovncentral-cr.yaml"
-  assert_contains "the leg waits for it to go Ready" "$ovncentral" \
-    "kubectl wait \"ovncentral/ovn-neutron-tempest-\${slug}\""
+  # The name comes from the matrix, like every other CR this job waits on. It
+  # was once rebuilt here by stripping "neutron-" off the config-dir basename,
+  # which put the OVNCentral name in the workflow as well as in the fixture, so
+  # a rename in tests/tempest/neutron-*/03-ovncentral-cr.yaml left CI waiting
+  # out its 300s on a resource that does not exist.
+  assert_contains "the leg waits on the OVNCentral the matrix names" "$ovncentral" \
+    "kubectl wait ovncentral/\${{ matrix.ovn-cr-name }}"
+  assert_not_contains "the name is not rebuilt from the config directory" \
+    "$ovncentral" 'slug="${slug#neutron-}"'
+  # The `..` stand in for the escaped quotes of the JSON the generator emits,
+  # so the needle pins the emitting line rather than the header comment.
+  assert_file_contains "the matrix generator emits ovn-cr-name for the neutron legs" \
+    "$PROJECT_ROOT/hack/ci-generate-tempest-matrix.sh" \
+    'ovn-cr-name..:..ovn-neutron-tempest'
 
-  neutron_cr=$(tempest_step "Deploy Neutron CR for Tempest")
+  neutron_cr=$(job_step tempest "Deploy Neutron CR for Tempest")
   assert_contains "the Neutron CR is applied" "$neutron_cr" "04-neutron-cr.yaml"
   assert_contains "the leg waits on the CR the matrix names" "$neutron_cr" \
     "kubectl wait neutron/\${{ matrix.neutron-cr-name }}"
@@ -432,7 +432,7 @@ test_tempest_neutron_leg_is_wired() {
     "--timeout=600s"
 
   local run_step
-  run_step=$(tempest_step "Run Tempest API tests")
+  run_step=$(job_step tempest "Run Tempest API tests")
   assert_contains "the runner learns the Neutron Service name" "$run_step" \
     "NEUTRON_K8S_NAME: \${{ matrix.neutron-cr-name }}"
 
@@ -448,6 +448,64 @@ test_tempest_neutron_leg_is_wired() {
        [ "$neutron_at" -lt "$catalog_at" ] && echo yes || echo no)"
 }
 
+# Each of the three CR names the tempest neutron leg waits on is generated, and
+# each names a static fixture in the same config directory: ovn-cr-name the
+# OVNCentral of 03-ovncentral-cr.yaml (300s), neutron-cr-name the Neutron of
+# 04-neutron-cr.yaml (600s, and that fixture holds the OVNCentral name a second
+# time in its centralRef), cr-name the Keystone of 00-keystone-cr.yaml (300s,
+# and it drives the port-forward too). Every assertion above pins one of those
+# literals against another copy of itself, so a renamed metadata.name in any of
+# the three fixtures leaves them all green while the leg burns its wait on a
+# resource that does not exist. This test reads the names out of the fixtures
+# and requires the generator to agree with them.
+test_matrix_cr_names_match_the_tempest_fixtures() {
+  echo "Test: the matrix names the CRs the tempest fixtures create"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  local out matrix legs
+  out=$(mktemp)
+  # The generator writes the matrix to GITHUB_OUTPUT and prints nothing else,
+  # so its ::error:: line for a missing config directory reaches this output.
+  GITHUB_OUTPUT="$out" bash "$PROJECT_ROOT/hack/ci-generate-tempest-matrix.sh"
+  matrix=$(sed -n 's/^tempest-releases=//p' "$out")
+  rm -f "$out"
+
+  legs=$(printf '%s' "$matrix" | jq -r '.include[]
+    | select(.service == "neutron")
+    | [."config-dir", ."ovn-cr-name", ."neutron-cr-name", ."cr-name"] | @tsv')
+  assert_not_empty "the generator emits at least one neutron leg" "$legs"
+
+  local config_dir emitted neutron_emitted keystone_emitted
+  local fixture_name central_ref
+  while IFS=$'\t' read -r config_dir emitted neutron_emitted keystone_emitted; do
+    [ -n "$config_dir" ] || continue
+    fixture_name=$(yq -r '.metadata.name' \
+      "$PROJECT_ROOT/$config_dir/03-ovncentral-cr.yaml")
+    assert_eq "$config_dir waits on the OVNCentral its fixture creates" \
+      "$fixture_name" "$emitted"
+    central_ref=$(yq -r '.spec.ovn.centralRef.name' \
+      "$PROJECT_ROOT/$config_dir/04-neutron-cr.yaml")
+    assert_eq "$config_dir points its Neutron at the same OVNCentral" \
+      "$fixture_name" "$central_ref"
+    assert_eq "$config_dir waits on the Neutron its fixture creates" \
+      "$(yq -r '.metadata.name' "$PROJECT_ROOT/$config_dir/04-neutron-cr.yaml")" \
+      "$neutron_emitted"
+    assert_eq "$config_dir waits on the Keystone its fixture creates" \
+      "$(yq -r '.metadata.name' "$PROJECT_ROOT/$config_dir/00-keystone-cr.yaml")" \
+      "$keystone_emitted"
+  done <<< "$legs"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -459,9 +517,13 @@ test_helm_validate_renders_the_neutron_chart
 test_scenario_five_accepts_the_neutron_refusal
 test_e2e_leg_deploys_the_ovn_operator
 test_e2e_leg_loads_the_ovn_images
+test_go_matrices_list_neutron
+test_cleanup_matrices_cover_the_neutron_images
+test_a_keystone_only_change_produces_no_neutron_leg
 test_build_e2e_images_builds_the_neutron_images
 test_chaos_network_leg_runs_the_neutron_suites
 test_tempest_neutron_leg_is_wired
+test_matrix_cr_names_match_the_tempest_fixtures
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
