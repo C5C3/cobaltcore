@@ -1232,14 +1232,20 @@ these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`cobaltcore`) at `KIND_VERSION` |
-| 4 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs |
-| 5 | `kind load docker-image` | Loads keystone operator and service images into kind |
-| 6 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
-| 7 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
-| 8 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml` and waits for `matrix.cr-name` Ready |
-| 9 | `hack/ci-run-tempest.sh` | Runs Tempest API tests with `CONFIG_DIR=matrix.config-dir`, `SERVICE_K8S_NAME=matrix.service-k8s-name` |
-| 10 | Upload Tempest results | Uploads `_output/tempest/` as `tempest-<release>-results` artifact (14-day retention) |
-| 11 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` |
+| 4 | Resolve OVN version | `hack/ci-resolve-ovn-version.sh` writes `OVN_VERSION` to `$GITHUB_ENV`; `images/ovn/Dockerfile` holds the pin |
+| 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs; the neutron leg additionally pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>` |
+| 6 | `kind load docker-image` | Loads keystone operator and service images into kind |
+| 7 | `kind load docker-image` *(neutron leg only)* | Loads the two operator images, the neutron and OVN service images, and the tempest image the catalog Job runs in-cluster |
+| 8 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
+| 9 | `hack/ci-deploy-operator.sh` | Installs CRDs and deploys operator via Helm |
+| 10 | `hack/ci-deploy-operator.sh` ×2 *(neutron leg only)* | Deploys the ovn-operator into `ovn-system` and the neutron-operator into `neutron-system`; a Neutron never reaches Ready without a live OVNCentral |
+| 11 | Deploy Keystone CR | Applies `matrix.config-dir/00-keystone-cr.yaml` and waits for `matrix.cr-name` Ready |
+| 12 | Bootstrap network catalog *(neutron leg only)* | Applies `matrix.config-dir/01-catalog-setup-job.yaml` and waits 300 s for the `neutron-tempest-catalog-setup` Job to complete |
+| 13 | Deploy OVNCentral *(neutron leg only)* | Applies `02-messaging-secret.yaml` and `03-ovncentral-cr.yaml`, waits 300 s for `ovncentral/ovn-neutron-tempest-<slug>` Ready |
+| 14 | Deploy Neutron CR *(neutron leg only)* | Applies `04-neutron-cr.yaml`, waits 600 s for `matrix.neutron-cr-name` Ready |
+| 15 | `hack/ci-run-tempest.sh` | Runs Tempest API tests with `CONFIG_DIR=matrix.config-dir`, `SERVICE_K8S_NAME=matrix.service-k8s-name`, and on the neutron leg `NEUTRON_K8S_NAME=matrix.neutron-cr-name` (empty elsewhere, which disables the 9696 port-forward) |
+| 16 | Upload Tempest results | Uploads `_output/tempest/` as `tempest-<release>-results` artifact (14-day retention) |
+| 17 | `hack/ci-dump-diagnostics.sh` (always) | Dumps diagnostic info with `OPERATOR=keystone` |
 
 Timeout: 68 minutes.
 

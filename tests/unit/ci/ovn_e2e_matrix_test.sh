@@ -19,10 +19,11 @@
 # beyond the shared shape: without either one the chassis Pods never start and
 # every suite fails at once, for a reason unrelated to the change under test.
 #
-# The last two tests cover jobs the e2e-operators matrix never produces:
+# The last three tests cover jobs the e2e-operators matrix never produces:
 # e2e-ovn-overlay, which needs the two-worker cluster of
 # hack/kind-config-multinode.yaml instead of the single-node config every matrix
-# leg creates, and the ovn leg of e2e-chaos, whose test_dirs are enumerated by
+# leg creates, the tempest neutron leg, whose Neutron only reconciles behind an
+# OVNCentral, and the ovn leg of e2e-chaos, whose test_dirs are enumerated by
 # hand because chainsaw's regex filters are no-ops.
 #
 # Usage: bash tests/unit/ci/ovn_e2e_matrix_test.sh
@@ -86,6 +87,17 @@ e2e_operator_step() {
 # both carry a "Setup E2E infrastructure" and a "Dump diagnostic info" step.
 e2e_chaos_step() {
   job_block e2e-chaos | awk -v key="      - name: $1" '
+    $0 == key { in_block = 1; next }
+    in_block && /^      [-#]/ { exit }
+    in_block { print }
+  '
+}
+
+# Echo the body of the named step of the tempest job. Same shape as
+# e2e_operator_step above; scoping matters because tempest, e2e-operator and
+# e2e-chaos all carry a "Load E2E images" step.
+tempest_step() {
+  job_block tempest | awk -v key="      - name: $1" '
     $0 == key { in_block = 1; next }
     in_block && /^      [-#]/ { exit }
     in_block { print }
@@ -295,6 +307,23 @@ test_overlay_job_is_wired() {
     "$(job_block cleanup-e2e-tags)" "e2e-ovn-overlay"
 }
 
+test_tempest_neutron_leg_loads_the_ovn_image() {
+  echo "Test: the tempest neutron leg pulls the OVN daemon image at the pin"
+
+  # The leg's Neutron only reconciles behind an OVNCentral, whose Pods run
+  # ghcr.io/c5c3/ovn:<pin>. images/ovn/Dockerfile holds that pin, so the job
+  # resolves it into the env instead of repeating the tag (asserted globally in
+  # test_build_e2e_images_builds_the_ovn_images).
+  local job load
+  job=$(job_block tempest)
+  load=$(tempest_step "Load E2E images")
+
+  assert_contains "the job resolves the pin into the env" "$job" \
+    'OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)'
+  assert_contains "the neutron leg pulls the daemon image at that pin" "$load" \
+    "matrix.service == 'neutron' && format('{0}/ovn:{1}', env.IMAGE_PREFIX, env.OVN_VERSION)"
+}
+
 test_chaos_ovn_leg_is_wired() {
   echo "Test: the e2e-chaos ovn leg runs the southbound-outage suite alone"
 
@@ -381,6 +410,7 @@ test_build_e2e_images_builds_the_ovn_images
 test_e2e_leg_loads_the_ovn_image
 test_e2e_leg_opts_into_kernel_modules
 test_overlay_job_is_wired
+test_tempest_neutron_leg_loads_the_ovn_image
 test_chaos_ovn_leg_is_wired
 
 echo ""
