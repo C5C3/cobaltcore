@@ -1,0 +1,267 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E smoke test for the Neutron Gateway quick-start path — the
+# networking counterpart to tests/e2e/keystone/gateway-quick-start-smoke,
+# tests/e2e/horizon/gateway-quick-start-smoke,
+# tests/e2e/glance/gateway-quick-start-smoke and
+# tests/e2e/placement/gateway-quick-start-smoke. Exercises end-to-end:
+#   `curl -k https://neutron.127-0-0-1.nip.io/` returns HTTP 200 with the
+#   Neutron version document (a JSON body carrying a "versions" key).
+#
+# The full chain under test:
+#   kind host :443 → kindnode :31443 (NodePort) → Envoy Gateway proxy
+#   → the HTTPS listener on `openstack/openstack-gw` that terminates
+#   `neutron.127-0-0-1.nip.io` → HTTPRoute managed by the Neutron Operator
+#   → Service → neutron-api pod.
+#
+# Suite location: lives under `tests/e2e/neutron/` (not
+# `tests/e2e/infrastructure/`) so the operator-installed `e2e-operator` matrix
+# job runs it — that job is the only place where the Neutron and OVNCentral CRDs
+# are registered and the two operators can reconcile the smoke CRs into an
+# HTTPRoute. The `e2e-infra` job brings up neither operator, so a smoke suite
+# under `tests/e2e/infrastructure/` could never apply a Neutron CR.
+#
+# ── DECISION: curl from the chainsaw host (Option B) ─────────────────
+# curl runs directly from the chainsaw script step on the CI host, NOT from an
+# ephemeral in-cluster pod: the nip.io → 127.0.0.1 mapping is an external DNS
+# concern, `hack/kind-config.yaml` already bridges host 127.0.0.1:443 to the
+# proxy NodePort 31443, and the point of a quick-start smoke is to prove "the
+# external URL the docs tell the user to open WORKS". Mirrors the sibling
+# keystone, horizon, glance and placement gateway-quick-start-smoke suites.
+#
+# ── DECISION: probe "/", accept HTTP 200 only ────────────────────────
+# Neutron serves no oslo healthcheck app on the API port, so there is no
+# `/healthcheck` path to probe and no plain-text `OK` body to match: the
+# analogue is the version document at "/", which neutron renders without a token
+# and without a database round-trip, exactly like the keystone smoke's JSON
+# `version` check. Accepting only 200 (not 200-or-404/302) proves the HTTPRoute
+# is attached AND the neutron-api backend is serving — a 404 would only prove
+# the data-plane is reachable. The self-contained fixtures make the 200
+# independent of sibling-suite ordering under `parallel: 4`.
+#
+# ── Scope gating — runtime presence checks ──────────────────────────
+# The script probes for `GatewayClass/envoy`, `Gateway/openstack-gw`, and the
+# `neutrons.neutron.openstack.c5c3.io` and `ovncentrals.ovn.openstack.c5c3.io`
+# CRDs. If any is absent it exits 0 with a SKIP line, so production overlays (no
+# Envoy Gateway, operators suspended) default-skip the test off any non-kind
+# cluster with no `--selector` needed.
+#
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-gateway-quick-start-smoke
+spec:
+  # The OVNCentral bring-up, the db-sync Job and the API warm-up make the
+  # envelope 12m. The inner `kubectl wait` bounds (5m each) stay under this
+  # outer cap so their failure mode surfaces as a targeted `condition X not
+  # reached` diagnostic rather than chainsaw's generic script-timeout kill. The
+  # three waits are sequential phases of one reconcile chain (the Gateway must
+  # be Programmed before the HTTPRoute can attach, and the OVNCentral must
+  # publish its addresses before the Neutron reconciler renders anything), so
+  # all of them complete well inside 12m on a warm cluster.
+  timeouts:
+    assert: 12m
+    exec: 12m
+  steps:
+  # ── Step 1: Apply namespace ───────────────────────────────────────
+  # Neither CR is applied here — their CRDs are registered by the neutron- and
+  # ovn-operator, which are suspended in some overlays. Applying them
+  # unconditionally would abort chainsaw with `no matches for kind "Neutron"` on
+  # those clusters, so the applies live in the Step 2 script body behind a CRD
+  # presence guard to keep this test default-safe.
+  - try:
+    - apply:
+        file: 00-namespace.yaml
+  # ── Step 2: Smoke-check Neutron API reachability ──────────────────
+  - try:
+    - script:
+        timeout: 12m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`; all other
+        # infra/keystone e2e scripts pin bash for the same reason.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Presence guard ──────────────────────────────
+          # The kind overlay alone applies
+          # `deploy/kind/base/openstack-gateway.yaml`, which materialises
+          # GatewayClass/envoy and Gateway/openstack-gw. Their absence
+          # unambiguously signals a non-kind cluster — exit 0 with a SKIP line.
+          if ! kubectl get gatewayclass envoy >/dev/null 2>&1; then
+            echo "SKIP: GatewayClass/envoy not present (non-kind overlay)."
+            exit 0
+          fi
+          if ! kubectl get gateway openstack-gw -n openstack >/dev/null 2>&1; then
+            echo "SKIP: Gateway/openstack-gw not present in openstack namespace"
+            echo "      (non-kind overlay)."
+            exit 0
+          fi
+          # CRD gates — the `e2e-operator` matrix job installs both operators so
+          # both CRDs are present and these guards pass; on infra-only or
+          # production clusters where either operator is suspended/absent, the
+          # guard exits 0 and the suite skips cleanly.
+          if ! kubectl get crd neutrons.neutron.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Neutron CRD not present (operator not deployed)."
+            exit 0
+          fi
+          if ! kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: OVNCentral CRD not present (operator not deployed)."
+            exit 0
+          fi
+          echo "OK: Gateway + Neutron/OVNCentral CRDs present — running smoke checks"
+
+          # Apply the broker Secret and the OVN control plane now that the CRD
+          # presence guards have passed. Chainsaw runs scripts with the test
+          # directory as CWD, so the relative paths resolve.
+          kubectl apply -f 01-messaging-secret.yaml
+          kubectl apply -f 02-ovncentral-cr.yaml
+
+          # ── Pre-flight: Gateway Programmed ────────────────────────
+          # Envoy Gateway sets `Programmed=True` once the listeners have usable
+          # TLS Secrets and the xDS data-plane is ready. Without this wait an
+          # early curl races kind startup (cert issuance + Envoy roll-out).
+          kubectl wait --for=condition=Programmed \
+            gateway/openstack-gw -n openstack --timeout=5m
+          echo "OK: Gateway/openstack-gw is Programmed"
+
+          # ── Pre-flight: OVNCentral Ready=True ─────────────────────
+          # The Neutron reconciler renders no config until this central has
+          # published both internalDbAddress values and its client Secret, so
+          # applying the Neutron CR earlier would only lengthen the wait below
+          # with a condition that reports the same thing twice.
+          kubectl wait --for=condition=Ready \
+            ovncentral/neutron-smoke-ovn -n openstack --timeout=5m
+          echo "OK: OVNCentral/neutron-smoke-ovn Ready=True"
+
+          kubectl apply -f 03-smoke-neutron-cr.yaml
+
+          # ── Pre-flight: Neutron Ready=True ────────────────────────
+          # Neutron's aggregate Ready condition includes the HTTPRouteReady
+          # sub-condition (only True after Envoy publishes Accepted=True on the
+          # route's parent) AND the deployment/health sub-conditions (pods
+          # serving the version document). Waiting on Ready gates the curl on
+          # BOTH the route being attached AND the backend being up — the same
+          # strong single gate the horizon, glance and placement smokes use.
+          kubectl wait --for=condition=Ready \
+            neutron/neutron-smoke -n openstack --timeout=5m
+          echo "OK: Neutron/neutron-smoke Ready=True"
+
+          # ── HTTP 200 from the CI host ────────────────────
+          # `-k` accepts the self-signed cert issued by
+          # selfsigned-cluster-issuer (expected for a kind cluster). Retry
+          # loop: Envoy's xDS push and the neutron-api pod's warm-up can race
+          # the Ready signal by a few seconds — up to 15 attempts, 2s apart — so
+          # a brief 503 from the proxy doesn't fail the whole run.
+          URL="https://neutron.127-0-0-1.nip.io/"
+          HTTP_CODE=""
+          for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            HTTP_CODE="$(curl -sk -o /tmp/body -w '%{http_code}' "$URL" || true)"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "OK: got HTTP 200 on attempt $attempt"
+              break
+            fi
+            echo "attempt $attempt: HTTP $HTTP_CODE (retrying in 2s)"
+            sleep 2
+          done
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: $URL returned HTTP $HTTP_CODE (expected 200)"
+            echo "--- response body (first 2KB) ---"
+            head -c 2048 /tmp/body 2>/dev/null || true
+            echo
+            exit 1
+          fi
+
+          # Non-empty body assertion: a 200 with an empty body would mean the
+          # HTTPRoute is attached but the neutron-api backend returned nothing.
+          if [ ! -s /tmp/body ]; then
+            echo "ERROR: $URL returned HTTP 200 with empty body"
+            exit 1
+          fi
+
+          # Version-document assertion: neutron answers "/" with a JSON document
+          # whose top-level key is "versions". Matching the quoted key (not a
+          # bare `versions`) keeps an arbitrary error page from passing. This is
+          # the neutron analogue of the keystone smoke's JSON `"version"` check,
+          # the glance smoke's oslo healthcheck `OK` marker and the horizon
+          # smoke's `csrfmiddlewaretoken` marker: it proves the Gateway served
+          # the neutron-api response rather than a bare proxy 200.
+          if grep -q '"versions"' /tmp/body; then
+            echo "OK: response body is the Neutron version document"
+          else
+            echo "ERROR: response body is not the Neutron version document"
+            echo "--- response body (first 2KB) ---"
+            head -c 2048 /tmp/body 2>/dev/null || true
+            echo
+            exit 1
+          fi
+
+          echo "OK: neutron-api answered 200 on https://neutron.127-0-0-1.nip.io/"
+    catch:
+    # On failure, dump post-mortem state to help CI triage. Each resource is
+    # individually scoped so a missing one doesn't short-circuit the dump.
+    - describe:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        name: openstack-gw
+        namespace: openstack
+    - describe:
+        apiVersion: neutron.openstack.c5c3.io/v1alpha1
+        kind: Neutron
+        name: neutron-smoke
+        namespace: openstack
+    - script:
+        # The HTTPRoute and the Certificate may not exist on an early failure
+        # (the Neutron CR hasn't reconciled yet), so `|| true` so the dump
+        # always runs to completion. The operator-managed HTTPRoute is listed
+        # generically rather than by a guessed name.
+        shell: bash
+        content: |
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-smoke-ovn -n openstack -o yaml 2>&1 || true
+          echo
+          echo "=== HTTPRoutes in openstack ==="
+          kubectl get httproute -n openstack -o wide 2>&1 || true
+          echo
+          echo "=== Certificates in openstack ==="
+          kubectl get certificate -n openstack -o wide 2>&1 || true
+          echo
+          echo "=== Neutron pods ==="
+          kubectl get pods -n openstack -l app.kubernetes.io/instance=neutron-smoke -o wide 2>&1 || true
+          echo
+          echo "=== neutron-operator logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo
+          echo "=== ovn-operator logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo
+          echo "=== events (last 30) ==="
+          kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    - podLogs:
+        namespace: envoy-gateway-system
+        selector: app.kubernetes.io/name=gateway-helm
+        tail: 200
+    finally:
+    # The three objects are applied with `kubectl` from inside the Step 2 script
+    # (they sit behind the CRD presence guard), so chainsaw's own `cleanup`
+    # never sees them and its namespace teardown does not apply — the suite
+    # shares the long-lived `openstack` namespace with every other neutron
+    # suite. Without this block each run would permanently leak the neutron-api
+    # Deployment, the HTTPRoute holding `neutron.127-0-0-1.nip.io` on the shared
+    # Gateway, the OVN control plane with its PVCs, and the MariaDB
+    # Database/User/Grant CRs plus the `neutron_smoke` schema the operator
+    # provisions. The Neutron goes first: it mounts the client Secret the
+    # OVNCentral publishes. Best-effort: a SKIP run created nothing, and a
+    # cleanup failure must not mask the assertion result.
+    - script:
+        shell: bash
+        content: |
+          kubectl delete neutron neutron-smoke -n openstack \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete ovncentral neutron-smoke-ovn -n openstack \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete secret neutron-smoke-messaging -n openstack \
+            --ignore-not-found --timeout=1m 2>&1 || true

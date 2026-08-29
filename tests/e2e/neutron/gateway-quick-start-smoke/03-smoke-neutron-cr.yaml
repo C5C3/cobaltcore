@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Minimal Neutron CR fixture for the Gateway quick-start smoke test — the
+# networking counterpart to tests/e2e/keystone/gateway-quick-start-smoke,
+# tests/e2e/horizon/gateway-quick-start-smoke,
+# tests/e2e/glance/gateway-quick-start-smoke and
+# tests/e2e/placement/gateway-quick-start-smoke.
+#
+# This smoke test exercises the end-to-end TLS + Gateway data-plane path:
+# `curl -k https://neutron.127-0-0-1.nip.io/` must return HTTP 200 carrying the
+# Neutron version document. That requires a Neutron CR whose spec.gateway
+# produces an HTTPRoute attaching to the kind overlay's `openstack-gw` Gateway.
+# The hostname MUST match the listener on `openstack-gw` that terminates TLS for
+# `neutron.127-0-0-1.nip.io` AND the dnsName of that listener's Certificate, so
+# the listener's TLS Secret matches the SNI the client presents.
+#
+# Name-collision avoidance: chainsaw-config.yaml sets `execution.parallel: 4`,
+# so this fixture uses a unique CR name (`neutron-smoke`) to avoid clashing with
+# the sibling neutron suites that share the `openstack` namespace and the
+# backing services (`openstack-db`, `openstack-memcached`) and on HTTPRoute
+# object names inside the `openstack` namespace. No other neutron suite attaches
+# to the nip.io Gateway hostname, so a root-path route does not conflict.
+#
+# The version document at `/` is served above the auth pipeline, so it answers
+# 200 without a live Keystone and without a database round-trip;
+# keystoneEndpoint therefore points at the cluster-local convention URL and the
+# smoke needs no running Keystone — exactly like the neutron basic-deployment
+# fixture.
+#
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-smoke
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_smoke
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-smoke-messaging
+  ovn:
+    centralRef:
+      name: neutron-smoke-ovn
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  gateway:
+    parentRef:
+      name: openstack-gw
+    hostname: neutron.127-0-0-1.nip.io
+    path: /

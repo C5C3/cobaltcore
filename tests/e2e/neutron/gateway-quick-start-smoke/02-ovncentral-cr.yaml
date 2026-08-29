@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVN control plane the neutron-smoke CR programs.
+#
+# The Neutron reconciler gates on this CR's status, so the smoke's HTTPRoute
+# and the API pod behind it exist only once this central publishes its two
+# addresses and its client Secret. Single-member Raft clusters, a single northd
+# and a suspended backup CronJob keep the bring-up inside the script's wait
+# budget.
+#
+# Applied from the Step-2 script behind the CRD presence guard, like the Neutron
+# CR beside it: an overlay without the ovn-operator has no OVNCentral kind, and
+# an unconditional apply would abort the suite there instead of skipping it.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: neutron-smoke-ovn
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true

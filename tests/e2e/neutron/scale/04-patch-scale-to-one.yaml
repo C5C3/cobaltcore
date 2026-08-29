@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Patch: scale the Neutron API down to a single replica (the PDB flips to
+# maxUnavailable=1 to avoid a drain deadlock).
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-scale
+  namespace: openstack
+spec:
+  deployment:
+    replicas: 1
