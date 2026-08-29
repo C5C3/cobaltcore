@@ -67,6 +67,12 @@ resources:
   # shim-drop names (keystone-admin/keystone-db/mariadb-root-password), so it
   # survives that filter on the ControlPlane path.
   - barbican-db-externalsecret.yaml
+  # kind-only: standalone Neutron CRs (the neutron e2e suites) reference the
+  # Secret "neutron-db" through the Neutron CR's database.secretRef, mirroring
+  # the barbican-db shim above. It is NOT one of the WITH_CONTROLPLANE shim-drop
+  # names (keystone-admin/keystone-db/mariadb-root-password), so it survives that
+  # filter on the ControlPlane path.
+  - neutron-db-externalsecret.yaml
   - keystone-admin-externalsecret.yaml
   - mariadb-root-password-externalsecret.yaml
   # horizon-secret-key is the Django SECRET_KEY shim for standalone Horizon

@@ -308,48 +308,25 @@ main() {
     "username=keystone" \
     "password=${GENERATED_PASSWORD}"
 
-  # Standalone (non-ControlPlane) Glance demos read a static KV DB credential
-  # too, mirroring the Keystone standalone seed above. It is read by the kind-only
-  # glance-db ExternalSecret (deploy/kind/infrastructure/glance-db-externalsecret.yaml)
-  # and materialised as the Secret the glance e2e suites' Glance CR selects via
-  # database.secretRef. No PushSecret targets it, so no mark_eso_managed is needed.
+  # The four optional services seed the same shape as the Keystone standalone
+  # credential above, one path per service, and differ only in the service
+  # segment: openstack/<svc>/{namespace}/standalone/db. Each is read by the
+  # kind-only <svc>-db ExternalSecret
+  # (deploy/kind/infrastructure/<svc>-db-externalsecret.yaml), which reaches it
+  # through the per-tenant openbao-tenant-store, and materialised as the Secret
+  # the <svc> e2e suites' CR selects via database.secretRef. No PushSecret
+  # targets any of them, so no mark_eso_managed is needed.
   #
-  # The path mirrors the Keystone standalone shape with the glance service segment
-  # (openstack/glance/{namespace}/standalone/db); like keystone-db, the glance-db
-  # ExternalSecret reaches it through the per-tenant openbao-tenant-store.
-  write_secret_if_missing "kv-v2/openstack/glance/openstack/standalone/db" \
-    "username=glance" \
-    "password=${GENERATED_PASSWORD}"
-
-  # Standalone (non-ControlPlane) Placement demos read a static KV DB credential
-  # too, mirroring the Glance standalone seed above. It is read by the kind-only
-  # placement-db ExternalSecret
-  # (deploy/kind/infrastructure/placement-db-externalsecret.yaml) and materialised
-  # as the Secret the placement e2e suites' Placement CR selects via
-  # database.secretRef. No PushSecret targets it, so no mark_eso_managed is needed.
-  #
-  # The path mirrors the Keystone standalone shape with the placement service
-  # segment (openstack/placement/{namespace}/standalone/db); like glance-db, the
-  # placement-db ExternalSecret reaches it through the per-tenant
-  # openbao-tenant-store.
-  write_secret_if_missing "kv-v2/openstack/placement/openstack/standalone/db" \
-    "username=placement" \
-    "password=${GENERATED_PASSWORD}"
-
-  # Standalone (non-ControlPlane) Barbican demos read a static KV DB credential
-  # too, mirroring the Placement standalone seed above. It is read by the
-  # kind-only barbican-db ExternalSecret
-  # (deploy/kind/infrastructure/barbican-db-externalsecret.yaml) and materialised
-  # as the Secret the barbican e2e suites' Barbican CR selects via
-  # database.secretRef. No PushSecret targets it, so no mark_eso_managed is needed.
-  #
-  # The path mirrors the Keystone standalone shape with the barbican service
-  # segment (openstack/barbican/{namespace}/standalone/db); like placement-db, the
-  # barbican-db ExternalSecret reaches it through the per-tenant
-  # openbao-tenant-store.
-  write_secret_if_missing "kv-v2/openstack/barbican/openstack/standalone/db" \
-    "username=barbican" \
-    "password=${GENERATED_PASSWORD}"
+  # A loop rather than one block per service, matching the presence-gated loop
+  # in setup-database-tenant.sh: the fifth copy of a fourteen-line block whose
+  # only varying token is the service name is a place for the sixth to be
+  # subtly wrong.
+  local svc
+  for svc in glance placement barbican neutron; do
+    write_secret_if_missing "kv-v2/openstack/${svc}/openstack/standalone/db" \
+      "username=${svc}" \
+      "password=${GENERATED_PASSWORD}"
+  done
 
   log "=== Done ==="
 }
