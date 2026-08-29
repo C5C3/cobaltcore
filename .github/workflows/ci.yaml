@@ -2454,6 +2454,99 @@ jobs:
           path: _output/reports/
           retention-days: 14
 
+  # Multi-node OVN overlay E2E on kind. Brings up the one-control-plane,
+  # two-worker cluster of hack/kind-config-multinode.yaml, deploys the
+  # ovn-operator, and runs tests/e2e-ovn-overlay/ across both workers: one
+  # logical switch port per node, a ping across the Geneve tunnel between them,
+  # and the Southbound rows that say which chassis carried it.
+  #
+  # continue-on-error: true because the suite needs the openvswitch and geneve
+  # kernel modules on the runner host, which puts it under the non-blocking entry
+  # rule of `### Kernel-module-dependent suites` in
+  # docs/reference/ci-cd/ci-workflow.md. A later change flips it to blocking
+  # once its pass history on main justifies the flip. The single-node chassis
+  # baseline under tests/e2e/ovn/ stays blocking inside the e2e-operator legs.
+  #
+  # The job runs alone on its runner: hack/kind-config-multinode.yaml and
+  # hack/kind-config.yaml bind the same host ports (443 and 8428 on 127.0.0.1),
+  # so a second cluster created from either file on the same host fails to bind
+  # them.
+  e2e-ovn-overlay:
+    needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
+    # always(): allow the job to run when upstream Go jobs are skipped
+    # (e.g. pure E2E test-definition PRs where go=false). The explicit
+    # failure/cancelled guard still blocks if any upstream actually failed.
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork != true &&
+      needs.changes.outputs.e2e-ovn-overlay == 'true' &&
+      needs.build-e2e-images.result == 'success' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: self-hosted
+    timeout-minutes: 60
+    continue-on-error: true
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The multi-node config is passed through the action's `config:` input
+      # rather than KIND_CONFIG: setup-e2e-infra runs with SKIP_KIND_CREATE,
+      # so the cluster already exists by the time hack/deploy-infra.sh reads
+      # that variable.
+      - name: Create kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        with:
+          version: ${{ env.KIND_VERSION }}
+          config: hack/kind-config-multinode.yaml
+          cluster_name: ${{ env.KIND_CLUSTER }}
+      # images/ovn/Dockerfile holds the pin; resolving it here keeps the tag
+      # out of this workflow.
+      - name: Resolve OVN version
+        run: echo "OVN_VERSION=$(hack/ci-resolve-ovn-version.sh)" >> "$GITHUB_ENV"
+      - name: Load E2E images
+        uses: ./.github/actions/load-e2e-images
+        with:
+          images: |
+            ${{ env.IMAGE_PREFIX }}/ovn-operator:dev
+            ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }}
+      # Every node runs its own chassis pods, and kind loads an image onto all
+      # of a cluster's nodes.
+      - name: Load images into kind
+        run: |
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn-operator:dev --name "${{ env.KIND_CLUSTER }}"
+          kind load docker-image ${{ env.IMAGE_PREFIX }}/ovn:${{ env.OVN_VERSION }} --name "${{ env.KIND_CLUSTER }}"
+      # The chassis DaemonSets open a Geneve tunnel from each kind node, which
+      # needs the openvswitch and geneve modules loaded on the host.
+      - name: Setup E2E infrastructure
+        uses: ./.github/actions/setup-e2e-infra
+        env:
+          WITH_OVN_KERNEL_MODULES: "true"
+      - name: Deploy ovn-operator
+        run: hack/ci-deploy-operator.sh
+        env:
+          OPERATOR: ovn
+          IMAGE_REPO: ${{ env.IMAGE_PREFIX }}/ovn-operator
+          NAMESPACE: ovn-system
+      - name: Run the overlay suite
+        run: |
+          mkdir -p _output/reports
+          make e2e-ovn-overlay
+      - name: Dump diagnostic info
+        if: always()
+        run: hack/ci-dump-diagnostics.sh
+        env:
+          OPERATOR: ovn
+      - name: Upload JUnit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-ovn-overlay-junit-report
+          path: _output/reports/
+          retention-days: 14
+
   # Tempest API integration tests.
   # Deploys services into a kind cluster and runs the OpenStack Tempest test
   # suite against them.  Currently tests Keystone; designed so additional
@@ -2671,7 +2764,7 @@ jobs:
   # nightly cleanup-images workflow has a safety-net job that catches
   # tags that survive a cancelled run before this one fires.
   cleanup-e2e-tags:
-    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, tempest]
+    needs: [changes, build-e2e-images, e2e-operator, e2e-operator-upgrade, e2e-chaos, e2e-ovn-overlay, tempest]
     if: |
       always() &&
       needs.build-e2e-images.result == 'success'

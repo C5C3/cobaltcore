@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw configuration for the multi-node OVN overlay suite.
+#
+# The suite lives outside tests/e2e/ because it needs two schedulable nodes:
+# it programs one logical switch port on each worker and pings across the
+# Geneve tunnel between them. Every suite under tests/e2e/ runs against the
+# single-node hack/kind-config.yaml cluster that `make e2e` sweeps, where the
+# second port would land on the same node and the tunnel would never carry a
+# packet.
+#
+# Key differences from the happy-path config at tests/e2e/chainsaw-config.yaml:
+#   - Assert timeout: 300s (5m) vs 120s: the OVNCentral, the two chassis
+#     DaemonSets and the chassis registration on both workers happen in
+#     sequence before the first datapath assertion can run.
+#   - Cleanup timeout: 120s (2m) vs 3m: the teardown deletes probe Pods, two
+#     network namespaces, two OVS ports and one logical switch. No finalizer
+#     waits on a database behind it, so it needs less than the happy path.
+#   - Parallelism: 1 vs 4: the probe Pods run with hostNetwork and own
+#     /run/openvswitch and /run/netns on both workers, and there is one
+#     `openstack` namespace to put them in.
+#
+# apiVersion v1alpha2 Configuration is the correct pairing with v1alpha1 Test
+# manifests, matching the sibling configs.
+apiVersion: chainsaw.kyverno.io/v1alpha2
+kind: Configuration
+metadata:
+  name: cloud-operator-e2e-ovn-overlay
+spec:
+  # ── Timeouts ────────────────────────────────────────────────────────────
+  timeouts:
+    apply: 30s
+    assert: 300s
+    cleanup: 120s
+    delete: 30s
+    error: 30s
+    exec: 30s
+
+  # ── Cleanup ─────────────────────────────────────────────────────────────
+  cleanup:
+    skipDelete: false
+
+  # ── Execution ───────────────────────────────────────────────────────────
+  execution:
+    failFast: true
+    parallel: 1
+
+  # ── Report ──────────────────────────────────────────────────────────────
+  report:
+    format: JUNIT-TEST
+    name: chainsaw-ovn-overlay-report
+    path: _output/reports

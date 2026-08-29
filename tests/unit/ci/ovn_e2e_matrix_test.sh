@@ -19,6 +19,11 @@
 # beyond the shared shape: without either one the chassis Pods never start and
 # every suite fails at once, for a reason unrelated to the change under test.
 #
+# The last test covers the separate e2e-ovn-overlay job, which the e2e-operators
+# matrix never produces: it needs the two-worker cluster of
+# hack/kind-config-multinode.yaml instead of the single-node config every matrix
+# leg creates.
+#
 # Usage: bash tests/unit/ci/ovn_e2e_matrix_test.sh
 
 set -uo pipefail
@@ -231,6 +236,42 @@ test_e2e_leg_opts_into_kernel_modules() {
     "WITH_OVN_KERNEL_MODULES: \${{ (matrix.operator == 'ovn' || matrix.operator == 'neutron') && 'true' || '' }}"
 }
 
+test_overlay_job_is_wired() {
+  echo "Test: the e2e-ovn-overlay job runs the multi-node suite non-blocking"
+
+  # The job is the only consumer of hack/kind-config-multinode.yaml and of the
+  # e2e-ovn-overlay change signal. Every assertion below is a silent failure
+  # otherwise: a wrong runner label leaves the job queued forever, a missing
+  # continue-on-error turns a kernel-module gap on the host into a red PR, a
+  # single-node config makes the suite fail its own two-node preflight, and an
+  # unset WITH_OVN_KERNEL_MODULES leaves the chassis Pods unable to start.
+  local job
+  job=$(job_block e2e-ovn-overlay)
+
+  assert_not_empty "the job exists" "$job"
+  assert_contains "it runs on the self-hosted runners" "$job" \
+    "runs-on: self-hosted"
+  assert_contains "it enters CI non-blocking" "$job" \
+    "continue-on-error: true"
+  assert_contains "it creates the two-worker cluster" "$job" \
+    "config: hack/kind-config-multinode.yaml"
+  assert_contains "it asks for the OVN kernel modules" "$job" \
+    'WITH_OVN_KERNEL_MODULES: "true"'
+  assert_contains "it runs the suite through the Makefile target" "$job" \
+    "make e2e-ovn-overlay"
+  assert_contains "it uploads its own JUnit artifact" "$job" \
+    "name: e2e-ovn-overlay-junit-report"
+  assert_contains "the diagnostics dump looks in ovn-system" "$job" \
+    "OPERATOR: ovn"
+  assert_contains "it gates on the overlay change signal" "$job" \
+    "needs.changes.outputs.e2e-ovn-overlay == 'true'"
+
+  # Without this the tag prune races the job and deletes the run-scoped ovn
+  # images out from under a suite that is still pulling them.
+  assert_contains "cleanup-e2e-tags waits for the job" \
+    "$(job_block cleanup-e2e-tags)" "e2e-ovn-overlay"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -242,6 +283,7 @@ test_helm_validate_renders_the_ovn_chart
 test_build_e2e_images_builds_the_ovn_images
 test_e2e_leg_loads_the_ovn_image
 test_e2e_leg_opts_into_kernel_modules
+test_overlay_job_is_wired
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

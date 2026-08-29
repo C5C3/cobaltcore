@@ -13,9 +13,13 @@
 # permanently unexercised.
 #
 # The resolve script is executed for real in all of its branches; the ci.yaml
-# sides are asserted against the workflow file. Modelled on the sibling
-# tests/unit/ci/e2e_multicluster_output_test.sh, with the shared resolve-script
-# scaffolding in tests/lib/ci_resolve.sh.
+# sides are asserted against the workflow file. The last test follows the signal
+# to its two consumers: the job that reads it, and the Makefile target that job
+# calls. A signal nothing consumes is as silent as one nothing produces, and the
+# Makefile target is what lets a developer reproduce the job locally.
+#
+# Modelled on the sibling tests/unit/ci/e2e_multicluster_output_test.sh, with the
+# shared resolve-script scaffolding in tests/lib/ci_resolve.sh.
 #
 # Usage: bash tests/unit/hack/ci_resolve_changes_ovn_overlay_test.sh
 
@@ -24,6 +28,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
+MAKEFILE="$PROJECT_ROOT/Makefile"
 
 # The resolve script reads FILTER_${op} only for operators named here, so ovn
 # must be in the list for the operator-change scenario to assert anything.
@@ -162,6 +167,34 @@ test_filter_names_the_suite_and_nothing_else() {
     "$block" "deploy/**"
 }
 
+test_the_signal_reaches_its_consumers() {
+  echo "Test: the job gates on the output and runs the Makefile target"
+
+  # The job body ends at the next 2-space line, which is the comment header of
+  # the job after it.
+  local job
+  job=$(awk '
+    /^  e2e-ovn-overlay:$/ { in_block = 1; next }
+    in_block && /^  [#a-z0-9-]/ { exit }
+    in_block { print }
+  ' "$CI_YAML")
+
+  assert_not_empty "the e2e-ovn-overlay job exists" "$job"
+  assert_contains "the job reads the output the resolve script wrote" "$job" \
+    "needs.changes.outputs.e2e-ovn-overlay == 'true'"
+  assert_contains "the job runs the suite through the Makefile" "$job" \
+    "make e2e-ovn-overlay"
+
+  assert_file_contains "the Makefile declares the target" "$MAKEFILE" \
+    "^e2e-ovn-overlay:$"
+  assert_file_contains "the target is phony" "$MAKEFILE" \
+    "^\\.PHONY: e2e-ovn-overlay$"
+  # The preflight message is the whole local-reproduction story: it names the
+  # kind config a developer has to pass to get a second schedulable node.
+  assert_file_contains "the preflight names the multi-node config" "$MAKEFILE" \
+    "the overlay suite needs a multi-node cluster; run KIND_CONFIG=hack/kind-config-multinode.yaml make deploy-infra first"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -173,6 +206,7 @@ test_tag_push_forces_the_job
 test_the_signal_reaches_the_image_build
 test_ci_yaml_wires_the_signal
 test_filter_names_the_suite_and_nothing_else
+test_the_signal_reaches_its_consumers
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
