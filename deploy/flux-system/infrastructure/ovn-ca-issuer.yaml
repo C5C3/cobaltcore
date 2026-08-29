@@ -1,0 +1,77 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Dedicated cert-manager CA for the OVN trust domain.
+# One self-signed CA keypair backs the OVN database transport TLS:
+#   1. The Northbound and Southbound ovsdb-server certificates the
+#      ovn-operator requests for each Raft member.
+#   2. The client certificates ovn-northd, the relays, and the chassis
+#      agents present to those databases.
+#
+# DECISION (D9 of meta issue #898): CA scoped to the OVN databases —
+# OVS/OVN authenticates a peer by checking that its certificate chains
+# to the configured CA, and nothing else: there is no per-certificate
+# allowlist, no SAN check, no RBAC. Every leaf this CA signs is
+# therefore a valid OVN database client. Giving OVN its own CA keeps
+# that blast radius to the OVN databases and their clients; reusing
+# openstack-db-ca-issuer would let any MariaDB or Keystone DB-client
+# certificate open an OVSDB session. The ovn-operator's OVNCentral
+# `spec.tls.issuerRef` names the ClusterIssuer below on the devstack.
+#
+# DECISION: dedicated CA over selfsigned-cluster-issuer — With
+# cert-manager's SelfSigned issuer every Certificate is its own root, so
+# a server certificate's ca.crt does not validate the leaves issued for
+# the clients. The ovn-operator rejects such an issuer outright
+# (operators/ovn/internal/controller/reconcile_tls.go: "spec.tls.
+# issuerRef must name a CA issuer"), because an issuer that exposes no
+# ca.crt produces certificates the databases cannot authenticate each
+# other with. The selfsigned-cluster-issuer is used here only to
+# bootstrap the CA keypair, as in db-ca-issuer.yaml.
+#
+# DECISION: CA Certificate placement — Issued the CA Certificate into
+# the cert-manager namespace because cert-manager's default
+# --cluster-resource-namespace is "cert-manager", which is where a
+# CA-type ClusterIssuer looks up its secretName. Mirrors db-ca-issuer.
+#
+# DECISION: CA lifetime — 3 years (26280h) with 30-day renewBefore.
+# CAs should outlive the leaves they sign, and 3 years matches the
+# openstack-db-ca and openbao-ca cadence so all three trust-domain CAs
+# renew on comparable schedules.
+#
+---
+# Bootstrap CA keypair Secret. The selfsigned-cluster-issuer mints this
+# self-signed CA, which then becomes the trust root for all OVN
+# database transport TLS material.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: openstack-ovn-ca
+  namespace: cert-manager
+spec:
+  secretName: openstack-ovn-ca
+  isCA: true
+  commonName: openstack-ovn-ca
+  duration: 26280h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-cluster-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# CA-type ClusterIssuer signing every OVN database and client
+# certificate. The name "openstack-ovn-ca-issuer" is the string the
+# OVNCentral fixtures under tests/e2e/ovn and tests/e2e/neutron carry in
+# `spec.tls.issuerRef.name`; ClusterIssuer (not Issuer) because the
+# chassis agents live outside the OVNCentral's namespace and a
+# namespaced Issuer cannot reach them.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: openstack-ovn-ca-issuer
+spec:
+  ca:
+    secretName: openstack-ovn-ca

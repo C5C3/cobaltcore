@@ -35,6 +35,9 @@ resources:
   # TLS for the seventh Gateway listener (`https-barbican`) the Barbican
   # key-management API is exposed through (deploy/kind/base/openstack-gateway.yaml).
   - barbican-nip-io-tls-certificate.yaml
+  # TLS for the eighth Gateway listener (`https-neutron`) the Neutron
+  # networking API is exposed through (deploy/kind/base/openstack-gateway.yaml).
+  - neutron-nip-io-tls-certificate.yaml
   # kind-only: standalone Keystone CRs (Quick Start, keystone e2e/tempest/
   # chaos suites) reference the Secret "keystone-db"; ControlPlane-based
   # deployments use the operator-projected per-ControlPlane ExternalSecret

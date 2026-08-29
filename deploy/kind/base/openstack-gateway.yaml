@@ -3,14 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Gateway API wiring for the kind Quick Start — `GatewayClass/envoy`
-# plus a seven-listener HTTPS Gateway on port 443
+# plus an eight-listener HTTPS Gateway on port 443
 # (`keystone.127-0-0-1.nip.io`, `horizon.127-0-0-1.nip.io`,
 # `glance.127-0-0-1.nip.io`, `dizzy.127-0-0-1.nip.io`,
-# `glance-upload.127-0-0-1.nip.io`, `placement.127-0-0-1.nip.io`, and
-# `barbican.127-0-0-1.nip.io`, routed by SNI) terminating TLS with
-# self-signed certificates issued by the existing
-# `selfsigned-cluster-issuer` ClusterIssuer (the same issuer OpenBao
-# uses; see `deploy/flux-system/infrastructure/cluster-issuer.yaml`).
+# `glance-upload.127-0-0-1.nip.io`, `placement.127-0-0-1.nip.io`,
+# `barbican.127-0-0-1.nip.io`, and `neutron.127-0-0-1.nip.io`, routed by
+# SNI) terminating TLS with self-signed certificates issued by the
+# existing `selfsigned-cluster-issuer` ClusterIssuer (the same issuer
+# OpenBao uses; see
+# `deploy/flux-system/infrastructure/cluster-issuer.yaml`).
 #
 # The Gateway lives in the `openstack` namespace alongside the Keystone
 # CR on purpose: same-namespace `parentRef` resolution does not need a
@@ -220,6 +221,34 @@ spec:
         certificateRefs:
           - kind: Secret
             name: barbican-nip-io-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
+    # Eighth HTTPS listener for the Neutron networking API. It shares
+    # port 443 with the listeners above, routed by SNI on its distinct
+    # `hostname` and terminating with its own certificate
+    # (deploy/kind/infrastructure/neutron-nip-io-tls-certificate.yaml).
+    # Another listener on the same port leaves the NodePort pin intact:
+    # `envoy-nodeport.yaml` keys its StrategicMerge patch by `port: 443`,
+    # which selects the single ServicePort Envoy generates for all
+    # listeners.
+    #
+    # The HTTPRoute the neutron-operator projects from the Neutron CR's
+    # `spec.gateway` carries the hostname `neutron.127-0-0-1.nip.io`, so
+    # it attaches to THIS listener (matching hostname) and not the ones
+    # above. Its first consumer is
+    # tests/e2e/neutron/gateway-quick-start-smoke. Like the listeners
+    # above it is unconditional: with no HTTPRoute projected onto this
+    # hostname, requests for this SNI get 404.
+    - name: https-neutron
+      protocol: HTTPS
+      port: 443
+      hostname: neutron.127-0-0-1.nip.io
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: neutron-nip-io-tls
       allowedRoutes:
         namespaces:
           from: Same
