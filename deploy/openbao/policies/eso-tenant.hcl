@@ -48,6 +48,7 @@
 # glance-db ExternalSecret (openstack/glance/{ns}/standalone/db), the
 # placement-db ExternalSecret (openstack/placement/{ns}/standalone/db), the
 # barbican-db ExternalSecret (openstack/barbican/{ns}/standalone/db), the
+# neutron-db ExternalSecret (openstack/neutron/{ns}/standalone/db), the
 # keystone-admin ExternalSecret (bootstrap/{ns}/{name}/admin), and the read-back
 # leg of every PushSecret below.
 path "kv-v2/data/openstack/keystone/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/*" {
@@ -63,6 +64,10 @@ path "kv-v2/data/openstack/placement/{{identity.entity.aliases.KUBERNETES_MANAGE
 }
 
 path "kv-v2/data/openstack/barbican/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/*" {
+  capabilities = ["read"]
+}
+
+path "kv-v2/data/openstack/neutron/{{identity.entity.aliases.KUBERNETES_MANAGEMENT_ACCESSOR.metadata.service_account_namespace}}/*" {
   capabilities = ["read"]
 }
 

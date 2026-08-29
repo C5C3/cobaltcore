@@ -125,6 +125,7 @@ deploy/
 │       ├── mariadb-root-password-externalsecret.yaml Secret mariadb-root-password
 │       ├── keystone-db-externalsecret.yaml           Secret keystone-db
 │       ├── placement-db-externalsecret.yaml          Secret placement-db
+│       ├── neutron-db-externalsecret.yaml            Secret neutron-db
 │       └── placement-nip-io-tls-certificate.yaml     Certificate placement-nip-io-tls
 └── flux-system/
     ├── releases/
@@ -827,6 +828,7 @@ deployment-specific.
 | `keystone-admin` (kind only) | `openstack` | `bootstrap/openstack/controlplane-keystone/admin` | `password` | `keystone-admin` | `password` |
 | `mariadb-root-password` (kind only) | `openstack` | `infrastructure/mariadb` | `root-password` | `mariadb-root-password` | `password` |
 | `keystone-db` (kind only) | `openstack` | `openstack/keystone/openstack/standalone/db` | `username`, `password` | `keystone-db` | `username`, `password` |
+| `neutron-db` (kind only) | `openstack` | `openstack/neutron/openstack/standalone/db` | `username`, `password` | `neutron-db` | `username`, `password` |
 
 **Note:** The static `deploy/eso/externalsecrets/` directory has been removed, so
 the production stack ships **no** ExternalSecret resources — its ESO
