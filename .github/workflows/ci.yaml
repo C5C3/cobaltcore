@@ -83,6 +83,7 @@ jobs:
       e2e-controlplane-sso: ${{ steps.result.outputs.e2e-controlplane-sso }}
       e2e-external-keystone: ${{ steps.result.outputs.e2e-external-keystone }}
       e2e-multicluster: ${{ steps.result.outputs.e2e-multicluster }}
+      e2e-ovn-overlay: ${{ steps.result.outputs.e2e-ovn-overlay }}
       e2e-operator-upgrade: ${{ steps.result.outputs.e2e-operator-upgrade }}
       tempest: ${{ steps.result.outputs.tempest }}
       actionlint: ${{ steps.result.outputs.actionlint }}
@@ -239,6 +240,8 @@ jobs:
             tests_multicluster:
               - 'tests/e2e-multicluster/**'
               - 'deploy/target-cluster/**'
+            tests_ovn_overlay:
+              - 'tests/e2e-ovn-overlay/**'
             tests_operator_upgrade:
               - 'tests/e2e-operator-upgrade/**'
               - 'hack/ci-fetch-released-operator.sh'
@@ -377,6 +380,7 @@ jobs:
           FILTER_tests_external_keystone: ${{ steps.filter.outputs.tests_external_keystone }}
           FILTER_tests_chaos: ${{ steps.filter.outputs.tests_chaos }}
           FILTER_tests_multicluster: ${{ steps.filter.outputs.tests_multicluster }}
+          FILTER_tests_ovn_overlay: ${{ steps.filter.outputs.tests_ovn_overlay }}
           FILTER_tests_operator_upgrade: ${{ steps.filter.outputs.tests_operator_upgrade }}
           FILTER_tests_prometheus: ${{ steps.filter.outputs.tests_prometheus }}
           FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
