@@ -42,6 +42,8 @@ HORIZON_DIGEST="sha256:ccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
 GLANCE_DIGEST="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 PLACEMENT_DIGEST="sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 BARBICAN_DIGEST="sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+OVN_DIGEST="sha256:1111111111111111111111111111111111111111111111111111111111111111"
+NEUTRON_DIGEST="sha256:2222222222222222222222222222222222222222222222222222222222222222"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -89,6 +91,8 @@ if [ "${1:-}" = "buildx" ] && [ "${2:-}" = "imagetools" ] && [ "${3:-}" = "inspe
     *glance-operator*)   printf '"sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"' ;;
     *placement-operator*) printf '"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"' ;;
     *barbican-operator*) printf '"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' ;;
+    *ovn-operator*)      printf '"sha256:1111111111111111111111111111111111111111111111111111111111111111"' ;;
+    *neutron-operator*)  printf '"sha256:2222222222222222222222222222222222222222222222222222222222222222"' ;;
     *) exit 1 ;;
   esac
   exit 0
@@ -143,6 +147,8 @@ case "$repo" in
   *glance-operator*)   digest="sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" ;;
   *placement-operator*) digest="sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" ;;
   *barbican-operator*) digest="sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" ;;
+  *ovn-operator*)      digest="sha256:1111111111111111111111111111111111111111111111111111111111111111" ;;
+  *neutron-operator*)  digest="sha256:2222222222222222222222222222222222222222222222222222222222222222" ;;
 esac
 
 if [ -n "$headers_file" ]; then
@@ -163,6 +169,8 @@ if [ "${1:-}" = "get" ] && [ "${2:-}" = "configmap" ]; then
       glance-operator-image-digest)   printf 'image:\n  digest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n' ;;
       placement-operator-image-digest) printf 'image:\n  digest: sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\n' ;;
       barbican-operator-image-digest) printf 'image:\n  digest: sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\n' ;;
+      ovn-operator-image-digest)      printf 'image:\n  digest: sha256:1111111111111111111111111111111111111111111111111111111111111111\n' ;;
+      neutron-operator-image-digest)  printf 'image:\n  digest: sha256:2222222222222222222222222222222222222222222222222222222222222222\n' ;;
     esac
   fi
   exit 0
@@ -299,10 +307,10 @@ test_resolve_image_digest_fallback_to_curl() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 5: the loop applies all six ConfigMaps and requests reconciles
+# Test 5: the loop applies all eight ConfigMaps and requests reconciles
 # ---------------------------------------------------------------------------
 test_refresh_applies_and_annotates_all_operators() {
-  echo "Test: refresh applies 6 ConfigMaps and annotates 6 HelmReleases"
+  echo "Test: refresh applies 8 ConfigMaps and annotates 8 HelmReleases"
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
@@ -334,8 +342,14 @@ test_refresh_applies_and_annotates_all_operators() {
   assert_contains "barbican ConfigMap applied" "$apply_log" "name: barbican-operator-image-digest"
   assert_contains "barbican ConfigMap namespace" "$apply_log" "namespace: barbican-system"
   assert_contains "barbican digest in payload" "$apply_log" "$BARBICAN_DIGEST"
+  assert_contains "ovn ConfigMap applied" "$apply_log" "name: ovn-operator-image-digest"
+  assert_contains "ovn ConfigMap namespace" "$apply_log" "namespace: ovn-system"
+  assert_contains "ovn digest in payload" "$apply_log" "$OVN_DIGEST"
+  assert_contains "neutron ConfigMap applied" "$apply_log" "name: neutron-operator-image-digest"
+  assert_contains "neutron ConfigMap namespace" "$apply_log" "namespace: neutron-system"
+  assert_contains "neutron digest in payload" "$apply_log" "$NEUTRON_DIGEST"
 
-  assert_eq "six reconcile annotations" "6" "$(grep -c 'annotate helmrelease/' "$tmp/annotate.log")"
+  assert_eq "eight reconcile annotations" "8" "$(grep -c 'annotate helmrelease/' "$tmp/annotate.log")"
   assert_contains "keystone reconcile requested" "$annotate_log" "helmrelease/keystone-operator"
   assert_contains "keystone reconcile namespace" "$annotate_log" "-n keystone-system"
   assert_contains "c5c3 reconcile requested" "$annotate_log" "helmrelease/c5c3-operator"
@@ -343,6 +357,10 @@ test_refresh_applies_and_annotates_all_operators() {
   assert_contains "glance reconcile requested" "$annotate_log" "helmrelease/glance-operator"
   assert_contains "placement reconcile requested" "$annotate_log" "helmrelease/placement-operator"
   assert_contains "barbican reconcile requested" "$annotate_log" "helmrelease/barbican-operator"
+  assert_contains "ovn reconcile requested" "$annotate_log" "helmrelease/ovn-operator"
+  assert_contains "ovn reconcile namespace" "$annotate_log" "-n ovn-system"
+  assert_contains "neutron reconcile requested" "$annotate_log" "helmrelease/neutron-operator"
+  assert_contains "neutron reconcile namespace" "$annotate_log" "-n neutron-system"
   assert_contains "requestedAt annotation" "$annotate_log" "reconcile.fluxcd.io/requestedAt="
   assert_contains "annotation is idempotent (overwrite)" "$annotate_log" "overwrite"
   assert_contains "pinned log line" "$out" "pinned to"
@@ -361,7 +379,7 @@ test_refresh_skips_annotate_when_digest_unchanged() {
   local out rc=0
   out=$(run_refresh "$tmp" KUBECTL_CM_EXISTS=true) || rc=$?
   assert_eq "refresh succeeds" "0" "$rc"
-  assert_eq "six ConfigMap applies (idempotent re-apply)" "6" "$(grep -c -- '--- kubectl apply' "$tmp/apply.log")"
+  assert_eq "eight ConfigMap applies (idempotent re-apply)" "8" "$(grep -c -- '--- kubectl apply' "$tmp/apply.log")"
   assert_eq "no reconcile annotations" "0" "$(grep -c 'annotate' "$tmp/annotate.log")"
   assert_contains "unchanged log line" "$out" "digest unchanged"
 }
@@ -389,7 +407,9 @@ test_refresh_continues_on_resolve_failure() {
   assert_contains "glance ConfigMap still applied" "$apply_log" "name: glance-operator-image-digest"
   assert_contains "placement ConfigMap still applied" "$apply_log" "name: placement-operator-image-digest"
   assert_contains "barbican ConfigMap still applied" "$apply_log" "name: barbican-operator-image-digest"
-  assert_eq "five reconcile annotations" "5" "$(grep -c 'annotate helmrelease/' "$tmp/annotate.log")"
+  assert_contains "ovn ConfigMap still applied" "$apply_log" "name: ovn-operator-image-digest"
+  assert_contains "neutron ConfigMap still applied" "$apply_log" "name: neutron-operator-image-digest"
+  assert_eq "seven reconcile annotations" "7" "$(grep -c 'annotate helmrelease/' "$tmp/annotate.log")"
 }
 
 # ---------------------------------------------------------------------------

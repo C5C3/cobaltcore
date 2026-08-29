@@ -80,7 +80,7 @@ test_explicit_values_pass_through() {
 # The scale is the half that matters on a re-used cluster: a HelmRelease
 # suspended after the chart installed leaves the Deployment running. Covering
 # only c5c3 would leave an INFRA_ONLY=true WITH_CONTROLPLANE=true target running
-# the five service operators the flux branch un-suspends, and two controller
+# the seven service operators the flux branch un-suspends, and two controller
 # sets applying the same children is what the split exists to prevent.
 # ---------------------------------------------------------------------------
 test_gate_suspends_and_scales() {
@@ -111,11 +111,12 @@ test_gate_suspends_and_scales() {
   assert_not_empty "the suspend patch is inside the gate" "$suspend_line"
   assert_not_empty "the scale-to-zero is inside the gate" "$scale_line"
 
-  # All six: c5c3 plus the five service operators the WITH_CONTROLPLANE=true /
+  # All eight: c5c3 plus the seven service operators the WITH_CONTROLPLANE=true /
   # flux branch un-suspends right above this gate.
   local operator
   for operator in c5c3:c5c3-system keystone:keystone-system horizon:horizon-system \
-                  glance:glance-system placement:placement-system barbican:barbican-system; do
+                  glance:glance-system placement:placement-system barbican:barbican-system \
+                  ovn:ovn-system neutron:neutron-system; do
     assert_not_empty "the loop covers ${operator%%:*}-operator" \
       "$(awk -v lo="${gate_line:-0}" -v hi="${block_end:-0}" -v want="$operator" \
         'NR > lo && NR < hi && index($0, want) { print NR; exit }' "$DEPLOY_INFRA_SH")"
