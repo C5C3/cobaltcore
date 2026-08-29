@@ -1,0 +1,900 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw chaos E2E test for a Southbound database outage.
+#
+# The fault is a PodChaos pod-failure on every Southbound member of this
+# suite's OVNCentral, so the database ovn-controller reads its flows from is
+# gone while the chassis keeps running. The suite pins the property that makes
+# an OVN dataplane survivable: a chassis forwards on the flows it has already
+# programmed, and losing the Southbound database costs it new logical state,
+# not the traffic it is carrying.
+#
+#   - baseline: a logical switch with two ports, a network namespace per port
+#     on the node, and a ping between them
+#   - under the outage: ovn-sbctl cannot reach the database (the control for
+#     everything below it), the same ping still answers, both chassis pods stay
+#     scheduled with every container at restartCount 0, and the Open vSwitch
+#     DaemonSet stays ready. The ovn-controller DaemonSet goes unready in that
+#     window on purpose: its readiness probe is the southbound connection
+#     itself, so the suite asserts it scheduled rather than ready (step 8)
+#   - after the outage: SouthboundReady and the chassis go back to True, a
+#     third logical port added once the database is back becomes reachable,
+#     and the node still holds one Chassis row
+#
+# The datapath is built the way OVN's own tutorial builds one, and the way
+# tests/e2e-ovn-overlay/geneve-datapath/ builds it across two workers: an
+# internal OVS port on br-int carrying external_ids:iface-id of the logical
+# switch port, moved into a network namespace that configures the MAC and IP
+# the logical port advertises. Both ports live on the one chassis here, so the
+# ping crosses br-int alone and says nothing about tunnels. That is the point:
+# it is an assertion about locally programmed flows.
+#
+# spec.concurrent is false because the probe Pods run with hostNetwork and own
+# /run/openvswitch and /run/netns on the node. The chaos config already runs
+# suites serially (parallel: 1), so this is parity with the chassis suites
+# rather than a second guard.
+#
+# The shared chaos config allows 300s per assert (tests/e2e-chaos/
+# chainsaw-config.yaml), which is the window the Southbound member needs to
+# come back and rejoin after the fault is lifted; no suite-level override is
+# needed on top of it.
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-southbound-outage
+spec:
+  namespace: openstack
+  concurrent: false
+  steps:
+  # ── Step 1: Label the node the chassis selects ─────────────────────────
+  # The suite labels the node itself rather than relying on the cluster
+  # bring-up, so it runs against any kind cluster the CI job hands it. The
+  # step cleanup takes the label off again, which is what keeps a later suite
+  # from finding a node advertising a chassis role nothing serves.
+  - try:
+    - script:
+        content: |
+          set -eu
+          NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          kubectl label node "$NODE" openstack.c5c3.io/chassis=true --overwrite
+          echo "OK: labelled node $NODE with openstack.c5c3.io/chassis=true"
+    cleanup:
+    - script:
+        content: |
+          set -eu
+          for node in $(kubectl get nodes -l openstack.c5c3.io/chassis=true -o name); do
+            kubectl label "$node" openstack.c5c3.io/chassis- || true
+          done
+          echo "OK: removed openstack.c5c3.io/chassis from every node"
+  # ── Step 2: Bring up the control plane the chassis attaches to ─────────
+  - try:
+    - apply:
+        file: 01-ovncentral-cr.yaml
+    - apply:
+        file: 04-probe-scripts.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: ovn-sb-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            clientSecretName: ovn-sb-chaos-client
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline ovn-sb-chaos --cr-kind=ovncentral
+    - script:
+        content: kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+  # ── Step 3: Apply the OVNChassis and assert it is ready on the node ────
+  - try:
+    - apply:
+        file: 02-ovnchassis-cr.yaml
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNChassis
+          metadata:
+            name: ovn-sb-chaos-chassis
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+            desiredNumberScheduled: 1
+            numberReady: 1
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline ovn-sb-chaos-chassis --cr-kind=ovnchassis
+    - script:
+        content: kubectl describe ds -n openstack -l app.kubernetes.io/instance=ovn-sb-chaos-chassis 2>&1 || true
+    - script:
+        content: kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+  # ── Step 4: Write the logical model over the client certificate ────────
+  # One logical switch, two ports. The probe reads its verdict from the pod log
+  # after a terminal phase rather than from an attached stream: `kubectl run -i`
+  # carries only what the container writes after the attach is established, so a
+  # probe that reaches its sentinel first would leave the captured output empty.
+  # That costs --rm, and the trap removes the pod instead.
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          POD=ovn-sb-chaos-nb-setup
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          # The image comes from the running StatefulSet, so no fixture in this
+          # suite has to spell the OVN tag the operator resolved.
+          IMG="$(kubectl get sts ovn-sb-chaos-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          NB="$(kubectl get ovncentral ovn-sb-chaos -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-sb-chaos-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-sb-chaos-probe-scripts"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/nb-setup.sh"],
+                  "env": [
+                    {"name": "NB_ADDRESS", "value": "${NB}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          # Poll for a terminal phase instead of waiting for Succeeded alone: a
+          # probe that fails its assertion ends in Failed, and waiting only for
+          # Succeeded would burn the step timeout and then throw away the log
+          # that says why. The sentinel below, not the phase, is the verdict.
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'NB-SETUP-OK'
+          echo "OK: chaos-sw carries lsp-1 and lsp-2"
+    catch:
+    - script:
+        content: ../diagnostics.sh baseline ovn-sb-chaos --cr-kind=ovncentral
+    - script:
+        content: kubectl describe pod ovn-sb-chaos-nb-setup -n openstack 2>&1 || true
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -eu
+          POD=ovn-sb-chaos-nb-cleanup
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          IMG="$(kubectl get sts ovn-sb-chaos-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+          NB="$(kubectl get ovncentral ovn-sb-chaos -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}' 2>/dev/null || true)"
+          if [ -z "$IMG" ] || [ -z "$NB" ]; then
+            echo "OK: no reachable northbound database left, nothing to delete"
+            exit 0
+          fi
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-sb-chaos-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-sb-chaos-probe-scripts"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/nb-cleanup.sh"],
+                  "env": [
+                    {"name": "NB_ADDRESS", "value": "${NB}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES" || true
+
+          phase=""
+          for _ in $(seq 1 40); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true
+          echo "pod phase: ${phase:-<none>}"
+  # ── Step 5: Build the datapath on the node ─────────────────────────────
+  # One long-lived Pod, pinned by nodeName to the labelled node. It needs the
+  # node's own network namespace and its /run/openvswitch to reach ovs-vsctl,
+  # and /run/netns with Bidirectional propagation so the namespaces it creates
+  # are visible to the ping probes that follow on the same node. runAsUser 0
+  # because the OVN image's default user is openstack, which drives neither OVS
+  # nor netns.
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          IMG="$(kubectl get sts ovn-sb-chaos-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true \
+            -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+
+          cat <<YAML | kubectl apply -f -
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: ovn-sb-chaos-probe
+            namespace: ${NAMESPACE}
+            labels:
+              app.kubernetes.io/name: ovn-sb-chaos-probe
+          spec:
+            nodeName: ${NODE}
+            hostNetwork: true
+            restartPolicy: Never
+            terminationGracePeriodSeconds: 1
+            containers:
+            - name: probe
+              image: ${IMG}
+              command: ["sleep", "infinity"]
+              securityContext:
+                privileged: true
+                runAsUser: 0
+              volumeMounts:
+              - name: run-ovs
+                mountPath: /run/openvswitch
+              - name: run-netns
+                mountPath: /run/netns
+                mountPropagation: Bidirectional
+            volumes:
+            - name: run-ovs
+              hostPath:
+                path: /run/openvswitch
+                type: DirectoryOrCreate
+            - name: run-netns
+              hostPath:
+                path: /run/netns
+                type: DirectoryOrCreate
+          YAML
+
+          kubectl wait --for=condition=Ready --timeout=180s -n "$NAMESPACE" \
+            pod/ovn-sb-chaos-probe
+
+          # attach_port <port> <netns> <mac> <ip> <lsp>
+          #
+          # Every command tolerates the state a previous attempt left behind,
+          # so a retried step converges instead of failing on its own work.
+          attach_port() {
+            kubectl exec -n "$NAMESPACE" ovn-sb-chaos-probe -- bash -c '
+              set -eu
+              port="$1"; ns="$2"; mac="$3"; addr="$4"; lsp="$5"
+              ovs-vsctl --may-exist add-port br-int "$port" \
+                -- set Interface "$port" type=internal "external_ids:iface-id=$lsp"
+              [ -e "/run/netns/$ns" ] || ip netns add "$ns"
+              ip netns exec "$ns" ip link show "$port" >/dev/null 2>&1 \
+                || ip link set "$port" netns "$ns"
+              ip netns exec "$ns" ip link set "$port" address "$mac"
+              ip netns exec "$ns" ip addr replace "$addr/24" dev "$port"
+              ip netns exec "$ns" ip link set "$port" up
+              ip netns exec "$ns" ip addr show dev "$port"
+            ' bash "$1" "$2" "$3" "$4" "$5"
+          }
+
+          attach_port chaos-p1 chaos-1 0a:00:00:00:00:01 10.98.0.1 lsp-1
+          attach_port chaos-p2 chaos-2 0a:00:00:00:00:02 10.98.0.2 lsp-2
+          echo "DATAPATH-SETUP-OK"
+    catch:
+    - script:
+        content: kubectl describe pod ovn-sb-chaos-probe -n openstack 2>&1 || true
+    - script:
+        content: kubectl exec -n openstack ovn-sb-chaos-probe -- ovs-vsctl show 2>&1 || true
+    - script:
+        content: ../diagnostics.sh baseline ovn-sb-chaos-chassis --cr-kind=ovnchassis
+    cleanup:
+    - script:
+        timeout: 2m
+        content: |
+          set -u
+          # The netns and the OVS port outlive the Pod that created them: they
+          # are the node's, not the container's. Removing them here is what
+          # keeps the next suite from finding a br-int with three orphaned
+          # internal ports on it.
+          for pair in chaos-1:chaos-p1 chaos-2:chaos-p2 chaos-3:chaos-p3; do
+            kubectl exec -n "$NAMESPACE" ovn-sb-chaos-probe -- bash -c '
+              ip netns del "$1" >/dev/null 2>&1 || true
+              ovs-vsctl --if-exists del-port br-int "$2" || true
+            ' bash "${pair%%:*}" "${pair##*:}" || true
+          done
+          kubectl delete pod ovn-sb-chaos-probe ovn-sb-chaos-ping-baseline \
+            ovn-sb-chaos-ping-outage ovn-sb-chaos-ping-lsp3 \
+            -n "$NAMESPACE" --ignore-not-found --wait=false
+          echo "OK: removed the three network namespaces, their OVS ports and the probe pods"
+  # ── Step 6: Baseline ping between the two ports ────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          POD=ovn-sb-chaos-ping-baseline
+          PEER=10.98.0.2
+          IMG="$(kubectl get sts ovn-sb-chaos-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true \
+            -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "nodeName": "${NODE}",
+              "hostNetwork": true,
+              "volumes": [
+                {"name": "probe", "configMap": {"name": "ovn-sb-chaos-probe-scripts"}},
+                {"name": "run-ovs", "hostPath": {"path": "/run/openvswitch", "type": "DirectoryOrCreate"}},
+                {"name": "run-netns", "hostPath": {"path": "/run/netns", "type": "DirectoryOrCreate"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/ping.sh"],
+                  "securityContext": {"privileged": true, "runAsUser": 0},
+                  "env": [
+                    {"name": "NS_NAME", "value": "chaos-1"},
+                    {"name": "PEER_IP", "value": "${PEER}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true},
+                    {"name": "run-ovs", "mountPath": "/run/openvswitch"},
+                    {"name": "run-netns", "mountPath": "/run/netns", "mountPropagation": "Bidirectional"}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          # The ping pods are NOT deleted on exit: step 5's cleanup removes all
+          # of them at the end of the suite, and a pod that is still
+          # terminating would collide with the next run of the same name.
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'PING-OK'
+          echo "OK: ${PEER} answered from netns chaos-1 before the outage"
+    catch:
+    - script:
+        content: kubectl logs -n openstack ovn-sb-chaos-ping-baseline --tail=200 2>&1 || true
+    - script:
+        content: kubectl exec -n openstack ovn-sb-chaos-probe -- ovs-vsctl show 2>&1 || true
+    - script:
+        content: ../diagnostics.sh baseline ovn-sb-chaos-chassis --cr-kind=ovnchassis
+  # ── Step 7: Fail every Southbound member ───────────────────────────────
+  # `kubectl wait --for=condition=AllInjected` rather than a chainsaw resource
+  # assert: PodChaos.status.conditions is a fixed 4-item list
+  # (Selected/AllInjected/AllRecovered/Paused) and chainsaw's list-merge rejects
+  # a shorter expected slice with "lengths of slices don't match".
+  - try:
+    - apply:
+        file: 03-podchaos.yaml
+    - script:
+        timeout: 3m
+        content: |
+          set -eu
+          kubectl wait podchaos/sb-outage -n openstack \
+            --for=condition=AllInjected --timeout=120s
+    catch:
+    - script:
+        content: kubectl get podchaos -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl get pods -n openstack -l app.kubernetes.io/instance=ovn-sb-chaos -o wide 2>&1 || true
+    cleanup:
+    - script:
+        content: |
+          set -eu
+          kubectl delete -f 03-podchaos.yaml --ignore-not-found
+          echo "OK: the southbound outage is lifted"
+  # ── Step 8: Under the outage — no database, unchanged forwarding ───────
+  # The three assertions of the suite, in the order that makes them mean
+  # something: first that the database really is gone, then that the ping still
+  # answers anyway, then that the chassis did not restart its way there.
+  - try:
+    - script:
+        timeout: 4m
+        content: |
+          set -eu
+          POD=ovn-sb-chaos-sb-down
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          IMG="$(kubectl get sts ovn-sb-chaos-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          SB="$(kubectl get ovncentral ovn-sb-chaos -n "$NAMESPACE" \
+            -o jsonpath='{.status.southbound.internalDbAddress}')"
+          test -n "$SB"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-sb-chaos-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-sb-chaos-probe-scripts"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/sb-down.sh"],
+                  "env": [
+                    {"name": "SB_ADDRESS", "value": "${SB}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 60); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'SB-DOWN-OK'
+          echo "OK: the southbound database refuses connections while the fault is injected"
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          POD=ovn-sb-chaos-ping-outage
+          PEER=10.98.0.2
+          IMG="$(kubectl get sts ovn-sb-chaos-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true \
+            -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "nodeName": "${NODE}",
+              "hostNetwork": true,
+              "volumes": [
+                {"name": "probe", "configMap": {"name": "ovn-sb-chaos-probe-scripts"}},
+                {"name": "run-ovs", "hostPath": {"path": "/run/openvswitch", "type": "DirectoryOrCreate"}},
+                {"name": "run-netns", "hostPath": {"path": "/run/netns", "type": "DirectoryOrCreate"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/ping.sh"],
+                  "securityContext": {"privileged": true, "runAsUser": 0},
+                  "env": [
+                    {"name": "NS_NAME", "value": "chaos-1"},
+                    {"name": "PEER_IP", "value": "${PEER}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true},
+                    {"name": "run-ovs", "mountPath": "/run/openvswitch"},
+                    {"name": "run-netns", "mountPath": "/run/netns", "mountPropagation": "Bidirectional"}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'PING-OK'
+          echo "OK: ${PEER} still answers from netns chaos-1 with the southbound database gone"
+    # The Open vSwitch DaemonSet is untouched by the outage: both its probes
+    # are local (ovs-vsctl show, ovs-appctl version), so a member of the
+    # southbound cluster going away cannot depool the datapath daemons.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: ovn-sb-chaos-chassis-ovs
+            namespace: openstack
+          status:
+            desiredNumberScheduled: 1
+            numberReady: 1
+    # The ovn-controller DaemonSet is asserted scheduled, NOT ready. Its
+    # readiness probe is the southbound connection itself
+    # (`ovn-appctl connection-status | grep -q connected`, see
+    # operators/ovn/internal/controller/reconcile_controller.go), and the
+    # operator means it that way: "a chassis that cannot reach the database
+    # serves stale flows and must not count as a node the rollout may move on
+    # from". So numberReady drops while the fault is injected, by design, and
+    # the pod stays scheduled and running on the node. That split is what the
+    # suite claims: the chassis is marked unready and keeps forwarding, which is
+    # what the ping beside this assert shows.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: ovn-sb-chaos-chassis-ovn-controller
+            namespace: openstack
+          status:
+            desiredNumberScheduled: 1
+            currentNumberScheduled: 1
+    # Neither DaemonSet declares a liveness probe, so an unready ovn-controller
+    # is never restarted by the kubelet. A container that had exited and come
+    # back would have re-programmed br-int from scratch, and the ping would then
+    # say nothing about flows that survived the outage.
+    - script:
+        content: |
+          set -eu
+          PODS="$(kubectl get pods -n "$NAMESPACE" \
+            -l app.kubernetes.io/instance=ovn-sb-chaos-chassis -o name)"
+          if [ -z "${PODS}" ]; then
+            echo "FAIL: no pod carries app.kubernetes.io/instance=ovn-sb-chaos-chassis"
+            exit 1
+          fi
+          STATUS=0
+          for pod in ${PODS}; do
+            RESTARTS="$(kubectl get "${pod}" -n "$NAMESPACE" \
+              -o jsonpath='{.status.containerStatuses[*].restartCount}')"
+            if [ -z "${RESTARTS}" ]; then
+              echo "FAIL: ${pod} reports no container statuses"
+              STATUS=1
+              continue
+            fi
+            CLEAN=0
+            for count in ${RESTARTS}; do
+              if [ "${count}" -ne 0 ]; then
+                CLEAN=1
+              fi
+            done
+            if [ "${CLEAN}" -ne 0 ]; then
+              echo "FAIL: ${pod} restarted a container, restart counts: ${RESTARTS}"
+              STATUS=1
+            else
+              echo "OK: ${pod} restart counts: ${RESTARTS}"
+            fi
+          done
+          exit "${STATUS}"
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos ovn-sb-chaos --cr-kind=ovncentral --dep-label=app.kubernetes.io/instance=ovn-sb-chaos --log-label=app.kubernetes.io/instance=ovn-sb-chaos-chassis
+    - script:
+        content: kubectl get podchaos -n openstack -o yaml 2>&1 || true
+    - script:
+        content: kubectl logs -n openstack -l app.kubernetes.io/instance=ovn-sb-chaos-chassis --all-containers --tail=80 2>&1 || true
+    - script:
+        content: kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 9: Lift the outage and let the database come back ─────────────
+  - try:
+    - script:
+        content: |
+          set -eu
+          kubectl delete -f 03-podchaos.yaml --ignore-not-found
+          echo "OK: deleted podchaos/sb-outage"
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNCentral
+          metadata:
+            name: ovn-sb-chaos
+            namespace: openstack
+          status:
+            (conditions[?type == 'SouthboundReady']):
+            - status: "True"
+              reason: StatefulSetReady
+    # The chassis is ready again once ovn-controller reconnects, which is the
+    # other half of the readiness contract step 8 relies on: the unready
+    # DaemonSet there was the missing connection, and nothing else.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: ovn-sb-chaos-chassis-ovn-controller
+            namespace: openstack
+          status:
+            desiredNumberScheduled: 1
+            numberReady: 1
+    - assert:
+        resource:
+          apiVersion: ovn.openstack.c5c3.io/v1alpha1
+          kind: OVNChassis
+          metadata:
+            name: ovn-sb-chaos-chassis
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos ovn-sb-chaos --cr-kind=ovncentral --dep-label=app.kubernetes.io/instance=ovn-sb-chaos --log-label=app.kubernetes.io/instance=ovn-sb-chaos
+    - script:
+        content: kubectl get podchaos -n openstack -o yaml 2>&1 || true
+  # ── Step 10: A port added during the outage becomes reachable ──────────
+  # The strongest statement about recovery the suite can make: lsp-3 was
+  # written to the Northbound database only now, so reaching 10.98.0.3 needs
+  # northd to have translated it and ovn-controller to have claimed and
+  # programmed it after rejoining the database it lost.
+  - try:
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          POD=ovn-sb-chaos-nb-lsp3
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          IMG="$(kubectl get sts ovn-sb-chaos-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          NB="$(kubectl get ovncentral ovn-sb-chaos -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-sb-chaos-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-sb-chaos-probe-scripts"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/nb-add-lsp3.sh"],
+                  "env": [
+                    {"name": "NB_ADDRESS", "value": "${NB}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'NB-PORT3-OK'
+          echo "OK: chaos-sw carries lsp-3"
+    - script:
+        timeout: 3m
+        content: |
+          set -eu
+          kubectl exec -n "$NAMESPACE" ovn-sb-chaos-probe -- bash -c '
+            set -eu
+            port="$1"; ns="$2"; mac="$3"; addr="$4"; lsp="$5"
+            ovs-vsctl --may-exist add-port br-int "$port" \
+              -- set Interface "$port" type=internal "external_ids:iface-id=$lsp"
+            [ -e "/run/netns/$ns" ] || ip netns add "$ns"
+            ip netns exec "$ns" ip link show "$port" >/dev/null 2>&1 \
+              || ip link set "$port" netns "$ns"
+            ip netns exec "$ns" ip link set "$port" address "$mac"
+            ip netns exec "$ns" ip addr replace "$addr/24" dev "$port"
+            ip netns exec "$ns" ip link set "$port" up
+            ip netns exec "$ns" ip addr show dev "$port"
+          ' bash chaos-p3 chaos-3 0a:00:00:00:00:03 10.98.0.3 lsp-3
+          echo "OK: chaos-p3 is bound in netns chaos-3"
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          POD=ovn-sb-chaos-ping-lsp3
+          PEER=10.98.0.3
+          IMG="$(kubectl get sts ovn-sb-chaos-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true \
+            -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "nodeName": "${NODE}",
+              "hostNetwork": true,
+              "volumes": [
+                {"name": "probe", "configMap": {"name": "ovn-sb-chaos-probe-scripts"}},
+                {"name": "run-ovs", "hostPath": {"path": "/run/openvswitch", "type": "DirectoryOrCreate"}},
+                {"name": "run-netns", "hostPath": {"path": "/run/netns", "type": "DirectoryOrCreate"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/ping.sh"],
+                  "securityContext": {"privileged": true, "runAsUser": 0},
+                  "env": [
+                    {"name": "NS_NAME", "value": "chaos-1"},
+                    {"name": "PEER_IP", "value": "${PEER}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true},
+                    {"name": "run-ovs", "mountPath": "/run/openvswitch"},
+                    {"name": "run-netns", "mountPath": "/run/netns", "mountPropagation": "Bidirectional"}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'PING-OK'
+          echo "OK: ${PEER} answers from netns chaos-1 after the outage"
+    - script:
+        timeout: 6m
+        content: |
+          set -eu
+          POD=ovn-sb-chaos-sb-chassis
+          cleanup() { kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          IMG="$(kubectl get sts ovn-sb-chaos-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+          SB="$(kubectl get ovncentral ovn-sb-chaos -n "$NAMESPACE" \
+            -o jsonpath='{.status.southbound.internalDbAddress}')"
+          test -n "$SB"
+          NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true \
+            -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-sb-chaos-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-sb-chaos-probe-scripts"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/sb-chassis.sh"],
+                  "env": [
+                    {"name": "SB_ADDRESS", "value": "${SB}"},
+                    {"name": "NODE_NAME", "value": "${NODE}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'CHASSIS-OK'
+          echo "OK: the node still holds exactly one Chassis row"
+    catch:
+    - script:
+        content: ../diagnostics.sh chaos ovn-sb-chaos --cr-kind=ovncentral --dep-label=app.kubernetes.io/instance=ovn-sb-chaos --log-label=app.kubernetes.io/instance=ovn-sb-chaos-chassis
+    - script:
+        content: kubectl logs -n openstack -l app.kubernetes.io/instance=ovn-sb-chaos-chassis --all-containers --tail=80 2>&1 || true
+    - script:
+        content: kubectl exec -n openstack ovn-sb-chaos-probe -- ovs-vsctl show 2>&1 || true
+    - script:
+        content: kubectl get events -n openstack --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

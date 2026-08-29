@@ -1,0 +1,273 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The scripts the probe Pods of this suite run inside the OVN image.
+#
+# They live in a ConfigMap rather than in the `kubectl run --overrides`
+# payloads so they stay reviewable, shellcheck-able shell scripts instead of
+# JSON-escaped one-liners. Every probe Pod mounts this ConfigMap at /probe; the
+# ones that speak to a database also mount the client certificate the
+# OVNCentral published at /certs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ovn-sb-chaos-probe-scripts
+  namespace: openstack
+data:
+  common.sh: |
+    # Sourced by every script below that speaks to a database. The client
+    # identity, the retry vocabulary and the northbound retry loop are one
+    # piece of knowledge, and five scripts across this suite need it, so a
+    # tenth retryable ovsdb error is added here rather than in each of them.
+    # Every probe Pod mounts this ConfigMap at /probe, so the scripts reach it
+    # as /probe/common.sh.
+
+    # The client keypair and the CA the database authenticates peers against.
+    readonly CERT=(-p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt)
+
+    # Only a connection-level failure is retried. A TLS failure reports a
+    # certificate, an SSL routine or a protocol error instead, and retrying it
+    # would burn the budget on a misconfiguration that cannot resolve itself.
+    readonly RETRYABLE='Connection refused|Connection timed out|Network is unreachable|No route to host|Host is unreachable|Name or service not known|timeout exceeded'
+
+    # A handshake that fails on the certificate is a misconfiguration of this
+    # suite, not the outage under test, so the scripts call it out on its own.
+    # shellcheck disable=SC2034  # read by sb-down.sh and sb-chassis.sh
+    readonly TLS_ERROR='certificate|SSL routines|self.signed|protocol error|handshake'
+
+    readonly INTERVAL=5
+
+    # retry_nbctl <attempts> <exhausted-message> <ovn-nbctl arguments...>
+    #
+    # Runs ovn-nbctl against NB_ADDRESS with the client certificate until it
+    # exits 0, retrying connection-level failures alone. Returns 0 on success;
+    # exits the script on a non-retryable failure or once the budget is spent,
+    # after printing what went wrong.
+    retry_nbctl() {
+      local attempts="$1" exhausted="$2"
+      shift 2
+      local attempt=0 out rc
+
+      while [ "${attempt}" -lt "${attempts}" ]; do
+        attempt=$((attempt + 1))
+        out="$(ovn-nbctl --db="${NB_ADDRESS}" "${CERT[@]}" --timeout=10 "$@" 2>&1)"
+        rc=$?
+        if [ "${rc}" -eq 0 ]; then
+          return 0
+        fi
+        if grep -Eq "${RETRYABLE}" <<< "${out}"; then
+          echo "retry ${attempt}/${attempts}: northbound database not reachable yet: ${out}"
+          sleep "${INTERVAL}"
+          continue
+        fi
+        echo "FAIL: ovn-nbctl exited ${rc}: ${out}"
+        exit 1
+      done
+
+      echo "FAIL: ${exhausted}"
+      exit 1
+    }
+  nb-setup.sh: |
+    #!/bin/bash
+    # Writes the logical model the datapath probes attach to: one logical
+    # switch with two ports, each carrying the MAC and IP the corresponding
+    # network namespace configures on its OVS port. OVN forwards on the
+    # addresses recorded here, so a mismatch between them and the interface
+    # silently drops every packet.
+    #
+    # NB_ADDRESS arrives as an environment variable.
+    set -u
+
+    # Fail closed: these scripts run under `set -u` without `set -e`, so an
+    # unmounted ConfigMap would otherwise leave the sentinel below printed
+    # by a probe that never reached a database.
+    . /probe/common.sh || { echo "FAIL: /probe/common.sh is not mounted"; exit 1; }
+
+    # --may-exist on every create keeps a retried attempt from failing on the
+    # model the previous one already wrote.
+    retry_nbctl 30 "the northbound database never accepted the logical model" \
+      -- --may-exist ls-add chaos-sw \
+      -- --may-exist lsp-add chaos-sw lsp-1 \
+      -- lsp-set-addresses lsp-1 "0a:00:00:00:00:01 10.98.0.1" \
+      -- --may-exist lsp-add chaos-sw lsp-2 \
+      -- lsp-set-addresses lsp-2 "0a:00:00:00:00:02 10.98.0.2"
+
+    echo "chaos-sw carries lsp-1 10.98.0.1 and lsp-2 10.98.0.2"
+    echo "NB-SETUP-OK"
+  nb-add-lsp3.sh: |
+    #!/bin/bash
+    # Adds a third port to the switch after the Southbound outage is over. The
+    # port did not exist while the database was down, so northd has to translate
+    # it and ovn-controller has to claim and program it now: a chassis that came
+    # back only halfway would keep forwarding the two ports it already knew and
+    # never reach this one.
+    #
+    # NB_ADDRESS arrives as an environment variable.
+    set -u
+
+    # Fail closed: these scripts run under `set -u` without `set -e`, so an
+    # unmounted ConfigMap would otherwise leave the sentinel below printed
+    # by a probe that never reached a database.
+    . /probe/common.sh || { echo "FAIL: /probe/common.sh is not mounted"; exit 1; }
+
+    retry_nbctl 30 "the northbound database never accepted lsp-3" \
+      -- --may-exist lsp-add chaos-sw lsp-3 \
+      -- lsp-set-addresses lsp-3 "0a:00:00:00:00:03 10.98.0.3"
+
+    echo "chaos-sw carries lsp-3 10.98.0.3"
+    echo "NB-PORT3-OK"
+  nb-cleanup.sh: |
+    #!/bin/bash
+    # Removes the logical switch nb-setup.sh created, with it all three ports.
+    # Runs in the suite teardown, where the switch may already be gone. Hence
+    # --if-exists, and hence the shorter budget: a database that is on its way
+    # out with the rest of the suite is not worth waiting five minutes for.
+    #
+    # NB_ADDRESS arrives as an environment variable.
+    set -u
+
+    # Fail closed: these scripts run under `set -u` without `set -e`, so an
+    # unmounted ConfigMap would otherwise leave the sentinel below printed
+    # by a probe that never reached a database.
+    . /probe/common.sh || { echo "FAIL: /probe/common.sh is not mounted"; exit 1; }
+
+    retry_nbctl 6 "the northbound database never dropped chaos-sw" \
+      -- --if-exists ls-del chaos-sw
+
+    echo "NB-CLEANUP-OK"
+  sb-down.sh: |
+    #!/bin/bash
+    # Proves the injected outage is real: with every Southbound member failed,
+    # a client that asks the database for its Chassis rows must not get an
+    # answer. This is the control for the ping that runs beside it. Without it
+    # a ping that keeps working proves nothing, because the database might
+    # simply still be up.
+    #
+    # One attempt, no retry: the fault is bounded and a retry loop would report
+    # its own expiry as an outage.
+    #
+    # SB_ADDRESS arrives as an environment variable.
+    set -u
+
+    # Fail closed: these scripts run under `set -u` without `set -e`, so an
+    # unmounted ConfigMap would otherwise leave the sentinel below printed
+    # by a probe that never reached a database.
+    . /probe/common.sh || { echo "FAIL: /probe/common.sh is not mounted"; exit 1; }
+
+    # Wider than the shared RETRYABLE: these are the failures that mean
+    # "nothing answered on the other side". An exit that matches none of them is
+    # not proof of the outage, because it could be a bad certificate, an
+    # unparsable command line or a schema error, each of which would fail the
+    # same way with the database up.
+    readonly UNREACHABLE='Connection refused|Connection timed out|Connection reset|Network is unreachable|No route to host|Host is unreachable|Name or service not known|timeout exceeded|timeout expired|database connection failed|connection dropped|no response'
+
+    out="$(ovn-sbctl --db="${SB_ADDRESS}" "${CERT[@]}" --timeout=5 \
+      --format=csv --no-headings list Chassis 2>&1)"
+    rc=$?
+
+    if [ "${rc}" -eq 0 ]; then
+      echo "FAIL: ovn-sbctl listed Chassis while every southbound member was failed: ${out}"
+      exit 1
+    fi
+    if grep -Eiq "${TLS_ERROR}" <<< "${out}"; then
+      echo "FAIL: ovn-sbctl exited ${rc} on a TLS error, which is a broken client identity rather than the outage: ${out}"
+      exit 1
+    fi
+    if ! grep -Eiq "${UNREACHABLE}" <<< "${out}"; then
+      echo "FAIL: ovn-sbctl exited ${rc}, but not because the database was unreachable: ${out}"
+      exit 1
+    fi
+
+    echo "ovn-sbctl exited ${rc}: ${out}"
+    echo "SB-DOWN-OK"
+  sb-chassis.sh: |
+    #!/bin/bash
+    # Reads the Chassis row of the node back once the Southbound database is
+    # serving again. Exactly one row: the chassis rejoined the database it was
+    # registered in rather than registering a second time under the same
+    # hostname, which is what a lost and re-created system-id would look like.
+    #
+    # SB_ADDRESS and NODE_NAME arrive as environment variables.
+    set -u
+
+    # Fail closed: these scripts run under `set -u` without `set -e`, so an
+    # unmounted ConfigMap would otherwise leave the sentinel below printed
+    # by a probe that never reached a database.
+    . /probe/common.sh || { echo "FAIL: /probe/common.sh is not mounted"; exit 1; }
+
+    readonly ATTEMPTS=30
+
+    attempt=0
+    while [ "${attempt}" -lt "${ATTEMPTS}" ]; do
+      attempt=$((attempt + 1))
+      out="$(ovn-sbctl --db="${SB_ADDRESS}" "${CERT[@]}" --timeout=10 \
+        --format=csv --no-headings --columns=hostname,name \
+        find Chassis "hostname=${NODE_NAME}" 2>&1)"
+      rc=$?
+      if [ "${rc}" -ne 0 ]; then
+        if grep -Eiq "${TLS_ERROR}" <<< "${out}"; then
+          echo "FAIL: ovn-sbctl exited ${rc} on a TLS error: ${out}"
+          exit 1
+        fi
+        if grep -Eq "${RETRYABLE}" <<< "${out}"; then
+          echo "retry ${attempt}/${ATTEMPTS}: southbound database not reachable yet: ${out}"
+          sleep "${INTERVAL}"
+          continue
+        fi
+        echo "FAIL: ovn-sbctl exited ${rc}: ${out}"
+        exit 1
+      fi
+
+      rows="$(grep -c . <<< "${out}")"
+      if [ "${rows}" -gt 1 ]; then
+        echo "FAIL: ${NODE_NAME} holds ${rows} Chassis rows, want exactly 1: ${out}"
+        exit 1
+      fi
+      if [ "${rows}" -eq 1 ]; then
+        echo "chassis row for ${NODE_NAME}: ${out}"
+        echo "CHASSIS-OK"
+        exit 0
+      fi
+      # ovn-controller re-registers a moment after the database accepts
+      # connections again, so an empty result is a wait rather than a verdict.
+      echo "retry ${attempt}/${ATTEMPTS}: no Chassis row for ${NODE_NAME} yet"
+      sleep "${INTERVAL}"
+    done
+
+    echo "FAIL: ${NODE_NAME} never held exactly one Chassis row"
+    exit 1
+  ping.sh: |
+    #!/bin/bash
+    # Pings a peer port from the network namespace the datapath step built on
+    # this node. Both ports hang off the same chassis, so the packet is carried
+    # by the flows ovn-controller programmed into br-int and by nothing else:
+    # that is what makes the ping under the Southbound outage an assertion
+    # about the datapath rather than about the control plane.
+    #
+    # NS_NAME and PEER_IP arrive as environment variables.
+    set -u
+
+    # ovn-controller programs the flows for a port it has just claimed a few
+    # seconds after the binding appears, so the first ping can legitimately go
+    # unanswered. Retrying the whole ping rather than raising -c keeps a
+    # failure readable: every attempt prints its own output.
+    readonly ATTEMPTS=10
+    readonly INTERVAL=3
+
+    attempt=0
+    while [ "${attempt}" -lt "${ATTEMPTS}" ]; do
+      attempt=$((attempt + 1))
+      out="$(ip netns exec "${NS_NAME}" ping -c 3 -W 2 "${PEER_IP}" 2>&1)"
+      rc=$?
+      if [ "${rc}" -eq 0 ]; then
+        echo "${out}"
+        echo "PING-OK"
+        exit 0
+      fi
+      echo "retry ${attempt}/${ATTEMPTS}: ping from ${NS_NAME} to ${PEER_IP} exited ${rc}: ${out}"
+      sleep "${INTERVAL}"
+    done
+
+    echo "FAIL: ${PEER_IP} never answered from ${NS_NAME}"
+    exit 1

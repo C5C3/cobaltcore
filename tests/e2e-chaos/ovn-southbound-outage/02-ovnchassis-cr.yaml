@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNChassis fixture for the Southbound outage chaos test.
+#
+# The selector matches the label step 1 puts on the one kind node, so both
+# DaemonSets land on that node and the datapath the suite builds runs beside
+# the ovn-controller under test.
+#
+# No bridge mappings and no gateway: there is no provider network on a kind
+# node to map, and a gateway chassis without an uplink would announce
+# connectivity it does not have. spec.image is left unset so the operator
+# resolves the same OVN image the control plane runs.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: ovn-sb-chaos-chassis
+  namespace: openstack
+spec:
+  centralRef:
+    name: ovn-sb-chaos
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"

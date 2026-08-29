@@ -1,0 +1,62 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkChaos CR to partition neutron-api <-> MariaDB traffic.
+#
+# The partition is enforced on the MariaDB (server) side on purpose. neutron
+# does not connect to a MariaDB pod IP: it connects to the ClusterIP Service
+# openstack-db.openstack.svc:3306. chaos-mesh installs its drop rule inside the
+# *selector* pods' network namespace and matches the *target* pods by their pod
+# IPs. If the rule were installed on the neutron (client) side, it would match
+# MariaDB pod IPs — but at that point the packet still carries the Service
+# ClusterIP, because kube-proxy only DNATs ClusterIP -> pod IP later, in the
+# node's root namespace, after the packet has left the pod. The rule would
+# therefore never match and the partition would be a no-op for Service-routed
+# traffic.
+#
+# Installing the rule on the MariaDB pods and dropping traffic *from* the
+# neutron pods works because, by the time the packet reaches the MariaDB
+# namespace, it has already been DNATed and carries the real neutron pod source
+# IP — the same reason Kubernetes NetworkPolicies can match Service-routed
+# traffic by client pod IP. direction 'both' fully severs the link in either
+# direction.
+#
+# The target is narrowed to the API component of this suite's Neutron. The API
+# pods are the ones serving the requests the probes make; the worker pods and
+# the db-sync Job pods carry the same name and instance labels and reach the
+# same database, so partitioning them would widen the fault beyond what the
+# suite asserts. The three labels are what reconcile_deployment.go stamps on the
+# API pod template (naming.ComponentLabels("neutron", <cr>, "api")).
+#
+# Duration is a safety net for auto-expiry if the test does not explicitly
+# delete the CR; the suite lifts the partition explicitly. It must *exceed* the
+# Chainsaw assert window, not equal it. An equal duration self-heals at the exact
+# deadline: connectivity returns in the same instant the fail-closed probe is
+# still waiting on its bounded POST, which can flip a failing write back to
+# success mid-assert and mask the fault. 600s sits above the 5m assert window
+# with margin.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-mariadb-neutron
+  namespace: openstack
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: mariadb
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - openstack
+      labelSelectors:
+        app.kubernetes.io/name: neutron
+        app.kubernetes.io/instance: neutron-db-chaos
+        app.kubernetes.io/component: api
+  duration: "600s"

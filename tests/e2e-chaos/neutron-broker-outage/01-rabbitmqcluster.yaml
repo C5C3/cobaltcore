@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The message bus this suite partitions.
+#
+# It is a plain RabbitmqCluster, not a ControlPlane with
+# spec.infrastructure.messaging: the subject here is what a Neutron in managed
+# messaging mode does when the broker becomes unreachable, and the aggregate
+# would add a second operator between the fixture and the fault.
+# tests/e2e/c5c3/messaging/ is where the projection itself is asserted.
+#
+# One replica. The RabbitMQ Cluster Operator's defaults for image and
+# persistence are left alone, as the ControlPlane projection leaves them
+# (ensureRabbitMQ projects spec.replicas and nothing else). Its resource default
+# is not: the operator requests 1 CPU and 2Gi per pod, and on the single kind
+# node of the self-hosted e2e-chaos network leg that one request took the last
+# schedulable CPU, so the OVN database pod of 02-ovncentral-cr.yaml stayed
+# Pending on "Insufficient cpu" and the OVNCentral never reached Ready. The
+# broker carries no traffic in this suite (the whole point is that nothing
+# connects to it), so 100m and 512Mi are what it needs on kind.
+#
+# The cluster-operator labels the broker's pods app.kubernetes.io/name=<cluster
+# name>, which is the selector 04-networkchaos.yaml and the catch blocks use.
+apiVersion: rabbitmq.com/v1beta1
+kind: RabbitmqCluster
+metadata:
+  name: neutron-chaos-rabbitmq
+  namespace: openstack
+spec:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 512Mi

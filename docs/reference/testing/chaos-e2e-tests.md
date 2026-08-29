@@ -137,15 +137,15 @@ Individual test suites override the assert timeout to 5 minutes (`5m`) at the sp
 ## CI Trigger Policy
 
 Chaos tests run as a separate `e2e-chaos` GitHub Actions job in the CI workflow.
-The job is path-filtered; its two matrix legs gate differently — the pod leg is
-blocking, the network leg is not (see below). See
+The job is path-filtered; its three matrix legs gate differently. The pod leg is
+blocking, the network and ovn legs are not (see below). See
 [CI Workflow — e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos) for full job documentation.
 
 **Path filter (`e2e_chaos`):** Changes to `tests/e2e-chaos/**`, `hack/**`, `deploy/**`,
 `.github/workflows/ci.yaml`, or `.github/actions/**` trigger the job.
 
-A Go code change does not. The two legs cost about 62 runner minutes between
-them, and a change to an operator is exercised by that operator's own e2e leg;
+A Go code change does not. The pod and network legs alone cost about 62 runner
+minutes between them, and a change to an operator is exercised by that operator's own e2e leg;
 the chaos suites test recovery behaviour, which is what the `tests_chaos` filter
 watches. Apply the `ci:chaos` label to run them against a pull request that
 changes something else. On `v*` tag pushes the job is forced active regardless
@@ -162,13 +162,25 @@ of which files were touched.
 `test-integration`, `verify-codegen`). It only runs if no dependency failed or was
 cancelled.
 
-**Per-leg gating (<code v-pre>continue-on-error: ${{ matrix.suite == 'network' }}</code>):** The `pod`
+**Per-leg gating (<code v-pre>continue-on-error: ${{ matrix.suite != 'pod' }}</code>):** The `pod`
 leg is **blocking** — a failure in any PodChaos suite (operator restart, PDB, rotation)
 fails the build. The `network` leg stays **non-blocking**, because its
 `ip_set`/`sch_netem` kernel-module dependency remains prone to environment
 flakiness; its failures are visible but do not
-block merges. The `ci:chaos` PR label runs both legs on demand for pre-validation.
+block merges. The `ci:chaos` PR label runs every leg on demand for pre-validation.
 `run-chaos` still works as an alias for it.
+
+**Legs and what they carry:** the `network` leg runs the NetworkChaos suites, the two
+Neutron ones (`neutron-mariadb-outage`, `neutron-broker-outage`) among them, and
+therefore deploys the neutron-operator and the ovn-operator alongside keystone. The
+`ovn` leg is the third one, on the `self-hosted` runners as well and
+`continue-on-error` like the network one. It sets `WITH_OVN_KERNEL_MODULES=true` so
+`hack/deploy-infra.sh` modprobes `openvswitch` and `geneve` on the host (the chassis
+DaemonSets cannot start without them), deploys the ovn-operator alone, and runs
+`ovn-southbound-outage`. It is
+separate from the network leg because it builds a datapath on the node itself: its
+probe pods own `/run/openvswitch` and `/run/netns`, which no other suite may hold at
+the same time.
 
 **Timeout:** 90 minutes to accommodate serial test execution and longer recovery
 assertion windows.
@@ -188,6 +200,9 @@ assertion windows.
 | [operator-pod-kill](#operator-pod-kill) | SC-CHAOS-009 | `keystone-chaos-opk` | Operator pod kill (all) with failover reconciliation | All 6 conditions `True` maintained, replica patch reconciled by new leader |
 | [deletion-stuck-finalizer](#deletion-stuck-finalizer) | SC-CHAOS-010 | `keystone-chaos-stuck` | Deletion with a downed dependency operator | Keystone CR removed, `FinalizingDatabase`/`DatabaseFinalized` emitted, MariaDB CRs Terminating → removed after recovery |
 | [keystone-federation](#keystone-federation) | — | `keystone-chaos-fed` | Federation sidecar container-kill + IdP outage (fail-closed) | Sidecar `restartCount` gated recovery, `Ready=True` restored, federated auth recovers; during IdP outage federated auth non-2xx while password auth stays 201 |
+| [ovn-southbound-outage](#ovn-southbound-outage) | — | `ovn-sb-chaos` | Southbound database outage (datapath no-regression) | Ping across the datapath answers under the fault, chassis containers stay at `restartCount: 0`, `SouthboundReady=True` and chassis `Ready=True/AllReady` restored after it |
+| [neutron-mariadb-outage](#neutron-mariadb-outage) | — | `neutron-db-chaos` | Database partition (fail-closed write) | `NeutronAPIReady=True/APIHealthy` and `DeploymentReady=True/DeploymentReady` maintained, `POST /v2.0/networks` non-2xx during the partition and 201 after it |
+| [neutron-broker-outage](#neutron-broker-outage) | — | `neutron-broker-chaos` | Message-bus partition (no-regression) | `Ready=True/AllReady` maintained, `POST /v2.0/networks` answers 201 throughout, `rabbitmqctl list_connections` empty before, during and after |
 
 ---
 
@@ -668,6 +683,206 @@ script (not a fixture apply) so the probe bearer token is provably fetched
 before the IdP disappears; the chaos carries a bounded `duration` so the
 fixture heals itself even if the test is interrupted before the explicit
 delete.
+
+---
+
+### ovn-southbound-outage
+
+**File:** `tests/e2e-chaos/ovn-southbound-outage/chainsaw-test.yaml`
+
+**Scenario:** —
+
+**Purpose:** A `PodChaos` `pod-failure` fails every Southbound member of the suite's
+OVNCentral while the chassis on the node keeps running. The suite pins the property
+that makes an OVN dataplane survivable: a chassis forwards on the flows it has already
+programmed, so losing the Southbound database costs it new logical state and not the
+traffic it is carrying. The datapath is a real one, built the way
+`tests/e2e-ovn-overlay/geneve-datapath/` builds its own: an internal OVS port on
+`br-int` carrying `external_ids:iface-id`, moved into a network namespace that
+configures the MAC and IP the logical port advertises. Both ports sit on the one
+chassis, so the ping crosses `br-int` and nothing else. The Open vSwitch DaemonSet stays
+ready throughout; the ovn-controller one goes unready by design while the database is
+away (see the design notes).
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Label the node | `script` | Labels the first node `openstack.c5c3.io/chassis=true`; the step cleanup removes the label again |
+| 2 | Control plane | `apply` + `assert` (5m) | `ovn-sb-chaos` (one member per database, one northd, backup suspended) reaches `Ready=True/AllReady` and publishes `clientSecretName: ovn-sb-chaos-client` |
+| 3 | Chassis | `apply` + `assert` (5m) | `ovn-sb-chaos-chassis` reaches `Ready=True/AllReady` with `numberReady: 1` |
+| 4 | Logical model | `script` (6m) | A probe pod runs `ovn-nbctl` over the client certificate and creates `chaos-sw` with `lsp-1` (`10.98.0.1`) and `lsp-2` (`10.98.0.2`); sentinel `NB-SETUP-OK`. The step cleanup deletes the switch |
+| 5 | Datapath | `script` (6m) | A privileged `hostNetwork` pod on the node binds `chaos-p1` in netns `chaos-1` and `chaos-p2` in `chaos-2`. The step cleanup removes all three namespaces, their OVS ports and every probe pod |
+| 6 | Baseline ping | `script` (6m) | `ip netns exec chaos-1 ping -c 3 -W 2 10.98.0.2` answers; sentinel `PING-OK` |
+| 7 | Inject PodChaos | `apply` + `script` | `PodChaos/sb-outage` (`pod-failure`, `mode: all`, `duration: 900s`) on the `sb` component, then `kubectl wait --for=condition=AllInjected` |
+| 8 | Assert under the fault | `script` + `assert` | `ovn-sbctl --timeout=5 list Chassis` fails on a connection error (`SB-DOWN-OK`), the same ping still answers (`PING-OK`), the OVS DaemonSet keeps `numberReady: 1`, the ovn-controller DaemonSet keeps `currentNumberScheduled: 1`, and every chassis container reports `restartCount: 0` |
+| 9 | Lift the fault | `script` + `assert` (5m) | Deletes the PodChaos; `SouthboundReady=True/StatefulSetReady`, the ovn-controller DaemonSet back to `numberReady: 1`, and the OVNChassis back to `Ready=True/AllReady` |
+| 10 | Assert post-fault programming | `script` | `lsp-3` is added (`NB-PORT3-OK`), `chaos-p3` is bound in netns `chaos-3`, `chaos-1` reaches `10.98.0.3` (`PING-OK`), and `find Chassis hostname=<node>` returns one row (`CHASSIS-OK`) |
+
+**Fixtures:** `01-ovncentral-cr.yaml`, `02-ovnchassis-cr.yaml`, `03-podchaos.yaml`,
+`04-probe-scripts.yaml` (the shell the probe pods run, mounted at `/probe`; its
+`common.sh` key holds the client certificate arguments, the retryable-error
+vocabulary and the `retry_nbctl` loop the other scripts source).
+
+**Catch blocks:** every step from 2 on calls `../diagnostics.sh` with
+`--cr-kind=ovncentral` or `--cr-kind=ovnchassis` and adds the chassis pod logs
+(`--all-containers`), `kubectl get podchaos -o yaml`, the `ovs-vsctl show` of the
+datapath pod, and the namespace events.
+
+**Design notes:**
+
+- `pod-failure`, not `pod-kill`: the StatefulSet replaces a killed pod within seconds.
+  `pod-failure` swaps the container for a pause image, so the member stays scheduled,
+  serves nothing, and leaves the member Service without an endpoint for the whole
+  window.
+- The `ovn-sbctl` probe of step 8 is the control for everything beside it. A ping that
+  keeps answering says nothing if the database might still be up. That probe runs once
+  with no retry loop and accepts a connection-level failure alone: a TLS error or an
+  unclassified non-zero exit fails the suite, because neither is evidence of the outage.
+- Under the fault the ovn-controller DaemonSet is asserted scheduled, not ready. Its
+  readiness probe is the Southbound connection itself
+  (`ovn-appctl connection-status | grep -q connected` in
+  `operators/ovn/internal/controller/reconcile_controller.go`), and the operator means
+  it that way: a chassis that cannot reach the database serves stale flows and must not
+  count as a node a rollout may move on from. The suite's claim is that split. The
+  chassis is marked unready and keeps forwarding, and step 9 asserts readiness returns
+  once ovn-controller reconnects.
+- `restartCount: 0` on every chassis container separates "kept forwarding" from
+  "recovered by restarting". Neither DaemonSet declares a liveness probe, so an unready
+  ovn-controller is never restarted by the kubelet; a container that had exited and come
+  back would have re-programmed `br-int` from scratch.
+- `lsp-3` is written only after the fault is lifted, so reaching `10.98.0.3` needs
+  northd to translate the port and ovn-controller to claim and program it after
+  rejoining the database it lost.
+- `duration: 900s` is a safety net for an interrupted run. The two probes that need the
+  fault run first, and step 9 lifts it explicitly. Like the `duration` of the two
+  Neutron `NetworkChaos` fixtures, it has to outlast everything asserted under it:
+  step 8 grants its probes 4m and 6m and then runs two DaemonSet asserts inside the
+  300s assert window, and a fault that expires in the middle of that lets
+  ovn-controller reconnect and answer the ping the suite reads as proof that the
+  datapath forwards without the database.
+- Probe pods take their image from the Northbound StatefulSet, so no fixture spells the
+  OVN tag the operator resolved, and every probe reads its verdict from the pod log
+  after a terminal phase. An attached `kubectl run -i` stream can miss a sentinel
+  written before the attach is established.
+
+---
+
+### neutron-mariadb-outage
+
+**File:** `tests/e2e-chaos/neutron-mariadb-outage/chainsaw-test.yaml`
+
+**Scenario:** —
+
+**Purpose:** A `NetworkChaos` partition severs neutron-api from MariaDB, enforced on the
+MariaDB (server) side for the reason `mariadb-network-partition` documents. The suite
+pins the fail-closed contract of a partitioned database: a write that cannot reach it
+must not answer 2xx, and the record it would have created must be absent once the
+database is back. The counterpart is pinned in the same window: all three Neutron
+container probes GET the API root, which serves the version document without a token
+and without touching a table, so `NeutronAPIReady` and `DeploymentReady` stay `True`
+and the pod stays pooled while database-backed requests fail. That is the difference
+from `mariadb-network-partition`, where keystone's database-aware readiness probe
+depools the pods and `DeploymentReady` goes `False`.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-neutron-outage` (database `keystone_neutron_outage`) reaches `Ready=True/AllReady`; the probes authenticate against it |
+| 2 | Apply the service stack | `apply` + `assert` (5m) | Broker Secret, `neutron-db-chaos-ovn` and `neutron-db-chaos` (database `neutron_db_chaos`, one API replica, one worker); both CRs reach `Ready=True/AllReady` |
+| 3 | Baseline write | `script` (5m) | A python probe on the neutron image takes a project-scoped admin token and `POST /v2.0/networks` answers 201; sentinel `WRITE-OK` |
+| 4 | Inject NetworkChaos | `apply` | `partition-mariadb-neutron` (`action: partition`, `direction: both`, `duration: 600s`) drops traffic between the MariaDB pods and the API pods of this CR. The step cleanup deletes it |
+| 5 | Assert injection active | `script` (60s) | `kubectl wait networkchaos/partition-mariadb-neutron --for=condition=AllInjected` |
+| 6 | Assert fail-closed | `script` (5m) + `assert` | `GET /` stays 200, a token is still obtainable, and a `POST` named `db-outage-failclosed` returns 5xx or times out within 90s and never 2xx (`FAILCLOSED-OK`); `NeutronAPIReady=True/APIHealthy` and `DeploymentReady=True/DeploymentReady` |
+| 7 | Lift the partition | `delete` | Removes the NetworkChaos |
+| 8 | Assert recovery | `script` (5m) | `GET /v2.0/networks?name=db-outage-failclosed` returns an empty list and a fresh `POST` answers 201; sentinel `RECOVERY-OK` |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-messaging-secret.yaml`, `02-ovncentral-cr.yaml`,
+`03-neutron-cr.yaml`, `04-networkchaos.yaml`.
+
+**Catch blocks:** every assert step calls `../diagnostics.sh` with `--cr-kind=neutron`
+and `--dep-label=app.kubernetes.io/name=mariadb`, and adds the OVNCentral or Keystone CR
+dump, `kubectl get networkchaos -o yaml`, and the neutron-operator logs from
+`neutron-system`. `diagnostics.sh` ends every run with the namespace events.
+
+**Design notes:**
+
+- A 4xx during the partition fails the suite. The subject is the database write path,
+  and a regression in the auth pipeline (a wrong `serviceUser`, a misrendered
+  `[keystone_authtoken]`) would turn every write into a 401 that could otherwise pass
+  for proof.
+- The fail-closed `POST` is attempted once, bounded at 90 seconds. A retry could land a
+  second network under the same name and blur what step 8 reads.
+- Step 8 exists because a timeout only proves the client gave up. The request could
+  still have been completed by the uWSGI worker it was parked in, and listing by name
+  once the database is reachable again is what separates the two outcomes.
+- The recovery probe retries a 5xx for up to two minutes. The SQLAlchemy pool holds
+  connections that died inside the partition and hands them out once more before it
+  reconnects. A 4xx stays fatal there.
+- The target is narrowed to `app.kubernetes.io/component: api`. The worker pods and the
+  db-sync Job pods carry the same name and instance labels and reach the same database,
+  so partitioning them would widen the fault past what the suite asserts.
+
+---
+
+### neutron-broker-outage
+
+**File:** `tests/e2e-chaos/neutron-broker-outage/chainsaw-test.yaml`
+
+**Scenario:** —
+
+**Purpose:** A `NetworkChaos` partition severs Neutron from its RabbitMQ cluster,
+enforced on the broker side. The suite pins the finding that makes the outage a
+non-event: a pure-OVN Neutron never opens a broker connection at all. The operator
+renders `rpc_workers = 0` and the `noop` notification driver, so the transport URL it
+builds from the RabbitmqCluster's default-user Secret is configuration nothing dials.
+The API keeps answering 201 to network creations throughout, the CR stays `Ready`, and
+`rabbitmqctl list_connections` on the broker is empty before, during and after the
+fault.
+
+**Steps:**
+
+| # | Action | Type | Details |
+| --- | --- | --- | --- |
+| 1 | Apply Keystone CR | `apply` + `assert` (5m) | `keystone-neutron-broker` (database `keystone_neutron_broker`) reaches `Ready=True/AllReady` |
+| 2 | Bring up the broker | `apply` + `script` (11m) | `RabbitmqCluster/neutron-chaos-rabbitmq` (`replicas: 1`) waited on `AllReplicasReady`, the condition the RabbitMQ Cluster Operator does set |
+| 3 | Apply the service stack | `apply` + `assert` (5m) | `neutron-broker-ovn` and `neutron-broker-chaos` (managed messaging via `messaging.clusterRef`, database `neutron_broker_chaos`) reach `Ready=True/AllReady` |
+| 4 | Baseline | `script` (5m) + `script` (2m) | An authenticated `POST /v2.0/networks` answers 201 (`WRITE-OK`), and `rabbitmqctl list_connections` on `neutron-chaos-rabbitmq-server-0` lists no connection (`NO-CONN-OK`) |
+| 5 | Inject NetworkChaos | `apply` + `script` (60s) | `partition-rabbitmq-neutron` (`direction: both`, `duration: 600s`) between the broker pods and every pod of this Neutron, then `kubectl wait --for=condition=AllInjected`. The step cleanup deletes it |
+| 6 | Assert no regression | `script` (5m) + `assert` + `script` (2m) | A `POST` still answers 201, the CR stays `Ready=True/AllReady`, and the connection list is still empty |
+| 7 | Lift the partition | `delete` + `script` (2m) | Removes the NetworkChaos, waits 30 seconds for a reconnect that must not happen, and reads the connection list once more |
+| 8 | Tear the broker down | `script` (8m) | Deletes the Neutron CR and waits for its pods, then deletes the RabbitmqCluster and waits for `neutron-chaos-rabbitmq-server-0` to disappear |
+
+**Fixtures:** `00-keystone-cr.yaml`, `01-rabbitmqcluster.yaml`, `02-ovncentral-cr.yaml`,
+`03-neutron-cr.yaml`, `04-networkchaos.yaml`.
+
+**Catch blocks:** the assert steps call `../diagnostics.sh` with `--cr-kind=neutron` and
+`--dep-label=app.kubernetes.io/name=neutron-chaos-rabbitmq`, and add
+`kubectl get rabbitmqcluster -o yaml`, the broker pod logs, the
+rabbitmq-cluster-operator logs from `rabbitmq-system`, and the NetworkChaos dump.
+
+**Design notes:**
+
+- The CR uses managed messaging (`messaging.clusterRef`), which is the mode the fault is
+  about. The brownfield `secretRef` mode the other Neutron suites use points at a host
+  that never resolves and could not tell a partition from a typo.
+- The empty connection list carries the suite. A test that only showed "the partition
+  changed nothing" would pass just as well against a Neutron whose transport URL pointed
+  at the wrong host; the broker's own accounting is what rules that out.
+- `kubectl exec` into the broker keeps working under the fault. The drop rule matches the
+  neutron pod IPs, and the exec arrives from the kubelet.
+- The target carries no component key, so API and worker pods are both cut off. Sparing
+  the workers would leave the half of the deployment meant to consume RPC still
+  connected.
+- Step 8 tears the bus down through the RabbitmqCluster delete itself, inside the suite.
+  The broker pod carries the RabbitMQ Cluster Operator's default
+  `terminationGracePeriodSeconds` of 604800 (seven days, so its preStop drain can
+  finish), and the operator's own delete path is what labels the pod `skipPreStopChecks`
+  and releases the finalizer. `tests/e2e/c5c3/messaging/` documents the same teardown.
+- The RabbitmqCluster fixture sets `replicas: 1` and leaves image, resources and
+  persistence at the operator's defaults, the way the ControlPlane projection
+  (`ensureRabbitMQ`) leaves them.
 
 ---
 

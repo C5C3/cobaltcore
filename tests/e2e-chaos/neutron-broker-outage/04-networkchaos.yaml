@@ -1,0 +1,61 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NetworkChaos CR to partition neutron <-> RabbitMQ traffic.
+#
+# The partition is enforced on the broker (server) side on purpose. neutron does
+# not connect to a broker pod IP: the transport URL the operator builds from
+# the RabbitmqCluster's default-user Secret carries the cluster's ClusterIP
+# Service. chaos-mesh installs its drop rule inside the *selector* pods'
+# network namespace and matches the *target* pods by their pod IPs. If the rule
+# were installed on the neutron (client) side, it would match broker pod IPs —
+# but at that point the packet still carries the Service ClusterIP, because
+# kube-proxy only DNATs ClusterIP -> pod IP later, in the node's root
+# namespace, after the packet has left the pod. The rule would therefore never
+# match and the partition would be a no-op for Service-routed traffic.
+#
+# Installing the rule on the broker pods and dropping traffic *from* the neutron
+# pods works because, by the time the packet reaches the broker's namespace, it
+# has already been DNATed and carries the real neutron pod source IP — the same
+# reason Kubernetes NetworkPolicies can match Service-routed traffic by client
+# pod IP. direction 'both' fully severs the link in either direction.
+#
+# The selector is the broker: the RabbitMQ Cluster Operator labels a cluster's
+# pods app.kubernetes.io/name=<cluster name>.
+#
+# The target is every pod of this suite's Neutron, API and workers alike, with
+# no component key. A broker partition that spared the workers would leave the
+# half of the deployment that is meant to consume RPC still connected, and the
+# suite's claim (a pure-OVN Neutron opens no broker connection at all) is about
+# both halves.
+#
+# Duration is a safety net for auto-expiry if the test does not explicitly
+# delete the CR; the suite lifts the partition explicitly. It must *exceed* the
+# Chainsaw assert window, not equal it: an equal duration self-heals at the
+# exact deadline, restoring broker connectivity in the same instant an
+# assertion is still reading the state under the fault. 600s sits above the 5m
+# assert window with margin.
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: partition-rabbitmq-neutron
+  namespace: openstack
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - openstack
+    labelSelectors:
+      app.kubernetes.io/name: neutron-chaos-rabbitmq
+  direction: both
+  target:
+    mode: all
+    selector:
+      namespaces:
+        - openstack
+      labelSelectors:
+        app.kubernetes.io/name: neutron
+        app.kubernetes.io/instance: neutron-broker-chaos
+  duration: "600s"
