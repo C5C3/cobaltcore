@@ -1,0 +1,54 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR fixture for the release-upgrade E2E test, at the initial 2025.2
+# release. Managed mode: database via clusterRef to openstack-db (schema
+# neutron_release_upgrade, its own so the suite can run beside the two
+# basic-deployment suites), cache via clusterRef to openstack-memcached, OVN via
+# the sibling OVNCentral. The database credentials come from the ESO-synced
+# neutron-db Secret and the service-user password from the pre-seeded
+# keystone-admin Secret (both deploy/kind/infrastructure).
+#
+# A single API replica keeps the rollout observable when 03-patch-upgrade.yaml
+# bumps the release to 2026.1: with one replica, updatedReplicas == replicas
+# holds only once the old pod is gone.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-release-upgrade
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_release_upgrade
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-release-upgrade-messaging
+  ovn:
+    centralRef:
+      name: neutron-release-upgrade-ovn
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

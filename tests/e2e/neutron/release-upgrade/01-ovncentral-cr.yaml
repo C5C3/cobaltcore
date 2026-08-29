@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVN control plane the neutron-release-upgrade CR programs.
+#
+# The Neutron reconciler gates on this CR's status: it needs both
+# internalDbAddress values and the published clientSecretName before it renders
+# ml2_conf.ini. Single-member Raft clusters and a single northd keep the
+# bring-up inside the suite's assert budget, which the upgrade itself already
+# spends most of.
+#
+# The OVN control plane is release-independent: the daemon image carries no
+# OpenStack release, so it is unaffected by the 2025.2 -> 2026.1 patch in step 4
+# and stays up across it.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: neutron-release-upgrade-ovn
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true

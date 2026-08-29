@@ -1,0 +1,424 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a happy-path Neutron deployment (2026.1 release).
+# The per-release twin of the 2025.2 basic-deployment suite. The operator
+# renders the same files for both releases (nothing in the config step reads
+# spec.openStackRelease), so this suite asserts the SAME uWSGI command, the
+# same ML2/OVN driver set and the same neutron.conf shape against the 2026.1
+# image, and a difference between the two legs is the failure it exists to
+# catch. It pins the container image as well, so a release bump that forgot the
+# tag shows up here rather than in a passing 2025.2 run.
+#
+# Validates the full reconciliation cycle:
+#   - all 10 sub-conditions progress to True with their expected reasons, and
+#     the aggregate Ready=True with reason AllReady
+#   - the API Deployment launches uWSGI against the module the image ships
+#     (--module neutron.wsgi.api) with the rendered uwsgi.ini behind --ini, and
+#     points neutron at the mounted config through the two OS_NEUTRON_* env vars
+#   - the database URL, the transport URL and the service-user password arrive
+#     as oslo.config env overrides sourced from Secrets
+#   - the owned children exist: both worker Deployments, the Service on 9696,
+#     the PodDisruptionBudget, and the mirrored OVN client identity
+#   - the rendered ml2_conf.ini drives ML2/OVN over geneve and points the
+#     mechanism driver at the Northbound address the OVNCentral published
+#   - the rendered neutron.conf runs no RPC worker, drops the versioned
+#     notifications, and carries no transport_url line
+#   - the Neutron API answers the unauthenticated version document with 200 and
+#     rejects an unauthenticated /v2.0/networks request with exactly 401
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-basic-deployment-2026-1
+spec:
+  namespace: openstack
+  timeouts:
+    # The OVNCentral has to issue three certificates and bootstrap two Raft
+    # databases before the Neutron reconciler renders anything, and the schema
+    # migration and the API cold start follow. That does not fit the 120s the
+    # shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the broker Secret, the OVNCentral and the Neutron CR ──
+  - try:
+    - apply:
+        file: 00-messaging-secret.yaml
+    - apply:
+        file: 01-ovncentral-cr.yaml
+    - apply:
+        file: 02-neutron-cr.yaml
+  # ── Step 2: Assert all sub-conditions and Ready ────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-basic-2026-1
+            namespace: openstack
+          status:
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'OVNEndpointsReady']):
+            - status: "True"
+              reason: OVNEndpointsResolved
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'WorkersReady']):
+            - status: "True"
+              reason: WorkersReady
+            (conditions[?type == 'NeutronAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'OVNDBSyncReady']):
+            - status: "True"
+              reason: OVNDBSyncNotRequired
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-basic-2026-1 -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-basic-2026-1-ovn -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Neutron pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-basic-2026-1 -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert the API Deployment, the workers, Service and PDB ─────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-basic-2026-1
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: neutron-api
+                  image: ghcr.io/c5c3/neutron:2026.1
+                # The neutron image ships no WSGI entry script, so the
+                # application is imported as a module. A --wsgi-file launch
+                # would mean the image layout changed under the operator.
+                (contains(join(' ', containers[0].command), '--module neutron.wsgi.api')): true
+                # uwsgi.ini carries the start-time marker the API reports its
+                # uptime from, and --ini is the only thing that loads it.
+                (contains(join(' ', containers[0].command), '--ini /etc/neutron/uwsgi.ini')): true
+                # D10: the start time comes from uWSGI's own %t inside that ini
+                # file, not from a --set-placeholder on the command line. A
+                # placeholder flag here would mean the decision was reverted
+                # without the file following.
+                (contains(join(' ', containers[0].command), '--set-placeholder')): false
+                # Neutron runs one process per API pod: the workers live in
+                # their own Deployments and the OVN client identity is a
+                # mounted Secret, not a sidecar. A second container would mean
+                # something injected itself into every Neutron API pod.
+                (length(containers) == `1`): true
+                # A uWSGI-imported application has no argv to carry
+                # --config-file, so the directory and the ordered file list
+                # travel in the environment instead.
+                (containers[0].env[?name == 'OS_NEUTRON_CONFIG_DIR'].value | [0]): /etc/neutron
+                (containers[0].env[?name == 'OS_NEUTRON_CONFIG_FILES'].value | [0]): neutron.conf;ml2_conf.ini
+                # The three credentials travel as oslo.config env overrides
+                # sourced from Secrets, so none of them enters the rendered
+                # ConfigMap.
+                (containers[0].env[?name == 'OS_DATABASE__CONNECTION'].valueFrom.secretKeyRef.name | [0]): neutron-basic-2026-1-db-connection
+                (containers[0].env[?name == 'OS_DATABASE__CONNECTION'].valueFrom.secretKeyRef.key | [0]): connection
+                (containers[0].env[?name == 'OS_DEFAULT__TRANSPORT_URL'].valueFrom.secretKeyRef.name | [0]): neutron-basic-2026-1-transport-url
+                (containers[0].env[?name == 'OS_DEFAULT__TRANSPORT_URL'].valueFrom.secretKeyRef.key | [0]): transport_url
+                (containers[0].env[?name == 'OS_KEYSTONE_AUTHTOKEN__PASSWORD'].valueFrom.secretKeyRef.name | [0]): keystone-admin
+                (containers[0].env[?name == 'OS_KEYSTONE_AUTHTOKEN__PASSWORD'].valueFrom.secretKeyRef.key | [0]): password
+          status:
+            (availableReplicas > `0`): true
+    # Both workers run the same image with the RPC side enabled and serve no
+    # HTTP. They carry no readiness probe, so availableReplicas is what says the
+    # process stayed up rather than crash-looping on the rendered config.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-basic-2026-1-periodic-workers
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-basic-2026-1-ovn-maintenance-worker
+            namespace: openstack
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: neutron-basic-2026-1
+            namespace: openstack
+          spec:
+            ports:
+            - port: 9696
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: neutron-basic-2026-1
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: neutron
+              app.kubernetes.io/instance: neutron-basic-2026-1
+              app.kubernetes.io/managed-by: neutron-operator
+          spec:
+            # Two API replicas, so the shared builder renders minAvailable
+            # rather than the single-replica maxUnavailable that exists to
+            # avoid a drain deadlock.
+            minAvailable: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: neutron
+                app.kubernetes.io/instance: neutron-basic-2026-1
+                # The component key keeps the two worker Deployments out of the
+                # budget. Without it a drain could take every API replica at
+                # once while the budget still counted healthy worker pods.
+                app.kubernetes.io/component: api
+              # db-sync pods carry no readiness probe, so they count as healthy
+              # from their first moment. Without this exclusion they inflate
+              # currentHealthy and let a drain evict the API pods the budget
+              # protects.
+              matchExpressions:
+              - key: batch.kubernetes.io/job-name
+                operator: DoesNotExist
+    # The mirrored copy of the OVNCentral's client identity: the keypair the
+    # ML2/OVN mechanism driver presents to both databases and the CA bundle it
+    # verifies them against. Only the key names are asserted; the values are
+    # cert-manager's.
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: neutron-basic-2026-1-ovn-client
+            namespace: openstack
+          (contains(keys(data), 'tls.crt')): true
+          (contains(keys(data), 'tls.key')): true
+          (contains(keys(data), 'ca.crt')): true
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron children ==="
+          kubectl get deploy,svc,pdb,cm,secret -n $NAMESPACE -l app.kubernetes.io/instance=neutron-basic-2026-1 -o wide 2>&1 || true
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-basic-2026-1 -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-basic-2026-1-ovn -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 4: Assert the rendered config ConfigMap ────────────────────────
+  # The ConfigMap is content-hashed, so it is resolved through the Deployment's
+  # config volume rather than guessed by name.
+  - try:
+    - script:
+        content: |
+          set -eu
+          kubectl get cm -n openstack -o name | grep neutron-basic-2026-1-config-
+    # ml2_conf.ini is the file the ML2 plugin reads. The four driver options are
+    # what make this an OVN deployment over geneve rather than an OVS one, and
+    # ovn_nb_connection is the address the mechanism driver writes the logical
+    # network model to: it has to be the one the OVNCentral published, not a
+    # default the operator invented.
+    - script:
+        content: |
+          set -eu
+          CM=$(kubectl get deploy neutron-basic-2026-1 -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          test -n "$CM"
+          kubectl get cm "$CM" -n openstack -o 'jsonpath={.data.ml2_conf\.ini}' \
+            > /tmp/neutron-basic-2026-1-ml2.ini
+          grep -Fxq 'mechanism_drivers = ovn' /tmp/neutron-basic-2026-1-ml2.ini
+          grep -Fxq 'tenant_network_types = geneve' /tmp/neutron-basic-2026-1-ml2.ini
+          grep -Fxq 'type_drivers = geneve,flat' /tmp/neutron-basic-2026-1-ml2.ini
+          grep -Fxq 'flat_networks = *' /tmp/neutron-basic-2026-1-ml2.ini
+          NB=$(kubectl get ovncentral neutron-basic-2026-1-ovn -n openstack \
+            -o 'jsonpath={.status.northbound.internalDbAddress}')
+          test -n "$NB"
+          grep -Fxq "ovn_nb_connection = ${NB}" /tmp/neutron-basic-2026-1-ml2.ini
+          echo "OK: $CM drives ML2/OVN over geneve against ${NB}"
+    # neutron.conf is neutron-server's own file. Nothing in this deployment
+    # consumes RPC — OVN answers DHCP and metadata out of the logical model and
+    # no agent registers — so both worker counts are zero and the versioned
+    # notifications are dropped at the source. The transport URL is the one
+    # credential that must never appear here: it reaches the pods as
+    # OS_DEFAULT__TRANSPORT_URL, and a rendered line would put the broker
+    # password in a ConfigMap.
+    - script:
+        content: |
+          set -eu
+          CM=$(kubectl get deploy neutron-basic-2026-1 -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          test -n "$CM"
+          kubectl get cm "$CM" -n openstack -o 'jsonpath={.data.neutron\.conf}' \
+            > /tmp/neutron-basic-2026-1.conf
+          grep -Fxq 'rpc_workers = 0' /tmp/neutron-basic-2026-1.conf
+          grep -Fxq 'rpc_state_report_workers = 0' /tmp/neutron-basic-2026-1.conf
+          grep -Fxq 'driver = noop' /tmp/neutron-basic-2026-1.conf
+          if grep -q '^transport_url' /tmp/neutron-basic-2026-1.conf; then
+            echo "ERROR: neutron.conf carries a transport_url line"
+            exit 1
+          fi
+          echo "OK: $CM runs no RPC worker and renders no transport_url"
+    # D11: uwsgi.ini is exactly the start-time marker. uWSGI expands %t while it
+    # reads the file, so the epoch second needs neither an entry point nor a
+    # writable copy of a file the kubelet projects read-only.
+    - script:
+        content: |
+          set -eu
+          CM=$(kubectl get deploy neutron-basic-2026-1 -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          test -n "$CM"
+          kubectl get cm "$CM" -n openstack -o 'jsonpath={.data.uwsgi\.ini}' \
+            > /tmp/neutron-basic-2026-1-uwsgi.ini
+          printf '%s\n' '[uwsgi]' 'start-time = %t' > /tmp/neutron-basic-2026-1-uwsgi.want
+          diff -u /tmp/neutron-basic-2026-1-uwsgi.want /tmp/neutron-basic-2026-1-uwsgi.ini
+          echo "OK: $CM renders the uwsgi.ini start-time marker verbatim"
+    catch:
+    - script:
+        content: |
+          echo "=== Config ConfigMaps ==="
+          kubectl get cm -n $NAMESPACE -o name 2>&1 | grep neutron-basic-2026-1-config- || true
+          echo "=== Rendered config ==="
+          CM=$(kubectl get deploy neutron-basic-2026-1 -n $NAMESPACE -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}' 2>/dev/null || true)
+          kubectl get cm "$CM" -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-basic-2026-1-ovn -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+  # ── Step 5: Assert the Neutron API answers over HTTP ────────────────────
+  # HTTP-level API coverage. "/" is the version document, which neutron serves
+  # without a token and without touching the database, so a 200 there proves the
+  # WSGI app is serving requests. Both probes run from the periodic-workers pod
+  # this CR already owns: it carries the same image, so python3 is there, and it
+  # is a client of the Service like any other pod, so the request still crosses
+  # kube-proxy. A `kubectl run` pod is not an option here. The leg runs two
+  # suites at once on a four-vCPU kind node, and when both reach Ready together
+  # the node has no CPU left to schedule a fresh pod: the probe pods stayed
+  # Pending on "Insufficient cpu" until kubectl's one-minute pod-running wait
+  # gave up, on a run where every assertion before them had held. The probe
+  # retries connection-level failures inside the pod: kube-proxy's endpoint
+  # programming can trail the CR's Ready flip by a second or two, so a
+  # single-shot request races it. HTTP errors still fail hard.
+  - try:
+    - script:
+        timeout: 90s
+        content: |
+          kubectl exec -n $NAMESPACE deploy/neutron-basic-2026-1-periodic-workers -- python3 -c "
+          import time, urllib.error, urllib.request
+          last = None
+          for _ in range(15):
+              try:
+                  r = urllib.request.urlopen('http://neutron-basic-2026-1.openstack.svc.cluster.local:9696/')
+                  body = r.read().decode()
+                  assert r.status == 200, r.status
+                  assert 'versions' in body, body
+                  print('version document OK, status %d: %s' % (r.status, body))
+                  break
+              except urllib.error.HTTPError as exc:
+                  raise SystemExit('GET / -> HTTP %d' % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  print('version document retry: %s' % exc)
+                  time.sleep(2)
+          else:
+              raise SystemExit('version document never answered after retries: %r' % last)
+          "
+    # The version document alone cannot tell a keystone-protected API from an
+    # open one: neutron serves it unauthenticated either way. /v2.0/networks is
+    # behind keystonemiddleware, so an unauthenticated GET must come back 401.
+    # A 200 would mean [DEFAULT] auth_strategy never reached the config and
+    # every network in the deployment is world-writable; a 404 would mean the
+    # core plugin never loaded; a 500 would mean it loaded and then failed.
+    # All of them fail here, and only connection-level errors are retried.
+    - script:
+        timeout: 90s
+        content: |
+          kubectl exec -n $NAMESPACE deploy/neutron-basic-2026-1-periodic-workers -- python3 -c "
+          import time, urllib.error, urllib.request
+          last = None
+          for _ in range(15):
+              try:
+                  r = urllib.request.urlopen('http://neutron-basic-2026-1.openstack.svc.cluster.local:9696/v2.0/networks')
+              except urllib.error.HTTPError as exc:
+                  if exc.code == 401:
+                      print('unauthenticated GET /v2.0/networks -> HTTP 401')
+                      break
+                  raise SystemExit('unauthenticated GET /v2.0/networks -> HTTP %d, want 401' % exc.code)
+              except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                  last = exc
+                  print('networks retry: %s' % exc)
+                  time.sleep(2)
+              else:
+                  raise SystemExit('unauthenticated GET /v2.0/networks -> HTTP %d, want 401' % r.status)
+          else:
+              raise SystemExit('networks never answered after retries: %r' % last)
+          "
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-basic-2026-1 -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-basic-2026-1-ovn -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Neutron pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-basic-2026-1 -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Service and Endpoints ==="
+          kubectl get svc,endpoints -n $NAMESPACE -l app.kubernetes.io/instance=neutron-basic-2026-1 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

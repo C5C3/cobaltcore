@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVN control plane the neutron-deletion CR programs.
+#
+# The Neutron reconciler gates on this CR's status: it needs both
+# internalDbAddress values and the published clientSecretName before it renders
+# ml2_conf.ini. Single-member Raft clusters and a single northd keep the
+# bring-up inside the suite's assert budget; the multi-member cluster is what
+# tests/e2e/ovn/central-basic-deployment/ covers.
+#
+# The backup CronJob is suspended: this suite asserts nothing about it, and a
+# suspended schedule keeps the hourly database dump out of a cluster that runs
+# four suites in parallel.
+#
+# The issuer is the cluster-scoped one the kind overlay ships. OVN authenticates
+# every connection, so both databases and the client identity the Neutron pods
+# mount are issued from the same CA.
+#
+# The name is deliberately not <neutron>-ovn. The ovn-operator publishes the
+# client identity as <ovncentral>-client and the neutron-operator mirrors it as
+# <neutron>-ovn-client, so an OVNCentral named neutron-deletion-ovn would publish
+# neutron-deletion-ovn-client: the mirror's own name, in the same namespace. The
+# reconciler then finds its "mirror" already there, issued by cert-manager for
+# the OVNCentral's Certificate, creates nothing, and the absence check in the
+# suite's last step waits for a Secret that never belonged to the Neutron.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: neutron-deletion-central
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true
