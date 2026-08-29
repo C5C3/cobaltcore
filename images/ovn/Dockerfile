@@ -154,7 +154,10 @@ RUN if [ -n "$APT_MIRROR" ]; then \
 # its unbound runtime, libcap-ng0 the privilege-drop library the daemons
 # link against. kmod (modprobe) and iproute2 (ip) serve the chassis
 # DaemonSets of #903, which load host kernel modules from inside this image
-# and inspect interfaces. No python3, no compiler and no git here.
+# and inspect interfaces. iputils-ping (ping) serves the datapath probes of
+# tests/e2e-ovn-overlay/geneve-datapath and of the ovn-southbound-outage
+# chaos suite, which ping across the Geneve overlay from a netns on the
+# node. No python3, no compiler and no git here.
 # Cache mounts speed up rebuilds under BuildKit; the trailing rm is a no-op
 # when the mount is active but keeps the layer clean on non-BuildKit engines.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -162,6 +165,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     iproute2 \
+    iputils-ping \
     kmod \
     libcap-ng0 \
     libssl3t64 \
