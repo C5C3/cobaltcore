@@ -579,7 +579,7 @@ port-forwarded).
 | Service endpoint | In-cluster DNS (`<service-k8s-name>.openstack.svc:5000`) | Port-forwarded to `localhost:5000` |
 | Glance endpoint | Not supported (local runs are keystone-only) | When `GLANCE_K8S_NAME` is set (glance legs), additionally forwards `svc/<glance-cr-name>` on 9292, polls its `/healthcheck`, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's image endpoint resolves to the forwarded port |
 | Barbican endpoint | Not supported (local runs are keystone-only) | When `BARBICAN_K8S_NAME` is set (barbican legs), additionally forwards `svc/<barbican-cr-name>` on 9311, polls its `/healthcheck`, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's key-manager endpoint resolves to the forwarded port |
-| Neutron endpoint | Not supported (local runs are keystone-only) | When `NEUTRON_K8S_NAME` is set (neutron legs), additionally forwards `svc/<neutron-cr-name>` on 9696, polls its root path, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's network endpoint resolves to the forwarded port |
+| Neutron endpoint | Not supported (local runs are keystone-only) | When `NEUTRON_K8S_NAME` is set (neutron legs), the script also forwards `svc/<neutron-cr-name>` on 9696, polls its root path, and add-hosts its cluster DNS names to `127.0.0.1` so the catalog's network endpoint resolves to the forwarded port |
 | Credential injection | Environment variable passed to container | `sed` substitution into generated config copy |
 | Base images | Pulled from GHCR (`docker-image://ghcr.io/...`) | Built locally in prior CI steps (no `--build-context` for bases) |
 | Artifact upload | Manual inspection of `_output/` | `actions/upload-artifact` with `tempest-<service>-<release>-results` name |

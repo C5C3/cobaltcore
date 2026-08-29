@@ -851,9 +851,12 @@ suites, OVN Southbound outage). See
 
 The `e2e-chaos` job depends on the standard gate jobs plus `e2e-operator`, so chaos
 tests run after the happy-path operator E2E suite has passed. Gating is set per
-matrix leg via `continue-on-error: ${{ matrix.suite != 'pod' }}`: the `pod`
-leg is **blocking** — an operator-restart, PDB, or rotation regression fails the
-build — while the `network` and `ovn` legs stay **non-blocking**. The `network`
+matrix leg via `continue-on-error: ${{ matrix.suite == 'network' || matrix.suite
+== 'ovn' }}`: the `pod` leg is **blocking**, so an operator-restart, PDB, or
+rotation regression fails the build. The `network` and `ovn` legs stay
+**non-blocking**. The expression names those two rather than negating `pod`, so
+a leg added to the matrix later gates merges until it is argued out of that.
+The `network`
 leg's `ip_set`/`sch_netem` kernel-module dependency keeps it prone to
 environment flakiness, and the `ovn` leg builds an OVN datapath out of the
 host's `openvswitch` and `geneve` modules, which places it under
@@ -1235,7 +1238,7 @@ these via `matrix.release`, `matrix.config-dir`, `matrix.cr-name`, and
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
 | 3 | `helm/kind-action@v1.14.0` | Creates kind cluster (`cobaltcore`) at `KIND_VERSION` |
 | 4 | Resolve OVN version | `hack/ci-resolve-ovn-version.sh` writes `OVN_VERSION` to `$GITHUB_ENV`; `images/ovn/Dockerfile` holds the pin |
-| 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs; the neutron leg additionally pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>` |
+| 5 | `load-e2e-images` composite action | Pulls run-scoped GHCR tags and re-tags to canonical local refs; the neutron leg also pulls `neutron-operator:dev`, `neutron:<release>`, `ovn-operator:dev` and `ovn:<OVN_VERSION>` |
 | 6 | `kind load docker-image` | Loads keystone operator and service images into kind |
 | 7 | `kind load docker-image` *(neutron leg only)* | Loads the two operator images, the neutron and OVN service images, and the tempest image the catalog Job runs in-cluster |
 | 8 | `setup-e2e-infra` composite action | Installs Flux CLI, test deps, and deploys infra stack |
