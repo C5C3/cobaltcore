@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the HealthCheck sub-reconciler.
+# Verifies the operator's HTTP probe of the Neutron API version document drives
+# NeutronAPIReady and status.endpoint:
+#   - NeutronAPIReady=True with reason APIHealthy once the Deployment serves
+#   - status.endpoint carries the cluster-local Service URL
+#
+# Neutron writes the internal URL into status.endpoint on every pass, whether or
+# not spec.gateway is set, because the probe verifies API readiness rather than
+# the ingress path an external address would describe. This CR configures no
+# gateway, so the two coincide here.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-healthcheck
+spec:
+  namespace: openstack
+  timeouts:
+    # The OVNCentral bring-up, the schema migration and the API cold start all
+    # precede Ready, and none of that fits the 120s the shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the broker Secret, the OVNCentral and the Neutron CR ──
+  - try:
+    - apply:
+        file: 00-messaging-secret.yaml
+    - apply:
+        file: 01-ovncentral-cr.yaml
+    - apply:
+        file: 02-neutron-cr.yaml
+  # ── Step 2: Assert NeutronAPIReady and the endpoint ────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-health
+            namespace: openstack
+          status:
+            endpoint: http://neutron-health.openstack.svc.cluster.local:9696
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+            (conditions[?type == 'NeutronAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-health -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-health-ovn -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Neutron pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-health -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Service and Endpoints ==="
+          kubectl get svc,endpoints -n $NAMESPACE -l app.kubernetes.io/instance=neutron-health 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

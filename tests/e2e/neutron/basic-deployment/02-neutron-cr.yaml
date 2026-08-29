@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR for the basic-deployment E2E test (2025.2 release).
+#
+# Managed mode throughout: the schema neutron_basic on the openstack-db MariaDB
+# cluster, the openstack-memcached cache, the ESO-synced neutron-db credentials
+# and the pre-seeded keystone-admin service-user password (both from
+# deploy/kind/infrastructure). The broker and the OVN control plane come from
+# the two sibling fixtures.
+#
+# The API runs two replicas because that is what makes the PodDisruptionBudget
+# assertion meaningful: the shared builder renders minAvailable=1 only above one
+# replica and maxUnavailable=1 at exactly one. Both workers stay at one replica;
+# neither serves a request, so a second pod would only lengthen the bring-up.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-basic
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 2
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_basic
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-basic-messaging
+  ovn:
+    centralRef:
+      name: neutron-basic-ovn
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

@@ -1,0 +1,59 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR with spec.gateway for the HTTPRoute lifecycle test.
+#
+# Same managed-mode wiring as the basic-deployment fixture, on the schema
+# neutron_route.
+#
+# The parentRef names a Gateway that does not exist. That is deliberate and it
+# is what the placement twin does: with a real Envoy Gateway as the parent, the
+# Gateway controller writes its own RouteParentStatus slot and races the status
+# merge-patch the acceptance step applies, so the suite would be asserting
+# against whichever write landed last. A parent nothing reconciles leaves the
+# slot to the suite alone.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-route
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_route
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-route-messaging
+  ovn:
+    centralRef:
+      name: neutron-route-ovn
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  gateway:
+    parentRef:
+      name: not-a-real-gateway
+    hostname: neutron-route.example.test
+    path: /

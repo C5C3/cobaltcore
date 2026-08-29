@@ -1,0 +1,272 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the finalizer-driven cleanup on Neutron CR deletion.
+#
+# Deploys a Neutron CR, waits for Ready=True, then:
+#   - asserts the cleanup finalizer and every owned child (the API Deployment,
+#     both worker Deployments, the Service, the PDB, the content-hashed config
+#     ConfigMap, the three derived Secrets, and the db-sync Job);
+#   - deletes the CR and asserts all of them are gone within a bounded deletion
+#     window, together with the MariaDB Database/User/Grant CRs the operator
+#     created in managed mode.
+#
+# The OVNCentral and the broker Secret this suite applies are fixtures rather
+# than children: nothing owns them, so they go with chainsaw's own namespace
+# cleanup and are deliberately not asserted gone here.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-deletion-cleanup
+spec:
+  namespace: openstack
+  timeouts:
+    # The OVNCentral bring-up, the schema migration and the API cold start all
+    # precede Ready, and none of that fits the 120s the shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Apply the broker Secret, the OVNCentral and the Neutron CR ──
+  - try:
+    - apply:
+        file: 00-messaging-secret.yaml
+    - apply:
+        file: 01-ovncentral-cr.yaml
+    - apply:
+        file: 02-neutron-cr.yaml
+  # ── Step 2: Wait for Ready=True and assert the cleanup finalizer ────────
+  # The finalizer is added on first reconcile so deletion can trigger the
+  # MariaDB CR cleanup before the Neutron CR leaves etcd.
+  - try:
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-deletion
+            namespace: openstack
+            # Nil-safe: on the first poll after apply the controller may not
+            # have added the finalizer yet (`finalizers` is nil). The `|| `[]``
+            # fallback lets the assert retry rather than raising a non-retryable
+            # JMESPath type error.
+            (contains(finalizers || `[]`, 'neutron.openstack.c5c3.io/finalizer')): true
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-deletion -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-deletion-central -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Assert the owned children exist before the deletion ─────────
+  # Asserting them here is what gives step 5 its meaning: an absence assertion
+  # on a resource that never existed passes for the wrong reason.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-deletion
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-deletion-periodic-workers
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-deletion-ovn-maintenance-worker
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: neutron-deletion
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: neutron-deletion
+            namespace: openstack
+    # The three derived Secrets: the assembled DSN, the transport URL copied
+    # out of the broker Secret, and the mirrored OVN client identity.
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: neutron-deletion-db-connection
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: neutron-deletion-transport-url
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: neutron-deletion-ovn-client
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: neutron-deletion-db-sync
+            namespace: openstack
+    - script:
+        content: |
+          set -eu
+          kubectl get cm -n openstack -o name | grep neutron-deletion-config-
+  # ── Step 4: Delete the Neutron CR ───────────────────────────────────────
+  # Bounded timeout (<= 2m) to keep deletion responsive; fails the test if the
+  # finalizer blocks removal for longer than this.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          name: neutron-deletion
+          namespace: openstack
+  # ── Step 5: Assert owned resources and MariaDB CRs are deleted ──────────
+  - try:
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-deletion-periodic-workers
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-deletion-ovn-maintenance-worker
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: neutron-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: neutron-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: neutron-deletion-db-connection
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: neutron-deletion-transport-url
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: neutron-deletion-ovn-client
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: neutron-deletion-db-sync
+            namespace: openstack
+    # MariaDB CRs created by reconcileDatabase in managed mode (clusterRef).
+    # All three carry the CR's own name. Owner references are set on them, but
+    # the cleanup finalizer also issues an explicit Delete so the schema
+    # teardown is triggered before the owner-ref chain disappears.
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: neutron-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: neutron-deletion
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: neutron-deletion
+            namespace: openstack
+  # ── Step 6: Assert the content-hashed ConfigMaps are gone ──────────────
+  # These carry a content-hash suffix so they cannot use a static error
+  # assertion. A script step with an inverted grep verifies none with the
+  # expected prefix remains after garbage collection.
+  - try:
+    - script:
+        content: |
+          set -eu
+          if kubectl get cm -n openstack -o name | grep -q neutron-deletion-config-; then
+            echo "ERROR: ConfigMap matching neutron-deletion-config-* still exists"
+            exit 1
+          fi
+          echo "OK: no neutron-deletion config ConfigMap remains"
+    catch:
+    - script:
+        content: |
+          echo "=== remaining neutron-deletion objects ==="
+          kubectl get all,cm,secret,job -n $NAMESPACE 2>&1 | grep neutron-deletion || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-deletion-central -n $NAMESPACE -o yaml 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true

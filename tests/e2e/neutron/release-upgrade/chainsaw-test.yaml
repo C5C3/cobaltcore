@@ -1,0 +1,248 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a cross-release Neutron upgrade from 2025.2 to 2026.1.
+#
+# Every other Neutron suite installs a release into a fresh, empty schema and so
+# only ever runs neutronDBSyncCommand; none of them enters the four-phase
+# machine of operators/neutron/internal/controller/reconcile_database.go. This
+# suite is the one that does, against a schema the 2025.2 db-sync already
+# populated. Verifies:
+#   (1) Fresh deployment at 2025.2 reaches Ready=True/AllReady with
+#       installedRelease=2025.2 on the :2025.2 image
+#   (2) Patching spec.openStackRelease and spec.image.tag to 2026.1 walks
+#       status.upgradePhase Expanding -> Migrating -> RollingUpdate ->
+#       Contracting -> "" via the db-expand/-db-migrate/-db-contract phase Jobs
+#   (3) installedRelease is promoted to 2026.1 only after the contract phase,
+#       and status.upgradePhase is cleared
+#   (4) The three phase Jobs are left in place after the upgrade succeeds, and
+#       each carries the :2026.1 image the new release's migration tree ships
+#   (5) The API Deployment flips to the :2026.1 image and the single-replica
+#       rollout converges
+#   (6) The steady-state db-sync Job re-runs on the :2026.1 image
+#
+# The db-migrate phase is asserted like the other two even though Neutron has no
+# data-migration command: the operator runs neutron-db-manage current there so
+# the phase is observable, and a Job missing here would mean the shared flow
+# stopped emitting one.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-release-upgrade
+spec:
+  namespace: openstack
+  timeouts:
+    # The OVNCentral issues three certificates and bootstraps two Raft databases
+    # before the Neutron reconciler renders anything, the 2025.2 schema
+    # migration and the API cold start follow, and the upgrade then runs three
+    # more Jobs and a rollout. That does not fit the 120s the shared config
+    # allows, nor the 5m the single-release suites use.
+    assert: 10m
+  steps:
+  # ── Step 1: Apply the broker Secret, the OVNCentral and the Neutron CR ──
+  - try:
+    - apply:
+        file: 00-messaging-secret.yaml
+    - apply:
+        file: 01-ovncentral-cr.yaml
+    - apply:
+        file: 02-neutron-cr.yaml
+  # ── Step 2: Assert the pre-upgrade steady state on :2025.2 ──────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-release-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2025.2"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-release-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: neutron-api
+                  image: ghcr.io/c5c3/neutron:2025.2
+          status:
+            (availableReplicas > `0`): true
+    # No phase Job exists before the release moves. Asserting their absence here
+    # is what makes their presence in step 4 evidence of the upgrade rather than
+    # of the steady-state flow.
+    - script:
+        content: |
+          set -eu
+          echo "=== Verifying no phase Job exists before the upgrade ==="
+          for phase in expand migrate contract; do
+            JOB="neutron-release-upgrade-db-${phase}"
+            if kubectl get job "$JOB" -n openstack >/dev/null 2>&1; then
+              echo "ERROR: Job $JOB exists before spec.openStackRelease moved"
+              exit 1
+            fi
+            echo "OK: no Job $JOB yet"
+          done
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-release-upgrade -n $NAMESPACE -o yaml 2>&1 | tail -80 || true
+          echo "=== OVNCentral CR status ==="
+          kubectl get ovncentral neutron-release-upgrade-ovn -n $NAMESPACE -o yaml 2>&1 | tail -40 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 --previous 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Neutron pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 3: Patch release + image tag to trigger the upgrade ────────────
+  - try:
+    - patch:
+        file: 03-patch-upgrade.yaml
+  # ── Step 4: Assert the upgrade completes through expand-migrate-contract ─
+  - try:
+    # Gate on the settled end state first: installedRelease is promoted to
+    # 2026.1 only after the contract phase, and the fresh post-upgrade db-sync
+    # flips DatabaseReady (and so Ready) back False until it completes, so a
+    # stable Ready=True/AllReady here means the whole flow has drained.
+    - assert:
+        resource:
+          apiVersion: neutron.openstack.c5c3.io/v1alpha1
+          kind: Neutron
+          metadata:
+            name: neutron-release-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - script:
+        content: |
+          set -eu
+          echo "=== Verifying status.upgradePhase is cleared ==="
+          PHASE=$(kubectl get neutron neutron-release-upgrade -n openstack \
+            -o jsonpath='{.status.upgradePhase}')
+          if [ -n "$PHASE" ]; then
+            echo "ERROR: status.upgradePhase still set to '$PHASE'"
+            exit 1
+          fi
+          echo "OK: status.upgradePhase is empty"
+    - script:
+        content: |
+          set -eu
+          echo "=== Verifying the expand-migrate-contract phase Jobs remain ==="
+          # The operator leaves the phase Jobs in place, and each runs
+          # spec.image: the contract is that the image moves with
+          # spec.openStackRelease, so the new release's migration tree owns both
+          # schema deltas. A Job left on :2025.2 would mean the flow migrated
+          # with the old tree and promoted installedRelease anyway.
+          for phase in expand migrate contract; do
+            JOB="neutron-release-upgrade-db-${phase}"
+            IMG=$(kubectl get job "$JOB" -n openstack \
+              -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
+            if [ -z "$IMG" ]; then
+              echo "ERROR: Job $JOB not found"
+              exit 1
+            fi
+            case "$IMG" in
+            *:2026.1) echo "OK: Job $JOB ran on $IMG" ;;
+            *)
+              echo "ERROR: Job $JOB ran on $IMG, want the :2026.1 image"
+              exit 1
+              ;;
+            esac
+          done
+    # The Deployment now runs the :2026.1 image and the single-replica rollout
+    # has fully converged (updatedReplicas == replicas).
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: neutron-release-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: neutron-api
+                  image: ghcr.io/c5c3/neutron:2026.1
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    - script:
+        timeout: 5m
+        content: |
+          set -eu
+          JOB=neutron-release-upgrade-db-sync
+          echo "=== Verifying the steady-state db-sync Job re-ran on :2026.1 ==="
+          # RunJob deletes and re-creates a completed Job in place when its
+          # pod-spec-hash changes, so the same-named db-sync Job is replaced on
+          # the :2026.1 image after the contract phase promotes installedRelease.
+          # Poll to ride out the brief delete/re-create window right after the
+          # upgrade settles, then assert the current Job carries :2026.1 and
+          # succeeded. The bound is a wall-clock deadline rather than a round
+          # count: each round issues two kubectl calls of unbounded duration, so
+          # a fixed count of rounds cannot keep the loop inside the 5m step
+          # budget, and an overrun produces the opaque chainsaw timeout this
+          # loop exists to replace. 240s leaves the report below a minute.
+          DEADLINE=$(( $(date +%s) + 240 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            IMG=$(kubectl get job "$JOB" -n openstack \
+              -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
+            SUCC=$(kubectl get job "$JOB" -n openstack \
+              -o jsonpath='{.status.succeeded}' 2>/dev/null || true)
+            case "$IMG" in
+            *:2026.1)
+              if [ "$SUCC" = "1" ]; then
+                echo "OK: $JOB at $IMG succeeded=$SUCC"
+                exit 0
+              fi
+              ;;
+            esac
+            sleep 5
+          done
+          echo "ERROR: $JOB did not reach :2026.1 succeeded=1 (image=$IMG succeeded=$SUCC)"
+          exit 1
+    catch:
+    - script:
+        content: |
+          echo "=== Neutron CR status ==="
+          kubectl get neutron neutron-release-upgrade -n $NAMESPACE -o yaml 2>&1 | tail -80 || true
+          echo "=== Jobs ==="
+          kubectl get jobs -n $NAMESPACE -o wide 2>&1 || true
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=80 2>&1 || true
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=80 --previous 2>&1 || true
+          echo "=== Job logs ==="
+          for job in $(kubectl get jobs -n $NAMESPACE -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n $NAMESPACE "$job" --all-containers --tail=100 2>&1 || true
+          done
+          echo "=== Neutron pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=neutron-release-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 --previous 2>&1 || true
+          done
+          echo "=== Events ==="
+          kubectl get events -n $NAMESPACE --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
