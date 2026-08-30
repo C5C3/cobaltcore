@@ -136,6 +136,22 @@ patches:
           enabled: false
         maxScale:
           enabled: false
+        # Probe thresholds only: a probe override without a handler keeps
+        # mariadb-operator's own exec command (SELECT 1 as root) and merges
+        # these values over its defaults (timeoutSeconds 5, periodSeconds 10,
+        # failureThreshold 3). Those defaults kill the single replica after
+        # thirty seconds of slow answers, which on a CI kind node is not death
+        # but CPU contention: concurrent e2e suites running their db-sync Jobs
+        # starved the node, the SELECT 1 ran past five seconds, and the kubelet
+        # restarted the database mid schema migration, failing every suite in
+        # flight. Sixty seconds of liveness tolerance rides out the contention;
+        # readiness keeps the tighter threshold so a genuinely wedged server
+        # still leaves the Service.
+        livenessProbe:
+          timeoutSeconds: 10
+          failureThreshold: 6
+        readinessProbe:
+          timeoutSeconds: 10
         storage:
           size: 1Gi
           storageClassName: standard
