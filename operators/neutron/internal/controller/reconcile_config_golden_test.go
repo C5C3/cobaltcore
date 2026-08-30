@@ -25,6 +25,7 @@ auth_strategy = keystone
 core_plugin = ml2
 debug = false
 dhcp_agent_notification = false
+dns_domain = cobaltcore.local.
 notify_nova_on_port_data_changes = false
 notify_nova_on_port_status_changes = false
 rpc_state_report_workers = 0
@@ -66,7 +67,7 @@ use_queue_manager = true
 // remaining seven are routing entries that render only once spec.extraConfig
 // puts a key under them.
 const pinML2ConfGolden = `[ml2]
-extension_drivers = port_security
+extension_drivers = port_security,dns_domain_ports,tag_ports_during_bulk_creation
 mechanism_drivers = ovn
 tenant_network_types = geneve
 type_drivers = geneve,flat
