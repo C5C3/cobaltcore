@@ -231,6 +231,13 @@ func operatorDefaults(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpoints
 			// OVN serves DHCP out of the logical model and no DHCP agent is
 			// deployed, so the notifications would queue RPC casts nothing consumes.
 			"dhcp_agent_notification": "false",
+			// A dns_domain other than neutron's built-in "openstacklocal." is what
+			// arms the dns_domain_ports extension driver: with the default in place,
+			// dns_integration.py discards every dns_name a port is created or
+			// updated with. A deployment sets its own suffix through
+			// spec.extraConfig; like every rendered key the override is honored and
+			// reported through ExtraConfigHealthy.
+			"dns_domain": "cobaltcore.local.",
 			// The two Nova notifications stay off until a Nova is deployed to
 			// receive them; a port that waits for a vif-plugged event nothing sends
 			// is worse than one that never announces itself.
@@ -282,7 +289,14 @@ func operatorDefaults(neutron *neutronv1alpha1.Neutron, ovn resolvedOVNEndpoints
 			"mechanism_drivers":    "ovn",
 			"type_drivers":         "geneve,flat",
 			"tenant_network_types": "geneve",
-			"extension_drivers":    "port_security",
+			// port_security is what the OVN mechanism driver assumes. dns_domain_ports
+			// serves the dns-integration and dns-domain-ports API extensions (the
+			// dns_name and dns_domain attributes on ports and networks; it is a
+			// superset of the dns driver and needs no external DNS service), and
+			// tag_ports_during_bulk_creation serves the extension of the same name,
+			// so tags given on port creation are applied rather than dropped. Both
+			// are what neutron-tempest-plugin's port and network suites drive.
+			"extension_drivers": "port_security,dns_domain_ports,tag_ports_during_bulk_creation",
 		},
 		"ml2_type_geneve": {
 			"vni_ranges": "1:65536",
