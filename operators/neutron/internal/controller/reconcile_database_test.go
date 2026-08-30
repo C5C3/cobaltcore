@@ -101,16 +101,16 @@ func TestNeutronMaxUserConnections(t *testing.T) {
 	}{
 		{
 			name: "default topology",
-			want: 18,
-			because: "3 API pods plus one surge run 2 uWSGI processes each, the two worker " +
-				"Deployments run 3 replicas plus a surge each, and two Jobs may overlap",
+			want: 26,
+			because: "3 API pods plus one surge run 2 uWSGI processes each holding two connections, the two " +
+				"worker Deployments run 3 replicas plus a surge each, and two Jobs may overlap",
 		},
 		{
 			name: "autoscaling raises the pod ceiling",
 			mutate: func(n *neutronv1alpha1.Neutron) {
 				n.Spec.Autoscaling = &neutronv1alpha1.AutoscalingSpec{MaxReplicas: 5}
 			},
-			want:    22,
+			want:    34,
 			because: "an HPA owns the replica count, so the cap is sized for its ceiling rather than for spec.deployment.replicas",
 		},
 		{
@@ -120,14 +120,28 @@ func TestNeutronMaxUserConnections(t *testing.T) {
 					UWSGI: &commonv1.UWSGISpec{Processes: 4, Threads: 2},
 				}
 			},
-			want:    42,
-			because: "every worker thread holds a pooled connection once its app has loaded",
+			want:    74,
+			because: "every worker thread holds its request session and the hash-ring maintenance session",
 		},
 		{
 			name:    "worker replicas count twice",
 			mutate:  func(n *neutronv1alpha1.Neutron) { n.Spec.Workers.Deployment.Replicas = 1 },
-			want:    14,
+			want:    22,
 			because: "the periodic workers and the ovn-maintenance worker each run the configured replica count",
+		},
+		{
+			// The e2e scale suite's topology after its patch to five replicas. With one
+			// connection counted per API process the cap came out at 18, and four API
+			// pods held exactly 4 × 2 × 2 + 2 = 18 of them, so the fifth failed its pool
+			// with error 1226 and never loaded its app. The fleet at five pods needs
+			// 5 × 2 × 2 + 2 = 22 before a surge pod or a Job is counted.
+			name: "five API pods with one worker of each kind",
+			mutate: func(n *neutronv1alpha1.Neutron) {
+				n.Spec.Deployment.Replicas = 5
+				n.Spec.Workers.Deployment.Replicas = 1
+			},
+			want:    30,
+			because: "the cap must cover every API process's two sessions across the whole fleet, plus the surge pod",
 		},
 	}
 

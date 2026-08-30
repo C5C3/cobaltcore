@@ -65,13 +65,22 @@ func neutronCommand(binary string, args ...string) []string {
 // the contract branch in a single pass.
 var neutronDBSyncCommand = neutronCommand("neutron-db-manage", "upgrade", "head")
 
+// neutronAPIProcessConnections is how many pooled connections one API worker
+// process holds at steady state. The request-serving session is one. The ML2/OVN
+// mechanism driver adds a second: post_fork_initialize starts a MaintenanceThread
+// in every worker that touches the process's hash-ring node every
+// HASH_RING_TOUCH_INTERVAL (15 s) on a session of its own, beside whatever the
+// request path holds, and oslo.db's pool keeps the connection that session
+// opened. The two are not shared, so counting one per process undersizes the
+// fleet by half.
+const neutronAPIProcessConnections int32 = 2
+
 // neutronMaxUserConnections sizes the SQL user's max_user_connections cap for
-// the CR's own topology. Every uWSGI worker holds at least one pooled connection
-// once its app has loaded, so the API floor is pods × processes × threads, with
-// pods being the autoscaling ceiling when an HPA owns the replica count. On top
-// of it comes one surge pod, because the rollout strategy (maxSurge=1,
-// maxUnavailable=0) runs a full extra pod's workers alongside the fleet during
-// an update.
+// the CR's own topology. The API floor is pods × processes × threads ×
+// neutronAPIProcessConnections, with pods being the autoscaling ceiling when an
+// HPA owns the replica count. On top of it comes one surge pod, because the
+// rollout strategy (maxSurge=1, maxUnavailable=0) runs a full extra pod's
+// workers alongside the fleet during an update.
 //
 // The two worker Deployments come next. Each runs
 // spec.workers.deployment.replicas pods plus one surge pod of its own, and each
@@ -79,11 +88,13 @@ var neutronDBSyncCommand = neutronCommand("neutron-db-manage", "upgrade", "head"
 // Last, two transient job connections (db-sync and the ovn-db-sync run that may
 // overlap it).
 //
-// Left unsized, the mariadb-operator CRD default of 10 applies, which the
-// default topology already exceeds before a single request is served: the API
-// pods alone take (3+1)×2 = 8, the workers another 2×(3+1) = 8, and the last
-// processes to start fail their pool with MySQL error 1226 while --need-app
-// crash-loops their pod indefinitely.
+// A cap below the fleet's steady state does not degrade: the last processes to
+// start fail their pool with MySQL error 1226 and --need-app crash-loops their
+// pod indefinitely. Left unsized, the mariadb-operator CRD default of 10 applies,
+// which the default topology exceeds before a single request is served. Sized
+// with one connection per API process, five API pods and one worker of each
+// kind were capped at 18, and four API pods held exactly that (4 × 2 × 2 + 2),
+// so the fifth never loaded its app.
 func neutronMaxUserConnections(neutron *neutronv1alpha1.Neutron) int32 {
 	pods := deployment.EffectiveReplicas(&neutron.Spec.Deployment)
 	if neutron.Spec.Autoscaling != nil {
@@ -95,7 +106,7 @@ func neutronMaxUserConnections(neutron *neutronv1alpha1.Neutron) int32 {
 	}
 	processes, threads := deployment.EffectiveUWSGIConcurrency(uwsgi)
 	workers := deployment.EffectiveReplicas(&neutron.Spec.Workers.Deployment)
-	return (pods+1)*processes*threads + 2*(workers+1) + 2
+	return (pods+1)*processes*threads*neutronAPIProcessConnections + 2*(workers+1) + 2
 }
 
 // reconcileDatabase provisions and migrates the Neutron database schema and
