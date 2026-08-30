@@ -222,6 +222,13 @@ spec:
             exec:
               command:
               - /etc/ovn-central/bin/set-connection-nb.sh
+          preStop:
+            exec:
+              command:
+              - ovs-appctl
+              - -t
+              - /var/run/ovn/ovnnb_db.ctl
+              - exit
         name: ovsdb
         ports:
         - containerPort: 6641
@@ -358,6 +365,13 @@ spec:
             exec:
               command:
               - /etc/ovn-central/bin/set-connection-sb.sh
+          preStop:
+            exec:
+              command:
+              - ovs-appctl
+              - -t
+              - /var/run/ovn/ovnsb_db.ctl
+              - exit
         name: ovsdb
         ports:
         - containerPort: 6642
@@ -494,6 +508,13 @@ spec:
             exec:
               command:
               - /etc/ovn-central/bin/set-connection-nb.sh
+          preStop:
+            exec:
+              command:
+              - ovs-appctl
+              - -t
+              - /var/run/ovn/ovnnb_db.ctl
+              - exit
         name: ovsdb
         ports:
         - containerPort: 6641

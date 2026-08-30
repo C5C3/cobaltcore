@@ -26,6 +26,16 @@ spec:
     # The OVNCentral bring-up, the schema migration and the API cold start all
     # precede Ready, and none of that fits the 120s the shared config allows.
     assert: 5m
+    # The absence checks in the last step are error operations, which take the
+    # shared config's error timeout rather than the assert one above: 30s. The
+    # MariaDB Database, User and Grant CRs are what need more: the finalizer only
+    # issues their Delete, the mariadb-operator drops the schema and the user
+    # before it releases them, and tests/e2e/chainsaw-config.yaml records those
+    # deletions serializing past 60s under parallel suites. The mirrored OVN
+    # client Secret needs none of this: it carries a controller owner reference
+    # to the Neutron, and the garbage collector reaps it within seconds of the
+    # owner going.
+    error: 3m
   steps:
   # ── Step 1: Apply the broker Secret, the OVNCentral and the Neutron CR ──
   - try:

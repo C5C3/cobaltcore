@@ -1367,7 +1367,17 @@ jobs:
           if [ -d "tests/e2e/${OPERATOR}-operator/" ]; then
             test_dirs+=("tests/e2e/${OPERATOR}-operator/")
           fi
-          chainsaw test --config tests/e2e/chainsaw-config.yaml "${test_dirs[@]}"
+          # Every neutron suite carries its own OVNCentral beside the Neutron
+          # API, its two worker Deployments and a db-sync Job, so four of them
+          # at once do not fit one kind node: the workers and the db-sync Jobs
+          # stay Pending on "Insufficient cpu" and the CRs never reach Ready.
+          # Only this leg is narrowed; the shared config's parallel: 4 is what
+          # every other operator runs at.
+          parallel=()
+          if [ "${OPERATOR}" = "neutron" ]; then
+            parallel=(--parallel 2)
+          fi
+          chainsaw test --config tests/e2e/chainsaw-config.yaml "${parallel[@]}" "${test_dirs[@]}"
       # Use shared diagnostic dump script.
       - name: Dump diagnostic info
         if: always()
