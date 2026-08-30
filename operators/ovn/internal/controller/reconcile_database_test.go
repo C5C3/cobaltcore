@@ -256,3 +256,28 @@ func TestRaftPerPodService_ClusterIPUnlessExternallyReachable(t *testing.T) {
 	g.Expect(sb.Spec.Type).To(Equal(corev1.ServiceTypeNodePort))
 	g.Expect(sb.Spec.Ports[0].NodePort).To(Equal(ovnv1alpha1.DefaultSouthboundNodePortBase + 1))
 }
+
+// ovn-ctl's run_*_ovsdb keeps ovsdb-server as a background child and blocks in
+// wait without installing a signal handler, so the container's PID 1 is a shell
+// with no SIGTERM trap. PID 1 gets no default signal action from the kernel, so
+// without a pre-stop hook the kubelet's TERM is ignored and every member is
+// SIGKILLed when its grace expires — mid-snapshot, which is exactly what the
+// 300s grace is there to prevent. The hook is what makes the container stop.
+func TestRaftStatefulSet_PreStopAsksTheDatabaseToExit(t *testing.T) {
+	g := NewWithT(t)
+	cr := testOVNCentral()
+
+	for _, db := range []raftDB{northboundDB(cr), southboundDB(cr)} {
+		sts := raftStatefulSet(cr, db)
+		c := sts.Spec.Template.Spec.Containers[0]
+		g.Expect(c.Name).To(Equal("ovsdb"))
+		g.Expect(c.Lifecycle).NotTo(BeNil(), db.suffix)
+		g.Expect(c.Lifecycle.PreStop).NotTo(BeNil(),
+			"without the hook the pod is SIGKILLed after the full grace period")
+		g.Expect(c.Lifecycle.PreStop.Exec.Command).To(Equal([]string{
+			"ovs-appctl", "-t", "/var/run/ovn/ovn" + db.suffix + "_db.ctl", "exit",
+		}), db.suffix)
+		g.Expect(sts.Spec.Template.Spec.TerminationGracePeriodSeconds).
+			To(HaveValue(BeNumerically(">", 0)), db.suffix)
+	}
+}

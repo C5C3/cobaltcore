@@ -330,6 +330,13 @@ exit 1
 `, db.ctlTool, ovnRunDir, db.suffix, db.clientPort)
 }
 
+// ovnCtlSocket is the unixctl socket of one database's ovsdb-server, at the
+// path ovn-ctl gives it under ovnRunDir. It is the socket ovs-appctl addresses
+// the daemon on, which is how the pre-stop hook asks it to exit.
+func ovnCtlSocket(db raftDB) string {
+	return path.Join(ovnRunDir, "ovn"+db.suffix+"_db.ctl")
+}
+
 // runScriptKey and setConnectionScriptKey name a script in the ConfigMap. The
 // container command and the ConfigMap data are derived from the same helper, so
 // the file the container executes cannot drift from the key that carries it.
@@ -548,6 +555,20 @@ func ovsdbContainer(cr *ovnv1alpha1.OVNCentral, db raftDB) corev1.Container {
 			PostStart: &corev1.LifecycleHandler{
 				Exec: &corev1.ExecAction{
 					Command: []string{path.Join(centralScriptDir, setConnectionScriptKey(db))},
+				},
+			},
+			// The hook is what stops this container at all. ovn-ctl's run_*_ovsdb
+			// starts ovsdb-server as a background child and blocks in wait, and it
+			// installs no signal handler, so the container's PID 1 is a shell with
+			// no SIGTERM trap. The kernel applies no default signal action to PID
+			// 1, so the TERM the kubelet sends is ignored outright and every member
+			// is SIGKILLed when its grace expires: the abrupt stop, mid-snapshot
+			// and mid-handover, that the 300 seconds above exist to avoid. Asking
+			// the database to exit over its own control socket ends the wait, and
+			// the pod stops in about a second with the snapshot finished.
+			PreStop: &corev1.LifecycleHandler{
+				Exec: &corev1.ExecAction{
+					Command: []string{"ovs-appctl", "-t", ovnCtlSocket(db), "exit"},
 				},
 			},
 		},

@@ -9,8 +9,8 @@
 #     the two headless and the two per-member Services, the northd Deployment,
 #     the scripts ConfigMap, the three Certificates and their Secrets, the
 #     backup CronJob and volume, and the per-member database volumes);
-#   - deletes the CR and asserts all of them are gone within the 3m cleanup
-#     bound of tests/e2e/chainsaw-config.yaml.
+#   - deletes the CR and asserts all of them are gone within the 3m error
+#     bound set in spec.timeouts below.
 #
 # The two database volumes are the interesting case: nothing sets an owner
 # reference on a volumeClaimTemplate's claims, so they only disappear because
@@ -35,6 +35,14 @@ spec:
     # One Raft member per database plus three issued certificates still takes
     # longer than the 120s the shared config allows.
     assert: 5m
+    # The absence checks below are error operations, which take the shared
+    # config's error timeout rather than the assert one above: 30s. Deleting a
+    # control plane is asynchronous throughout — the database pods stop, their
+    # volumeClaimTemplate claims stay Terminating behind the pvc-protection
+    # finalizer until each pod is gone, and the garbage collector reaches the
+    # rest afterwards. Three minutes is the bound this test always meant to
+    # apply.
+    error: 3m
   steps:
   # ── Step 1: Apply the OVNCentral CR ────────────────────────────────────
   - try:
