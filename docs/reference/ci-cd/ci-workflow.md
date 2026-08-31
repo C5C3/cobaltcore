@@ -38,7 +38,7 @@ The workflow triggers on three event types:
 | --- | --- | --- |
 | `push` | `branches: [main]` | Runs on every push to the main branch |
 | `push` | `tags: ["v*"]` | Runs on every v-prefixed tag push (triggers publish and release jobs) |
-| `pull_request` | `branches: [main]`, `types: [opened, synchronize, reopened, labeled]` | Runs on every pull request targeting main; includes `labeled` type to support on-demand chaos via `run-chaos` label |
+| `pull_request` | `branches: [main]`, `types: [opened, synchronize, reopened, labeled]` | Runs on every pull request targeting main; the `labeled` type lets a `ci:*` label schedule jobs the paths alone did not |
 
 Most gate, test, and E2E jobs run **only on `pull_request` events** — they each carry a
 `github.event_name == 'pull_request'` guard. `test-shell` is the exception. It carries no
@@ -51,6 +51,58 @@ already green, so the E2E suite is not re-run on push
 ("publish-only-on-merge"). On tag pushes the `changes` job forces all areas and all
 operators active, so every operator's images and charts are published regardless of
 which files the tagged commit touched.
+
+## Change classes and labels
+
+A pull request runs the jobs whose inputs it changes. The `changes` job
+classifies the changed paths with `dorny/paths-filter`, and
+`hack/ci-resolve-changes.sh` turns those classes into one flag per job. A job's
+inputs are the code it tests, the images it loads, the suite it runs, and the
+scripts it calls. Nothing runs because Go code changed somewhere else.
+
+| Change class | Paths | What it schedules |
+| --- | --- | --- |
+| `<op>` (one per operator) | `operators/<op>/**` | that operator's Go gates, its `test` and `test-integration` legs, its `e2e-operator` leg. `keystone` adds `e2e-operator-upgrade`; `c5c3` adds the three ControlPlane jobs |
+| `image_<svc>` | `images/<svc>/**`, `patches/<svc>/**` | that service's `e2e-operator` leg |
+| `image_ovn`, `image_proxy`, `image_tempest` | the OVN, federation-proxy and Tempest image sources | the `ovn` and `keystone` e2e legs; the Tempest image rebuild |
+| `go_common` | `internal/**`, `go.work*`, `operators/Dockerfile`, `.golangci.yml` | every operator's Go gates, every `e2e-operator` leg, `e2e-operator-upgrade` |
+| `images_base` | `images/python-base/**`, `images/venv-builder/**`, `releases/**`, `scripts/**`, `overrides/**` | every service image, both Tempest images, every service operator's e2e leg |
+| `tempest_src` and `tempest_<svc>` | `images/tempest/**`, `tests/tempest/**`, the Tempest scripts | `tempest`, narrowed to the services whose configuration changed |
+| `tests_e2e_<op>` | `tests/e2e/<op>/**`, `tests/e2e/<op>-operator/**` | that operator's `e2e-operator` leg |
+| `tests_controlplane`, `tests_controlplane_sso`, `tests_external_keystone` | the three ControlPlane suites | the job that runs that suite |
+| `tests_chaos`, `tests_multicluster`, `tests_operator_upgrade`, `tests_prometheus` | each suite's own tree | the job that runs it |
+| `e2e_infra` | `tests/e2e/infrastructure/**` | `e2e-infra` |
+| `e2e_shared`, `e2e_openbao`, `ci_plumbing`, `makefile` | the deploy stack, the infra scripts, the shared composite actions, the workflow file, the remaining CI helpers | the canary: `e2e-infra` plus the keystone `e2e-operator` leg. `deploy/openbao/**` adds the barbican leg |
+| `actionlint` | `.github/**` | `actionlint` |
+| `docs`, `helm`, `target_cluster_chart` | as before | `docs`, `helm-validate`, `helm-push-target-cluster` |
+| `publish_legacy` | the wide paths a push publishes from | push events only, ignored on pull requests |
+
+The canary is the deliberate gap. A change to the substrate every e2e job stands
+on could break any of them, and running all of them costs about 450 runner
+minutes. Instead it runs the infrastructure suite and one operator leg, and a
+label asks for the rest.
+
+### Labels
+
+Five labels add jobs. None of them ever removes one.
+
+| Label | Schedules |
+| --- | --- |
+| `ci:full` | everything, and builds every image |
+| `ci:tempest` | the Tempest legs of the services the pull request touches, or the keystone legs when it touches none |
+| `ci:chaos` | both `e2e-chaos` legs. `run-chaos` is an alias |
+| `ci:controlplane` | `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone` |
+| `ci:multicluster` | `e2e-multicluster` |
+
+The `labeled` trigger means a label applied after the last push starts a run that
+evaluates the new label set. A label outside this set resolves to nothing: the
+`changes` job emits `noop=true`, every gated job skips, and the run lands in a
+concurrency group of its own so it does not cancel the pipeline in flight. See
+[Concurrency](#concurrency).
+
+On a `v*` tag push every flag is forced on. On a push to `main` the operator
+matrix keeps its publish semantics, driven by the `publish_legacy` class, so what
+a merge publishes is unchanged.
 
 ## Environment Variables
 
@@ -106,7 +158,7 @@ Jobs that need elevated access declare per-job `permissions:` blocks:
 
 ## Job Dependency DAG
 
-The workflow defines 27 jobs organised in a directed acyclic graph. Every gate, test,
+The workflow defines 34 jobs organised in a directed acyclic graph. Every gate, test,
 and E2E job except `test-shell` additionally carries a
 `github.event_name == 'pull_request'` guard; the publish and release jobs run only on
 push events:
@@ -120,7 +172,8 @@ Gate Jobs (pull requests; test-shell also on push):
   test-shell                   │   (PRs + push: main, tags)
   verify-codegen ──────────────┤   (go == 'true')
   verify-invalid-cr-fixtures ──┤   (always on PRs)
-  chainsaw-lint ───────────────┤   (always on PRs)
+  chainsaw-lint ───────────────┤   (always on PRs, unless the run is a no-op)
+  actionlint ──────────────────┤   (actionlint == 'true')
   test (matrix) ───────────────┼──> build-e2e-images ──> E2E Jobs
   test-integration ────────────┘
 
@@ -136,7 +189,7 @@ Image Build (pull requests only, depends on gates):
 E2E Jobs (pull requests only, depend on build-e2e-images):
   e2e-infra ──────> needs: [changes], if: needs.changes.outputs.e2e-infra == 'true'
   e2e-operator ───> needs: [changes, build-e2e-images]
-  e2e-operator-upgrade > needs: [changes, build-e2e-images], if: needs.changes.outputs.has-e2e-operators == 'true'
+  e2e-operator-upgrade > needs: [changes, build-e2e-images], if: needs.changes.outputs.e2e-operator-upgrade == 'true'
   e2e-chaos ──────> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]
   e2e-prometheus ─> needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images]
                      if: needs.changes.outputs.e2e-prometheus == 'true'
@@ -304,6 +357,38 @@ the `setup-test-deps` composite action, the same one consumed internally by
 
 Timeout: 8 minutes.
 
+### actionlint
+
+Static-lints every workflow file. actionlint resolves the expression contexts, so
+a `needs.changes.outputs.<name>` that no job exports is caught here instead of
+evaluating to the empty string and leaving a job unscheduled for good. It also
+runs shellcheck over every `run:` script.
+
+**Dependencies:** `needs: [changes]`
+**Condition:** `if: github.event_name == 'pull_request' && needs.changes.outputs.actionlint == 'true'`
+**Path filter:** `.github/**`
+
+| Step | Action | Details |
+| --- | --- | --- |
+| 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
+| 2 | Install actionlint | Downloads the pinned release, verifies `ACTIONLINT_SHA256` with `sha256sum --check --strict`, installs to `/usr/local/bin` |
+| 3 | `actionlint -no-color` | Lints every workflow under `.github/workflows/` |
+
+The binary is pinned and checksummed the way `verify-container-images.yaml`
+installs `yq`. Renovate bumps `ACTIONLINT_VERSION`; the checksum then fails until
+it is updated alongside, which is the intended signal.
+
+`.github/actionlint.yaml` declares `blacksmith-4vcpu-ubuntu-2404`. actionlint
+validates `runs-on:` against the labels GitHub itself provides, so a self-hosted
+pool has to be declared there or the lint fails on a runner that exists.
+
+Three `run:` scripts carry inline `# shellcheck disable=` directives for
+deliberate word splitting: the release-list loops in `e2e-operator` (SC2086), the
+digest expansion in `merge-operator-images` (SC2012, SC2046), and the version
+appends in `build-images.yaml` (SC2129).
+
+Timeout: 8 minutes.
+
 ### test-shell
 
 Runs every shell unit test under `tests/unit/` (hack/, deploy/, docs/,
@@ -342,9 +427,12 @@ a single coverage profile uploaded to Codecov under a dedicated flag.
 ```yaml
 strategy:
   fail-fast: false
-  matrix:
-    target: [common, keystone, c5c3, horizon, glance, placement, barbican]
+  matrix: ${{ fromJson(needs.changes.outputs.test-targets) }}
 ```
+
+The resolver builds that list: `common` when shared Go code or the `Makefile`
+changed, plus every operator whose own code changed. A pull request touching one
+operator runs one leg.
 
 The `common` leg runs `make test-common` (producing `cover-unit-common.out`). Operator legs
 run `make test-operator OPERATOR=<target>` (producing `cover-unit-<operator>.out`). This
@@ -380,9 +468,12 @@ download kubebuilder assets (kube-apiserver, etcd) for the test API server.
 ```yaml
 strategy:
   fail-fast: false
-  matrix:
-    target: [common, keystone, c5c3, horizon, glance, placement, barbican]
+  matrix: ${{ fromJson(needs.changes.outputs.test-targets) }}
 ```
+
+The resolver builds that list: `common` when shared Go code or the `Makefile`
+changed, plus every operator whose own code changed. A pull request touching one
+operator runs one leg.
 
 The `common` leg runs `make test-integration-common` (producing
 `cover-integration-common.out`), which tests `./internal/common/...` with
@@ -596,9 +687,9 @@ rebuilding, saving ~5-10 min per CI run.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]`
 
-**Condition:** Runs only when any of `has-e2e-operators`, `e2e-chaos`,
-`e2e-prometheus`, or `e2e-controlplane` is `'true'`
-and no gate job failed. Uses `always()` so the job runs when upstream Go jobs are
+**Condition:** Runs only when `build-e2e-images == 'true'` and no gate job
+failed. The resolver sets that flag when any job downstream of this one is
+scheduled, so the four-way OR the job used to carry lives in one place. Uses `always()` so the job runs when upstream Go jobs are
 skipped (e.g. pure E2E test-definition PRs where `go=false`). Skipped on PRs from
 forks (the workflow's `GITHUB_TOKEN` is read-only on `packages:` for forked
 `pull_request` events, so GHCR push would fail) — see `github.event.pull_request.head.repo.fork`
@@ -611,17 +702,20 @@ guard.
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `docker/setup-buildx-action@v4` | Sets up BuildKit for `type=gha` cache support |
 | 3 | `docker/login-action@v4` | Authenticates to GHCR with `GITHUB_TOKEN` |
-| 4 | Resolve build operators | Unions `e2e-operators` with a fixed `keystone` entry (required by tempest) |
+| 4 | Resolve build operators | Expands `build-operators` into `BUILD_OPERATORS`, one name per line |
 | 5 | Build base images | Builds `python-base` and `venv-builder` (reused by subsequent builds) |
 | 6 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each resolved operator |
 | 7 | Build service images | Builds `<IMAGE_PREFIX>/<op>:<release>` for each operator x release combination |
 | 8 | Build Tempest images | Builds `<IMAGE_PREFIX>/tempest:<release>` for all releases |
 | 9 | Push E2E images to GHCR | For each image, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push` |
 
-The "Resolve build operators" step guarantees that `keystone` is always in the build set.
-This is required because the `tempest` job hardcodes `keystone-operator:dev` and
-`keystone:<release>` — without the union, a pipeline triggered by a different operator
-(e.g. glance) would fail tempest due to missing keystone images.
+The build set comes from the resolver's `build-operators` output, which lists the
+operator images the jobs this run scheduled will load. Tempest reads
+`keystone-operator:dev` and `keystone:<release>` whatever triggered it, so the
+resolver adds keystone whenever tempest is scheduled, and the same rule covers the
+chaos, ControlPlane and two-cluster jobs. The step itself only translates the
+list, which keeps the question of which job needs which image in one file:
+`tests/unit/ci/resolve_changes_scenarios_test.sh` pins the answers.
 
 GH-310 replaced the previous `docker save | zstd | upload-artifact` transport with
 GHCR push/pull because the 355 MB single-blob artifact intermittently timed out at
@@ -677,8 +771,9 @@ deployed Keystone survives the operator upgrade (Ready persists,
 details.
 
 **Dependencies:** `needs: [changes, build-e2e-images]`
-**Condition:** Runs on `pull_request` when `has-e2e-operators == 'true'`,
-`build-e2e-images` succeeded, and no dependency failed or was cancelled.
+**Condition:** Runs on `pull_request` when `e2e-operator-upgrade == 'true'`,
+`build-e2e-images` succeeded, and no dependency failed or was cancelled. The
+resolver sets that flag from the suite's own tree or a keystone code change.
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
 Unlike the per-CR `e2e-operator` matrix, this suite manages the operator Helm
@@ -700,7 +795,7 @@ partition, MariaDB network latency). See
 [Chaos E2E Test Suites](../testing/chaos-e2e-tests.md) for test suite details.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, chainsaw-lint, build-e2e-images, e2e-operator]`
-**Condition:** Runs only when `e2e-chaos == 'true'` or the PR has a `run-chaos` label, `build-e2e-images` succeeded, and no dependency failed or was cancelled.
+**Condition:** Runs only when `e2e-chaos == 'true'`, `build-e2e-images` succeeded, and no dependency failed or was cancelled. The resolver sets that flag from the `tests_chaos` class or the `ci:chaos` label, so the job's own condition no longer reads the label set.
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
 The `e2e-chaos` job depends on the standard gate jobs plus `e2e-operator`, so chaos
@@ -710,7 +805,7 @@ leg is **blocking** — an operator-restart, PDB, or rotation regression fails t
 build — while the `network` leg stays **non-blocking**, because its
 `ip_set`/`sch_netem` kernel-module dependency keeps it prone to environment
 flakiness. On-demand pre-validation of either leg is available via the
-`run-chaos` PR label.
+`ci:chaos` PR label, with `run-chaos` kept as an alias.
 
 The job runs as a two-entry matrix split by chaos type: the `pod` suite
 (PodChaos tests) and the `network` suite (NetworkChaos tests). The `pod` leg is
@@ -995,7 +1090,7 @@ configuration, Keystone CRs, and K8s service names. Pulls pre-built images from
 GHCR (run-scoped tag) via the `load-e2e-images` composite action.
 
 **Dependencies:** `needs: [changes, build-e2e-images, e2e-infra, e2e-operator, e2e-chaos, e2e-prometheus]`
-**Condition:** Runs only when `has-e2e-operators == 'true'`, `build-e2e-images` succeeded, and no other E2E job failed or was cancelled — tempest is the last E2E job in the chain.
+**Condition:** Runs only when `tempest == 'true'`, `build-e2e-images` succeeded, and no other E2E job failed or was cancelled; tempest is the last E2E job in the chain. Without a label it runs for a change to its own sources, and the matrix is narrowed to the services whose configuration changed.
 **Permissions:** `contents: read`, `packages: read` (required for GHCR pull).
 
 **Matrix strategy:**
@@ -1500,7 +1595,7 @@ The workflow uses a concurrency group scoped per-branch per-workflow:
 
 ```yaml
 concurrency:
-  group: ${{ github.ref }}-${{ github.workflow }}
+  group: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && !startsWith(github.event.label.name, 'ci:') && github.event.label.name != 'run-chaos' && format('noop-{0}', github.run_id) || format('{0}-{1}', github.ref, github.workflow) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 ```
 
@@ -1508,6 +1603,14 @@ For pull requests, pushing new commits cancels any in-progress CI run for that s
 branch, preventing wasted CI resources on outdated code. For pushes to `main`, in-progress
 runs are **not** cancelled, ensuring every merge commit is fully validated. Different
 branches do not cancel each other's runs.
+
+Applying a label that does not steer CI used to cancel the run in flight and start
+it again from scratch, because every `labeled` event landed in the branch's group.
+Such an event now gets a group of its own, keyed on the run id, and the `changes`
+job resolves it to nothing; the run costs one `ubuntu-latest` runner for about
+twenty seconds. A `ci:*` label (or `run-chaos`) stays in the branch's group and is
+meant to supersede the run in flight, since it asks for jobs that run did not
+schedule.
 
 ## Action Pinning
 
