@@ -13,14 +13,15 @@ Repeated E2E logic is factored into reusable shell scripts (`hack/ci-*.sh`) and 
 composite GitHub Action (`.github/actions/setup-e2e-infra/`), reducing duplication across
 the `e2e-infra`, `e2e-operator`, and `tempest` jobs.
 
-The `build-e2e-images` job centralises E2E image builds: it builds all Docker images
-(operator, service, tempest) once and pushes them to GHCR with run-scoped tags
-(`e2e-${run_id}-<orig_tag>`). The `e2e-operator`, `e2e-chaos`, and `tempest` jobs
-`docker pull` from GHCR via the `load-e2e-images` composite action and re-tag the
-images to their canonical local references, saving ~5-10 min per CI run versus
-rebuilding. The build always includes `keystone` (required by tempest) regardless of
-which operator triggered the pipeline. The `cleanup-e2e-tags` job prunes the
-run-scoped tags at the end of the workflow, with a nightly safety net in
+The `build-e2e-images` job centralises E2E image builds. It builds the images whose
+sources the pull request changed and pushes those to GHCR under run-scoped tags
+(`e2e-${run_id}-<orig_tag>`), then resolves every other image to the digest behind
+the tag `main` last published. Both kinds go into the job's `image-map` output. The
+`e2e-operator`, `e2e-chaos`, and `tempest` jobs `docker pull` whatever the map names
+via the `load-e2e-images` composite action and re-tag the images to their canonical
+local references, so a pull request that touches one operator spends about four
+minutes here instead of the 39 the full build took. The `cleanup-e2e-tags` job prunes
+the run-scoped tags at the end of the workflow, with a nightly safety net in
 `cleanup-images.yaml` for cancelled runs (GH-310).
 
 ## File Location
@@ -679,11 +680,11 @@ the newly enabled component while leaving the base stack untouched.
 
 ### build-e2e-images
 
-Centralised image build for E2E test jobs. Builds all Docker images (base, operator,
-service, tempest) once and pushes them to GHCR under run-scoped tags
-(`e2e-${run_id}-<orig_tag>`). The `e2e-operator`, `e2e-chaos`, and `tempest` jobs
-`docker pull` from GHCR via the `load-e2e-images` composite action instead of
-rebuilding, saving ~5-10 min per CI run.
+Centralised image build for E2E test jobs. Builds the images whose sources the pull
+request changed, pushes them to GHCR under run-scoped tags
+(`e2e-${run_id}-<orig_tag>`), and resolves the rest to the digests `main` published.
+The `e2e-operator`, `e2e-chaos`, and `tempest` jobs `docker pull` from GHCR via the
+`load-e2e-images` composite action instead of rebuilding.
 
 **Dependencies:** `needs: [changes, lint, shellcheck, test, test-integration, verify-codegen, verify-invalid-cr-fixtures, chainsaw-lint]`
 
@@ -697,25 +698,37 @@ guard.
 
 **Permissions:** `contents: read`, `packages: write` (required for GHCR push).
 
+**Outputs:** `image-map`, the JSON object every consumer resolves its images through.
+
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `docker/setup-buildx-action@v4` | Sets up BuildKit for `type=gha` cache support |
 | 3 | `docker/login-action@v4` | Authenticates to GHCR with `GITHUB_TOKEN` |
-| 4 | Resolve build operators | Expands `build-operators` into `BUILD_OPERATORS`, one name per line |
-| 5 | Build base images | Builds `python-base` and `venv-builder` (reused by subsequent builds) |
-| 6 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each resolved operator |
-| 7 | Build service images | Builds `<IMAGE_PREFIX>/<op>:<release>` for each operator x release combination |
-| 8 | Build Tempest images | Builds `<IMAGE_PREFIX>/tempest:<release>` for all releases |
-| 9 | Push E2E images to GHCR | For each image, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push` |
+| 4 | Resolve images | Runs `hack/ci-resolve-e2e-images.sh` with `changed-operators`, `changed-services`, `changed-tempest` and `changed-proxy`; writes the `BUILD_*` variables and the `image-map` output |
+| 5 | Build base images | Builds `python-base` and `venv-builder`, only when `NEEDS_BASE_IMAGES` is true |
+| 6 | Build federation proxy image | Builds `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, only when `BUILD_PROXY` is true |
+| 7 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS` |
+| 8 | Build service images | Builds `<IMAGE_PREFIX>/<svc>:<release>` for each pair in `BUILD_SERVICE_IMAGES` |
+| 9 | Build Tempest images | Builds `<IMAGE_PREFIX>/tempest:<release>` for each release in `BUILD_TEMPEST_RELEASES` |
+| 10 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push` |
 
-The build set comes from the resolver's `build-operators` output, which lists the
-operator images the jobs this run scheduled will load. Tempest reads
-`keystone-operator:dev` and `keystone:<release>` whatever triggered it, so the
-resolver adds keystone whenever tempest is scheduled, and the same rule covers the
-chaos, ControlPlane and two-cluster jobs. The step itself only translates the
-list, which keeps the question of which job needs which image in one file:
-`tests/unit/ci/resolve_changes_scenarios_test.sh` pins the answers.
+`hack/ci-resolve-e2e-images.sh` derives the image set from the tree: an operator image
+per `operators/<op>/` with a `go.mod`, a service image per (operator, release) pair in
+`releases/*/source-refs.yaml`, a Tempest image per `releases/<release>/`, and the
+federation proxy. An image whose sources this pull request changed is built here and
+mapped to its run-scoped tag. Every other image is mapped to the index digest behind
+its published tag (`<op>-operator:latest`, `<svc>:<release>`, `tempest:<release>`,
+`keystone-federation-proxy:latest`), which the run pulls instead of rebuilding.
+A source that has never been published, the state of a new operator before its first
+merge, is built instead of failing the run.
+
+Only the service and Tempest images build `FROM python-base` and `venv-builder`, so a
+run that reuses both skips the base-image step. A reused image is never tagged in the
+registry: the consumers pull it by digest, which is what keeps the run-scoped tag off
+the published version that `cleanup-e2e-tags` would then refuse to prune.
+`tests/unit/hack/ci_resolve_e2e_images_test.sh` pins the decisions against a stubbed
+registry.
 
 GH-310 replaced the previous `docker save | zstd | upload-artifact` transport with
 GHCR push/pull because the 355 MB single-blob artifact intermittently timed out at
@@ -1038,9 +1051,10 @@ one under review — which is why the `e2e_controlplane` path filter also watche
 **Path filter:** `operators/c5c3/**`, `operators/keystone/**`, `tests/e2e/c5c3/**`,
 `deploy/**`, `hack/**`, `.github/actions/**`, `.github/workflows/ci.yaml`. As with
 `e2e-prometheus`, any Go code change (`go_changed`) or any E2E test change
-(`any_e2e_tests`) also triggers the job via `ci-resolve-changes.sh`. When it
-runs, `build-e2e-images` unions `c5c3` into the built operator set so both dev
-images exist even for a full-chain-test-only change.
+(`any_e2e_tests`) also triggers the job via `ci-resolve-changes.sh`. The job pulls
+`c5c3-operator:dev` from the image map: built in this run when `operators/c5c3/**`
+changed, and otherwise the digest behind `ghcr.io/c5c3/c5c3-operator:latest`, so both
+dev images exist even for a full-chain-test-only change.
 
 ### e2e-external-keystone
 
@@ -1144,7 +1158,9 @@ something.
 The package list is the `cleanup-e2e-packages` output of the `changes` job,
 derived by `hack/ci-generate-cleanup-matrix.sh` from `images/` and `operators/`.
 It was a hardcoded list until `keystone-federation-proxy` was left out of it and
-accumulated 352 stale tags.
+accumulated 352 stale tags. A package whose image this run reused rather than built
+carries no run-scoped tag, so the narrowed plan finds no candidate there and deletes
+nothing.
 
 Deletion runs through `hack/ghcr-prune-stale-versions.py` in
 `--only-tag-pattern` mode, scoped to `^e2e-${run_id}-`. That mode only considers
@@ -1516,20 +1532,25 @@ environment variables.
 
 `.github/actions/load-e2e-images/action.yaml`
 
-A composite GitHub Action that pulls pre-built E2E images from GHCR (under the
-run-scoped tag pushed by `build-e2e-images`) and re-tags them to their canonical
-local references so downstream `kind load docker-image` calls work unchanged.
-Shared between `e2e-operator`, `e2e-chaos`, and `tempest` jobs.
+A composite GitHub Action that pulls pre-built E2E images from GHCR and re-tags them
+to their canonical local references so downstream `kind load docker-image` calls work
+unchanged. Shared between `e2e-operator`, `e2e-chaos`, and `tempest` jobs.
 
 | Step | Description |
 | --- | --- |
 | 1 | `docker/login-action@v4` authenticates to GHCR using the workflow's `GITHUB_TOKEN` |
-| 2 | For each input ref, `docker pull <repo>:e2e-${run_id}-<orig_tag>` then `docker tag` to the canonical local ref |
+| 2 | For each input ref, `docker pull` the reference `image-map` gives for it, then `docker tag` to the canonical local ref |
+
+The map holds one of two forms per ref: `<repo>:e2e-<run-id>-<tag>` for an image this
+run built, or `<repo>@sha256:...` for one it reused from `main`. A ref the map does
+not carry falls back to the run-scoped tag, and so does every ref when `image-map` is
+left empty. A malformed map fails the step before the first pull.
 
 | Input | Default | Description |
 | --- | --- | --- |
 | `run-id` | `${{ github.run_id }}` | Run ID used as the tag prefix (`e2e-<run-id>-`) |
 | `images` | (required) | Multiline list of canonical local refs (e.g. `ghcr.io/c5c3/keystone:2025.2`); blank/comment lines are ignored |
+| `image-map` | `''` | The `image-map` output of `build-e2e-images`; empty means pull every ref by run-scoped tag |
 | `registry` | `ghcr.io` | Registry to authenticate against |
 | `username` | `${{ github.actor }}` | Login user |
 | `password` | `${{ github.token }}` | Login token |
@@ -1540,6 +1561,7 @@ Usage in a workflow job:
 - name: Load E2E images
   uses: ./.github/actions/load-e2e-images
   with:
+    image-map: ${{ needs.build-e2e-images.outputs.image-map }}
     images: |
       ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
       ${{ env.IMAGE_PREFIX }}/keystone:2025.2
@@ -1567,8 +1589,9 @@ The E2E jobs follow a common pattern with shared components:
 ```
 
 Image building is centralised in `build-e2e-images`, which runs once before the E2E jobs
-and pushes every image to GHCR under a run-scoped tag. The `e2e-infra` job uses steps 1,
-4, 6-8 (no operator or service images needed). The `e2e-operator`, `e2e-chaos`, and
+and pushes the images it built to GHCR under a run-scoped tag. An image it reused from
+`main` is pulled by digest and carries no run-scoped tag. The `e2e-infra` job uses steps
+1, 4, 6-8 (no operator or service images needed). The `e2e-operator`, `e2e-chaos`, and
 `tempest` jobs use all steps, pulling their required images from GHCR via
 `load-e2e-images`. The `e2e-chaos` job uses a chaos-specific Chainsaw config
 (`tests/e2e-chaos/chainsaw-config.yaml`) and test directory (`tests/e2e-chaos/`). The
