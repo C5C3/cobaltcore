@@ -36,6 +36,8 @@ github.com/external-secrets/external-secrets/apis v0.0.0-20260803120615-8552ed8d
 github.com/external-secrets/external-secrets/apis v0.0.0-20260803120615-8552ed8d11d1/go.mod h1:5GcFUHfOeptmLo4hCGlzWQf50wGxTszFJGuMN3IlkhE=
 github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8 h1:ESlT8XppH/lIi1yVLbi0fwu7WoIQPcNhU5eZnTUCXAs=
 github.com/external-secrets/external-secrets/apis v0.0.0-20260819101639-6271822a4da8/go.mod h1:1HdrhQd9BpjfoAAn0I7Jo4NVMPwLj3OWw4C4VQWju5w=
+github.com/external-secrets/external-secrets/apis v0.0.0-20260828130843-8488600898e8 h1:wbwJQFGs/HvoeZUQ6n70gOm6FBjqQISDDX8pWWCJOCc=
+github.com/external-secrets/external-secrets/apis v0.0.0-20260828130843-8488600898e8/go.mod h1:1HdrhQd9BpjfoAAn0I7Jo4NVMPwLj3OWw4C4VQWju5w=
 github.com/fatih/color v1.19.0 h1:Zp3PiM21/9Ld6FzSKyL5c/BULoe/ONr9KlbYVOfG8+w=
 github.com/fatih/color v1.19.0/go.mod h1:zNk67I0ZUT1bEGsSGyCZYZNrHuTkJJB+r6Q9VuMi0LE=
 github.com/fsnotify/fsnotify v1.10.1 h1:b0/UzAf9yR5rhf3RPm9gf3ehBPpf0oZKIjtpKrx59Ho=
