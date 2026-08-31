@@ -165,16 +165,16 @@ test_ci_yaml_wires_all_four_sides() {
       "$(job_block "$job")" "needs.changes.outputs.${job} == 'true'"
   done
 
-  # build-e2e-images no longer reads the ControlPlane output at all: the
-  # resolver folds the images those jobs load into build-operators. Broken, this
-  # job does not skip — it fails the e2e jobs an hour later at "Load E2E images"
-  # with a dev tag that was never pushed.
+  # build-e2e-images no longer reads the ControlPlane output at all: it builds
+  # what changed and reuses the rest from main, so the images those jobs load
+  # exist either way. Broken, this job does not skip — it fails the e2e jobs an
+  # hour later at "Load E2E images" with a dev tag that was never pushed.
   local build_block
   build_block=$(job_block build-e2e-images)
   assert_contains "build-e2e-images gates on its own flag" \
     "$build_block" "needs.changes.outputs.build-e2e-images == 'true'"
-  assert_contains "build-e2e-images takes its image list from the resolver" \
-    "$build_block" "needs.changes.outputs.build-operators"
+  assert_contains "build-e2e-images takes its build set from the resolver" \
+    "$build_block" 'CHANGED_OPERATORS: ${{ needs.changes.outputs.changed-operators }}'
   assert_not_contains "build-e2e-images no longer reads the ControlPlane output" \
     "$build_block" "needs.changes.outputs.e2e-controlplane"
 }

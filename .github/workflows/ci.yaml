@@ -90,7 +90,6 @@ jobs:
       changed-services: ${{ steps.result.outputs.changed-services }}
       changed-tempest: ${{ steps.result.outputs.changed-tempest }}
       changed-proxy: ${{ steps.result.outputs.changed-proxy }}
-      build-operators: ${{ steps.result.outputs.build-operators }}
       build-e2e-images: ${{ steps.result.outputs.build-e2e-images }}
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
@@ -981,6 +980,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image-map: ${{ steps.images.outputs.image-map }}
     env:
       RUN_TAG: e2e-${{ github.run_id }}
     steps:
@@ -995,42 +996,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Tempest and the e2e-chaos suites always exercise keystone and glance,
-      # both e2e-chaos legs always exercise barbican (the operator pod-kill suite
-      # on the pod leg, the OpenBao outage suite on the network leg), and the
-      # e2e-chaos pod leg always exercises placement, so all four must be built
-      # regardless of which operator triggered the pipeline.  Union the
-      # changed-operator list with fixed "keystone", "glance", "placement" and
-      # "barbican" entries so the dependency is explicit.
-      #
-      # placement is unioned in unconditionally rather than behind a copy of
-      # the e2e-chaos `if:`. That condition lives hundreds of lines away and
-      # nothing keeps a duplicate in sync, so a third trigger added there
-      # would leave the pod leg pulling a placement tag this job never
-      # pushed — a blocking failure an hour into the run. Such a gate would
-      # also save very little: a non-empty operator matrix already implies
-      # e2e-chaos runs (every path that fills the matrix sets go=true or
-      # forces the full E2E suite), so it would skip the build only on the
-      # PRs that reach this job through the e2e-prometheus or
-      # e2e-controlplane paths alone.
-      # The resolver already knows which operator images the jobs this run
-      # scheduled will load, so the union lives there rather than here. It never
-      # emits the __none__ sentinel and is never empty while build-e2e-images is
-      # true, both pinned by tests/unit/ci/resolve_changes_scenarios_test.sh.
-      - name: Resolve build operators
+      # The resolver says which image sources this pull request changed. This
+      # step builds those and resolves every other image to the digest behind
+      # the tag main last published, then hands the consumers one image-map so
+      # they pull whatever it names. A run that changes no image source builds
+      # nothing here and still leaves every consumer with a working reference.
+      - name: Resolve images
+        id: images
         env:
-          BUILD_OPERATORS_JSON: ${{ needs.changes.outputs.build-operators }}
-        run: |
-          {
-            echo "BUILD_OPERATORS<<EOF"
-            jq -r '.[]' <<<"${BUILD_OPERATORS_JSON}"
-            echo "EOF"
-          } >> "$GITHUB_ENV"
+          CHANGED_OPERATORS: ${{ needs.changes.outputs.changed-operators }}
+          CHANGED_SERVICES: ${{ needs.changes.outputs.changed-services }}
+          CHANGED_TEMPEST: ${{ needs.changes.outputs.changed-tempest }}
+          CHANGED_PROXY: ${{ needs.changes.outputs.changed-proxy }}
+        run: hack/ci-resolve-e2e-images.sh
 
       # Build base images once — all subsequent service and tempest builds
       # reuse them via the skip-if-exists guard in ci-build-service-image.sh.
       # GHA cache scopes are shared across branches; these images rarely change.
+      # Only the service and Tempest images build FROM them, so a run that
+      # reuses both skips this step.
       - name: Build base images
+        if: env.NEEDS_BASE_IMAGES == 'true'
         run: |
           docker build -t python-base \
             --cache-from type=gha,scope=e2e-python-base \
@@ -1042,10 +1028,11 @@ jobs:
             --cache-to type=gha,mode=max,scope=e2e-venv-builder \
             images/venv-builder/
 
-      # The keystone oidc-federation e2e projects the mod_auth_openidc
-      # sidecar. The image is release-independent and keystone is always in
-      # BUILD_OPERATORS (tempest unions it in), so build it unconditionally.
+      # The keystone oidc-federation e2e projects the mod_auth_openidc sidecar.
+      # The image is built when images/keystone-federation-proxy/** changed and
+      # otherwise comes from the map.
       - name: Build federation proxy image
+        if: env.BUILD_PROXY == 'true'
         run: |
           docker build -t "${IMAGE_PREFIX}/keystone-federation-proxy:dev" \
             --cache-from type=gha,scope=e2e-keystone-federation-proxy \
@@ -1053,7 +1040,7 @@ jobs:
             --build-arg APT_MIRROR=http://azure.archive.ubuntu.com \
             images/keystone-federation-proxy/
 
-      # Build operator images for all resolved operators (changed + keystone).
+      # Build operator images for all resolved operators.
       - name: Build operator images
         run: |
           for op in $BUILD_OPERATORS; do
@@ -1064,32 +1051,29 @@ jobs:
             echo "::endgroup::"
           done
 
-      # Build service images for every operator × release combination.
-      # ci-service-image-releases.sh derives the release list per operator from
-      # releases/<release>/source-refs.yaml (the single source of truth, also
-      # used by ci-generate-build-matrix.sh). Orchestration operators without a
-      # service image — e.g. c5c3, which deploys K-ORC via an upstream
-      # Helm chart — yield no releases and are skipped, so a changed c5c3 no
-      # longer fails this step on a missing source-ref.
+      # Build the service images whose sources changed, one line per
+      # (service, release) pair. ci-resolve-e2e-images.sh derives the release
+      # list per operator from releases/<release>/source-refs.yaml through
+      # ci-service-image-releases.sh (the single source of truth, also used by
+      # ci-generate-build-matrix.sh). Orchestration operators without a service
+      # image — e.g. c5c3, which deploys K-ORC via an upstream Helm chart —
+      # yield no releases and so never appear here.
       - name: Build service images
         run: |
-          for op in $BUILD_OPERATORS; do
-            for release in $(OPERATOR="${op}" hack/ci-service-image-releases.sh); do
-              echo "::group::Building ${op}:${release}"
-              OPERATOR="${op}" IMAGE_PREFIX="${IMAGE_PREFIX}" RELEASE="${release}" \
-                DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-${op}-${release}" \
-                DOCKER_BUILD_CACHE_TO="type=gha,mode=max,scope=e2e-${op}-${release}" \
-                hack/ci-build-service-image.sh
-              echo "::endgroup::"
-            done
-          done
+          while read -r svc release; do
+            [ -n "$svc" ] || continue
+            echo "::group::Building ${svc}:${release}"
+            OPERATOR="${svc}" IMAGE_PREFIX="${IMAGE_PREFIX}" RELEASE="${release}" \
+              DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-${svc}-${release}" \
+              DOCKER_BUILD_CACHE_TO="type=gha,mode=max,scope=e2e-${svc}-${release}" \
+              hack/ci-build-service-image.sh
+            echo "::endgroup::"
+          done <<<"$BUILD_SERVICE_IMAGES"
 
-      # Build Tempest images for all releases.
+      # Build the Tempest images for the releases the map marked as built.
       - name: Build Tempest images
         run: |
-          for release_dir in releases/*/; do
-            release="${release_dir%/}"
-            release="${release##*/}"
+          for release in $BUILD_TEMPEST_RELEASES; do
             echo "::group::Building tempest:${release}"
             RELEASE="${release}" TEMPEST_IMAGE="${IMAGE_PREFIX}/tempest:${release}" \
               DOCKER_BUILD_CACHE_FROM="type=gha,scope=e2e-tempest-${release}" \
@@ -1098,12 +1082,13 @@ jobs:
             echo "::endgroup::"
           done
 
-      # GH-310: Push every E2E image to GHCR under a run-scoped tag so consumer
-      # jobs can `docker pull` instead of downloading a 355 MB single-blob
-      # artifact (which intermittently times out at the 5-minute mark).
-      # Tags use the form e2e-${run_id}-<original-tag>; cleanup-e2e-tags
+      # GH-310: Push every E2E image this run built to GHCR under a run-scoped
+      # tag so consumer jobs can `docker pull` instead of downloading a 355 MB
+      # single-blob artifact (which intermittently times out at the 5-minute
+      # mark). Tags use the form e2e-${run_id}-<original-tag>; cleanup-e2e-tags
       # prunes them at the end of the run, with a nightly safety net for
-      # cancelled workflows in cleanup-images.yaml.
+      # cancelled workflows in cleanup-images.yaml. A reused image is never
+      # tagged here: the consumers pull it by the digest the map carries.
       - name: Push E2E images to GHCR
         run: |
           # docker push has no built-in retry, so a transient ghcr.io timeout
@@ -1138,18 +1123,17 @@ jobs:
             push_with_retry "${run_ref}"
             echo "::endgroup::"
           }
-          push_image "${IMAGE_PREFIX}/keystone-federation-proxy:dev"
+          if [ "$BUILD_PROXY" = "true" ]; then
+            push_image "${IMAGE_PREFIX}/keystone-federation-proxy:dev"
+          fi
           for op in $BUILD_OPERATORS; do
             push_image "${IMAGE_PREFIX}/${op}-operator:dev"
-            # Only push service images that were actually built — operators
-            # without a source-ref (e.g. c5c3) build none, so push none.
-            for release in $(OPERATOR="${op}" hack/ci-service-image-releases.sh); do
-              push_image "${IMAGE_PREFIX}/${op}:${release}"
-            done
           done
-          for release_dir in releases/*/; do
-            release="${release_dir%/}"
-            release="${release##*/}"
+          while read -r svc release; do
+            [ -n "$svc" ] || continue
+            push_image "${IMAGE_PREFIX}/${svc}:${release}"
+          done <<<"$BUILD_SERVICE_IMAGES"
+          for release in $BUILD_TEMPEST_RELEASES; do
             push_image "${IMAGE_PREFIX}/tempest:${release}"
           done
 
@@ -1219,6 +1203,7 @@ jobs:
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: ${{ steps.e2e-images.outputs.refs }}
       - name: Load images into kind
         env:
@@ -1365,6 +1350,7 @@ jobs:
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
@@ -1517,6 +1503,7 @@ jobs:
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
@@ -1686,6 +1673,7 @@ jobs:
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:2025.2
@@ -1805,6 +1793,7 @@ jobs:
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
@@ -1998,6 +1987,7 @@ jobs:
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
@@ -2118,6 +2108,7 @@ jobs:
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/c5c3-operator:dev
@@ -2252,6 +2243,7 @@ jobs:
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
@@ -2422,6 +2414,7 @@ jobs:
       - name: Load E2E images
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/keystone-operator:dev
             ${{ env.IMAGE_PREFIX }}/keystone:${{ matrix.release }}
@@ -2437,6 +2430,7 @@ jobs:
         if: matrix.service == 'glance'
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/glance-operator:dev
             ${{ env.IMAGE_PREFIX }}/glance:${{ matrix.release }}
@@ -2458,6 +2452,7 @@ jobs:
         if: matrix.service == 'barbican'
         uses: ./.github/actions/load-e2e-images
         with:
+          image-map: ${{ needs.build-e2e-images.outputs.image-map }}
           images: |
             ${{ env.IMAGE_PREFIX }}/barbican-operator:dev
             ${{ env.IMAGE_PREFIX }}/barbican:${{ matrix.release }}
