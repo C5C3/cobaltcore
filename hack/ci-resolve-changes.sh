@@ -169,7 +169,7 @@ if [[ "${noop}" == "true" ]]; then
     changed-tempest changed-proxy build-e2e-images actionlint; do
     emit "$out" false
   done
-  for out in changed-operators changed-services build-operators tempest-services; do
+  for out in changed-operators changed-services tempest-services; do
     emit "$out" '[]'
   done
   emit test-targets "$(matrix_of target "")"
@@ -325,8 +325,9 @@ for op in $ALL_OPERATORS; do
   fi
 done
 
-# changed-operators: the operators whose own sources changed. #954 reads this
-# to decide which operator images it still has to build.
+# changed-operators: the operators whose own sources changed.
+# hack/ci-resolve-e2e-images.sh reads this to decide which operator images
+# build-e2e-images still has to build; it reuses the rest from main.
 changed_operators="$op_changed"
 if filter_on makefile; then
   changed_operators=$(set_add "$changed_operators" "$CANARY_OPERATOR")
@@ -389,30 +390,6 @@ if [[ "$tempest" == "true" ]]; then
   fi
 fi
 
-# build-operators: the operator images the selected jobs load. Interim — #954
-# replaces it with an image map that also covers the service and tempest
-# images, and drops this output together with the step that reads it.
-build_operators="$e2e_ops"
-if [[ "${EVENT_NAME}" == "push" && "$is_tag" != "true" ]]; then
-  build_operators=""
-fi
-if [[ "$e2e_operator_upgrade" == "true" || "$e2e_prometheus" == "true" ||
-  "$e2e_chaos" == "true" || "$e2e_controlplane" == "true" ||
-  "$e2e_controlplane_sso" == "true" || "$e2e_external_keystone" == "true" ||
-  "$e2e_multicluster" == "true" || "$tempest" == "true" ]]; then
-  build_operators=$(set_add "$build_operators" "$CANARY_OPERATOR")
-fi
-[[ "$e2e_chaos" == "true" ]] && build_operators=$(set_add "$build_operators" horizon glance placement barbican)
-[[ "$e2e_controlplane" == "true" ]] && build_operators=$(set_add "$build_operators" c5c3 horizon glance placement barbican)
-if [[ "$e2e_controlplane_sso" == "true" || "$e2e_external_keystone" == "true" ]]; then
-  build_operators=$(set_add "$build_operators" c5c3 horizon)
-fi
-[[ "$e2e_multicluster" == "true" ]] && build_operators=$(set_add "$build_operators" barbican)
-if [[ "$tempest" == "true" ]]; then
-  # shellcheck disable=SC2086 # deliberate word split of the service set
-  build_operators=$(set_add "$build_operators" $tempest_services)
-fi
-
 has_e2e_operators=$(yesno test -n "$e2e_ops")
 
 build_e2e_images=false
@@ -453,7 +430,6 @@ emit has-e2e-operators "$has_e2e_operators"
 
 emit changed-operators "$(json_list "$(order_by "$ALL_OPERATORS" "$changed_operators")")"
 emit changed-services "$(json_list "$(order_by "$SERVICE_OPERATORS" "$changed_services")")"
-emit build-operators "$(json_list "$(order_by "$ALL_OPERATORS" "$build_operators")")"
 emit tempest-services "$(json_list "$(order_by "$TEMPEST_ALL_SERVICES" "$tempest_services")")"
 
 emit test-targets "$(matrix_of target "$(order_by "common $ALL_OPERATORS" "$test_targets")")"

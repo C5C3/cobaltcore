@@ -85,7 +85,6 @@ test_operator_change() {
   expect e2e-operators '{"operator":["glance"]}'
   expect changed-operators '["glance"]'
   expect changed-services '[]'
-  expect build-operators '["glance"]'
   expect build-e2e-images true
   expect tempest-services '[]'
   # shellcheck disable=SC2086 # deliberate: expand the job list
@@ -98,7 +97,6 @@ test_c5c3_change_runs_the_controlplane_trio() {
   scenario "a c5c3 operator change" refs/heads/main FILTER_c5c3=true
   expect e2e-operators '{"operator":["c5c3"]}'
   expect_all true e2e-controlplane e2e-controlplane-sso e2e-external-keystone
-  expect build-operators '["keystone","c5c3","horizon","glance","placement","barbican"]'
   expect_all false e2e-chaos tempest e2e-multicluster e2e-prometheus
 }
 
@@ -106,7 +104,6 @@ test_keystone_change_runs_the_upgrade_suite() {
   scenario "a keystone operator change" refs/heads/main FILTER_keystone=true
   expect e2e-operators '{"operator":["keystone"]}'
   expect e2e-operator-upgrade true
-  expect build-operators '["keystone"]'
   expect_all false e2e-controlplane tempest e2e-chaos
 }
 
@@ -136,7 +133,6 @@ test_suite_edit_runs_one_leg() {
   expect test-targets "$SENTINEL_TARGETS"
   expect e2e-operators '{"operator":["glance"]}'
   expect changed-operators '[]'
-  expect build-operators '["glance"]'
 }
 
 test_service_image_change() {
@@ -193,7 +189,6 @@ test_shared_substrate_runs_the_canary() {
   expect e2e-infra true
   expect e2e-operators '{"operator":["keystone"]}'
   expect changed-operators '[]'
-  expect build-operators '["keystone"]'
   expect actionlint false
   # shellcheck disable=SC2086 # deliberate: expand the job list
   expect_all false $EXPENSIVE
@@ -203,7 +198,6 @@ test_openbao_change_adds_barbican() {
   scenario "an OpenBao deploy change" refs/heads/main FILTER_e2e_shared=true FILTER_e2e_openbao=true
   expect e2e-infra true
   expect e2e-operators '{"operator":["keystone","barbican"]}'
-  expect build-operators '["keystone","barbican"]'
 }
 
 test_workflow_plumbing_runs_the_canary_and_actionlint() {
@@ -246,7 +240,6 @@ test_tempest_config_narrows_to_its_service() {
   expect tempest true
   expect tempest-services '["glance"]'
   expect has-e2e-operators false
-  expect build-operators '["keystone","glance"]'
   expect build-e2e-images true
 }
 
@@ -280,42 +273,34 @@ test_ci_tempest_follows_the_touched_service() {
     FILTER_glance=true PR_LABELS='["ci:tempest"]'
   expect tempest true
   expect tempest-services '["glance"]'
-  expect build-operators '["keystone","glance"]'
   expect_all false e2e-chaos e2e-controlplane
 
   scenario "ci:tempest with no service touched" refs/heads/main \
     FILTER_docs=true PR_LABELS='["ci:tempest"]'
   expect tempest true
   expect tempest-services '["keystone"]'
-  expect build-operators '["keystone"]'
   expect build-e2e-images true
 }
 
 test_ci_chaos_and_its_alias() {
-  local expected_build='["keystone","horizon","glance","placement","barbican"]'
-
   scenario "ci:chaos on a glance pull request" refs/heads/main \
     FILTER_glance=true PR_LABELS='["ci:chaos"]'
   expect e2e-chaos true
-  expect build-operators "$expected_build"
 
   # run-chaos predates the ci: prefix and stays an alias, so an existing habit
   # keeps working.
   scenario "the run-chaos alias" refs/heads/main \
     FILTER_glance=true PR_LABELS='["run-chaos"]'
   expect e2e-chaos true
-  expect build-operators "$expected_build"
 }
 
 test_ci_controlplane_and_multicluster() {
   scenario "ci:controlplane on a glance pull request" refs/heads/main \
     FILTER_glance=true PR_LABELS='["ci:controlplane"]'
   expect_all true e2e-controlplane e2e-controlplane-sso e2e-external-keystone
-  expect build-operators '["keystone","c5c3","horizon","glance","placement","barbican"]'
 
   scenario "ci:multicluster on its own" refs/heads/main PR_LABELS='["ci:multicluster"]'
   expect e2e-multicluster true
-  expect build-operators '["keystone","barbican"]'
   expect has-e2e-operators false
 }
 
@@ -422,7 +407,6 @@ test_no_filters_at_all() {
   expect e2e-operators "$SENTINEL_OPERATORS"
   expect changed-operators '[]'
   expect changed-services '[]'
-  expect build-operators '[]'
   expect tempest-services '[]'
 }
 
@@ -462,7 +446,7 @@ test_outputs_are_complete() {
     e2e-prometheus e2e-controlplane e2e-controlplane-sso e2e-external-keystone
     e2e-multicluster e2e-operator-upgrade tempest actionlint changed-tempest
     changed-proxy build-e2e-images has-e2e-operators changed-operators
-    changed-services build-operators tempest-services test-targets e2e-operators"
+    changed-services tempest-services test-targets e2e-operators"
   for key in $expected; do
     assert_not_empty "the resolver emits $key" \
       "$(printf '%s\n' "$CURRENT" | grep "^${key}=")"
