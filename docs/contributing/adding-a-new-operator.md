@@ -84,10 +84,16 @@ bottom when scaffolding `operators/<op>/`:
   `go:embed` accessor. The validating webhook checks `spec.extraConfig`
   against these catalogs; both targets need docker and the published service
   images.
-- **`.github/workflows/ci.yaml`** — the biggest surface: add the operator to
-  the paths-filter groups, `ALL_OPERATORS` and the `FILTER_<op>` env var, the
-  unit/integration test matrices, the helm-validate chart loops, and the
-  `build-e2e-images` operator resolution.
+- **`.github/workflows/ci.yaml`** — add three paths filters and their
+  `FILTER_<name>` env vars: `<op>` for `operators/<op>/**`, `tests_e2e_<op>` for
+  the operator's suites, and, when the operator ships a service image,
+  `image_<op>` for `images/<op>/**` and `patches/<op>/**`. Then add the operator
+  to `ALL_OPERATORS`, and to `SERVICE_OPERATORS` when it has a service image.
+  The unit and integration test matrices, the e2e matrix and the
+  `build-e2e-images` build set are all derived from those lists, so none of them
+  needs editing. `tests/unit/ci/change_classes_wiring_test.sh` fails when a step
+  is missed, and `SERVICE_OPERATORS` is pinned to the union of the keys in
+  `releases/*/source-refs.yaml`.
 - **`.github/workflows/build-images.yaml`** — nothing to do for the operator
   image (the shared `operators/Dockerfile` is already wired); only new service
   images under `images/` need matrix entries.

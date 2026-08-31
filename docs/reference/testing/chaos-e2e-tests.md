@@ -142,18 +142,21 @@ blocking, the network leg is not (see below). See
 [CI Workflow — e2e-chaos](../ci-cd/ci-workflow.md#e2e-chaos) for full job documentation.
 
 **Path filter (`e2e_chaos`):** Changes to `tests/e2e-chaos/**`, `hack/**`, `deploy/**`,
-`.github/workflows/ci.yaml`, or `.github/actions/**` trigger the job. Additionally, any Go code change — whether in
-a specific operator (e.g., `operators/keystone/**/*.go`) or in shared code
-(`internal/common/**/*.go` via `go_common`) — triggers the job, since chaos tests validate
-operator resilience against the current codebase. On `v*` tag pushes, the job is forced
-active regardless of which files were touched.
+`.github/workflows/ci.yaml`, or `.github/actions/**` trigger the job.
+
+A Go code change does not. The two legs cost about 62 runner minutes between
+them, and a change to an operator is exercised by that operator's own e2e leg;
+the chaos suites test recovery behaviour, which is what the `tests_chaos` filter
+watches. Apply the `ci:chaos` label to run them against a pull request that
+changes something else. On `v*` tag pushes the job is forced active regardless
+of which files were touched.
 
 **Trigger conditions:**
 
 | Event | Runs when |
 | --- | --- |
-| Push to `main` | Path filter matches or Go code changed (always on `v*` tags) |
-| Pull request | Path filter matches, Go code changed, **or `run-chaos` label present** |
+| Push to `main` | Not scheduled; the merged pull request already ran it (always on `v*` tags) |
+| Pull request | A suite under `tests/e2e-chaos/**` changed, or the `ci:chaos` label is applied |
 
 **Dependencies:** The job depends on all gate jobs (`lint`, `shellcheck`, `test`,
 `test-integration`, `verify-codegen`). It only runs if no dependency failed or was
@@ -164,7 +167,8 @@ leg is **blocking** — a failure in any PodChaos suite (operator restart, PDB, 
 fails the build. The `network` leg stays **non-blocking**, because its
 `ip_set`/`sch_netem` kernel-module dependency remains prone to environment
 flakiness; its failures are visible but do not
-block merges. The `run-chaos` PR label runs both legs on demand for pre-validation.
+block merges. The `ci:chaos` PR label runs both legs on demand for pre-validation.
+`run-chaos` still works as an alias for it.
 
 **Timeout:** 90 minutes to accommodate serial test execution and longer recovery
 assertion windows.
