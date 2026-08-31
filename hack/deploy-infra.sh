@@ -325,7 +325,7 @@ GATEWAY_API_CRDS_URL="${GATEWAY_API_CRDS_URL:-https://github.com/kubernetes-sigs
 # through the release's plain CRD asset — see the CRD-ownership decision in
 # deploy/kind/base/envoy-gateway.yaml. Keep the pin inside the chart's SemVer
 # range there; Renovate bumps both through the same envoy-gateway group.
-ENVOY_GATEWAY_VERSION="${ENVOY_GATEWAY_VERSION:-v1.9.0}"
+ENVOY_GATEWAY_VERSION="${ENVOY_GATEWAY_VERSION:-v1.9.1}"
 ENVOY_GATEWAY_CRDS_URL="${ENVOY_GATEWAY_CRDS_URL:-https://github.com/envoyproxy/gateway/releases/download/${ENVOY_GATEWAY_VERSION}/envoy-gateway-crds.yaml}"
 
 # flux-operator release applied in Step 2 before the FluxInstance CR is created
