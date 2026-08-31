@@ -18,6 +18,7 @@ with the count of resolved flakes and still-failing tests.
 """
 from __future__ import annotations
 
+import re
 import sys
 import xml.etree.ElementTree as ET
 
@@ -62,7 +63,25 @@ def _dec(elem: ET.Element, attr: str) -> None:
         elem.attrib[attr] = str(value - 1)
 
 
-def rewrite_junit(junit_path: str, passed_on_retry: set[str]) -> tuple[int, int]:
+_FIXTURE_ROW = re.compile(r"^(?:setUpClass|tearDownClass) \((.+)\)$")
+
+
+def _resolve_flake(tc: ET.Element, ts: ET.Element, root: ET.Element,
+                   fail_children: list[ET.Element], note_text: str) -> None:
+    kinds = {c.tag for c in fail_children}
+    for child in fail_children:
+        tc.remove(child)
+    note = ET.SubElement(tc, "system-out")
+    note.text = note_text
+    for kind in kinds:
+        attr = "failures" if kind == "failure" else "errors"
+        _dec(ts, attr)
+        if root.tag == "testsuites":
+            _dec(root, attr)
+
+
+def rewrite_junit(junit_path: str, passed_on_retry: set[str],
+                  failed_on_retry: frozenset[str] | set[str] = frozenset()) -> tuple[int, int]:
     """Rewrite resolved failures as flakes, in place. Returns (fixed, still_failing)."""
     tree = _safe_parse(junit_path)
     root = tree.getroot()
@@ -76,7 +95,29 @@ def rewrite_junit(junit_path: str, passed_on_retry: set[str]) -> tuple[int, int]
         for tc in list(ts.findall("testcase")):
             classname = tc.attrib.get("classname", "")
             name = tc.attrib.get("name", "")
-            if not classname or not name:
+            if not name:
+                continue
+            if not classname:
+                # A class-fixture row (setUpClass/tearDownClass) has no test_id
+                # of its own; the retry re-ran the whole class. Resolve the row
+                # only when at least one test of the class ran on retry and
+                # none failed.
+                fixture = _FIXTURE_ROW.match(name)
+                if fixture is None:
+                    continue
+                fail_children = [c for c in tc if c.tag in ("failure", "error")]
+                if not fail_children:
+                    continue
+                prefix = fixture.group(1) + "."
+                ran = any(tid.startswith(prefix) for tid in passed_on_retry)
+                refailed = any(tid.startswith(prefix) for tid in failed_on_retry)
+                if ran and not refailed:
+                    _resolve_flake(tc, ts, root, fail_children,
+                                   "flaky: class fixture failed on first run, "
+                                   "all tests of the class passed on retry")
+                    fixed += 1
+                else:
+                    still_failing += 1
                 continue
             # Match JUnit testcases by their full classname.name (including
             # any "[id-...]" parametrization tag) so parametrized variants
@@ -86,16 +127,8 @@ def rewrite_junit(junit_path: str, passed_on_retry: set[str]) -> tuple[int, int]
             if not fail_children:
                 continue
             if test_id in passed_on_retry:
-                kinds = {c.tag for c in fail_children}
-                for child in fail_children:
-                    tc.remove(child)
-                note = ET.SubElement(tc, "system-out")
-                note.text = "flaky: failed on first run, passed on retry"
-                for kind in kinds:
-                    attr = "failures" if kind == "failure" else "errors"
-                    _dec(ts, attr)
-                    if root.tag == "testsuites":
-                        _dec(root, attr)
+                _resolve_flake(tc, ts, root, fail_children,
+                               "flaky: failed on first run, passed on retry")
                 fixed += 1
             else:
                 still_failing += 1
@@ -123,8 +156,14 @@ def main() -> int:
         tid for tid, status in outcomes.items()
         if status in {"success", "uxsuccess"}
     }
+    # xfail is a designed failure: a class whose retry ends in xfail did not
+    # come back clean, so it blocks class-fixture resolution like a fail does.
+    failed_on_retry = {
+        tid for tid, status in outcomes.items()
+        if status in {"fail", "xfail"}
+    }
 
-    fixed, still_failing = rewrite_junit(junit_path, passed_on_retry)
+    fixed, still_failing = rewrite_junit(junit_path, passed_on_retry, failed_on_retry)
     print(
         f"Retry merge: {fixed} flaky test(s) passed on retry, "
         f"{still_failing} still failing.",

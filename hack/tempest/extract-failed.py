@@ -33,9 +33,23 @@ def main() -> int:
     for tc in root.iter("testcase"):
         classname = tc.attrib.get("classname", "")
         name = tc.attrib.get("name", "")
-        if not classname or not name:
+        if not name:
             continue
         if not any(child.tag in ("failure", "error") for child in tc):
+            continue
+        if not classname:
+            # A class-fixture failure (setUpClass/tearDownClass) is reported
+            # with an empty classname and no per-test id to re-run. Re-run the
+            # whole class serially; merge-retry-junit.py resolves the fixture
+            # row only when every test of the class passed on retry.
+            fixture = re.match(r"^(?:setUpClass|tearDownClass) \((.+)\)$", name)
+            if not fixture:
+                continue
+            key = fixture.group(1)
+            if key in seen:
+                continue
+            seen.add(key)
+            print("^" + re.escape(key) + r"\.")
             continue
         # Strip any trailing "[id-...]" tag from the method name so we retry
         # the test method itself, not a single parametrized variant.

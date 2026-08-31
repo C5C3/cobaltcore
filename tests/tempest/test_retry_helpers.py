@@ -160,6 +160,40 @@ class ExtractFailedTests(_JunitFixtureMixin, unittest.TestCase):
             ],
         )
 
+    def test_setupclass_failure_emits_class_pattern(self) -> None:
+        junit = self._write_junit(
+            '<?xml version="1.0"?>'
+            '<testsuite name="tempest" tests="1" failures="1" errors="0">'
+            '  <testcase classname=""'
+            '            name="setUpClass (tempest.api.foo.Bar)">'
+            "    <failure>keystone went away</failure>"
+            "  </testcase>"
+            "</testsuite>"
+        )
+        rc, out, _ = self._run(junit)
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            out.strip().splitlines(), [r"^tempest\.api\.foo\.Bar\."]
+        )
+
+    def test_teardownclass_failure_emits_class_pattern_once(self) -> None:
+        junit = self._write_junit(
+            '<?xml version="1.0"?>'
+            '<testsuite name="tempest" tests="2" failures="2" errors="0">'
+            '  <testcase classname=""'
+            '            name="tearDownClass (pkg.mod.Cls)">'
+            "    <failure>503</failure>"
+            "  </testcase>"
+            '  <testcase classname=""'
+            '            name="setUpClass (pkg.mod.Cls)">'
+            "    <error>boom</error>"
+            "  </testcase>"
+            "</testsuite>"
+        )
+        rc, out, _ = self._run(junit)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.strip().splitlines(), [r"^pkg\.mod\.Cls\."])
+
     def test_missing_file_returns_error(self) -> None:
         rc, _, err = self._run("/nonexistent/path/junit.xml")
         self.assertEqual(rc, 1)
@@ -278,6 +312,48 @@ class RewriteJunitTests(_JunitFixtureMixin, unittest.TestCase):
         self.assertIsNotNone(
             cases["test_bad[id-still-bad]"].find("failure")
         )
+
+    def test_class_fixture_row_resolved_when_class_passes_on_retry(self) -> None:
+        junit = self._write_junit(
+            '<?xml version="1.0"?>'
+            '<testsuites errors="0" failures="1">'
+            '  <testsuite name="tempest" tests="1" failures="1" errors="0">'
+            '    <testcase classname=""'
+            '              name="setUpClass (pkg.C)">'
+            "      <failure>keystone went away</failure>"
+            "    </testcase>"
+            "  </testsuite>"
+            "</testsuites>"
+        )
+        fixed, still = merge_retry_junit.rewrite_junit(
+            junit, {"pkg.C.test_a", "pkg.C.test_b"}, frozenset()
+        )
+        self.assertEqual((fixed, still), (1, 0))
+        root = ET.parse(junit).getroot()
+        self.assertEqual(root.attrib["failures"], "0")
+        ts = root.find("testsuite")
+        assert ts is not None
+        self.assertEqual(ts.attrib["failures"], "0")
+        tc = ts.find("testcase")
+        assert tc is not None
+        self.assertIsNone(tc.find("failure"))
+
+    def test_class_fixture_row_left_when_a_class_test_fails_on_retry(self) -> None:
+        junit = self._write_junit(
+            '<?xml version="1.0"?>'
+            '<testsuite name="tempest" tests="1" failures="1" errors="0">'
+            '  <testcase classname=""'
+            '            name="setUpClass (pkg.C)">'
+            "    <failure>boom</failure>"
+            "  </testcase>"
+            "</testsuite>"
+        )
+        fixed, still = merge_retry_junit.rewrite_junit(
+            junit, {"pkg.C.test_a"}, {"pkg.C.test_b"}
+        )
+        self.assertEqual((fixed, still), (0, 1))
+        root = ET.parse(junit).getroot()
+        self.assertEqual(root.attrib["failures"], "1")
 
     def test_empty_passed_on_retry_is_noop(self) -> None:
         junit = self._write_junit(
