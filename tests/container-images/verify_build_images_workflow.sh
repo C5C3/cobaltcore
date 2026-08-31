@@ -135,6 +135,7 @@ test_pull_request_trigger() {
 test_all_jobs_defined() {
   echo "Test: every build-images job is defined"
 
+  assert_file_contains "changes job defined" "$WORKFLOW" "changes:"
   assert_file_contains "build-base-images job defined" "$WORKFLOW" "build-base-images:"
   assert_file_contains "merge-base-images job defined" "$WORKFLOW" "merge-base-images:"
   assert_file_contains "verify-base-images job defined" "$WORKFLOW" "verify-base-images:"
@@ -386,6 +387,80 @@ test_matrix_includes_service_and_release() {
   gen_matrix_output=$(yq_raw '.jobs["generate-matrix"]["outputs"]["matrix"]' "$WORKFLOW" || true)
 
   assert_contains "generate-matrix job exposes matrix output" "$gen_matrix_output" "matrix"
+}
+
+# --- changes job classifies the paths and gates the build and test jobs ---
+test_changes_job_gates_matrix_jobs() {
+  echo "Test: the changes job resolves the image set and every gated job reads it"
+
+  # Every mistake below is silent in CI: GitHub resolves an unknown
+  # needs.<job>.outputs.<name> to the empty string rather than failing, so a
+  # renamed output leaves a build job skipped on every pull request while the
+  # workflow stays green.
+  local outputs
+  outputs=$(yq_raw '.jobs["changes"]["outputs"] | keys | .[]' "$WORKFLOW" || true)
+  local key
+  for key in services has-services build-tempest build-ovn build-proxy build-shifter; do
+    assert_contains "changes exports $key" "$outputs" "$key"
+  done
+
+  local filter_if filter_uses
+  filter_if=$(yq_raw '.jobs["changes"]["steps"][] | select(.id == "filter") | .if' "$WORKFLOW" || true)
+  filter_uses=$(yq_raw '.jobs["changes"]["steps"][] | select(.id == "filter") | .uses' "$WORKFLOW" || true)
+  assert_contains "the filter step runs on pull requests only" \
+    "$filter_if" "github.event_name == 'pull_request'"
+  assert_contains "the filter step pins dorny/paths-filter by SHA" \
+    "$filter_uses" "dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d"
+
+  local resolve_run resolve_env
+  resolve_run=$(yq_raw '.jobs["changes"]["steps"][] | select(.id == "result") | .run' "$WORKFLOW" || true)
+  resolve_env=$(yq_raw '.jobs["changes"]["steps"][] | select(.id == "result") | .env | keys | .[]' "$WORKFLOW" || true)
+  assert_contains "the resolve step runs hack/ci-resolve-image-changes.sh" \
+    "$resolve_run" "hack/ci-resolve-image-changes.sh"
+  assert_contains "the resolve step is handed ALL_SERVICES" "$resolve_env" "ALL_SERVICES"
+  assert_contains "the resolve step is handed FILTER_plumbing" "$resolve_env" "FILTER_plumbing"
+
+  local gen_needs gen_env
+  gen_needs=$(yq_raw '.jobs["generate-matrix"]["needs"][]' "$WORKFLOW" || true)
+  gen_env=$(yq_raw '.jobs["generate-matrix"]["steps"][] | select(.id == "matrix") | .env | keys | .[]' "$WORKFLOW" || true)
+  assert_contains "generate-matrix needs changes" "$gen_needs" "changes"
+  assert_contains "generate-matrix is handed SERVICES" "$gen_env" "SERVICES"
+
+  local job
+  for job in build-service-images test-service-images; do
+    assert_contains "$job gates on has-services" \
+      "$(yq_raw ".jobs[\"${job}\"][\"if\"]" "$WORKFLOW" || true)" \
+      "needs.changes.outputs.has-services == 'true'"
+  done
+
+  assert_contains "build-tempest gates on its own flag" \
+    "$(yq_raw '.jobs["build-tempest"]["if"]' "$WORKFLOW" || true)" \
+    "needs.changes.outputs.build-tempest == 'true'"
+  assert_contains "build-keystone-federation-proxy gates on its own flag" \
+    "$(yq_raw '.jobs["build-keystone-federation-proxy"]["if"]' "$WORKFLOW" || true)" \
+    "needs.changes.outputs.build-proxy == 'true'"
+  assert_contains "build-backup-shifter gates on its own flag" \
+    "$(yq_raw '.jobs["build-backup-shifter"]["if"]' "$WORKFLOW" || true)" \
+    "needs.changes.outputs.build-shifter == 'true'"
+  assert_contains "build-ovn gates on its own flag" \
+    "$(yq_raw '.jobs["build-ovn"]["if"]' "$WORKFLOW" || true)" \
+    "needs.changes.outputs.build-ovn == 'true'"
+
+  # The pull-request trigger names the inputs this workflow reads; the push
+  # trigger keeps the broad list, so the publish path is unchanged.
+  local pr_paths push_paths
+  pr_paths=$(yq_raw '.on.pull_request.paths[]' "$WORKFLOW" || true)
+  push_paths=$(yq_raw '.on.push.paths[]' "$WORKFLOW" || true)
+
+  assert_contains "the pull-request trigger names overrides/**" "$pr_paths" "overrides/**"
+  assert_contains "the pull-request trigger names one composite action" \
+    "$pr_paths" ".github/actions/build-push-image/**"
+  assert_not_contains "the pull-request trigger drops the .github/actions/ catch-all" \
+    "$pr_paths" ".github/actions/**"
+  assert_not_contains "the pull-request trigger drops the hack/ci-* catch-all" \
+    "$pr_paths" "hack/ci-*"
+  assert_contains "the push trigger keeps .github/actions/**" "$push_paths" ".github/actions/**"
+  assert_contains "the push trigger keeps hack/ci-*" "$push_paths" "hack/ci-*"
 }
 
 # --- Source ref resolution step exists (now in checkout-service-source composite) ---
@@ -1967,6 +2042,8 @@ echo ""
 test_service_images_depend_on_base
 echo ""
 test_matrix_includes_service_and_release
+echo ""
+test_changes_job_gates_matrix_jobs
 echo ""
 test_source_ref_resolution_step
 echo ""

@@ -24,6 +24,14 @@ name: Build Images
       - tests/container-images/**
       - .github/workflows/build-images.yaml
       - .hadolint.yaml
+  # The pull-request list is exactly what this workflow reads: the images and
+  # their build inputs, the composite actions it reaches (directly or through
+  # build-push-image, setup-docker-registry and merge-manifest-and-attest), the
+  # hack scripts it calls, and the per-image verify scripts. The four structural
+  # scripts under tests/container-images/ belong to verify-container-images.yaml,
+  # which runs them; this workflow never does, so they are excluded. GitHub
+  # evaluates the list in order, which is why the negations follow the positive
+  # entry they carve out of, and quoted, because a bare "!" starts a YAML tag.
   pull_request:
     paths:
       - images/**
@@ -31,13 +39,34 @@ name: Build Images
       - releases/**
       - patches/**
       - scripts/**
-      - hack/ci-*
+      - overrides/**
+      - hack/ci-generate-build-matrix.sh
+      - hack/ci-merge-manifest.sh
+      - hack/ci-resolve-extra-packages.sh
+      - hack/ci-resolve-image-changes.sh
+      - hack/ci-resolve-ovn-version.sh
+      - hack/ci-resolve-ubuntu-digest.sh
+      - hack/ci-run-unit-tests.sh
+      - hack/ci-wait-for-image.sh
+      - hack/resolve-test-ref.sh
       - hack/gen-option-catalog.sh
       - operators/keystone/api/v1alpha1/catalogs/**
       - operators/glance/api/v1alpha1/catalogs/**
       - operators/neutron/api/v1alpha1/catalogs/**
-      - .github/actions/**
+      - .github/actions/build-push-image/**
+      - .github/actions/checkout-service-source/**
+      - .github/actions/derive-service-tags/**
+      - .github/actions/export-digest/**
+      - .github/actions/merge-manifest-and-attest/**
+      - .github/actions/platform-pair/**
+      - .github/actions/registry-login/**
+      - .github/actions/setup-docker-registry/**
+      - .github/actions/supply-chain-attest/**
       - tests/container-images/**
+      - "!tests/container-images/verify_build_images_workflow.sh"
+      - "!tests/container-images/verify_deviation_comments.sh"
+      - "!tests/container-images/verify_release_config.sh"
+      - "!tests/container-images/verify_spdx_headers.sh"
       - .github/workflows/build-images.yaml
       - .hadolint.yaml
 
@@ -49,6 +78,147 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Classify the changed paths, then resolve them into the service list and the
+  # four release-independent image flags the build and test jobs gate on. An
+  # image is built when its own sources changed.
+  #
+  # Three inputs build everything, because everything is built from them: an
+  # event that is not a pull request, a change to the workflow's own plumbing,
+  # and a change to the base images or the release configuration. Push and
+  # workflow_dispatch runs therefore publish exactly what they publish today.
+  #
+  # The base-image jobs stay outside this: they run on every run of the
+  # workflow, because four of their outputs are what the service, Tempest and
+  # test jobs build against.
+  #
+  # To add a new service: see hack/ci-resolve-image-changes.sh for full
+  # instructions.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    outputs:
+      services: ${{ steps.result.outputs.services }}
+      has-services: ${{ steps.result.outputs.has-services }}
+      build-tempest: ${{ steps.result.outputs.build-tempest }}
+      build-ovn: ${{ steps.result.outputs.build-ovn }}
+      build-proxy: ${{ steps.result.outputs.build-proxy }}
+      build-shifter: ${{ steps.result.outputs.build-shifter }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The action diffs against the pull request base. On push and
+      # workflow_dispatch it is skipped, its outputs resolve to the empty
+      # string, and the resolver overrides them with "everything" anyway.
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            # ---------------------------------------------------------------
+            # One filter per service image: its Dockerfile and build context,
+            # its patches, the option catalogs the build verifies, and the
+            # script that verifies the built image.
+            # ---------------------------------------------------------------
+            svc_keystone:
+              - 'images/keystone/**'
+              - 'patches/keystone/**'
+              - 'operators/keystone/api/v1alpha1/catalogs/**'
+              - 'tests/container-images/verify_keystone.sh'
+            svc_horizon:
+              - 'images/horizon/**'
+              - 'patches/horizon/**'
+              - 'tests/container-images/verify_horizon.sh'
+            svc_glance:
+              - 'images/glance/**'
+              - 'patches/glance/**'
+              - 'operators/glance/api/v1alpha1/catalogs/**'
+              - 'tests/container-images/verify_glance.sh'
+            svc_placement:
+              - 'images/placement/**'
+              - 'patches/placement/**'
+              - 'tests/container-images/verify_placement.sh'
+            svc_barbican:
+              - 'images/barbican/**'
+              - 'patches/barbican/**'
+              - 'tests/container-images/verify_barbican.sh'
+            svc_neutron:
+              - 'images/neutron/**'
+              - 'patches/neutron/**'
+              - 'operators/neutron/api/v1alpha1/catalogs/**'
+              - 'tests/container-images/verify_neutron.sh'
+            # ---------------------------------------------------------------
+            # Everything every service image is built from: the two base
+            # images, the release pins, the build scripts, the constraint
+            # overrides.
+            # ---------------------------------------------------------------
+            base:
+              - 'images/python-base/**'
+              - 'images/venv-builder/**'
+              - 'releases/**'
+              - 'scripts/**'
+              - 'overrides/**'
+            # ---------------------------------------------------------------
+            # The four release-independent images, one filter each.
+            # ---------------------------------------------------------------
+            tempest:
+              - 'images/tempest/**'
+              - 'tests/container-images/verify_tempest.sh'
+            ovn:
+              - 'images/ovn/**'
+              - 'tests/container-images/verify_ovn.sh'
+            proxy:
+              - 'images/keystone-federation-proxy/**'
+              - 'tests/container-images/verify_keystone_federation_proxy.sh'
+            shifter:
+              - 'images/backup-shifter/**'
+              - 'tests/container-images/verify_backup_shifter.sh'
+            # ---------------------------------------------------------------
+            # The workflow itself, and everything any of its jobs may call.
+            # ---------------------------------------------------------------
+            plumbing:
+              - '.github/workflows/build-images.yaml'
+              - '.hadolint.yaml'
+              - '.github/actions/build-push-image/**'
+              - '.github/actions/checkout-service-source/**'
+              - '.github/actions/derive-service-tags/**'
+              - '.github/actions/export-digest/**'
+              - '.github/actions/merge-manifest-and-attest/**'
+              - '.github/actions/platform-pair/**'
+              - '.github/actions/registry-login/**'
+              - '.github/actions/setup-docker-registry/**'
+              - '.github/actions/supply-chain-attest/**'
+              - 'hack/ci-generate-build-matrix.sh'
+              - 'hack/ci-merge-manifest.sh'
+              - 'hack/ci-resolve-extra-packages.sh'
+              - 'hack/ci-resolve-image-changes.sh'
+              - 'hack/ci-resolve-ovn-version.sh'
+              - 'hack/ci-resolve-ubuntu-digest.sh'
+              - 'hack/ci-run-unit-tests.sh'
+              - 'hack/ci-wait-for-image.sh'
+              - 'hack/resolve-test-ref.sh'
+              - 'hack/gen-option-catalog.sh'
+
+      - name: Resolve the image set
+        id: result
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          ALL_SERVICES: keystone horizon glance placement barbican neutron
+          FILTER_svc_keystone: ${{ steps.filter.outputs.svc_keystone }}
+          FILTER_svc_horizon: ${{ steps.filter.outputs.svc_horizon }}
+          FILTER_svc_glance: ${{ steps.filter.outputs.svc_glance }}
+          FILTER_svc_placement: ${{ steps.filter.outputs.svc_placement }}
+          FILTER_svc_barbican: ${{ steps.filter.outputs.svc_barbican }}
+          FILTER_svc_neutron: ${{ steps.filter.outputs.svc_neutron }}
+          FILTER_base: ${{ steps.filter.outputs.base }}
+          FILTER_tempest: ${{ steps.filter.outputs.tempest }}
+          FILTER_ovn: ${{ steps.filter.outputs.ovn }}
+          FILTER_proxy: ${{ steps.filter.outputs.proxy }}
+          FILTER_shifter: ${{ steps.filter.outputs.shifter }}
+          FILTER_plumbing: ${{ steps.filter.outputs.plumbing }}
+        run: hack/ci-resolve-image-changes.sh
+
   lint-dockerfiles:
     runs-on: ubuntu-latest
     timeout-minutes: 8
@@ -258,7 +428,7 @@ jobs:
           bash tests/container-images/verify_venv_builder.sh "$VENV_BUILDER_IMAGE"
 
   generate-matrix:
-    needs: [merge-base-images, verify-base-images]
+    needs: [changes, merge-base-images, verify-base-images]
     runs-on: ubuntu-latest
     timeout-minutes: 8
     permissions:
@@ -277,10 +447,12 @@ jobs:
         id: matrix
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
+          SERVICES: ${{ needs.changes.outputs.services }}
         run: hack/ci-generate-build-matrix.sh
 
   build-tempest:
-    needs: [lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix, prepare]
+    needs: [changes, lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix, prepare]
+    if: needs.changes.outputs.build-tempest == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -399,7 +571,8 @@ jobs:
   # inline on PRs (tempest pattern), merged + attested with the base-image
   # :latest / :<sha> tag scheme on push events.
   build-keystone-federation-proxy:
-    needs: [lint-dockerfiles, prepare]
+    needs: [changes, lint-dockerfiles, prepare]
+    if: needs.changes.outputs.build-proxy == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -503,7 +676,8 @@ jobs:
   # inline on PRs (tempest pattern), merged + attested with the base-image
   # :latest / :<sha> tag scheme on push events.
   build-backup-shifter:
-    needs: [lint-dockerfiles, prepare]
+    needs: [changes, lint-dockerfiles, prepare]
+    if: needs.changes.outputs.build-shifter == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -607,7 +781,8 @@ jobs:
   # Per-platform builds pushed by digest, verified inline on PRs, tagged
   # <ovn-version>-<sha> on every push and <ovn-version> + latest on main.
   build-ovn:
-    needs: [lint-dockerfiles, prepare]
+    needs: [changes, lint-dockerfiles, prepare]
+    if: needs.changes.outputs.build-ovn == 'true'
     runs-on: ${{ matrix.runner }}
     # OVS and OVN are compiled from source on a 4-vCPU runner.
     timeout-minutes: 60
@@ -770,7 +945,8 @@ jobs:
 
   # Per-platform service builds pushed by digest or loaded locally for PR verification.
   build-service-images:
-    needs: [merge-base-images, verify-base-images, generate-matrix, prepare]
+    needs: [changes, merge-base-images, verify-base-images, generate-matrix, prepare]
+    if: needs.changes.outputs.has-services == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -918,7 +1094,8 @@ jobs:
           grype-category: grype-${{ matrix.service }}
 
   test-service-images:
-    needs: [merge-base-images, verify-base-images, generate-matrix]
+    needs: [changes, merge-base-images, verify-base-images, generate-matrix]
+    if: needs.changes.outputs.has-services == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:

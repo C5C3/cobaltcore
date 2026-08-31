@@ -241,23 +241,35 @@ test_merge_manifest_and_attest_usage() {
   fi
 }
 
-# --- Test 13: Path triggers include composite actions and hack scripts (B-001) ---
+# --- Test 13: Path triggers cover the extracted components (B-001) ---
 test_path_triggers_include_extracted_components() {
-  echo "Test: path triggers include .github/actions/** and hack/ci-*"
+  echo "Test: path triggers cover the composite actions and hack scripts"
 
   local missing=0
-  # Both push and pull_request triggers must include the extracted component paths.
+
+  # The push trigger keeps the catch-alls, so the publish path reacts to any
+  # composite action or CI script.
   for pattern in '.github/actions/\*\*' 'hack/ci-\*'; do
     local count
     count=$(grep -c "$pattern" "$WORKFLOW" || true)
-    if [[ "$count" -lt 2 ]]; then
-      echo "  FAIL: $pattern appears $count time(s) in path triggers (expected >= 2: push + pull_request)"
+    if [[ "$count" -lt 1 ]]; then
+      echo "  FAIL: $pattern appears $count time(s) in the push trigger (expected >= 1)"
+      missing=$((missing + 1))
+    fi
+  done
+
+  # The pull-request trigger names the components this workflow actually
+  # reaches, one entry each, so a change to a component it never calls no
+  # longer starts an image build.
+  for pattern in '.github/actions/build-push-image/\*\*' 'hack/ci-generate-build-matrix.sh'; do
+    if ! grep -q "$pattern" "$WORKFLOW"; then
+      echo "  FAIL: $pattern missing from the pull_request trigger"
       missing=$((missing + 1))
     fi
   done
 
   if [[ "$missing" -eq 0 ]]; then
-    echo "  PASS: .github/actions/** and hack/ci-* present in both push and pull_request triggers"
+    echo "  PASS: push keeps the catch-alls, pull_request names the components it reaches"
     PASS=$((PASS + 1))
   else
     FAIL=$((FAIL + 1))
