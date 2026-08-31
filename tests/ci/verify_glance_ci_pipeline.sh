@@ -44,7 +44,12 @@ extract_yaml_job_section() {
 run_resolve() {
   local out
   out=$(mktemp)
-  GITHUB_OUTPUT="$out" bash "$RESOLVE_SCRIPT" >/dev/null
+  # SERVICE_OPERATORS and CANARY_OPERATOR are required by the resolve script and
+  # supplied here as defaults, so a caller that only sets ALL_OPERATORS and its
+  # FILTER_ vars keeps working. A caller that sets either one wins.
+  SERVICE_OPERATORS="${SERVICE_OPERATORS:-keystone horizon glance placement barbican neutron}" \
+    CANARY_OPERATOR="${CANARY_OPERATOR:-keystone}" \
+    GITHUB_OUTPUT="$out" bash "$RESOLVE_SCRIPT" >/dev/null
   cat "$out"
   rm -f "$out"
 }
@@ -105,13 +110,29 @@ test_glance_filter_env_var() {
 test_glance_test_matrices() {
   echo "Test: unit and integration test matrices include glance"
 
+  # Both matrices are resolved per pull request rather than hardcoded, so the
+  # assertion is in two parts: the jobs read the resolver's list, and the
+  # resolver puts this operator in it when its own code changes.
   local matrix_count
-  matrix_count=$(grep -c "target: \[common, keystone, c5c3, horizon, glance, placement, barbican\]" "$CI_YAML")
+  matrix_count=$(grep -c 'matrix: ${{ fromJson(needs.changes.outputs.test-targets) }}' "$CI_YAML") || true
 
   assert_eq \
-    "both test and test-integration matrices list glance" \
+    "both test and test-integration matrices read test-targets" \
     "2" \
     "$matrix_count"
+
+  local resolved
+  resolved=$(
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
+    GITHUB_REF="refs/heads/main" \
+    FILTER_glance="true" \
+    run_resolve
+  )
+
+  assert_contains \
+    "a glance change puts glance in the test matrix" \
+    "$(output_value "$resolved" "test-targets")" \
+    '"glance"'
 }
 
 test_glance_helm_validate_loops() {
@@ -228,12 +249,26 @@ test_glance_tempest_wiring() {
 # ── ci-resolve-changes.sh documentation ─────────────────────────────────────
 
 test_resolve_script_documents_filter() {
-  echo "Test: ci-resolve-changes.sh documents FILTER_glance"
+  echo "Test: FILTER_glance reaches the resolve script"
+
+  # The resolver reads the per-operator filters through ALL_OPERATORS rather
+  # than naming each one, so asserting the literal FILTER_glance against its
+  # source would pass on any incidental mention. What has to hold is the wiring
+  # in ci.yaml and the onboarding procedure in the resolver's header.
+  assert_file_contains \
+    "ci.yaml passes FILTER_glance to the resolve step" \
+    "$CI_YAML" \
+    "FILTER_glance: \${{ steps.filter.outputs.glance }}"
 
   assert_file_contains \
-    "resolve script documents FILTER_glance" \
+    "ci.yaml lists glance in ALL_OPERATORS" \
+    "$CI_YAML" \
+    "ALL_OPERATORS: .*glance"
+
+  assert_file_contains \
+    "the resolve script documents how an operator is added" \
     "$RESOLVE_SCRIPT" \
-    "FILTER_glance"
+    "To add a new operator"
 }
 
 # ── ci-resolve-changes.sh behavioural tests ─────────────────────────────────
@@ -252,7 +287,6 @@ test_resolve_emits_glance_on_operator_change() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="false" \
     run_resolve
   )
@@ -290,7 +324,6 @@ test_resolve_emits_all_on_go_common_change() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="true" \
     run_resolve
   )
@@ -327,7 +360,6 @@ test_resolve_emits_glance_on_tag_push() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="false" \
     run_resolve
   )
@@ -354,7 +386,6 @@ test_resolve_excludes_glance_on_keystone_only_change() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="false" \
     run_resolve
   )

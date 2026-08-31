@@ -34,26 +34,44 @@ env:
   GOFUMPT_VERSION: v0.11.0
   GOLANGCI_LINT_VERSION: v2.13.1
 
+# A `labeled` event for a label that does not steer CI gets a group of its own,
+# so adding `bug` or `documentation` to a pull request no longer cancels the
+# pipeline in flight and starts it again. The changes job resolves such a run to
+# nothing, so it costs one ubuntu-latest runner for about twenty seconds. A
+# ci:* label (or the run-chaos alias) lands in the normal group and is meant to
+# supersede the run in flight: it asks for more jobs than that run scheduled.
 concurrency:
-  group: ${{ github.ref }}-${{ github.workflow }}
+  group: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && !startsWith(github.event.label.name, 'ci:') && github.event.label.name != 'run-chaos' && format('noop-{0}', github.run_id) || format('{0}-{1}', github.ref, github.workflow) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Detect which areas of code changed to avoid running expensive jobs on
-  # unrelated changes (e.g. docs edits must not trigger E2E or image builds).
+  # Classify the changed paths, then resolve them into one flag per job. A job
+  # runs when one of ITS OWN inputs changed: the code it tests, the images it
+  # loads, the suite it runs, the scripts it calls. Nothing runs because Go code
+  # changed somewhere else.
   #
-  # The e2e-operators output is a JSON matrix that lists only the operators
-  # whose code (or shared code) actually changed, so E2E and image-push jobs
-  # run per-operator rather than all-or-nothing.
+  # Five labels add to that, and never subtract: ci:full runs everything,
+  # ci:tempest / ci:chaos / ci:controlplane / ci:multicluster switch on one area
+  # each. run-chaos is kept as an alias of ci:chaos.
+  #
+  # A change to the substrate every e2e job stands on (deploy/**, the infra
+  # scripts, the shared composite actions) or to the workflow plumbing runs a
+  # canary instead of the pipeline: e2e-infra plus the keystone leg.
+  #
+  # Adding a triage label resolves to nothing at all (noop), so it no longer
+  # cancels the run in flight; the concurrency group above keeps such an event
+  # out of the pull request's own group.
   #
   # To add a new operator: see hack/ci-resolve-changes.sh for full instructions.
   #
   # On tag pushes the full release pipeline must always run, so all areas and
-  # all operators are forced active regardless of which files were touched.
+  # all operators are forced active regardless of which files were touched. On a
+  # push to main the operator matrix keeps the publish semantics it has today.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     outputs:
+      noop: ${{ steps.result.outputs.noop }}
       go: ${{ steps.result.outputs.go }}
       docs: ${{ steps.result.outputs.docs }}
       helm: ${{ steps.result.outputs.helm }}
@@ -62,9 +80,21 @@ jobs:
       e2e-chaos: ${{ steps.result.outputs.e2e-chaos }}
       e2e-prometheus: ${{ steps.result.outputs.e2e-prometheus }}
       e2e-controlplane: ${{ steps.result.outputs.e2e-controlplane }}
+      e2e-controlplane-sso: ${{ steps.result.outputs.e2e-controlplane-sso }}
+      e2e-external-keystone: ${{ steps.result.outputs.e2e-external-keystone }}
       e2e-multicluster: ${{ steps.result.outputs.e2e-multicluster }}
+      e2e-operator-upgrade: ${{ steps.result.outputs.e2e-operator-upgrade }}
+      tempest: ${{ steps.result.outputs.tempest }}
+      actionlint: ${{ steps.result.outputs.actionlint }}
+      changed-operators: ${{ steps.result.outputs.changed-operators }}
+      changed-services: ${{ steps.result.outputs.changed-services }}
+      changed-tempest: ${{ steps.result.outputs.changed-tempest }}
+      changed-proxy: ${{ steps.result.outputs.changed-proxy }}
+      build-operators: ${{ steps.result.outputs.build-operators }}
+      build-e2e-images: ${{ steps.result.outputs.build-e2e-images }}
       has-e2e-operators: ${{ steps.result.outputs.has-e2e-operators }}
       e2e-operators: ${{ steps.result.outputs.e2e-operators }}
+      test-targets: ${{ steps.result.outputs.test-targets }}
       tempest-releases: ${{ steps.tempest-matrix.outputs.tempest-releases }}
       cleanup-e2e-packages: ${{ steps.cleanup-matrix.outputs.cleanup-e2e-packages }}
     steps:
@@ -73,170 +103,245 @@ jobs:
         id: filter
         with:
           filters: |
-            # Shared Go infrastructure — a change here affects every operator.
+            # ---------------------------------------------------------------
+            # Operator code. One filter per operator, its own source tree only:
+            # a change here runs that operator's Go gates, its unit and envtest
+            # legs, and its e2e leg. Nothing else.
+            # ---------------------------------------------------------------
+            keystone:
+              - 'operators/keystone/**'
+            c5c3:
+              - 'operators/c5c3/**'
+            horizon:
+              - 'operators/horizon/**'
+            glance:
+              - 'operators/glance/**'
+            placement:
+              - 'operators/placement/**'
+            barbican:
+              - 'operators/barbican/**'
+            ovn:
+              - 'operators/ovn/**'
+            neutron:
+              - 'operators/neutron/**'
+            # ---------------------------------------------------------------
+            # Service image sources. A change runs that service's e2e leg
+            # against a freshly built image; the operator binary is untouched.
+            # ---------------------------------------------------------------
+            image_keystone:
+              - 'images/keystone/**'
+              - 'patches/keystone/**'
+            image_horizon:
+              - 'images/horizon/**'
+              - 'patches/horizon/**'
+            image_glance:
+              - 'images/glance/**'
+              - 'patches/glance/**'
+            image_placement:
+              - 'images/placement/**'
+              - 'patches/placement/**'
+            image_barbican:
+              - 'images/barbican/**'
+              - 'patches/barbican/**'
+            image_neutron:
+              - 'images/neutron/**'
+              - 'patches/neutron/**'
+            # ovn ships the OVS/OVN daemons the CRs project and the rclone
+            # shifter the OVNCentral backup CronJob uploads with. Neither is a
+            # per-release service image, so they steer the ovn e2e leg rather
+            # than changed-services.
+            image_ovn:
+              - 'images/ovn/**'
+              - 'images/backup-shifter/**'
+            # The keystone oidc-federation suite projects this sidecar.
+            image_proxy:
+              - 'images/keystone-federation-proxy/**'
+            image_tempest:
+              - 'images/tempest/**'
+              - 'hack/ci-build-tempest-image.sh'
+            # ---------------------------------------------------------------
+            # Shared code and shared image inputs.
+            # ---------------------------------------------------------------
+            # Every operator's binary is built from this.
             go_common:
               - 'internal/**'
               - 'go.work'
-              - 'Makefile'
+              - 'go.work.sum'
+              - 'operators/Dockerfile'
               - '.golangci.yml'
-              - 'hack/**'
-              - 'scripts/**'
+            # Every service image and both Tempest images are built from this.
+            images_base:
               - 'images/python-base/**'
               - 'images/venv-builder/**'
-              - 'images/tempest/**'
               - 'releases/**'
+              - 'scripts/**'
+              - 'overrides/**'
+              - 'hack/ci-build-service-image.sh'
+              - 'hack/ci-service-image-releases.sh'
+            # ---------------------------------------------------------------
+            # Tempest. tempest_src switches the job on; the per-service filters
+            # narrow the matrix to the configuration that changed. Without a
+            # label, this is the only path that runs Tempest on a pull request.
+            # ---------------------------------------------------------------
+            tempest_src:
+              - 'images/tempest/**'
+              - 'tests/tempest/**'
+              - 'hack/tempest/**'
+              - 'hack/ci-run-tempest.sh'
+              - 'hack/ci-build-tempest-image.sh'
+              - 'hack/ci-generate-tempest-matrix.sh'
+            tempest_keystone:
+              - 'tests/tempest/keystone-*/**'
+            tempest_glance:
+              - 'tests/tempest/glance-*/**'
+            tempest_barbican:
+              - 'tests/tempest/barbican-*/**'
+            # ---------------------------------------------------------------
+            # Per-operator e2e suites. Editing one operator's suite runs that
+            # operator's leg, not all eight.
+            # ---------------------------------------------------------------
+            tests_e2e_keystone:
+              - 'tests/e2e/keystone/**'
+              - 'tests/e2e/keystone-operator/**'
+            tests_e2e_c5c3:
+              - 'tests/e2e/c5c3/**'
+            tests_e2e_horizon:
+              - 'tests/e2e/horizon/**'
+              - 'tests/e2e/horizon-operator/**'
+            tests_e2e_glance:
+              - 'tests/e2e/glance/**'
+              - 'tests/e2e/glance-operator/**'
+            tests_e2e_placement:
+              - 'tests/e2e/placement/**'
+              - 'tests/e2e/placement-operator/**'
+            tests_e2e_barbican:
+              - 'tests/e2e/barbican/**'
+              - 'tests/e2e/barbican-operator/**'
+            tests_e2e_ovn:
+              - 'tests/e2e/ovn/**'
+            tests_e2e_neutron:
+              - 'tests/e2e/neutron/**'
+            # ---------------------------------------------------------------
+            # Suites that live in a job of their own. Each filter names exactly
+            # the suite its job runs, so an edit schedules that job and no
+            # other. The ControlPlane suites are split three ways because they
+            # run on three separate clusters.
+            # ---------------------------------------------------------------
+            tests_controlplane:
+              - 'tests/e2e/c5c3/full-controlplane-keystone/**'
+              - 'tests/e2e/c5c3/keystone-service/**'
+              - 'tests/e2e/c5c3/keystone-service-foreign-namespace/**'
+            tests_controlplane_sso:
+              - 'tests/e2e-controlplane-sso/**'
+            tests_external_keystone:
+              - 'tests/e2e/c5c3/external-keystone/**'
+            tests_chaos:
+              - 'tests/e2e-chaos/**'
+            tests_multicluster:
+              - 'tests/e2e-multicluster/**'
+              - 'deploy/target-cluster/**'
+            tests_operator_upgrade:
+              - 'tests/e2e-operator-upgrade/**'
+              - 'hack/ci-fetch-released-operator.sh'
+            tests_prometheus:
+              - 'tests/e2e/keystone/prometheus-stack/**'
+              - 'deploy/kind/prometheus/**'
+              - 'operators/keystone/dashboards/**'
+              - 'operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml'
+            e2e_infra:
+              - 'tests/e2e/infrastructure/**'
+            # ---------------------------------------------------------------
+            # The canary. A change to the substrate every e2e job stands on, or
+            # to the workflow plumbing, proves itself against e2e-infra plus the
+            # keystone leg rather than against the whole pipeline. ci:full is
+            # how you ask for the rest.
+            # ---------------------------------------------------------------
+            e2e_shared:
+              - 'deploy/**'
+              - 'tests/e2e/chainsaw-config.yaml'
+              - 'hack/deploy-infra.sh'
+              - 'hack/deploy-mgmt-cluster.sh'
+              - 'hack/install-test-deps.sh'
+              - 'hack/kind-config.yaml'
+              - 'hack/kind-config-multinode.yaml'
+              - 'hack/ci-deploy-operator.sh'
+              - 'hack/ci-deploy-korc.sh'
+              - 'hack/ci-dump-diagnostics.sh'
+              - '.github/actions/setup-e2e-infra/**'
+              - '.github/actions/setup-test-deps/**'
+              - '.github/actions/load-e2e-images/**'
+              - '.github/actions/registry-login/**'
+            # OpenBao is the one piece of the substrate with an operator that
+            # exercises it directly, so barbican joins the canary for it.
+            e2e_openbao:
+              - 'deploy/openbao/**'
+            ci_plumbing:
               - '.github/workflows/ci.yaml'
-            # Per-operator paths — only the relevant E2E job is triggered.
-            # Test-definition paths (tests/e2e/<op>/**) are covered by
-            # tests_e2e_operator so they run the full E2E suite without also
-            # pulling in lint/unit/format jobs.
-            keystone:
-              - 'operators/keystone/**'
-              - 'operators/Dockerfile'
-              - 'images/keystone/**'
-            # c5c3 orchestration operator. K-ORC is deployed from an
-            # upstream Helm chart (there is no images/k-orc/ to build), so only
-            # the operator source path triggers the c5c3 unit/integration/E2E
-            # and image-build/push jobs.
-            c5c3:
-              - 'operators/c5c3/**'
-              - 'operators/Dockerfile'
-            horizon:
-              - 'operators/horizon/**'
-              - 'operators/Dockerfile'
-              - 'images/horizon/**'
-            glance:
-              - 'operators/glance/**'
-              - 'operators/Dockerfile'
-              - 'images/glance/**'
-            placement:
-              - 'operators/placement/**'
-              - 'operators/Dockerfile'
-              - 'images/placement/**'
-            barbican:
-              - 'operators/barbican/**'
-              - 'operators/Dockerfile'
-              - 'images/barbican/**'
-            # ovn ships two images: the OVS/OVN daemons the CRs project, and
-            # the rclone shifter the OVNCentral backup CronJob uploads with.
-            ovn:
-              - 'operators/ovn/**'
-              - 'operators/Dockerfile'
-              - 'images/ovn/**'
-              - 'images/backup-shifter/**'
-            # neutron ships one image, the service daemons the CRs project. Its
-            # chart under operators/neutron/helm rides the helm filter below.
-            neutron:
-              - 'operators/neutron/**'
-              - 'operators/Dockerfile'
-              - 'images/neutron/**'
+              - '.github/actions/**'
+              - 'hack/ci-*.sh'
+            actionlint:
+              - '.github/**'
+            makefile:
+              - 'Makefile'
+            # ---------------------------------------------------------------
+            # Everything else.
+            # ---------------------------------------------------------------
             docs:
               - 'docs/**'
               - 'package.json'
               - 'package-lock.json'
-              - '.github/workflows/ci.yaml'
-            # Helm chart changes trigger the helm-validate job. The operator
-            # charts share the operator-library library chart and a
-            # values.schema.json generator, so a change to any chart, the
-            # shared library, the generator, or the Makefile targets it backs
-            # must re-run Helm validation. The glob covers every chart under
-            # operators/<op>/helm/ and the library under operators/shared/helm/.
+            # The operator charts share the operator-library library chart and a
+            # values.schema.json generator, so a change to any chart, the shared
+            # library, either generator, or the Makefile targets behind them
+            # must re-run Helm validation.
             helm:
               - 'operators/*/helm/**'
               - 'deploy/target-cluster/**'
               - 'hack/gen-helm-values-schema.py'
               - 'hack/gen-helm-rbac-rules.py'
               - 'Makefile'
-            # The target-cluster-access chart is published on its own, outside
-            # the per-operator helm-push matrix, so it needs a filter of its own
-            # to gate that job. helm-validate runs off the wider helm filter
-            # above.
+            # The target-cluster-access chart is published outside the
+            # per-operator helm-push matrix, so it needs its own gate.
             target_cluster_chart:
               - 'deploy/target-cluster/**'
-            e2e_infra:
-              - 'tests/e2e/infrastructure/**'
+            # Push events only, and ignored on pull requests. Reproduces the
+            # operator set today's go_common and e2e-test unions publish on a
+            # push to main, so what lands in GHCR after a merge does not change
+            # with this rewiring. Delete it when the post-merge behaviour is
+            # revisited.
+            publish_legacy:
               - 'hack/**'
+              - 'scripts/**'
+              - 'releases/**'
               - 'deploy/**'
-              - '.github/workflows/ci.yaml'
-            # Chaos E2E tests — separate from e2e_infra to allow independent gating.
-            e2e_chaos:
-              - 'tests/e2e-chaos/**'
-              - 'hack/**'
-              - 'deploy/**'
-              - '.github/workflows/ci.yaml'
-              - '.github/actions/**'
-            # Prometheus stack E2E tests — separate filter so
-            # the e2e-prometheus job runs only when the kind-only monitoring
-            # stack, the keystone-operator ServiceMonitor wiring, the operator
-            # values surface that toggles it, the dashboard JSON consumed by
-            # the overlay, the deploy script that opts in, the composite
-            # action that threads WITH_PROMETHEUS, the workflow file, or the
-            # Makefile target that mirrors the CI invocation actually change.
-            e2e_prometheus:
-              - 'deploy/kind/prometheus/**'
-              - 'tests/e2e/keystone/prometheus-stack/**'
-              - 'hack/deploy-infra.sh'
-              - 'operators/keystone/helm/keystone-operator/templates/servicemonitor.yaml'
-              - 'operators/keystone/helm/keystone-operator/values.yaml'
-              # The ServiceMonitor's labels render via the operator-library helper.
-              - 'operators/shared/helm/**'
-              - 'operators/keystone/dashboards/keystone-operator.json'
-              - '.github/actions/setup-e2e-infra/action.yaml'
-              - '.github/workflows/ci.yaml'
-              - 'Makefile'
-            # ControlPlane E2E path filter. Its output gates the
-            # resource-heavy ControlPlane e2e jobs. Separate filter so they run
-            # only when their inputs actually change: any operator the chain
-            # deploys (c5c3, keystone, horizon, glance, placement, barbican),
-            # the suites, the deploy stack, the hack scripts (deploy-infra,
-            # ci-deploy-korc, ci-deploy-operator) or the composite actions they
-            # use.
-            e2e_controlplane:
-              - 'operators/c5c3/**'
-              - 'operators/keystone/**'
-              - 'operators/horizon/**'
-              - 'operators/glance/**'
-              - 'operators/placement/**'
-              - 'operators/barbican/**'
-              - 'tests/e2e/c5c3/**'
-              # The federated suite lives outside tests/e2e/ so the per-CR
-              # e2e-operator matrix leg does not sweep it up. It therefore needs
-              # its own entry here — tests_e2e_operator's 'tests/e2e/**' filter
-              # cannot reach it.
-              - 'tests/e2e-controlplane-sso/**'
-              - 'deploy/**'
-              - 'hack/**'
-              - '.github/actions/**'
-              - '.github/workflows/ci.yaml'
-              # The federated-controlplane suite pins the mod_auth_openidc
-              # sidecar to the locally built :dev tag, so a sidecar change must
-              # trigger the ControlPlane e2e jobs that exercise it.
-              - 'images/keystone-federation-proxy/**'
-            # Two-cluster placed-services E2E job — separate filter so the job
-            # that brings up two kind clusters runs only when the suite, the
-            # target-cluster access chart whose credentials it runs on, the
-            # deploy stack, the hack scripts (deploy-infra, deploy-mgmt-cluster,
-            # ci-deploy-operator), or the composite actions it uses change.
-            e2e_multicluster:
-              - 'tests/e2e-multicluster/**'
-              - 'deploy/target-cluster/**'
-              - 'deploy/**'
-              - 'hack/**'
-              - '.github/actions/**'
-              - '.github/workflows/ci.yaml'
-            # follow-up: Any E2E test-definition change forces all E2E
-            # jobs to run. Kept separate from go_common so pure test edits do
-            # not also trigger lint/unit/format/vuln jobs.
-            tests_e2e_operator:
+              - 'images/python-base/**'
+              - 'images/venv-builder/**'
+              - 'images/tempest/**'
               - 'tests/e2e/**'
+              - 'tests/e2e-chaos/**'
               - 'tests/e2e-operator-upgrade/**'
-            tests_tempest:
               - 'tests/tempest/**'
+              - '.github/workflows/ci.yaml'
+              - '.github/actions/**'
       # Extracted to hack/ci-resolve-changes.sh (review #2 comment 3).
       - name: Resolve effective changes
         id: result
         env:
           ALL_OPERATORS: keystone c5c3 horizon glance placement barbican ovn neutron
+          # The operators that ship an OpenStack service image: the union of the
+          # keys in releases/*/source-refs.yaml. Pinned to that union by
+          # tests/unit/ci/change_classes_wiring_test.sh.
+          SERVICE_OPERATORS: keystone horizon glance placement barbican neutron
+          # The operator whose e2e leg stands in for the pipeline when the shared
+          # substrate or the workflow plumbing changes.
+          CANARY_OPERATOR: keystone
+          # toJSON, not join: GitHub expression literals carry no escape
+          # sequences, so join(..., '\n') would join on a literal backslash-n.
+          # The resolver reads null and any non-array as an empty label set.
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_LABEL: ${{ github.event.label.name }}
           FILTER_keystone: ${{ steps.filter.outputs.keystone }}
           FILTER_c5c3: ${{ steps.filter.outputs.c5c3 }}
           FILTER_horizon: ${{ steps.filter.outputs.horizon }}
@@ -245,23 +350,56 @@ jobs:
           FILTER_barbican: ${{ steps.filter.outputs.barbican }}
           FILTER_ovn: ${{ steps.filter.outputs.ovn }}
           FILTER_neutron: ${{ steps.filter.outputs.neutron }}
+          FILTER_image_keystone: ${{ steps.filter.outputs.image_keystone }}
+          FILTER_image_horizon: ${{ steps.filter.outputs.image_horizon }}
+          FILTER_image_glance: ${{ steps.filter.outputs.image_glance }}
+          FILTER_image_placement: ${{ steps.filter.outputs.image_placement }}
+          FILTER_image_barbican: ${{ steps.filter.outputs.image_barbican }}
+          FILTER_image_neutron: ${{ steps.filter.outputs.image_neutron }}
+          FILTER_image_ovn: ${{ steps.filter.outputs.image_ovn }}
+          FILTER_image_proxy: ${{ steps.filter.outputs.image_proxy }}
+          FILTER_image_tempest: ${{ steps.filter.outputs.image_tempest }}
+          FILTER_go_common: ${{ steps.filter.outputs.go_common }}
+          FILTER_images_base: ${{ steps.filter.outputs.images_base }}
+          FILTER_tempest_src: ${{ steps.filter.outputs.tempest_src }}
+          FILTER_tempest_keystone: ${{ steps.filter.outputs.tempest_keystone }}
+          FILTER_tempest_glance: ${{ steps.filter.outputs.tempest_glance }}
+          FILTER_tempest_barbican: ${{ steps.filter.outputs.tempest_barbican }}
+          FILTER_tests_e2e_keystone: ${{ steps.filter.outputs.tests_e2e_keystone }}
+          FILTER_tests_e2e_c5c3: ${{ steps.filter.outputs.tests_e2e_c5c3 }}
+          FILTER_tests_e2e_horizon: ${{ steps.filter.outputs.tests_e2e_horizon }}
+          FILTER_tests_e2e_glance: ${{ steps.filter.outputs.tests_e2e_glance }}
+          FILTER_tests_e2e_placement: ${{ steps.filter.outputs.tests_e2e_placement }}
+          FILTER_tests_e2e_barbican: ${{ steps.filter.outputs.tests_e2e_barbican }}
+          FILTER_tests_e2e_ovn: ${{ steps.filter.outputs.tests_e2e_ovn }}
+          FILTER_tests_e2e_neutron: ${{ steps.filter.outputs.tests_e2e_neutron }}
+          FILTER_tests_controlplane: ${{ steps.filter.outputs.tests_controlplane }}
+          FILTER_tests_controlplane_sso: ${{ steps.filter.outputs.tests_controlplane_sso }}
+          FILTER_tests_external_keystone: ${{ steps.filter.outputs.tests_external_keystone }}
+          FILTER_tests_chaos: ${{ steps.filter.outputs.tests_chaos }}
+          FILTER_tests_multicluster: ${{ steps.filter.outputs.tests_multicluster }}
+          FILTER_tests_operator_upgrade: ${{ steps.filter.outputs.tests_operator_upgrade }}
+          FILTER_tests_prometheus: ${{ steps.filter.outputs.tests_prometheus }}
+          FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
+          FILTER_e2e_shared: ${{ steps.filter.outputs.e2e_shared }}
+          FILTER_e2e_openbao: ${{ steps.filter.outputs.e2e_openbao }}
+          FILTER_ci_plumbing: ${{ steps.filter.outputs.ci_plumbing }}
+          FILTER_actionlint: ${{ steps.filter.outputs.actionlint }}
+          FILTER_makefile: ${{ steps.filter.outputs.makefile }}
           FILTER_docs: ${{ steps.filter.outputs.docs }}
           FILTER_helm: ${{ steps.filter.outputs.helm }}
           FILTER_target_cluster_chart: ${{ steps.filter.outputs.target_cluster_chart }}
-          FILTER_e2e_infra: ${{ steps.filter.outputs.e2e_infra }}
-          FILTER_e2e_chaos: ${{ steps.filter.outputs.e2e_chaos }}
-          FILTER_e2e_prometheus: ${{ steps.filter.outputs.e2e_prometheus }}
-          FILTER_e2e_controlplane: ${{ steps.filter.outputs.e2e_controlplane }}
-          FILTER_e2e_multicluster: ${{ steps.filter.outputs.e2e_multicluster }}
-          FILTER_tests_e2e_operator: ${{ steps.filter.outputs.tests_e2e_operator }}
-          FILTER_tests_tempest: ${{ steps.filter.outputs.tests_tempest }}
-          FILTER_go_common: ${{ steps.filter.outputs.go_common }}
+          FILTER_publish_legacy: ${{ steps.filter.outputs.publish_legacy }}
         run: hack/ci-resolve-changes.sh
       # Derive Tempest release matrix from releases/ directories (review #1).
       # Avoids hardcoding releases in the workflow — adding or removing a release
       # only requires updating releases/ and tests/tempest/, not this file.
       - name: Generate Tempest release matrix
         id: tempest-matrix
+        # The generator still checks every service's config directory for every
+        # release; TEMPEST_SERVICES only narrows what it emits.
+        env:
+          TEMPEST_SERVICES: ${{ join(fromJson(steps.result.outputs.tempest-services), ' ') }}
         run: hack/ci-generate-tempest-matrix.sh
 
       # Derive the GHCR package list from images/ and operators/ for the same
@@ -337,7 +475,8 @@ jobs:
   # early.  shellcheck is pre-installed on ubuntu-latest runners.
   # Runs unconditionally — it is fast and hack/ scripts are exercised in E2E.
   shellcheck:
-    if: github.event_name == 'pull_request'
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.noop != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -350,7 +489,8 @@ jobs:
   # unconditionally on every PR — not path-filtered — so a stray ID added
   # anywhere is caught. Folds in the former docs-only check.
   feature-ids:
-    if: github.event_name == 'pull_request'
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.noop != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -364,7 +504,8 @@ jobs:
   # scripts/review-markers-baseline.txt and are expected to shrink over time;
   # the gate fails only when a file exceeds its baselined count.
   review-markers:
-    if: github.event_name == 'pull_request'
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.noop != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -402,7 +543,8 @@ jobs:
   # sub-second and python3 is preinstalled on ubuntu-latest runners — no
   # untrusted GitHub event input is read, so no injection surface is added.
   verify-invalid-cr-fixtures:
-    if: github.event_name == 'pull_request'
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.noop != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -417,7 +559,8 @@ jobs:
   # Always-on: no cluster needed; chainsaw is restored from the shared testdeps
   # cache via the same composite action setup-e2e-infra uses internally.
   chainsaw-lint:
-    if: github.event_name == 'pull_request'
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.noop != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
@@ -425,6 +568,37 @@ jobs:
       - uses: ./.github/actions/setup-test-deps
       - name: Run chainsaw lint
         run: make chainsaw-lint
+
+  # Static-lint every workflow file. actionlint resolves the expression
+  # contexts, so a `needs.changes.outputs.<name>` that no job exports fails here
+  # rather than silently evaluating to the empty string and leaving a job
+  # unscheduled — the failure mode the change classes above are built on. It
+  # also runs shellcheck over every `run:` script. Custom runner labels are
+  # declared in .github/actionlint.yaml.
+  actionlint:
+    needs: [changes]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.actionlint == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Pinned and checksummed like the yq install in verify-container-images.yaml.
+      # Renovate bumps ACTIONLINT_VERSION; the checksum then fails until it is
+      # updated with it, which is the intended signal.
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          curl -sSL -o /tmp/actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  /tmp/actionlint.tar.gz" | sha256sum --check --strict
+          sudo tar -xzf /tmp/actionlint.tar.gz -C /usr/local/bin actionlint
+          actionlint -version
+      - name: Lint workflows
+        run: actionlint -no-color
 
   # Matrix over [common, keystone, c5c3] to deduplicate common coverage
   # into a single leg (review comment #7/#8).
@@ -435,8 +609,7 @@ jobs:
     timeout-minutes: 15
     strategy:
       fail-fast: false
-      matrix:
-        target: [common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron]
+      matrix: ${{ fromJson(needs.changes.outputs.test-targets) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -473,8 +646,7 @@ jobs:
     timeout-minutes: 35
     strategy:
       fail-fast: false
-      matrix:
-        target: [common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron]
+      matrix: ${{ fromJson(needs.changes.outputs.test-targets) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -800,7 +972,7 @@ jobs:
     if: |
       always() &&
       github.event_name == 'pull_request' &&
-      (needs.changes.outputs.has-e2e-operators == 'true' || needs.changes.outputs.e2e-chaos == 'true' || needs.changes.outputs.e2e-prometheus == 'true' || needs.changes.outputs.e2e-controlplane == 'true') &&
+      needs.changes.outputs.build-e2e-images == 'true' &&
       github.event.pull_request.head.repo.fork != true &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
@@ -841,36 +1013,17 @@ jobs:
       # forces the full E2E suite), so it would skip the build only on the
       # PRs that reach this job through the e2e-prometheus or
       # e2e-controlplane paths alone.
+      # The resolver already knows which operator images the jobs this run
+      # scheduled will load, so the union lives there rather than here. It never
+      # emits the __none__ sentinel and is never empty while build-e2e-images is
+      # true, both pinned by tests/unit/ci/resolve_changes_scenarios_test.sh.
       - name: Resolve build operators
+        env:
+          BUILD_OPERATORS_JSON: ${{ needs.changes.outputs.build-operators }}
         run: |
-          # ci-resolve-changes.sh emits {"operator":["__none__"]} when no
-          # operator changed, so fromJson() stays valid in the matrix jobs that
-          # gate on has-e2e-operators. This job is the one consumer that reads
-          # the matrix ungated (it also runs for e2e-chaos/-prometheus/
-          # -controlplane), so the sentinel must be dropped here — otherwise
-          # `make docker-build OPERATOR=__none__` fails the build on exactly
-          # the PRs the comment above describes.
-          ops=$(echo '${{ needs.changes.outputs.e2e-operators }}' | jq -r '.operator[] | select(. != "__none__")')
-          for base in keystone glance placement barbican; do
-            if ! printf '%s\n' $ops | grep -qx "$base"; then
-              ops=$(printf '%s\n%s' "$ops" "$base")
-            fi
-          done
-          # The e2e-controlplane job runs the full chain from local dev images, so
-          # keystone-operator:dev, c5c3-operator:dev, and horizon-operator:dev
-          # must all be built when it runs — even if only the full-chain test
-          # definition changed (the ControlPlane projects a Horizon child once
-          # KeystoneReady).
-          if [ '${{ needs.changes.outputs.e2e-controlplane }}' = 'true' ]; then
-            for extra in c5c3 horizon; do
-              if ! printf '%s\n' $ops | grep -qx "$extra"; then
-                ops=$(printf '%s\n%s' "$ops" "$extra")
-              fi
-            done
-          fi
           {
             echo "BUILD_OPERATORS<<EOF"
-            echo "$ops"
+            jq -r '.[]' <<<"${BUILD_OPERATORS_JSON}"
             echo "EOF"
           } >> "$GITHUB_ENV"
 
@@ -1075,6 +1228,7 @@ jobs:
           KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
         run: |
           kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}-operator:dev" --name "${KIND_CLUSTER}"
+          # shellcheck disable=SC2086 # deliberate: split the release list
           for release in ${SERVICE_RELEASES}; do
             kind load docker-image "${IMAGE_PREFIX}/${OPERATOR}:${release}" --name "${KIND_CLUSTER}"
           done
@@ -1083,6 +1237,7 @@ jobs:
           fi
           # The image-upgrade E2E test re-tags the 2025.2 service image; only
           # operators that ship a 2025.2 service image need it loaded.
+          # shellcheck disable=SC2086 # deliberate: split the release list
           if printf '%s\n' ${SERVICE_RELEASES} | grep -qx 2025.2; then
             docker tag "${IMAGE_PREFIX}/${OPERATOR}:2025.2" \
               "${IMAGE_PREFIX}/${OPERATOR}:2025.2-upgraded"
@@ -1183,7 +1338,7 @@ jobs:
     if: |
       always() &&
       github.event_name == 'pull_request' &&
-      needs.changes.outputs.has-e2e-operators == 'true' &&
+      needs.changes.outputs.e2e-operator-upgrade == 'true' &&
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
@@ -1292,7 +1447,7 @@ jobs:
     if: |
       always() &&
       github.event_name == 'pull_request' &&
-      (needs.changes.outputs.e2e-chaos == 'true' || (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'run-chaos'))) &&
+      needs.changes.outputs.e2e-chaos == 'true' &&
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
@@ -1822,7 +1977,7 @@ jobs:
       always() &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.fork != true &&
-      needs.changes.outputs.e2e-controlplane == 'true' &&
+      needs.changes.outputs.e2e-controlplane-sso == 'true' &&
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
@@ -1939,7 +2094,7 @@ jobs:
       always() &&
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.fork != true &&
-      needs.changes.outputs.e2e-controlplane == 'true' &&
+      needs.changes.outputs.e2e-external-keystone == 'true' &&
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
@@ -2239,7 +2394,7 @@ jobs:
     if: |
       always() &&
       github.event_name == 'pull_request' &&
-      needs.changes.outputs.has-e2e-operators == 'true' &&
+      needs.changes.outputs.tempest == 'true' &&
       needs.build-e2e-images.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
@@ -2606,7 +2761,9 @@ jobs:
           IMAGE: ${{ env.IMAGE_PREFIX }}/${{ matrix.operator }}-operator
         run: |
           cd /tmp/digests
+          # shellcheck disable=SC2012 # deliberate: counting entries, not parsing names
           [[ $(ls | wc -l) -ge 1 ]] || { echo "::error::No digests found for ${{ matrix.operator }}-operator"; exit 1; }
+          # shellcheck disable=SC2046 # deliberate: both substitutions expand to argument lists
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "${IMAGE}@sha256:%s " *)

@@ -52,7 +52,7 @@ run_resolve() {
   shift 2
 
   resolve_output e2e-multicluster "$ref" "$ALL_OPERATORS_FIXTURE" \
-    FILTER_e2e_multicluster="$filter" "$@"
+    FILTER_tests_multicluster="$filter" "$@"
 }
 
 # ---------------------------------------------------------------------------
@@ -68,13 +68,25 @@ test_own_filter_is_honoured() {
     "e2e-multicluster=false" "$(run_resolve refs/heads/main false)"
 }
 
-test_composed_shape_matches_e2e_controlplane() {
-  echo "Test: a Go change and an E2E test change both force the job on"
+test_only_its_own_inputs_force_the_job() {
+  echo "Test: only the suite, the chart and the label schedule the two-cluster job"
 
-  assert_eq "an operator code change forces the job on" \
-    "e2e-multicluster=true" "$(run_resolve refs/heads/main false FILTER_keystone=true)"
-  assert_eq "an E2E test-definition change forces the job on" \
-    "e2e-multicluster=true" "$(run_resolve refs/heads/main false FILTER_tests_e2e_operator=true)"
+  # The job brings up two kind clusters and takes about 17 minutes. It used to
+  # run on any Go change and on any edit under tests/e2e/**, so a keystone
+  # one-liner paid for it. Its inputs are the suite, the chart whose grant set
+  # it proves, and the label.
+  assert_eq "an operator code change does not schedule the job" \
+    "e2e-multicluster=false" "$(run_resolve refs/heads/main false FILTER_keystone=true)"
+  assert_eq "another operator's suite does not schedule the job" \
+    "e2e-multicluster=false" "$(run_resolve refs/heads/main false FILTER_tests_e2e_glance=true)"
+  assert_eq "a shared Go change does not schedule the job" \
+    "e2e-multicluster=false" "$(run_resolve refs/heads/main false FILTER_go_common=true)"
+  assert_eq "the ci:multicluster label schedules the job" \
+    "e2e-multicluster=true" \
+    "$(run_resolve refs/heads/main false PR_LABELS='["ci:multicluster"]')"
+  assert_eq "ci:full schedules the job" \
+    "e2e-multicluster=true" \
+    "$(run_resolve refs/heads/main false PR_LABELS='["ci:full"]')"
 }
 
 test_unset_filter_defaults_to_false() {
@@ -95,7 +107,7 @@ test_tag_push_forces_the_job() {
 test_ci_yaml_wires_all_four_sides() {
   echo "Test: ci.yaml declares the filter, passes it in, exports it and gates on it"
 
-  assert_filter_is_wired e2e_multicluster e2e-multicluster
+  assert_filter_is_wired tests_multicluster e2e-multicluster
   assert_file_contains "the job gates on it" "$CI_YAML" \
     "needs.changes.outputs.e2e-multicluster == 'true'"
 }
@@ -106,16 +118,21 @@ test_filter_covers_the_suite_and_the_chart() {
   # The filter block ends at the next filter key at the same indent.
   local block
   block=$(awk '
-    /^            e2e_multicluster:$/ { in_block = 1; next }
-    in_block && /^            [a-z_]+:$/ { exit }
+    /^            tests_multicluster:$/ { in_block = 1; next }
+    in_block && /^            [a-z0-9_]+:$/ { exit }
     in_block { print }
   ' "$CI_YAML")
 
   assert_contains "the filter lists the two-cluster suite" \
     "$block" "tests/e2e-multicluster/**"
+  # The chart is what the suite proves: the management cluster reaches the
+  # target only through the ServiceAccount token it mints, so a missing verb
+  # surfaces as a CR that never goes Ready.
   assert_contains "the filter lists the target-cluster chart" \
     "$block" "deploy/target-cluster/**"
-  assert_contains "the filter lists the hack scripts" \
+  # The infra scripts reach this job through the canary instead. Listing
+  # hack/** here is what made every helper-script edit bring up two clusters.
+  assert_not_contains "the filter does not carry the hack scripts" \
     "$block" "hack/**"
 }
 
@@ -175,7 +192,7 @@ test_setup_action_threads_the_target_flags() {
 # Run
 # ---------------------------------------------------------------------------
 test_own_filter_is_honoured
-test_composed_shape_matches_e2e_controlplane
+test_only_its_own_inputs_force_the_job
 test_unset_filter_defaults_to_false
 test_tag_push_forces_the_job
 test_ci_yaml_wires_all_four_sides

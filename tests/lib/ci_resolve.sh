@@ -13,6 +13,17 @@
 # reason.
 #
 # Source this after tests/lib/assertions.sh, with PROJECT_ROOT and CI_YAML set.
+#
+# SERVICE_OPERATORS and CANARY_OPERATOR are supplied as defaults so a caller that
+# only cares about ALL_OPERATORS keeps working; both are overridden by anything
+# the caller passes, including an empty value, since the caller's assignments are
+# applied after these.
+
+# The service operators (the union of the keys in releases/*/source-refs.yaml) and
+# the canary operator the ci.yaml resolve step passes. Kept here so a test that
+# does not care about either still satisfies the resolve script's guards.
+CI_RESOLVE_DEFAULT_SERVICE_OPERATORS="keystone horizon glance placement barbican neutron"
+CI_RESOLVE_DEFAULT_CANARY_OPERATOR="keystone"
 
 # resolve_output <output-key> <ref> <all-operators> [ENV=value ...]
 #
@@ -29,7 +40,10 @@ resolve_output() {
   local out rc
 
   out=$(mktemp)
-  env "$@" \
+  env \
+    SERVICE_OPERATORS="$CI_RESOLVE_DEFAULT_SERVICE_OPERATORS" \
+    CANARY_OPERATOR="$CI_RESOLVE_DEFAULT_CANARY_OPERATOR" \
+    "$@" \
     ALL_OPERATORS="$all_operators" \
     GITHUB_OUTPUT="$out" \
     GITHUB_REF="$ref" \
@@ -40,6 +54,35 @@ resolve_output() {
     echo "resolve script exited $rc"
   else
     grep "^${key}=" "$out"
+  fi
+  rm -f "$out"
+}
+
+# resolve_outputs <ref> <all-operators> [ENV=value ...]
+#
+# Same contract as resolve_output, but echoes the whole GITHUB_OUTPUT rather than
+# one line, so a scenario test can assert several outputs from a single run.
+# Echoes the exit status line on failure for the same reason resolve_output does.
+resolve_outputs() {
+  local ref="$1" all_operators="$2"
+  shift 2
+  local out rc
+
+  out=$(mktemp)
+  env \
+    SERVICE_OPERATORS="$CI_RESOLVE_DEFAULT_SERVICE_OPERATORS" \
+    CANARY_OPERATOR="$CI_RESOLVE_DEFAULT_CANARY_OPERATOR" \
+    "$@" \
+    ALL_OPERATORS="$all_operators" \
+    GITHUB_OUTPUT="$out" \
+    GITHUB_REF="$ref" \
+    bash "$PROJECT_ROOT/hack/ci-resolve-changes.sh" >/dev/null 2>&1
+  rc=$?
+
+  if [ "$rc" -ne 0 ]; then
+    echo "resolve script exited $rc"
+  else
+    cat "$out"
   fi
   rm -f "$out"
 }

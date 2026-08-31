@@ -41,7 +41,7 @@ source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 filter_block() {
   awk -v key="            $1:" '
     $0 == key { in_block = 1; next }
-    in_block && /^            [a-z_]+:$/ { exit }
+    in_block && /^            [a-z0-9_]+:$/ { exit }
     in_block { print }
   ' "$CI_YAML"
 }
@@ -69,6 +69,14 @@ test_ovn_filter_is_wired() {
   local block
   block=$(filter_block ovn)
   assert_contains "the operator source path is covered" "$block" "operators/ovn/**"
+
+  # The images live in a filter of their own: rebuilding the OVS/OVN daemons or
+  # the backup shifter runs the ovn e2e leg without pulling the operator's Go
+  # gates in with them.
+  assert_file_contains "the image filter exists" "$CI_YAML" "^ *image_ovn:$"
+  assert_file_contains "the image filter is passed to the resolve step" "$CI_YAML" \
+    "FILTER_image_ovn: \${{ steps.filter.outputs.image_ovn }}"
+  block=$(filter_block image_ovn)
   assert_contains "the OVN image is covered" "$block" "images/ovn/**"
   assert_contains "the backup-shifter image is covered" "$block" "images/backup-shifter/**"
 }

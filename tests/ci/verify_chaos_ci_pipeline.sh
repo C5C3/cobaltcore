@@ -60,22 +60,32 @@ E2E_CHAOS_JOB_SECTION=$(extract_yaml_job_section "$CI_YAML" "e2e-chaos")
 # ── ci.yaml path filter tests ──────────────────────────────────────────────
 
 test_e2e_chaos_filter_block() {
-  echo "Test: ci.yaml has e2e_chaos path filter block"
+  echo "Test: ci.yaml has a tests_chaos path filter block"
 
   assert_file_contains \
-    "ci.yaml has e2e_chaos filter block" \
+    "ci.yaml has a tests_chaos filter block" \
     "$CI_YAML" \
-    "e2e_chaos:"
+    "^            tests_chaos:$"
 
-  assert_file_contains \
-    "e2e_chaos filter includes tests/e2e-chaos/**" \
-    "$CI_YAML" \
-    "tests/e2e-chaos/\*\*"
+  local filter_block
+  filter_block=$(awk '
+    /^            tests_chaos:$/ { in_block = 1; next }
+    in_block && /^            [a-z0-9_]+:$/ { exit }
+    in_block { print }
+  ' "$CI_YAML")
 
-  assert_file_contains \
-    "e2e_chaos filter includes deploy/**" \
-    "$CI_YAML" \
-    "deploy/\*\*"
+  assert_contains \
+    "tests_chaos filter includes tests/e2e-chaos/**" \
+    "$filter_block" \
+    "tests/e2e-chaos/**"
+
+  # deploy/** reaches the chaos legs through the canary instead. Listing it here
+  # meant every OpenBao or Flux bump paid for two chaos legs, about 62 runner
+  # minutes, on top of the pipeline it already triggered.
+  assert_not_contains \
+    "tests_chaos filter does not carry the deploy stack" \
+    "$filter_block" \
+    "deploy/**"
 }
 
 test_e2e_chaos_output() {
@@ -88,23 +98,25 @@ test_e2e_chaos_output() {
 }
 
 test_e2e_chaos_env_var() {
-  echo "Test: ci.yaml passes FILTER_e2e_chaos env var to resolve script"
+  echo "Test: ci.yaml passes FILTER_tests_chaos env var to resolve script"
 
   assert_file_contains \
-    "FILTER_e2e_chaos env var is set" \
+    "FILTER_tests_chaos env var is set" \
     "$CI_YAML" \
-    "FILTER_e2e_chaos:"
+    "FILTER_tests_chaos:"
 }
 
 # ── ci-resolve-changes.sh tests ────────────────────────────────────────────
 
 test_resolve_script_documents_filter() {
-  echo "Test: ci-resolve-changes.sh documents FILTER_e2e_chaos"
+  echo "Test: ci-resolve-changes.sh documents the filter convention"
 
+  # The resolver documents the FILTER_<filter> convention rather than listing
+  # 48 filter names; ci.yaml is where each one is wired, asserted above.
   assert_file_contains \
-    "resolve script documents FILTER_e2e_chaos" \
+    "resolve script documents the FILTER_ convention" \
     "$RESOLVE_SCRIPT" \
-    "FILTER_e2e_chaos"
+    "FILTER_<filter>"
 }
 
 test_resolve_script_tag_push() {
@@ -116,13 +128,14 @@ test_resolve_script_tag_push() {
   trap 'rm -f "$output"' RETURN
 
   ALL_OPERATORS="keystone" \
+  SERVICE_OPERATORS="keystone" \
   GITHUB_REF="refs/tags/v1.0.0" \
   GITHUB_OUTPUT="$output" \
   FILTER_keystone="false" \
   FILTER_docs="false" \
   FILTER_helm="false" \
   FILTER_e2e_infra="false" \
-  FILTER_e2e_chaos="false" \
+  FILTER_tests_chaos="false" \
   FILTER_go_common="false" \
   bash "$RESOLVE_SCRIPT"
 
@@ -136,22 +149,23 @@ test_resolve_script_tag_push() {
 }
 
 test_resolve_script_non_tag_passthrough() {
-  echo "Test: ci-resolve-changes.sh passes through FILTER_e2e_chaos on non-tag push"
+  echo "Test: ci-resolve-changes.sh passes through FILTER_tests_chaos on non-tag push"
 
-  # Case 1: FILTER_e2e_chaos=true
+  # Case 1: FILTER_tests_chaos=true
   local output output2
   output=$(mktemp)
   output2=$(mktemp)
   trap 'rm -f "$output" "$output2"' RETURN
 
   ALL_OPERATORS="keystone" \
+  SERVICE_OPERATORS="keystone" \
   GITHUB_REF="refs/heads/main" \
   GITHUB_OUTPUT="$output" \
   FILTER_keystone="false" \
   FILTER_docs="false" \
   FILTER_helm="false" \
   FILTER_e2e_infra="false" \
-  FILTER_e2e_chaos="true" \
+  FILTER_tests_chaos="true" \
   FILTER_go_common="false" \
   bash "$RESOLVE_SCRIPT"
 
@@ -163,15 +177,16 @@ test_resolve_script_non_tag_passthrough() {
     "$result" \
     "e2e-chaos=true"
 
-  # Case 2: FILTER_e2e_chaos=false
+  # Case 2: FILTER_tests_chaos=false
   ALL_OPERATORS="keystone" \
+  SERVICE_OPERATORS="keystone" \
   GITHUB_REF="refs/heads/main" \
   GITHUB_OUTPUT="$output2" \
   FILTER_keystone="false" \
   FILTER_docs="false" \
   FILTER_helm="false" \
   FILTER_e2e_infra="false" \
-  FILTER_e2e_chaos="false" \
+  FILTER_tests_chaos="false" \
   FILTER_go_common="false" \
   bash "$RESOLVE_SCRIPT"
 
@@ -191,6 +206,7 @@ test_resolve_script_default_value() {
   trap 'rm -f "$output"' RETURN
 
   ALL_OPERATORS="keystone" \
+  SERVICE_OPERATORS="keystone" \
   GITHUB_REF="refs/heads/feature" \
   GITHUB_OUTPUT="$output" \
   FILTER_keystone="false" \
@@ -204,7 +220,7 @@ test_resolve_script_default_value() {
   result=$(cat "$output")
 
   assert_contains \
-    "unset FILTER_e2e_chaos defaults to e2e-chaos=false" \
+    "unset FILTER_tests_chaos defaults to e2e-chaos=false" \
     "$result" \
     "e2e-chaos=false"
 }
@@ -212,47 +228,52 @@ test_resolve_script_default_value() {
 # ── ci-resolve-changes.sh go_changed tests ────────────────────────────────
 
 test_resolve_script_go_changed() {
-  echo "Test: ci-resolve-changes.sh sets e2e-chaos=true when go_changed is true"
+  echo "Test: ci-resolve-changes.sh leaves e2e-chaos=false on a shared Go change"
 
   local output
   output=$(mktemp)
   trap 'rm -f "$output"' RETURN
 
   ALL_OPERATORS="keystone" \
+  SERVICE_OPERATORS="keystone" \
   GITHUB_REF="refs/heads/main" \
   GITHUB_OUTPUT="$output" \
   FILTER_keystone="false" \
   FILTER_docs="false" \
   FILTER_helm="false" \
   FILTER_e2e_infra="false" \
-  FILTER_e2e_chaos="false" \
+  FILTER_tests_chaos="false" \
   FILTER_go_common="true" \
   bash "$RESOLVE_SCRIPT"
 
   local result
   result=$(cat "$output")
 
+  # Chaos runs on its own suite, on the ci:chaos label, or on the run-chaos
+  # alias. Firing it for any Go change is what made a dependency bump cost two
+  # chaos legs on top of everything else.
   assert_contains \
-    "go_common=true triggers e2e-chaos=true" \
+    "go_common=true no longer triggers chaos" \
     "$result" \
-    "e2e-chaos=true"
+    "e2e-chaos=false"
 }
 
 test_resolve_script_operator_go_change() {
-  echo "Test: ci-resolve-changes.sh sets e2e-chaos=true when operator Go code changes (without go_common)"
+  echo "Test: ci-resolve-changes.sh leaves e2e-chaos=false when only operator Go code changes"
 
   local output
   output=$(mktemp)
   trap 'rm -f "$output"' RETURN
 
   ALL_OPERATORS="keystone" \
+  SERVICE_OPERATORS="keystone" \
   GITHUB_REF="refs/heads/main" \
   GITHUB_OUTPUT="$output" \
   FILTER_keystone="true" \
   FILTER_docs="false" \
   FILTER_helm="false" \
   FILTER_e2e_infra="false" \
-  FILTER_e2e_chaos="false" \
+  FILTER_tests_chaos="false" \
   FILTER_go_common="false" \
   bash "$RESOLVE_SCRIPT"
 
@@ -260,9 +281,29 @@ test_resolve_script_operator_go_change() {
   result=$(cat "$output")
 
   assert_contains \
-    "operator-specific Go change (keystone=true, go_common=false) triggers e2e-chaos=true" \
+    "an operator-only change no longer triggers chaos" \
     "$result" \
-    "e2e-chaos=true"
+    "e2e-chaos=false"
+
+  # The two labels are what schedules it on such a pull request.
+  local labelled
+  for labelled in "ci:chaos" "run-chaos"; do
+    local out
+    out=$(mktemp)
+    ALL_OPERATORS="keystone" \
+    SERVICE_OPERATORS="keystone" \
+    GITHUB_REF="refs/heads/main" \
+    GITHUB_OUTPUT="$out" \
+    FILTER_keystone="true" \
+    PR_LABELS="[\"${labelled}\"]" \
+    bash "$RESOLVE_SCRIPT"
+
+    assert_contains \
+      "the ${labelled} label schedules chaos" \
+      "$(cat "$out")" \
+      "e2e-chaos=true"
+    rm -f "$out"
+  done
 }
 
 test_resolve_script_docs_only() {
@@ -273,13 +314,14 @@ test_resolve_script_docs_only() {
   trap 'rm -f "$output"' RETURN
 
   ALL_OPERATORS="keystone" \
+  SERVICE_OPERATORS="keystone" \
   GITHUB_REF="refs/heads/main" \
   GITHUB_OUTPUT="$output" \
   FILTER_keystone="false" \
   FILTER_docs="true" \
   FILTER_helm="false" \
   FILTER_e2e_infra="false" \
-  FILTER_e2e_chaos="false" \
+  FILTER_tests_chaos="false" \
   FILTER_go_common="false" \
   bash "$RESOLVE_SCRIPT"
 
@@ -322,6 +364,14 @@ test_e2e_chaos_if_condition() {
     "e2e-chaos checks e2e-chaos output" \
     "$E2E_CHAOS_JOB_SECTION" \
     "needs.changes.outputs.e2e-chaos == 'true'"
+
+  # The run-chaos label used to be read here as well. With five labels that
+  # pattern would spread label logic across five jobs and leave the resolver's
+  # own view of them incomplete, so it lives in the resolver alone now.
+  assert_not_contains \
+    "e2e-chaos does not read the label set itself" \
+    "$E2E_CHAOS_JOB_SECTION" \
+    "contains(github.event.pull_request.labels"
 
   assert_contains \
     "e2e-chaos blocks on failure" \

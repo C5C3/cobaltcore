@@ -3,13 +3,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# Verify renovate.json has customManagers for the five GitHub Actions env-var
+# Verify renovate.json has customManagers for the six GitHub Actions env-var
 # tool pins:
 #   - CONTROLLER_GEN_VERSION → kubernetes-sigs/controller-tools
 #   - GOFUMPT_VERSION        → mvdan/gofumpt
 #   - GOLANGCI_LINT_VERSION  → golangci/golangci-lint
 #   - KIND_VERSION           → kubernetes-sigs/kind
 #   - YQ_VERSION             → mikefarah/yq
+#   - ACTIONLINT_VERSION     → rhysd/actionlint
 #
 # For each: regex must capture the literal in the workflow file that pins it,
 # and the paired packageRule must disable majors and automerge minor/patch.
@@ -43,6 +44,7 @@ TOOLS=(
   "GOLANGCI_LINT_VERSION:golangci/golangci-lint:.github/workflows/ci.yaml"
   "KIND_VERSION:kubernetes-sigs/kind:.github/workflows/ci.yaml"
   "YQ_VERSION:mikefarah/yq:.github/workflows/verify-container-images.yaml"
+  "ACTIONLINT_VERSION:rhysd/actionlint:.github/workflows/ci.yaml"
 )
 
 test_each_workflow_pin_has_manager() {
@@ -137,13 +139,13 @@ test_workflow_pins_share_a_package_rule() {
   echo "Test: workflow tool pins share a major-disable + minor-automerge packageRule"
 
   if ! command -v jq >/dev/null 2>&1; then
-    echo "  SKIP: jq not installed (4 checks skipped)"
-    SKIP=$((SKIP + 4))
+    echo "  SKIP: jq not installed (5 checks skipped)"
+    SKIP=$((SKIP + 5))
     return
   fi
 
   local pkg
-  for pkg in kubernetes-sigs/controller-tools golangci/golangci-lint mikefarah/yq; do
+  for pkg in kubernetes-sigs/controller-tools golangci/golangci-lint mikefarah/yq rhysd/actionlint; do
     local major_rule
     major_rule="$(jq -c --arg pkg "$pkg" '.packageRules[]
       | select(

@@ -36,7 +36,12 @@ echo ""
 run_resolve() {
   local out
   out=$(mktemp)
-  GITHUB_OUTPUT="$out" bash "$RESOLVE_SCRIPT" >/dev/null
+  # SERVICE_OPERATORS and CANARY_OPERATOR are required by the resolve script and
+  # supplied here as defaults, so a caller that only sets ALL_OPERATORS and its
+  # FILTER_ vars keeps working. A caller that sets either one wins.
+  SERVICE_OPERATORS="${SERVICE_OPERATORS:-keystone horizon glance placement barbican neutron}" \
+    CANARY_OPERATOR="${CANARY_OPERATOR:-keystone}" \
+    GITHUB_OUTPUT="$out" bash "$RESOLVE_SCRIPT" >/dev/null
   cat "$out"
   rm -f "$out"
 }
@@ -115,12 +120,26 @@ test_cleanup_matrix_includes_c5c3_operator() {
 # ── ci-resolve-changes.sh documentation ─────────────────────────────────────
 
 test_resolve_script_documents_filter() {
-  echo "Test: ci-resolve-changes.sh documents FILTER_c5c3"
+  echo "Test: FILTER_c5c3 reaches the resolve script"
+
+  # The resolver reads the per-operator filters through ALL_OPERATORS rather
+  # than naming each one, so asserting the literal FILTER_c5c3 against its
+  # source would pass on any incidental mention. What has to hold is the wiring
+  # in ci.yaml and the onboarding procedure in the resolver's header.
+  assert_file_contains \
+    "ci.yaml passes FILTER_c5c3 to the resolve step" \
+    "$CI_YAML" \
+    "FILTER_c5c3: \${{ steps.filter.outputs.c5c3 }}"
 
   assert_file_contains \
-    "resolve script documents FILTER_c5c3" \
+    "ci.yaml lists c5c3 in ALL_OPERATORS" \
+    "$CI_YAML" \
+    "ALL_OPERATORS: .*c5c3"
+
+  assert_file_contains \
+    "the resolve script documents how an operator is added" \
     "$RESOLVE_SCRIPT" \
-    "FILTER_c5c3"
+    "To add a new operator"
 }
 
 # ── ci-resolve-changes.sh behavioural tests ─────────────────────────────────
@@ -137,7 +156,6 @@ test_resolve_emits_c5c3_on_operator_change() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="false" \
     run_resolve
   )
@@ -173,7 +191,6 @@ test_resolve_emits_both_on_go_common_change() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="true" \
     run_resolve
   )
@@ -203,7 +220,6 @@ test_resolve_emits_c5c3_on_tag_push() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="false" \
     run_resolve
   )
@@ -228,7 +244,6 @@ test_resolve_excludes_c5c3_on_keystone_only_change() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="false" \
     run_resolve
   )
