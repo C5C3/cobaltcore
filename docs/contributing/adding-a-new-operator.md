@@ -95,8 +95,13 @@ bottom when scaffolding `operators/<op>/`:
   is missed, and `SERVICE_OPERATORS` is pinned to the union of the keys in
   `releases/*/source-refs.yaml`.
 - **`.github/workflows/build-images.yaml`** — nothing to do for the operator
-  image (the shared `operators/Dockerfile` is already wired); only new service
-  images under `images/` need matrix entries.
+  image (the shared `operators/Dockerfile` is already wired). A new service
+  image under `images/` needs three edits in the `changes` job: a
+  `svc_<service>` paths filter, its `FILTER_svc_<service>` env line, and the
+  name in `ALL_SERVICES`. The build matrix itself still follows
+  `releases/*/source-refs.yaml`.
+  `tests/unit/ci/build_images_services_lockstep_test.sh` fails when one of the
+  three is missed.
 - **`.github/workflows/cleanup-images.yaml`** — nothing to do. The GHCR
   cleanup jobs build their matrix from `hack/ci-generate-cleanup-matrix.sh`,
   which reads `images/` and `operators/`, so a new operator picks up its
