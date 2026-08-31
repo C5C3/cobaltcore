@@ -32,6 +32,8 @@ security pipeline. See [Reusable Components](#reusable-components) for details.
 | Export Digest action | `.github/actions/export-digest/action.yaml` |
 | Merge Manifest script | `hack/ci-merge-manifest.sh` |
 | Run Unit Tests script | `hack/ci-run-unit-tests.sh` |
+| Resolve image changes script | `hack/ci-resolve-image-changes.sh` |
+| Generate build matrix script | `hack/ci-generate-build-matrix.sh` |
 | Resolve OVN version script | `hack/ci-resolve-ovn-version.sh` |
 | Build OVN image script | `hack/ci-build-ovn-image.sh` |
 
@@ -46,10 +48,24 @@ The workflow triggers on two events:
 | Event | Scope | Description |
 | --- | --- | --- |
 | `push` | `branches: [main, stable/**]` | Runs on every push to `main` or any `stable/**` branch (recursive glob) |
-| `pull_request` | all branches | Runs on every pull request |
+| `pull_request` | all branches | Runs when a changed path is one of the workflow's inputs; the [`changes`](#changes) job then decides which images the run builds |
 
 Push events produce multi-arch images pushed to GHCR. Pull request events produce
 single-arch images loaded locally for testing (see [PR vs Push Behavior](#pr-vs-push-behavior)).
+
+The two path lists differ. The push list is the broad one it has always been:
+`hack/ci-*` and `.github/actions/**` as catch-alls, so any CI script or composite
+action republishes the images. The pull-request list names the inputs this workflow
+actually reads: the images and their build contexts, `releases/**`, `patches/**`,
+`scripts/**`, `overrides/**`, the option catalogs it verifies, and the nine
+composite actions and ten `hack/` scripts its jobs call, directly or through
+`build-push-image`, `setup-docker-registry` and `merge-manifest-and-attest`. Four
+negative patterns exclude `tests/container-images/verify_build_images_workflow.sh`,
+`verify_deviation_comments.sh`, `verify_release_config.sh` and
+`verify_spdx_headers.sh`: those four belong to
+[Verify Container Images](#verify-container-images-workflow), which runs them, while
+this workflow never does. GitHub evaluates the list in order, so each negation follows
+the positive `tests/container-images/**` entry it carves out of.
 
 > **Fork PRs are not supported.** Base images must be pushed to GHCR on every run
 > (because downstream `docker-image://` URIs require registry availability), but fork
@@ -256,14 +272,75 @@ Writes `results/testresults.subunit` to the workspace.
 `docker run` block. The script can also be run locally with appropriate env vars for
 debugging failed tests.
 
+### hack/ci-resolve-image-changes.sh
+
+Turns the paths-filter outputs of the [`changes`](#changes) job into the service list
+and the four image flags the build and test jobs gate on.
+
+| Env var | Required | Default | Description |
+| --- | --- | --- | --- |
+| `EVENT_NAME` | yes | — | `github.event_name` |
+| `ALL_SERVICES` | yes | — | Space-separated list of every service in the build matrix |
+| `FILTER_svc_<service>` | no | `false` | One per name in `ALL_SERVICES` |
+| `FILTER_base` | no | `false` | Base images, release configs, build scripts, constraint overrides |
+| `FILTER_tempest` / `FILTER_ovn` / `FILTER_proxy` / `FILTER_shifter` | no | `false` | The four release-independent images |
+| `FILTER_plumbing` | no | `false` | The workflow, its composite actions, its `hack/` scripts |
+| `GITHUB_OUTPUT` | no | `/dev/null` | GitHub Actions output file |
+
+Anything but the literal `true` is false, including the empty string the skipped filter
+step yields on `push` and `workflow_dispatch`.
+
+| Output | Value |
+| --- | --- |
+| `services` | `all`, a space-separated subset of `ALL_SERVICES` in `ALL_SERVICES` order, or empty |
+| `has-services` | `true` when `services` is `all` or non-empty |
+| `build-tempest` / `build-ovn` / `build-proxy` / `build-shifter` | `true` or `false` |
+
+Three inputs resolve to everything, because everything is built from them: an event
+that is not a `pull_request`, a `plumbing` match, and a `base` match. The `base` class
+also sets `build-tempest`, since the Tempest image is built `FROM` `python-base` and
+`venv-builder` and reads `releases/<release>/`. OVN, the federation proxy and the
+backup shifter build `FROM ubuntu:noble` and read neither, so they follow their own
+filters alone.
+
+Every output line is echoed as well as written, so running the script prints what it
+decided:
+
+```console
+$ EVENT_NAME=pull_request ALL_SERVICES="keystone glance" FILTER_svc_glance=true \
+    bash hack/ci-resolve-image-changes.sh
+services=glance
+has-services=true
+build-tempest=false
+build-ovn=false
+build-proxy=false
+build-shifter=false
+```
+
+### hack/ci-generate-build-matrix.sh
+
+Scans `releases/*/` and writes the four matrices the build, test and verify jobs
+consume. `SERVICES` restricts the two service matrices to a subset:
+
+| `SERVICES` | `matrix` and `build-matrix` | Exit |
+| --- | --- | --- |
+| unset or `all` | every `{service, release}` pair | 0 |
+| a space-separated list | the pairs of those services, across every release | 0 |
+| the empty string | `{"include":[]}` | 0 |
+| a name no `source-refs.yaml` carries | not written | 1, with an `::error::` naming it |
+
+`tempest-matrix` and `tempest-release-matrix` are never filtered: the Tempest image is
+per release, not per service. The empty case reaches only jobs that gate on
+`has-services`, so an empty `include` never reaches a job that runs.
+
 ## Jobs
 
-The workflow defines nineteen jobs with a dependency graph:
+The workflow defines twenty jobs with a dependency graph:
 
 ```text
-lint-dockerfiles ─┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
-prepare ──────────┤      └──> merge-keystone-federation-proxy-image (push only)
-                  │
+changes ──────────┬──> build-keystone-federation-proxy (matrix: amd64 + arm64)
+lint-dockerfiles ─┤      └──> merge-keystone-federation-proxy-image (push only)
+prepare ──────────┤
                   ├──> build-backup-shifter (matrix: amd64 + arm64)
                   │      └──> merge-backup-shifter-image (push only)
                   │
@@ -285,6 +362,10 @@ prepare ──────────┤      └──> merge-keystone-federat
                                     └── hack/ci-run-unit-tests.sh (stestr run)
 ```
 
+`changes` is also a dependency of `generate-matrix`, `build-service-images` and
+`test-service-images`: it supplies the service list the matrix is built from and the
+flag those two gate on.
+
 Each platform (linux/amd64 on `ubuntu-latest`, linux/arm64 on `ubuntu-24.04-arm`) is
 built on a native runner and pushed by digest. `merge-base-images` then assembles the
 multi-arch manifest list and runs the supply chain security pipeline via the
@@ -305,6 +386,33 @@ All jobs use the `setup-docker-registry` composite action for Docker Buildx
 setup, registry authentication, and optional cosign installation, replacing the
 previously duplicated three-step setup sequence.
 
+### changes
+
+Classifies the changed paths of a pull request into twelve filters — one per service
+image, one for the base images and release configuration, one per release-independent
+image, and one for the workflow's own plumbing — and hands them to
+[`hack/ci-resolve-image-changes.sh`](#hack-ci-resolve-image-changes-sh), which resolves
+them into the service list and the four image flags.
+
+| Property | Value |
+| --- | --- |
+| `runs-on` | `ubuntu-latest` |
+| `timeout-minutes` | `8` |
+| Permissions | `contents: read` |
+| Outputs | `services`, `has-services`, `build-tempest`, `build-ovn`, `build-proxy`, `build-shifter` |
+
+The `dorny/paths-filter` step carries `if: github.event_name == 'pull_request'`, since
+the action diffs against the pull request base. On `push` and `workflow_dispatch` it is
+skipped, its outputs resolve to the empty string, and the resolver answers `all` and
+four `true` flags regardless. That is why no gated job needs a `github.event_name` term
+in its condition.
+
+`ALL_SERVICES` is a hand-maintained list, because `dorny/paths-filter` has no dynamic
+filter names. `tests/unit/ci/build_images_services_lockstep_test.sh` pins it to the
+union of the keys in `releases/*/source-refs.yaml` and fails when a service is missing
+its filter or its `FILTER_svc_<service>` env line. It runs under `make test-shell` on
+every pull request.
+
 ### build-keystone-federation-proxy / merge-keystone-federation-proxy-image
 
 The Apache federation reverse-proxy sidecar for Keystone — `mod_auth_openidc`
@@ -320,6 +428,11 @@ script), and a PR-skipped merge job assembling the multi-arch manifest with
 the `:latest` + `:<sha>` tag scheme the base images use, followed by the
 supply-chain pipeline (SBOM, attestation, cosign).
 
+Condition: `needs.changes.outputs.build-proxy == 'true'`. On a pull request the
+build job runs when `images/keystone-federation-proxy/**` or
+`tests/container-images/verify_keystone_federation_proxy.sh` changed; on a push it
+always runs.
+
 ### build-backup-shifter / merge-backup-shifter-image
 
 The rclone shifter that copies OVN database backups from a PVC to S3
@@ -332,6 +445,10 @@ shape: a two-platform build job depending only on `lint-dockerfiles` and
 the `tests/container-images/verify_backup_shifter.sh` verify script), and a
 PR-skipped merge job assembling the multi-arch manifest with the `:latest` +
 `:<sha>` tags, followed by the supply-chain pipeline.
+
+Condition: `needs.changes.outputs.build-shifter == 'true'`. On a pull request the
+build job runs when `images/backup-shifter/**` or
+`tests/container-images/verify_backup_shifter.sh` changed; on a push it always runs.
 
 ### build-ovn / merge-ovn-image / verify-ovn-image
 
@@ -350,7 +467,10 @@ that the submodule is "not recommended to be used as a source for OVS build";
 ovn-kubernetes builds its OVS from that gitlink in
 `dist/images/Dockerfile.fedora`, and this image does the same.
 
-`build-ovn` needs only `lint-dockerfiles` and `prepare`. Its `linux/amd64` +
+`build-ovn` needs `changes`, `lint-dockerfiles` and `prepare`, and carries
+`if: needs.changes.outputs.build-ovn == 'true'`: on a pull request it runs when
+`images/ovn/**` or `tests/container-images/verify_ovn.sh` changed, and on a push it
+always runs. Its `linux/amd64` +
 `linux/arm64` include matrix is written out in the workflow, because the image
 has no `source-refs.yaml` key for `generate-matrix` to discover and no release
 axis. Both projects are compiled from source on a four-vCPU runner, so the job
@@ -508,7 +628,8 @@ locally for inline verification instead of being pushed to GHCR.
 | --- | --- |
 | `runs-on` | <code v-pre>${{ matrix.runner }}</code> (`ubuntu-latest` for amd64, `ubuntu-24.04-arm` for arm64) |
 | `timeout-minutes` | `45` |
-| `needs` | `[merge-base-images, verify-base-images, generate-matrix]` |
+| `needs` | `[changes, merge-base-images, verify-base-images, generate-matrix]` |
+| Condition | `needs.changes.outputs.has-services == 'true'` |
 | Matrix | `service × release × platform × runner` (from `generate-matrix.build-matrix`; ARM64 excluded on PRs) |
 
 **Steps:**
@@ -620,7 +741,8 @@ This job runs in parallel with `build-service-images` — both depend on
 | --- | --- |
 | `runs-on` | `ubuntu-latest` |
 | `timeout-minutes` | `90` |
-| `needs` | `[merge-base-images, verify-base-images, generate-matrix]` |
+| `needs` | `[changes, merge-base-images, verify-base-images, generate-matrix]` |
+| Condition | `needs.changes.outputs.has-services == 'true'` |
 | Permissions | `contents: read`, `packages: read` |
 | Matrix | `service × release` (from `generate-matrix.matrix`) |
 
@@ -816,6 +938,9 @@ The workflow behaves differently depending on the trigger event:
 | --- | --- | --- |
 | Base images | Per-platform digests pushed; multi-arch manifest assembled by `merge-base-images` | Same |
 | Base image verification | `verify-base-images` job (always runs) | `verify-base-images` job (always runs) |
+| Service matrix | The services whose sources changed, both releases each | Every service |
+| Tempest images | On `images/tempest/**`, its verify script, or a base change | Always |
+| OVN, federation proxy, backup shifter | On their own sources | Always |
 | Service image platforms | `linux/amd64` only (ARM64 excluded) | `linux/amd64,linux/arm64` |
 | Service image push | No (`load: true` on amd64 runner) | Yes (by digest, tags assigned by `merge-service-images`) |
 | Service image tags | Computed but not published | Published to GHCR |
@@ -1346,13 +1471,29 @@ nova:
     - libvirt0
 ```
 
-### 4. Verify matrix discovery
+### 4. Wire the change class, then verify matrix discovery
 
-The `generate-matrix` job automatically discovers all services from `source-refs.yaml`
-in each `releases/*/` directory. Adding the service to `source-refs.yaml` (step 2) is
-sufficient — no manual workflow matrix changes are needed. The job produces
-`service × release` matrices consumed by `build-service-images`, `test-service-images`,
-`merge-service-images`, and `verify-service-images`.
+The `generate-matrix` job discovers all services from `source-refs.yaml` in each
+`releases/*/` directory, and produces the `service × release` matrices consumed by
+`build-service-images`, `test-service-images`, `merge-service-images`, and
+`verify-service-images`. Adding the service to `source-refs.yaml` (step 2) is what
+puts it there.
+
+The [`changes`](#changes) job needs three edits in `.github/workflows/build-images.yaml`,
+because its filter names cannot be generated:
+
+1. A `svc_<service>` paths filter listing `images/<service>/**`,
+   `patches/<service>/**`, `tests/container-images/verify_<service>.sh`, and
+   `operators/<service>/api/v1alpha1/catalogs/**` when the workflow verifies that
+   service's option catalog.
+2. A <code v-pre>FILTER_svc_&lt;service&gt;: ${{ steps.filter.outputs.svc_&lt;service&gt; }}</code>
+   line in the `env:` of the resolve step.
+3. The name appended to `ALL_SERVICES` in that same `env:` block.
+
+`tests/unit/ci/build_images_services_lockstep_test.sh` fails under `make test-shell`
+when any of the three is missing. Without them the service is in the matrix but never
+resolves to `true`, so its images stop being built on pull requests while the pipeline
+stays green.
 
 ### 5. (Optional) Add patches
 

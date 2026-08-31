@@ -565,7 +565,12 @@ Builds the Tempest container image per release and per platform, runs verificati
 and pushes by digest on push events. The job is parameterized by release via the
 `generate-matrix` job, which discovers all releases from `releases/*/` directories.
 
-**Dependencies:** `needs: [lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix]`
+**Dependencies:** `needs: [changes, lint-dockerfiles, merge-base-images, verify-base-images, generate-matrix]`
+
+**Condition:** `needs.changes.outputs.build-tempest == 'true'`. On a pull request the
+job runs when `images/tempest/**`, `tests/container-images/verify_tempest.sh`, or one
+of the base-image and release-configuration inputs changed; on a push it always runs.
+See [the changes job](/reference/ci-cd/build-images-workflow#changes).
 
 **Matrix strategy:** `release × platform × runner` (from `generate-matrix.tempest-matrix`; ARM64 excluded on PRs)
 
