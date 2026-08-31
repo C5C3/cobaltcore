@@ -18,7 +18,8 @@ description: >
   them to their canonical local references. The build-e2e-images job
   pushes each image as ghcr.io/c5c3/<name>:e2e-${run_id}-<tag>; this
   action reverses the rewrite so consumers can keep using the
-  release-scoped local refs.
+  release-scoped local refs. When the job passes its image-map, a ref
+  the run did not build is pulled by the digest main published instead.
 
 inputs:
   run-id:
@@ -34,6 +35,16 @@ inputs:
       provided ref. Blank lines and lines starting with `#` are
       ignored.
     required: true
+  image-map:
+    description: >
+      The build-e2e-images job's image-map output: a JSON object
+      mapping each canonical ref to the reference to pull for it,
+      either <repo>:e2e-<run-id>-<tag> for an image this run built or
+      <repo>@sha256:... for one it reused from main. A ref the map
+      does not carry falls back to the run-scoped tag, and so does
+      every ref when the input is left empty.
+    required: false
+    default: ''
   registry:
     description: Container registry to authenticate against.
     required: false
@@ -64,9 +75,16 @@ runs:
       env:
         IMAGES: ${{ inputs.images }}
         RUN_ID: ${{ inputs.run-id }}
+        IMAGE_MAP: ${{ inputs.image-map }}
       run: |
         set -euo pipefail
         run_tag="e2e-${RUN_ID}"
+        # Reject a malformed map before the first pull rather than halfway
+        # through the list, where half the images are already re-tagged.
+        if [[ -n "${IMAGE_MAP}" ]] && ! jq -e 'type == "object"' <<<"${IMAGE_MAP}" >/dev/null 2>&1; then
+          echo "::error::image-map is not a JSON object"
+          exit 1
+        fi
         while IFS= read -r raw; do
           # Strip trailing line comments and surrounding whitespace.
           ref=""
@@ -79,7 +97,16 @@ runs:
           fi
           repo="${ref%:*}"
           tag="${ref##*:}"
-          src="${repo}:${run_tag}-${tag}"
+          src=""
+          if [[ -n "${IMAGE_MAP}" ]]; then
+            src=$(jq -r --arg ref "${ref}" '.[$ref] // empty' <<<"${IMAGE_MAP}")
+          fi
+          if [[ -z "${src}" ]]; then
+            src="${repo}:${run_tag}-${tag}"
+            if [[ -n "${IMAGE_MAP}" ]]; then
+              echo "no image-map entry for ${ref}; pulling ${src}"
+            fi
+          fi
           echo "::group::Pull ${src} → ${ref}"
           docker pull "${src}"
           docker tag "${src}" "${ref}"

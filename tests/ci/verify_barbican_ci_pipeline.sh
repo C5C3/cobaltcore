@@ -9,8 +9,8 @@
 # matrices, the codecov flags, the BARBICAN_SECRET_STORE_GRANTS passthrough
 # on the e2e-operator deploy step, both e2e-chaos legs with their ungated image
 # load and operator deploy, the e2e-controlplane filter entry with its image
-# load and grant-free operator deploy, the barbican entry in the
-# build-e2e-images operator union, the tempest service leg, and that
+# load and grant-free operator deploy, the barbican images reaching the chaos
+# legs through the build-e2e-images image map, the tempest service leg, and that
 # ci-resolve-changes.sh emits barbican in the e2e-operators matrix once
 # barbican is a known operator.
 # No CI job runs this script; it is a hand-run check of the workflow wiring.
@@ -435,13 +435,6 @@ test_barbican_controlplane_filter() {
     "the ci:controlplane label schedules the chain" \
     "true" \
     "$(output_value "$resolved" "e2e-controlplane")"
-
-  # And when it runs, the barbican operator image has to be in the build set or
-  # the chain fails at Load E2E images with a tag that was never pushed.
-  assert_contains \
-    "the chain builds the barbican operator image" \
-    "$(output_value "$resolved" "build-operators")" \
-    '"barbican"'
 }
 
 test_barbican_controlplane_wiring() {
@@ -500,45 +493,32 @@ test_barbican_controlplane_wiring() {
 
 # ── build-e2e-images wiring ─────────────────────────────────────────────────
 
-test_barbican_build_is_resolved() {
-  echo "Test: build-e2e-images builds barbican whenever a chaos leg runs"
+test_barbican_build_uses_the_image_map() {
+  echo "Test: the barbican images reach the consumers through the image map"
 
   local build_section resolve_step
   build_section=$(extract_yaml_job_section "$CI_YAML" "build-e2e-images")
-  resolve_step=$(extract_yaml_step "$build_section" "Resolve build operators")
+  resolve_step=$(extract_yaml_step "$build_section" "Resolve images")
 
   assert_contains \
-    "the step takes its list from the resolver" \
+    "the build job resolves its images through the script" \
     "$resolve_step" \
-    "needs.changes.outputs.build-operators"
+    "hack/ci-resolve-e2e-images.sh"
 
-  # Both e2e-chaos legs consume barbican-operator:dev and barbican:2025.2, so
-  # the resolver has to put barbican in the build set whenever chaos is
-  # scheduled, and again for the two-cluster job that places a secret store.
-  local resolved
-  resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
-    GITHUB_REF="refs/heads/main" \
-    FILTER_tests_chaos="true" \
-    run_resolve
-  )
-
-  assert_contains \
-    "a chaos suite change builds barbican" \
-    "$(output_value "$resolved" "build-operators")" \
-    '"barbican"'
-
-  resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
-    GITHUB_REF="refs/heads/main" \
-    FILTER_tests_multicluster="true" \
-    run_resolve
-  )
-
-  assert_contains \
-    "a two-cluster suite change builds barbican" \
-    "$(output_value "$resolved" "build-operators")" \
-    '"barbican"'
+  # Both e2e-chaos legs consume barbican-operator:dev and barbican:2025.2, and
+  # the two-cluster job places a barbican secret store. The build job no longer
+  # builds barbican unless its own sources changed, so those legs get the images
+  # from the map: this run's build when it built them, the digest main published
+  # otherwise. Without the map input the leg falls back to a run-scoped tag
+  # nothing pushed and fails an hour into the run.
+  local section leg
+  for leg in e2e-chaos e2e-multicluster; do
+    section=$(extract_yaml_job_section "$CI_YAML" "$leg")
+    assert_contains \
+      "$leg takes the image map from the build job" \
+      "$(extract_yaml_step "$section" "Load E2E images")" \
+      'image-map: ${{ needs.build-e2e-images.outputs.image-map }}'
+  done
 }
 
 # ── tempest service-dimension leg ───────────────────────────────────────────
@@ -765,7 +745,7 @@ test_barbican_controlplane_filter
 echo ""
 test_barbican_controlplane_wiring
 echo ""
-test_barbican_build_is_resolved
+test_barbican_build_uses_the_image_map
 echo ""
 test_barbican_tempest_wiring
 echo ""

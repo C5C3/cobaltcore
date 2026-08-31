@@ -7,8 +7,8 @@
 # Validates: placement paths-filter block, the helm filter entry,
 # FILTER_placement env, ALL_OPERATORS membership, test/helm-validate/cleanup
 # matrices, the e2e-chaos pod-kill leg and its pod-leg-only image load/deploy,
-# the placement entry in the build-e2e-images operator union, and
-# that ci-resolve-changes.sh emits placement in the e2e-operators matrix once
+# the placement images reaching that leg through the build-e2e-images image map,
+# and that ci-resolve-changes.sh emits placement in the e2e-operators matrix once
 # placement is a known operator.
 # Placement ships no tempest plugin, so the tempest job carries no placement
 # leg to assert.
@@ -312,42 +312,38 @@ test_placement_chaos_wiring() {
 
 # ── build-e2e-images wiring ─────────────────────────────────────────────────
 
-test_placement_build_is_resolved() {
-  echo "Test: build-e2e-images builds placement whenever the chaos pod leg runs"
+test_placement_build_uses_the_image_map() {
+  echo "Test: the placement images reach the chaos pod leg through the image map"
 
   local build_section resolve_step
   build_section=$(extract_yaml_job_section "$CI_YAML" "build-e2e-images")
-  resolve_step=$(extract_yaml_step "$build_section" "Resolve build operators")
+  resolve_step=$(extract_yaml_step "$build_section" "Resolve images")
 
-  # The union used to be spelled out in this step, which meant the step had to
-  # re-derive when each job runs. It is now computed in the resolver from the
-  # jobs the run actually scheduled, so the step only translates the list.
+  # The build set used to be a union spelled out in this step, then one the
+  # resolver computed from the jobs a run scheduled. The job now builds only
+  # what changed and resolves the rest to the digests main published, so the
+  # step runs the script that decides both.
   assert_contains \
-    "the step takes its list from the resolver" \
+    "the build job resolves its images through the script" \
     "$resolve_step" \
-    "needs.changes.outputs.build-operators"
+    "hack/ci-resolve-e2e-images.sh"
 
   assert_not_contains \
     "the step no longer carries a hardcoded union" \
     "$resolve_step" \
     "for base in"
 
-  # The e2e-chaos pod leg consumes placement-operator:dev and placement:2025.2,
-  # so the resolver has to put placement in the build set whenever that leg is
-  # scheduled. Missing, the blocking leg fails on `manifest unknown` an hour
-  # into the run.
-  local resolved
-  resolved=$(
-    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
-    GITHUB_REF="refs/heads/main" \
-    FILTER_tests_chaos="true" \
-    run_resolve
-  )
+  # The e2e-chaos pod leg consumes placement-operator:dev and placement:2025.2.
+  # The job builds neither unless placement changed, so the leg reads them from
+  # the map. Missing the map input, it falls back to a run-scoped tag nothing
+  # pushed and the blocking leg fails on `manifest unknown` an hour into the run.
+  local chaos_section
+  chaos_section=$(extract_yaml_job_section "$CI_YAML" "e2e-chaos")
 
   assert_contains \
-    "a chaos suite change builds placement" \
-    "$(output_value "$resolved" "build-operators")" \
-    '"placement"'
+    "the chaos image load takes the map from the build job" \
+    "$(extract_yaml_step "$chaos_section" "Load E2E images")" \
+    'image-map: ${{ needs.build-e2e-images.outputs.image-map }}'
 }
 
 # ── ci-resolve-changes.sh documentation ─────────────────────────────────────
@@ -526,7 +522,7 @@ test_cleanup_matrices_include_placement
 echo ""
 test_placement_chaos_wiring
 echo ""
-test_placement_build_is_resolved
+test_placement_build_uses_the_image_map
 echo ""
 test_resolve_script_documents_filter
 echo ""
