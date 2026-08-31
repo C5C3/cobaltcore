@@ -33,6 +33,18 @@
 # Required env vars:
 #   GITHUB_OUTPUT — GitHub Actions output file (set automatically by Actions)
 #
+# Optional env vars:
+#   TEMPEST_SERVICES — Space-separated subset of the covered services to emit
+#                      entries for (the tempest-services output of
+#                      hack/ci-resolve-changes.sh). Unset or empty emits all
+#                      three, so a local run and a skipped job never see an
+#                      empty include list. An unknown name is a hard failure.
+#                      The missing-directory check below still runs for every
+#                      service of every release, whatever this is set to: a
+#                      Tempest config directory that disappears must fail the
+#                      build on the pull request that removed it, not on the
+#                      next one that happens to select that service.
+#
 # Extracted from ci.yaml inline script (review #2).
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
 
@@ -51,16 +63,46 @@ shopt -s nullglob
 dirs=("${REPO_ROOT}"/releases/*/)
 entries=()
 
+# Services this generator knows how to emit, in matrix order.
+ALL_TEMPEST_SERVICES=(keystone glance barbican)
+
+# Resolve the selection once, and reject an unknown name before any output line
+# is written.
+selected=("${ALL_TEMPEST_SERVICES[@]}")
+if [[ -n "${TEMPEST_SERVICES:-}" ]]; then
+  read -ra selected <<< "${TEMPEST_SERVICES}"
+  for want in "${selected[@]}"; do
+    known=false
+    for svc in "${ALL_TEMPEST_SERVICES[@]}"; do
+      [[ "${want}" == "${svc}" ]] && known=true
+    done
+    if [[ "${known}" != "true" ]]; then
+      echo "::error::Unknown tempest service: ${want}"
+      exit 1
+    fi
+  done
+fi
+
+is_selected() {
+  local want="$1" svc
+  for svc in "${selected[@]}"; do
+    [[ "${svc}" == "${want}" ]] && return 0
+  done
+  return 1
+}
+
 for d in "${dirs[@]}"; do
   release="${d%/}"
   release="${release##*/}"
   slug="${release//./-}"
-  for service in keystone glance barbican; do
+  for service in "${ALL_TEMPEST_SERVICES[@]}"; do
     config_dir="tests/tempest/${service}-${slug}"
     if [[ ! -d "${REPO_ROOT}/${config_dir}" ]]; then
       echo "::error::Missing Tempest config directory: ${config_dir} (for service ${service}, release ${release})"
       exit 1
     fi
+    # Checked above for every service; emitted only for the selected ones.
+    is_selected "${service}" || continue
     cr_name="keystone-tempest-${slug}"
     extra_keys=""
     if [[ "${service}" != "keystone" ]]; then

@@ -65,7 +65,12 @@ extract_yaml_step() {
 run_resolve() {
   local out
   out=$(mktemp)
-  GITHUB_OUTPUT="$out" bash "$RESOLVE_SCRIPT" >/dev/null
+  # SERVICE_OPERATORS and CANARY_OPERATOR are required by the resolve script and
+  # supplied here as defaults, so a caller that only sets ALL_OPERATORS and its
+  # FILTER_ vars keeps working. A caller that sets either one wins.
+  SERVICE_OPERATORS="${SERVICE_OPERATORS:-keystone horizon glance placement barbican neutron}" \
+    CANARY_OPERATOR="${CANARY_OPERATOR:-keystone}" \
+    GITHUB_OUTPUT="$out" bash "$RESOLVE_SCRIPT" >/dev/null
   cat "$out"
   rm -f "$out"
 }
@@ -94,14 +99,27 @@ test_placement_filter_block() {
     "$filter_block" \
     "operators/placement/**"
 
-  assert_contains \
-    "placement filter includes operators/Dockerfile" \
+  # The shared Dockerfile builds every operator binary, so it belongs to
+  # go_common; listing it per operator made a change to it look like a change to
+  # each of them in turn.
+  assert_not_contains \
+    "placement filter does not carry the shared operator Dockerfile" \
     "$filter_block" \
     "operators/Dockerfile"
 
+  assert_file_contains \
+    "ci.yaml declares an image_placement filter" \
+    "$CI_YAML" \
+    "^            image_placement:"
+
+  # The service image has a filter of its own: rebuilding it runs the placement
+  # e2e leg without pulling the operator's Go gates in with it.
+  local image_block
+  image_block=$(extract_paths_filter_block "$CI_YAML" "image_placement")
+
   assert_contains \
-    "placement filter includes images/placement/**" \
-    "$filter_block" \
+    "image_placement filter includes images/placement/**" \
+    "$image_block" \
     "images/placement/**"
 }
 
@@ -146,13 +164,29 @@ test_placement_filter_env_var() {
 test_placement_test_matrices() {
   echo "Test: unit and integration test matrices include placement"
 
+  # Both matrices are resolved per pull request rather than hardcoded, so the
+  # assertion is in two parts: the jobs read the resolver's list, and the
+  # resolver puts this operator in it when its own code changes.
   local matrix_count
-  matrix_count=$(grep -c "target: \[common, keystone, c5c3, horizon, glance, placement, barbican\]" "$CI_YAML")
+  matrix_count=$(grep -c 'matrix: ${{ fromJson(needs.changes.outputs.test-targets) }}' "$CI_YAML") || true
 
   assert_eq \
-    "both test and test-integration matrices list placement" \
+    "both test and test-integration matrices read test-targets" \
     "2" \
     "$matrix_count"
+
+  local resolved
+  resolved=$(
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
+    GITHUB_REF="refs/heads/main" \
+    FILTER_placement="true" \
+    run_resolve
+  )
+
+  assert_contains \
+    "a placement change puts placement in the test matrix" \
+    "$(output_value "$resolved" "test-targets")" \
+    '"placement"'
 }
 
 test_placement_helm_validate_loops() {
@@ -278,45 +312,67 @@ test_placement_chaos_wiring() {
 
 # ── build-e2e-images wiring ─────────────────────────────────────────────────
 
-test_placement_build_is_unconditional() {
-  echo "Test: build-e2e-images always builds placement"
+test_placement_build_is_resolved() {
+  echo "Test: build-e2e-images builds placement whenever the chaos pod leg runs"
 
   local build_section resolve_step
   build_section=$(extract_yaml_job_section "$CI_YAML" "build-e2e-images")
   resolve_step=$(extract_yaml_step "$build_section" "Resolve build operators")
 
-  # The e2e-chaos pod leg consumes placement-operator:dev and placement:2025.2
-  # unconditionally, so placement joins keystone and glance in the fixed union.
+  # The union used to be spelled out in this step, which meant the step had to
+  # re-derive when each job runs. It is now computed in the resolver from the
+  # jobs the run actually scheduled, so the step only translates the list.
   assert_contains \
-    "the unconditional build union lists keystone, glance and placement" \
+    "the step takes its list from the resolver" \
     "$resolve_step" \
-    "for base in keystone glance placement barbican; do"
-
-  # Gating the union on a hand-copied duplicate of the e2e-chaos `if:` is the
-  # failure this asserts against: the two conditions drift, build-e2e-images
-  # stops pushing the placement tags, and the blocking pod leg fails on
-  # `manifest unknown` an hour into the run. A non-empty operator matrix
-  # already implies e2e-chaos runs, so the gate saved almost nothing anyway.
-  assert_not_contains \
-    "the build union does not re-derive the e2e-chaos trigger condition" \
-    "$resolve_step" \
-    "needs.changes.outputs.e2e-chaos"
+    "needs.changes.outputs.build-operators"
 
   assert_not_contains \
-    "the build union does not re-derive the run-chaos label condition" \
+    "the step no longer carries a hardcoded union" \
     "$resolve_step" \
-    "run-chaos"
+    "for base in"
+
+  # The e2e-chaos pod leg consumes placement-operator:dev and placement:2025.2,
+  # so the resolver has to put placement in the build set whenever that leg is
+  # scheduled. Missing, the blocking leg fails on `manifest unknown` an hour
+  # into the run.
+  local resolved
+  resolved=$(
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
+    GITHUB_REF="refs/heads/main" \
+    FILTER_tests_chaos="true" \
+    run_resolve
+  )
+
+  assert_contains \
+    "a chaos suite change builds placement" \
+    "$(output_value "$resolved" "build-operators")" \
+    '"placement"'
 }
 
 # ── ci-resolve-changes.sh documentation ─────────────────────────────────────
 
 test_resolve_script_documents_filter() {
-  echo "Test: ci-resolve-changes.sh documents FILTER_placement"
+  echo "Test: FILTER_placement reaches the resolve script"
+
+  # The resolver reads the per-operator filters through ALL_OPERATORS rather
+  # than naming each one, so asserting the literal FILTER_placement against its
+  # source would pass on any incidental mention. What has to hold is the wiring
+  # in ci.yaml and the onboarding procedure in the resolver's header.
+  assert_file_contains \
+    "ci.yaml passes FILTER_placement to the resolve step" \
+    "$CI_YAML" \
+    "FILTER_placement: \${{ steps.filter.outputs.placement }}"
 
   assert_file_contains \
-    "resolve script documents FILTER_placement" \
+    "ci.yaml lists placement in ALL_OPERATORS" \
+    "$CI_YAML" \
+    "ALL_OPERATORS: .*placement"
+
+  assert_file_contains \
+    "the resolve script documents how an operator is added" \
     "$RESOLVE_SCRIPT" \
-    "FILTER_placement"
+    "To add a new operator"
 }
 
 # ── ci-resolve-changes.sh behavioural tests ─────────────────────────────────
@@ -337,7 +393,6 @@ test_resolve_emits_placement_on_operator_change() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="false" \
     run_resolve
   )
@@ -377,7 +432,6 @@ test_resolve_excludes_placement_on_keystone_only_change() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="false" \
     run_resolve
   )
@@ -411,7 +465,6 @@ test_resolve_emits_all_on_go_common_change() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="true" \
     run_resolve
   )
@@ -442,7 +495,6 @@ test_resolve_emits_all_on_tag_push() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="false" \
     run_resolve
   )
@@ -474,7 +526,7 @@ test_cleanup_matrices_include_placement
 echo ""
 test_placement_chaos_wiring
 echo ""
-test_placement_build_is_unconditional
+test_placement_build_is_resolved
 echo ""
 test_resolve_script_documents_filter
 echo ""

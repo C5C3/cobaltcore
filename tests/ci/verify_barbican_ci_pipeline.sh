@@ -85,7 +85,12 @@ extract_codecov_flag_block() {
 run_resolve() {
   local out
   out=$(mktemp)
-  GITHUB_OUTPUT="$out" bash "$RESOLVE_SCRIPT" >/dev/null
+  # SERVICE_OPERATORS and CANARY_OPERATOR are required by the resolve script and
+  # supplied here as defaults, so a caller that only sets ALL_OPERATORS and its
+  # FILTER_ vars keeps working. A caller that sets either one wins.
+  SERVICE_OPERATORS="${SERVICE_OPERATORS:-keystone horizon glance placement barbican neutron}" \
+    CANARY_OPERATOR="${CANARY_OPERATOR:-keystone}" \
+    GITHUB_OUTPUT="$out" bash "$RESOLVE_SCRIPT" >/dev/null
   cat "$out"
   rm -f "$out"
 }
@@ -114,14 +119,27 @@ test_barbican_filter_block() {
     "$filter_block" \
     "operators/barbican/**"
 
-  assert_contains \
-    "barbican filter includes operators/Dockerfile" \
+  # The shared Dockerfile builds every operator binary, so it belongs to
+  # go_common; listing it per operator made a change to it look like a change to
+  # each of them in turn.
+  assert_not_contains \
+    "barbican filter does not carry the shared operator Dockerfile" \
     "$filter_block" \
     "operators/Dockerfile"
 
+  assert_file_contains \
+    "ci.yaml declares an image_barbican filter" \
+    "$CI_YAML" \
+    "^            image_barbican:"
+
+  # The service image has a filter of its own: rebuilding it runs the barbican
+  # e2e leg without pulling the operator's Go gates in with it.
+  local image_block
+  image_block=$(extract_paths_filter_block "$CI_YAML" "image_barbican")
+
   assert_contains \
-    "barbican filter includes images/barbican/**" \
-    "$filter_block" \
+    "image_barbican filter includes images/barbican/**" \
+    "$image_block" \
     "images/barbican/**"
 }
 
@@ -166,20 +184,38 @@ test_barbican_filter_env_var() {
 test_barbican_test_matrices() {
   echo "Test: unit and integration test matrices include barbican"
 
+  # Both matrices are resolved per pull request rather than hardcoded, so the
+  # assertion is in two parts: the jobs read the resolver's list, and the
+  # resolver puts this operator in it when its own code changes.
   local matrix_count
-  matrix_count=$(grep -c "target: \[common, keystone, c5c3, horizon, glance, placement, barbican\]" "$CI_YAML")
+  matrix_count=$(grep -c 'matrix: ${{ fromJson(needs.changes.outputs.test-targets) }}' "$CI_YAML") || true
 
   assert_eq \
-    "both test and test-integration matrices list barbican" \
+    "both test and test-integration matrices read test-targets" \
     "2" \
     "$matrix_count"
+
+  local resolved
+  resolved=$(
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
+    GITHUB_REF="refs/heads/main" \
+    FILTER_barbican="true" \
+    run_resolve
+  )
+
+  assert_contains \
+    "a barbican change puts barbican in the test matrix" \
+    "$(output_value "$resolved" "test-targets")" \
+    '"barbican"'
 }
 
 test_barbican_helm_validate_loops() {
   echo "Test: helm-validate loops include the barbican-operator chart"
 
   local loop_count
-  loop_count=$(grep -c " operators/barbican/helm/barbican-operator" "$CI_YAML")
+  # `|| true`: grep exits 1 on no match, which under `set -e` killed the whole
+  # run here and hid every assertion below this point.
+  loop_count=$(grep -c " operators/barbican/helm/barbican-operator" "$CI_YAML") || true
 
   assert_eq \
     "all three helm-validate loops list the barbican-operator chart" \
@@ -362,18 +398,50 @@ test_barbican_chaos_wiring() {
 # ── e2e-controlplane wiring ─────────────────────────────────────────────────
 
 test_barbican_controlplane_filter() {
-  echo "Test: the e2e_controlplane paths-filter covers the barbican operator"
+  echo "Test: a barbican change reaches the ControlPlane jobs by label, not by default"
 
-  # The full-chain suite hard-requires the barbican-operator, so a barbican-only
-  # change that skipped this job would let the ControlPlane's barbican leg rot
-  # unnoticed until an unrelated PR touched one of the other five globs.
-  local filter_block
-  filter_block=$(extract_paths_filter_block "$CI_YAML" "e2e_controlplane")
+  # The full-chain suite deploys the barbican-operator, but the three
+  # ControlPlane jobs take up to 195 minutes each and running them for every
+  # service-operator change is what the change classes exist to stop. A barbican
+  # change proves itself on the barbican e2e leg; ci:controlplane and ci:full
+  # ask for the chain.
+  local resolved
+  resolved=$(
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
+    GITHUB_REF="refs/heads/main" \
+    FILTER_barbican="true" \
+    run_resolve
+  )
+
+  assert_eq \
+    "a barbican-only change does not schedule the ControlPlane chain" \
+    "false" \
+    "$(output_value "$resolved" "e2e-controlplane")"
 
   assert_contains \
-    "e2e_controlplane filter includes operators/barbican/**" \
-    "$filter_block" \
-    "- 'operators/barbican/**'"
+    "a barbican-only change still runs the barbican e2e leg" \
+    "$(output_value "$resolved" "e2e-operators")" \
+    '"barbican"'
+
+  resolved=$(
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
+    GITHUB_REF="refs/heads/main" \
+    FILTER_barbican="true" \
+    PR_LABELS='["ci:controlplane"]' \
+    run_resolve
+  )
+
+  assert_eq \
+    "the ci:controlplane label schedules the chain" \
+    "true" \
+    "$(output_value "$resolved" "e2e-controlplane")"
+
+  # And when it runs, the barbican operator image has to be in the build set or
+  # the chain fails at Load E2E images with a tag that was never pushed.
+  assert_contains \
+    "the chain builds the barbican operator image" \
+    "$(output_value "$resolved" "build-operators")" \
+    '"barbican"'
 }
 
 test_barbican_controlplane_wiring() {
@@ -432,22 +500,45 @@ test_barbican_controlplane_wiring() {
 
 # ── build-e2e-images wiring ─────────────────────────────────────────────────
 
-test_barbican_build_is_unconditional() {
-  echo "Test: build-e2e-images always builds barbican"
+test_barbican_build_is_resolved() {
+  echo "Test: build-e2e-images builds barbican whenever a chaos leg runs"
 
   local build_section resolve_step
   build_section=$(extract_yaml_job_section "$CI_YAML" "build-e2e-images")
   resolve_step=$(extract_yaml_step "$build_section" "Resolve build operators")
 
-  # Both e2e-chaos legs consume barbican-operator:dev and barbican:2025.2
-  # unconditionally, so barbican joins keystone, glance and placement in the
-  # fixed union. Gating it on a hand-copied duplicate of the e2e-chaos `if:`
-  # would let the two conditions drift and fail the chaos legs on
-  # `manifest unknown` an hour into the run.
   assert_contains \
-    "the unconditional build union lists keystone, glance, placement and barbican" \
+    "the step takes its list from the resolver" \
     "$resolve_step" \
-    "for base in keystone glance placement barbican; do"
+    "needs.changes.outputs.build-operators"
+
+  # Both e2e-chaos legs consume barbican-operator:dev and barbican:2025.2, so
+  # the resolver has to put barbican in the build set whenever chaos is
+  # scheduled, and again for the two-cluster job that places a secret store.
+  local resolved
+  resolved=$(
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
+    GITHUB_REF="refs/heads/main" \
+    FILTER_tests_chaos="true" \
+    run_resolve
+  )
+
+  assert_contains \
+    "a chaos suite change builds barbican" \
+    "$(output_value "$resolved" "build-operators")" \
+    '"barbican"'
+
+  resolved=$(
+    ALL_OPERATORS="keystone c5c3 horizon glance placement barbican ovn neutron" \
+    GITHUB_REF="refs/heads/main" \
+    FILTER_tests_multicluster="true" \
+    run_resolve
+  )
+
+  assert_contains \
+    "a two-cluster suite change builds barbican" \
+    "$(output_value "$resolved" "build-operators")" \
+    '"barbican"'
 }
 
 # ── tempest service-dimension leg ───────────────────────────────────────────
@@ -456,9 +547,21 @@ test_barbican_tempest_wiring() {
   echo "Test: tempest job carries the barbican service leg"
 
   assert_file_contains \
-    "the tempest matrix generator emits a barbican leg per release" \
+    "the tempest matrix generator knows the barbican service" \
     "$TEMPEST_MATRIX_SCRIPT" \
-    "for service in keystone glance barbican; do"
+    "ALL_TEMPEST_SERVICES=(keystone glance barbican)"
+
+  # The matrix is narrowed per pull request, so the leg has to survive both the
+  # unnarrowed case and a selection that names it.
+  local out
+  out=$(mktemp)
+  GITHUB_OUTPUT="$out" TEMPEST_SERVICES="barbican" \
+    bash "$TEMPEST_MATRIX_SCRIPT" >/dev/null 2>&1
+  assert_file_contains \
+    "selecting barbican emits a barbican leg" \
+    "$out" \
+    '"service":"barbican"'
+  rm -f "$out"
 
   assert_file_contains \
     "tempest bootstraps the key-manager catalog" \
@@ -479,12 +582,26 @@ test_barbican_tempest_wiring() {
 # ── ci-resolve-changes.sh documentation ─────────────────────────────────────
 
 test_resolve_script_documents_filter() {
-  echo "Test: ci-resolve-changes.sh documents FILTER_barbican"
+  echo "Test: FILTER_barbican reaches the resolve script"
+
+  # The resolver reads the per-operator filters through ALL_OPERATORS rather
+  # than naming each one, so asserting the literal FILTER_barbican against its
+  # source would pass on any incidental mention. What has to hold is the wiring
+  # in ci.yaml and the onboarding procedure in the resolver's header.
+  assert_file_contains \
+    "ci.yaml passes FILTER_barbican to the resolve step" \
+    "$CI_YAML" \
+    "FILTER_barbican: \${{ steps.filter.outputs.barbican }}"
 
   assert_file_contains \
-    "resolve script documents FILTER_barbican" \
+    "ci.yaml lists barbican in ALL_OPERATORS" \
+    "$CI_YAML" \
+    "ALL_OPERATORS: .*barbican"
+
+  assert_file_contains \
+    "the resolve script documents how an operator is added" \
     "$RESOLVE_SCRIPT" \
-    "FILTER_barbican"
+    "To add a new operator"
 }
 
 # ── ci-resolve-changes.sh behavioural tests ─────────────────────────────────
@@ -505,7 +622,6 @@ test_resolve_emits_barbican_on_operator_change() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="false" \
     run_resolve
   )
@@ -545,7 +661,6 @@ test_resolve_excludes_barbican_on_keystone_only_change() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="false" \
     run_resolve
   )
@@ -579,7 +694,6 @@ test_resolve_emits_all_on_go_common_change() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="true" \
     run_resolve
   )
@@ -610,7 +724,6 @@ test_resolve_emits_all_on_tag_push() {
     FILTER_docs="false" \
     FILTER_helm="false" \
     FILTER_e2e_infra="false" \
-    FILTER_e2e_chaos="false" \
     FILTER_go_common="false" \
     run_resolve
   )
@@ -652,7 +765,7 @@ test_barbican_controlplane_filter
 echo ""
 test_barbican_controlplane_wiring
 echo ""
-test_barbican_build_is_unconditional
+test_barbican_build_is_resolved
 echo ""
 test_barbican_tempest_wiring
 echo ""

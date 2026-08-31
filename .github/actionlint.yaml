@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# actionlint validates `runs-on:` against the labels GitHub itself provides, so
+# every self-hosted label the workflows use has to be declared here or the lint
+# fails on a runner that exists. `self-hosted` is built in; the Blacksmith pool
+# is not.
+self-hosted-runner:
+  labels:
+    - blacksmith-4vcpu-ubuntu-2404

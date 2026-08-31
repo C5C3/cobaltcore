@@ -29,7 +29,7 @@ CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 # The real list from the ci.yaml resolve step env block. The resolve script
 # reads FILTER_${op} only for operators named here, so a shorter list would
 # make the FILTER_c5c3 scenario below assert nothing.
-ALL_OPERATORS_FIXTURE="keystone c5c3 horizon glance placement barbican"
+ALL_OPERATORS_FIXTURE="keystone c5c3 horizon glance placement barbican ovn neutron"
 
 PASS=0
 FAIL=0
@@ -46,14 +46,13 @@ source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 
 # Run the resolve script for the given ref and FILTER_ values, and echo the
 # e2e-controlplane line it emits. Extra FILTER_ assignments are passed through
-# so the composed shape (own filter, go change, any e2e test change) can be
-# exercised one input at a time.
+# so each input can be exercised one at a time.
 run_resolve() {
   local ref="$1" filter="$2"
   shift 2
 
   resolve_output e2e-controlplane "$ref" "$ALL_OPERATORS_FIXTURE" \
-    FILTER_e2e_controlplane="$filter" "$@"
+    FILTER_tests_controlplane="$filter" "$@"
 }
 
 # Echo the body of the top-level ci.yaml job <name>. The block ends at the next
@@ -83,14 +82,33 @@ test_own_filter_is_honoured() {
 }
 
 test_upstream_signals_force_the_job() {
-  echo "Test: a c5c3 change, a shared Go change and a suite edit each force the job on"
+  echo "Test: a c5c3 change and the ci:controlplane label each force the job on"
 
   assert_eq "a change under operators/c5c3/** forces the job on" \
     "e2e-controlplane=true" "$(run_resolve refs/heads/main false FILTER_c5c3=true)"
-  assert_eq "a shared Go change forces the job on" \
-    "e2e-controlplane=true" "$(run_resolve refs/heads/main false FILTER_go_common=true)"
-  assert_eq "a suite edit under tests/e2e/** forces the job on" \
-    "e2e-controlplane=true" "$(run_resolve refs/heads/main false FILTER_tests_e2e_operator=true)"
+  assert_eq "the ci:controlplane label forces the job on" \
+    "e2e-controlplane=true" \
+    "$(run_resolve refs/heads/main false PR_LABELS='["ci:controlplane"]')"
+  assert_eq "ci:full forces the job on" \
+    "e2e-controlplane=true" \
+    "$(run_resolve refs/heads/main false PR_LABELS='["ci:full"]')"
+}
+
+test_shared_changes_no_longer_force_the_job() {
+  echo "Test: a shared Go change and another operator's suite leave the job off"
+
+  # This job and its two siblings are the most expensive in the pipeline (up to
+  # 195 minutes each). They used to run on any Go change and on any edit under
+  # tests/e2e/**, which is what made a one-line dependency bump cost a full
+  # pipeline. A shared change still runs the c5c3 e2e leg; ci:controlplane and
+  # ci:full are how you ask for the chain itself.
+  assert_eq "a shared Go change does not schedule the job" \
+    "e2e-controlplane=false" "$(run_resolve refs/heads/main false FILTER_go_common=true)"
+  assert_eq "another operator's suite does not schedule the job" \
+    "e2e-controlplane=false" \
+    "$(run_resolve refs/heads/main false FILTER_tests_e2e_glance=true)"
+  assert_eq "the keystone operator does not schedule the job" \
+    "e2e-controlplane=false" "$(run_resolve refs/heads/main false FILTER_keystone=true)"
 }
 
 test_unrelated_change_stays_off() {
@@ -131,57 +149,77 @@ test_resolve_script_errors_without_operators() {
 }
 
 test_ci_yaml_wires_all_four_sides() {
-  echo "Test: ci.yaml declares the filter, passes it in, exports it and gates on it"
+  echo "Test: ci.yaml declares each filter, passes it in, exports it and gates on it"
 
-  assert_filter_is_wired e2e_controlplane e2e-controlplane
+  assert_filter_is_wired tests_controlplane e2e-controlplane
+  assert_filter_is_wired tests_controlplane_sso e2e-controlplane-sso
+  assert_filter_is_wired tests_external_keystone e2e-external-keystone
 
-  # Three jobs gate on the output. A file-wide grep would let a typo in any one
-  # of them hide behind the other two, which is exactly the permanently-skipped
-  # job this file exists to catch — so each is pinned in its own block.
+  # The three jobs run on three separate clusters and each owns its own suite,
+  # so each gates on an output of its own. A file-wide grep would let a typo in
+  # any one of them hide behind the other two, which is exactly the
+  # permanently-skipped job this file exists to catch.
   local job
   for job in e2e-controlplane e2e-controlplane-sso e2e-external-keystone; do
-    assert_contains "$job gates on the output" \
-      "$(job_block "$job")" "needs.changes.outputs.e2e-controlplane == 'true'"
+    assert_contains "$job gates on its own output" \
+      "$(job_block "$job")" "needs.changes.outputs.${job} == 'true'"
   done
 
-  # build-e2e-images is the fourth consumer and reads the output twice: once as
-  # one OR term of its own `if:`, and once inline to add c5c3/horizon to
-  # BUILD_OPERATORS. Broken, this job does not skip — it fails the e2e jobs an
-  # hour later at "Load E2E images" with a dev tag that was never pushed.
+  # build-e2e-images no longer reads the ControlPlane output at all: the
+  # resolver folds the images those jobs load into build-operators. Broken, this
+  # job does not skip — it fails the e2e jobs an hour later at "Load E2E images"
+  # with a dev tag that was never pushed.
   local build_block
   build_block=$(job_block build-e2e-images)
-  assert_contains "build-e2e-images gates on the output" \
-    "$build_block" "needs.changes.outputs.e2e-controlplane == 'true'"
-  assert_contains "build-e2e-images reads it for the dev image list" \
-    "$build_block" "needs.changes.outputs.e2e-controlplane }}' = 'true' ]"
+  assert_contains "build-e2e-images gates on its own flag" \
+    "$build_block" "needs.changes.outputs.build-e2e-images == 'true'"
+  assert_contains "build-e2e-images takes its image list from the resolver" \
+    "$build_block" "needs.changes.outputs.build-operators"
+  assert_not_contains "build-e2e-images no longer reads the ControlPlane output" \
+    "$build_block" "needs.changes.outputs.e2e-controlplane"
 }
 
 test_filter_covers_the_machinery_and_the_suites() {
-  echo "Test: the filter lists the operator code and the suites the job runs"
+  echo "Test: each filter lists exactly the suite its job runs"
 
-  # The filter block ends at the next filter key at the same indent. The
-  # terminator class carries a digit because the next key is e2e_multicluster:,
-  # and without it the block would run on into that filter, whose own 'hack/**'
-  # entry would mask a removal here.
+  # A filter block ends at the next filter key at the same indent. The
+  # terminator class carries a digit because several keys have one.
+  filter_block() {
+    awk -v key="            $1:" '
+      $0 == key { in_block = 1; next }
+      in_block && /^            [a-z0-9_]+:$/ { exit }
+      in_block { print }
+    ' "$CI_YAML"
+  }
+
   local block
-  block=$(awk '
-    /^            e2e_controlplane:$/ { in_block = 1; next }
-    in_block && /^            [a-z0-9_]+:$/ { exit }
-    in_block { print }
-  ' "$CI_YAML")
-
-  assert_contains "the filter lists the ControlPlane operator" \
+  block=$(filter_block tests_controlplane)
+  assert_contains "the filter lists the full-chain suite" \
+    "$block" "tests/e2e/c5c3/full-controlplane-keystone/**"
+  assert_contains "the filter lists the own-namespace registration suite" \
+    "$block" "tests/e2e/c5c3/keystone-service/**"
+  assert_contains "the filter lists the foreign-namespace registration suite" \
+    "$block" "tests/e2e/c5c3/keystone-service-foreign-namespace/**"
+  # The operator code and the shared scripts reach this job through the c5c3
+  # filter and the canary respectively, not through the suite filter. Listing
+  # them here again is what made every Go change schedule three 195-minute jobs.
+  assert_not_contains "the suite filter does not carry the operator tree" \
     "$block" "operators/c5c3/**"
-  assert_contains "the filter lists the ControlPlane suites" \
-    "$block" "tests/e2e/c5c3/**"
-  assert_contains "the filter lists the hack scripts" \
+  assert_not_contains "the suite filter does not carry the hack scripts" \
     "$block" "hack/**"
-  # These two reach the job through this filter alone: tests_e2e_operator's
-  # 'tests/e2e/**' sees neither, and neither sets go_changed. Dropping either
-  # one silently unschedules the ControlPlane jobs for their own edits.
-  assert_contains "the filter lists the federated suite" \
+
+  block=$(filter_block tests_controlplane_sso)
+  assert_contains "the federated suite has a filter of its own" \
     "$block" "tests/e2e-controlplane-sso/**"
-  assert_contains "the filter lists the federation-proxy sidecar" \
+
+  block=$(filter_block tests_external_keystone)
+  assert_contains "the External-mode suite has a filter of its own" \
+    "$block" "tests/e2e/c5c3/external-keystone/**"
+
+  # The sidecar reaches the keystone e2e leg through image_proxy; the SSO suite
+  # pins it to the locally built :dev tag and is scheduled by its own filter.
+  block=$(filter_block image_proxy)
+  assert_contains "the federation-proxy sidecar has a filter of its own" \
     "$block" "images/keystone-federation-proxy/**"
 }
 
@@ -218,6 +256,7 @@ test_job_runs_all_three_suites() {
 # ---------------------------------------------------------------------------
 test_own_filter_is_honoured
 test_upstream_signals_force_the_job
+test_shared_changes_no_longer_force_the_job
 test_unrelated_change_stays_off
 test_unset_filter_defaults_to_false
 test_tag_push_forces_the_job

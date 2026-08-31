@@ -44,7 +44,7 @@ source "$PROJECT_ROOT/tests/lib/ci_resolve.sh"
 filter_block() {
   awk -v key="            $1:" '
     $0 == key { in_block = 1; next }
-    in_block && /^            [a-z_]+:$/ { exit }
+    in_block && /^            [a-z0-9_]+:$/ { exit }
     in_block { print }
   ' "$CI_YAML"
 }
@@ -72,7 +72,14 @@ test_neutron_filter_is_wired() {
   local block
   block=$(filter_block neutron)
   assert_contains "the operator source path is covered" "$block" "operators/neutron/**"
-  assert_contains "the Neutron image is covered" "$block" "images/neutron/**"
+
+  # The service image lives in a filter of their own, so rebuilding it runs the
+  # neutron e2e leg without the operator's Go gates.
+  assert_file_contains "the image filter exists" "$CI_YAML" "^ *image_neutron:$"
+  assert_file_contains "the image filter is passed to the resolve step" "$CI_YAML" \
+    "FILTER_image_neutron: \${{ steps.filter.outputs.image_neutron }}"
+  assert_contains "the Neutron image is covered" \
+    "$(filter_block image_neutron)" "images/neutron/**"
 }
 
 test_neutron_change_produces_an_e2e_leg() {

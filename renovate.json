@@ -354,6 +354,19 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/\\.github/workflows/.*\\.yaml$/"
+      ],
+      "matchStrings": [
+        "ACTIONLINT_VERSION:\\s*\"?(?<currentValue>\\d+\\.\\d+\\.\\d+)\"?"
+      ],
+      "depNameTemplate": "rhysd/actionlint",
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "rhysd/actionlint",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/tests/e2e/keystone/ldap-domain-backend/00-openldap\\.yaml$/",
         "/tests/e2e-controlplane-sso/01-openldap\\.yaml$/"
       ],
@@ -667,7 +680,8 @@
         "mvdan/gofumpt",
         "golangci/golangci-lint",
         "kubernetes-sigs/controller-tools",
-        "mikefarah/yq"
+        "mikefarah/yq",
+        "rhysd/actionlint"
       ],
       "matchUpdateTypes": ["major"],
       "enabled": false
@@ -679,7 +693,8 @@
         "mvdan/gofumpt",
         "golangci/golangci-lint",
         "kubernetes-sigs/controller-tools",
-        "mikefarah/yq"
+        "mikefarah/yq",
+        "rhysd/actionlint"
       ],
       "matchUpdateTypes": ["minor", "patch"],
       "automerge": true,

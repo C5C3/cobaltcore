@@ -3,163 +3,458 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-# hack/ci-resolve-changes.sh — Resolve effective CI changes for matrix generation.
+# hack/ci-resolve-changes.sh — Resolve effective CI changes into job flags.
 #
-# Reads paths-filter outputs (passed as FILTER_* env vars) and determines which
-# operators changed. Emits outputs to GITHUB_OUTPUT for downstream jobs.
+# Reads the paths-filter outputs (passed as FILTER_* env vars) plus the pull
+# request's label set, and decides which jobs and which matrix legs run. The
+# rule is one line long: a job runs when one of ITS OWN inputs changed, never
+# because Go code changed somewhere. A job's inputs are the code it tests, the
+# images it loads, the suite it runs, and the scripts it calls.
 #
-# On tag pushes the full release pipeline runs for all operators regardless of
-# which files were touched.
+# Labels only ever ADD jobs. ci:full runs everything, ci:tempest / ci:chaos /
+# ci:controlplane / ci:multicluster switch on one area each. run-chaos is kept
+# as an alias of ci:chaos.
+#
+# A `labeled` event for a label outside that set resolves to nothing at all
+# (noop=true), so adding a triage label to a pull request no longer cancels and
+# restarts its pipeline.
 #
 # Required env vars:
-#   ALL_OPERATORS    — Space-separated list of known operators (e.g. "keystone")
-#   GITHUB_OUTPUT    — GitHub Actions output file (set automatically by Actions)
-#   GITHUB_REF       — Git ref (set automatically by Actions)
+#   ALL_OPERATORS     — Space-separated list of every operator (e.g. "keystone")
+#   SERVICE_OPERATORS — Space-separated subset that ships an OpenStack service
+#                       image (the union of the keys in
+#                       releases/*/source-refs.yaml)
+#   GITHUB_OUTPUT     — GitHub Actions output file (set automatically)
+#   GITHUB_REF        — Git ref (set automatically)
 #
-# Per-operator filter outputs must be set as FILTER_<operator> env vars:
-#   FILTER_keystone           — paths-filter output for keystone paths
-#   FILTER_c5c3               — paths-filter output for c5c3 paths
-#   FILTER_horizon            — paths-filter output for horizon paths
-#   FILTER_glance             — paths-filter output for glance paths
-#   FILTER_placement          — paths-filter output for placement paths
-#   FILTER_barbican           — paths-filter output for barbican paths
-#   FILTER_docs               — paths-filter output for docs paths
-#   FILTER_helm               — paths-filter output for helm paths
-#   FILTER_target_cluster_chart — paths-filter output for deploy/target-cluster paths
-#   FILTER_e2e_infra          — paths-filter output for e2e-infra paths
-#   FILTER_e2e_chaos          — paths-filter output for e2e-chaos paths
-#   FILTER_e2e_prometheus     — paths-filter output for e2e-prometheus paths
-#   FILTER_e2e_controlplane   — paths-filter output for e2e-controlplane paths
-#   FILTER_e2e_multicluster   — paths-filter output for e2e-multicluster paths
-#   FILTER_tests_e2e_operator — paths-filter output for tests/e2e/** (follow-up)
-#   FILTER_tests_tempest      — paths-filter output for tests/tempest/** (follow-up)
-#   FILTER_go_common          — paths-filter output for go_common paths
+# Optional env vars:
+#   CANARY_OPERATOR   — Operator whose e2e leg runs for a change to the shared
+#                       e2e substrate or the workflow plumbing (default keystone)
+#   FILTER_<filter>   — One per paths-filter key; anything but "true" is false
+#   PR_LABELS         — JSON array of the pull request's label names. Unset, "",
+#                       null and any non-array all mean "no labels"
+#   EVENT_NAME        — github.event_name (default pull_request)
+#   EVENT_ACTION      — github.event.action, for the labeled no-op
+#   EVENT_LABEL       — github.event.label.name, for the labeled no-op
 #
-# To add a new operator (e.g. glance):
-#   1. Add a filter block in ci.yaml (glance: ...)
-#   2. Add the operator name to ALL_OPERATORS in the ci.yaml step env block
-#   3. Add a matching FILTER_glance env var in the ci.yaml step env block
-#
-# Extracted from ci.yaml to reduce workflow file size (review #2 comment 3).
-# set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
+# To add a new operator <op>:
+#   1. Add a paths filter <op> listing operators/<op>/**
+#   2. Add a paths filter tests_e2e_<op> listing tests/e2e/<op>/** and
+#      tests/e2e/<op>-operator/**
+#   3. Add <op> to ALL_OPERATORS in the ci.yaml resolve step
+#   4. When the operator ships a service image, add a paths filter image_<op>
+#      listing images/<op>/** and patches/<op>/**, and add <op> to
+#      SERVICE_OPERATORS
+#   The test matrices, the e2e matrix and the build set follow automatically;
+#   tests/unit/ci/change_classes_wiring_test.sh fails when a step is missed.
 
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# Guards and defaults
+# ---------------------------------------------------------------------------
 if [[ -z "${ALL_OPERATORS:-}" ]]; then
   echo "::error::ALL_OPERATORS must be set (space-separated list of operator names)"
   exit 1
 fi
+if [[ -z "${SERVICE_OPERATORS:-}" ]]; then
+  echo "::error::SERVICE_OPERATORS must be set (space-separated list of operators with a service image)"
+  exit 1
+fi
+CANARY_OPERATOR="${CANARY_OPERATOR:-keystone}"
+EVENT_NAME="${EVENT_NAME:-pull_request}"
 
-ops=()
-go_changed=false
-any_e2e_tests=false
+# Services that have a Tempest configuration directory under tests/tempest/.
+# Mirrors the service loop in hack/ci-generate-tempest-matrix.sh.
+TEMPEST_ALL_SERVICES="keystone glance barbican"
 
-# follow-up: Any change to an E2E test definition (infrastructure,
-# operator, chaos, tempest) should trigger the full E2E suite so that
-# refactoring test infra is validated end-to-end. This is independent of
-# go_changed so lint/unit/format/vuln stay skipped on pure test-only edits.
-if [[ "${FILTER_tests_e2e_operator:-false}" == "true" || \
-      "${FILTER_tests_tempest:-false}" == "true" || \
-      "${FILTER_e2e_infra:-false}" == "true" || \
-      "${FILTER_e2e_chaos:-false}" == "true" ]]; then
-  any_e2e_tests=true
+# ---------------------------------------------------------------------------
+# Helpers
+#
+# Sets are space-separated strings rather than associative arrays so the script
+# runs on bash 3.2 (macOS) as well as the runners' bash 5.
+# ---------------------------------------------------------------------------
+
+# filter_on <name> — true when FILTER_<name> is exactly "true".
+filter_on() {
+  local var="FILTER_$1"
+  [[ "${!var:-false}" == "true" ]]
+}
+
+# set_has <set> <item>
+set_has() {
+  case " $1 " in
+    *" $2 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# set_add <set> <item...> — echoes the set with the items appended once each.
+set_add() {
+  local acc="$1" item
+  shift
+  for item in "$@"; do
+    set_has "$acc" "$item" || acc="${acc:+$acc }$item"
+  done
+  echo "$acc"
+}
+
+# order_by <ordering> <set> — echoes <set> in <ordering> order.
+order_by() {
+  local out="" item
+  for item in $1; do
+    set_has "$2" "$item" && out="${out:+$out }$item"
+  done
+  echo "$out"
+}
+
+# json_list <set> — echoes a compact JSON array, [] when the set is empty.
+json_list() {
+  # shellcheck disable=SC2086 # deliberate: split the space-separated set
+  printf '%s\n' ${1:-} | jq -Rnc '[inputs | select(length > 0)]'
+}
+
+# matrix_of <key> <set> — echoes {"<key>":[...]}, or the __none__ sentinel when
+# the set is empty. Downstream jobs gate on the matching has-* flag; the
+# sentinel keeps fromJson() valid for the ones that read the matrix ungated.
+matrix_of() {
+  if [[ -z "${2:-}" ]]; then
+    echo "{\"$1\":[\"__none__\"]}"
+    return
+  fi
+  # shellcheck disable=SC2086 # deliberate: split the space-separated set
+  printf '%s\n' $2 | jq -Rnc --arg k "$1" '{($k): [inputs | select(length > 0)]}'
+}
+
+emit() { echo "$1=$2" >>"$GITHUB_OUTPUT"; }
+
+# bool <condition-result> — normalises an exit status into true/false.
+yesno() { if "$@"; then echo true; else echo false; fi; }
+
+# ---------------------------------------------------------------------------
+# Label set
+# ---------------------------------------------------------------------------
+LABELS=""
+if [[ -n "${PR_LABELS:-}" ]]; then
+  # Anything that is not a JSON array of strings resolves to no labels at all,
+  # which is what a push event's empty expression renders to.
+  LABELS=$(jq -r 'if type == "array" then .[] | select(type == "string") else empty end' \
+    <<<"${PR_LABELS}" 2>/dev/null || true)
 fi
 
-if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-  # Tag push: run the full release pipeline for all known operators.
-  go_changed=true
-  read -ra ops <<< "$ALL_OPERATORS"
-  echo "docs=true"                 >> "$GITHUB_OUTPUT"
-  echo "helm=true"                 >> "$GITHUB_OUTPUT"
-  echo "target-cluster-chart=true" >> "$GITHUB_OUTPUT"
-  echo "e2e-infra=true"            >> "$GITHUB_OUTPUT"
-else
-  echo "docs=${FILTER_docs:-false}" >> "$GITHUB_OUTPUT"
-  echo "helm=${FILTER_helm:-false}" >> "$GITHUB_OUTPUT"
-  echo "target-cluster-chart=${FILTER_target_cluster_chart:-false}" >> "$GITHUB_OUTPUT"
-  # e2e-infra runs when its own paths change or any E2E test definition changes.
-  if [[ "${FILTER_e2e_infra:-false}" == "true" || "$any_e2e_tests" == "true" ]]; then
-    echo "e2e-infra=true"  >> "$GITHUB_OUTPUT"
-  else
-    echo "e2e-infra=false" >> "$GITHUB_OUTPUT"
-  fi
+has_label() {
+  [[ -n "$LABELS" ]] && printf '%s\n' "$LABELS" | grep -Fxq -- "$1"
+}
 
-  if [[ "${FILTER_go_common:-false}" == "true" ]]; then
-    # Shared-code change → all operators are potentially affected.
-    go_changed=true
-    read -ra ops <<< "$ALL_OPERATORS"
+# ---------------------------------------------------------------------------
+# 1. The labeled no-op
+#
+# Adding a label that does not steer CI must not cancel the run in flight. The
+# workflow puts such an event in a concurrency group of its own; this resolves
+# it to nothing so every gated job skips.
+# ---------------------------------------------------------------------------
+noop=false
+if [[ "${EVENT_NAME}" == "pull_request" && "${EVENT_ACTION:-}" == "labeled" ]]; then
+  event_label="${EVENT_LABEL:-}"
+  if [[ "${event_label}" != ci:* && "${event_label}" != "run-chaos" ]]; then
+    noop=true
+  fi
+fi
+
+if [[ "${noop}" == "true" ]]; then
+  emit noop true
+  for out in go docs helm target-cluster-chart has-e2e-operators e2e-infra \
+    e2e-chaos e2e-prometheus e2e-controlplane e2e-controlplane-sso \
+    e2e-external-keystone e2e-multicluster e2e-operator-upgrade tempest \
+    changed-tempest changed-proxy build-e2e-images actionlint; do
+    emit "$out" false
+  done
+  for out in changed-operators changed-services build-operators tempest-services; do
+    emit "$out" '[]'
+  done
+  emit test-targets "$(matrix_of target "")"
+  emit e2e-operators "$(matrix_of operator "")"
+  exit 0
+fi
+emit noop false
+
+# ---------------------------------------------------------------------------
+# 2. Inputs
+# ---------------------------------------------------------------------------
+full=false
+has_label "ci:full" && full=true
+
+is_tag=false
+[[ "${GITHUB_REF:-}" == refs/tags/v* ]] && is_tag=true
+
+# op_changed — the operator's own Go code is affected.
+op_changed=""
+for op in $ALL_OPERATORS; do
+  if [[ "$is_tag" == "true" || "$full" == "true" ]] || filter_on "$op" || filter_on go_common; then
+    op_changed=$(set_add "$op_changed" "$op")
+  fi
+done
+
+# changed_services — the operator's service image sources are affected.
+changed_services=""
+if [[ "$is_tag" == "true" || "$full" == "true" ]] || filter_on images_base; then
+  changed_services="$SERVICE_OPERATORS"
+else
+  for svc in $SERVICE_OPERATORS; do
+    filter_on "image_${svc}" && changed_services=$(set_add "$changed_services" "$svc")
+  done
+fi
+
+# The canary: a change to the shared e2e substrate or to the workflow plumbing
+# proves itself against the infrastructure suite and one operator leg, not
+# against the whole pipeline. ci:full is the way to ask for the rest.
+canary=false
+if filter_on e2e_shared || filter_on e2e_openbao || filter_on ci_plumbing || filter_on makefile; then
+  canary=true
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Job flags
+#
+# force is what a tag push and ci:full have in common: every flag on, whatever
+# the paths say. Every other flag is the OR of its own inputs and nothing else.
+# ---------------------------------------------------------------------------
+force=false
+if [[ "$is_tag" == "true" || "$full" == "true" ]]; then
+  force=true
+fi
+
+# or_force <bool> — echoes true when forced, otherwise the argument.
+or_force() {
+  if [[ "$force" == "true" || "$1" == "true" ]]; then
+    echo true
   else
-    # Operator-specific change → include only changed operators.
+    echo false
+  fi
+}
+
+op_is_changed() { set_has "$op_changed" "$1"; }
+
+cond=false
+if [[ -n "$op_changed" ]] || filter_on makefile; then cond=true; fi
+go=$(or_force "$cond")
+
+cond=false
+if filter_on e2e_infra || [[ "$canary" == "true" ]]; then cond=true; fi
+e2e_infra=$(or_force "$cond")
+
+cond=false
+if filter_on tests_chaos || has_label "ci:chaos" || has_label "run-chaos"; then cond=true; fi
+e2e_chaos=$(or_force "$cond")
+
+cond=false
+if filter_on tests_prometheus; then cond=true; fi
+e2e_prometheus=$(or_force "$cond")
+
+# The three ControlPlane jobs share two triggers: a change to operators/c5c3/**
+# (they are the real tests of that operator, whose own e2e leg carries only the
+# sibling CRDs) and the ci:controlplane label. Each adds its own suite filter on
+# top.
+#
+# Deliberately FILTER_c5c3 rather than membership of op_changed: a shared Go
+# change puts every operator in that set, and these three jobs are the most
+# expensive in the pipeline (up to 195 minutes each). A shared change still runs
+# the c5c3 e2e leg; ci:controlplane or ci:full asks for the full chain.
+cp_common=false
+if filter_on c5c3 || has_label "ci:controlplane"; then cp_common=true; fi
+
+cond="$cp_common"
+if filter_on tests_controlplane; then cond=true; fi
+e2e_controlplane=$(or_force "$cond")
+
+cond="$cp_common"
+if filter_on tests_controlplane_sso; then cond=true; fi
+e2e_controlplane_sso=$(or_force "$cond")
+
+cond="$cp_common"
+if filter_on tests_external_keystone; then cond=true; fi
+e2e_external_keystone=$(or_force "$cond")
+
+cond=false
+if filter_on tests_multicluster || has_label "ci:multicluster"; then cond=true; fi
+e2e_multicluster=$(or_force "$cond")
+
+cond=false
+if filter_on tests_operator_upgrade || op_is_changed keystone; then cond=true; fi
+e2e_operator_upgrade=$(or_force "$cond")
+
+cond=false
+if filter_on tempest_src || has_label "ci:tempest"; then cond=true; fi
+tempest=$(or_force "$cond")
+
+cond=false
+if filter_on image_tempest || filter_on images_base; then cond=true; fi
+changed_tempest=$(or_force "$cond")
+
+cond=false
+if filter_on image_proxy; then cond=true; fi
+changed_proxy=$(or_force "$cond")
+
+cond=false
+if filter_on actionlint; then cond=true; fi
+actionlint=$(or_force "$cond")
+
+cond=false
+if filter_on docs; then cond=true; fi
+docs=$(or_force "$cond")
+
+cond=false
+if filter_on helm; then cond=true; fi
+helm=$(or_force "$cond")
+
+cond=false
+if filter_on target_cluster_chart; then cond=true; fi
+target_cluster_chart=$(or_force "$cond")
+# ---------------------------------------------------------------------------
+# 4. Matrices
+# ---------------------------------------------------------------------------
+
+# test / test-integration: common plus every operator whose code is affected.
+test_targets=""
+if [[ "$force" == "true" ]] || filter_on go_common || filter_on makefile; then
+  test_targets="common"
+fi
+for op in $ALL_OPERATORS; do
+  if op_is_changed "$op" || filter_on makefile; then
+    test_targets=$(set_add "$test_targets" "$op")
+  fi
+done
+
+# changed-operators: the operators whose own sources changed. #954 reads this
+# to decide which operator images it still has to build.
+changed_operators="$op_changed"
+if filter_on makefile; then
+  changed_operators=$(set_add "$changed_operators" "$CANARY_OPERATOR")
+fi
+
+# e2e-operator legs.
+e2e_ops="$op_changed"
+for svc in $SERVICE_OPERATORS; do
+  set_has "$changed_services" "$svc" && e2e_ops=$(set_add "$e2e_ops" "$svc")
+done
+filter_on image_ovn && e2e_ops=$(set_add "$e2e_ops" ovn)
+filter_on image_proxy && e2e_ops=$(set_add "$e2e_ops" keystone)
+for op in $ALL_OPERATORS; do
+  filter_on "tests_e2e_${op}" && e2e_ops=$(set_add "$e2e_ops" "$op")
+done
+[[ "$canary" == "true" ]] && e2e_ops=$(set_add "$e2e_ops" "$CANARY_OPERATOR")
+filter_on e2e_openbao && e2e_ops=$(set_add "$e2e_ops" barbican)
+[[ "$force" == "true" ]] && e2e_ops="$ALL_OPERATORS"
+
+# On a push the operator matrix keeps today's publish semantics: it drives
+# build-and-push, merge-operator-images and helm-push, not the e2e jobs.
+if [[ "${EVENT_NAME}" == "push" && "$is_tag" != "true" ]]; then
+  e2e_ops=""
+  if filter_on go_common || filter_on publish_legacy; then
+    e2e_ops="$ALL_OPERATORS"
+  else
     for op in $ALL_OPERATORS; do
-      filter_var="FILTER_${op}"
-      # Indirect expansion with default so an operator listed in ALL_OPERATORS
-      # before its FILTER_<op> env var is wired up doesn't trip `set -u`.
-      if [[ "${!filter_var:-false}" == "true" ]]; then
-        go_changed=true
-        ops+=("$op")
+      if filter_on "$op" || filter_on "image_${op}"; then
+        e2e_ops=$(set_add "$e2e_ops" "$op")
       fi
     done
   fi
+fi
 
-  # E2E test-only changes: go_changed stays false, but all operators must
-  # run their E2E suite so the edited test definitions are exercised.
-  if [[ "$any_e2e_tests" == "true" && ${#ops[@]} -eq 0 ]]; then
-    read -ra ops <<< "$ALL_OPERATORS"
+# Tempest legs, by service. A change to something every leg shares (the image,
+# the base images, the runner) exercises all three; a config edit under
+# tests/tempest/<svc>-*/ narrows it to that service; the ci:tempest label
+# narrows it to the services the pull request touches, and falls back to
+# keystone when it touches none.
+tempest_services=""
+if [[ "$tempest" == "true" ]]; then
+  any_tempest_service_filter=false
+  for svc in $TEMPEST_ALL_SERVICES; do
+    if filter_on "tempest_${svc}"; then any_tempest_service_filter=true; fi
+  done
+
+  if [[ "$force" == "true" ]] || filter_on image_tempest || filter_on images_base ||
+    { filter_on tempest_src && [[ "$any_tempest_service_filter" == "false" ]]; }; then
+    tempest_services="$TEMPEST_ALL_SERVICES"
+  else
+    for svc in $TEMPEST_ALL_SERVICES; do
+      if filter_on "tempest_${svc}" || op_is_changed "$svc" ||
+        filter_on "image_${svc}" || filter_on "tests_e2e_${svc}"; then
+        tempest_services=$(set_add "$tempest_services" "$svc")
+      fi
+    done
+    if [[ -z "$tempest_services" ]]; then
+      tempest_services="keystone"
+    fi
   fi
 fi
 
-echo "go=${go_changed}" >> "$GITHUB_OUTPUT"
-
-# Chaos E2E tests run when chaos test definitions change, when any
-# Go code changes (so chaos validates the current operator code), or when any
-# other E2E test definition changes (so refactoring shared test infra runs
-# the full E2E suite end-to-end).
-if [[ "$go_changed" == "true" || "${FILTER_e2e_chaos:-false}" == "true" || "$any_e2e_tests" == "true" ]]; then
-  echo "e2e-chaos=true" >> "$GITHUB_OUTPUT"
-else
-  echo "e2e-chaos=false" >> "$GITHUB_OUTPUT"
+# build-operators: the operator images the selected jobs load. Interim — #954
+# replaces it with an image map that also covers the service and tempest
+# images, and drops this output together with the step that reads it.
+build_operators="$e2e_ops"
+if [[ "${EVENT_NAME}" == "push" && "$is_tag" != "true" ]]; then
+  build_operators=""
+fi
+if [[ "$e2e_operator_upgrade" == "true" || "$e2e_prometheus" == "true" ||
+  "$e2e_chaos" == "true" || "$e2e_controlplane" == "true" ||
+  "$e2e_controlplane_sso" == "true" || "$e2e_external_keystone" == "true" ||
+  "$e2e_multicluster" == "true" || "$tempest" == "true" ]]; then
+  build_operators=$(set_add "$build_operators" "$CANARY_OPERATOR")
+fi
+[[ "$e2e_chaos" == "true" ]] && build_operators=$(set_add "$build_operators" horizon glance placement barbican)
+[[ "$e2e_controlplane" == "true" ]] && build_operators=$(set_add "$build_operators" c5c3 horizon glance placement barbican)
+if [[ "$e2e_controlplane_sso" == "true" || "$e2e_external_keystone" == "true" ]]; then
+  build_operators=$(set_add "$build_operators" c5c3 horizon)
+fi
+[[ "$e2e_multicluster" == "true" ]] && build_operators=$(set_add "$build_operators" barbican)
+if [[ "$tempest" == "true" ]]; then
+  # shellcheck disable=SC2086 # deliberate word split of the service set
+  build_operators=$(set_add "$build_operators" $tempest_services)
 fi
 
-# Prometheus stack E2E tests run when prometheus paths change
-# (kind overlay, suite, deploy/composite/operator wiring), when any Go code
-# changes (so the suite re-validates the current operator metrics surface), or
-# when any other E2E test definition changes (so refactoring shared test infra
-# runs the full E2E suite end-to-end).
-if [[ "$go_changed" == "true" || "${FILTER_e2e_prometheus:-false}" == "true" || "$any_e2e_tests" == "true" ]]; then
-  echo "e2e-prometheus=true" >> "$GITHUB_OUTPUT"
-else
-  echo "e2e-prometheus=false" >> "$GITHUB_OUTPUT"
-fi
+has_e2e_operators=$(yesno test -n "$e2e_ops")
 
-# The full ControlPlane -> Keystone chain E2E job runs when its own paths change
-# (c5c3/keystone operator code, the full-chain suite, the deploy stack, the hack
-# scripts, or the composite actions it uses), when any Go code changes (so the
-# live chain re-validates the current operator code), or when any other E2E test
-# definition changes (so refactoring shared test infra runs the full suite).
-if [[ "$go_changed" == "true" || "${FILTER_e2e_controlplane:-false}" == "true" || "$any_e2e_tests" == "true" ]]; then
-  echo "e2e-controlplane=true" >> "$GITHUB_OUTPUT"
-else
-  echo "e2e-controlplane=false" >> "$GITHUB_OUTPUT"
+build_e2e_images=false
+if [[ "$has_e2e_operators" == "true" || "$e2e_chaos" == "true" ||
+  "$e2e_prometheus" == "true" || "$e2e_controlplane" == "true" ||
+  "$e2e_controlplane_sso" == "true" || "$e2e_external_keystone" == "true" ||
+  "$e2e_multicluster" == "true" || "$e2e_operator_upgrade" == "true" ||
+  "$tempest" == "true" ]]; then
+  build_e2e_images=true
 fi
+# The build job only runs on pull requests; a push resolves it away so the
+# publish path is never gated on it.
+[[ "${EVENT_NAME}" == "push" && "$is_tag" != "true" ]] && build_e2e_images=false
 
-# The two-cluster placed-services E2E job runs on the same composition as
-# e2e-controlplane: its own paths (the suite, the target-cluster chart, the
-# deploy stack, the hack scripts, the composite actions), any Go change (so the
-# placement path re-validates the current operator code), or any other E2E test
-# definition change.
-if [[ "$go_changed" == "true" || "${FILTER_e2e_multicluster:-false}" == "true" || "$any_e2e_tests" == "true" ]]; then
-  echo "e2e-multicluster=true" >> "$GITHUB_OUTPUT"
-else
-  echo "e2e-multicluster=false" >> "$GITHUB_OUTPUT"
-fi
+# ---------------------------------------------------------------------------
+# 5. Emit
+# ---------------------------------------------------------------------------
+emit go "$go"
+emit docs "$docs"
+emit helm "$helm"
+emit target-cluster-chart "$target_cluster_chart"
 
-# Emit operator matrix — single codepath for both tag and non-tag.
-if [[ ${#ops[@]} -eq 0 ]]; then
-  echo "has-e2e-operators=false"                   >> "$GITHUB_OUTPUT"
-  # Always emit valid JSON so fromJson() never fails in downstream jobs.
-  echo 'e2e-operators={"operator":["__none__"]}'   >> "$GITHUB_OUTPUT"
-else
-  matrix=$(printf '%s\n' "${ops[@]}" | jq -Rnc '[inputs] | {operator: .}')
-  echo "has-e2e-operators=true"                    >> "$GITHUB_OUTPUT"
-  echo "e2e-operators=${matrix}"                   >> "$GITHUB_OUTPUT"
-fi
+emit e2e-infra "$e2e_infra"
+emit e2e-chaos "$e2e_chaos"
+emit e2e-prometheus "$e2e_prometheus"
+emit e2e-controlplane "$e2e_controlplane"
+emit e2e-controlplane-sso "$e2e_controlplane_sso"
+emit e2e-external-keystone "$e2e_external_keystone"
+emit e2e-multicluster "$e2e_multicluster"
+emit e2e-operator-upgrade "$e2e_operator_upgrade"
+emit tempest "$tempest"
+emit actionlint "$actionlint"
+
+emit changed-tempest "$changed_tempest"
+emit changed-proxy "$changed_proxy"
+emit build-e2e-images "$build_e2e_images"
+emit has-e2e-operators "$has_e2e_operators"
+
+emit changed-operators "$(json_list "$(order_by "$ALL_OPERATORS" "$changed_operators")")"
+emit changed-services "$(json_list "$(order_by "$SERVICE_OPERATORS" "$changed_services")")"
+emit build-operators "$(json_list "$(order_by "$ALL_OPERATORS" "$build_operators")")"
+emit tempest-services "$(json_list "$(order_by "$TEMPEST_ALL_SERVICES" "$tempest_services")")"
+
+emit test-targets "$(matrix_of target "$(order_by "common $ALL_OPERATORS" "$test_targets")")"
+emit e2e-operators "$(matrix_of operator "$(order_by "$ALL_OPERATORS" "$e2e_ops")")"
