@@ -714,7 +714,7 @@ guard.
 | 6 | Build federation proxy image | Builds `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, only when `BUILD_PROXY` is true |
 | 7 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS` |
 | 8 | Build service images | Builds `<IMAGE_PREFIX>/<svc>:<release>` for each pair in `BUILD_SERVICE_IMAGES`; passes `GITHUB_TOKEN` so the source clones from `github.com` are authenticated |
-| 9 | Build OVN image | Builds `<IMAGE_PREFIX>/ovn:<version>` from `images/ovn/Dockerfile`, with the version resolved by `hack/ci-resolve-ovn-version.sh` |
+| 9 | Build OVN image | Builds `<IMAGE_PREFIX>/ovn:<version>` from `images/ovn/Dockerfile`, with the version resolved by `hack/ci-resolve-ovn-version.sh`; passes `GITHUB_TOKEN` as the `github_token` BuildKit secret for the fetches inside the build |
 | 10 | Build Tempest images | Builds `<IMAGE_PREFIX>/tempest:<release>` for each release in `BUILD_TEMPEST_RELEASES` |
 | 11 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push` |
 
