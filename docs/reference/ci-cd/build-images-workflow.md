@@ -467,6 +467,14 @@ that the submodule is "not recommended to be used as a source for OVS build";
 ovn-kubernetes builds its OVS from that gitlink in
 `dist/images/Dockerfile.fedora`, and this image does the same.
 
+Both fetches run inside the build with the git `ubuntu:noble` ships, and
+GitHub does not reliably serve unauthenticated `upload-pack` requests to that
+version. The job therefore passes the workflow token to `build-push-image`
+as the `github_token` secret (`secrets: github_token=...`), which the
+Dockerfile mounts into the one `RUN` that fetches and turns into the
+basic-auth header `actions/checkout` sends. A secret reaches no layer; a build
+without it, such as a local `docker build`, fetches anonymously.
+
 `build-ovn` needs `changes`, `lint-dockerfiles` and `prepare`, and carries
 `if: needs.changes.outputs.build-ovn == 'true'`: on a pull request it runs when
 `images/ovn/**` or `tests/container-images/verify_ovn.sh` changed, and on a push it

@@ -15,6 +15,8 @@
 #
 # Optional env vars:
 #   RELEASE       — Release directory name (default: 2025.2)
+#   GITHUB_TOKEN  — Authenticates the clone from github.com; CI passes the
+#                   workflow token, a run without one clones anonymously
 #
 # Reusable service image build script.
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
@@ -55,12 +57,81 @@ APT_PACKAGES=$(yq -r ".\"${OPERATOR}\".apt_packages // [] | join(\" \")" "${EXTR
 # ---------------------------------------------------------------------------
 # 3. Clone upstream at pinned ref
 # ---------------------------------------------------------------------------
+# Never let git wait for a username. On a runner without a terminal the
+# credential prompt fails as "could not read Username for
+# 'https://github.com': No such device or address", which hides the rejection
+# behind it; with prompts disabled the same rejection reads "terminal prompts
+# disabled" and the retry below moves on.
+export GIT_TERMINAL_PROMPT=0
+
+# GitHub does not reliably serve unauthenticated upload-pack requests to the
+# git a distribution ships (the self-hosted runners run Ubuntu 24.04's 2.43):
+# since 2026-09-02 the anonymous POST can come back as a 401 challenge, while
+# the same request carrying a token, which is what actions/checkout sends,
+# succeeds. CI hands over the workflow token in GITHUB_TOKEN; send it the way
+# actions/checkout does, as a basic-auth header scoped to https://github.com/,
+# through git's environment config so it lands in no file and no argument
+# list and the opendev fallback below never sees it. hack/ci-deploy-korc.sh
+# carries the same block. A run without a token stays anonymous.
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  auth_index="${GIT_CONFIG_COUNT:-0}"
+  export "GIT_CONFIG_KEY_${auth_index}=http.https://github.com/.extraheader"
+  export "GIT_CONFIG_VALUE_${auth_index}=AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 | tr -d '\n')"
+  export GIT_CONFIG_COUNT=$((auth_index + 1))
+fi
+
+# Where the source comes from, in order. OpenStack develops and tags on
+# opendev.org; the GitHub mirror goes first because it is what the Build
+# Images workflow checks out (.github/actions/checkout-service-source), so the
+# e2e image and the published one are cut from the same bytes, and because it
+# is the host the token above authenticates. A source that does not serve the
+# clone within MAX_ATTEMPTS hands over to the next. The retry mirrors
+# .github/actions/registry-login: a bounded number of tries, linear backoff.
+SOURCE_URLS=(
+  "https://github.com/openstack/${OPERATOR}.git"
+  "https://opendev.org/openstack/${OPERATOR}.git"
+)
+MAX_ATTEMPTS=3
+BASE_DELAY=5
+
 # NOTE: Uses mktemp to avoid race conditions during local parallel debugging.
 # Each invocation gets a unique directory (review #2 comment 9).
 SRC_DIR=$(mktemp -d "/tmp/${OPERATOR}-src.XXXXXX")
 trap 'rm -rf "${SRC_DIR}"' EXIT
-git clone --depth 1 --branch "${SERVICE_REF}" \
-  "https://github.com/openstack/${OPERATOR}.git" "${SRC_DIR}"
+
+# clone_from <url>
+# Clones SERVICE_REF from <url> into SRC_DIR, retrying up to MAX_ATTEMPTS
+# times. The target is recreated between tries so a half-written clone never
+# leaks into the next attempt.
+clone_from() {
+  local url="$1" attempt delay
+  for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+    if git clone --depth 1 --branch "${SERVICE_REF}" "${url}" "${SRC_DIR}"; then
+      return 0
+    fi
+    rm -rf "${SRC_DIR}"
+    mkdir -p "${SRC_DIR}"
+    if [ "${attempt}" -lt "${MAX_ATTEMPTS}" ]; then
+      delay=$((attempt * BASE_DELAY))
+      echo "::warning::git clone of ${url} at ${SERVICE_REF} failed (attempt ${attempt}/${MAX_ATTEMPTS}); retrying in ${delay}s"
+      sleep "${delay}"
+    fi
+  done
+  return 1
+}
+
+cloned=false
+for url in "${SOURCE_URLS[@]}"; do
+  if clone_from "${url}"; then
+    cloned=true
+    break
+  fi
+  echo "::warning::${url} did not serve ${SERVICE_REF} after ${MAX_ATTEMPTS} attempts"
+done
+if [ "${cloned}" != true ]; then
+  echo "::error::Could not clone openstack/${OPERATOR} at ${SERVICE_REF} from any source: ${SOURCE_URLS[*]}"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 4. Apply patches (mirrors .github/actions/checkout-service-source so the

@@ -1059,6 +1059,9 @@ jobs:
       # image — e.g. c5c3, which deploys K-ORC via an upstream Helm chart —
       # yield no releases and so never appear here.
       - name: Build service images
+        env:
+          # Authenticates the source clones from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           while read -r svc release; do
             [ -n "$svc" ] || continue
@@ -1243,6 +1246,9 @@ jobs:
       # e2e-controlplane job) and K-ORC via the shared pinned installer.
       - name: Install CRDs watched by the c5c3-operator
         if: matrix.operator == 'c5c3'
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           kubectl apply -f operators/keystone/helm/keystone-operator/crds/
           kubectl apply -f operators/horizon/helm/horizon-operator/crds/
@@ -1835,6 +1841,9 @@ jobs:
       # Deploy K-ORC (CRDs + controller) from the upstream installer at the tag
       # pinned in deploy/flux-system/sources/k-orc.yaml.
       - name: Deploy K-ORC
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
         run: hack/ci-deploy-korc.sh
       # keystone-operator first so its CRD exists before c5c3-operator projects
       # Keystone CRs.
@@ -2014,6 +2023,9 @@ jobs:
           CONTROLPLANE_NAME: controlplane-sso
           WITH_CONTROLPLANE_CR: "false"
       - name: Deploy K-ORC
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
         run: hack/ci-deploy-korc.sh
       - name: Deploy keystone-operator
         run: hack/ci-deploy-operator.sh
@@ -2135,6 +2147,9 @@ jobs:
           CONTROLPLANE_OPERATORS: external
           WITH_CONTROLPLANE_CR: "false"
       - name: Deploy K-ORC
+        env:
+          # Authenticates the K-ORC clone from github.com; see the script.
+          GITHUB_TOKEN: ${{ github.token }}
         run: hack/ci-deploy-korc.sh
       # keystone-operator first so its CRD exists before c5c3-operator's manager
       # cache starts (it Owns Keystone/Horizon children even in External mode).

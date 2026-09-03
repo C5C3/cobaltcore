@@ -709,7 +709,7 @@ guard.
 | 5 | Build base images | Builds `python-base` and `venv-builder`, only when `NEEDS_BASE_IMAGES` is true |
 | 6 | Build federation proxy image | Builds `<IMAGE_PREFIX>/keystone-federation-proxy:dev`, only when `BUILD_PROXY` is true |
 | 7 | Build operator images | Builds `<IMAGE_PREFIX>/<op>-operator:dev` for each name in `BUILD_OPERATORS` |
-| 8 | Build service images | Builds `<IMAGE_PREFIX>/<svc>:<release>` for each pair in `BUILD_SERVICE_IMAGES` |
+| 8 | Build service images | Builds `<IMAGE_PREFIX>/<svc>:<release>` for each pair in `BUILD_SERVICE_IMAGES`; passes `GITHUB_TOKEN` so the source clones from `github.com` are authenticated |
 | 9 | Build Tempest images | Builds `<IMAGE_PREFIX>/tempest:<release>` for each release in `BUILD_TEMPEST_RELEASES` |
 | 10 | Push E2E images to GHCR | For each image built above, `docker tag` to `<repo>:e2e-${run_id}-<orig_tag>` and `docker push` |
 
@@ -1041,7 +1041,7 @@ one under review — which is why the `e2e_controlplane` path filter also watche
 | 3 | `load-e2e-images` composite | Restores `keystone-operator:dev`, `c5c3-operator:dev`, `keystone:2025.2`, `tempest:2025.2` from GHCR |
 | 4 | `kind load docker-image` | Loads the four images into kind |
 | 5 | `setup-e2e-infra` composite action | Deploys infra with `WITH_CONTROLPLANE=true CONTROLPLANE_OPERATORS=external CONTROLPLANE_NAME=controlplane-keystone` |
-| 6 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned tag |
+| 6 | `hack/ci-deploy-korc.sh` | Applies K-ORC CRDs + controller at the pinned commit; runs with `GITHUB_TOKEN` so the clone from `github.com` is authenticated (see [hack/ci-build-service-image.sh](#hackci-build-service-imagesh) for why) |
 | 7 | `hack/ci-deploy-operator.sh` (keystone) | Deploys the keystone-operator dev image into `keystone-system` |
 | 8 | `hack/ci-deploy-operator.sh` (c5c3) | Deploys the c5c3-operator dev image into `c5c3-system` |
 | 9 | `chainsaw test` | Runs the full-chain suite with `E2E_REQUIRE_CONTROLPLANE_STACK=true` |
@@ -1349,10 +1349,24 @@ full image chain (`python-base` -> `venv-builder` -> service image).
 | `OPERATOR` | Yes | - | OpenStack service name (e.g. `keystone`) |
 | `IMAGE_PREFIX` | Yes | - | Container image prefix (e.g. `ghcr.io/c5c3`) |
 | `RELEASE` | No | `2025.2` | Release directory name under `releases/` |
+| `GITHUB_TOKEN` | No | (unset) | Authenticates the clone from `github.com`; the `Build service images` step passes the workflow token, a run without one clones anonymously |
 
 The script reads `releases/<RELEASE>/source-refs.yaml` for the upstream Git ref and
 `releases/<RELEASE>/extra-packages.yaml` for additional pip/apt packages. The final image
 is tagged `<IMAGE_PREFIX>/<OPERATOR>:<RELEASE>`.
+
+The source is cloned from the GitHub mirror first, the host the Build Images
+workflow checks out, and from `opendev.org` when the mirror does not serve the
+ref after three attempts with a linear backoff. Both hosts carry the same
+tags. GitHub does not reliably serve unauthenticated `upload-pack` requests to
+the git a distribution ships (the self-hosted runners run Ubuntu 24.04's
+2.43): since 2026-09-02 the anonymous request can come back as a 401
+challenge, which a runner without a terminal reports as `could not read
+Username for 'https://github.com'`. With `GITHUB_TOKEN` set the script sends
+the token the way `actions/checkout` does, as a basic-auth header scoped to
+`https://github.com/`, through git's environment config, so it lands in no
+file, no argument list and never reaches `opendev.org`. `GIT_TERMINAL_PROMPT=0`
+keeps a rejected clone from waiting for a username.
 
 Usage:
 
@@ -1444,6 +1458,7 @@ the tag can never claim a version the image was not built from.
 | `OVN_DOCKERFILE` | No | `images/ovn/Dockerfile` | Dockerfile to resolve the pin from and to build; its directory is the build context |
 | `DOCKER_BUILD_CACHE_FROM` | No | (unset) | buildx `--cache-from` spec |
 | `DOCKER_BUILD_CACHE_TO` | No | (unset) | buildx `--cache-to` spec |
+| `GITHUB_TOKEN` | No | (unset) | Authenticates the source fetches from `github.com` inside the build; mounted as the `github_token` BuildKit secret, never a build-arg, so it reaches no layer. The `Build OVN image` step passes the workflow token |
 
 Usage:
 
@@ -1816,7 +1831,8 @@ The CI workflow depends on the following artifacts:
 | `hack/*.sh` | `shellcheck` job | Shell scripts validated by shellcheck |
 | `.codecov.yml` | Codecov integration | Component-level coverage thresholds |
 | `hack/ci-dump-diagnostics.sh` | `e2e-infra`, `e2e-operator`, `e2e-chaos`, `tempest` jobs | Shared diagnostic dump |
-| `hack/ci-build-service-image.sh` | `e2e-operator`, `e2e-chaos`, `tempest` jobs | Builds OpenStack service images |
+| `hack/ci-build-service-image.sh` | `build-e2e-images` job | Builds OpenStack service images from an authenticated clone of the upstream source |
+| `hack/ci-deploy-korc.sh` | `e2e-operator` (c5c3 leg), `e2e-controlplane`, `e2e-controlplane-sso`, `e2e-external-keystone` jobs | Applies K-ORC from an authenticated clone at the pinned commit |
 | `hack/ci-deploy-operator.sh` | `e2e-operator`, `e2e-chaos`, `tempest` jobs | Deploys operator via Helm |
 | `hack/ci-run-tempest.sh` | `tempest` job | Runs Tempest API tests |
 | `.github/actions/setup-test-deps/` | `chainsaw-lint` job, `setup-e2e-infra` composite action | Composite action for testdeps cache + `make install-test-deps` |

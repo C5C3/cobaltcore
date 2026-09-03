@@ -841,6 +841,11 @@ jobs:
           platform-pair: ${{ steps.platform-pair.outputs.value }}
           build-args: |
             APT_MIRROR=http://azure.archive.ubuntu.com
+          # The Dockerfile fetches OVN and OVS from github.com with the git
+          # noble ships; the token authenticates those fetches (see the
+          # Dockerfile). A secret, not a build-arg: it reaches no layer.
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
           labels-title: ovn
           labels-description: OVN and Open vSwitch daemons and client tools built from pinned upstream sources
           metadata-tags: |

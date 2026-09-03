@@ -10,6 +10,8 @@
 #   - OVN_IMAGE overrides the tag;
 #   - the DOCKER_BUILD_CACHE_* vars add --cache-from/--cache-to;
 #   - OVN_DOCKERFILE moves the resolved pin and the built file together;
+#   - GITHUB_TOKEN is mounted as the github_token BuildKit secret, never
+#     passed as a build-arg;
 #   - a Dockerfile without the pin aborts before docker is invoked.
 #
 # Follows the project-native bash test pattern (tests/lib/assertions.sh),
@@ -57,14 +59,15 @@ STUB
 
 # run_build [VAR=value ...]
 # Runs the builder with the docker stub prepended to PATH (so coreutils still
-# resolve) and a fresh log. OVN_IMAGE, OVN_DOCKERFILE and the cache vars start
-# out unset; the arguments are exported on top of that. Stores the combined
-# stdout/stderr in OUTPUT, the exit status in RC and the recorded argv in LOG.
+# resolve) and a fresh log. OVN_IMAGE, OVN_DOCKERFILE, GITHUB_TOKEN and the
+# cache vars start out unset; the arguments are exported on top of that. Stores
+# the combined stdout/stderr in OUTPUT, the exit status in RC and the recorded
+# argv in LOG.
 run_build() {
   RC=0
   rm -f "$DOCKER_LOG"
   OUTPUT="$(
-    unset OVN_IMAGE OVN_DOCKERFILE DOCKER_BUILD_CACHE_FROM DOCKER_BUILD_CACHE_TO
+    unset OVN_IMAGE OVN_DOCKERFILE DOCKER_BUILD_CACHE_FROM DOCKER_BUILD_CACHE_TO GITHUB_TOKEN
     for assignment in "$@"; do
       export "${assignment?}"
     done
@@ -168,6 +171,26 @@ test_unresolvable_pin_aborts() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 6: GITHUB_TOKEN travels as a BuildKit secret
+# ---------------------------------------------------------------------------
+test_github_token_secret() {
+  echo "Test: GITHUB_TOKEN is mounted as the github_token secret, never a build-arg"
+
+  # The Dockerfile's source fetch mounts the secret and turns it into the
+  # auth header actions/checkout sends; a build-arg would bake the token
+  # into the image metadata, and the default run (test 1) proves the flag is
+  # absent without a token.
+  run_build "GITHUB_TOKEN=ghs_testtoken"
+
+  assert_eq "builder exits 0 with a token" "0" "$RC"
+  assert_contains "the token is passed as a secret read from the environment" "$LOG" \
+    "--secret id=github_token,env=GITHUB_TOKEN"
+  assert_not_contains "the raw token is in no docker argument" "$LOG" "ghs_testtoken"
+  assert_not_contains "the token is no build-arg" "$LOG" "--build-arg"
+  assert_eq "the build context stays the last argument" "${PROJECT_ROOT}/images/ovn/" "${LOG##* }"
+}
+
+# ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
 test_default_build
@@ -175,6 +198,7 @@ test_ovn_image_override
 test_cache_args
 test_ovn_dockerfile_override
 test_unresolvable_pin_aborts
+test_github_token_secret
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

@@ -82,7 +82,25 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # 'ovs' gitlink names there, straight from openvswitch/ovs rather than from
 # whatever URL upstream's .gitmodules carries at that commit. A gitlink that
 # no longer matches OVS_COMMIT fails the build loudly.
-RUN git init /src/ovn && \
+#
+# GitHub does not reliably serve unauthenticated fetches to the git noble
+# ships (2.43): since 2026-09-02 the anonymous upload-pack request can come
+# back as a 401 challenge, which a build without a terminal reports as "could
+# not read Username for 'https://github.com'". A build that mounts the
+# github_token secret (hack/ci-build-ovn-image.sh and the build-ovn job pass
+# the workflow token) sends it the way actions/checkout does, as a basic-auth
+# header scoped to github.com, through git's environment config: it lives in
+# this one RUN and in no layer. A build without the secret stays anonymous.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN --mount=type=secret,id=github_token \
+    export GIT_TERMINAL_PROMPT=0 && \
+    if [ -s /run/secrets/github_token ]; then \
+        auth="$(printf 'x-access-token:%s' "$(cat /run/secrets/github_token)" | base64 -w0)" && \
+        export GIT_CONFIG_COUNT=1 \
+            GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}"; \
+    fi && \
+    git init /src/ovn && \
     git -C /src/ovn remote add origin https://github.com/ovn-org/ovn.git && \
     git -C /src/ovn fetch --depth 1 origin "${OVN_COMMIT}" && \
     git -C /src/ovn checkout --detach FETCH_HEAD && \

@@ -15,6 +15,11 @@
 #   (none — all have sensible defaults)
 #
 # Optional env vars:
+#   GITHUB_TOKEN            — Authenticates the source fetches from github.com
+#                             inside the build; mounted as the github_token
+#                             BuildKit secret, never a build-arg, so it reaches
+#                             no layer. CI passes the workflow token; a run
+#                             without one fetches anonymously.
 #   OVN_IMAGE               — Target image name:tag (default: c5c3/ovn:<version>)
 #   OVN_DOCKERFILE          — Dockerfile to resolve the pin from and to build
 #                             (default: images/ovn/Dockerfile). Its directory is
@@ -52,10 +57,17 @@ cache_args=()
 [[ -n "${DOCKER_BUILD_CACHE_FROM:-}" ]] && cache_args+=(--cache-from "${DOCKER_BUILD_CACHE_FROM}")
 [[ -n "${DOCKER_BUILD_CACHE_TO:-}" ]] && cache_args+=(--cache-to "${DOCKER_BUILD_CACHE_TO}")
 
+# The token goes in as a BuildKit secret read from the environment: the
+# Dockerfile mounts it into the one RUN that fetches from github.com, so it
+# is in no build-arg, no layer and no image metadata.
+secret_args=()
+[[ -n "${GITHUB_TOKEN:-}" ]] && secret_args+=(--secret "id=github_token,env=GITHUB_TOKEN")
+
 # ${cache_args[@]+"…"} guards the empty case: bash 3.2, which contributors run
 # `make test-shell` under on macOS, aborts on an empty array under set -u.
 docker build \
   -t "${OVN_IMAGE}" \
   -f "${OVN_DOCKERFILE}" \
   ${cache_args[@]+"${cache_args[@]}"} \
+  ${secret_args[@]+"${secret_args[@]}"} \
   "$(dirname "${OVN_DOCKERFILE}")/"

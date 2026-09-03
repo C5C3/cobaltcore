@@ -37,6 +37,14 @@ inputs:
     description: Additional build contexts (multiline)
     required: false
     default: ''
+  secrets:
+    description: >
+      BuildKit secrets for docker/build-push-action (multiline, id=value). A
+      secret reaches only the RUN steps that mount it and never a layer;
+      build-ovn passes the workflow token as github_token so the source
+      fetches from github.com are authenticated.
+    required: false
+    default: ''
   labels-title:
     description: OCI image title annotation
     required: true
@@ -118,6 +126,7 @@ runs:
         file: ${{ inputs.file || format('{0}/Dockerfile', inputs.context) }}
         build-args: ${{ inputs.build-args }}
         build-contexts: ${{ inputs.build-contexts }}
+        secrets: ${{ inputs.secrets }}
         platforms: ${{ inputs.platform }}
         load: ${{ inputs.push-by-digest == 'false' }}
         outputs: ${{ inputs.push-by-digest == 'true' && 'type=image,push-by-digest=true,name-canonical=true,push=true' || '' }}
