@@ -45,6 +45,8 @@
 #                  (default: deploy/flux-system/releases/k-orc.yaml).
 #   WAIT_TIMEOUT — kubectl wait timeout for the controller Deployment
 #                  (default: 180s).
+#   GITHUB_TOKEN — Authenticates the clone from github.com; CI passes the
+#                  workflow token, a run without one clones anonymously.
 #
 # set -euo pipefail, SPDX Apache-2.0 header, shellcheck-clean.
 
@@ -115,8 +117,55 @@ KORC_CHECKOUT="${KORC_WORKDIR}/checkout"
 KORC_BUILD="${KORC_WORKDIR}/build"
 mkdir -p "${KORC_BUILD}"
 
+# Never let git wait for a username. On a runner without a terminal the
+# credential prompt fails as "could not read Username for
+# 'https://github.com': No such device or address", which hides the rejection
+# behind it; with prompts disabled the same rejection reads "terminal prompts
+# disabled" and the retry below moves on.
+export GIT_TERMINAL_PROMPT=0
+
+# GitHub does not reliably serve unauthenticated upload-pack requests to the
+# git a distribution ships (the self-hosted runners run Ubuntu 24.04's 2.43):
+# since 2026-09-02 the anonymous POST can come back as a 401 challenge, while
+# the same request carrying a token, which is what actions/checkout sends,
+# succeeds. CI hands over the workflow token in GITHUB_TOKEN; send it the way
+# actions/checkout does, as a basic-auth header scoped to https://github.com/,
+# through git's environment config so it lands in no file and no argument
+# list. The blob-less clone below fetches on demand during the checkout, so
+# the header has to cover every git command here, not only the clone.
+# hack/ci-build-service-image.sh carries the same block. A run without a
+# token stays anonymous.
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  auth_index="${GIT_CONFIG_COUNT:-0}"
+  export "GIT_CONFIG_KEY_${auth_index}=http.https://github.com/.extraheader"
+  export "GIT_CONFIG_VALUE_${auth_index}=AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 | tr -d '\n')"
+  export GIT_CONFIG_COUNT=$((auth_index + 1))
+fi
+
+# The retry mirrors .github/actions/registry-login: a bounded number of tries,
+# linear backoff. K-ORC has no mirror, so a clone that fails every try fails
+# the step.
+MAX_ATTEMPTS=3
+BASE_DELAY=5
+
 echo "Cloning K-ORC ${KORC_COMMIT} from ${KORC_REPO_URL}"
-git clone --filter=blob:none --no-checkout "${KORC_REPO_URL}" "${KORC_CHECKOUT}"
+cloned=false
+for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+  if git clone --filter=blob:none --no-checkout "${KORC_REPO_URL}" "${KORC_CHECKOUT}"; then
+    cloned=true
+    break
+  fi
+  rm -rf "${KORC_CHECKOUT}"
+  if [ "${attempt}" -lt "${MAX_ATTEMPTS}" ]; then
+    delay=$((attempt * BASE_DELAY))
+    echo "::warning::git clone of ${KORC_REPO_URL} failed (attempt ${attempt}/${MAX_ATTEMPTS}); retrying in ${delay}s"
+    sleep "${delay}"
+  fi
+done
+if [ "${cloned}" != true ]; then
+  echo "::error::Could not clone K-ORC from ${KORC_REPO_URL} after ${MAX_ATTEMPTS} attempts"
+  exit 1
+fi
 git -C "${KORC_CHECKOUT}" checkout --detach "${KORC_COMMIT}"
 
 # Generate a kustomization that builds the upstream ./config/default base with the

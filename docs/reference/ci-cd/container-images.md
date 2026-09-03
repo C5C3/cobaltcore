@@ -966,7 +966,9 @@ bash tests/container-images/verify_horizon.sh c5c3/horizon:25.5.1
 
 The ovn build needs no source checkout and no build args: the Dockerfile clones
 OVN at the pinned tag itself and derives Open vSwitch from that tag. One script
-covers it.
+covers it. Set `GITHUB_TOKEN` when the anonymous fetch inside the build fails
+with `could not read Username for 'https://github.com'`; the script mounts it
+as a BuildKit secret and the fetch is authenticated (CI always does).
 
 ```bash
 # Builds c5c3/ovn:<pinned version>
