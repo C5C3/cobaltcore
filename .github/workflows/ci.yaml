@@ -1096,6 +1096,10 @@ jobs:
       # consumer jobs address the image by that tag and the workflow must not
       # carry a second copy of the pin.
       - name: Build OVN image
+        env:
+          # Authenticates the source fetches from github.com inside the
+          # build; the script mounts it as a BuildKit secret.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           OVN_VERSION="$(hack/ci-resolve-ovn-version.sh)"
           echo "::group::Building ovn:${OVN_VERSION}"
