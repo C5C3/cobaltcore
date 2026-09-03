@@ -312,7 +312,7 @@ INFRA_ONLY="${INFRA_ONLY:-false}"
 # install_gateway_api_crds(): it enumerates the standard-channel CRD names of
 # this bundle, and a release that adds a CRD needs the new name added there —
 # otherwise the presence check passes on the old set and skips the install.
-GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.6.1}"
+GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.6.2}"
 GATEWAY_API_CRDS_URL="${GATEWAY_API_CRDS_URL:-https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml}"
 
 # Envoy Gateway CRD release asset, applied right after the Gateway API bundle.
