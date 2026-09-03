@@ -8,7 +8,7 @@
 # to a PVC, then this container copies that PVC to the configured S3 bucket
 # with 'rclone copy'. Release-independent: rclone comes from the distro
 # (ubuntu:noble) package archive, not from an OpenStack release.
-FROM ubuntu:noble@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+FROM ubuntu:noble@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
 
 ENV LANG=C.UTF-8
 
