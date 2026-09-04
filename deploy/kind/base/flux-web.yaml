@@ -65,7 +65,7 @@ spec:
   # This keeps the kind-only addon self-contained — no extra
   # ResourceSetInputProvider CR to maintain.
   inputs:
-    - version: "0.58.x"
+    - version: "0.59.x"
   resources:
     - apiVersion: source.toolkit.fluxcd.io/v1
       kind: OCIRepository
