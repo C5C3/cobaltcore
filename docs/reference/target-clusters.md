@@ -354,6 +354,40 @@ StatefulSet comes back forbidden and `NorthboundReady` holds the API server's
 message under reason `StatefulSetError`. Without the second, the write of the
 `<name>-backup` claim comes back forbidden and `BackupReady` holds it.
 
+An `OVNCentral` also needs cert-manager on the cluster its children land on, and
+a CA-capable issuer for `spec.tls.issuerRef` to name. The ref takes kind
+`ClusterIssuer` by default and accepts `Issuer`. Give OVN an issuer of its own:
+OVS authenticates a peer by checking that its certificate chains to the
+configured CA, with no per-certificate allowlist and no SAN check, so every leaf
+that CA signs is a valid client of both databases, and reusing the database CA
+would let a MariaDB client certificate open an OVSDB session (decision D9 of
+[#898](https://github.com/C5C3/cobaltcore/issues/898)). Without cert-manager on
+that cluster the CR holds `TLSReady=False` under reason `CertManagerUnavailable`
+and polls, and since TLS is the first gate of the pipeline nothing is written. An
+issuer that is not CA-backed clears that gate and fails the next one, because the
+client Secret it produces carries no `ca.crt`. `TLSReady` then holds reason
+`CertificateError` and the message
+`issuer <kind>/<name> issued no ca.crt; spec.tls.issuerRef must name a CA issuer`.
+The devstack ships the `ClusterIssuer` `openstack-ovn-ca-issuer` from
+`deploy/flux-system/infrastructure/ovn-ca-issuer.yaml`, a CA issuer whose root is
+a self-signed CA Certificate in the `cert-manager` namespace. The field is
+described under [`OVNTLSSpec`](./ovn/ovn-central-crd.md#ovntlsspec).
+
+The nodes an `OVNChassis` selects have to be labelled ahead of it.
+`spec.nodeSelector` is what selects them, and the CRD fixes no keys: the suites
+and the guides use `openstack.c5c3.io/chassis=true` for the chassis nodes and
+`openstack.c5c3.io/gateway=true` for the gateway subset. Each selected node also
+has to carry the `openvswitch` and `geneve` kernel modules in its `/lib/modules`
+tree, which the privileged `host-prepare` init container loads with
+`modprobe openvswitch && modprobe geneve` (`reconcile_nodes.go`). The operator
+never writes a Node. Its RBAC on `nodes` is `get`, `list` and `watch`, matching
+the access chart's refusal to grant `patch` there, so both the labels and the
+module tree are the platform's job. The two DaemonSets run in the node's network
+namespace and mount `/run/openvswitch`, `/run/ovn` and `/lib/modules`, which is
+the posture the `privilegedNamespaces` entry above admits.
+[Node contract](./ovn/ovn-chassis-crd.md#node-contract) has the mount table and
+the per-container capabilities.
+
 A placed CR's API health probe does not resolve over Service DNS from the
 management cluster, so it runs through the target's API server instead. The same
 credentials therefore need `get` on `services/proxy` in every namespace a
@@ -560,6 +594,22 @@ deletion open. The pass requeues and the finalizer stays on until the two
 five-minute windows run out. Then it is released without a sweep, under a
 `RemoteChildrenAbandoned` warning event naming what went undeleted, and the
 children stay on the unreachable cluster, to be removed there by hand.
+
+The four CRs of a placed network service come down in one order, because each of
+the first three reads something a later one owns. Delete the
+`NeutronMetadataAgent` first: its pods mount the chassis's `/run/openvswitch`
+socket. Then drain the `OVNChassis` before deleting it. Take the gateway label
+off the gateway nodes and wait for the `evacuate` Jobs, then take the chassis
+label off and wait for the `chassis-del` Jobs. Deleting the CR outright removes
+the DaemonSets and leaves the Southbound `Chassis` rows behind, the way deleting
+a Deployment leaves the rows its pods wrote (`ovnchassis_controller.go`);
+[Drain a chassis node](../guides/ovn/drain-a-chassis-node.md) walks the drain.
+The `Neutron` goes third, since it mounts the client Secret the central
+publishes, and the `OVNCentral` last. `PersistentVolumeClaim` is on that CR's
+sweep list for the sake of the `<name>-backup` claim, which no controller owns
+(`ovncentral_controller.go`), so on a target cluster the snapshots are deleted
+with the CR, as they are under the local cascade. Copy them off the claim first,
+or have `spec.backup.s3` write each run to a bucket.
 
 ::: warning Children written once keep an owner reference from an older operator
 A child written by an operator predating this contract carries an owner
