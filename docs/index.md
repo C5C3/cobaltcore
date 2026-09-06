@@ -16,8 +16,9 @@ to the multi-cluster picture of the original design.
 The Keystone operator is the reference implementation that establishes the
 patterns — CRD layout, sub-reconciler chain, webhooks, finalizers,
 instrumentation — replicated by every other service operator. Horizon, Glance,
-Placement, and Barbican are onboarded on the same scaffolding, and the
-c5c3-operator ties the services together into a single ControlPlane resource.
+Placement, Barbican, and Neutron with its OVN layer are onboarded on the same
+scaffolding, and the c5c3-operator ties the services together into a single
+ControlPlane resource.
 
 ## Start here
 
@@ -34,8 +35,10 @@ c5c3-operator ties the services together into a single ControlPlane resource.
   with [Keystone](./reference/keystone/) as the reference implementation and the
   [c5c3-operator](./reference/c5c3/controlplane-crd.md) as the ControlPlane
   orchestration layer. [Horizon](./reference/horizon/),
-  [Glance](./reference/glance/), [Placement](./reference/placement/), and
-  [Barbican](./reference/barbican/) are onboarded on the same conventions.
+  [Glance](./reference/glance/), [Placement](./reference/placement/),
+  [Barbican](./reference/barbican/), and [Neutron](./reference/neutron/) are
+  onboarded on the same conventions; the [OVN operator](./reference/ovn/) runs
+  the SDN layer Neutron programs.
 - **Shared library.** Common types, conditions, config rendering, and
   Kubernetes helpers in `internal/common/`, plus the Helm chart, operator
   packaging, and rotation scripts. See the

@@ -176,6 +176,30 @@ export default defineConfig({
             ],
           },
           {
+            text: 'OVN',
+            link: '/reference/ovn/',
+            collapsed: true,
+            items: [
+              { text: 'Overview', link: '/reference/ovn/' },
+              { text: 'OVNCentral CRD', link: '/reference/ovn/ovn-central-crd' },
+              { text: 'OVNChassis CRD', link: '/reference/ovn/ovn-chassis-crd' },
+              { text: 'Controller Events', link: '/reference/ovn/ovn-events' },
+              { text: 'Reconciler Architecture', link: '/reference/ovn/ovn-reconciler' },
+            ],
+          },
+          {
+            text: 'Neutron',
+            link: '/reference/neutron/',
+            collapsed: true,
+            items: [
+              { text: 'Overview', link: '/reference/neutron/' },
+              { text: 'CRD', link: '/reference/neutron/neutron-crd' },
+              { text: 'Metadata Agent CRD', link: '/reference/neutron/neutron-metadata-agent-crd' },
+              { text: 'Controller Events', link: '/reference/neutron/neutron-events' },
+              { text: 'Reconciler Architecture', link: '/reference/neutron/neutron-reconciler' },
+            ],
+          },
+          {
             text: 'c5c3 (ControlPlane)',
             collapsed: true,
             items: [
