@@ -1,0 +1,475 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the two halves of a provider network that live below the
+# Neutron API: the bridge mapping the OVNChassis writes onto the node, and the
+# Southbound port binding a chassis claims for a port on it.
+#
+# The five steps are the five observation points: the stack is up, the node
+# carries external_ids:ovn-bridge-mappings with the mapped bridge beside it, the
+# Northbound database carries a provider switch with a localnet port, an
+# interface on br-int announces the logical port, and the Southbound port
+# binding of that port names a chassis.
+#
+# ── Why this suite drives OVN instead of the Neutron API ──────────────
+# The neutron e2e-operator leg runs no Keystone. The keystoneEndpoint every
+# Neutron fixture carries is a cluster-local convention URL nothing on this leg
+# serves, and [DEFAULT] auth_strategy is a Rejected owned key
+# (operators/neutron/api/v1alpha1/config_ownership.go), so the API cannot be put
+# on a pipeline without token validation either. A suite on this leg therefore
+# never calls the Neutron API: authenticated network CRUD is what the Tempest
+# neutron legs prove.
+#
+# What that leaves out of the provider-network guide is named here so no reader
+# mistakes this suite for a check on it: the `openstack network create
+# --provider-network-type flat --provider-physical-network physnet1` and
+# `openstack port create` commands are not run, and the ACTIVE port status the
+# guide has the reader look for is not asserted. The logical model below is
+# written straight into the Northbound database with ovn-nbctl instead, which is
+# the same model those commands would have produced, and the binding read back
+# in the Southbound database is the same one the ACTIVE status reports.
+#
+# ── ASSUMPTION under test: the chassis claims the port ────────────────
+# The chassis binds smoke0 because the interface on br-int carries
+# external_ids:iface-id=smoke0 and the logical port of that name exists. That
+# path was read off the OVN sources, not observed on this cluster; the first CI
+# run is what settles it. If the binding never names a chassis, the
+# neutron-provider-probe-sb-check pod log and the ovn-controller container of the
+# chassis pod are the evidence, and the step is to be narrowed to the localnet
+# port the mapping alone binds.
+#
+# spec.concurrent is false because the chassis pods run with hostNetwork and own
+# /run/openvswitch and /run/ovn on the node, and this suite also adds a port to
+# the node's br-int. hack/kind-config.yaml declares a single node, so a second
+# suite rendering an OVNChassis or a NeutronMetadataAgent at the same time would
+# contend with this one over the same host paths.
+#
+# Every step opens with the same two CRD presence gates and exits 0 with a SKIP
+# line when either operator is not deployed, so the suite is default-safe off
+# the e2e-operator matrix job. Nothing is applied before that gate, which is
+# also what lets the teardown below tolerate a run that created nothing.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-provider-network-smoke
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # The OVN control plane, the two chassis DaemonSets, the chassis
+    # registration and the Neutron bring-up in sequence take longer than the
+    # 120s the shared config allows.
+    assert: 5m
+    exec: 12m
+  steps:
+  # ── Step 1: Label the node and bring the stack up ───────────────────────
+  # The suite labels the node itself rather than relying on the cluster
+  # bring-up, so it runs against any kind cluster the CI job hands it. The step
+  # cleanup takes the label off again, which is what keeps a later suite from
+  # finding a node advertising a chassis role nothing serves.
+  #
+  # The fixtures are applied from inside the script rather than through an
+  # `apply` operation: they sit behind the CRD gates, and chainsaw would abort
+  # the whole test with `no matches for kind "OVNChassis"` on a cluster without
+  # the operators. Chainsaw runs scripts with the test directory as CWD, so the
+  # relative paths resolve.
+  - try:
+    - script:
+        timeout: 16m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl get crd neutrons.neutron.openstack.c5c3.io >/dev/null 2>&1 ||
+             ! kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Neutron or OVNCentral CRD not present (operators not deployed)."
+            exit 0
+          fi
+
+          NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          kubectl label node "$NODE" openstack.c5c3.io/chassis=true --overwrite
+          echo "OK: labelled node $NODE with openstack.c5c3.io/chassis=true"
+
+          kubectl apply -f 00-messaging-secret.yaml
+          kubectl apply -f 01-ovncentral-cr.yaml
+          kubectl apply -f 04-probe-script.yaml
+
+          # The control plane goes up first: the chassis registers with its
+          # Southbound database and the Neutron reconciler renders no config
+          # until it has published both addresses and its client Secret.
+          kubectl wait ovncentral/neutron-provider-ovn -n "$NAMESPACE" \
+            --for=condition=Ready --timeout=5m
+          echo "OK: OVNCentral/neutron-provider-ovn Ready=True"
+
+          kubectl apply -f 02-ovnchassis-cr.yaml
+          kubectl apply -f 03-neutron-cr.yaml
+
+          kubectl wait ovnchassis/neutron-provider-chassis -n "$NAMESPACE" \
+            --for=condition=Ready --timeout=5m
+          echo "OK: OVNChassis/neutron-provider-chassis Ready=True"
+
+          kubectl wait neutron/neutron-provider -n "$NAMESPACE" \
+            --for=condition=Ready --timeout=5m
+          echo "OK: Neutron/neutron-provider Ready=True"
+    catch: &provider-dump
+    # The dump is the same at every step: what the three CRs report, what the
+    # chassis pods and the probe pods said, and which node carried the label.
+    # Each command is guarded so an object that a given step never reached does
+    # not short-circuit the rest.
+    - script:
+        shell: bash
+        content: |
+          echo "=== OVNCentral CR ==="
+          kubectl get ovncentral neutron-provider-ovn -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== OVNChassis CR ==="
+          kubectl get ovnchassis neutron-provider-chassis -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== Neutron CR ==="
+          kubectl get neutron neutron-provider -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== DaemonSets ==="
+          kubectl describe ds -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-provider-chassis 2>&1 || true
+          echo "=== Chassis pod logs ==="
+          for pod in $(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/instance=neutron-provider-chassis -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=80 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --all-containers --tail=80 --previous 2>&1 || true
+          done
+          echo "=== Probe pods ==="
+          for pod in neutron-provider-probe-nb-seed neutron-provider-probe-sb-check; do
+            echo "--- $pod ---"
+            kubectl describe pod "$pod" -n "$NAMESPACE" 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --tail=200 2>&1 || true
+          done
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Node labels ==="
+          kubectl get nodes --show-labels 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    cleanup:
+    - script:
+        shell: bash
+        content: |
+          set -uo pipefail
+          for node in $(kubectl get nodes -l openstack.c5c3.io/chassis=true -o name 2>/dev/null); do
+            kubectl label "$node" openstack.c5c3.io/chassis- || true
+          done
+          echo "OK: removed the chassis label from every node"
+  # ── Step 2: Read the mapping back off the node ──────────────────────────
+  # The exec goes into the ovsdb-server container of the {name}-ovs DaemonSet:
+  # it serves the local Open vSwitch database over the socket in
+  # /run/openvswitch, and its own readiness probe is an ovs-vsctl call, so the
+  # client and the database it addresses are both there. The values are written
+  # by the apply-node init container of the ovn-controller pod beside it.
+  #
+  # ovs-vsctl prints the value of an external_ids key quoted, so the comparison
+  # strips the quotes rather than matching them.
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl get crd neutrons.neutron.openstack.c5c3.io >/dev/null 2>&1 ||
+             ! kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Neutron or OVNCentral CRD not present (operators not deployed)."
+            exit 0
+          fi
+
+          DS=ds/neutron-provider-chassis-ovs
+          MAPPINGS=""
+          RAW=""
+          for _ in $(seq 1 24); do
+            RAW="$(kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+              ovs-vsctl --timeout=15 get open . external_ids:ovn-bridge-mappings 2>&1 || true)"
+            MAPPINGS="$(tr -d '[:space:]"' <<< "${RAW}")"
+            if [ "${MAPPINGS}" = "physnet1:br-ex" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ "${MAPPINGS}" != "physnet1:br-ex" ]; then
+            echo "FAIL: external_ids:ovn-bridge-mappings is '${RAW}', want physnet1:br-ex"
+            exit 1
+          fi
+          echo "OK: the node carries external_ids:ovn-bridge-mappings=physnet1:br-ex"
+
+          # The bridge itself, because ovn-controller attaches patch ports to a
+          # bridge but never creates one: a mapping pointing at a bridge that
+          # does not exist would drop every packet on that physical network
+          # while both the CR and the mapping above still read correctly.
+          if ! kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+            ovs-vsctl --timeout=15 br-exists br-ex; then
+            echo "FAIL: bridge br-ex does not exist on the node"
+            kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+              ovs-vsctl --timeout=15 list-br 2>&1 || true
+            exit 1
+          fi
+          echo "OK: bridge br-ex exists on the node"
+    catch: *provider-dump
+  # ── Step 3: Write the provider network into the Northbound database ─────
+  # The probe runs the OVN client tools inside the OVN image, with the client
+  # certificate the OVNCentral published. It reads its verdict from the pod log
+  # after a terminal phase rather than from an attached stream: `kubectl run -i`
+  # carries only what the container writes after the attach is established, so a
+  # probe that reaches its sentinel first would leave the captured output empty.
+  # That costs --rm, and the trap removes the pod instead.
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl get crd neutrons.neutron.openstack.c5c3.io >/dev/null 2>&1 ||
+             ! kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Neutron or OVNCentral CRD not present (operators not deployed)."
+            exit 0
+          fi
+
+          POD=neutron-provider-probe-nb-seed
+
+          NB="$(kubectl get ovncentral neutron-provider-ovn -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+          # The image comes from the running StatefulSet, so no fixture in this
+          # suite has to spell the OVN tag the operator resolved.
+          IMG="$(kubectl get sts neutron-provider-ovn-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "neutron-provider-ovn-client"}},
+                {"name": "probe", "configMap": {"name": "neutron-provider-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh", "nb-seed"],
+                  "env": [{"name": "NB_ADDRESS", "value": "${NB}"}],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          # Poll for a terminal phase rather than for Succeeded alone: a probe
+          # that fails its assertion ends in Failed, and waiting only for
+          # Succeeded would burn the step timeout and throw away the log that
+          # says why. The sentinel below, not the phase, is the verdict.
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'NB-SEED-OK'
+          echo "OK: the northbound database carries the provider switch with its localnet port"
+    catch: *provider-dump
+  # ── Step 4: Announce the logical port on the integration bridge ─────────
+  # This is what a hypervisor's port plug does: an interface on br-int carrying
+  # external_ids:iface-id, which is the name ovn-controller looks the logical
+  # port up by. The interface is internal because nothing has to carry traffic
+  # through it. The binding, not a packet, is the assertion.
+  #
+  # br-int is created by ovn-controller rather than by the operator, so its
+  # existence is polled instead of assumed: the chassis reporting Ready says its
+  # pods are running, not that ovn-controller has finished its first pass.
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl get crd neutrons.neutron.openstack.c5c3.io >/dev/null 2>&1 ||
+             ! kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Neutron or OVNCentral CRD not present (operators not deployed)."
+            exit 0
+          fi
+
+          DS=ds/neutron-provider-chassis-ovs
+          FOUND=""
+          for _ in $(seq 1 24); do
+            if kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+              ovs-vsctl --timeout=15 br-exists br-int >/dev/null 2>&1; then
+              FOUND=yes
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "${FOUND}" ]; then
+            echo "FAIL: ovn-controller never created br-int on the node"
+            kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+              ovs-vsctl --timeout=15 list-br 2>&1 || true
+            exit 1
+          fi
+          echo "OK: bridge br-int exists on the node"
+
+          kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+            ovs-vsctl --timeout=15 --may-exist add-port br-int smoke0 \
+            -- set Interface smoke0 type=internal external_ids:iface-id=smoke0
+          echo "OK: br-int carries interface smoke0 with external_ids:iface-id=smoke0"
+    catch: *provider-dump
+  # ── Step 5: Read the port binding back ──────────────────────────────────
+  # The Southbound port binding is where the chassis records the claim, and the
+  # chassis column naming a UUID is the same fact the Neutron API would report
+  # as an ACTIVE port.
+  - try:
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl get crd neutrons.neutron.openstack.c5c3.io >/dev/null 2>&1 ||
+             ! kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Neutron or OVNCentral CRD not present (operators not deployed)."
+            exit 0
+          fi
+
+          POD=neutron-provider-probe-sb-check
+
+          SB="$(kubectl get ovncentral neutron-provider-ovn -n "$NAMESPACE" \
+            -o jsonpath='{.status.southbound.internalDbAddress}')"
+          test -n "$SB"
+          IMG="$(kubectl get sts neutron-provider-ovn-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "neutron-provider-ovn-client"}},
+                {"name": "probe", "configMap": {"name": "neutron-provider-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh", "sb-check"],
+                  "env": [{"name": "SB_ADDRESS", "value": "${SB}"}],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 210); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'BINDING-OK'
+          echo "OK: the southbound port binding of smoke0 names a chassis"
+    catch: *provider-dump
+    finally:
+    # Everything this suite creates is applied with kubectl from inside a script
+    # (all of it sits behind the CRD gates), so chainsaw's own cleanup never
+    # sees it and its namespace teardown does not apply. The suite shares the
+    # long-lived openstack namespace with every other neutron suite. Without
+    # this block each run would leak the neutron-api Deployment, the two worker
+    # Deployments, the MariaDB Database/User/Grant CRs with the neutron_provider
+    # schema, the OVN control plane with its PVCs, the two chassis DaemonSets
+    # and the interface this suite put on the node's br-int. The Neutron and the
+    # OVNChassis go before the OVNCentral: both mount the client Secret it
+    # publishes. Best-effort throughout, because a SKIP run created nothing and
+    # a teardown failure must not mask the assertion result.
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -uo pipefail
+          DS=ds/neutron-provider-chassis-ovs
+          kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+            ovs-vsctl --timeout=15 --if-exists del-port br-int smoke0 2>&1 || true
+
+          # The switch is dropped from the database before the database goes
+          # away, so a central that outlived a failed teardown carries no
+          # leftover logical model. Skipped when the central is already gone:
+          # the probe would only wait out its own connection budget.
+          POD=neutron-provider-probe-nb-cleanup
+          NB="$(kubectl get ovncentral neutron-provider-ovn -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}' 2>/dev/null || true)"
+          IMG="$(kubectl get sts neutron-provider-ovn-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+          if [ -n "${NB}" ] && [ -n "${IMG}" ]; then
+            OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "neutron-provider-ovn-client"}},
+                {"name": "probe", "configMap": {"name": "neutron-provider-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh", "nb-cleanup"],
+                  "env": [{"name": "NB_ADDRESS", "value": "${NB}"}],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+            kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+              --overrides="$OVERRIDES" 2>&1 || true
+            for _ in $(seq 1 60); do
+              phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+              case "${phase}" in Succeeded|Failed) break ;; esac
+              sleep 2
+            done
+            kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true
+          fi
+
+          kubectl delete neutron neutron-provider -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete ovnchassis neutron-provider-chassis -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete ovncentral neutron-provider-ovn -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete pod neutron-provider-probe-nb-seed neutron-provider-probe-sb-check \
+            neutron-provider-probe-nb-cleanup -n "$NAMESPACE" \
+            --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete configmap neutron-provider-probe-script -n "$NAMESPACE" \
+            --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete secret neutron-provider-messaging -n "$NAMESPACE" \
+            --ignore-not-found --timeout=1m 2>&1 || true
+          for node in $(kubectl get nodes -l openstack.c5c3.io/chassis=true -o name 2>/dev/null); do
+            kubectl label "$node" openstack.c5c3.io/chassis- || true
+          done

@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR for the ovn-db-sync-repair E2E test (2025.2 release).
+#
+# Managed mode throughout: the schema neutron_dbsync on the openstack-db MariaDB
+# cluster, the openstack-memcached cache, the ESO-synced neutron-db credentials
+# and the pre-seeded keystone-admin service-user password (both from
+# deploy/kind/infrastructure). The broker and the OVN control plane come from
+# the two sibling fixtures.
+#
+# One API replica and one worker replica: nothing here calls the API, and the
+# pods exist because the sync CronJob reads the same two config files they do.
+#
+# spec.ovnDBSync is the subject. suspend keeps the schedule from firing on its
+# own, so the only run against the Northbound database is the Job step 3
+# creates, and repair is the mode whose deletion direction this suite proves.
+# schedule is left unset: the operator resolves it to the hourly default at
+# reconcile time, and a suspended CronJob never fires it.
+# region neutron-cr
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-dbsync
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_dbsync
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-dbsync-messaging
+  ovn:
+    centralRef:
+      name: neutron-dbsync-ovn
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
+  ovnDBSync:
+    syncMode: repair
+    suspend: true
+# endregion neutron-cr

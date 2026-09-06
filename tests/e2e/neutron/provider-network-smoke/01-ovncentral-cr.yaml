@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVN control plane of the provider-network stack: the chassis registers with
+# its Southbound database, the Neutron API would program its Northbound
+# database, and the probe pods of this suite read both.
+#
+# Single-member Raft clusters and a single northd keep the bring-up inside the
+# suite's wait budget; the multi-member cluster is what
+# tests/e2e/ovn/central-basic-deployment/ covers. The backup CronJob is
+# suspended: this suite asserts nothing about it, and a snapshot of the logical
+# model it seeds proves nothing either.
+#
+# The issuer is the cluster-scoped one the kind overlay ships. OVN authenticates
+# every connection, so both databases, the chassis, the Neutron pods and the
+# probe pods are issued from the same CA.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: neutron-provider-ovn
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true
