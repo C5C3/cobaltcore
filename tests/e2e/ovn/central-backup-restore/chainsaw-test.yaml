@@ -1,0 +1,419 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the round trip an OVN database snapshot has to survive:
+# seed a logical switch, take a snapshot with the backup CronJob, wipe the
+# switch, replay the snapshot with ovsdb-client, and find the switch again.
+#
+# Both directions of the replay are observed, because ovsdb-client restore
+# replaces the target database rather than merging into it. The wipe step also
+# creates a switch the snapshot has no row for, and the last step asserts the
+# replay deleted it: a restore that only inserted would pass the round trip and
+# still lose nothing, which is not what the operator has to plan against.
+#
+# The five steps are the five observation points. Nothing about the snapshot
+# format or the restore invocation can be settled from the CRD alone, and the
+# backup CronJob's own success says only that a file was written.
+#
+# ── ASSUMPTION under test: restore against a clustered server ────────
+# The Phase-0 lab verified `ovsdb-client --force restore` against a standalone
+# ovsdb-server only. This suite runs the same invocation against the one-member
+# clustered Northbound the operator projects, which is the shape every
+# deployment actually runs. Its result is what decides the invocation the
+# restore guide prints: if the server refuses the transaction, the error text
+# from the ovn-restore-restore Job is to be recorded on the issue and both
+# artefacts (this suite and the guide) changed to whatever the server does
+# accept.
+#
+# The suite runs concurrently with its siblings: it starts no hostNetwork pod
+# and claims no node port, so it contends with them over nothing but the node's
+# CPU.
+#
+# Every step opens with the same CRD presence gate and exits 0 with a SKIP line
+# when the ovn-operator is not deployed, so the suite is default-safe off the
+# e2e-operator matrix job.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-central-backup-restore
+spec:
+  namespace: openstack
+  timeouts:
+    # The control plane, a backup run and a restore run in sequence take longer
+    # than the 120s the shared config allows.
+    assert: 5m
+    exec: 6m
+  steps:
+  # ── Step 1: Bring the control plane up and seed the switch ──────────────
+  # The CR and the ConfigMap are applied from inside the script rather than
+  # through an `apply` operation: they sit behind the CRD gate, and chainsaw
+  # would abort the whole test with `no matches for kind "OVNCentral"` on a
+  # cluster without the operator. Chainsaw runs scripts with the test directory
+  # as CWD, so the relative paths resolve.
+  - try:
+    - script:
+        timeout: 11m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1 || {
+            echo "SKIP: OVNCentral CRD not present (operator not deployed)."
+            exit 0
+          }
+
+          POD=ovn-restore-probe-seed
+
+          kubectl apply -f 00-ovncentral-cr.yaml
+          kubectl apply -f 01-probe-script.yaml
+
+          kubectl wait ovncentral/ovn-restore -n "$NAMESPACE" \
+            --for=condition=Ready --timeout=5m
+          echo "OK: OVNCentral/ovn-restore Ready=True"
+
+          NB="$(kubectl get ovncentral ovn-restore -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+          # The image comes from the running StatefulSet, so no fixture in this
+          # suite has to spell the OVN tag the operator resolved.
+          IMG="$(kubectl get sts ovn-restore-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-restore-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-restore-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh", "seed"],
+                  "env": [{"name": "NB_ADDRESS", "value": "${NB}"}],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          # Poll for a terminal phase rather than for Succeeded alone: a probe
+          # that fails its assertion ends in Failed, and waiting only for
+          # Succeeded would burn the step timeout and throw away the log that
+          # says why. The sentinel below, not the phase, is the verdict.
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'SEED-OK'
+          echo "OK: logical switch restore-probe exists in the northbound database"
+    catch: &restore-dump
+    # The dump is the same at every step: what the CR reports, what the backup
+    # schedule projected, and what the two Jobs and the three probe pods said.
+    # Each command is guarded so an object that a given step never reached does
+    # not short-circuit the rest.
+    - script:
+        shell: bash
+        content: |
+          echo "=== OVNCentral CR ==="
+          kubectl get ovncentral ovn-restore -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== Backup CronJob ==="
+          kubectl get cronjob ovn-restore-backup -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== Jobs ==="
+          kubectl get jobs -n "$NAMESPACE" -o wide 2>&1 || true
+          echo "=== Backup Job pod logs ==="
+          kubectl logs -n "$NAMESPACE" job/ovn-restore-manual --all-containers --tail=80 2>&1 || true
+          echo "=== Restore Job pod logs ==="
+          kubectl logs -n "$NAMESPACE" job/ovn-restore-restore --all-containers --tail=80 2>&1 || true
+          echo "=== Snapshot volume ==="
+          kubectl get pvc ovn-restore-backup -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== Probe pods ==="
+          for pod in ovn-restore-probe-seed ovn-restore-probe-wipe ovn-restore-probe-check; do
+            echo "--- $pod ---"
+            kubectl describe pod "$pod" -n "$NAMESPACE" 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --tail=200 2>&1 || true
+          done
+          echo "=== Operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Take one snapshot ───────────────────────────────────────────
+  # The CronJob is suspended, so the only run on the volume is this one. Creating
+  # a Job from it is the same manual trigger an operator reaches for, which is
+  # what makes this step a check on the CronJob's own pod template rather than on
+  # a template the suite wrote itself.
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1 || {
+            echo "SKIP: OVNCentral CRD not present (operator not deployed)."
+            exit 0
+          }
+
+          kubectl create job ovn-restore-manual \
+            --from=cronjob/ovn-restore-backup -n "$NAMESPACE"
+          kubectl wait --for=condition=complete job/ovn-restore-manual \
+            -n "$NAMESPACE" --timeout=5m
+          kubectl logs -n "$NAMESPACE" job/ovn-restore-manual --all-containers 2>&1 || true
+          echo "OK: the backup Job wrote a snapshot of both databases"
+    catch: *restore-dump
+  # ── Step 3: Wipe the switch out of the live database ────────────────────
+  # The snapshot on the volume now describes a database that no longer matches
+  # the live one. Without this step the check in step 5 would pass on a database
+  # the restore never had to touch. The probe also adds a second switch the
+  # snapshot predates, which is the row step 5 checks the replay deleted.
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1 || {
+            echo "SKIP: OVNCentral CRD not present (operator not deployed)."
+            exit 0
+          }
+
+          POD=ovn-restore-probe-wipe
+
+          NB="$(kubectl get ovncentral ovn-restore -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+          IMG="$(kubectl get sts ovn-restore-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-restore-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-restore-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh", "wipe"],
+                  "env": [{"name": "NB_ADDRESS", "value": "${NB}"}],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'WIPE-OK'
+          echo "OK: restore-probe is gone and post-snapshot-probe is in the northbound database"
+    catch: *restore-dump
+  # ── Step 4: Replay the newest Northbound snapshot ───────────────────────
+  # The Job is rendered here rather than kept as a fixture because two of its
+  # values are only known at runtime: the OVN image the operator resolved and the
+  # address the Northbound database published.
+  #
+  # Its pod copies the security posture of the backup run (reconcile_backup.go):
+  # fsGroup 42424 at pod level, which is what hands a freshly provisioned volume
+  # to the group the container runs as, and the Restricted container context the
+  # backup container carries. Without both, the run cannot read the files the
+  # backup wrote.
+  #
+  # The snapshot is redirected as a regular file rather than piped: ovsdb-client
+  # restore needs a seekable stdin.
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1 || {
+            echo "SKIP: OVNCentral CRD not present (operator not deployed)."
+            exit 0
+          }
+
+          NB="$(kubectl get ovncentral ovn-restore -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+          IMG="$(kubectl get sts ovn-restore-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+
+          cat <<JOB | kubectl apply -f -
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: ovn-restore-restore
+            namespace: ${NAMESPACE}
+          spec:
+            backoffLimit: 0
+            activeDeadlineSeconds: 300
+            template:
+              spec:
+                restartPolicy: Never
+                securityContext:
+                  fsGroup: 42424
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                - name: restore
+                  image: ${IMG}
+                  securityContext:
+                    allowPrivilegeEscalation: false
+                    runAsNonRoot: true
+                    runAsUser: 42424
+                    runAsGroup: 42424
+                    readOnlyRootFilesystem: true
+                    capabilities:
+                      drop: [ALL]
+                    seccompProfile:
+                      type: RuntimeDefault
+                  env:
+                  - name: NB_ADDR
+                    value: "${NB}"
+                  command:
+                  - sh
+                  - -ec
+                  - |
+                    f="\$(ls -1 /backup/nb-*.backup | sort | tail -n1)"
+                    test -s "\$f"
+                    echo "restoring \$f"
+                    ovsdb-client --force -p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt restore "\$NB_ADDR" OVN_Northbound < "\$f"
+                  volumeMounts:
+                  - name: backup
+                    mountPath: /backup
+                  - name: certs
+                    mountPath: /certs
+                    readOnly: true
+                  - name: tmp
+                    mountPath: /tmp
+                volumes:
+                - name: backup
+                  persistentVolumeClaim:
+                    claimName: ovn-restore-backup
+                - name: certs
+                  secret:
+                    secretName: ovn-restore-client
+                - name: tmp
+                  emptyDir: {}
+          JOB
+
+          kubectl wait --for=condition=complete job/ovn-restore-restore \
+            -n "$NAMESPACE" --timeout=5m
+          kubectl logs -n "$NAMESPACE" job/ovn-restore-restore --all-containers 2>&1 || true
+          echo "OK: ovsdb-client replayed the snapshot into the northbound database"
+    catch: *restore-dump
+  # ── Step 5: Find the switch again ───────────────────────────────────────
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1 || {
+            echo "SKIP: OVNCentral CRD not present (operator not deployed)."
+            exit 0
+          }
+
+          POD=ovn-restore-probe-check
+
+          NB="$(kubectl get ovncentral ovn-restore -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+          IMG="$(kubectl get sts ovn-restore-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-restore-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-restore-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh", "check"],
+                  "env": [{"name": "NB_ADDRESS", "value": "${NB}"}],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'RESTORE-OK'
+          echo "OK: the replay brought restore-probe back and deleted post-snapshot-probe"
+    catch: *restore-dump
+    finally:
+    # Everything this suite creates is applied with kubectl from inside a script
+    # (all of it sits behind the CRD gate), so chainsaw's own cleanup never sees
+    # it and its namespace teardown does not apply. The suite shares the
+    # long-lived openstack namespace with every other ovn suite. Without this
+    # block each run would leak the OVN control plane with its PVCs, the two
+    # Jobs and their pods, and the snapshot volume. Best-effort throughout,
+    # because a SKIP run created nothing and a teardown failure must not mask the
+    # assertion result.
+    - script:
+        shell: bash
+        content: |
+          set -uo pipefail
+          kubectl delete job ovn-restore-manual ovn-restore-restore -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete pod ovn-restore-probe-seed ovn-restore-probe-wipe ovn-restore-probe-check \
+            -n "$NAMESPACE" --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete configmap ovn-restore-probe-script -n "$NAMESPACE" \
+            --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete ovncentral ovn-restore -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true

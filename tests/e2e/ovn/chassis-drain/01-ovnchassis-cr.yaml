@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNChassis fixture for the chassis-drain E2E test.
+#
+# Two selectors, both matched by the one kind node step 1 labels. nodeSelector
+# is what puts the DaemonSets on it; gateway.nodeSelector narrows that set to
+# the nodes that announce enable-chassis-as-gw. Taking the gateway label off
+# triggers the evacuation Job, taking the chassis label off the chassis-deletion
+# Job, and those two transitions are what this suite exists to observe.
+#
+# No bridge mappings: there is no provider network on a kind node to map, and
+# the gateway role is announced through ovn-cms-options rather than through a
+# mapping. spec.image is left unset so the operator resolves the same OVN image
+# the control plane runs.
+# region ovnchassis-cr
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: ovn-drain
+  namespace: openstack
+spec:
+  centralRef:
+    name: ovn-drain-central
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  gateway:
+    nodeSelector:
+      openstack.c5c3.io/gateway: "true"
+# endregion ovnchassis-cr

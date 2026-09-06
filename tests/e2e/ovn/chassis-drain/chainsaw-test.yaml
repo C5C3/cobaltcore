@@ -1,0 +1,545 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for draining a node out of an OVNChassis.
+#
+# Validates what only a real node can answer, because both transitions are
+# driven by a label on that node and are carried out by Jobs that talk to a
+# running OVN control plane:
+#   - the node loses openstack.c5c3.io/gateway: the operator re-applies the
+#     node's values, then runs the evacuation Job against the Northbound
+#     database, and status.nodes[0] ends at gatewayEvacuated=true with
+#     gateway=false
+#   - the node loses openstack.c5c3.io/chassis: the entry is re-rendered with
+#     LEAVING=true, the chassis-deletion Job runs against the Southbound
+#     database, and the operator drops the nodes ConfigMap key together with the
+#     status entry, leaving status.nodes empty and desiredNumberScheduled at 0
+#
+# Both transitions are read back out of the databases the Jobs write, not out of
+# the status alone. gatewayEvacuated and the emptied status.nodes are set from
+# the Jobs' exit codes, and both scripts exit 0 on a database that holds nothing
+# for this chassis: the evacuation collects the rows naming it, and the
+# deregistration passes --if-exists. So step 1 seeds a logical router port bound
+# to this chassis as a gateway and reads back the Southbound Chassis row
+# ovn-controller registered, and the two later steps assert the binding and the
+# row are gone. Without the seed an evacuation that moved nothing would still
+# turn the suite green.
+#
+# Both Job names are computed here from the first 8 hex characters of the
+# SHA-256 of the node name, which is the name maintenanceJobName builds
+# (reconcile_maintenance.go). Waiting on the computed name rather than on a
+# prefix match is what makes the suite assert that contract instead of assuming
+# it.
+#
+# spec.concurrent is false for the same reason chassis-single-node sets it: the
+# chassis pods run with hostNetwork and own /run/openvswitch and /run/ovn on the
+# node, and hack/kind-config.yaml declares a single node, so a second suite
+# rendering an OVNChassis or a NeutronMetadataAgent at the same time would
+# contend with this one over the same host paths.
+#
+# Every step opens with the same CRD presence gate and exits 0 with a SKIP line
+# when the ovn-operator is not deployed, so the suite is default-safe off the
+# e2e-operator matrix job. Nothing is applied before that gate, which is also
+# what lets the teardown below tolerate a run that created nothing.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: ovn-chassis-drain
+spec:
+  namespace: openstack
+  concurrent: false
+  timeouts:
+    # The control plane, the two DaemonSets, the chassis registration and two
+    # maintenance Jobs in sequence take longer than the 120s the shared config
+    # allows.
+    assert: 5m
+    exec: 6m
+  steps:
+  # ── Step 1: Label the node, bring the chassis up as a gateway ───────────
+  # The suite labels the node itself rather than relying on the cluster
+  # bring-up, so it runs against any kind cluster the CI job hands it. The step
+  # cleanup takes both labels off again, which is what keeps a later suite from
+  # finding a node advertising a chassis or gateway role nothing serves.
+  #
+  # Both CRs are applied from inside the script rather than through an `apply`
+  # operation: they sit behind the CRD gate, and chainsaw would abort the whole
+  # test with `no matches for kind "OVNChassis"` on a cluster without the
+  # operator. Chainsaw runs scripts with the test directory as CWD, so the
+  # relative paths resolve.
+  - try:
+    - script:
+        timeout: 13m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1 || {
+            echo "SKIP: OVNCentral CRD not present (operator not deployed)."
+            exit 0
+          }
+
+          POD=ovn-drain-probe-seed
+
+          NODE="$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          kubectl label node "$NODE" openstack.c5c3.io/chassis=true --overwrite
+          kubectl label node "$NODE" openstack.c5c3.io/gateway=true --overwrite
+          echo "OK: labelled node $NODE as a chassis and a gateway"
+
+          kubectl apply -f 00-ovncentral-cr.yaml
+          kubectl apply -f 01-ovnchassis-cr.yaml
+          kubectl apply -f 02-probe-script.yaml
+
+          kubectl wait ovncentral/ovn-drain-central -n "$NAMESPACE" \
+            --for=condition=Ready --timeout=5m
+          echo "OK: OVNCentral/ovn-drain-central Ready=True"
+          kubectl wait ovnchassis/ovn-drain -n "$NAMESPACE" \
+            --for=condition=Ready --timeout=5m
+          echo "OK: OVNChassis/ovn-drain Ready=True"
+
+          # status.nodes is rebuilt from the rendered entries on every pass, so
+          # the gateway flag appearing there is what says the operator evaluated
+          # the gateway selector against this node and not merely that the node
+          # carries the label.
+          GATEWAY=""
+          NAME=""
+          SELECTED=""
+          for _ in $(seq 1 24); do
+            GATEWAY="$(kubectl get ovnchassis ovn-drain -n "$NAMESPACE" \
+              -o jsonpath='{.status.nodes[0].gateway}' 2>/dev/null || true)"
+            NAME="$(kubectl get ovnchassis ovn-drain -n "$NAMESPACE" \
+              -o jsonpath='{.status.nodes[0].name}' 2>/dev/null || true)"
+            if [ "${GATEWAY}" = "true" ] && [ "${NAME}" = "${NODE}" ]; then
+              SELECTED=yes
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "${SELECTED}" ]; then
+            echo "FAIL: status.nodes[0] is name='${NAME}' gateway='${GATEWAY}', want name='${NODE}' gateway='true'"
+            exit 1
+          fi
+          echo "OK: status.nodes[0] is ${NAME} with gateway=true"
+
+          # Seed the gateway binding the evacuation Job of step 2 has to take
+          # away, and read back the Southbound registration the chassis-deletion
+          # Job of step 3 has to remove. CHASSIS is the system-id the operator
+          # recorded, which is the value both Jobs are handed.
+          NB="$(kubectl get ovncentral ovn-drain-central -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+          SB="$(kubectl get ovncentral ovn-drain-central -n "$NAMESPACE" \
+            -o jsonpath='{.status.southbound.internalDbAddress}')"
+          test -n "$SB"
+          CHASSIS="$(kubectl get ovnchassis ovn-drain -n "$NAMESPACE" \
+            -o jsonpath='{.status.nodes[0].systemID}')"
+          test -n "$CHASSIS"
+          # The image comes from the running StatefulSet, so no fixture in this
+          # suite has to spell the OVN tag the operator resolved.
+          IMG="$(kubectl get sts ovn-drain-central-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-drain-central-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-drain-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh", "seed"],
+                  "env": [
+                    {"name": "NB_ADDRESS", "value": "${NB}"},
+                    {"name": "SB_ADDRESS", "value": "${SB}"},
+                    {"name": "CHASSIS", "value": "${CHASSIS}"},
+                    {"name": "NODE_NAME", "value": "${NODE}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          # Poll for a terminal phase rather than for Succeeded alone: a probe
+          # that fails its assertion ends in Failed, and waiting only for
+          # Succeeded would burn the step timeout and throw away the log that
+          # says why. The sentinel below, not the phase, is the verdict.
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'SEED-OK'
+          echo "OK: ovn-drain-lrp binds ${CHASSIS} as a gateway and the southbound carries its Chassis row"
+    catch: &drain-dump
+    # The dump is the same at every step: which maintenance Jobs exist, what
+    # their pods said, what the operator rendered for the node, and what both
+    # CRs report. Each command is guarded so a missing object does not
+    # short-circuit the rest.
+    - script:
+        shell: bash
+        content: |
+          echo "=== Maintenance Jobs ==="
+          kubectl get jobs -n "$NAMESPACE" -l app.kubernetes.io/instance=ovn-drain -o wide 2>&1 || true
+          echo "=== Maintenance Job pod logs ==="
+          for job in $(kubectl get jobs -n "$NAMESPACE" -l app.kubernetes.io/instance=ovn-drain -o name 2>/dev/null); do
+            echo "--- $job ---"
+            kubectl logs -n "$NAMESPACE" "$job" --all-containers --tail=80 2>&1 || true
+          done
+          echo "=== Probe pods ==="
+          for pod in ovn-drain-probe-seed ovn-drain-probe-evacuated ovn-drain-probe-deregistered; do
+            echo "--- $pod ---"
+            kubectl describe pod "$pod" -n "$NAMESPACE" 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --tail=200 2>&1 || true
+          done
+          echo "=== Nodes ConfigMap ==="
+          kubectl get configmap ovn-drain-nodes -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== OVNChassis CR ==="
+          kubectl get ovnchassis ovn-drain -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== OVNCentral CR ==="
+          kubectl get ovncentral ovn-drain-central -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== Operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Node labels ==="
+          kubectl get nodes --show-labels 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    cleanup:
+    - script:
+        shell: bash
+        content: |
+          set -uo pipefail
+          for label in openstack.c5c3.io/chassis openstack.c5c3.io/gateway; do
+            for node in $(kubectl get nodes -l "${label}=true" -o name 2>/dev/null); do
+              kubectl label "$node" "${label}-" || true
+            done
+          done
+          echo "OK: removed the chassis and gateway labels from every node"
+  # ── Step 2: Take the gateway role away and watch the evacuation ─────────
+  # Two Jobs run, in this order: the rendered entry now carries GATEWAY=false, so
+  # its hash differs from status.nodes[0].configHash and the apply Job re-applies
+  # it on the node; only once that has landed does the evacuation Job take the
+  # gateway bindings off the chassis in the Northbound database. The order is the
+  # point: a chassis that still announced itself as a gateway would be handed
+  # the bindings straight back.
+  - try:
+    - script:
+        timeout: 17m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1 || {
+            echo "SKIP: OVNCentral CRD not present (operator not deployed)."
+            exit 0
+          }
+
+          POD=ovn-drain-probe-evacuated
+
+          NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+
+          # maintenanceJobName hashes the node name because a node name is a DNS
+          # subdomain of up to 253 characters and a Job name has 63. sha256sum is
+          # the GNU tool the Linux CI runner ships; shasum covers a developer
+          # reproducing the run on macOS.
+          if command -v sha256sum >/dev/null 2>&1; then
+            HASH="$(printf '%s' "$NODE" | sha256sum | cut -c1-8)"
+          else
+            HASH="$(printf '%s' "$NODE" | shasum -a 256 | cut -c1-8)"
+          fi
+          echo "OK: maintenance Jobs for $NODE are suffixed $HASH"
+
+          # await_job <name> waits for a maintenance Job to be created and then
+          # to complete. The creation is polled separately because `kubectl wait`
+          # fails outright on a name that does not exist yet, and the operator
+          # only renders the Job on the pass that observes the label change.
+          await_job() {
+            local job="$1"
+            for _ in $(seq 1 24); do
+              if kubectl get "job/${job}" -n "$NAMESPACE" >/dev/null 2>&1; then
+                echo "OK: Job ${job} created"
+                kubectl wait --for=condition=complete "job/${job}" -n "$NAMESPACE" --timeout=5m
+                echo "OK: Job ${job} completed"
+                return 0
+              fi
+              sleep 5
+            done
+            echo "FAIL: Job ${job} was never created"
+            return 1
+          }
+
+          kubectl label node "$NODE" openstack.c5c3.io/gateway-
+          echo "OK: removed openstack.c5c3.io/gateway from $NODE"
+
+          await_job "ovn-drain-apply-${HASH}"
+          await_job "ovn-drain-evacuate-${HASH}"
+
+          # gatewayEvacuated is the evacuation Job's finding, and status.gateway
+          # is held at true until that Job lands, so the pair flipping together
+          # is what says the drain completed rather than that the label vanished.
+          EVACUATED=""
+          GATEWAY=""
+          DRAINED=""
+          for _ in $(seq 1 24); do
+            EVACUATED="$(kubectl get ovnchassis ovn-drain -n "$NAMESPACE" \
+              -o jsonpath='{.status.nodes[0].gatewayEvacuated}' 2>/dev/null || true)"
+            GATEWAY="$(kubectl get ovnchassis ovn-drain -n "$NAMESPACE" \
+              -o jsonpath='{.status.nodes[0].gateway}' 2>/dev/null || true)"
+            # gateway carries omitempty, so false prints as the empty string.
+            if [ "${EVACUATED}" = "true" ] && [ "${GATEWAY}" != "true" ]; then
+              DRAINED=yes
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "${DRAINED}" ]; then
+            echo "FAIL: status.nodes[0] is gatewayEvacuated='${EVACUATED}' gateway='${GATEWAY}', want gatewayEvacuated=true and gateway cleared"
+            exit 1
+          fi
+          echo "OK: status.nodes[0] is gatewayEvacuated=true with gateway=false"
+
+          # gatewayEvacuated is written from the Job's exit code, so the binding
+          # seeded in step 1 is read back out of the Northbound database itself.
+          NB="$(kubectl get ovncentral ovn-drain-central -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+          CHASSIS="$(kubectl get ovnchassis ovn-drain -n "$NAMESPACE" \
+            -o jsonpath='{.status.nodes[0].systemID}')"
+          test -n "$CHASSIS"
+          IMG="$(kubectl get sts ovn-drain-central-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-drain-central-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-drain-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh", "evacuated"],
+                  "env": [
+                    {"name": "NB_ADDRESS", "value": "${NB}"},
+                    {"name": "CHASSIS", "value": "${CHASSIS}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'EVACUATED-OK'
+          echo "OK: ovn-drain-lrp no longer binds ${CHASSIS} as a gateway"
+    catch: *drain-dump
+  # ── Step 3: Take the chassis role away and watch the deregistration ─────
+  # The node stops matching spec.nodeSelector, so its entry is re-rendered with
+  # LEAVING=true rather than dropped: the Southbound registration outlives the
+  # selection and the system-id to deregister has to outlive it too. Once the
+  # chassis-deletion Job succeeds the operator forgets the node in both places at
+  # once, the ConfigMap key and the status entry.
+  #
+  # Forgetting it there is not the same as removing the Chassis row, and it is
+  # that row's survival that leaves the remaining chassis building Geneve
+  # tunnels to a node which no longer answers, so the probe at the end reads the
+  # Southbound database back.
+  - try:
+    - script:
+        timeout: 12m
+        shell: bash
+        content: |
+          set -euo pipefail
+          kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1 || {
+            echo "SKIP: OVNCentral CRD not present (operator not deployed)."
+            exit 0
+          }
+
+          POD=ovn-drain-probe-deregistered
+
+          NODE="$(kubectl get nodes -l openstack.c5c3.io/chassis=true -o jsonpath='{.items[0].metadata.name}')"
+          test -n "$NODE"
+          if command -v sha256sum >/dev/null 2>&1; then
+            HASH="$(printf '%s' "$NODE" | sha256sum | cut -c1-8)"
+          else
+            HASH="$(printf '%s' "$NODE" | shasum -a 256 | cut -c1-8)"
+          fi
+
+          kubectl label node "$NODE" openstack.c5c3.io/chassis-
+          echo "OK: removed openstack.c5c3.io/chassis from $NODE"
+
+          JOB="ovn-drain-chassis-del-${HASH}"
+          CREATED=""
+          for _ in $(seq 1 24); do
+            if kubectl get "job/${JOB}" -n "$NAMESPACE" >/dev/null 2>&1; then
+              CREATED=yes
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "${CREATED}" ]; then
+            echo "FAIL: Job ${JOB} was never created"
+            exit 1
+          fi
+          kubectl wait --for=condition=complete "job/${JOB}" -n "$NAMESPACE" --timeout=5m
+          echo "OK: Job ${JOB} completed"
+
+          # Both fields carry omitempty, so the forgotten state prints as the
+          # empty string rather than as "[]" or "0".
+          NODES=""
+          DESIRED=""
+          FORGOTTEN=""
+          for _ in $(seq 1 24); do
+            NODES="$(kubectl get ovnchassis ovn-drain -n "$NAMESPACE" \
+              -o jsonpath='{.status.nodes}' 2>/dev/null || true)"
+            DESIRED="$(kubectl get ovnchassis ovn-drain -n "$NAMESPACE" \
+              -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null || true)"
+            if { [ -z "${NODES}" ] || [ "${NODES}" = "[]" ]; } &&
+               { [ -z "${DESIRED}" ] || [ "${DESIRED}" = "0" ]; }; then
+              FORGOTTEN=yes
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "${FORGOTTEN}" ]; then
+            echo "FAIL: status.nodes is '${NODES}' and status.desiredNumberScheduled is '${DESIRED}', want both empty"
+            exit 1
+          fi
+          echo "OK: status.nodes is empty and status.desiredNumberScheduled is 0"
+
+          # A drained chassis has nothing outstanding. MaintenanceIdle is what
+          # separates that from a Job the step is still waiting on, which reports
+          # True as well but under MaintenanceRunning.
+          STATE=""
+          REASON=""
+          IDLE=""
+          for _ in $(seq 1 24); do
+            STATE="$(kubectl get ovnchassis ovn-drain -n "$NAMESPACE" \
+              -o jsonpath='{.status.conditions[?(@.type=="MaintenanceReady")].status}' 2>/dev/null || true)"
+            REASON="$(kubectl get ovnchassis ovn-drain -n "$NAMESPACE" \
+              -o jsonpath='{.status.conditions[?(@.type=="MaintenanceReady")].reason}' 2>/dev/null || true)"
+            if [ "${STATE}" = "True" ] && [ "${REASON}" = "MaintenanceIdle" ]; then
+              IDLE=yes
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "${IDLE}" ]; then
+            echo "FAIL: MaintenanceReady is '${STATE}' with reason '${REASON}', want True/MaintenanceIdle"
+            exit 1
+          fi
+          echo "OK: MaintenanceReady=True with reason MaintenanceIdle"
+
+          # Every check above reads operator status, and all of it is written
+          # from the Job's exit code. chassisDelScript passes --if-exists, so
+          # exit 0 says nothing about whether a row matched: the Southbound
+          # database is asked directly. The OVNCentral outlives the OVNChassis,
+          # so it still answers.
+          SB="$(kubectl get ovncentral ovn-drain-central -n "$NAMESPACE" \
+            -o jsonpath='{.status.southbound.internalDbAddress}')"
+          test -n "$SB"
+          IMG="$(kubectl get sts ovn-drain-central-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "ovn-drain-central-client"}},
+                {"name": "probe", "configMap": {"name": "ovn-drain-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh", "deregistered"],
+                  "env": [
+                    {"name": "SB_ADDRESS", "value": "${SB}"},
+                    {"name": "NODE_NAME", "value": "${NODE}"}
+                  ],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'DEREGISTERED-OK'
+          echo "OK: the southbound database carries no Chassis row for ${NODE}"
+    catch: *drain-dump
+    finally:
+    # Both CRs are applied with kubectl from inside the step 1 script (they sit
+    # behind the CRD gate), so chainsaw's own cleanup never sees them and its
+    # namespace teardown does not apply. This suite shares the long-lived
+    # openstack namespace with every other ovn suite. Without this block each run
+    # would leak the OVN control plane with its PVCs and the two chassis
+    # DaemonSets. The OVNChassis goes first: it mounts the client Secret the
+    # OVNCentral publishes. Best-effort throughout, because a SKIP run created
+    # nothing and a teardown failure must not mask the assertion result.
+    - script:
+        shell: bash
+        content: |
+          set -uo pipefail
+          kubectl delete ovnchassis ovn-drain -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete ovncentral ovn-drain-central -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          for label in openstack.c5c3.io/chassis openstack.c5c3.io/gateway; do
+            for node in $(kubectl get nodes -l "${label}=true" -o name 2>/dev/null); do
+              kubectl label "$node" "${label}-" || true
+            done
+          done

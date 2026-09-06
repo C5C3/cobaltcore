@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNCentral fixture for the central-backup-restore E2E test.
+#
+# One Raft member per database and one northd replica. The single Northbound
+# member is what makes the restore addressable: status.northbound.
+# internalDbAddress is a comma-separated list of member addresses, and
+# ovsdb-client takes one server.
+#
+# The backup is suspended so the only snapshot on the volume is the one the
+# manual Job in step 2 writes. A schedule firing beside it would put a second
+# pair of files there and leave which of them the restore picks up to timing.
+#
+# The databases stay unpublished (externallyReachable defaults to false), so the
+# fixture claims no node port and can run beside central-basic-deployment, which
+# holds 30641..30643 and 30651..30653.
+# region ovncentral-cr
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-restore
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true
+# endregion ovncentral-cr

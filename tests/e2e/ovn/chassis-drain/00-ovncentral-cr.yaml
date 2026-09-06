@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNCentral fixture for the chassis-drain E2E test.
+#
+# The control plane here is scaffolding for the drain under test, so it runs one
+# Raft member per database and one northd replica. The evacuation Job writes the
+# Northbound database and the chassis-deletion Job the Southbound one; neither
+# cares how many members answer.
+#
+# The backup is suspended: this suite takes no snapshot, and the CronJob would
+# only compete for the single node's disk with the chassis pods.
+#
+# The databases stay unpublished (externallyReachable defaults to false), so the
+# fixture claims no node port and cannot collide with central-basic-deployment,
+# which holds 30641..30643 and 30651..30653.
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: ovn-drain-central
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      name: openstack-ovn-ca-issuer
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+  backup:
+    suspend: true
