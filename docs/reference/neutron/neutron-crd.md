@@ -156,14 +156,17 @@ utility walks both and reports, or repairs, the difference.
 
 ## Rendered defaults
 
-`reconcile_config.go` renders two files into one immutable ConfigMap and hands
-`neutron-server` both as `--config-file` arguments, `neutron.conf` first and
-`ml2_conf.ini` second, so an `ml2` option set in both resolves to the
-`ml2_conf.ini` value. Section names decide the file. `ml2`, the five
-`ml2_type_*` sections, `ovn`, `ovn_nb_global`, `ovs`, `ovs_driver`,
-`securitygroup` and `sriov_driver` go to `ml2_conf.ini`; everything else goes to
-`neutron.conf`. The routing covers `spec.extraConfig` too, so a user override
-lands in the file its consumer reads.
+`reconcile_config.go` renders two files into one immutable ConfigMap,
+`neutron.conf` first and `ml2_conf.ini` second. The API Deployment names them in
+`OS_NEUTRON_CONFIG_DIR` and `OS_NEUTRON_CONFIG_FILES`, since uWSGI imports
+`neutron.wsgi.api` and there is no argv to carry a flag; the worker Deployments,
+the migration Jobs and the ovn-db-sync CronJob pass the same two files as
+`--config-file` arguments. The order is the same on both paths, so an `ml2`
+option set in both files resolves to the `ml2_conf.ini` value. Section names
+decide the file. `ml2`, the five `ml2_type_*` sections, `ovn`, `ovn_nb_global`,
+`ovs`, `ovs_driver`, `securitygroup` and `sriov_driver` go to `ml2_conf.ini`;
+everything else goes to `neutron.conf`. The routing covers `spec.extraConfig`
+too, so a user override lands in the file its consumer reads.
 
 Nothing here depends on `spec.openStackRelease`: two CRs differing only in their
 release render byte-identical files.
