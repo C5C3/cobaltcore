@@ -367,12 +367,12 @@ the overridden-key set changes. See [Controller Events](./neutron-events.md).
 **File:** `operators/neutron/internal/controller/reconcile_ovndbsync.go`
 
 **Purpose:** Project or remove the `{name}-ovn-db-sync` CronJob and report on the
-newest run that reached a terminal state. Run visibility is derived rather than
-watched: the CronJob controller spawns one Job per firing and prunes them by
-history limit, so the step lists the Jobs carrying this CR's sync component
+newest run that reached a terminal state. Run visibility is derived from the Jobs
+on the cluster: the CronJob controller spawns one Job per firing and prunes them
+by history limit, so the step lists the Jobs carrying this CR's sync component
 labels, keeps the ones this CronJob controls, and reads the newest terminal one.
-`schedule` and `syncMode` are resolved here rather than by the defaulting
-webhook, so an unset field keeps tracking the operator default across upgrades.
+`schedule` and `syncMode` are resolved here at reconcile time, so an unset field
+keeps tracking the operator default across upgrades.
 See [ovnDBSync](./neutron-crd.md#ovndbsync).
 
 **Condition Contract:**
@@ -542,10 +542,11 @@ the rendered config sets both worker counts to zero to match.
 
 **Error handling:** A failed apply names the Deployment in the wrapped error and
 returns it. Both Deployments are applied before readiness is judged, so a cluster
-starting from nothing creates both on its first pass rather than one per polling
-interval. Readiness is the conjunction of the two: one worker down holds
-`WorkersReady` `False` while `DeploymentReady` stays `True`, which is what
-separates an API that serves reads from one that serves nothing.
+starting from nothing creates both on its first pass. Judging readiness between
+the two applies would cost one polling interval per Deployment. Readiness is the
+conjunction of the two: one worker down holds `WorkersReady` `False` while
+`DeploymentReady` stays `True`, which is what separates an API that serves reads
+from one that serves nothing.
 
 ### reconcileHTTPRoute
 
@@ -571,8 +572,8 @@ the cluster the children land on.
 | `True` | `HTTPRouteAccepted` | "HTTPRoute accepted by Gateway" | none |
 
 **Error handling:** A failed apply or delete is returned. A cluster without
-Gateway API is reported on the condition rather than failing the controller at
-start with an unknown kind, which would take down every controller in the binary.
+Gateway API is reported on the condition. Failing the controller at start with an
+unknown kind would take down every controller in the binary.
 
 ### reconcileHealthCheck
 
@@ -732,8 +733,8 @@ every agent pod mounts.
 **Error handling:** A backend read error is returned. The gate and the container
 environment resolve the shared secret's data key through one function, so a pod
 never sources a key the gate did not check. Nova rejects an unsigned request when
-it carries a secret of its own, which is why a missing shared secret is a wait
-rather than a value the agent starts without.
+it carries a secret of its own, so the gate holds `False` until the shared secret
+exists.
 
 ### reconcileAgentConfig
 
@@ -776,9 +777,8 @@ to the node. The `wait-for-chassis` init container polls the local Open vSwitch
 database until `external_ids:system-id` exists, which is what the chassis's own
 `apply-node` init container writes: both workloads select the same nodes and
 nothing orders the two DaemonSets, so the gate is per node. Readiness is the
-metadata proxy socket rather than the process, tested with
-`test -S /var/lib/neutron/metadata_proxy`. See
-[Node contract](./neutron-metadata-agent-crd.md#node-contract).
+metadata proxy socket, tested with `test -S /var/lib/neutron/metadata_proxy`.
+See [Node contract](./neutron-metadata-agent-crd.md#node-contract).
 
 **Condition Contract:**
 
@@ -824,10 +824,10 @@ The `Neutron` controller registers two field indexes on the local field indexer.
 `spec.secretRefs.name` holds the deduplicated union of
 `spec.database.secretRef.name`, `spec.serviceUser.secretRef.name` and
 `spec.messaging.secretRef.name`. `spec.ovn.centralRef` holds
-`<namespace>/<name>` rather than the bare name, because the ref carries a
-namespace and a bare name would collide across namespaces. Both indexes stay
-local: they are indexes on a CR kind, which no target cluster holds, and
-registering them on the fleet would fail the engagement of every target cluster.
+`<namespace>/<name>`, because the ref carries a namespace and a bare name would
+collide across namespaces. Both indexes stay local: they are indexes on a CR
+kind, which no target cluster holds, and registering them on the fleet would fail
+the engagement of every target cluster.
 
 It `Owns` its Deployment, Service, ConfigMap, Secret, Job, CronJob,
 PodDisruptionBudget, HorizontalPodAutoscaler and NetworkPolicy. The HTTPRoute
@@ -877,8 +877,8 @@ adds three watches:
   The hop is what makes the leg necessary at all. An agent names a chassis and
   not a central, while the two values its pods cannot start without live on the
   central's status. Both hops resolve through a field index, so the leg copies
-  the chassis it needs rather than every one in the namespace, each of which
-  carries one status entry per node it selects.
+  the chassis it needs. A namespace-wide list would copy every chassis there,
+  each carrying one status entry per node it selects.
 
 Both controllers watch their children a second time on the clusters a CR can
 project onto (`AddRemoteChildWatches`), and register their input watches on both

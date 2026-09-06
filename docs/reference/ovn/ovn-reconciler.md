@@ -82,8 +82,8 @@ so a node that runs the second without the first has nothing to register against
 Maintenance runs last, since it acts on nodes the node step has already marked as
 leaving or as giving up the gateway role. `central` and `nodes` are threaded from
 the steps that resolve them to the steps that consume them through a closure, so
-the hand-off stays inside one pass instead of living on the reconciler, where it
-would be shared by every CR reconciled concurrently.
+the hand-off stays inside one pass. A field on the reconciler would be shared by
+every CR reconciled concurrently.
 
 ## Conditions
 
@@ -155,9 +155,10 @@ the drift visible in alerts.
 one server keypair per database, one for the relay tier when the CR runs one, and
 one client keypair shared by everything that dials them. All of them are ensured
 before the first pending one is reported, so a cluster starting from nothing
-requests every certificate on its first pass instead of one per polling interval.
-The step ends at the issued client Secret, one layer past the Certificates: the
-Secret is what the workloads mount and what an `OVNChassis` is pointed at through
+requests every certificate on its first pass. Reporting the first pending one and
+returning would cost a polling interval per certificate. The step ends at the
+issued client Secret, one layer past the Certificates: the Secret is what the
+workloads mount and what an `OVNChassis` is pointed at through
 `status.clientSecretName`.
 
 **Condition Contract:**
@@ -402,12 +403,12 @@ add nothing. Both ConfigMaps are applied even when nothing is selected, because 
 pod whose ConfigMap volume does not exist never starts.
 
 **Drain semantics.** A node that stops matching `spec.nodeSelector`, or that
-leaves the cluster, keeps its entry with `LEAVING=true` instead of losing it. The
-mappings and the encapsulation are re-rendered from the spec, never carried over
-from the live ConfigMap, so everything reaching the file a node sources comes from
-a source admission validated. The entry survives until the chassis-deletion
-Job has succeeded, at which point the maintenance step drops the ConfigMap key and
-the status entry together.
+leaves the cluster, keeps its entry with `LEAVING=true`. The mappings and the
+encapsulation are re-rendered from the spec, never carried over from the live
+ConfigMap, so everything reaching the file a node sources comes from a source
+admission validated. The entry survives until the chassis-deletion Job has
+succeeded, at which point the maintenance step drops the ConfigMap key and the
+status entry together.
 
 ### reconcileOVS
 
@@ -561,7 +562,8 @@ ConfigMap, PersistentVolumeClaim, CronJob and Job. The cert-manager Certificate
 joins that set only when the kind is present on the management cluster, probed at
 setup through the RESTMapper. An unconditional `Owns(Certificate)` would fail at
 start with "no matches for kind Certificate", which takes down every controller
-in the binary instead of reporting the missing CRD on the CR.
+in the binary. `reconcileTLS` reports the missing kind on the CR as
+`CertManagerUnavailable`.
 
 The `OVNChassis` controller `Owns` its DaemonSet, ConfigMap and Job, and adds two
 watches:

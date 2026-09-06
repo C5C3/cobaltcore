@@ -188,7 +188,7 @@ object a pre-upgrade operator already admitted, and the validating webhook also
 sees the finalizer-removal update that completes a deletion: rejecting that one
 would wedge the CR in `Terminating` with no field left to edit.
 
-One update raises a warning instead of a rejection:
+One update is admitted with a warning:
 
 ```text
 spec.backup.retentionDays reduced %d → %d: the next backup run deletes the snapshots taken between %d and %d days ago, which cannot be undone

@@ -168,7 +168,7 @@ spec.extraConfig [%s] %s: deprecated option in neutron %s with no replacement
 ```
 
 The first two are the fail-open paths: an unresolvable release skips the option
-check with one warning instead of blocking admission.
+check and raises one warning.
 
 ### Rejected owned keys
 
@@ -263,9 +263,9 @@ value on the children of a placed CR. Kubernetes caps a label value at 63.
 The agent picks no nodes of its own. `spec.nodeSelector` and `spec.tolerations`
 of the referenced `OVNChassis` are copied verbatim onto the DaemonSet, so the
 agent lands on the set of nodes the chassis programs and nowhere else. Both are
-deep-copied rather than aliased, and `spec.chassisRef` is resolved in the CR's
-own namespace through the management-cluster client, since every CR of this
-control plane is written there whatever cluster the children land on.
+deep-copied, and `spec.chassisRef` is resolved in the CR's own namespace through
+the management-cluster client, since every CR of this control plane is written
+there whatever cluster the children land on.
 
 The pod runs with `hostNetwork: true`: it answers the 169.254.169.254 requests
 arriving on the node's own interfaces. Two host paths are mounted, both
