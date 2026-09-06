@@ -545,7 +545,7 @@ see the [reconciler reference](./neutron-reconciler.md).
 | `DeploymentReady` | False | `WaitingForDeployment` | The Deployment is rolling out, or the upgrade's rolling-update phase waits for every replica to be updated, ready and counted before the contract Jobs drop what the old pods still read |
 | `WorkersReady` | True | `WorkersReady` | Both worker Deployments are available |
 | `WorkersReady` | False | `WaitingForWorkers` | At least one of them is not |
-| `NeutronAPIReady` | True | `APIHealthy` | An HTTP GET against the cluster-local API root answered 2xx. `/` is the version document, which `neutron-server` answers without a token and without touching the database |
+| `NeutronAPIReady` | True | `APIHealthy` | An HTTP GET against the cluster-local API root answered 2xx. `/` is the version document, which the API pods answer without a token and without touching the database |
 | `NeutronAPIReady` | False | `APIUnhealthy` | The probe answered a non-2xx status |
 | `NeutronAPIReady` | False | `EndpointNotReady` | `status.endpoint` is not stamped yet, or the endpoint does not resolve |
 | `NeutronAPIReady` | False | `HealthCheckTimeout` | The probe exceeded its deadline |
@@ -579,8 +579,8 @@ HorizontalPodAutoscaler, the NetworkPolicy, the HTTPRoute and the MariaDB
 `Database`/`User`/`Grant` take the bare CR name with no suffix, matching the
 keystone convention. A `Neutron` named `neutron` in the `openstack` namespace is
 therefore reachable in-cluster at `neutron.openstack.svc.cluster.local:9696`,
-since the Service DNS name is the CR name and 9696 is the port
-`neutron-server` serves its API on.
+since the Service DNS name is the CR name and 9696 is the port the
+uWSGI-served API listens on.
 
 The derived and content-addressed children carry a suffix:
 
