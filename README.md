@@ -11,14 +11,14 @@ built with Operator SDK (Go), controller-runtime, and Kubebuilder. How the piece
 implemented management/target-cluster topology, is described in [the architecture documentation](docs/architecture/index.md).
 
 The Keystone Operator is the reference implementation: it establishes the patterns every service operator
-follows. Horizon, Glance, Placement, and Barbican are built on the same scaffolding, and the c5c3-operator
-orchestrates all of them as children of one ControlPlane resource.
+follows. Horizon, Glance, Placement, Barbican, and Neutron with its OVN layer are built on the same
+scaffolding, and the c5c3-operator orchestrates all of them as children of one ControlPlane resource.
 
 The architecture is organized as a Go Workspace monorepo with a shared library (`internal/common/`), individual
 operator modules (`operators/keystone/`, `operators/horizon/`, `operators/glance/`, `operators/placement/`,
-`operators/barbican/`, `operators/c5c3/`), container image builds (`images/`), declarative
-infrastructure deployment manifests (`deploy/`), and comprehensive tests at every level (unit, envtest integration,
-Chainsaw E2E).
+`operators/barbican/`, `operators/ovn/`, `operators/neutron/`, `operators/c5c3/`), container image builds
+(`images/`), declarative infrastructure deployment manifests (`deploy/`), and comprehensive tests at every
+level (unit, envtest integration, Chainsaw E2E).
 
 ## Roadmap
 

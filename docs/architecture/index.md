@@ -140,9 +140,9 @@ IronCore. The table maps them to the state in this repository:
 | Storage | Ceph via Rook, storage observability | [Sketch](../future/storage-cluster.md) |
 
 Beyond the clusters, the original document scopes services that are not
-onboarded yet: the Nova, Neutron, and Cinder operators with the ovn-operator
-SDN backend and their RabbitMQ and Valkey infrastructure, the optional Cortex
-scheduler and Tempest operator, and consumer self-service via Crossplane.
+onboarded yet: the Nova and Cinder operators with their Valkey infrastructure,
+the optional Cortex scheduler and Tempest operator, and consumer self-service
+via Crossplane.
 Tempest exists in this repository as a container image driven by the
 [e2e test infrastructure](../reference/testing/tempest-test-infrastructure.md),
 not as an operator. New services follow the onboarding path in

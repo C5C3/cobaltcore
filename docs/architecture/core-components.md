@@ -34,6 +34,12 @@ convention `<service>.openstack.c5c3.io`.
 | placement-operator | `Placement` | Resource tracking | [Overview](../reference/placement/) |
 | horizon-operator | `Horizon` | Dashboard | [Overview](../reference/horizon/) |
 | barbican-operator | `Barbican`, `BarbicanSecretStore` | Key management | [Overview](../reference/barbican/) |
+| ovn-operator | `OVNCentral`, `OVNChassis` | SDN control plane and chassis | [Overview](../reference/ovn/) |
+| neutron-operator | `Neutron`, `NeutronMetadataAgent` | Networking | [Overview](../reference/neutron/) |
+
+The ovn-operator is the exception to the one-operator-per-service rule. It
+manages no OpenStack service of its own; it owns the OVN and Open vSwitch
+layer that the Neutron ML2/OVN driver programs.
 
 ## OpenStack resource management
 

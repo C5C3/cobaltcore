@@ -7,8 +7,9 @@ quadrant: operator
 
 Reference documentation for the Keystone Custom Resource Definition. The
 Keystone CRD is the reference implementation for all CobaltCore service operators —
-the patterns established here (types, webhooks, generation, scheme registration) will
-be replicated for Nova, Neutron, Glance, and other OpenStack service operators.
+the patterns established here (types, webhooks, generation, scheme registration) are
+replicated by the Horizon, Glance, Placement, Barbican and Neutron operators and by
+the OVN layer underneath Neutron.
 
 ## API Group and Version
 

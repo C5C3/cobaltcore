@@ -8,8 +8,9 @@ quadrant: operator
 The Keystone operator deploys and manages the OpenStack Identity Service as a
 Kubernetes-native workload. It is the reference implementation for all CobaltCore
 service operators — the patterns established here (CRD layout, sub-reconciler
-chain, webhooks, finalizers, instrumentation) will be replicated for Nova,
-Neutron, Glance, and other OpenStack service operators.
+chain, webhooks, finalizers, instrumentation) are replicated by the Horizon,
+Glance, Placement, Barbican and Neutron operators and by the OVN layer
+underneath Neutron.
 
 This page is a feature catalogue and entry point. Each item links to the
 in-depth reference doc for that area.
