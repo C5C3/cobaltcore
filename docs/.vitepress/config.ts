@@ -119,6 +119,16 @@ export default defineConfig({
               { text: 'Enable OVN Operator NetworkPolicy', link: '/guides/ovn/enable-ovn-operator-networkpolicy' },
             ],
           },
+          {
+            text: 'Neutron',
+            collapsed: true,
+            items: [
+              { text: 'Create a Provider Network', link: '/guides/neutron/create-a-provider-network' },
+              { text: 'Repair OVN Drift with db-sync', link: '/guides/neutron/repair-ovn-drift-with-db-sync' },
+              { text: 'Enable Neutron Operator Metrics', link: '/guides/neutron/enable-neutron-operator-metrics' },
+              { text: 'Enable Neutron Operator NetworkPolicy', link: '/guides/neutron/enable-neutron-operator-networkpolicy' },
+            ],
+          },
         ],
       },
       {
