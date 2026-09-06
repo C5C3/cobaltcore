@@ -1,0 +1,394 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the deletion direction of spec.ovnDBSync in repair mode:
+# a logical switch the Neutron database cannot account for is gone from the OVN
+# Northbound database after one run of the sync CronJob's pod template.
+#
+# The four steps are the four observation points: the CronJob exists and is
+# suspended, the switch is in the Northbound database, one manual run of the
+# CronJob's template completes and names the switch in its log, and the switch
+# is gone while the condition still reports the suspended posture.
+#
+# ── Why this suite drives OVN instead of the Neutron API ──────────────
+# The neutron e2e-operator leg runs no Keystone. The keystoneEndpoint every
+# Neutron fixture carries is a cluster-local convention URL nothing on this leg
+# serves, and [DEFAULT] auth_strategy is a Rejected owned key
+# (operators/neutron/api/v1alpha1/config_ownership.go), so the API cannot be put
+# on a pipeline without token validation either. A suite on this leg therefore
+# never calls the Neutron API: authenticated network CRUD is what the Tempest
+# neutron legs prove. What is left, and what this suite takes, is the OVN side
+# of the same feature: the switch the repair run deletes, read back over the
+# Northbound database with the client certificate the OVNCentral published.
+#
+# ── ASSUMPTION under test: repair deletes the stray switch ────────────
+# In the ghcr.io/c5c3/neutron:2025.2 image (neutron 27.0.3),
+# neutron-ovn-db-sync-util in repair mode logs "Network found in OVN NB DB but
+# not in Neutron, network_id=<name>" followed by "Deleting network <name> from
+# OVN NB DB" and issues ls_del for every Logical_Switch carrying
+# external_ids:neutron:network_name with no Neutron row behind it
+# (ovn_db_sync.py, impl_idl_ovn.py:get_all_logical_switches_with_ports). That
+# was read off the image and off the release's sources on this branch; the first
+# CI run is what settles it against a live database. If the switch survives the
+# run, the log of the neutron-dbsync-repair-manual Job is the evidence, and this
+# suite is to be changed to assert the log-mode report line naming the switch
+# instead of its deletion.
+#
+# The suite runs concurrently with its siblings: it starts no hostNetwork pod
+# and claims no node port, so it contends with them over nothing but the node's
+# CPU.
+#
+# Every step opens with the same two CRD presence gates and exits 0 with a SKIP
+# line when either operator is not deployed, so the suite is default-safe off
+# the e2e-operator matrix job. Nothing is applied before that gate, which is
+# also what lets the teardown below tolerate a run that created nothing.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: neutron-ovn-db-sync-repair
+spec:
+  namespace: openstack
+  timeouts:
+    # The OVN control plane, the db-sync Job, the API cold start and one manual
+    # sync run in sequence take longer than the 120s the shared config allows.
+    assert: 5m
+    exec: 12m
+  steps:
+  # ── Step 1: Bring the stack up and assert the suspended schedule ────────
+  # The three fixtures and both CRs are applied from inside the script rather
+  # than through an `apply` operation: they sit behind the CRD gates, and
+  # chainsaw would abort the whole test with `no matches for kind "Neutron"` on
+  # a cluster without the operators. Chainsaw runs scripts with the test
+  # directory as CWD, so the relative paths resolve.
+  #
+  # The OVNCentral goes up first. The Neutron reconciler renders no config until
+  # the central has published both addresses and its client Secret, so applying
+  # the Neutron CR earlier would only lengthen its own wait.
+  - try:
+    - script:
+        timeout: 12m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl get crd neutrons.neutron.openstack.c5c3.io >/dev/null 2>&1 ||
+             ! kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Neutron or OVNCentral CRD not present (operators not deployed)."
+            exit 0
+          fi
+
+          kubectl apply -f 00-messaging-secret.yaml
+          kubectl apply -f 01-ovncentral-cr.yaml
+          kubectl apply -f 03-probe-script.yaml
+
+          kubectl wait ovncentral/neutron-dbsync-ovn -n "$NAMESPACE" \
+            --for=condition=Ready --timeout=5m
+          echo "OK: OVNCentral/neutron-dbsync-ovn Ready=True"
+
+          kubectl apply -f 02-neutron-cr.yaml
+          # The db-sync Job and the API cold start sit inside this wait.
+          kubectl wait neutron/neutron-dbsync -n "$NAMESPACE" \
+            --for=condition=Ready --timeout=5m
+          echo "OK: Neutron/neutron-dbsync Ready=True"
+
+          # OVNDBSyncSuspended rather than OVNDBSyncScheduled is what says the
+          # operator read spec.ovnDBSync.suspend rather than merely projecting a
+          # CronJob: both reasons report True, and only the reason separates a
+          # paused schedule from a running one.
+          STATE=""
+          REASON=""
+          for _ in $(seq 1 12); do
+            STATE="$(kubectl get neutron neutron-dbsync -n "$NAMESPACE" \
+              -o jsonpath='{.status.conditions[?(@.type=="OVNDBSyncReady")].status}' 2>/dev/null || true)"
+            REASON="$(kubectl get neutron neutron-dbsync -n "$NAMESPACE" \
+              -o jsonpath='{.status.conditions[?(@.type=="OVNDBSyncReady")].reason}' 2>/dev/null || true)"
+            if [ "${STATE}" = "True" ] && [ "${REASON}" = "OVNDBSyncSuspended" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ "${STATE}" != "True" ] || [ "${REASON}" != "OVNDBSyncSuspended" ]; then
+            echo "FAIL: OVNDBSyncReady is '${STATE}' with reason '${REASON}', want True/OVNDBSyncSuspended"
+            exit 1
+          fi
+          echo "OK: OVNDBSyncReady=True with reason OVNDBSyncSuspended"
+
+          # The condition is the operator's account of the schedule; this is the
+          # object it wrote. A suspended CronJob is what keeps the only run
+          # against the Northbound database the one step 3 creates.
+          SUSPEND="$(kubectl get cronjob neutron-dbsync-ovn-db-sync -n "$NAMESPACE" \
+            -o jsonpath='{.spec.suspend}' 2>/dev/null || true)"
+          if [ "${SUSPEND}" != "true" ]; then
+            echo "FAIL: cronjob/neutron-dbsync-ovn-db-sync .spec.suspend is '${SUSPEND}', want true"
+            exit 1
+          fi
+          echo "OK: cronjob/neutron-dbsync-ovn-db-sync carries .spec.suspend=true"
+    catch: &dbsync-dump
+    # The dump is the same at every step: what both CRs report, what the
+    # operator projected for the schedule, what the manual run said, and what
+    # the two probe pods found. Each command is guarded so an object that a
+    # given step never reached does not short-circuit the rest.
+    - script:
+        shell: bash
+        content: |
+          echo "=== Neutron CR ==="
+          kubectl get neutron neutron-dbsync -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== OVNCentral CR ==="
+          kubectl get ovncentral neutron-dbsync-ovn -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== Sync CronJob ==="
+          kubectl get cronjob neutron-dbsync-ovn-db-sync -n "$NAMESPACE" -o yaml 2>&1 || true
+          echo "=== Jobs ==="
+          kubectl get jobs -n "$NAMESPACE" -o wide 2>&1 || true
+          echo "=== Manual sync Job pod log ==="
+          kubectl logs -n "$NAMESPACE" job/neutron-dbsync-repair-manual --all-containers --tail=200 2>&1 || true
+          echo "=== Probe pods ==="
+          for pod in neutron-dbsync-probe-seed neutron-dbsync-probe-check; do
+            echo "--- $pod ---"
+            kubectl describe pod "$pod" -n "$NAMESPACE" 2>&1 || true
+            kubectl logs -n "$NAMESPACE" "$pod" --tail=200 2>&1 || true
+          done
+          echo "=== neutron-operator pod logs ==="
+          kubectl logs -n neutron-system -l app.kubernetes.io/name=neutron-operator --all-containers --tail=60 2>&1 || true
+          echo "=== ovn-operator pod logs ==="
+          kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
+          echo "=== Events ==="
+          kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+  # ── Step 2: Seed the switch Neutron does not know about ─────────────────
+  # The probe runs the OVN client tools inside the OVN image, with the client
+  # certificate the OVNCentral published. It reads its verdict from the pod log
+  # after a terminal phase rather than from an attached stream: `kubectl run -i`
+  # carries only what the container writes after the attach is established, so a
+  # probe that reaches its sentinel first would leave the captured output empty.
+  # That costs --rm, and the trap removes the pod instead.
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl get crd neutrons.neutron.openstack.c5c3.io >/dev/null 2>&1 ||
+             ! kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Neutron or OVNCentral CRD not present (operators not deployed)."
+            exit 0
+          fi
+
+          POD=neutron-dbsync-probe-seed
+
+          NB="$(kubectl get ovncentral neutron-dbsync-ovn -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+          # The image comes from the running StatefulSet, so no fixture in this
+          # suite has to spell the OVN tag the operator resolved.
+          IMG="$(kubectl get sts neutron-dbsync-ovn-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "neutron-dbsync-ovn-client"}},
+                {"name": "probe", "configMap": {"name": "neutron-dbsync-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh", "seed"],
+                  "env": [{"name": "NB_ADDRESS", "value": "${NB}"}],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          # Poll for a terminal phase rather than for Succeeded alone: a probe
+          # that fails its assertion ends in Failed, and waiting only for
+          # Succeeded would burn the step timeout and throw away the log that
+          # says why. The sentinel below, not the phase, is the verdict.
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'SEED-OK'
+          echo "OK: logical switch stray-drift exists in the northbound database"
+    catch: *dbsync-dump
+  # ── Step 3: Run the sync once, by hand ──────────────────────────────────
+  # The CronJob is suspended, so the only run against this Northbound database
+  # is this one. Creating a Job from the CronJob is the same manual trigger the
+  # repair procedure reaches for, which is what makes this step a check on the
+  # projected pod template rather than on a template the suite wrote itself.
+  #
+  # The log is the second half of the assertion: an exit 0 alone would also
+  # cover a run that compared nothing, and the switch name in the report is what
+  # says the utility saw the drift this suite seeded.
+  - try:
+    - script:
+        timeout: 8m
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl get crd neutrons.neutron.openstack.c5c3.io >/dev/null 2>&1 ||
+             ! kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Neutron or OVNCentral CRD not present (operators not deployed)."
+            exit 0
+          fi
+
+          JOB=neutron-dbsync-repair-manual
+          kubectl create job "$JOB" \
+            --from=cronjob/neutron-dbsync-ovn-db-sync -n "$NAMESPACE"
+
+          # The creation is polled before the wait because `kubectl wait` fails
+          # outright on a name the API server has not served yet.
+          CREATED=""
+          for _ in $(seq 1 24); do
+            if kubectl get "job/${JOB}" -n "$NAMESPACE" >/dev/null 2>&1; then
+              CREATED=yes
+              break
+            fi
+            sleep 5
+          done
+          if [ -z "${CREATED}" ]; then
+            echo "FAIL: Job ${JOB} was never created"
+            exit 1
+          fi
+
+          kubectl wait --for=condition=complete "job/${JOB}" -n "$NAMESPACE" --timeout=5m
+          echo "OK: Job ${JOB} completed"
+
+          LOG="$(kubectl logs -n "$NAMESPACE" "job/${JOB}" --all-containers 2>&1 || true)"
+          echo "${LOG}"
+          if ! grep -q 'stray-drift' <<< "${LOG}"; then
+            echo "FAIL: the sync log never names stray-drift, so the run did not"
+            echo "      see the switch the seed left in the northbound database"
+            exit 1
+          fi
+          echo "OK: the repair run reported stray-drift"
+    catch: *dbsync-dump
+  # ── Step 4: Read the switch back, and the condition with it ─────────────
+  # The condition is re-asserted here rather than left at step 1 because a
+  # manual Job is exactly the event that could disturb the suspended posture,
+  # and the code says it cannot: reconcileOVNDBSync reports on the newest
+  # terminal Job the CronJob *controls*, and `kubectl create job --from` copies
+  # the labels but sets no controller reference, so newestTerminalJob skips this
+  # run, and the suspend arm outranks a failed run in any case.
+  - try:
+    - script:
+        timeout: 6m
+        shell: bash
+        content: |
+          set -euo pipefail
+          if ! kubectl get crd neutrons.neutron.openstack.c5c3.io >/dev/null 2>&1 ||
+             ! kubectl get crd ovncentrals.ovn.openstack.c5c3.io >/dev/null 2>&1; then
+            echo "SKIP: Neutron or OVNCentral CRD not present (operators not deployed)."
+            exit 0
+          fi
+
+          POD=neutron-dbsync-probe-check
+
+          NB="$(kubectl get ovncentral neutron-dbsync-ovn -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}')"
+          test -n "$NB"
+          IMG="$(kubectl get sts neutron-dbsync-ovn-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')"
+          test -n "$IMG"
+
+          OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "neutron-dbsync-ovn-client"}},
+                {"name": "probe", "configMap": {"name": "neutron-dbsync-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh", "check"],
+                  "env": [{"name": "NB_ADDRESS", "value": "${NB}"}],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+          kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+            --overrides="$OVERRIDES"
+
+          phase=""
+          for _ in $(seq 1 150); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${phase}" in Succeeded|Failed) break ;; esac
+            sleep 2
+          done
+          OUT="$(kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true)"
+          echo "${OUT}"
+          echo "pod phase: ${phase:-<none>}"
+          echo "${OUT}" | grep -q 'REPAIR-OK'
+          echo "OK: the repair run deleted stray-drift from the northbound database"
+
+          STATE=""
+          REASON=""
+          for _ in $(seq 1 12); do
+            STATE="$(kubectl get neutron neutron-dbsync -n "$NAMESPACE" \
+              -o jsonpath='{.status.conditions[?(@.type=="OVNDBSyncReady")].status}' 2>/dev/null || true)"
+            REASON="$(kubectl get neutron neutron-dbsync -n "$NAMESPACE" \
+              -o jsonpath='{.status.conditions[?(@.type=="OVNDBSyncReady")].reason}' 2>/dev/null || true)"
+            if [ "${STATE}" = "True" ] && [ "${REASON}" = "OVNDBSyncSuspended" ]; then
+              break
+            fi
+            sleep 5
+          done
+          if [ "${STATE}" != "True" ] || [ "${REASON}" != "OVNDBSyncSuspended" ]; then
+            echo "FAIL: OVNDBSyncReady is '${STATE}' with reason '${REASON}' after the manual run, want True/OVNDBSyncSuspended"
+            exit 1
+          fi
+          echo "OK: the manual run left OVNDBSyncReady=True with reason OVNDBSyncSuspended"
+    catch: *dbsync-dump
+    finally:
+    # Everything this suite creates is applied with kubectl from inside a script
+    # (all of it sits behind the CRD gates), so chainsaw's own cleanup never
+    # sees it and its namespace teardown does not apply. The suite shares the
+    # long-lived openstack namespace with every other neutron suite. Without
+    # this block each run would leak the neutron-api Deployment, the two worker
+    # Deployments, the MariaDB Database/User/Grant CRs with the neutron_dbsync
+    # schema, the OVN control plane with its PVCs, and the manual Job with its
+    # pod. The Neutron goes first: it mounts the client Secret the OVNCentral
+    # publishes. Best-effort throughout, because a SKIP run created nothing and
+    # a teardown failure must not mask the assertion result.
+    - script:
+        shell: bash
+        content: |
+          set -uo pipefail
+          kubectl delete job neutron-dbsync-repair-manual -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete pod neutron-dbsync-probe-seed neutron-dbsync-probe-check \
+            -n "$NAMESPACE" --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete neutron neutron-dbsync -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete ovncentral neutron-dbsync-ovn -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete configmap neutron-dbsync-probe-script -n "$NAMESPACE" \
+            --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete secret neutron-dbsync-messaging -n "$NAMESPACE" \
+            --ignore-not-found --timeout=1m 2>&1 || true

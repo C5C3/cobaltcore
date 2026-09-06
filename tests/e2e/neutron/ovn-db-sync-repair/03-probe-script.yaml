@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The script the two Northbound client probes of this suite run inside the OVN
+# image.
+#
+# It lives in a ConfigMap rather than in the `kubectl run --overrides` payload so
+# it stays a reviewable, shellcheck-able shell script instead of a JSON-escaped
+# one-liner. Each probe pod mounts it at /probe and the client certificate the
+# OVNCentral published at /certs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: neutron-dbsync-probe-script
+  namespace: openstack
+data:
+  probe.sh: |
+    #!/bin/bash
+    # Seeds or re-reads the one logical switch this suite hands the repair run.
+    # The two modes are the two observation points: the switch is in the
+    # Northbound database before the run, and gone after it.
+    #
+    # NB_ADDRESS arrives as an environment variable; the mode is the first
+    # argument.
+    set -u
+
+    # The client keypair and the CA the database authenticates peers against.
+    readonly CERT=(-p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt)
+
+    # Only a connection-level failure is retried. A TLS failure reports a
+    # certificate, an SSL routine or a protocol error instead, and retrying it
+    # would burn the budget on a misconfiguration that cannot resolve itself.
+    readonly RETRYABLE='Connection refused|Connection timed out|Network is unreachable|No route to host|Host is unreachable|Name or service not known|timeout exceeded'
+
+    readonly ATTEMPTS=30
+    readonly INTERVAL=5
+
+    # The switch the repair run has to delete. Its name is also the key the
+    # sync utility reports it under: neutron-ovn-db-sync-util derives the
+    # network id from the switch name, and this one carries no "neutron-"
+    # prefix to strip.
+    readonly SWITCH=stray-drift
+
+    # The external_ids key that makes the switch visible to the utility at all.
+    # get_all_logical_switches_with_ports filters on neutron:network_name, so a
+    # switch without it is not a switch Neutron ever created and the repair run
+    # walks past it. The key is double-quoted for ovn-nbctl: a bare colon ends
+    # a token in its column:key=value syntax, and the unquoted form is rejected
+    # with: argument does not end in "=" followed by a value.
+    readonly MARKER="external_ids:\"neutron:network_name\"=${SWITCH}"
+
+    # nbctl <label> <ovn-nbctl arguments...>
+    #
+    # Runs one ovn-nbctl invocation and leaves its output in OUT. A connection
+    # that is not up yet is retried; anything else fails the probe.
+    OUT=""
+    nbctl() {
+      local label="$1"
+      shift
+      local attempt=0 out rc
+
+      while [ "${attempt}" -lt "${ATTEMPTS}" ]; do
+        attempt=$((attempt + 1))
+        out="$(ovn-nbctl --db="${NB_ADDRESS}" "${CERT[@]}" --timeout=10 "$@" 2>&1)"
+        rc=$?
+        if [ "${rc}" -eq 0 ]; then
+          OUT="${out}"
+          return 0
+        fi
+        if grep -Eq "${RETRYABLE}" <<< "${out}"; then
+          echo "retry ${attempt}/${ATTEMPTS}: northbound database not reachable yet: ${out}"
+          sleep "${INTERVAL}"
+          continue
+        fi
+        echo "FAIL: ovn-nbctl ${label} exited ${rc}: ${out}"
+        exit 1
+      done
+
+      echo "FAIL: ovn-nbctl ${label} never reached the northbound database"
+      exit 1
+    }
+
+    case "${1:-}" in
+    seed)
+      # One command line, so a retried attempt adds the marker to the switch it
+      # created rather than leaving a marked switch behind on the first half and
+      # an unmarked one on the second.
+      nbctl "ls-add ${SWITCH}" --may-exist ls-add "${SWITCH}" \
+        -- set Logical_Switch "${SWITCH}" "${MARKER}"
+      # ls-add under --may-exist succeeds on a switch that already existed, so
+      # the row is read back. A seed that wrote nothing would have the check
+      # after the repair run pass on a database the run never had to touch.
+      nbctl ls-list ls-list
+      if ! grep -qF -- "${SWITCH}" <<< "${OUT}"; then
+        echo "FAIL: ls-list carries no ${SWITCH} row after the add: ${OUT}"
+        exit 1
+      fi
+      echo "${OUT}"
+      echo "SEED-OK"
+      ;;
+    check)
+      nbctl ls-list ls-list
+      if grep -qF -- "${SWITCH}" <<< "${OUT}"; then
+        echo "FAIL: ls-list still carries ${SWITCH} after the repair run: ${OUT}"
+        exit 1
+      fi
+      echo "${OUT}"
+      echo "REPAIR-OK"
+      ;;
+    *)
+      echo "FAIL: unknown mode '${1:-}', want seed or check"
+      exit 1
+      ;;
+    esac

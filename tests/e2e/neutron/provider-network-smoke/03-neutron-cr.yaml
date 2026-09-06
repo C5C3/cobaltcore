@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Neutron CR of the provider-network stack (2025.2 release).
+#
+# Managed mode throughout: the schema neutron_provider on the openstack-db
+# MariaDB cluster, the openstack-memcached cache, the ESO-synced neutron-db
+# credentials and the pre-seeded keystone-admin service-user password (both from
+# deploy/kind/infrastructure). The broker and the OVN control plane come from
+# the two sibling fixtures.
+#
+# The suite never calls this API: the neutron e2e-operator leg runs no Keystone,
+# and the Neutron API rejects an unauthenticated request. It is here because it
+# is part of the stack the provider-network guide builds, and because a Neutron
+# that cannot reach Ready against this OVNCentral is a failure the guide's
+# reader would hit before the first `openstack network create`. One API replica
+# and one worker replica: nothing sends the pods a request.
+apiVersion: neutron.openstack.c5c3.io/v1alpha1
+kind: Neutron
+metadata:
+  name: neutron-provider
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  deployment:
+    replicas: 1
+  workers:
+    deployment:
+      replicas: 1
+  image:
+    repository: ghcr.io/c5c3/neutron
+    tag: "2025.2"
+  database:
+    clusterRef:
+      name: openstack-db
+    database: neutron_provider
+    secretRef:
+      name: neutron-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: neutron-provider-messaging
+  ovn:
+    centralRef:
+      name: neutron-provider-ovn
+  keystoneEndpoint: http://keystone.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password

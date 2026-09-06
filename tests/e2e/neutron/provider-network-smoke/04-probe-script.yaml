@@ -1,0 +1,157 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The script the database client probes of this suite run inside the OVN image.
+#
+# It lives in a ConfigMap rather than in the `kubectl run --overrides` payload so
+# it stays a reviewable, shellcheck-able shell script instead of a JSON-escaped
+# one-liner. Each probe pod mounts it at /probe and the client certificate the
+# OVNCentral published at /certs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: neutron-provider-probe-script
+  namespace: openstack
+data:
+  probe.sh: |
+    #!/bin/bash
+    # Writes, reads back or removes the logical model this suite binds a port
+    # from. The three modes are the three points the binding is observed from:
+    # the Northbound database carries the provider switch with its localnet port
+    # and one ordinary port, the Southbound database reports that port claimed by
+    # a chassis, and the switch is removed again.
+    #
+    # NB_ADDRESS (nb-seed, nb-cleanup) and SB_ADDRESS (sb-check) arrive as
+    # environment variables; the mode is the first argument.
+    set -u
+
+    # The client keypair and the CA the databases authenticate peers against.
+    readonly CERT=(-p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt)
+
+    # Only a connection-level failure is retried. A TLS failure reports a
+    # certificate, an SSL routine or a protocol error instead, and retrying it
+    # would burn the budget on a misconfiguration that cannot resolve itself.
+    readonly RETRYABLE='Connection refused|Connection timed out|Network is unreachable|No route to host|Host is unreachable|Name or service not known|timeout exceeded'
+
+    readonly ATTEMPTS=30
+    readonly INTERVAL=5
+
+    # The logical model. The switch carries two ports: the localnet port that
+    # ties it to the physical network the chassis maps, which is what makes it a
+    # provider network rather than an overlay one, and the ordinary port whose
+    # binding this suite reads back.
+    readonly SWITCH=provider
+    readonly PHYSNET=physnet1
+    readonly LOCALNET_PORT=provnet-physnet1
+    readonly PORT=smoke0
+    readonly PORT_ADDRESSES="0a:00:00:00:00:10 192.0.2.10"
+
+    # ovn-controller claims the port once it sees the interface on br-int with a
+    # matching iface-id and has read the switch out of the Southbound database.
+    # Five minutes is far above the time that takes on an idle node and still
+    # bounded, so a chassis that never claims it fails the probe instead of the
+    # step timeout.
+    readonly BIND_ATTEMPTS=60
+    readonly BIND_INTERVAL=5
+
+    # nbctl <label> <ovn-nbctl arguments...>
+    #
+    # Runs one ovn-nbctl invocation and leaves its output in OUT. A connection
+    # that is not up yet is retried; anything else fails the probe.
+    OUT=""
+    nbctl() {
+      local label="$1"
+      shift
+      local attempt=0 out rc
+
+      while [ "${attempt}" -lt "${ATTEMPTS}" ]; do
+        attempt=$((attempt + 1))
+        out="$(ovn-nbctl --db="${NB_ADDRESS}" "${CERT[@]}" --timeout=10 "$@" 2>&1)"
+        rc=$?
+        if [ "${rc}" -eq 0 ]; then
+          OUT="${out}"
+          return 0
+        fi
+        if grep -Eq "${RETRYABLE}" <<< "${out}"; then
+          echo "retry ${attempt}/${ATTEMPTS}: northbound database not reachable yet: ${out}"
+          sleep "${INTERVAL}"
+          continue
+        fi
+        echo "FAIL: ovn-nbctl ${label} exited ${rc}: ${out}"
+        exit 1
+      done
+
+      echo "FAIL: ovn-nbctl ${label} never reached the northbound database"
+      exit 1
+    }
+
+    case "${1:-}" in
+    nb-seed)
+      # One command line, so a retried attempt rebuilds the whole model rather
+      # than leaving a switch whose localnet port is half configured.
+      nbctl "provider network ${SWITCH}" \
+        --may-exist ls-add "${SWITCH}" \
+        -- --may-exist lsp-add "${SWITCH}" "${LOCALNET_PORT}" \
+        -- lsp-set-type "${LOCALNET_PORT}" localnet \
+        -- lsp-set-options "${LOCALNET_PORT}" "network_name=${PHYSNET}" \
+        -- lsp-set-addresses "${LOCALNET_PORT}" unknown \
+        -- --may-exist lsp-add "${SWITCH}" "${PORT}" \
+        -- lsp-set-addresses "${PORT}" "${PORT_ADDRESSES}"
+      nbctl "lsp-list ${SWITCH}" lsp-list "${SWITCH}"
+      echo "${OUT}"
+      for port in "${LOCALNET_PORT}" "${PORT}"; do
+        if ! grep -qF -- "${port}" <<< "${OUT}"; then
+          echo "FAIL: lsp-list ${SWITCH} carries no ${port} row: ${OUT}"
+          exit 1
+        fi
+      done
+      echo "NB-SEED-OK"
+      ;;
+    sb-check)
+      # The chassis column of the port binding is the whole assertion: the row
+      # exists as soon as northd has translated the switch, and only a chassis
+      # that claimed the interface writes a UUID into it.
+      attempt=0
+      out=""
+      rc=0
+      chassis=""
+      while [ "${attempt}" -lt "${BIND_ATTEMPTS}" ]; do
+        attempt=$((attempt + 1))
+        out="$(ovn-sbctl --db="${SB_ADDRESS}" "${CERT[@]}" --timeout=10 \
+          --bare --columns=chassis find Port_Binding "logical_port=${PORT}" 2>&1)"
+        rc=$?
+        if [ "${rc}" -ne 0 ]; then
+          if grep -Eq "${RETRYABLE}" <<< "${out}"; then
+            echo "retry ${attempt}/${BIND_ATTEMPTS}: southbound database not reachable yet: ${out}"
+            sleep "${BIND_INTERVAL}"
+            continue
+          fi
+          echo "FAIL: ovn-sbctl find Port_Binding exited ${rc}: ${out}"
+          exit 1
+        fi
+        # An unbound row prints an empty chassis set, and a row northd has not
+        # written yet prints nothing at all. Both are the same "not yet" here.
+        chassis="$(tr -d '[:space:]' <<< "${out}")"
+        if [ -n "${chassis}" ]; then
+          echo "port binding for ${PORT} names chassis ${chassis}"
+          echo "BINDING-OK"
+          exit 0
+        fi
+        echo "retry ${attempt}/${BIND_ATTEMPTS}: ${PORT} carries no chassis yet"
+        sleep "${BIND_INTERVAL}"
+      done
+      echo "FAIL: the port binding of ${PORT} never named a chassis"
+      exit 1
+      ;;
+    nb-cleanup)
+      # Deleting the switch takes both its ports with it, which is what releases
+      # the binding the chassis holds.
+      nbctl "ls-del ${SWITCH}" --if-exists ls-del "${SWITCH}"
+      echo "NB-CLEANUP-OK"
+      ;;
+    *)
+      echo "FAIL: unknown mode '${1:-}', want nb-seed, sb-check or nb-cleanup"
+      exit 1
+      ;;
+    esac

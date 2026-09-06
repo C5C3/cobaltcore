@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# OVNChassis fixture for the provider-network smoke test.
+#
+# The selector matches the label step 1 puts on the one kind node. The bridge
+# mapping is the subject: the operator renders spec.bridgeMappings into the
+# physnet:bridge list it writes to external_ids:ovn-bridge-mappings, and creates
+# each named bridge with `ovs-vsctl --may-exist add-br`, because ovn-controller
+# attaches patch ports to a bridge but never creates one.
+#
+# br-ex has no uplink on a kind node, which is what the suite is built around:
+# it asserts the mapping and the bridge, and binds a port on br-int rather than
+# sending a packet out of the node.
+#
+# No gateway: a gateway chassis without an uplink would announce external
+# connectivity it does not have. spec.image is left unset so the operator
+# resolves the same OVN image the control plane runs.
+# region ovnchassis-cr
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNChassis
+metadata:
+  name: neutron-provider-chassis
+  namespace: openstack
+spec:
+  centralRef:
+    name: neutron-provider-ovn
+  nodeSelector:
+    openstack.c5c3.io/chassis: "true"
+  bridgeMappings:
+  - physicalNetwork: physnet1
+    bridge: br-ex
+# endregion ovnchassis-cr
