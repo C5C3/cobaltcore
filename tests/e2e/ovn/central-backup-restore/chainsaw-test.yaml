@@ -154,6 +154,36 @@ spec:
           kubectl logs -n ovn-system -l app.kubernetes.io/name=ovn-operator --all-containers --tail=60 2>&1 || true
           echo "=== Events ==="
           kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+    cleanup:
+    # Everything this suite creates is applied with kubectl from inside a script
+    # (all of it sits behind the CRD gate), so chainsaw's own cleanup never sees
+    # it and its namespace teardown does not apply. This is a step cleanup
+    # rather than a finally on the last step: chainsaw runs a step's finally at
+    # the end of that step and skips every later step once one fails, while the
+    # cleanups of the steps that did run fire at the end of the test in reverse
+    # step order. So the stack comes down whichever step failed. The suite
+    # shares the long-lived openstack namespace with every other ovn suite, and
+    # an OVN control plane left behind holds the single node's CPU against the
+    # sibling suites for the rest of the leg, with its PVCs, the two Jobs with
+    # their pods and the snapshot volume beside it. Best-effort throughout,
+    # because a SKIP run created nothing and a teardown failure must not mask
+    # the assertion result.
+    # The probe pods come down here rather than from the step that created
+    # them: a step that deleted its own pod on the way out would take the
+    # evidence with it, and the catch above describes those pods and reads
+    # their logs when a step fails.
+    - script:
+        shell: bash
+        content: |
+          set -uo pipefail
+          kubectl delete job ovn-restore-manual ovn-restore-restore -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete pod ovn-restore-probe-seed ovn-restore-probe-wipe ovn-restore-probe-check \
+            -n "$NAMESPACE" --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete configmap ovn-restore-probe-script -n "$NAMESPACE" \
+            --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete ovncentral ovn-restore -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
   # ── Step 2: Take one snapshot ───────────────────────────────────────────
   # The CronJob is suspended, so the only run on the volume is this one. Creating
   # a Job from it is the same manual trigger an operator reaches for, which is
@@ -396,24 +426,3 @@ spec:
           echo "${OUT}" | grep -q 'RESTORE-OK'
           echo "OK: the replay brought restore-probe back and deleted post-snapshot-probe"
     catch: *restore-dump
-    finally:
-    # Everything this suite creates is applied with kubectl from inside a script
-    # (all of it sits behind the CRD gate), so chainsaw's own cleanup never sees
-    # it and its namespace teardown does not apply. The suite shares the
-    # long-lived openstack namespace with every other ovn suite. Without this
-    # block each run would leak the OVN control plane with its PVCs, the two
-    # Jobs and their pods, and the snapshot volume. Best-effort throughout,
-    # because a SKIP run created nothing and a teardown failure must not mask the
-    # assertion result.
-    - script:
-        shell: bash
-        content: |
-          set -uo pipefail
-          kubectl delete job ovn-restore-manual ovn-restore-restore -n "$NAMESPACE" \
-            --ignore-not-found --timeout=2m 2>&1 || true
-          kubectl delete pod ovn-restore-probe-seed ovn-restore-probe-wipe ovn-restore-probe-check \
-            -n "$NAMESPACE" --ignore-not-found --timeout=1m 2>&1 || true
-          kubectl delete configmap ovn-restore-probe-script -n "$NAMESPACE" \
-            --ignore-not-found --timeout=1m 2>&1 || true
-          kubectl delete ovncentral ovn-restore -n "$NAMESPACE" \
-            --ignore-not-found --timeout=2m 2>&1 || true
