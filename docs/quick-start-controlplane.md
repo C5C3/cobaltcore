@@ -11,8 +11,9 @@ SPDX-License-Identifier: Apache-2.0
 
 This guide takes a single c5c3 `ControlPlane` CR from `git clone` to an authenticated
 Keystone API call. Compared with the [Quick Start](./quick-start.md), the
-c5c3-operator now provisions the `MariaDB`, `Memcached`, `Keystone`, `Horizon`,
-`Glance`, `Placement`, and `Barbican` children, mints the admin application
+c5c3-operator now provisions the `MariaDB`, `Memcached`, `RabbitmqCluster`,
+`Keystone`, `Horizon`, `Glance`, `Placement`, `Barbican`, and `Neutron`
+children against a referenced `OVNCentral`, mints the admin application
 credential through
 [K-ORC](https://github.com/k-orc/openstack-resource-controller), mirrors it to
 OpenBao, and registers the identity catalog.
@@ -22,9 +23,10 @@ OpenBao, and registers the identity catalog.
 Same toolchain as the [Quick Start](./quick-start.md), plus:
 
 - `make` on `PATH` for `install-test-deps`, `deploy-infra`, and `teardown-infra`
-- The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 6, plus two plugins for the other checks in that step: [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) for the placement call and [`python-barbicanclient`](https://docs.openstack.org/python-barbicanclient/latest/) for the `openstack secret` subcommands
+- The OpenStack CLI ([`python-openstackclient`](https://docs.openstack.org/python-openstackclient/latest/)) on `PATH` for the auth check in Step 6, plus two plugins for the other checks in that step: [`osc-placement`](https://docs.openstack.org/osc-placement/latest/) for the placement call and [`python-barbicanclient`](https://docs.openstack.org/python-barbicanclient/latest/) for the `openstack secret` subcommands. The network commands in that step need no plugin: `openstack network` and `openstack subnet` ship with `python-openstackclient` itself
 - A stable internet connection while `make deploy-infra` clones K-ORC from GitHub
 - Roughly 8 GB RAM, 2 CPU cores, and 10 GB of free disk for a laptop-sized kind cluster
+- Room for the managed message bus on top of that: the RabbitMQ Cluster Operator requests 1 CPU and 2 Gi for the single broker pod Step 3 declares
 - `yq` v4.x on `PATH` for the `KIND_HOST_PORT=8443` override path in Step 2
 
 Docker Desktop and Podman are both valid kind providers. When using Podman,
@@ -75,9 +77,12 @@ KIND_HOST_PORT=8443 WITH_CONTROLPLANE=true make deploy-infra
 
 `WITH_CONTROLPLANE=true` brings up the shared infrastructure and then the
 ControlPlane operator stack (keystone-operator, horizon-operator,
-glance-operator, placement-operator, barbican-operator, K-ORC, c5c3-operator)
-from the published charts. It does not create the `ControlPlane` CR itself;
-you create and apply that in Step 3. In this mode the ControlPlane provisions
+glance-operator, placement-operator, barbican-operator, ovn-operator,
+neutron-operator, K-ORC, c5c3-operator) from the published charts. It does not
+create the `ControlPlane` CR itself; you create and apply that in Step 3. The
+RabbitMQ Cluster Operator that serves the managed bus arrives through a Flux
+Kustomization of its own, on every cluster this script provisions, with or
+without `WITH_CONTROLPLANE=true`. In this mode the ControlPlane provisions
 its own MariaDB/Memcached (managed mode), so deploy-infra does not create the
 shared ones. `KIND_HOST_PORT=8443` maps the Gateway to a non-privileged host
 port for macOS; on Linux with rootful Docker drop the override and use port
@@ -98,7 +103,49 @@ to `curl` if Docker is unavailable.
 
 ## Step 3 — Create the ControlPlane CR
 
-Apply a `ControlPlane` CR. You only supply `openStackRelease` and the
+The network service in the CR below programs an OVN control plane the
+ControlPlane only references, so that central goes up first:
+
+```yaml
+# controlplane-ovn.yaml
+apiVersion: ovn.openstack.c5c3.io/v1alpha1
+kind: OVNCentral
+metadata:
+  name: controlplane-ovn
+  namespace: openstack
+spec:
+  tls:
+    issuerRef:
+      # The cluster-scoped CA issuer the kind overlay ships. OVN authenticates
+      # every connection, so both databases and the client identity the Neutron
+      # pods mount are issued from this one CA.
+      name: openstack-ovn-ca-issuer
+  # Single-member Raft clusters and a single northd. Omit these and each
+  # database comes up as a 3-member cluster, which a single-node kind cannot
+  # carry beside the rest of the control plane.
+  northbound:
+    replicas: 1
+  southbound:
+    replicas: 1
+  northd:
+    deployment:
+      replicas: 1
+```
+
+```bash
+kubectl apply -f controlplane-ovn.yaml
+kubectl wait ovncentral/controlplane-ovn -n openstack \
+  --for=condition=Ready --timeout=10m
+```
+
+The ControlPlane references this central the way it references the
+infrastructure clusters in `spec.infrastructure`: it reads the two database
+addresses and the client Secret the central publishes, and it projects, updates
+and deletes nothing on it. The CR stays yours: `kubectl delete controlplane`
+leaves the central running, and only the Teardown at the end of this page takes
+it down with the cluster.
+
+Then apply a `ControlPlane` CR. You only supply `openStackRelease` and the
 `services.keystone` block; the defaulting webhook fills the infrastructure and
 admin-credential references with their well-known names:
 
@@ -131,6 +178,11 @@ spec:
       storageSize: 512Mi  # test-sized volume; omit to default to 100Gi (production)
     cache:
       replicas: 1     # single Memcached pod
+    # The shared message bus. The webhook fills clusterRef.name with
+    # openstack-rabbitmq, the RabbitmqCluster this ControlPlane then owns.
+    # One replica is what fits a single-node kind cluster.
+    messaging:
+      replicas: 1
   services:
     keystone:
       replicas: 1
@@ -199,6 +251,25 @@ spec:
         parentRef:
           name: openstack-gw
         hostname: barbican.127-0-0-1.nip.io
+    neutron:
+      replicas: 1
+      # Sizes both RPC worker Deployments. Omit it and each defaults to 3, so
+      # six idle worker pods land beside the rest of the control plane.
+      workerReplicas: 1
+      # Drop publicEndpoint on the default port 443 and the operator derives
+      # https://neutron.127-0-0-1.nip.io from the gateway hostname.
+      publicEndpoint: https://neutron.127-0-0-1.nip.io:8443
+      # Exposed through the same shared Envoy Gateway, via the eighth HTTPS
+      # listener the kind overlay adds for neutron.127-0-0-1.nip.io.
+      gateway:
+        parentRef:
+          name: openstack-gw
+        hostname: neutron.127-0-0-1.nip.io
+      # The standalone OVNCentral applied above. Its namespace defaults to this
+      # ControlPlane's own, so naming the CR is the whole reference.
+      ovn:
+        centralRef:
+          name: controlplane-ovn
 ```
 
 ```bash
@@ -232,10 +303,10 @@ Keystone tokens it receives. Its database and cache derive from
 `spec.infrastructure` the same way Keystone's do. On the managed shared
 database its DB credential is engine-issued and auto-rotated like Keystone's,
 as short-lived leases from the OpenBao database engine, and the Step 4
-onboarding provisions the engine tenant for all four database services
-(keystone, glance, placement, and barbican). A `GlanceReady` condition joins
-the chain, gated on `KeystoneReady` plus that registration having provisioned
-the account, and `status.services` gains a third entry.
+onboarding provisions the engine tenant for all five database services
+(keystone, glance, placement, barbican, and neutron). A `GlanceReady` condition
+joins the chain, gated on `KeystoneReady` plus that registration having
+provisioned the account, and `status.services` gains a third entry.
 
 The `placement` block projects a Placement child, `controlplane-placement`: the
 API deployment, its own logical schema on the shared MariaDB, and a Keystone
@@ -269,6 +340,25 @@ PodDisruptionBudget, sealed by a static key in a plain Secret beside its volume.
 [Run Barbican on a Dedicated OpenBao](./guides/barbican/barbican-dedicated-openbao.md)
 covers the same service step by step, including the external-server alternative.
 
+The `neutron` block adds the network service, and the `infrastructure.messaging`
+block beside it is what makes that service admissible: the Neutron CRD requires
+a message bus, so the webhook rejects `services.neutron` without one. The
+reconciler provisions the `openstack-rabbitmq` cluster, resolves its transport
+URL, and delivers the URL beside the child as a
+`controlplane-neutron-messaging` Secret, which the projected Neutron child
+`controlplane-neutron` references brownfield. A `KeystoneService` registration
+`controlplane-neutron` carries the network catalog entry and the `neutron`
+account (user `neutron`, role `service`) in its own project, `service-neutron`.
+Its database credential is engine-issued from the tenant Step 4 onboards, like
+Glance's, Placement's, and Barbican's. `ovn.centralRef` points at the
+`controlplane-ovn` central from the top of this step; the plane reads that
+central's database addresses and client Secret and mirrors its readiness into an
+`OVNReady` condition, which `NeutronReady` gates on alongside `KeystoneReady`,
+the bus delivery, and the registration. The `gateway` block puts the API on the
+eighth HTTPS listener, `neutron.127-0-0-1.nip.io`, and `publicEndpoint` carries
+the `:8443` host port into the public network catalog row. `status.services`
+gains a sixth entry.
+
 Manual work remains after the apply: a hand-applied ControlPlane needs the
 one-time OpenBao onboarding in Step 4 before the chain can progress past its
 database credentials.
@@ -301,6 +391,10 @@ spec:
         name: openstack-memcached
       backend: dogpile.cache.pymemcache
       replicas: 1                 # single Memcached pod; omit to default to 3
+    messaging:
+      clusterRef:
+        name: openstack-rabbitmq  # RabbitmqCluster the operator provisions (managed mode)
+      replicas: 1                 # single broker pod; omit to default to 3
   services:
     keystone:
       replicas: 1
@@ -352,6 +446,18 @@ spec:
         parentRef:
           name: openstack-gw          # same Gateway; seventh listener
         hostname: barbican.127-0-0-1.nip.io
+    neutron:
+      replicas: 1
+      workerReplicas: 1
+      publicEndpoint: https://neutron.127-0-0-1.nip.io:8443
+      gateway:
+        parentRef:
+          name: openstack-gw          # same Gateway; eighth listener
+        hostname: neutron.127-0-0-1.nip.io
+      ovn:
+        centralRef:
+          name: controlplane-ovn
+          namespace: openstack        # the ControlPlane's own namespace
   korc:
     adminCredential:
       cloudCredentialsRef:
@@ -436,15 +542,19 @@ ControlPlane. See the
 
 ## Step 5 — Watch the chain reconcile
 
-The aggregate `Ready` flips to `True` once all 15 sub-conditions are met, in
+The aggregate `Ready` flips to `True` once all 17 sub-conditions are met, in
 dependency order (`HorizonReady` gates on `KeystoneReady`; `GlanceReady`,
 `PlacementReady`, and `BarbicanReady` gate on `KeystoneReady` plus the
-`KeystoneService` registration each service projects for itself;
-`ServiceAccountsReady` then folds those three registrations, so it comes after
-them; the K-ORC branch runs alongside):
+`KeystoneService` registration each service projects for itself; `OVNReady`
+gates on nothing and only mirrors the readiness of the referenced
+`controlplane-ovn`, since nothing this chain produces can converge a central it
+does not own; `NeutronReady` carries the two gates its siblings do, plus
+`OVNReady` and the delivery of the message bus into the network service's
+namespace; `ServiceAccountsReady` then folds those four registrations, so it
+comes after them; the K-ORC branch runs alongside):
 
 ```
-NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady → BarbicanReady → ServiceAccountsReady → RegistrationTenantStoresReady
+NamespacesReady → InfrastructureReady → ESOTenantStoreReady → DBCredentialsReady → AdminPasswordReady → KeystoneReady → HorizonReady → KORCReady → AdminCredentialReady → CatalogReady → GlanceReady → PlacementReady → BarbicanReady → OVNReady → NeutronReady → ServiceAccountsReady → RegistrationTenantStoresReady
 ```
 
 `RegistrationTenantStoresReady` closes the chain and reads
@@ -509,6 +619,7 @@ sudo sh -c 'cat >> /etc/hosts <<EOF
 127.0.0.1 glance.127-0-0-1.nip.io
 127.0.0.1 placement.127-0-0-1.nip.io
 127.0.0.1 barbican.127-0-0-1.nip.io
+127.0.0.1 neutron.127-0-0-1.nip.io
 EOF'
 ```
 
@@ -546,8 +657,8 @@ openstack --insecure token issue
 > `foo-keystone-admin-credentials` instead.
 
 > With the default `KIND_HOST_PORT=443` use `https://keystone.127-0-0-1.nip.io/v3`
-> and drop all four `publicEndpoint` lines (keystone, glance, placement, and
-> barbican) from the CR in Step 3.
+> and drop all five `publicEndpoint` lines (keystone, glance, placement,
+> barbican, and neutron) from the CR in Step 3.
 
 ### Upload a first image
 
@@ -592,12 +703,12 @@ A run aborted before the final `delete` leaves `first-image` behind; delete it
 
 ::: warning Leave OS_REGION_NAME unset
 Do **not** add `OS_REGION_NAME` to the host exports: the projected K-ORC
-catalog rows for image, placement, and key-manager alike carry no region, so a
-region-scoped lookup finds no endpoint. The upload fails with `public endpoint
-for image service in RegionOne region not found`, the placement and secret calls
-with the same message under their own service names. Keystone's own bootstrap
-registers RegionOne identity rows, so identity is unaffected. Only the projected
-rows need the filter left clear.
+catalog rows for image, placement, key-manager, and network alike carry no
+region, so a region-scoped lookup finds no endpoint. The upload fails with
+`public endpoint for image service in RegionOne region not found`, the
+placement, secret, and network calls with the same message under their own
+service names. Keystone's own bootstrap registers RegionOne identity rows, so
+identity is unaffected. Only the projected rows need the filter left clear.
 :::
 
 ### List placement resource classes
@@ -673,6 +784,46 @@ that answers on the way collects the admin credential. Drop it anywhere the
 gateway presents a certificate you trust.
 :::
 
+### Create a first network
+
+With the same `OS_*` variables still exported, confirm the network service
+reached the catalog:
+
+```bash
+openstack --insecure catalog list
+```
+
+A `network` row proves the ControlPlane registered both endpoints: the
+in-cluster one at `http://controlplane-neutron.openstack.svc:9696` and the
+public one at `https://neutron.127-0-0-1.nip.io:8443`, the `publicEndpoint`
+from Step 3. Create a network, put a subnet on it, and read the network's
+status back:
+
+```bash
+openstack --insecure network create demo-net
+openstack --insecure subnet create --network demo-net --subnet-range 192.0.2.0/24 demo-subnet
+openstack --insecure network show demo-net -c status -f value
+```
+
+The last command prints `ACTIVE`. That one word covers the whole network chain:
+the catalog row resolved the endpoint, the gateway listener routed the request
+to the Neutron API, Neutron validated the admin token against Keystone, and the
+ML2/OVN mechanism driver wrote the logical switch into the Northbound database
+of `controlplane-ovn`. The subnet range is the RFC 5737 documentation block, so
+it collides with nothing on your host. These are core `python-openstackclient`
+commands, so no plugin is needed here.
+
+Remove the two objects again, the subnet first:
+
+```bash
+openstack --insecure subnet delete demo-subnet
+openstack --insecure network delete demo-net
+```
+
+`OS_REGION_NAME` has to stay unset here too: the network rows carry no region
+either, and with it set the create call fails with `public endpoint for network
+service in RegionOne region not found`.
+
 ### Open the Horizon dashboard
 
 The dashboard is exposed through the same shared Envoy Gateway as Keystone, on
@@ -688,8 +839,8 @@ Log in with `admin` / the password from the
 `controlplane-keystone-admin-credentials` Secret above (domain `Default`).
 
 After login the dashboard redirects to `/project/`, which reports
-"Unauthorized": the default landing page needs Compute/Network services this
-control plane does not serve yet. Open the Identity panel instead:
+"Unauthorized": the default landing page needs a Compute service this control
+plane does not serve yet. Open the Identity panel instead:
 
 ```bash
 open https://horizon.127-0-0-1.nip.io:8443/identity/
@@ -716,4 +867,8 @@ make teardown-infra
   service, its CRD surface, and the reconciler chain.
 - [Barbican Operator](./reference/barbican/index.md) — the projected Key Manager
   service, its `BarbicanSecretStore` attachment, and the reconciler chain.
+- [Neutron Operator](./reference/neutron/index.md) — the projected network
+  service, its ML2/OVN posture, and the reconciler chain.
+- [OVN Operator](./reference/ovn/index.md) — the referenced `OVNCentral`, the
+  `OVNChassis` node layer, and the reconciler chain.
 - [Quick Start](./quick-start.md) — the compact per-service Keystone path.
