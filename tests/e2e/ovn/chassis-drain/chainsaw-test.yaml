@@ -41,7 +41,7 @@
 # Every step opens with the same CRD presence gate and exits 0 with a SKIP line
 # when the ovn-operator is not deployed, so the suite is default-safe off the
 # e2e-operator matrix job. Nothing is applied before that gate, which is also
-# what lets the teardown below tolerate a run that created nothing.
+# what lets the step 1 cleanup tolerate a run that created nothing.
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -60,8 +60,9 @@ spec:
   # ── Step 1: Label the node, bring the chassis up as a gateway ───────────
   # The suite labels the node itself rather than relying on the cluster
   # bring-up, so it runs against any kind cluster the CI job hands it. The step
-  # cleanup takes both labels off again, which is what keeps a later suite from
-  # finding a node advertising a chassis or gateway role nothing serves.
+  # cleanup takes the stack down and both labels off again, which is what keeps
+  # a later suite from finding a node advertising a chassis or gateway role
+  # nothing serves.
   #
   # Both CRs are applied from inside the script rather than through an `apply`
   # operation: they sit behind the CRD gate, and chainsaw would abort the whole
@@ -223,10 +224,37 @@ spec:
           echo "=== Events ==="
           kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
     cleanup:
+    # Both CRs are applied with kubectl from inside the step 1 script (they sit
+    # behind the CRD gate), so chainsaw's own cleanup never sees them and its
+    # namespace teardown does not apply. This is a step cleanup rather than a
+    # finally on the last step: chainsaw runs a step's finally at the end of
+    # that step and skips every later step once one fails, while the cleanups of
+    # the steps that did run fire at the end of the test in reverse step order.
+    # So the stack comes down whichever step failed. This suite shares the
+    # long-lived openstack namespace with every other ovn suite, and an OVN
+    # control plane left behind holds the single node's CPU against the sibling
+    # suites for the rest of the leg, with its PVCs and the two chassis
+    # DaemonSets beside it. The OVNChassis goes first: it mounts the client
+    # Secret the OVNCentral publishes. The labels come off last, so an unlabel
+    # never triggers a drain Job while the chassis CR is still there.
+    # Best-effort throughout, because a SKIP run created nothing and a teardown
+    # failure must not mask the assertion result.
+    # The probe pods come down here rather than from the step that created
+    # them: a step that deleted its own pod on the way out would take the
+    # evidence with it, and the catch above describes those pods and reads
+    # their logs when a step fails.
     - script:
         shell: bash
         content: |
           set -uo pipefail
+          kubectl delete pod ovn-drain-probe-seed ovn-drain-probe-evacuated ovn-drain-probe-deregistered \
+            -n "$NAMESPACE" --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete configmap ovn-drain-probe-script -n "$NAMESPACE" \
+            --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete ovnchassis ovn-drain -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete ovncentral ovn-drain-central -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
           for label in openstack.c5c3.io/chassis openstack.c5c3.io/gateway; do
             for node in $(kubectl get nodes -l "${label}=true" -o name 2>/dev/null); do
               kubectl label "$node" "${label}-" || true
@@ -521,25 +549,3 @@ spec:
           echo "${OUT}" | grep -q 'DEREGISTERED-OK'
           echo "OK: the southbound database carries no Chassis row for ${NODE}"
     catch: *drain-dump
-    finally:
-    # Both CRs are applied with kubectl from inside the step 1 script (they sit
-    # behind the CRD gate), so chainsaw's own cleanup never sees them and its
-    # namespace teardown does not apply. This suite shares the long-lived
-    # openstack namespace with every other ovn suite. Without this block each run
-    # would leak the OVN control plane with its PVCs and the two chassis
-    # DaemonSets. The OVNChassis goes first: it mounts the client Secret the
-    # OVNCentral publishes. Best-effort throughout, because a SKIP run created
-    # nothing and a teardown failure must not mask the assertion result.
-    - script:
-        shell: bash
-        content: |
-          set -uo pipefail
-          kubectl delete ovnchassis ovn-drain -n "$NAMESPACE" \
-            --ignore-not-found --timeout=2m 2>&1 || true
-          kubectl delete ovncentral ovn-drain-central -n "$NAMESPACE" \
-            --ignore-not-found --timeout=2m 2>&1 || true
-          for label in openstack.c5c3.io/chassis openstack.c5c3.io/gateway; do
-            for node in $(kubectl get nodes -l "${label}=true" -o name 2>/dev/null); do
-              kubectl label "$node" "${label}-" || true
-            done
-          done

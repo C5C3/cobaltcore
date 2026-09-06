@@ -48,7 +48,7 @@
 # Every step opens with the same two CRD presence gates and exits 0 with a SKIP
 # line when either operator is not deployed, so the suite is default-safe off
 # the e2e-operator matrix job. Nothing is applied before that gate, which is
-# also what lets the teardown below tolerate a run that created nothing.
+# also what lets the step 1 cleanup tolerate a run that created nothing.
 #
 apiVersion: chainsaw.kyverno.io/v1alpha1
 kind: Test
@@ -67,8 +67,8 @@ spec:
   # ── Step 1: Label the node and bring the stack up ───────────────────────
   # The suite labels the node itself rather than relying on the cluster
   # bring-up, so it runs against any kind cluster the CI job hands it. The step
-  # cleanup takes the label off again, which is what keeps a later suite from
-  # finding a node advertising a chassis role nothing serves.
+  # cleanup takes the stack down and the label off again, which is what keeps a
+  # later suite from finding a node advertising a chassis role nothing serves.
   #
   # The fixtures are applied from inside the script rather than through an
   # `apply` operation: they sit behind the CRD gates, and chainsaw would abort
@@ -151,10 +151,94 @@ spec:
           echo "=== Events ==="
           kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
     cleanup:
+    # Everything this suite creates is applied with kubectl from inside a script
+    # (all of it sits behind the CRD gates), so chainsaw's own cleanup never
+    # sees it and its namespace teardown does not apply. This is a step cleanup
+    # rather than a finally on the last step: chainsaw runs a step's finally at
+    # the end of that step and skips every later step once one fails, while the
+    # cleanups of the steps that did run fire at the end of the test in reverse
+    # step order. So the stack comes down whichever step failed. The suite
+    # shares the long-lived openstack namespace with every other neutron suite,
+    # and a neutron-api Deployment, an OVN control plane and two chassis
+    # DaemonSets left behind hold the single node's CPU against the sibling
+    # suites for the rest of the leg, with the two worker Deployments, the
+    # MariaDB Database/User/Grant CRs carrying the neutron_provider schema and
+    # the PVCs beside them; the interface this suite put on the node's br-int
+    # would outlive the chassis that carried it. The Neutron and the OVNChassis
+    # go before the OVNCentral: both mount the client Secret it publishes. The
+    # label comes off last, so an unlabel never triggers a drain Job while the
+    # chassis CR is still there. Best-effort throughout, because a SKIP run
+    # created nothing and a teardown failure must not mask the assertion result.
+    # The probe pods come down here rather than from the step that created
+    # them: a step that deleted its own pod on the way out would take the
+    # evidence with it, and the catch above describes those pods and reads
+    # their logs when a step fails.
     - script:
+        timeout: 8m
         shell: bash
         content: |
           set -uo pipefail
+          DS=ds/neutron-provider-chassis-ovs
+          kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
+            ovs-vsctl --timeout=15 --if-exists del-port br-int smoke0 2>&1 || true
+
+          # The switch is dropped from the database before the database goes
+          # away, so a central that outlived a failed teardown carries no
+          # leftover logical model. Skipped when the central is already gone:
+          # the probe would only wait out its own connection budget.
+          POD=neutron-provider-probe-nb-cleanup
+          NB="$(kubectl get ovncentral neutron-provider-ovn -n "$NAMESPACE" \
+            -o jsonpath='{.status.northbound.internalDbAddress}' 2>/dev/null || true)"
+          IMG="$(kubectl get sts neutron-provider-ovn-nb -n "$NAMESPACE" \
+            -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+          if [ -n "${NB}" ] && [ -n "${IMG}" ]; then
+            OVERRIDES="$(cat <<JSON
+          {
+            "apiVersion": "v1",
+            "spec": {
+              "volumes": [
+                {"name": "certs", "secret": {"secretName": "neutron-provider-ovn-client"}},
+                {"name": "probe", "configMap": {"name": "neutron-provider-probe-script"}}
+              ],
+              "containers": [
+                {
+                  "name": "${POD}",
+                  "image": "${IMG}",
+                  "command": ["bash", "/probe/probe.sh", "nb-cleanup"],
+                  "env": [{"name": "NB_ADDRESS", "value": "${NB}"}],
+                  "volumeMounts": [
+                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
+                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
+                  ]
+                }
+              ]
+            }
+          }
+          JSON
+          )"
+            kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
+              --overrides="$OVERRIDES" 2>&1 || true
+            for _ in $(seq 1 60); do
+              phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+              case "${phase}" in Succeeded|Failed) break ;; esac
+              sleep 2
+            done
+            kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true
+          fi
+
+          kubectl delete neutron neutron-provider -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete ovnchassis neutron-provider-chassis -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete ovncentral neutron-provider-ovn -n "$NAMESPACE" \
+            --ignore-not-found --timeout=2m 2>&1 || true
+          kubectl delete pod neutron-provider-probe-nb-seed neutron-provider-probe-sb-check \
+            neutron-provider-probe-nb-cleanup -n "$NAMESPACE" \
+            --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete configmap neutron-provider-probe-script -n "$NAMESPACE" \
+            --ignore-not-found --timeout=1m 2>&1 || true
+          kubectl delete secret neutron-provider-messaging -n "$NAMESPACE" \
+            --ignore-not-found --timeout=1m 2>&1 || true
           for node in $(kubectl get nodes -l openstack.c5c3.io/chassis=true -o name 2>/dev/null); do
             kubectl label "$node" openstack.c5c3.io/chassis- || true
           done
@@ -392,84 +476,3 @@ spec:
           echo "${OUT}" | grep -q 'BINDING-OK'
           echo "OK: the southbound port binding of smoke0 names a chassis"
     catch: *provider-dump
-    finally:
-    # Everything this suite creates is applied with kubectl from inside a script
-    # (all of it sits behind the CRD gates), so chainsaw's own cleanup never
-    # sees it and its namespace teardown does not apply. The suite shares the
-    # long-lived openstack namespace with every other neutron suite. Without
-    # this block each run would leak the neutron-api Deployment, the two worker
-    # Deployments, the MariaDB Database/User/Grant CRs with the neutron_provider
-    # schema, the OVN control plane with its PVCs, the two chassis DaemonSets
-    # and the interface this suite put on the node's br-int. The Neutron and the
-    # OVNChassis go before the OVNCentral: both mount the client Secret it
-    # publishes. Best-effort throughout, because a SKIP run created nothing and
-    # a teardown failure must not mask the assertion result.
-    - script:
-        timeout: 8m
-        shell: bash
-        content: |
-          set -uo pipefail
-          DS=ds/neutron-provider-chassis-ovs
-          kubectl exec "$DS" -n "$NAMESPACE" -c ovsdb-server -- \
-            ovs-vsctl --timeout=15 --if-exists del-port br-int smoke0 2>&1 || true
-
-          # The switch is dropped from the database before the database goes
-          # away, so a central that outlived a failed teardown carries no
-          # leftover logical model. Skipped when the central is already gone:
-          # the probe would only wait out its own connection budget.
-          POD=neutron-provider-probe-nb-cleanup
-          NB="$(kubectl get ovncentral neutron-provider-ovn -n "$NAMESPACE" \
-            -o jsonpath='{.status.northbound.internalDbAddress}' 2>/dev/null || true)"
-          IMG="$(kubectl get sts neutron-provider-ovn-nb -n "$NAMESPACE" \
-            -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
-          if [ -n "${NB}" ] && [ -n "${IMG}" ]; then
-            OVERRIDES="$(cat <<JSON
-          {
-            "apiVersion": "v1",
-            "spec": {
-              "volumes": [
-                {"name": "certs", "secret": {"secretName": "neutron-provider-ovn-client"}},
-                {"name": "probe", "configMap": {"name": "neutron-provider-probe-script"}}
-              ],
-              "containers": [
-                {
-                  "name": "${POD}",
-                  "image": "${IMG}",
-                  "command": ["bash", "/probe/probe.sh", "nb-cleanup"],
-                  "env": [{"name": "NB_ADDRESS", "value": "${NB}"}],
-                  "volumeMounts": [
-                    {"name": "certs", "mountPath": "/certs", "readOnly": true},
-                    {"name": "probe", "mountPath": "/probe", "readOnly": true}
-                  ]
-                }
-              ]
-            }
-          }
-          JSON
-          )"
-            kubectl run "$POD" -n "$NAMESPACE" --image="$IMG" --restart=Never \
-              --overrides="$OVERRIDES" 2>&1 || true
-            for _ in $(seq 1 60); do
-              phase="$(kubectl get pod "$POD" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
-              case "${phase}" in Succeeded|Failed) break ;; esac
-              sleep 2
-            done
-            kubectl logs -n "$NAMESPACE" "$POD" 2>&1 || true
-          fi
-
-          kubectl delete neutron neutron-provider -n "$NAMESPACE" \
-            --ignore-not-found --timeout=2m 2>&1 || true
-          kubectl delete ovnchassis neutron-provider-chassis -n "$NAMESPACE" \
-            --ignore-not-found --timeout=2m 2>&1 || true
-          kubectl delete ovncentral neutron-provider-ovn -n "$NAMESPACE" \
-            --ignore-not-found --timeout=2m 2>&1 || true
-          kubectl delete pod neutron-provider-probe-nb-seed neutron-provider-probe-sb-check \
-            neutron-provider-probe-nb-cleanup -n "$NAMESPACE" \
-            --ignore-not-found --timeout=1m 2>&1 || true
-          kubectl delete configmap neutron-provider-probe-script -n "$NAMESPACE" \
-            --ignore-not-found --timeout=1m 2>&1 || true
-          kubectl delete secret neutron-provider-messaging -n "$NAMESPACE" \
-            --ignore-not-found --timeout=1m 2>&1 || true
-          for node in $(kubectl get nodes -l openstack.c5c3.io/chassis=true -o name 2>/dev/null); do
-            kubectl label "$node" openstack.c5c3.io/chassis- || true
-          done
