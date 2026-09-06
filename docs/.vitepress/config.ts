@@ -108,6 +108,17 @@ export default defineConfig({
               { text: 'Migrate Barbican DB to Dynamic Credentials', link: '/guides/barbican/migrate-barbican-db-to-dynamic-credentials' },
             ],
           },
+          {
+            text: 'OVN',
+            collapsed: true,
+            items: [
+              { text: 'Label a Node as a Compute or Network Node', link: '/guides/ovn/label-a-chassis-node' },
+              { text: 'Drain a Chassis Node', link: '/guides/ovn/drain-a-chassis-node' },
+              { text: 'Restore an OVN Database Snapshot', link: '/guides/ovn/restore-an-ovn-database-snapshot' },
+              { text: 'Enable OVN Operator Metrics', link: '/guides/ovn/enable-ovn-operator-metrics' },
+              { text: 'Enable OVN Operator NetworkPolicy', link: '/guides/ovn/enable-ovn-operator-networkpolicy' },
+            ],
+          },
         ],
       },
       {
