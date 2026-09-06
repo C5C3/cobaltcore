@@ -12,6 +12,7 @@
 # node to map, and a gateway chassis without an uplink would announce
 # connectivity it does not have. spec.image is left unset so the operator
 # resolves the same OVN image the control plane runs.
+# region ovnchassis-cr
 apiVersion: ovn.openstack.c5c3.io/v1alpha1
 kind: OVNChassis
 metadata:
@@ -22,3 +23,4 @@ spec:
     name: ovn-chassis-central
   nodeSelector:
     openstack.c5c3.io/chassis: "true"
+# endregion ovnchassis-cr

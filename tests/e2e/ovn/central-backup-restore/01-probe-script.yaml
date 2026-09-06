@@ -1,0 +1,126 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The script the three Northbound client probes of this suite run inside the OVN
+# image.
+#
+# It lives in a ConfigMap rather than in the `kubectl run --overrides` payload so
+# it stays a reviewable, shellcheck-able shell script instead of a JSON-escaped
+# one-liner. Each probe pod mounts it at /probe and the client certificate the
+# OVNCentral published at /certs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ovn-restore-probe-script
+  namespace: openstack
+data:
+  probe.sh: |
+    #!/bin/bash
+    # Seeds, wipes or checks the two logical switches this suite observes the
+    # restore through. SWITCH exists before the snapshot, is gone after the
+    # wipe, and is back after the restore Job replayed the snapshot; NEWER is
+    # created after the snapshot and has to be gone once the replay landed.
+    #
+    # NB_ADDRESS arrives as an environment variable; the mode is the first
+    # argument.
+    set -u
+
+    # The client keypair and the CA the database authenticates peers against.
+    readonly CERT=(-p /certs/tls.key -c /certs/tls.crt -C /certs/ca.crt)
+
+    # Only a connection-level failure is retried. A TLS failure reports a
+    # certificate, an SSL routine or a protocol error instead, and retrying it
+    # would burn the budget on a misconfiguration that cannot resolve itself.
+    readonly RETRYABLE='Connection refused|Connection timed out|Network is unreachable|No route to host|Host is unreachable|Name or service not known|timeout exceeded'
+
+    readonly ATTEMPTS=30
+    readonly INTERVAL=5
+
+    # The switch carries no ports and no ACLs: what the restore has to bring
+    # back is a row, and a richer object would only widen what a partial replay
+    # could get away with.
+    readonly SWITCH=restore-probe
+
+    # A second switch, created after the snapshot was taken. ovsdb-client
+    # restore replaces the target database rather than merging into it, so the
+    # replay has to delete this one. Without it the suite would only ever
+    # observe the insert direction, and a restore that merged would pass.
+    #
+    # Its name shares no substring with SWITCH, so the two grep -F checks below
+    # cannot match each other's row.
+    readonly NEWER=post-snapshot-probe
+
+    # nbctl <label> <ovn-nbctl arguments...>
+    #
+    # Runs one ovn-nbctl invocation and leaves its output in OUT. A connection
+    # that is not up yet is retried; anything else fails the probe.
+    OUT=""
+    nbctl() {
+      local label="$1"
+      shift
+      local attempt=0 out rc
+
+      while [ "${attempt}" -lt "${ATTEMPTS}" ]; do
+        attempt=$((attempt + 1))
+        out="$(ovn-nbctl --db="${NB_ADDRESS}" "${CERT[@]}" --timeout=10 "$@" 2>&1)"
+        rc=$?
+        if [ "${rc}" -eq 0 ]; then
+          OUT="${out}"
+          return 0
+        fi
+        if grep -Eq "${RETRYABLE}" <<< "${out}"; then
+          echo "retry ${attempt}/${ATTEMPTS}: northbound database not reachable yet: ${out}"
+          sleep "${INTERVAL}"
+          continue
+        fi
+        echo "FAIL: ovn-nbctl ${label} exited ${rc}: ${out}"
+        exit 1
+      done
+
+      echo "FAIL: ovn-nbctl ${label} never reached the northbound database"
+      exit 1
+    }
+
+    case "${1:-}" in
+    seed)
+      nbctl "ls-add ${SWITCH}" --may-exist ls-add "${SWITCH}"
+      echo "SEED-OK"
+      ;;
+    wipe)
+      nbctl "ls-del ${SWITCH}" --if-exists ls-del "${SWITCH}"
+      nbctl "ls-add ${NEWER}" --may-exist ls-add "${NEWER}"
+      # ls-del under --if-exists succeeds on a switch that was never there, so
+      # the deletion is read back. A wipe that silently left the row behind
+      # would have the check after the restore pass on a database the restore
+      # never touched. NEWER is read back for the mirror-image reason: a switch
+      # that was never created cannot prove it was deleted.
+      nbctl ls-list ls-list
+      if grep -qF -- "${SWITCH}" <<< "${OUT}"; then
+        echo "FAIL: ls-list still carries ${SWITCH} after the delete: ${OUT}"
+        exit 1
+      fi
+      if ! grep -qF -- "${NEWER}" <<< "${OUT}"; then
+        echo "FAIL: ls-list carries no ${NEWER} row after the add: ${OUT}"
+        exit 1
+      fi
+      echo "WIPE-OK"
+      ;;
+    check)
+      nbctl ls-list ls-list
+      if ! grep -qF -- "${SWITCH}" <<< "${OUT}"; then
+        echo "FAIL: ls-list carries no ${SWITCH} row: ${OUT}"
+        exit 1
+      fi
+      if grep -qF -- "${NEWER}" <<< "${OUT}"; then
+        echo "FAIL: ls-list still carries ${NEWER}, so the replay merged into the database instead of replacing it: ${OUT}"
+        exit 1
+      fi
+      echo "${OUT}"
+      echo "RESTORE-OK"
+      ;;
+    *)
+      echo "FAIL: unknown mode '${1:-}', want seed, wipe or check"
+      exit 1
+      ;;
+    esac
