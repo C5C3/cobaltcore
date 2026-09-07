@@ -6,12 +6,22 @@
 # dedicated c5c3-system Namespace and orchestrates the Keystone ControlPlane.
 # It depends on the infrastructure + Keystone operators it projects CRs into.
 #
-# K-ORC is deliberately NOT in dependsOn: a HelmRelease dependsOn can only
-# reference other HelmReleases, and K-ORC is now a Flux Kustomization
-# (releases/k-orc.yaml), not a HelmRelease. Ordering is unnecessary anyway — the
-# reconciler tolerates the K-ORC CRDs being absent (it surfaces KORCReady=False
-# with reason KORCCRDNotInstalled via a NoKindMatchError instead of crash-looping),
-# so the operator may start before K-ORC and converge once the CRDs appear.
+# K-ORC is NOT in dependsOn: a HelmRelease dependsOn can only reference other
+# HelmReleases, and K-ORC is a Flux Kustomization (releases/k-orc.yaml), not a
+# HelmRelease. That leaves the ordering UNEXPRESSED, not unnecessary: the nine
+# K-ORC kinds are a hard dependency the manager watches unconditionally
+# (SetupWithManager, see the HARD CRD DEPENDENCY note in reconcile_korc.go), so an
+# operator pod that starts before the K-ORC Kustomization has landed fails its
+# cache sync and crash-loops until it has, which fails the install Helm waits on.
+# Expect a CrashLoopBackOff window on a fresh cluster whenever this HelmRelease
+# reconciles first. The pod recovers once the CRDs appear, but the RELEASE only
+# follows it while install remediation still has retries left — hence the widened
+# install budget below. Expressing the ordering instead means wrapping
+# this release in a Flux Kustomization carrying
+# dependsOn: [{name: k-orc, namespace: flux-system}] (k-orc.yaml already sets
+# wait: true), which needs a Git/OCI source for this repository that neither the
+# kind Quick Start nor CI has — both kubectl apply -k these manifests directly
+# (see the no-spec.sync note in fluxinstance.yaml).
 ---
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
@@ -64,8 +74,27 @@ spec:
   install:
     crds: CreateReplace
     createNamespace: true
+    # 30 instead of the 3 every other release here uses: this is the only
+    # HelmRelease whose hard CRD dependency (K-ORC) has no dependsOn edge to wait
+    # on, so a FIRST install can fail for no reason other than the k-orc
+    # Kustomization not having landed yet. A spent budget stalls the release until
+    # the chart, the values or the spec change — on a fresh cluster or a DR rebuild
+    # that leaves the control plane down until someone reconciles it by hand. At
+    # the 5m default wait, 30 attempts are ~2.5h of installing, far past the window
+    # in which the Kustomization lands.
+    #
+    # Widened, NOT unbounded: a negative value never reaches RetriesExhausted, so a
+    # permanently broken install (an image digest the registry no longer serves,
+    # broken values) would churn uninstall -> install forever without ever setting
+    # Stalled for alerts to key on, and each remediation uninstalls the templated
+    # resources — including the failurePolicy: Fail webhook configurations, while
+    # the CRDs under crds/ survive — leaving a recurring window in which
+    # ControlPlane writes are admitted with no defaulting and no validation. A
+    # bounded budget closes both: the last failure stays put, webhooks included.
+    # The upgrade budget stays at 3: a failed upgrade remediates by rolling back to
+    # the running operator, which is the outcome we want there.
     remediation:
-      retries: 3
+      retries: 30
   upgrade:
     crds: CreateReplace
     remediation:

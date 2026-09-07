@@ -13,14 +13,13 @@
 # identical to the dist/install.yaml committed at the tag. So we vendor a
 # GitRepository and apply it via a Flux Kustomization (releases/k-orc.yaml).
 #
-# TEMPORARY main-commit pin (ref.commit, not ref.tag): the c5c3-operator now
-# Owns() the RoleAssignment kind, which no released K-ORC ships (latest is
-# v2.6.0) and which only upstream main's controller reconciles. dist/install.yaml
-# is regenerated ONLY at release time, so a main commit carries no refreshed
-# ./dist — the Kustomization therefore builds ./config/default with an image
-# override (see releases/k-orc.yaml) instead of applying ./dist. REVERT to the
-# tag + ./dist form once the first release shipping RoleAssignment (expected
-# v2.7.0) lands.
+# TEMPORARY main-commit pin (ref.commit, not ref.tag): the c5c3-operator Owns()
+# the RoleAssignment and Region kinds, neither of which a released K-ORC ships
+# (the latest is v2.6.0) and which only upstream main's controller reconciles.
+# dist/install.yaml is regenerated ONLY at release time, so a main commit carries
+# no refreshed ./dist — the Kustomization therefore builds ./config/default with
+# an image override (see releases/k-orc.yaml) instead of applying ./dist. REVERT
+# to the tag + ./dist form once the first release shipping both kinds exists.
 #
 # The clone is scoped to /config via spec.ignore so the source artifact stays
 # small (the full upstream repo carries a website/, examples/, tooling, etc.).
@@ -43,7 +42,7 @@ spec:
   interval: 1h
   url: https://github.com/k-orc/openstack-resource-controller
   ref:
-    commit: 8c8b4d9373edcb406bc9d82a092d97a3dbac7956
+    commit: 3f02592cc70433edbb74c1ac9c4f029ae2492c10
   ignore: |
     # Vendor only the config/ kustomize base; skip the rest of the repo.
     /*
