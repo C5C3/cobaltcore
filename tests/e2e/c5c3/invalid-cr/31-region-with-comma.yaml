@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# spec.region carrying a comma is rejected (CRD pattern): reconcileCatalog
+# casts it to K-ORC's OpenStackName on the adopted Region CR, whose own
+# pattern is ^[^,]+$. Admitting it here would wedge CatalogReady on a field
+# that is immutable after create.
+apiVersion: c5c3.io/v1alpha1
+kind: ControlPlane
+metadata:
+  name: cp-region-with-comma
+spec:
+  openStackRelease: "2025.2"
+  region: eu-de-1,dc2
+  infrastructure:
+    database:
+      host: db.example.com
+      database: openstack
+      secretRef:
+        name: db-creds
+    cache:
+      backend: dogpile.cache.pymemcache
+      servers:
+      - mc:11211
+  services:
+    keystone:
+      mode: Managed
+  korc:
+    adminCredential:
+      cloudCredentialsRef:
+        cloudName: admin
+      passwordSecretRef:
+        name: external-admin
+        key: password

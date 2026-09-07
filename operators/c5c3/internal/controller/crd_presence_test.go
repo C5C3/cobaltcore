@@ -414,7 +414,7 @@ func TestProbeOptionalWatches_FetchesEachGroupVersionOnce(t *testing.T) {
 
 // --- optionalWatchObjects ---
 
-// TestOptionalWatchObjects_ExcludesKORC guards the invariant that the eight K-ORC
+// TestOptionalWatchObjects_ExcludesKORC guards the invariant that the nine K-ORC
 // kinds are hard dependencies Owned unconditionally by buildControlPlaneController, not
 // slimmable watches guarded behind the discovery probe. Listing any K-ORC kind here
 // would let the manager start on a cluster whose K-ORC CRDs are unserved, only for the

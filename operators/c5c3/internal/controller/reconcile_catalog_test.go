@@ -150,3 +150,80 @@ func TestManagedServiceURL(t *testing.T) {
 	g.Expect(managedServiceURL("glance-api", "openstack", 9292, "")).
 		To(Equal("http://glance-api.openstack.svc:9292"), "an empty path adds no trailing slash")
 }
+
+// TestManagedCatalogRegion_Shape pins the projection of the Region CR that adopts
+// the region the keystone bootstrap inserted: a managed CR named "{cp}-region" in
+// the ControlPlane's child namespace that detaches on delete, plus the two-phase
+// description rule. Describing before adoption is the edge that matters: K-ORC's
+// adoption filter then looks for a region carrying that description, the bootstrap
+// row (whose description is empty) does not match, and the create that follows
+// takes Keystone's 409 Conflict as a terminal error.
+func TestManagedCatalogRegion_Shape(t *testing.T) {
+	credRef := orcv1alpha1.CloudCredentialsReference{SecretName: "k-orc-clouds-yaml", CloudName: "admin"}
+
+	// An empty wantDescription means the CR must carry no description at all: the
+	// empty string is not a legal value for K-ORC (MinLength 1).
+	tests := []struct {
+		name            string
+		region          string
+		description     string
+		adopted         bool
+		wantRegion      orcv1alpha1.OpenStackName
+		wantDescription string
+	}{
+		{
+			name:        "unadopted region drops the description",
+			region:      "RegionOne",
+			description: "CobaltCore e2e region",
+			adopted:     false,
+			wantRegion:  "RegionOne",
+		},
+		{
+			name:            "adopted region carries the description",
+			region:          "eu-de-1",
+			description:     "CobaltCore e2e region",
+			adopted:         true,
+			wantRegion:      "eu-de-1",
+			wantDescription: "CobaltCore e2e region",
+		},
+		{
+			name:       "adopted region without a description stays undescribed",
+			region:     "RegionOne",
+			adopted:    true,
+			wantRegion: "RegionOne",
+		},
+		{
+			name:       "an empty spec.region falls back to RegionOne",
+			region:     "",
+			adopted:    true,
+			wantRegion: "RegionOne",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			cp := korcControlPlane()
+			cp.Spec.Region = tt.region
+			cp.Spec.RegionDescription = tt.description
+
+			region := managedCatalogRegion(cp, credRef, tt.adopted)
+			g.Expect(region.Name).To(Equal(keystoneRegionName(cp)))
+			g.Expect(region.Namespace).To(Equal(childNamespace(cp)))
+			g.Expect(region.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyManaged))
+			g.Expect(region.Spec.Import).To(BeNil(), "the region is adopted as a managed CR, not imported")
+			g.Expect(region.Spec.ManagedOptions).NotTo(BeNil())
+			g.Expect(region.Spec.ManagedOptions.OnDelete).To(Equal(orcv1alpha1.OnDeleteDetach),
+				"Keystone refuses to delete a region the identity endpoints still reference")
+			g.Expect(region.Spec.CloudCredentialsRef).To(Equal(credRef))
+			g.Expect(region.Spec.Resource).NotTo(BeNil())
+			g.Expect(region.Spec.Resource.Name).To(HaveValue(Equal(tt.wantRegion)))
+
+			if tt.wantDescription == "" {
+				g.Expect(region.Spec.Resource.Description).To(BeNil())
+				return
+			}
+			g.Expect(region.Spec.Resource.Description).To(HaveValue(Equal(tt.wantDescription)))
+		})
+	}
+}

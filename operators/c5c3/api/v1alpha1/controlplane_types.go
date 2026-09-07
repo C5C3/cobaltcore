@@ -63,7 +63,16 @@ type ControlPlaneSpec struct {
 	// CRD schema default (normal admission path) and the defaulting webhook
 	// (callers that bypass the CRD default), mirroring BootstrapSpec.Region in the
 	// keystone operator.
+	//
+	// The bounds mirror K-ORC's OpenStackName, the type reconcileCatalog projects
+	// this value into as the adopted Region CR's spec.resource.name. Without them a
+	// comma-bearing or over-long region is admitted here and only rejected when the
+	// Region CR is applied — and since the field is immutable, the wedged
+	// CatalogReady could not be fixed in place, only by re-creating the whole
+	// ControlPlane.
 	// +kubebuilder:default="RegionOne"
+	// +kubebuilder:validation:MaxLength=255
+	// +kubebuilder:validation:Pattern=`^[^,]+$`
 	// +optional
 	Region string `json:"region,omitempty"`
 

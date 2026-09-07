@@ -9,8 +9,11 @@ import (
 	"fmt"
 
 	orcv1alpha1 "github.com/k-orc/openstack-resource-controller/v2/api/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/cobaltcore/internal/common/apply"
@@ -38,7 +41,11 @@ const (
 //
 //   - Managed — the ControlPlane OWNS the catalog. It registers the OpenStack
 //     service catalog entries for Keystone (an identity Service plus its public
-//     Endpoint) as managed K-ORC CRs, which K-ORC creates in Keystone.
+//     Endpoint) as managed K-ORC CRs, which K-ORC creates in Keystone. It also
+//     adopts the region the keystone bootstrap inserted as a managed Region CR
+//     ({cp.Name}-region) carrying spec.regionDescription: the CR adopts the region
+//     first and describes it on a later pass, and it detaches on delete instead of
+//     removing the Keystone row (see managedCatalogRegion).
 //   - External — the catalog belongs to the pre-existing installation, so the
 //     ControlPlane IMPORTS it instead (reconcileCatalogExternal). Creating
 //     entries against a populated catalog would duplicate rows Keystone does not
@@ -46,7 +53,10 @@ const (
 //
 // Both branches are GATED on AdminCredentialReady: the admin credential must be
 // available before K-ORC can talk to Keystone at all. Child CRs are
-// create-or-updated idempotently. K-ORC is a hard CRD dependency (see
+// create-or-updated idempotently, and apply.EnsureObject decodes the apply
+// response back into the object it was handed, so each child carries live status
+// after its own apply. That is what the terminal-error and availability checks
+// below read, without a second Get. K-ORC is a hard CRD dependency (see
 // reconcileKORC), so a missing Service/Endpoint CRD never reaches here — no-match
 // errors fall through to the generic error returns below (#476).
 func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v1alpha1.ControlPlane) (ctrl.Result, error) {
@@ -116,6 +126,60 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		applied = append(applied, appliedCatalogRow{row: row, service: service, endpoints: endpoints})
 	}
 
+	// Adopt the Keystone region the keystone bootstrap inserted as an owned managed
+	// Region CR, in two phases: the CR is applied WITHOUT a description until K-ORC
+	// reports an id for it, and only a later pass adds spec.regionDescription (see
+	// managedCatalogRegion for why that order is fixed).
+	//
+	// The live CR is read ONCE and exactly one apply follows, so a pass either adopts
+	// or describes. Applying twice in one pass, first without the description to adopt
+	// and then with it, would drop and re-add the field on every pass, bump the CR's
+	// generation on every pass, and leave K-ORC clearing and re-setting the Keystone
+	// description forever. The catalog rows are applied before the Region so a
+	// Service or Endpoint failure keeps reporting under its own reason.
+	live := &orcv1alpha1.Region{}
+	adopted := false
+	switch err := r.Get(ctx, client.ObjectKey{Name: keystoneRegionName(cp), Namespace: childNamespace(cp)}, live); {
+	case err == nil:
+		adopted = live.Status.ID != nil && *live.Status.ID != ""
+	case apierrors.IsNotFound(err):
+		// The apply below creates the CR; nothing is adopted yet. This is also the
+		// last pass before K-ORC first writes to the Keystone region, so it is where
+		// the destructive shape has to be recorded: K-ORC reads an absent
+		// spec.resource.description as the empty string, so an empty
+		// spec.regionDescription CLEARS a description an admin set on that region by
+		// hand. An operator upgrade adopts the region without anyone editing the
+		// ControlPlane, so admission never runs on that path and this event is the
+		// only notice the cluster carries.
+		//
+		// CatalogReady gates it because only an upgrade can lose anything here. A
+		// fresh install creates this CR on the same pass that first registers the
+		// catalog, and CatalogReady only turns True once THIS Region reports
+		// Available — so True while the CR is absent means the catalog was
+		// registered by a version that had no Region CR, which is exactly the
+		// population whose region may carry a hand-set description. On a fresh
+		// install the bootstrap row has no description, nothing is cleared, and a
+		// Warning on every install would be noise that buries the real one. The gate
+		// also holds the emitted-once promise: a failed Region apply below stamps
+		// CatalogReady False (RegionError), so the retry pass stays silent too.
+		if cp.Spec.RegionDescription == "" && r.Recorder != nil &&
+			conditions.AllTrue(cp.Status.Conditions, conditionTypeCatalogReady) {
+			r.Recorder.Event(cp, "Warning", "RegionDescriptionCleared", fmt.Sprintf(
+				"adopting Keystone region %q as the managed Region %q with spec.regionDescription empty: "+
+					"K-ORC asserts an empty description, clearing any description set on that region by "+
+					"hand. Set spec.regionDescription to keep one.",
+				korcRegion(cp), keystoneRegionName(cp)))
+		}
+	default:
+		fail("RegionError", fmt.Sprintf("reading Region %q: %v", keystoneRegionName(cp), err))
+		return ctrl.Result{}, err
+	}
+	region := managedCatalogRegion(cp, credRef, adopted)
+	if err := apply.EnsureObject(ctx, r.Client, r.Scheme, cp, region, apply.FieldManager); err != nil {
+		fail("RegionError", fmt.Sprintf("applying Region %q: %v", region.Name, err))
+		return ctrl.Result{}, err
+	}
+
 	// Gate CatalogReady on EVERY child CR reporting Available, and surface a TERMINAL
 	// K-ORC failure distinctly: registering the Service/Endpoint CRs only instructs
 	// K-ORC to create the catalog entries — it does not mean the entries exist in
@@ -136,6 +200,9 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 			}
 		}
 	}
+	if termErr := orcv1alpha1.GetTerminalError(region); termErr != nil {
+		return r.catalogTerminalError(cp, "Region", region.Name, termErr), nil
+	}
 	for _, ar := range applied {
 		ready := korcAvailableUpToDate(ar.service)
 		for _, endpoint := range ar.endpoints {
@@ -149,6 +216,16 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 			return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 		}
 	}
+	// The description apply bumps the Region CR's generation, so this generation-aware
+	// gate also holds the second phase: CatalogReady stays False until K-ORC has
+	// pushed the description and reported Available for that generation.
+	if !korcAvailableUpToDate(region) {
+		logger.Info("catalog Region not yet Available, requeuing", "region", region.Name)
+		fail(conditionReasonWaitingForCatalog, fmt.Sprintf(
+			"the Region CR %q for region %q is registered but not yet Available", region.Name, korcRegion(cp),
+		))
+		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
+	}
 
 	conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeCatalogReady,
@@ -156,7 +233,8 @@ func (r *ControlPlaneReconciler) reconcileCatalog(ctx context.Context, cp *c5c3v
 		ObservedGeneration: cp.Generation,
 		Reason:             "CatalogRegistered",
 		Message: fmt.Sprintf(
-			"%d catalog entry/entries registered as K-ORC CRs and Available", len(rows),
+			"region %q adopted and %d catalog entry/entries registered as K-ORC CRs and Available",
+			korcRegion(cp), len(rows),
 		),
 	})
 	return ctrl.Result{}, nil
@@ -255,6 +333,41 @@ func managedCatalogEndpoint(
 	return managedCatalogEndpointChild(ep.crName, childNamespace(cp), ep.iface, ep.url, row.crName, credRef)
 }
 
+// managedCatalogRegion builds the MANAGED K-ORC Region CR adopting the Keystone
+// region named by spec.region (korcRegion), the region the keystone bootstrap
+// inserted. Same SSA projection as managedCatalogService; two properties of the
+// Keystone region API decide its shape.
+//
+// ADOPT FIRST, DESCRIBE SECOND: K-ORC's adoption filter matches on the description
+// as well whenever the spec carries one, and the bootstrap's region row has an empty
+// description. A CR asking for a description on its FIRST pass therefore adopts
+// nothing, falls through to create, and Keystone answers 409 Conflict, which K-ORC
+// classifies as terminal. The description is set only once the region is adopted
+// (adopted, i.e. the live CR reports a status.id). An empty spec.regionDescription
+// leaves the field nil rather than pointing at the empty string, which K-ORC's
+// MinLength of 1 rejects.
+//
+// DETACH ON DELETE: Keystone answers 403 for a region that still has endpoints, and
+// the identity endpoints registered above reference this very region. With
+// onDelete: detach a Delete of the CR removes the CR and leaves the Keystone row.
+func managedCatalogRegion(
+	cp *c5c3v1alpha1.ControlPlane, credRef orcv1alpha1.CloudCredentialsReference, adopted bool,
+) *orcv1alpha1.Region {
+	resource := &orcv1alpha1.RegionResourceSpec{Name: ptr.To(orcv1alpha1.OpenStackName(korcRegion(cp)))}
+	if adopted && cp.Spec.RegionDescription != "" {
+		resource.Description = ptr.To(cp.Spec.RegionDescription)
+	}
+	return &orcv1alpha1.Region{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneRegionName(cp), Namespace: childNamespace(cp)},
+		Spec: orcv1alpha1.RegionSpec{
+			ManagementPolicy:    orcv1alpha1.ManagementPolicyManaged,
+			ManagedOptions:      &orcv1alpha1.ManagedOptions{OnDelete: orcv1alpha1.OnDeleteDetach},
+			CloudCredentialsRef: credRef,
+			Resource:            resource,
+		},
+	}
+}
+
 // catalogTerminalError records a terminal K-ORC catalog failure: it sets
 // CatalogReady=False/CatalogFailed naming the failing child CR. It requeues so a
 // fixed configuration (e.g. a corrected clouds.yaml) is re-evaluated rather than
@@ -291,6 +404,12 @@ func keystoneServiceName(cp *c5c3v1alpha1.ControlPlane) string {
 
 func keystoneEndpointName(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Name + "-identity-endpoint"
+}
+
+// keystoneRegionName returns the deterministic name of the owned K-ORC Region CR
+// adopting the region the keystone bootstrap inserted.
+func keystoneRegionName(cp *c5c3v1alpha1.ControlPlane) string {
+	return cp.Name + "-region"
 }
 
 // keystoneEndpointURL derives the in-cluster Keystone identity URL from the

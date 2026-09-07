@@ -39,7 +39,7 @@ import (
 // The helpers here let SetupWithManager register the fragile watches only when their
 // CRD is actually served, so a slimmed-down install (Keystone-only, no Glance) starts
 // clean. The infrastructure hard dependencies — MariaDB, Memcached, the ESO kinds
-// and the eight K-ORC kinds — are deliberately NOT guarded: every reconcile pass
+// and the nine K-ORC kinds — are deliberately NOT guarded: every reconcile pass
 // reads them unconditionally, so their absence must fail fast rather than defer to a
 // wedged reconcile (see optionalWatchObjects).
 //
@@ -74,7 +74,7 @@ type serverResourcesLister interface {
 // These are exactly the watch legs SetupWithManager must guard behind a
 // discovery probe; the mandatory kinds the c5c3 operator ships itself (ControlPlane)
 // and the infrastructure kinds it hard-depends on — MariaDB, Memcached, the ESO
-// kinds and the eight K-ORC kinds — are intentionally not listed. K-ORC in
+// kinds and the nine K-ORC kinds — are intentionally not listed. K-ORC in
 // particular is read unconditionally by every reconcile pass (reconcileKORC, the
 // registration legs), so a missing K-ORC CRD is a fail-fast startup error,
 // not a slimmable state that a guarded watch could paper over.

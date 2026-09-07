@@ -342,13 +342,14 @@ var controlPlaneRemoteChildKinds = []schema.GroupVersionKind{
 // reconciler grant the OpenBao instance its TokenReview without holding
 // TokenReview itself; no other ClusterRole is bindable.
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,resourceNames="system:auth-delegator",verbs=bind
-// domains, projects, roles, roleassignments. Minted/owned by reconcileKORC and
-// reconcileCatalog; users + domains are imported (unmanaged) so the admin
-// ApplicationCredential's UserRef resolves (ensureKORCAdminImports); users +
-// projects are also managed/owned by the KeystoneService registration projection
-// (registration_projection.go). Roles are imported and RoleAssignments minted for
-// the registrations' role projection.
-// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;projects;roles;roleassignments,verbs=get;list;watch;create;update;patch;delete
+// domains, projects, roles, roleassignments, regions. Minted/owned by
+// reconcileKORC and reconcileCatalog; users + domains are imported (unmanaged) so
+// the admin ApplicationCredential's UserRef resolves (ensureKORCAdminImports);
+// users + projects are also managed/owned by the KeystoneService registration
+// projection (registration_projection.go). Roles are imported and RoleAssignments
+// minted for the registrations' role projection. Regions are the bootstrap Region
+// reconcileCatalog adopts for the ControlPlane.
+// +kubebuilder:rbac:groups=openstack.k-orc.cloud,resources=applicationcredentials;services;endpoints;users;domains;projects;roles;roleassignments;regions,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=external-secrets.io,resources=externalsecrets;pushsecrets,verbs=get;list;watch;create;update;patch;delete
 // Required so the operator can observe the shared cluster store's Ready condition
 // and reflect upstream secret-backend outages. A ControlPlane that sets an
@@ -1091,7 +1092,7 @@ func controlPlaneTargetClusters(c client.Reader) commonmulticluster.TargetCluste
 
 // SetupWithManager registers the ControlPlaneReconciler with the controller
 // manager. It Owns every child CR the sub-reconcilers project (MariaDB,
-// Keystone, Horizon, Glance/GlanceBackend, the eight K-ORC resources, the
+// Keystone, Horizon, Glance/GlanceBackend, the nine K-ORC resources, the
 // Memcached CR, the mTLS Certificate, and the ESO ExternalSecret/PushSecret/
 // VaultDynamicSecret) so an upstream child status transition retriggers
 // reconcile, Watches Secrets so an admin-password rotation wakes the owning
@@ -1101,7 +1102,7 @@ func controlPlaneTargetClusters(c client.Reader) commonmulticluster.TargetCluste
 //
 // The legs for kinds a sibling operator owns (Keystone, Horizon, Glance,
 // GlanceBackend and KeystoneIdentityBackend) are registered only when a
-// discovery probe reports the CRD served. The eight K-ORC kinds are NOT among
+// discovery probe reports the CRD served. The nine K-ORC kinds are NOT among
 // them: like MariaDB, Memcached and the ESO kinds, K-ORC is a hard dependency
 // of every reconcile pass, so its watches stay unconditional (see the Owns
 // block below and the HARD CRD DEPENDENCY note in reconcile_korc.go).
@@ -1253,7 +1254,7 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		// self-wake loop the bare For() previously allowed.
 		For(&c5c3v1alpha1.ControlPlane{}, mcbuilder.WithPredicates(watch.CRUpdatePredicate()), engageLocal, engageNoProviders).
 		Owns(&mariadbv1alpha1.MariaDB{}, engageLocal, engageNoProviders).
-		// The eight K-ORC kinds are a HARD dependency of every reconcile pass:
+		// The nine K-ORC kinds are a HARD dependency of every reconcile pass:
 		// reconcileKORC unconditionally mints the admin ApplicationCredential and
 		// projects the catalog/identity resources, reading them through the cached
 		// client with no spec or condition gate. A missing K-ORC CRD would surface
@@ -1269,6 +1270,7 @@ func (r *ControlPlaneReconciler) buildControlPlaneController(mgr mcmanager.Manag
 		Owns(&orcv1alpha1.Project{}, engageLocal, engageNoProviders).
 		Owns(&orcv1alpha1.Role{}, engageLocal, engageNoProviders).
 		Owns(&orcv1alpha1.RoleAssignment{}, engageLocal, engageNoProviders).
+		Owns(&orcv1alpha1.Region{}, engageLocal, engageNoProviders).
 		Owns(memcached, engageLocal, engageNoProviders).
 		Owns(certificate, engageLocal, engageNoProviders).
 		Owns(&esov1.ExternalSecret{}, engageLocal, engageNoProviders).
