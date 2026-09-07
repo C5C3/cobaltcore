@@ -5,11 +5,17 @@
 #
 # audit-fixture-drift.sh — mechanical fixture-drift checks for the CobaltCore repo.
 # Verifies that test fixtures still match the CRD they claim to instantiate:
-#   X1  every kind: Keystone fixture uses the current apiVersion
-#   X2  every Spec field in a kind: Keystone fixture appears in the CRD schema
+#   X1  every CobaltCore CR fixture names a known kind on a served apiVersion
+#   X2  every spec field in such a fixture exists in that CRD's schema
 #   X3  every <NN>-*.yaml next to a chainsaw-test.yaml is referenced from it
 #   X4  every file referenced from a chainsaw-test.yaml exists
 #   X5  invalid-cr generator gate (make verify-invalid-cr-fixtures)
+#   X6  every invalid-cr generator is wired into that make target, and every
+#       path the target names exists on disk
+#
+# X1/X2 cover every CRD kind in the repo, not just Keystone, and read every
+# document of a multi-document fixture. They need a YAML parser, so they live
+# in the check_fixture_schema.py helper beside this script.
 #
 # Pass --full to chain make verify-invalid-cr-fixtures. Exit code 1 on [FAIL].
 
@@ -29,101 +35,53 @@ pass() { echo "[PASS] $*"; }
 info() { echo "[INFO] $*"; }
 hdr()  { echo; echo "=== $* ==="; }
 
-CRD_FILE="operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml"
-EXPECTED_APIVERSION="keystone.openstack.c5c3.io/v1alpha1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [[ ! -f "${CRD_FILE}" ]]; then
-  fail "missing CRD file ${CRD_FILE} — run: make manifests"
+# strip_yaml_comments — drop YAML comments from a file so that a filename
+# mentioned only in prose does not count as a step reference (X3) or as a step
+# that must exist (X4). In YAML a '#' opens a comment at line start or after
+# whitespace; anywhere else it is part of a scalar.
+strip_yaml_comments() {
+  sed -E 's/(^|[[:space:]])#.*$/\1/' "$1"
+}
+
+if ! compgen -G "operators/*/config/crd/bases/*.yaml" > /dev/null; then
+  fail "no CRDs under operators/*/config/crd/bases/ — run: make manifests"
   exit 1
 fi
 
-# Discover all Keystone fixtures (kind: Keystone) under tests/.
-KEYSTONE_FIXTURES_LIST=$(grep -lrE '^kind:[[:space:]]*Keystone[[:space:]]*$' tests/ 2>/dev/null | sort -u || true)
-KEYSTONE_FIXTURES_COUNT=$(echo "${KEYSTONE_FIXTURES_LIST}" | grep -c . || true)
-info "Found ${KEYSTONE_FIXTURES_COUNT} kind: Keystone fixture(s) under tests/"
-
 # ---------------------------------------------------------------------------
-# X1 — every fixture uses the current apiVersion
+# X1 + X2 — schema validation of every CobaltCore CR fixture (needs a YAML
+# parser: fixtures are multi-document and the CRD schema is deeply nested).
 # ---------------------------------------------------------------------------
-hdr "X1: every kind: Keystone fixture uses ${EXPECTED_APIVERSION}"
-while IFS= read -r f; do
-  [[ -z "${f}" ]] && continue
-  apiver=$(grep -E '^apiVersion:' "${f}" | head -1 | awk '{print $2}')
-  if [[ "${apiver}" == "${EXPECTED_APIVERSION}" ]]; then
-    pass "${f}: apiVersion ${apiver}"
-  else
-    fail "${f}: apiVersion='${apiver}' but expected '${EXPECTED_APIVERSION}'"
-  fi
-done <<< "${KEYSTONE_FIXTURES_LIST}"
-
-# ---------------------------------------------------------------------------
-# X2 — every top-level Spec field in fixtures appears in the CRD schema
-# ---------------------------------------------------------------------------
-hdr "X2: top-level spec fields used in fixtures appear in the CRD schema"
-# Extract the set of top-level spec field names from the CRD by reading the
-# openAPIV3Schema properties list. We rely on the controller-gen output style:
-# a section header `      spec:` followed by `        properties:` and then
-# 10-space-indented `<field>:` lines.
-crd_fields=$(awk '
-  /^      spec:/{in_spec=1; next}
-  in_spec && /^        properties:/{in_props=1; next}
-  in_props && /^          [a-z][A-Za-z0-9]+:/{
-    # capture field name
-    gsub(/^[[:space:]]+/,""); sub(":.*","",$0); print
-  }
-  in_props && /^        [a-z]/{exit}
-' "${CRD_FILE}" | sort -u)
-
-if [[ -z "${crd_fields}" ]]; then
-  info "could not extract spec properties from ${CRD_FILE} — X2 skipped (parse heuristic mismatched)"
+SCHEMA_HELPER="${SCRIPT_DIR}/check_fixture_schema.py"
+if ! command -v python3 > /dev/null 2>&1; then
+  hdr "X1+X2: fixture schema validation"
+  info "python3 not on PATH — X1/X2 skipped"
+elif ! python3 -c 'import yaml' > /dev/null 2>&1; then
+  hdr "X1+X2: fixture schema validation"
+  info "PyYAML not importable — X1/X2 skipped (pip install pyyaml)"
 else
-  info "CRD spec top-level fields: $(echo "${crd_fields}" | tr '\n' ',' | sed 's/,$//')"
-  while IFS= read -r f; do
-  [[ -z "${f}" ]] && continue
-    # Skip patch files (Chainsaw partial objects without a full spec block) — heuristic:
-    # files whose name starts with the patch convention "<NN>-patch-…".
-    base=$(basename "${f}")
-    if [[ "${base}" =~ ^[0-9]+-patch- ]]; then
-      info "${f}: skipped (patch fixture; partial spec by design)"
-      continue
-    fi
-    # Extract top-level spec field names — first level under `spec:` (2-space indent).
-    fixture_fields=$(awk '
-      /^spec:/{in_spec=1; next}
-      in_spec && /^[a-zA-Z]/{exit}
-      in_spec && /^  [a-z][A-Za-z0-9]+:/{
-        gsub(/^[[:space:]]+/,""); sub(":.*","",$0); print
-      }
-    ' "${f}" | sort -u)
-    [[ -z "${fixture_fields}" ]] && continue
-    fail_in_file=0
-    for fld in ${fixture_fields}; do
-      if echo "${crd_fields}" | grep -qx "${fld}"; then
-        :
-      else
-        fail "${f}: spec field '${fld}' not in CRD schema"
-        fail_in_file=$((fail_in_file + 1))
-      fi
-    done
-    if [[ "${fail_in_file}" -eq 0 ]]; then
-      pass "${f}: all $(echo "${fixture_fields}" | wc -w | tr -d ' ') top-level spec fields exist in CRD"
-    fi
-  done <<< "${KEYSTONE_FIXTURES_LIST}"
+  schema_out=$(python3 "${SCHEMA_HELPER}" 2>&1 || true)
+  echo "${schema_out}"
+  schema_fails=$(echo "${schema_out}" | grep -c '^\[FAIL\]' || true)
+  FAIL_COUNT=$((FAIL_COUNT + schema_fails))
 fi
 
 # ---------------------------------------------------------------------------
 # X3 — every <NN>-*.yaml next to a chainsaw-test.yaml is referenced
 # ---------------------------------------------------------------------------
 hdr "X3: every <NN>-*.yaml is referenced from its sibling chainsaw-test.yaml"
-CHAINSAW_DIRS_LIST=$(find tests/e2e tests/e2e-chaos tests/e2e-multicluster -name 'chainsaw-test.yaml' -exec dirname {} \; 2>/dev/null | sort -u || true)
+CHAINSAW_DIRS_LIST=$(find tests -name 'chainsaw-test.yaml' -exec dirname {} \; 2>/dev/null | sort -u || true)
 while IFS= read -r d; do
   [[ -z "${d}" ]] && continue
   ct="${d}/chainsaw-test.yaml"
   [[ -f "${ct}" ]] || continue
+  ct_body=$(strip_yaml_comments "${ct}")
   shopt -s nullglob
   for fx in "${d}"/[0-9][0-9]-*.yaml; do
     base=$(basename "${fx}")
-    if grep -q "${base}" "${ct}"; then
+    if grep -qF "${base}" <<< "${ct_body}"; then
       pass "${d}/${base}: referenced from chainsaw-test.yaml"
     else
       fail "${d}/${base}: orphan — not referenced from chainsaw-test.yaml"
@@ -140,8 +98,10 @@ while IFS= read -r d; do
   [[ -z "${d}" ]] && continue
   ct="${d}/chainsaw-test.yaml"
   [[ -f "${ct}" ]] || continue
-  # Reference style is typically: file: ./00-foo.yaml  OR  file: 00-foo.yaml
-  refs=$(grep -oE '[0-9]{2}-[A-Za-z0-9_-]+\.yaml' "${ct}" | sort -u || true)
+  # Reference style is typically: file: ./00-foo.yaml  OR  file: 00-foo.yaml.
+  # Comments are stripped first: a step name discussed in prose (an
+  # intentionally absent fixture, say) is not a reference that must resolve.
+  refs=$(strip_yaml_comments "${ct}" | grep -oE '[0-9]{2}-[A-Za-z0-9_-]+\.yaml' | sort -u || true)
   for ref in ${refs}; do
     if [[ -f "${d}/${ref}" ]]; then
       pass "${d}: chainsaw step ${ref} exists"
@@ -170,6 +130,43 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# X6 — every invalid-cr generator is wired into the make target, both ways
+# ---------------------------------------------------------------------------
+hdr "X6: every invalid-cr generator is wired into make verify-invalid-cr-fixtures"
+GENERATORS_LIST=$(find tests -name '_generate.py' 2>/dev/null | sort || true)
+# The recipe lines of the target, up to the next non-recipe line.
+MAKE_TARGET_BODY=$(awk '/^verify-invalid-cr-fixtures:/{on=1; next} on && /^[^\t]/{exit} on' Makefile)
+if [[ -z "${MAKE_TARGET_BODY}" ]]; then
+  fail "no verify-invalid-cr-fixtures recipe found in Makefile"
+else
+  while IFS= read -r gen; do
+    [[ -z "${gen}" ]] && continue
+    d=$(dirname "${gen}")
+    if grep -qF "${gen} --check" <<< "${MAKE_TARGET_BODY}"; then
+      pass "${gen}: run with --check by the make target"
+    else
+      fail "${gen}: exists but the make target never runs it — the corpus has no drift gate"
+    fi
+    if [[ ! -f "${d}/test_generate.py" ]]; then
+      fail "${d}: has _generate.py but no test_generate.py"
+    elif grep -qF "${d}/test_generate.py" <<< "${MAKE_TARGET_BODY}"; then
+      pass "${d}/test_generate.py: run by the make target"
+    else
+      fail "${d}/test_generate.py: exists but the make target never runs it"
+    fi
+  done <<< "${GENERATORS_LIST}"
+  # Reverse direction: every path the target names still exists.
+  while IFS= read -r ref; do
+    [[ -z "${ref}" ]] && continue
+    if [[ -f "${ref}" ]]; then
+      pass "make target path ${ref} exists"
+    else
+      fail "make target runs ${ref}, which does not exist on disk"
+    fi
+  done <<< "$(grep -oE 'tests/[A-Za-z0-9_/-]+\.py' <<< "${MAKE_TARGET_BODY}" | sort -u || true)"
+fi
+
+# ---------------------------------------------------------------------------
 # Inventory
 # ---------------------------------------------------------------------------
 hdr "Inventory — Chainsaw test directories (review aid)"
@@ -179,14 +176,18 @@ while IFS= read -r d; do
   info "${d}: ${fx_count} fixture(s)"
 done <<< "${CHAINSAW_DIRS_LIST}"
 
-hdr "Inventory — invalid-cr fixtures (review aid)"
-shopt -s nullglob
-for fx in tests/e2e/keystone/invalid-cr/[0-9][0-9]-*.yaml; do
-  # Pull the REQ-NNN and feature ID from the SPDX/comment header.
-  hint=$(grep -m1 -E 'REQ-[0-9]+|CC-[0-9]+' "${fx}" 2>/dev/null | head -1 | sed 's/^[#[:space:]]*//')
-  info "$(basename "${fx}"): ${hint}"
-done
-shopt -u nullglob
+hdr "Inventory — invalid-cr corpora (review aid)"
+while IFS= read -r gen; do
+  [[ -z "${gen}" ]] && continue
+  d=$(dirname "${gen}")
+  fx_count=$(find "${d}" -maxdepth 1 -name '[0-9][0-9]-*.yaml' | wc -l | tr -d ' ')
+  # Every <NN>-*.yaml the generator names, whether in its FIXTURES list or in
+  # an exemption set (keystone/invalid-cr carries two pre-CC-0094 fixtures it
+  # deliberately does not regenerate). A file on disk that the generator never
+  # names is outside the --check gate.
+  named=$(grep -oE '[0-9]{2}-[A-Za-z0-9_-]+\.yaml' "${gen}" 2>/dev/null | sort -u | grep -c . || true)
+  info "${d}: ${fx_count} fixture(s) on disk, ${named} named in $(basename "${gen}")"
+done <<< "${GENERATORS_LIST}"
 
 # ---------------------------------------------------------------------------
 hdr "Summary"

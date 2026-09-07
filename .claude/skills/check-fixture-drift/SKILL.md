@@ -1,29 +1,33 @@
 ---
 name: check-fixture-drift
 description: >-
-  Audit whether every Keystone / c5c3 CR fixture under tests/e2e/,
-  tests/e2e-chaos/, and tests/e2e-multicluster/ still validates against
+  Audit whether every CobaltCore CR fixture under tests/ still validates against
   the *current* CRD schema —
   no removed Spec field is still referenced, every fixture's
   apiVersion / kind matches a real CRD, every invalid-cr fixture is
   reachable from a Chainsaw test, and the existing
   verify-invalid-cr-fixtures generator stays in sync with its hand-edited
-  outputs. Use when asked to check fixture drift, after editing the
-  Keystone CRD or the validating webhook, or before a release.
+  outputs. Use when asked to check fixture drift, after editing a CRD
+  or the validating webhook, or before a release.
 ---
 
 # Check fixture drift
 
 This skill verifies that the CobaltCore **test fixtures still match the CRD
-they claim to instantiate**: every `apiVersion: keystone.openstack.c5c3.io/v1alpha1`
-fixture under `tests/e2e/`, `tests/e2e-chaos/`, and
-`tests/e2e-multicluster/` uses only Spec fields
+they claim to instantiate**: every fixture document under `tests/` whose
+apiVersion is in a `c5c3.io` group uses only Spec fields
 that the current CRD schema accepts, every invalid-cr fixture is
 referenced from a Chainsaw test that exercises it, and the
 `verify-invalid-cr-fixtures` generator's outputs stay in sync.
 
+The schema checks cover **every CRD kind in the repo** and read **every
+document** of a multi-document fixture. Suite roots are discovered rather
+than listed: `tests/tempest/`, `tests/e2e-ovn-overlay/` and
+`tests/e2e-controlplane-sso/` all landed after the original three and went
+unchecked while the roots were hardcoded.
+
 It is repeatable — run it any time, especially after editing
-`operators/keystone/api/v1alpha1/keystone_types.go`, the validating
+any `operators/<op>/api/v1alpha1/*_types.go`, a validating
 webhook, or any `kubebuilder:validation:*` marker.
 
 ## What fixture drift means here
@@ -33,10 +37,11 @@ of truth:
 
 | Fixture role | Where it lives | Source of truth |
 |---|---|---|
-| Happy-path e2e CR | `tests/e2e/keystone/<scenario>/*.yaml` (filename pattern `<NN>-*.yaml`, referenced from `chainsaw-test.yaml`) | the Keystone CRD `operators/keystone/config/crd/bases/keystone.openstack.c5c3.io_keystones.yaml` and the webhook in `operators/keystone/internal/controller/` |
-| Chaos / scale e2e CR | `tests/e2e-chaos/<scenario>/*.yaml`, `tests/e2e/infrastructure/*` | same CRD |
-| Two-cluster placed e2e CR | `tests/e2e-multicluster/<scenario>/*.yaml` — Keystone, Barbican, and BarbicanSecretStore CRs carrying `targetClusterRef` | same CRDs (the barbican kinds validate against the barbican CRD set) |
-| Invalid-CR webhook reject | `tests/e2e/keystone/invalid-cr/<NN>-*.yaml` (paired with the Python generator `_generate.py` and the unit test `test_generate.py`) | `keystone_types.go` `+kubebuilder:validation:*` markers and the webhook validation logic |
+| Happy-path e2e CR | `tests/e2e/<op>/<scenario>/*.yaml` (filename pattern `<NN>-*.yaml`, referenced from `chainsaw-test.yaml`) | that kind's CRD under `operators/<op>/config/crd/bases/` and the webhook in `operators/<op>/internal/controller/` |
+| Chaos / scale e2e CR | `tests/e2e-chaos/<scenario>/*.yaml`, `tests/e2e/infrastructure/*` | same CRDs |
+| Two-cluster placed e2e CR | `tests/e2e-multicluster/<scenario>/*.yaml` — CRs carrying `targetClusterRef` | same CRDs |
+| Suite-specific CR | `tests/tempest/<svc>-<release>/*.yaml`, `tests/e2e-ovn-overlay/<scenario>/*.yaml`, `tests/e2e-controlplane-sso/*.yaml`, `tests/e2e-operator-upgrade/<scenario>/*.yaml` | same CRDs |
+| Invalid-CR webhook reject | `tests/e2e/<op>/invalid-*/<NN>-*.yaml` (paired with the Python generator `_generate.py` and the unit test `test_generate.py`) | that operator's `+kubebuilder:validation:*` markers and the webhook validation logic |
 | Chainsaw test wiring | `tests/e2e/<area>/<scenario>/chainsaw-test.yaml` | references the local `<NN>-*.yaml` files by relative path |
 
 The authoritative gate for the invalid-cr corpus is
@@ -63,11 +68,11 @@ bash .claude/skills/check-fixture-drift/scripts/audit-fixture-drift.sh
 The script catches the mechanically-checkable gaps and prints an
 inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
 
-- **X1** — every fixture with `kind: Keystone` uses the current
-  apiVersion (`keystone.openstack.c5c3.io/v1alpha1`). A fixture on
+- **X1** — every fixture document in a `c5c3.io` group names a kind some
+  CRD declares, on a version that CRD still serves. A fixture on
   an old apiVersion fails to apply but the failure is generic.
-- **X2** — every top-level Spec field in every `kind: Keystone`
-  fixture appears in the CRD schema. A removed/renamed field is the
+- **X2** — every Spec field in such a document appears in that CRD's
+  schema, recursively. A removed/renamed field is the
   most common fixture-drift source after a CRD edit; the cluster
   rejects the CR with `unknown field`, which is hard to diff against
   the original intent.
@@ -78,6 +83,11 @@ inventory. Exit code `1` means at least one `[FAIL]`. Interpret:
 - **X4** — every file referenced from a `chainsaw-test.yaml` exists
   on disk under the same directory. A renamed fixture leaves a
   Chainsaw step pointing at nothing.
+- **X6** — every `_generate.py` under `tests/` is run with `--check` by
+  the `verify-invalid-cr-fixtures` make target, has a sibling
+  `test_generate.py` the target also runs, and every path the target
+  names still exists. A new service's invalid-CR corpus that nobody
+  wired into the target has no drift gate at all.
 - **X5** — the invalid-cr generator + unit tests still pass when
   invoked as `make verify-invalid-cr-fixtures` (gated check; skipped
   if `python3` is not on PATH).
@@ -104,12 +114,12 @@ the printed inventory, confirm:
 4. For server-side validation, optionally run a dry-run apply against
    a kind cluster:
    ```bash
-   for f in $(find tests/e2e/keystone -name '*keystone*.yaml' | xargs grep -l '^kind: Keystone'); do
+   for f in $(grep -rl 'apiVersion:.*c5c3\.io/' tests/); do
      kubectl apply --dry-run=server -f "${f}" 2>&1 | tail -1
    done
    ```
    This requires `kubectl` configured against a cluster with the
-   Keystone CRD installed.
+   CobaltCore CRDs installed.
 
 ### 3. Run the authoritative gate
 
@@ -148,7 +158,7 @@ fixture role.
 These recurring shapes are worth grepping for first:
 
 1. **Removed Spec field still referenced.** A `+kubebuilder` field
-   was renamed in `keystone_types.go`; the CRD regenerated; the
+   was renamed in a `*_types.go`; the CRD regenerated; the
    fixtures still use the old name. `kubectl apply --dry-run=server`
    would catch this but is not in the existing CI surface.
 2. **Orphan fixture under a test directory.** A scenario was reduced
@@ -174,8 +184,11 @@ These recurring shapes are worth grepping for first:
   Apply fixes (rename the fixture field, delete the orphan, update
   the Chainsaw step) as a separate, explicitly-scoped task.
 - Server-side validation is intentionally not in the script — it
-  requires a live cluster. The X1–X4 checks are the lightweight
-  smoke; X5 wraps the existing make-target gate.
+  requires a live cluster. X1/X2 parse YAML in the
+  `check_fixture_schema.py` helper beside the audit script and need
+  `python3` with PyYAML (the same baseline `make verify-helm-rbac`
+  already assumes); they report `[INFO]` and skip if either is missing.
+  X3/X4/X6 are pure shell; X5 wraps the existing make-target gate.
 - Pair this with [[check-crd-drift]] — that skill confirms the CRD
   YAML mirrors the Go source; this skill confirms the fixtures
   exercise that CRD correctly.
