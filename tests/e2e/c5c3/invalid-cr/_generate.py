@@ -49,6 +49,7 @@ LICENSE_HEADER = """\
 # Canonical ControlPlane scaffold. Any future required field on ControlPlaneSpec
 # must be added below AND verified against every fixture. Placeholders:
 #   {name}                metadata.name
+#   {region_description}  the spec.regionDescription line (indent 2) or ""
 #   {global_extra_config} the spec.globalExtraConfig block (indent 2) or ""
 #   {infrastructure}      the whole spec.infrastructure block (indent 2) or ""
 #   {keystone}            the spec.services.keystone body (indent 6) or "" for nil
@@ -70,7 +71,7 @@ metadata:
   name: {name}
 spec:
   openStackRelease: "2025.2"
-{global_extra_config}{infrastructure}  services:
+{region_description}{global_extra_config}{infrastructure}  services:
     keystone:
 {keystone}{horizon}{glance}{placement}{barbican}{neutron}  korc:
     adminCredential:
@@ -189,6 +190,8 @@ class Fixture:
     placement: str = ""
     barbican: str = ""
     neutron: str = ""
+    # The spec.regionDescription line (indent 2, trailing newline) or "".
+    region_description: str = ""
     # The spec.globalExtraConfig block (indent 2, trailing newline) or "".
     global_extra_config: str = ""
     # The spec.korc.serviceRegistrations block (indent 4, trailing newline) or "".
@@ -197,6 +200,7 @@ class Fixture:
     def render(self) -> str:
         body = SCAFFOLD.format(
             name=self.name,
+            region_description=self.region_description,
             global_extra_config=self.global_extra_config,
             infrastructure=self.infrastructure,
             keystone=self.keystone,
@@ -343,6 +347,16 @@ FIXTURES: tuple[Fixture, ...] = (
         comment="services.horizon set in External mode is forbidden by the webhook (P2, cross-field).",
         name="cp-external-with-horizon",
         horizon="    horizon: {}\n",
+    ),
+    Fixture(
+        filename="30-region-description-in-external.yaml",
+        comment=(
+            "spec.regionDescription set in External mode is forbidden by the webhook\n"
+            "(cross-field): no Region CR is adopted against a pre-existing installation,\n"
+            "so the description would be silently inert rather than applied."
+        ),
+        name="cp-external-region-description",
+        region_description='  regionDescription: "Frankfurt DC2"\n',
     ),
     Fixture(
         filename="05-external-replicas.yaml",
@@ -1453,6 +1467,22 @@ FIXTURES: tuple[Fixture, ...] = (
             "          name: ovn\n"
             "          namespace: other-tenant\n"
         ),
+    ),
+    Fixture(
+        filename="28-region-description-too-long.yaml",
+        comment=(
+            "spec.regionDescription is 256 characters, one over the MaxLength=255 the\n"
+            "field carries, which mirrors K-ORC's bound on\n"
+            "RegionResourceSpec.Description: a longer value would be refused by the\n"
+            "Region CR the ControlPlane adopts, once the ControlPlane itself had already\n"
+            "been admitted. The marker is the whole enforcement by decision, with no\n"
+            "webhook mirror, so the rejection at admission is the API server's own and\n"
+            "the step anchors on the field name plus `Too long`."
+        ),
+        name="cp-region-description-too-long",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        region_description='  regionDescription: "' + "x" * 256 + '"\n',
     ),
     # --- transition wave E: barbican secret-store addressing freeze
     #     (Test: c5c3-invalid-cr-barbican-store-freeze) ---

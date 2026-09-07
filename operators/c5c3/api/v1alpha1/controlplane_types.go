@@ -67,6 +67,17 @@ type ControlPlaneSpec struct {
 	// +optional
 	Region string `json:"region,omitempty"`
 
+	// RegionDescription is the description of the Keystone region the
+	// ControlPlane adopts as a managed K-ORC Region ({controlplane}-region).
+	// Empty keeps the Keystone description empty: K-ORC applies the spec value on
+	// every resync, so a description set by hand in Keystone is overwritten either
+	// way. A non-empty value is pushed once the region is adopted (status.id set
+	// on the Region CR); edits take effect on the next reconcile. Bounded by
+	// K-ORC's MaxLength on RegionResourceSpec.Description. Mutable.
+	// +kubebuilder:validation:MaxLength=255
+	// +optional
+	RegionDescription string `json:"regionDescription,omitempty"`
+
 	// Infrastructure declares the shared backing services (database, cache)
 	// that the control plane's services connect to.
 	//

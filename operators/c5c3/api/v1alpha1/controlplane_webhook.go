@@ -2976,6 +2976,11 @@ func validateKeystoneMode(cp *ControlPlane) field.ErrorList {
 		}
 
 		// Cross-field rules CEL cannot express.
+		if cp.Spec.RegionDescription != "" {
+			allErrs = append(allErrs, field.Forbidden(specPath.Child("regionDescription"),
+				"forbidden when services.keystone.mode is External (the region belongs to the "+
+					"pre-existing installation; no Region CR is adopted, so the description would be inert)"))
+		}
 		if cp.Spec.Infrastructure != nil {
 			allErrs = append(allErrs, field.Forbidden(specPath.Child("infrastructure"),
 				"forbidden when services.keystone.mode is External (phase 2 will relax this to optional)"))

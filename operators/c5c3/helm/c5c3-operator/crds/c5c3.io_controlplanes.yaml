@@ -733,6 +733,17 @@ spec:
                   (callers that bypass the CRD default), mirroring BootstrapSpec.Region in the
                   keystone operator.
                 type: string
+              regionDescription:
+                description: |-
+                  RegionDescription is the description of the Keystone region the
+                  ControlPlane adopts as a managed K-ORC Region ({controlplane}-region).
+                  Empty keeps the Keystone description empty: K-ORC applies the spec value on
+                  every resync, so a description set by hand in Keystone is overwritten either
+                  way. A non-empty value is pushed once the region is adopted (status.id set
+                  on the Region CR); edits take effect on the next reconcile. Bounded by
+                  K-ORC's MaxLength on RegionResourceSpec.Description. Mutable.
+                maxLength: 255
+                type: string
               secretStoreRef:
                 description: |-
                   SecretStoreRef selects the External Secrets store the ControlPlane and its
