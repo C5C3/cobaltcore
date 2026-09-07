@@ -1406,6 +1406,21 @@ func TestValidateCreate_RejectsInfrastructureInExternalMode(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("forbidden when services.keystone.mode is External"))
 }
 
+// TestValidateCreate_RejectsRegionDescriptionInExternalMode verifies
+// spec.regionDescription is forbidden in External mode: no Region CR is adopted
+// there, so the description would be silently inert rather than applied.
+func TestValidateCreate_RejectsRegionDescriptionInExternalMode(t *testing.T) {
+	g := NewGomegaWithT(t)
+	w := &ControlPlaneWebhook{}
+	cp := externalControlPlane()
+	cp.Spec.RegionDescription = "Frankfurt DC2"
+
+	_, err := w.ValidateCreate(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("spec.regionDescription"))
+	g.Expect(err.Error()).To(ContainSubstring("forbidden when services.keystone.mode is External"))
+}
+
 // TestValidateCreate_RejectsHorizonInExternalMode verifies services.horizon is
 // forbidden in External mode (P2).
 func TestValidateCreate_RejectsHorizonInExternalMode(t *testing.T) {
