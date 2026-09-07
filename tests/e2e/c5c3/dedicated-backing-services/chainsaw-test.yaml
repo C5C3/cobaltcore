@@ -128,6 +128,7 @@ spec:
             endpoints.openstack.k-orc.cloud \
             users.openstack.k-orc.cloud \
             domains.openstack.k-orc.cloud \
+            regions.openstack.k-orc.cloud \
             projects.openstack.k-orc.cloud; do
             if ! kubectl get crd "$crd" >/dev/null 2>&1; then
               missing="${missing} ${crd}"

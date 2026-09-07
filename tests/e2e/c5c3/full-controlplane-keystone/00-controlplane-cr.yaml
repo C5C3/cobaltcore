@@ -48,6 +48,9 @@ metadata:
 spec:
   openStackRelease: "2025.2"
   region: RegionOne
+  # Link 5 asserts this literal on the adopted Region CR, and Link 7b reads it
+  # back through `openstack region show`.
+  regionDescription: CobaltCore e2e region
   # Single-replica topology across database, cache, and the Keystone Deployment
   # so the full fresh-create chain schedules on a single-node kind cluster.
   # database.replicas:1 drives the operator's fresh-create MariaDB projection to

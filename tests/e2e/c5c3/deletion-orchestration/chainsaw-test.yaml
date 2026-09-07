@@ -23,7 +23,7 @@
 #      window plus orcTeardownStallTimeout): the finalizer waits, then
 #      force-removes the stuck openstack.k-orc.cloud/* finalizers and releases
 #      the ControlPlane.
-#   5. Assert the projected Keystone, MariaDB, Memcached, and all five K-ORC CRs
+#   5. Assert the projected Keystone, MariaDB, Memcached, and all six K-ORC CRs
 #      are garbage-collected, and that an ORC-teardown event was emitted.
 #   6. Assert the Barbican ensemble is reclaimed with it: the child, its
 #      BarbicanSecretStore, the dedicated OpenBaoCluster, the raft PVC that
@@ -87,6 +87,7 @@ spec:
           EP_CR="${CP_NAME}-identity-endpoint"
           USER_CR="${CP_NAME}-user-admin"
           DOMAIN_CR="${CP_NAME}-domain-default"
+          REGION_CR="${CP_NAME}-region"
           BARBICAN_CR="${CP_NAME}-barbican"
           BARBICAN_STORE="${BARBICAN_CR}-store"
           BARBICAN_BAO="${BARBICAN_CR}-bao"
@@ -130,6 +131,7 @@ spec:
             roles.openstack.k-orc.cloud \
             roleassignments.openstack.k-orc.cloud \
             domains.openstack.k-orc.cloud \
+            regions.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io; do
             if ! kubectl get crd "$crd" >/dev/null 2>&1; then
               missing="${missing} ${crd}"
@@ -270,7 +272,7 @@ spec:
           kubectl apply -f 00-controlplane-cr.yaml
           wait_cp_condition Ready 1200
 
-          # The ORC-teardown finalizer must be installed, and the five owned
+          # The ORC-teardown finalizer must be installed, and the six owned
           # K-ORC CRs must exist before we tear down.
           kubectl get controlplane "${CP_NAME}" -n "${CP_NS}" \
             -o jsonpath='{.metadata.finalizers}' | grep -qF "${FINALIZER}" \
@@ -280,12 +282,13 @@ spec:
             "services.openstack.k-orc.cloud ${SVC_CR}" \
             "endpoints.openstack.k-orc.cloud ${EP_CR}" \
             "users.openstack.k-orc.cloud ${USER_CR}" \
-            "domains.openstack.k-orc.cloud ${DOMAIN_CR}"; do
+            "domains.openstack.k-orc.cloud ${DOMAIN_CR}" \
+            "regions.openstack.k-orc.cloud ${REGION_CR}"; do
             set -- $kv
             kubectl get "$1" "$2" -n "${CP_NS}" >/dev/null \
               || { echo "ERROR: expected K-ORC CR $1/$2 missing before teardown"; exit 1; }
           done
-          echo "OK: finalizer installed and all five K-ORC CRs present."
+          echo "OK: finalizer installed and all six K-ORC CRs present."
 
           # The Barbican ensemble must be STANDING before the teardown, or the
           # "gone" checks below would pass against objects that never existed.
@@ -345,6 +348,7 @@ spec:
           wait_gone endpoints.openstack.k-orc.cloud "${EP_CR}" 300
           wait_gone users.openstack.k-orc.cloud "${USER_CR}" 300
           wait_gone domains.openstack.k-orc.cloud "${DOMAIN_CR}" 300
+          wait_gone regions.openstack.k-orc.cloud "${REGION_CR}" 300
           wait_gone keystone "${KEYSTONE_CR}" 300
           wait_gone mariadb openstack-db 300
           wait_gone memcacheds.memcached.c5c3.io openstack-memcached 300
@@ -395,7 +399,7 @@ spec:
           kubectl get controlplane deletion-orch -n openstack \
             -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
           echo "=== K-ORC CRs (may be Terminating) ==="
-          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,domains.openstack.k-orc.cloud -n openstack 2>&1 || true
+          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,users.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,regions.openstack.k-orc.cloud -n openstack 2>&1 || true
           echo "=== Projected child CRs ==="
           kubectl get mariadb,memcacheds.memcached.c5c3.io,keystone -n openstack 2>&1 || true
           echo "=== Projected KeystoneService registrations (may be Terminating) ==="

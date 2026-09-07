@@ -182,6 +182,7 @@ spec:
           PUSH_SECRET="${CP_NAME}-admin-app-credential-backup"
           SVC_CR="${CP_NAME}-identity-service"
           EP_CR="${CP_NAME}-identity-endpoint"
+          REGION_CR="${CP_NAME}-region"
           GLANCE_CR="${CP_NAME}-glance"
           PLACEMENT_CR="${CP_NAME}-placement"
           BARBICAN_CR="${CP_NAME}-barbican"
@@ -256,6 +257,7 @@ spec:
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \
             roleassignments.openstack.k-orc.cloud \
+            regions.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io \
             vaultdynamicsecrets.generators.external-secrets.io; do
             if ! kubectl get crd "$crd" >/dev/null 2>&1; then
@@ -597,7 +599,7 @@ spec:
           kubectl get secret "${CLOUDS_SECRET}" -n "${CP_NS}" >/dev/null
           wait_cp_condition AdminCredentialReady 600
 
-          # ── Link 5: catalog (K-ORC Service + Endpoint, owned) ──────────────
+          # ── Link 5: catalog (K-ORC Service + Endpoint + Region, owned) ─────
           wait_cp_condition CatalogReady 600
           kubectl get services.openstack.k-orc.cloud "${SVC_CR}" -n "${CP_NS}" >/dev/null
           kubectl get endpoints.openstack.k-orc.cloud "${EP_CR}" -n "${CP_NS}" >/dev/null
@@ -605,6 +607,20 @@ spec:
             "$(owner_of services.openstack.k-orc.cloud "${SVC_CR}")"
           assert_eq "K-ORC identity Endpoint owned by ControlPlane" "${CP_NAME}" \
             "$(owner_of endpoints.openstack.k-orc.cloud "${EP_CR}")"
+
+          # CatalogReady flips only once the described Region is Available for
+          # its current generation, so no retry loop is needed here.
+          kubectl get regions.openstack.k-orc.cloud "${REGION_CR}" -n "${CP_NS}" >/dev/null
+          assert_eq "K-ORC Region owned by ControlPlane" "${CP_NAME}" \
+            "$(owner_of regions.openstack.k-orc.cloud "${REGION_CR}")"
+          assert_eq "K-ORC Region adopted the bootstrap region" "RegionOne" \
+            "$(kubectl get regions.openstack.k-orc.cloud "${REGION_CR}" -n "${CP_NS}" -o jsonpath='{.status.id}')"
+          assert_eq "K-ORC Region carries spec.regionDescription" "CobaltCore e2e region" \
+            "$(kubectl get regions.openstack.k-orc.cloud "${REGION_CR}" -n "${CP_NS}" -o jsonpath='{.spec.resource.description}')"
+          assert_eq "K-ORC Region detaches on delete" "detach" \
+            "$(kubectl get regions.openstack.k-orc.cloud "${REGION_CR}" -n "${CP_NS}" -o jsonpath='{.spec.managedOptions.onDelete}')"
+          assert_eq "K-ORC Region Available" "True" \
+            "$(kubectl get regions.openstack.k-orc.cloud "${REGION_CR}" -n "${CP_NS}" -o jsonpath='{.status.conditions[?(@.type=="Available")].status}')"
 
           # ── Link 5b: glance + placement + barbican + neutron registrations ──
           # Each built-in service registers through a KeystoneService child the
@@ -1265,6 +1281,8 @@ spec:
             || { echo "ERROR: the Barbican secret round-trip did not confirm a matching payload"; exit 1; }
           grep -q "OK: network round-trip" <<<"${VERIFY_LOGS}" \
             || { echo "ERROR: the network round-trip did not confirm an ACTIVE network"; exit 1; }
+          grep -q "OK: region description round-trip" <<<"${VERIFY_LOGS}" \
+            || { echo "ERROR: the Keystone region description did not round-trip through openstack region show"; exit 1; }
           echo "OK: token issued, identity + image + placement + key-manager + network services catalogued, and the image, placement, secret and network round-trips passed — full chain verified."
     catch:
     - script:
@@ -1283,7 +1301,7 @@ spec:
             -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}: {.message}){"\n"}{end}' 2>&1 || true
           echo "=== Projected child CRs ==="
           kubectl get mariadb,memcacheds.memcached.c5c3.io,keystone -n openstack 2>&1 || true
-          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud -n openstack 2>&1 || true
+          kubectl get applicationcredentials.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,regions.openstack.k-orc.cloud -n openstack 2>&1 || true
           echo "=== Service registrations (KeystoneService children) ==="
           kubectl get keystoneservice -n openstack -o yaml 2>&1 || true
           echo "=== K-ORC children the registrations own ==="

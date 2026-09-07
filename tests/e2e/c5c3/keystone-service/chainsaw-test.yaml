@@ -124,6 +124,7 @@ spec:
             services.openstack.k-orc.cloud \
             endpoints.openstack.k-orc.cloud \
             domains.openstack.k-orc.cloud \
+            regions.openstack.k-orc.cloud \
             externalsecrets.external-secrets.io \
             pushsecrets.external-secrets.io \
             secretstores.external-secrets.io \
@@ -928,7 +929,7 @@ spec:
           echo "=== KeystoneServices and CredentialRotations ==="
           kubectl get keystoneservice,credentialrotation -n "${NAMESPACE}" -o yaml 2>&1 || true
           echo "=== K-ORC children in the plane's namespace ==="
-          kubectl get users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud -n "${NAMESPACE}" -o wide 2>&1 || true
+          kubectl get users.openstack.k-orc.cloud,projects.openstack.k-orc.cloud,roles.openstack.k-orc.cloud,roleassignments.openstack.k-orc.cloud,services.openstack.k-orc.cloud,endpoints.openstack.k-orc.cloud,domains.openstack.k-orc.cloud,regions.openstack.k-orc.cloud,applicationcredentials.openstack.k-orc.cloud -n "${NAMESPACE}" -o wide 2>&1 || true
           echo "=== Delivery objects ==="
           kubectl get externalsecret,pushsecret,secretstore -n "${NAMESPACE}" 2>&1 || true
           echo "=== Secrets (names only) ==="
