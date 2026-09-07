@@ -74,10 +74,13 @@ kubectl wait --for=condition=complete -n openstack \
 
 The `apply` Job re-applies the node's values, which now carry `GATEWAY=false`,
 so the chassis stops announcing `enable-chassis-as-gw`. Only then does the
-`evacuate` Job run `lrp-del-gateway-chassis` for every logical router port and
-`ha-chassis-group-remove-chassis` for every HA group against the Northbound
-database. Running it the other way round would have the model hand the bindings
-straight back to a node that still claims the role.
+`evacuate` Job collect the `Gateway_Chassis` and `HA_Chassis` rows that name
+this chassis and drop them out of the logical router ports and HA groups holding
+them, in one `ovn-nbctl` call against the Northbound database. Running it the
+other way round would have the model hand the bindings straight back to a node
+that still claims the role. The Job then asks the Northbound what still names
+the chassis and fails when a row survives, so `gatewayEvacuated` only ever
+records a drain the database confirmed.
 
 `kubectl wait` fails outright on a Job that has not been created yet, so poll for
 its existence first if you run this immediately after the label change: the

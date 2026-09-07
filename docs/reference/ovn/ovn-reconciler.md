@@ -516,7 +516,7 @@ needs the other CR to move; both poll at the same interval.
 | Trigger | Job | What it does |
 | --- | --- | --- |
 | The rendered entry hashes differently than `status.nodes[].configHash`, and that hash is not empty | `apply` | Reruns `apply-node.sh` on the node, pinned to it and in its network namespace. A node seen for the first time runs no Job: its own init container applies the values |
-| The node lost the gateway role (`prev.gateway` and not `entry.gateway`) and `gatewayEvacuated` is not set | `evacuate` | Runs `lrp-del-gateway-chassis` for every logical router port and `ha-chassis-group-remove-chassis` for every HA group, against the Northbound database. Each loop collects its rows first and submits every removal as one `ovn-nbctl` call |
+| The node lost the gateway role (`prev.gateway` and not `entry.gateway`) and `gatewayEvacuated` is not set | `evacuate` | Collects the `Gateway_Chassis` and `HA_Chassis` rows naming this chassis and removes them from the `Logical_Router_Port` and `HA_Chassis_Group` rows holding them, against the Northbound database. Each half joins its owning rows from one listing and submits every removal as one `ovn-nbctl` call, so a rerun after a partial pass finds nothing left to collect. The run closes by asking the Northbound what still names the chassis and fails when a row survives, so `gatewayEvacuated` records a confirmed drain |
 | The entry is marked `leaving` | `chassis-del` | Runs `chassis-del` against the Southbound database, then the step drops the node's ConfigMap key and its `status.nodes` entry together |
 
 The apply runs before the evacuation: the chassis has to stop announcing itself

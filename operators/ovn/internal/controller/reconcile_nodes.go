@@ -190,25 +190,78 @@ exec ovs-vswitchd unix:/run/openvswitch/db.sock --pidfile=/run/openvswitch/ovs-v
 // chassis from every router port's gateway list and from every HA group is what
 // makes the remaining gateways take the traffic over.
 //
-// It is idempotent, so a rerun after a partial pass costs nothing: --if-exists
-// turns an already-removed assignment into a no-op.
+// Both halves work off the rows that name this chassis rather than off every
+// router port and every HA group, which is what makes the removal both accepted
+// and idempotent. ovn-nbctl carries no --if-exists for lrp-del-gateway-chassis
+// or ha-chassis-group-remove-chassis and rejects the whole invocation when one
+// is passed, and neither command tolerates a chassis that is no longer bound.
+// Dropping the reference out of the owning set column does: the remove verb is
+// a no-op for a member that is already gone, and a rerun after a partial pass
+// finds no rows left to collect. ovsdb-server garbage-collects the orphaned
+// Gateway_Chassis and HA_Chassis rows once nothing strongly references them.
 //
-// Each loop collects its rows first and then submits every removal as one
-// ovn-nbctl invocation. A process per row would be a TLS handshake and a full
-// Northbound schema download per row, and a region with a few thousand logical
-// router ports needs longer for that than the maintenanceActiveDeadlineSeconds
-// the Job is given, which is terminal: backoffLimit is 0, so the drain would
-// never finish and no other node of the CR would get its maintenance run
-// either.
+// OVSDB answers no back-reference query, so the owning row is joined here from
+// one listing instead of one find per row. Each half then submits every removal
+// as one ovn-nbctl invocation. A process per row would be a TLS handshake and a
+// full Northbound schema download per row, and a region with a few thousand
+// logical router ports needs longer for that than the
+// maintenanceActiveDeadlineSeconds the Job is given, which is terminal:
+// backoffLimit is 0, so the drain would never finish and no other node of the
+// CR would get its maintenance run either.
+//
+// Both queries are captured into a variable rather than read from a process
+// substitution, whose exit status set -e never observes. An unanswered query
+// — a leader re-election, a rotated client certificate, the timeout firing
+// on a loaded database — would otherwise read exactly like a chassis that owns
+// nothing, and the step would write gatewayEvacuated from an exit code that
+// covered a drain the Job never performed.
+//
+// The exit code is the whole verdict the operator gets: the step writes
+// gatewayEvacuated from it, and the prev.GatewayEvacuated guard keeps the Job
+// from ever running for that node again. Reading a query is therefore not
+// enough to trust the batch that was built from it. A listing the parser no
+// longer matches leaves args empty and never invokes ovn-nbctl at all, and
+// --if-exists turns a removal whose record does not resolve into a no-op, so
+// both halves of a drain that removed nothing exit 0. The run closes by asking
+// the database what is left: ovsdb-server deletes a Gateway_Chassis or
+// HA_Chassis row once the set column holding it lets go, so a row that still
+// names this chassis is a removal that never landed.
 const evacuateScript = `#!/bin/bash
 set -eu
 T="--db=${NB_ADDR} -p ` + ovnTLSDir + `/tls.key -c ` + ovnTLSDir + `/tls.crt -C ` + ovnTLSDir + `/ca.crt --timeout=30"
 args=()
-mapfile -t lrps < <(ovn-nbctl $T --bare --columns=name find Logical_Router_Port)
-for lrp in "${lrps[@]}"; do args+=(-- --if-exists lrp-del-gateway-chassis "$lrp" "$CHASSIS"); done
-mapfile -t grps < <(ovn-nbctl $T --bare --columns=name find HA_Chassis_Group)
-for grp in "${grps[@]}"; do args+=(-- --if-exists ha-chassis-group-remove-chassis "$grp" "$CHASSIS"); done
+# collect <ref table> <owner table> <column> appends one removal for every owner
+# row whose <column> lists a <ref table> row naming this chassis.
+collect() {
+  local reftable="$1" owner="$2" column="$3" uuid row refs ids rows
+  local -A mine=()
+  ids="$(ovn-nbctl $T --bare --columns=_uuid find "$reftable" chassis_name="$CHASSIS")"
+  # --bare separates records with a blank line, so the empties are dropped here.
+  while read -r uuid; do if [ -n "$uuid" ]; then mine["$uuid"]=1; fi; done <<< "$ids"
+  if [ ${#mine[@]} -eq 0 ]; then return 0; fi
+  # The owner row is named by its _uuid: read does no CSV unquoting, and a name
+  # holding a comma would be split across the two fields. remove takes a UUID.
+  rows="$(ovn-nbctl $T --format=csv --no-headings --columns=_uuid,"$column" list "$owner")"
+  while IFS=, read -r row refs; do
+    for uuid in ${refs//[\"\[\],]/ }; do
+      # --if-exists so a row deleted between the listing and the write costs
+      # only its own removal rather than every removal in the invocation.
+      if [ -n "${mine[$uuid]:-}" ]; then args+=(-- --if-exists remove "$owner" "$row" "$column" "$uuid"); fi
+    done
+  done <<< "$rows"
+}
+collect Gateway_Chassis Logical_Router_Port gateway_chassis
+collect HA_Chassis HA_Chassis_Group ha_chassis
 if [ ${#args[@]} -gt 0 ]; then ovn-nbctl $T "${args[@]}"; fi
+# The drain is confirmed against the database rather than against the write: an
+# empty batch and an --if-exists removal that resolved no record both exit 0.
+for table in Gateway_Chassis HA_Chassis; do
+  left="$(ovn-nbctl $T --bare --columns=_uuid find "$table" chassis_name="$CHASSIS")"
+  if [ -n "${left//[[:space:]]/}" ]; then
+    echo "evacuation incomplete: a $table row still names $CHASSIS" >&2
+    exit 1
+  fi
+done
 `
 
 // chassisDelScript removes the chassis named by CHASSIS from the Southbound
