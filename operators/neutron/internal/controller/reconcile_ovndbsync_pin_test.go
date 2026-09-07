@@ -92,6 +92,8 @@ spec:
             - mountPath: /var/lib/neutron
               name: state
           restartPolicy: Never
+          securityContext:
+            fsGroup: 42424
           volumes:
           - configMap:
               name: neutron-config-abc
@@ -180,6 +182,8 @@ spec:
             - mountPath: /var/lib/neutron
               name: state
           restartPolicy: Never
+          securityContext:
+            fsGroup: 42424
           volumes:
           - configMap:
               name: neutron-config-abc
@@ -268,6 +272,8 @@ spec:
             - mountPath: /var/lib/neutron
               name: state
           restartPolicy: Never
+          securityContext:
+            fsGroup: 42424
           volumes:
           - configMap:
               name: neutron-config-abc

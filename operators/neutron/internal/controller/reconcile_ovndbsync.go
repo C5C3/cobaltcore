@@ -270,6 +270,11 @@ func buildOVNDBSyncCronJob(neutron *neutronv1alpha1.Neutron, configMapName strin
 						ObjectMeta: metav1.ObjectMeta{Labels: labels},
 						Spec: corev1.PodSpec{
 							RestartPolicy: corev1.RestartPolicyNever,
+							// The OVN client Secret is mounted 0400 and the container runs as the
+							// openstack UID, so the pod needs the fsGroup the API Deployments get
+							// from BuildWorkload. Without it the files stay root-owned and the
+							// utility dies on the CA file before it opens the Northbound database.
+							SecurityContext: &corev1.PodSecurityContext{FSGroup: ptr.To(deployment.OpenStackUID)},
 							Containers: []corev1.Container{{
 								Name:            componentOVNDBSync,
 								Image:           neutron.Spec.Image.Reference(),
