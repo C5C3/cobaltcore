@@ -737,6 +737,12 @@ jobs:
         id: setup-go
         with:
           go-version-file: go.work
+      # Verify every workspace member's go.mod/go.sum matches what go mod tidy
+      # writes. It needs only the Go toolchain, so it runs ahead of code
+      # generation: an untidy module is a clearer failure here than as an
+      # anonymous line in the diff at the end of this job.
+      - name: Verify Go modules are tidy
+        run: make verify-go-tidy
       - uses: actions/cache@v6
         id: controller-gen-cache
         with:

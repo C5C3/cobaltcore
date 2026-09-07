@@ -313,6 +313,40 @@ verify-crd-sync:
 	fi; \
 	echo "CRD sync check passed."
 
+.PHONY: tidy
+# tidy runs go mod tidy in every workspace member. Each module declares its own
+# pins, so tidy has to be per-module: it ignores go.work by design. Run it after
+# adding or dropping an import, then commit the go.mod/go.sum it rewrites.
+tidy:
+	@echo "Tidying internal/common module..."
+	@cd internal/common && go mod tidy
+	@for op in $(OPERATORS); do \
+		echo "Tidying operators/$$op module..."; \
+		(cd operators/$$op && go mod tidy) || exit 1; \
+	done
+
+.PHONY: verify-go-tidy
+# verify-go-tidy fails if any module's go.mod/go.sum differs from what go mod
+# tidy would write (run in CI; mirrors verify-crd-sync). Without it an untidy
+# module is invisible: the workspace build resolves fine while go.mod keeps a
+# requirement nothing imports and go.sum keeps hashes for superseded versions,
+# so the pins humans read stop matching the ones the module actually needs.
+# `go mod tidy -diff` reports the delta without writing, so this is read-only.
+verify-go-tidy:
+	@fail=0; \
+	for mod in internal/common $(addprefix operators/,$(OPERATORS)); do \
+		if ! (cd $$mod && go mod tidy -diff > /dev/null 2>&1); then \
+			echo "FAIL: $$mod is not tidy"; \
+			(cd $$mod && go mod tidy -diff 2>&1 | head -40) || true; \
+			fail=1; \
+		fi; \
+	done; \
+	if [ "$$fail" -eq 1 ]; then \
+		echo "Go tidy check failed. Run 'make tidy' and commit the result."; \
+		exit 1; \
+	fi; \
+	echo "Go tidy check passed."
+
 .PHONY: sync-helm-rbac
 # sync-helm-rbac regenerates every operator chart's templates/_rbac-rules.tpl
 # from the controller-gen ClusterRole in operators/<op>/config/rbac/role.yaml
