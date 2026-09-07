@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
+	"github.com/c5c3/cobaltcore/internal/common/deployment"
 	"github.com/c5c3/cobaltcore/internal/common/job"
 	neutronv1alpha1 "github.com/c5c3/cobaltcore/operators/neutron/api/v1alpha1"
 	neutronmetrics "github.com/c5c3/cobaltcore/operators/neutron/internal/metrics"
@@ -196,6 +197,22 @@ func TestReconcileOVNDBSync_ProjectsTheCronJob(t *testing.T) {
 			g.Expect(cond.Message).To(ContainSubstring(tc.wantMode))
 		})
 	}
+}
+
+// TestBuildOVNDBSyncCronJob_PodReadsTheOVNClientSecret pins the pod-level
+// fsGroup on the sync CronJob. The OVN client Secret is mounted 0400 and the
+// container runs as the openstack UID, so without the fsGroup the files stay
+// root-owned and neutron-ovn-db-sync-util dies on the CA file with
+// PermissionError before it opens the Northbound database. The API Deployments
+// read the same Secret only because BuildWorkload sets the same fsGroup.
+func TestBuildOVNDBSyncCronJob_PodReadsTheOVNClientSecret(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cronJob := buildOVNDBSyncCronJob(syncingNeutron(nil), deploymentConfigMapName)
+
+	podSpec := cronJob.Spec.JobTemplate.Spec.Template.Spec
+	g.Expect(podSpec.SecurityContext).NotTo(BeNil())
+	g.Expect(podSpec.SecurityContext.FSGroup).To(Equal(ptr.To(deployment.OpenStackUID)))
 }
 
 // TestReconcileOVNDBSync_SuspendPausesTheSchedule covers the maintenance-window
