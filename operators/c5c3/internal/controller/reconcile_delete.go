@@ -84,6 +84,11 @@ type orcChildObject struct {
 //     Service and its per-interface Endpoints are ManagementPolicyUnmanaged imports
 //     (see ensureExternalCatalogImports), so deleting them is a CR-only delete and
 //     the external catalog is left bit-for-bit intact.
+//   - Region is ManagementPolicyManaged with onDelete: detach (see
+//     managedCatalogRegion), so a Delete removes the CR and leaves the Keystone row
+//     in place; that row goes with the Keystone database. K-ORC still authenticates
+//     before releasing the detach finalizer, which is why reconcileDelete releases
+//     it together with the unmanaged imports.
 //
 // That holds for a teardown K-ORC can complete. The stall escape in reconcileDelete
 // is the deliberate exception: it strips the very finalizer that would have revoked
@@ -119,8 +124,13 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 		}
 	}
 
+	// The adopted Region is enumerated in both modes: an External-mode ControlPlane
+	// never projected one, so its name is NotFound and tolerated like every other
+	// absent name, and enumerating it unconditionally keeps the sweep independent of
+	// the mode the CR was created under.
 	objs = append(
 		objs,
+		orcChildObject{func() client.Object { return &orcv1alpha1.Region{} }, keystoneRegionName(cp)},
 		orcChildObject{newUser, adminUserRef(cp)},
 		orcChildObject{newDomain, adminDomainRef(cp)},
 	)
@@ -162,15 +172,16 @@ func orcChildObjects(cp *c5c3v1alpha1.ControlPlane) []orcChildObject {
 //     (releaseStalledRegistrationChildren, Warning
 //     ServiceRegistrationResourcesOrphaned), then release the finalizer so GC tears
 //     down the rest.
-//  3. When every CR still present is an Unmanaged import, force-remove their
-//     K-ORC finalizers right away: an import's deletion is CR-only, but K-ORC
-//     builds an authenticated delete actuator and re-fetches the imported
-//     resource by ID before releasing ANY finalizer — and the imports
-//     authenticate with the admin application credential whose revocation
-//     step 1 already triggered (the managed children ride the admin-password
-//     cloud instead). Waiting on them is waiting on a dead-credential retry
-//     loop only the stall breaker would cut, at orcTeardownDeadline. Nothing is
-//     orphaned: an import never owned the OpenStack resource behind it.
+//  3. When every CR still present is an Unmanaged import or a detach-on-delete
+//     resource (the adopted Region), force-remove their K-ORC finalizers right
+//     away: their deletion is CR-only, but K-ORC builds an authenticated delete
+//     actuator and re-fetches the OpenStack resource by ID before releasing ANY
+//     finalizer — and they authenticate with the admin application credential
+//     whose revocation step 1 already triggered (the managed children ride the
+//     admin-password cloud instead). Waiting on them is waiting on a
+//     dead-credential retry loop only the stall breaker would cut, at
+//     orcTeardownDeadline. Nothing is orphaned: neither class owns the OpenStack
+//     resource behind it.
 //  4. While managed CRs remain and the bounded orcTeardownDeadline has not
 //     elapsed, report KORCReady=False/FinalizingORC and requeue.
 //  5. Once the stall timeout elapses (K-ORC cannot make progress — most likely
@@ -306,22 +317,24 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 		return ctrl.Result{}, nil
 	}
 
-	// Once only Unmanaged imports remain, K-ORC can never finish them: its
-	// delete path re-fetches the imported resource by ID through an
-	// authenticated actuator before releasing any finalizer, and the imports
-	// authenticate with the admin application credential this sweep just
-	// revoked. Force-release their K-ORC finalizers instead of waiting out the
-	// stall window on a dead-credential retry loop. This is a Normal event, not
-	// a Warning: an import's deletion is CR-only by definition, so the external
-	// installation is left bit-for-bit intact and nothing is orphaned.
-	onlyUnmanagedLeft := len(remaining) > 0
+	// Once only CR-only children remain, K-ORC can never finish them: its delete
+	// path re-fetches the OpenStack resource by ID through an authenticated
+	// actuator before releasing any finalizer, and those children authenticate
+	// with the admin application credential this sweep just revoked. Two classes
+	// qualify: an Unmanaged import, whose deletion never called OpenStack in the
+	// first place, and a managed resource with onDelete: detach (the adopted
+	// Region), which K-ORC leaves in place by its own policy. Force-release their
+	// K-ORC finalizers instead of waiting out the stall window on a dead-credential
+	// retry loop. This is a Normal event, not a Warning: neither class owns the
+	// OpenStack resource behind it, so nothing is orphaned.
+	allRemainingAreCROnly := len(remaining) > 0
 	for _, obj := range remaining {
 		if isManagedORCChild(obj) {
-			onlyUnmanagedLeft = false
+			allRemainingAreCROnly = false
 			break
 		}
 	}
-	if onlyUnmanagedLeft {
+	if allRemainingAreCROnly {
 		names := make([]string, 0, len(remaining))
 		for _, obj := range remaining {
 			names = append(names, obj.GetName())
@@ -330,12 +343,13 @@ func (r *ControlPlaneReconciler) reconcileDelete(ctx context.Context, cp *c5c3v1
 			return ctrl.Result{}, err
 		}
 		r.Recorder.Event(cp, "Normal", "ORCImportsReleased", fmt.Sprintf(
-			"released the K-ORC finalizers of the remaining unmanaged import CR(s) %v: an import's deletion is "+
-				"CR-only, and its finalizer cannot authenticate once the admin application credential is revoked",
+			"released the K-ORC finalizers of the remaining CR-only K-ORC CR(s) %v (unmanaged imports and "+
+				"detach-on-delete resources): their deletion never touches Keystone, and their finalizers "+
+				"cannot authenticate once the admin application credential is revoked",
 			names,
 		))
-		log.FromContext(ctx).Info("released the K-ORC finalizers of the remaining unmanaged imports",
-			"imports", names)
+		log.FromContext(ctx).Info("released the K-ORC finalizers of the remaining CR-only K-ORC CRs",
+			"resources", names)
 		return ctrl.Result{RequeueAfter: korcRequeueAfter}, nil
 	}
 
@@ -1834,6 +1848,11 @@ func orcChildOpenStackRef(obj client.Object) string {
 		if o.Spec.Resource != nil && o.Spec.Resource.Name != nil {
 			name = string(*o.Spec.Resource.Name)
 		}
+	case *orcv1alpha1.Region:
+		kind = "region"
+		if o.Spec.Resource != nil && o.Spec.Resource.Name != nil {
+			name = string(*o.Spec.Resource.Name)
+		}
 	case *orcv1alpha1.Role:
 		kind = "role"
 		if o.Spec.Resource != nil && o.Spec.Resource.Name != nil {
@@ -2002,7 +2021,9 @@ func (r *ControlPlaneReconciler) deleteORCResources(
 // decides what a Delete does to the external installation, see orcChildObjects — and
 // it fails LOUD: anything not explicitly Unmanaged counts as managed, so an unset
 // policy (K-ORC defaults it to `managed`) or a kind added later is reported as a leak
-// rather than silently omitted from the warning.
+// rather than silently omitted from the warning. A managed CR whose onDelete is
+// detach is the one exception: it releases its OpenStack resource by policy, so
+// stripping its finalizer abandons nothing K-ORC would have removed.
 func isManagedORCChild(obj client.Object) bool {
 	switch o := obj.(type) {
 	case *orcv1alpha1.ApplicationCredential:
@@ -2011,6 +2032,11 @@ func isManagedORCChild(obj client.Object) bool {
 		return o.Spec.ManagementPolicy != orcv1alpha1.ManagementPolicyUnmanaged
 	case *orcv1alpha1.Endpoint:
 		return o.Spec.ManagementPolicy != orcv1alpha1.ManagementPolicyUnmanaged
+	case *orcv1alpha1.Region:
+		// GetOnDelete answers `delete` for a nil ManagedOptions, so a managed Region
+		// with the block unset still counts as managed.
+		return o.Spec.ManagementPolicy != orcv1alpha1.ManagementPolicyUnmanaged &&
+			o.Spec.ManagedOptions.GetOnDelete() != orcv1alpha1.OnDeleteDetach
 	case *orcv1alpha1.User:
 		return o.Spec.ManagementPolicy != orcv1alpha1.ManagementPolicyUnmanaged
 	case *orcv1alpha1.Domain:
