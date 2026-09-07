@@ -46,9 +46,9 @@ layer that the Neutron ML2/OVN driver programs.
 **K-ORC**, the upstream
 [OpenStack Resource Controller](https://k-orc.cloud/) (API group
 `openstack.k-orc.cloud`), manages Keystone resources declaratively: domains,
-projects, users, application credentials, catalog services, and endpoints. It
-is applied by a Flux `Kustomization` rather than a HelmRelease, and the
-c5c3-operator drives its CRs for the admin application credential, the
+projects, users, application credentials, regions, catalog services, and
+endpoints. It is applied by a Flux `Kustomization` rather than a HelmRelease,
+and the c5c3-operator drives its CRs for the admin application credential, the
 service accounts, and the catalog. See
 [K-ORC in the infrastructure manifests](../reference/infrastructure/infrastructure-manifests.md#k-orc-openstack-resource-controller).
 

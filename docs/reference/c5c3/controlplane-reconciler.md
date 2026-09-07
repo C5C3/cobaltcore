@@ -141,7 +141,8 @@ kinds (`ClusterSecretStore` and `SecretStore`):
 | K-ORC `ApplicationCredential` | `Owns()` | Re-reconciles when the minted admin credential's `Available` condition or `status.id` changes |
 | K-ORC `Service` | `Owns()` | Re-reconciles when the identity catalog Service changes |
 | K-ORC `Endpoint` | `Owns()` | Re-reconciles when the public identity Endpoint changes |
-| K-ORC `User`, `Domain` | `Owns()` | Re-reconciles when the admin identity imports change. These, the `ApplicationCredential` and the identity `Service`/`Endpoint` are the K-ORC CRs the ControlPlane itself owns (`orcChildObjects`) |
+| K-ORC `User`, `Domain` | `Owns()` | Re-reconciles when the admin identity imports change. These, the `ApplicationCredential`, the identity `Service`/`Endpoint` and the adopted `Region` are the K-ORC CRs the ControlPlane itself owns (`orcChildObjects`) |
+| K-ORC `Region` | `Owns()` | Re-reconciles when the adopted bootstrap Region (`{controlplane.Name}-region`) reports `status.id` or its `Available` condition moves, which is what advances the two-phase description push |
 | K-ORC `Project`, `Role`, `RoleAssignment` | `Owns()` | Registered, but no CR the ControlPlane projects carries them any more. A registration's project, role imports and role assignments are claimed by its own `KeystoneService` (`claimKeystoneServiceChild`: a controller owner reference to the **registration** when co-located with it, ownership labels otherwise), never by the ControlPlane, so an `Owns()` leg keyed on a ControlPlane owner reference does not match them. Such a change wakes the registration's controller, and the ControlPlane sees it one step later when the registration's status moves, through the legs below |
 | `ExternalSecret` | `Owns()` | Re-reconciles when an owned ESO ExternalSecret (DB credential, admin password, K-ORC clouds.yaml) syncs or fails, so the credential conditions track ESO promptly |
 | `PushSecret` | `Owns()` | Re-reconciles when the owned admin-credential PushSecret status changes |
@@ -276,7 +277,7 @@ RBAC markers on the two reconcilers generate the required ClusterRole. The
 | `openbao.org` | `openbaoclusters`, `openbaotenants` | get, list, watch, create, update, patch, delete |
 | `rbac.authorization.k8s.io` | `roles`, `rolebindings`, `clusterrolebindings` | get, create, patch, delete |
 | `rbac.authorization.k8s.io` | `clusterroles` (`resourceNames: system:auth-delegator`) | bind |
-| `openstack.k-orc.cloud` | `applicationcredentials`, `services`, `endpoints` | get, list, watch, create, update, patch, delete |
+| `openstack.k-orc.cloud` | `applicationcredentials`, `services`, `endpoints`, `regions`, `users`, `domains`, `projects`, `roles`, `roleassignments` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `externalsecrets`, `pushsecrets` | get, list, watch, create, update, patch, delete |
 | `external-secrets.io` | `clustersecretstores`, `secretstores` | get, list, watch |
 | `core` | `secrets` | get, list, watch, create, update, patch, delete |
@@ -2479,7 +2480,7 @@ OpenBao:
 | File | `reconcile_catalog.go` (Managed), `reconcile_catalog_external.go` (External) |
 | Condition | `CatalogReady` |
 | Gate | `AdminCredentialReady == True`, **and** every catalog child reports `Available` |
-| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`). That is the whole managed table: a built-in service's catalog row belongs to the `KeystoneService` registration projected for it, not here. External mode: the same identity `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, and nothing managed. All in `childNamespace(cp)` |
+| Owns | Managed mode: a K-ORC identity `Service` (`{controlplane.Name}-identity-service`) and its public `Endpoint` (`{controlplane.Name}-identity-endpoint`). That is the whole managed table: a built-in service's catalog row belongs to the `KeystoneService` registration projected for it, not here. Managed mode also owns the `Region` (`{controlplane.Name}-region`, `onDelete: detach`) that adopts the bootstrap region. External mode: the same identity `Service` plus one `Endpoint` per interface (`{controlplane.Name}-identity-endpoint-{interface}`), all unmanaged imports, and nothing managed. All in `childNamespace(cp)` |
 | Requeue | `korcRequeueAfter` = **10s** while gated, while a child is not yet Available, or on a terminal K-ORC failure |
 
 `reconcileCatalog` drives `CatalogReady`. Everything up to and including the
@@ -2515,32 +2516,75 @@ stay in `childNamespace(cp)` on the management cluster: they are K-ORC's to
 reconcile, and K-ORC runs there. See
 [Reaching a placed service](#reaching-a-placed-service).
 
-No managed row carries a region: `managedCatalogService` and
+Alongside the rows, the reconciler projects one managed `Region`
+(`{controlplane.Name}-region`) per ControlPlane. It adopts the Keystone region
+named by `spec.region`, the row the keystone bootstrap inserted, and adoption
+runs in two phases. The first apply carries the region name and no description,
+which is what K-ORC's adoption filter matches on; once the CR reports
+`status.id`, the next pass adds `spec.resource.description` from
+`spec.regionDescription`. That order is fixed by the filter: it also matches on
+the description when the spec carries one, and the bootstrap row's description
+is empty, so a described first apply matches nothing, falls through to create,
+and takes Keystone's 409 Conflict as a terminal error. Each pass does one Get
+and one apply, never two, so the description does not flip the CR's generation
+on every pass.
+
+`spec.managedOptions.onDelete` is `detach`. Keystone answers 403 for a region
+that still has endpoints, and the bootstrap identity endpoints reference this
+one, so deleting the CR leaves the Keystone row where it is; that row goes with
+the Keystone database. An empty `spec.regionDescription` keeps the Keystone
+description empty, and K-ORC applies the spec value on every resync, so a
+description set by hand in Keystone is overwritten either way. There is no third
+state: a managed `Region` drives the description, and K-ORC reads an absent
+`spec.resource.description` as the empty string. **On upgrade** that makes the
+first reconcile destructive for a control plane whose region was described by
+hand (`openstack region set RegionOne --description ...`) — the description is
+cleared, and nothing in the cluster holds the prior value. Copy it into
+`spec.regionDescription` before rolling out this version to keep it. Because that
+upgrade adopts the region without anyone editing the ControlPlane, admission never
+runs on it: the pass that creates the `Region` CR with `spec.regionDescription`
+empty therefore emits a **Warning** `RegionDescriptionCleared` event on the
+ControlPlane, naming the region and the field that would keep a description.
+
+Only the upgrade raises it. The event is gated on `CatalogReady` being True while
+the `Region` CR is still absent, which is a state a fresh install cannot reach —
+there the CR is created on the same pass that first registers the catalog, and
+`CatalogReady` only turns True once that `Region` reports `Available`. So the
+notice reaches the control planes whose region may carry a hand-set description
+and stays off the ones whose bootstrap row has none to lose. It is emitted once,
+on the pass before K-ORC first writes to the region — no later pass repeats it, a
+failed `Region` apply stamps `CatalogReady` False and silences the retry pass, and
+a ControlPlane that carries a description never raises it.
+
+The catalog rows carry no region of their own: `managedCatalogService` and
 `managedCatalogEndpoint` set the management policy, the credentials ref, and the
 resource block (type/name/enabled, and interface/URL/serviceRef), and nothing
-else. The region every client filters on comes from the `clouds.yaml`
-`region_name` the admin credential renders from `spec.region`. The registration
-children carry no region either, for the same upstream reason: K-ORC's
-`EndpointResourceSpec` has no region field.
+else. The registration children carry no region either, for the same upstream
+reason: K-ORC's `EndpointResourceSpec` has no region field. The region every
+client filters on comes from the `clouds.yaml` `region_name` the admin
+credential renders from `spec.region`.
 
-Registering the child CRs only instructs K-ORC to create the catalog entries — it
-does not mean they exist in Keystone — so `CatalogReady` is gated on both children
-reporting `Available` for their current generation (`korcAvailableUpToDate`, which
-refuses a stale `Available` condition whose `ObservedGeneration` lags the object —
-the same generation gate `GetTerminalError` already applies via its `Progressing`
-check — so an endpoint/region edit that moves the catalog URL cannot flip
-`CatalogReady` True before K-ORC re-reconciles the new value), and a terminal K-ORC
-failure (`GetTerminalError`, the documented wrong-endpoint / import-stuck class) is
-surfaced as the distinct `CatalogFailed` reason instead of a false-positive Ready.
+Registering the child CRs only instructs K-ORC to create the catalog entries —
+it does not mean they exist in Keystone — so `CatalogReady` is gated on every
+child reporting `Available` for its current generation
+(`korcAvailableUpToDate`, which refuses a stale `Available` condition whose
+`ObservedGeneration` lags the object — the same generation gate
+`GetTerminalError` already applies via its `Progressing` check — so an
+endpoint/region edit that moves the catalog URL cannot flip `CatalogReady` True
+before K-ORC re-reconciles the new value), and a terminal K-ORC failure
+(`GetTerminalError`, the documented wrong-endpoint / import-stuck class) is
+surfaced as the distinct `CatalogFailed` reason instead of a false-positive
+Ready.
 
 | Path | Status | Reason | Notes |
 | --- | --- | --- | --- |
 | `AdminCredentialReady` not True | False | `WaitingForAdminCredential` | requeue 10s |
 | Service create/update fails | False | `ServiceError` | returns the error |
 | Endpoint create/update fails | False | `EndpointError` | returns the error |
-| a catalog entry's Service/Endpoint reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s (Service before its Endpoints, so the root stuck dependency surfaces) |
-| a catalog entry's Service/Endpoint registered but not yet Available | False | `WaitingForCatalog` | requeue 10s |
-| every catalog entry registered and Available | True | `CatalogRegistered` | the message counts the registered entries, which is the identity row alone today; the table is what a future ControlPlane-owned row would be added to |
+| Region read (other than NotFound) or apply fails | False | `RegionError` | returns the error |
+| a catalog entry's Service/Endpoint, or the adopted `Region`, reports a terminal K-ORC error | False | `CatalogFailed` | requeue 10s (Service before its Endpoints, so the root stuck dependency surfaces; the Region is checked after the rows and its message names `Region`) |
+| a catalog entry's Service/Endpoint, or the adopted `Region`, registered but not yet Available | False | `WaitingForCatalog` | requeue 10s; the Region also fails this gate on the pass where the description apply bumped its generation |
+| the region adopted, every catalog entry registered and Available | True | `CatalogRegistered` | the message names the adopted region and counts the registered entries, which is the identity row alone today; the table is what a future ControlPlane-owned row would be added to |
 
 #### External mode — import-first
 
@@ -2955,7 +2999,7 @@ ControlPlane in etcd until they are swept.
 
 Owner-reference GC alone is **unordered**: deleting the ControlPlane would
 garbage-collect every child at once. That is unsafe for the K-ORC CRs the
-operator owns (`ApplicationCredential`, `Service`, `Endpoint`, `User`,
+operator owns (`ApplicationCredential`, `Service`, `Endpoint`, `Region`, `User`,
 `Domain`). Those CRs carry K-ORC finalizers that call the **Keystone API** to
 revoke/delete the credentials and catalog entries they minted; if Keystone (and
 in managed mode its MariaDB) were torn down concurrently, the K-ORC finalizers
@@ -3093,15 +3137,17 @@ projected. On deletion it:
    ControlPlane undeletable. The escape paths below release without this wait.
    The remote-children finalizer goes in the same update, because by then every
    placed namespace has been swept or its cluster abandoned.
-7. **Releases an unmanaged-only remainder immediately.** K-ORC re-fetches the
-   imported resource through an *authenticated* actuator before releasing any
-   finalizer, and the unmanaged imports authenticate with the admin application
-   credential whose revocation step 1 already triggered — so once every CR
-   still present is an `Unmanaged` import, waiting on K-ORC is waiting on a
-   dead-credential retry loop. The reconciler force-removes their
-   `openstack.k-orc.cloud/*` finalizers right away and emits a **Normal**
-   `ORCImportsReleased` event. An import's deletion is CR-only, so the external
-   installation is untouched and nothing is orphaned.
+7. **Releases a CR-only remainder immediately.** K-ORC re-fetches the
+   resource through an *authenticated* actuator before releasing any finalizer,
+   and those CRs authenticate with the admin application credential whose
+   revocation step 1 already triggered. Once every CR still present is an
+   `Unmanaged` import or a detach-on-delete resource (the adopted `Region`),
+   waiting on K-ORC is waiting on a dead-credential retry loop. The reconciler
+   force-removes their `openstack.k-orc.cloud/*` finalizers right away and
+   emits a **Normal** `ORCImportsReleased` event. Neither class owns the
+   OpenStack resource behind it: an import's deletion is CR-only, and a
+   `detach` resource is released by policy, so the external installation is
+   untouched and nothing is orphaned.
 8. **Bounds the wait.** If managed ORC CRs stay Terminating past
    `orcTeardownDeadline` (the 2-minute registration window plus
    `orcTeardownStallTimeout`, 5 minutes) — typically because Keystone is already
@@ -3118,9 +3164,11 @@ projected. On deletion it:
    Kubernetes object naming it. A second **Warning**, `ORCResourcesOrphaned`,
    lists exactly those CRs — the admin `ApplicationCredential` among them — and
    tells the operator to remove them from Keystone by hand. `Unmanaged` imports are never listed: their CR delete could not have
-   touched OpenStack. The classification is by `ManagementPolicy` and fails loud
-   (anything not explicitly `Unmanaged` is reported), because under-reporting a
-   leak is worse than over-reporting one.
+   touched OpenStack. The detach `Region` is never listed either, because
+   `onDelete: detach` leaves the Keystone row in place. The classification is by
+   `ManagementPolicy`, with `detach` as its one exception, and fails loud
+   (anything else not explicitly `Unmanaged` is reported), because
+   under-reporting a leak is worse than over-reporting one.
 
 ::: warning `kubectl delete namespace` makes the leak deterministic
 Children live in the ControlPlane's own namespace, so the namespace controller
@@ -3284,8 +3332,8 @@ deployed outside the plane and only read.
 #### External-mode deletion resource set
 
 `orcChildObjects(cp)` derives the swept CR names from the ControlPlane spec, so
-Managed mode enumerates exactly the five CRs it always did and External mode adds
-the per-interface identity `Endpoint` imports. A name that never existed in the
+Managed mode enumerates the six CRs it owns and External mode adds the
+per-interface identity `Endpoint` imports. A name that never existed in the
 current mode is simply `NotFound` and is tolerated as already-gone.
 
 The enumeration is purely spec-derived, and it can be: every name it produces
@@ -3311,6 +3359,12 @@ K-ORC CR's `ManagementPolicy`, not by the ControlPlane's mode:
   the identity `Service` and its per-interface `Endpoint`s are `Unmanaged`
   imports, so deleting them is a CR-only delete and the external catalog is left
   bit-for-bit intact.
+- **`Region`** — `Managed` with `onDelete: detach`, so a `Delete` removes the
+  CR and leaves the Keystone row in place; that row goes with the Keystone
+  database.
+  K-ORC still authenticates before releasing the detach finalizer, which is why
+  `reconcileDelete` releases it together with the unmanaged imports. External
+  mode projects no `Region`, so the name is `NotFound` there.
 That holds for a teardown K-ORC can complete. The **stall escape is the deliberate
 exception**: past `orcTeardownDeadline` it releases every stuck CR by stripping
 the finalizer that would have done the revoke or the `DELETE`, so each `Managed` CR

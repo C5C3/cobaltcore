@@ -72,6 +72,7 @@ metadata:
 spec:
   openStackRelease: "2025.2"
   region: RegionOne
+  regionDescription: CobaltCore region
   infrastructure:
     database:
       clusterRef:
@@ -199,7 +200,8 @@ status:
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `openStackRelease` | `string` | Yes | — | OpenStack release the control plane targets (e.g. `"2025.2"`). The reconciler (L2) projects this into each service CR's image tag. Must match the date-based release pattern `^\d{4}\.[12]$`, enforced by both the CRD `+kubebuilder:validation:Pattern` marker and the validating webhook. Upgrades are allowed on update, but **downgrades are rejected** (Keystone DB migrations are forward-only). Stays required in **both** keystone modes; in **External** mode it is **advisory** — no images are deployed, so the value only needs to match the external installation's release at the phase-3 managed takeover. |
-| `region` | `string` | No | `"RegionOne"` | OpenStack region name applied across the control plane. Projected into the Keystone CR's `bootstrap.region`. Defaulted to `RegionOne` by **both** the `+kubebuilder:default` marker (normal admission) and the defaulting webhook (callers that bypass the CRD default). Immutable after create (the projected `bootstrap.region` is itself immutable). |
+| `region` | `string` | No | `"RegionOne"` | OpenStack region name applied across the control plane. Projected into the Keystone CR's `bootstrap.region`. Defaulted to `RegionOne` by **both** the `+kubebuilder:default` marker (normal admission) and the defaulting webhook (callers that bypass the CRD default). Bounded by pattern `^[^,]+$` and 255 characters, K-ORC's bounds on `OpenStackName` — the value is also projected into the adopted `Region` CR's `spec.resource.name`, and since the field is immutable a value the `Region` CR rejects could not be corrected in place. Immutable after create (the projected `bootstrap.region` is itself immutable). |
+| `regionDescription` | `string` | No | `""` | Description pushed into the Keystone region the ControlPlane adopts as a managed K-ORC `Region` (`{controlplane.Name}-region`). Empty keeps Keystone's description empty: K-ORC applies the spec value on every resync, so a description set by hand in Keystone is overwritten either way. A non-empty value is pushed once the region is adopted (the `Region` CR reports `status.id`); edits take effect on the next reconcile. **Mutable.** Bounded at 255 characters, K-ORC's bound on `RegionResourceSpec.Description`. **Forbidden in External mode** (webhook): no `Region` CR is adopted against a pre-existing installation. **Upgrading an existing control plane:** the `Region` CR drives the Keystone description whether or not this field is set, so the first reconcile after the upgrade **clears** a description an admin set by hand (`openstack region set ... --description`). Copy that value into `spec.regionDescription` before rolling out this version if you want to keep it; the reconciler emits a **Warning** `RegionDescriptionCleared` event on the ControlPlane when it adopts the region with this field empty on a control plane whose catalog was already registered — the upgrade case. A fresh install, whose region has no description to lose, stays silent. |
 | `infrastructure` | [`*InfrastructureSpec`](#infrastructurespec) | Conditional | managed-mode defaulted | Shared backing services (database, cache) the control plane's services connect to. **Required** when `services.keystone.mode` is `Managed` (or unset, or `services.keystone` unset) — the defaulting webhook materializes a managed-mode `database`/`cache` when omitted, and the validating webhook rejects a non-External ControlPlane without it. **Forbidden** in **External** mode (an External ControlPlane provisions no backing services; phase 2 relaxes this to optional). The mode-conditional required/forbidden rule is webhook-enforced because CEL cannot span `spec.infrastructure` and `spec.services.keystone`; see [InfrastructureSpec](#infrastructurespec) and [Validation Rules](#validation-rules). |
 | `services` | [`ServicesSpec`](#servicesspec) | Yes | — | Per-service configuration projected into the individual service CRs. |
 | `globalPolicyOverrides` | [`*commonv1.PolicySpec`](../keystone/keystone-crd.md#policyspec) | No | `nil` | oslo.policy overrides applied across every service in the control plane. Per-service overrides (e.g. `services.keystone.policyOverrides`) take precedence over these global rules when both are set. |
@@ -1732,6 +1734,8 @@ Keystone discipline:
 | Field | Rule |
 | --- | --- |
 | `spec.openStackRelease` | Pattern `^\d{4}\.[12]$` |
+| `spec.region` | Pattern `^[^,]+$`; MaxLength 255 (K-ORC's bounds on `OpenStackName`, the type the adopted `Region` CR's `spec.resource.name` carries); schema default `RegionOne` |
+| `spec.regionDescription` | MaxLength 255 (K-ORC's bound on `RegionResourceSpec.Description`) |
 | `spec.services.keystone.publicEndpoint` | Pattern `^https?://`; MaxLength 512 (the Horizon child's bound on `websso.keystoneURL`, which this value is projected onto) |
 | `spec.services.horizon.publicEndpoint` | Pattern `^https?://`; MaxLength 499 (the Keystone child's 512-character bound on `trustedDashboards[]` minus `/auth/websso/`) |
 | `spec.services.keystone.mode` | Enum: `Managed`, `External`; schema default `Managed` |
@@ -1824,6 +1828,7 @@ short-circuit on the first error.
 | Gateway hostname is a usable DNS name | `spec.services.{keystone,horizon}.gateway.hostname` | `field.Invalid` | A wildcard, an embedded port, a path, a scheme, a control character, or over 253 characters. Each shape either breaks the browser-facing origins derived from the hostname or overruns the children's own `MaxLength` markers on those origins. |
 | External block forbidden in non-External mode | `spec.services.keystone.external` | `field.Forbidden` | `external` set while `mode` is not `External`. Defense-in-depth mirror of the CEL rule. |
 | Infrastructure forbidden in External mode | `spec.infrastructure` | `field.Forbidden` | `spec.infrastructure` set while `mode: External`. **Cross-field, webhook-only** — CEL cannot span `spec.infrastructure` and `spec.services.keystone` (phase 2 relaxes this to optional). |
+| Region description forbidden in External mode | `spec.regionDescription` | `field.Forbidden` | `spec.regionDescription` set while `mode: External`. No `Region` CR is adopted against a pre-existing installation, so the description would be silently inert. **Cross-field, webhook-only.** |
 | Horizon forbidden in External mode | `spec.services.horizon` | `field.Forbidden` | `services.horizon` set while `mode: External` (P2 — Horizon needs its own External-mode design). **Cross-field, webhook-only.** |
 | Infrastructure required in non-External mode | `spec.infrastructure` | `field.Required` | `spec.infrastructure` unset while the keystone mode is not `External` (Managed, unset mode, or `services.keystone` unset). Preserves today's contract now the Go field is an optional pointer. **Webhook-only.** |
 | Glance gateway hostname required | `spec.services.glance.gateway.hostname` | `field.Required` | A `gateway` is configured but its `hostname` is empty. Mirrors the `+kubebuilder:validation:MinLength=1` marker on `commonv1.GatewaySpec.Hostname`; without it the derived public endpoint has an empty host. The same usable-DNS-name check that applies to the Keystone/Horizon gateway hostnames applies here too. |
@@ -2572,25 +2577,26 @@ catalog child reporting `Available` for its current generation —
 `CatalogReady` True before K-ORC re-reconciles).
 
 What "every catalog child" means depends on the Keystone mode. In **Managed**
-mode the control plane owns the catalog and registers the identity `Service` and
-its public `Endpoint`. In **External** mode it is import-first: the identity
-`Service` and the `Endpoint` of the interface `endpointType` selects are the
-gating unmanaged imports, and nothing else — the other two interfaces are
-imported for visibility only (see
+mode the control plane owns the catalog, registers the identity `Service` and
+its public `Endpoint`, and adopts the bootstrap region as a managed `Region`. In
+**External** mode it is import-first: the identity `Service` and the `Endpoint`
+of the interface `endpointType` selects are the gating unmanaged imports, and
+nothing else — the other two interfaces are imported for visibility only (see
 [ExternalCatalogSpec](#externalcatalogspec)). Catalog rows a `KeystoneService`
 registers are gated by that CR's own `CatalogReady`, not by this condition.
 
 | Status | Reason | When |
 | --- | --- | --- |
-| `True` | `CatalogRegistered` | **Managed mode only.** Every managed catalog entry is registered as K-ORC CRs **and** reports `Available`. The catalog is a per-service table whose only entry today is the identity (Keystone) `Service` and its public `Endpoint`; the message counts the registered entries, so a future second service is one more entry rather than a reworded condition. |
+| `True` | `CatalogRegistered` | **Managed mode only.** The bootstrap region is adopted as a managed `Region` CR, and every managed catalog entry is registered as K-ORC CRs **and** reports `Available`. The catalog is a per-service table whose only entry today is the identity (Keystone) `Service` and its public `Endpoint`; the message names the adopted region and counts the registered entries, so a future second service is one more entry rather than a reworded condition. |
 | `True` | `CatalogImported` | **External mode only.** The external identity `Service` and the endpoint interface `endpointType` selects resolved as unmanaged imports. The message reports how many of the three endpoint interfaces resolved. Deliberately distinct from `CatalogRegistered`: nothing was registered, and conflating the two would make "did this ControlPlane write to my catalog?" unanswerable from status. |
 | `False` | `WaitingForAdminCredential` | `AdminCredentialReady` is not `True`; catalog reconciliation deferred. |
-| `False` | `WaitingForCatalog` | A catalog child is reconciled but not yet `Available` for the current generation (a stale `Available` condition whose `ObservedGeneration` lags the object does not count). In External mode this names the gating import that has not resolved. |
-| `False` | `CatalogFailed` | A catalog child reports a terminal K-ORC error (`GetTerminalError`). In External mode this is where the **>1-match** half of the ambiguity contract lands: K-ORC refuses to guess and stops retrying, and the message relays it verbatim plus a hint at `external.catalog.identityServiceName` (or, for an endpoint import, at the region limitation no spec field can fix). Terminal errors are surfaced for **every** import, gating or not — with one exception: a >1-match on a **non-gating** interface has no remediation and nothing depends on it, so it is tolerated exactly like a non-gating `ImportStalled` and reported as `resolved: false`. |
+| `False` | `WaitingForCatalog` | A catalog child is reconciled but not yet `Available` for the current generation (a stale `Available` condition whose `ObservedGeneration` lags the object does not count). In Managed mode the adopted `Region` CR is one of those children, including on the pass where the description apply has bumped its generation; the message then names the `Region` CR and the region it adopts. In External mode this names the gating import that has not resolved. |
+| `False` | `CatalogFailed` | A catalog child reports a terminal K-ORC error (`GetTerminalError`). In Managed mode the adopted `Region` is one of those children, and the message names `Region`. In External mode this is where the **>1-match** half of the ambiguity contract lands: K-ORC refuses to guess and stops retrying, and the message relays it verbatim plus a hint at `external.catalog.identityServiceName` (or, for an endpoint import, at the region limitation no spec field can fix). Terminal errors are surfaced for **every** import, gating or not — with one exception: a >1-match on a **non-gating** interface has no remediation and nothing depends on it, so it is tolerated exactly like a non-gating `ImportStalled` and reported as `resolved: false`. |
 | `False` | `ImportStalled` | **External mode only.** A **gating** catalog import has been waiting to be "created externally" for longer than `externalImportStallGrace` (2m). This is the **0-match** half of the ambiguity contract: a gating import's target pre-exists by definition, so the wait never ends on its own. The message names `external.endpointType` and `spec.region` as the likely causes, and for an endpoint import the third possibility — the external catalog publishes no such interface. A non-gating interface import stalls on the same marker without failing the condition. |
 | `False` | `AuthenticationFailed` \| `EndpointUnreachable` \| `TLSVerificationFailed` \| `CatalogEndpointMismatch` \| `CredentialDrift` | **External mode only.** An unresolved import carries a K-ORC message identifying one of these failure classes; it is relayed verbatim (see [`KORCReady`](#korcready) for each class). `CatalogEndpointMismatch` additionally names the effective `endpointType` and `spec.region`. |
 | `False` | `ServiceError` | **Managed mode only.** Error create-or-updating the identity `Service` CR. |
 | `False` | `EndpointError` | **Managed mode only.** Error create-or-updating the identity `Endpoint` CR. |
+| `False` | `RegionError` | **Managed mode only.** Error reading or applying the managed `Region` CR that adopts the bootstrap region (the error is returned, so the pass is retried with backoff). |
 | `False` | `ImportError` | **External mode only.** Kubernetes-level error create-or-updating one of the unmanaged import CRs. |
 
 ### ServiceAccountsReady
