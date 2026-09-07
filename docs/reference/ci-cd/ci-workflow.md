@@ -567,18 +567,20 @@ Timeout: 15 minutes.
 ### verify-codegen
 
 Verifies that generated code (CRD, webhook and RBAC manifests, deepcopy
-functions, the chart RBAC rules templates) is committed and up-to-date. This is a gate job — it blocks merge alongside `lint`,
+functions, the chart RBAC rules templates) is committed and up-to-date, and that
+every workspace member's `go.mod`/`go.sum` is tidy. This is a gate job — it blocks merge alongside `lint`,
 `test`, and `shellcheck`.
 
 | Step | Action | Details |
 | --- | --- | --- |
 | 1 | `actions/checkout@v7` | Checks out the repository (SHA-pinned) |
 | 2 | `actions/setup-go@v6` | Sets up Go with `go-version-file: go.work` |
-| 3 | `go install controller-gen@${{ env.CONTROLLER_GEN_VERSION }}` | Installs the pinned code generator |
-| 4 | `make manifests && make generate` | Regenerates CRD, webhook and RBAC (`config/rbac/role.yaml`) manifests and deepcopy functions |
-| 5 | `make verify-crd-sync` | Verifies Helm chart CRD copies match controller-gen output |
-| 6 | `make verify-helm-rbac` | Verifies each chart's `templates/_rbac-rules.tpl` matches the regenerated `config/rbac/role.yaml` |
-| 7 | `git diff --exit-code` | Fails if any files changed (stale generated code) |
+| 3 | `make verify-go-tidy` | Fails if any module's `go.mod`/`go.sum` differs from what `go mod tidy` would write |
+| 4 | `go install controller-gen@${{ env.CONTROLLER_GEN_VERSION }}` | Installs the pinned code generator |
+| 5 | `make manifests && make generate` | Regenerates CRD, webhook and RBAC (`config/rbac/role.yaml`) manifests and deepcopy functions |
+| 6 | `make verify-crd-sync` | Verifies Helm chart CRD copies match controller-gen output |
+| 7 | `make verify-helm-rbac` | Verifies each chart's `templates/_rbac-rules.tpl` matches the regenerated `config/rbac/role.yaml` |
+| 8 | `git diff --exit-code` | Fails if any files changed (stale generated code) |
 
 When the diff check fails, the job produces a GitHub Actions `::error::` annotation with
 instructions to run `make manifests && make generate` locally and commit the result.
