@@ -641,7 +641,8 @@ func TestReconcileCatalog_ManagedModeProjectsNoImports(t *testing.T) {
 
 	cp := korcControlPlane()
 	setAdminCredentialReady(cp)
-	cond, c := reconcileCatalogFor(t, cp, availableCatalogService(cp), availableCatalogEndpoint(cp))
+	cond, c := reconcileCatalogFor(t, cp,
+		availableCatalogService(cp), availableCatalogEndpoint(cp), availableCatalogRegion(cp))
 
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(cond.Reason).To(Equal("CatalogRegistered"), "the managed reason must not change")

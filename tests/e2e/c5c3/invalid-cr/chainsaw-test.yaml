@@ -674,6 +674,16 @@ spec:
             ($error != null): true
             (contains($error, 'regionDescription')): true
             (contains($error, 'Too long')): true
+    # A comma in spec.region is refused by the CRD's pattern marker: the value is
+    # cast to K-ORC's OpenStackName (pattern ^[^,]+$) on the adopted Region CR, and
+    # spec.region is immutable, so a late rejection could not be corrected in place.
+    - apply:
+        file: 31-region-with-comma.yaml
+        expect:
+        - check:
+            ($error != null): true
+            (contains($error, 'spec.region')): true
+            (contains($error, 'should match')): true
     # A target cluster on an External-mode keystone is rejected by the CEL rule,
     # like every other managed-only field: no Keystone workload is deployed, so
     # there is nothing to place.

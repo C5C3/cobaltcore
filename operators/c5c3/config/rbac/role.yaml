@@ -245,6 +245,7 @@ rules:
   - domains
   - endpoints
   - projects
+  - regions
   - roleassignments
   - roles
   - services

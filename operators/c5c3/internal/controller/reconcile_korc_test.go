@@ -1697,10 +1697,11 @@ func TestReconcileCatalog_RegistersServiceAndEndpoint(t *testing.T) {
 	s := korcTestScheme(t)
 	cp := korcControlPlane()
 	setAdminCredentialReady(cp)
-	// Pre-create the identity Service and Endpoint reporting Available=True so
-	// CatalogReady can flip True on this pass (registering them is not enough).
+	// Pre-create the identity Service and Endpoint plus the adopted Region reporting
+	// Available=True so CatalogReady can flip True on this pass (registering them is
+	// not enough).
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(cp, availableCatalogService(cp), availableCatalogEndpoint(cp)).Build()
+		WithObjects(cp, availableCatalogService(cp), availableCatalogEndpoint(cp), availableCatalogRegion(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileCatalog(context.Background(), cp)
@@ -1725,9 +1726,25 @@ func TestReconcileCatalog_RegistersServiceAndEndpoint(t *testing.T) {
 	g.Expect(string(ep.Spec.Resource.ServiceRef)).To(Equal(keystoneServiceName(cp)))
 	g.Expect(ep.OwnerReferences).To(HaveLen(1))
 
+	region := &orcv1alpha1.Region{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: keystoneRegionName(cp), Namespace: childNamespace(cp),
+	}, region)).To(Succeed())
+	g.Expect(region.Spec.ManagementPolicy).To(Equal(orcv1alpha1.ManagementPolicyManaged))
+	g.Expect(region.Spec.ManagedOptions).NotTo(BeNil())
+	g.Expect(region.Spec.ManagedOptions.OnDelete).To(Equal(orcv1alpha1.OnDeleteDetach))
+	g.Expect(region.Spec.Resource.Name).To(HaveValue(Equal(orcv1alpha1.OpenStackName("RegionOne"))))
+	g.Expect(region.Spec.Resource.Description).To(BeNil(),
+		"a ControlPlane without spec.regionDescription describes nothing")
+	g.Expect(region.Spec.CloudCredentialsRef.SecretName).To(Equal("k-orc-clouds-yaml"))
+	g.Expect(region.OwnerReferences).To(HaveLen(1))
+	g.Expect(region.OwnerReferences[0].Name).To(Equal("cp"))
+
 	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Message).To(Equal(
+		`region "RegionOne" adopted and 1 catalog entry/entries registered as K-ORC CRs and Available`))
 }
 
 // TestReconcileCatalog_DefersUntilServiceEndpointAvailable asserts that merely
@@ -1855,7 +1872,7 @@ func TestReconcileCatalog_EmptySecretNameFallsBack(t *testing.T) {
 	cp := korcControlPlane()
 	cp.Spec.KORC.AdminCredential.CloudCredentialsRef.SecretName = ""
 	setAdminCredentialReady(cp)
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, availableCatalogRegion(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileCatalog(context.Background(), cp)
@@ -1874,6 +1891,13 @@ func TestReconcileCatalog_EmptySecretNameFallsBack(t *testing.T) {
 	}, ep)).To(Succeed())
 	g.Expect(ep.Spec.CloudCredentialsRef.SecretName).To(Equal(korcCloudsYamlSecretName),
 		"empty CloudCredentialsRef.SecretName must fall back to the conventional name")
+
+	region := &orcv1alpha1.Region{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: keystoneRegionName(cp), Namespace: childNamespace(cp),
+	}, region)).To(Succeed())
+	g.Expect(region.Spec.CloudCredentialsRef.SecretName).To(Equal(korcCloudsYamlSecretName),
+		"empty CloudCredentialsRef.SecretName must fall back to the conventional name")
 }
 
 func TestReconcileCatalog_Idempotent(t *testing.T) {
@@ -1881,8 +1905,15 @@ func TestReconcileCatalog_Idempotent(t *testing.T) {
 
 	s := korcTestScheme(t)
 	cp := korcControlPlane()
+	// The Region is seeded ADOPTED (status.id set) and the ControlPlane carries a
+	// description, so both passes take the describing branch — the state the
+	// projection has to be stable in. A pass that recomputed "adopted" from stale
+	// state, or reordered the read and the apply, would drop and re-add
+	// spec.resource.description on every pass, bumping the CR's generation and
+	// leaving K-ORC clearing and re-setting the Keystone description forever.
+	cp.Spec.RegionDescription = "CobaltCore e2e region"
 	setAdminCredentialReady(cp)
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).Build()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, availableCatalogRegion(cp)).Build()
 	r := &ControlPlaneReconciler{Client: c, Scheme: s}
 
 	_, err := r.reconcileCatalog(context.Background(), cp)
@@ -1896,6 +1927,11 @@ func TestReconcileCatalog_Idempotent(t *testing.T) {
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: keystoneEndpointName(cp), Namespace: childNamespace(cp),
 	}, ep1)).To(Succeed())
+	region1 := &orcv1alpha1.Region{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: keystoneRegionName(cp), Namespace: childNamespace(cp),
+	}, region1)).To(Succeed())
+	g.Expect(region1.Spec.Resource.Description).To(HaveValue(Equal("CobaltCore e2e region")))
 
 	// Second reconcile must project a byte-identical spec (idempotent projection).
 	// The fake client bumps ResourceVersion on a no-op Server-Side Apply — a
@@ -1912,9 +1948,14 @@ func TestReconcileCatalog_Idempotent(t *testing.T) {
 	g.Expect(c.Get(context.Background(), types.NamespacedName{
 		Name: keystoneEndpointName(cp), Namespace: childNamespace(cp),
 	}, ep2)).To(Succeed())
+	region2 := &orcv1alpha1.Region{}
+	g.Expect(c.Get(context.Background(), types.NamespacedName{
+		Name: keystoneRegionName(cp), Namespace: childNamespace(cp),
+	}, region2)).To(Succeed())
 
 	g.Expect(svc2.Spec).To(Equal(svc1.Spec), "Service projection must be idempotent")
 	g.Expect(ep2.Spec).To(Equal(ep1.Spec), "Endpoint projection must be idempotent")
+	g.Expect(region2.Spec).To(Equal(region1.Spec), "Region projection must be idempotent once adopted")
 }
 
 // HARD CRD DEPENDENCY: as for reconcileKORC, the catalog sub-reconciler's
@@ -1949,6 +1990,337 @@ func TestReconcileCatalog_MissingCRDReturnsError(t *testing.T) {
 	g.Expect(cond).NotTo(BeNil())
 	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(cond.Reason).To(Equal("ServiceError"))
+}
+
+// TestReconcileCatalog_RegionAdoptsBeforeDescribing walks the two-phase adoption of
+// the bootstrap region. The first pass must register the Region CR WITHOUT
+// spec.regionDescription: K-ORC's adoption filter matches the description too when
+// the spec carries one, the bootstrap row's description is empty, so a described CR
+// adopts nothing and takes Keystone's 409 Conflict on the create that follows as a
+// terminal error. Only once K-ORC reports a status.id does the next pass push the
+// description.
+func TestReconcileCatalog_RegionAdoptsBeforeDescribing(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	cp.Spec.RegionDescription = "CobaltCore e2e region"
+	setAdminCredentialReady(cp)
+	// The catalog rows are Available, so the pass turns on the Region alone.
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, availableCatalogService(cp), availableCatalogEndpoint(cp)).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileCatalog(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
+	g.Expect(cond.Message).To(ContainSubstring(keystoneRegionName(cp)))
+
+	key := types.NamespacedName{Name: keystoneRegionName(cp), Namespace: childNamespace(cp)}
+	region := &orcv1alpha1.Region{}
+	g.Expect(c.Get(ctx, key, region)).To(Succeed())
+	g.Expect(region.Spec.Resource.Description).To(BeNil(),
+		"an absent Region CR means nothing is adopted yet, so the first pass describes nothing")
+
+	// K-ORC adopts the bootstrap region and reports its id.
+	region.Status.ID = ptr.To("RegionOne")
+	region.Status.Conditions = []metav1.Condition{{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		Message:            "adopted",
+		ObservedGeneration: region.Generation,
+		LastTransitionTime: metav1.Now(),
+	}}
+	g.Expect(c.Update(ctx, region)).To(Succeed())
+
+	_, err = r.reconcileCatalog(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(c.Get(ctx, key, region)).To(Succeed())
+	g.Expect(region.Spec.Resource.Description).To(HaveValue(Equal("CobaltCore e2e region")),
+		"the description is pushed on the pass after adoption")
+
+	// CatalogReady flips True in this same pass ONLY because the fake client leaves
+	// metadata.generation untouched on apply, so the simulated Available condition
+	// above still matches it. Against a real apiserver the description apply bumps
+	// the generation to 2, korcAvailableUpToDate refuses the stale Available, and the
+	// pass reports WaitingForCatalog until K-ORC has pushed the description — the
+	// behaviour TestReconcileCatalog_RegionStaleAvailableGenerationDefers pins.
+	cond = conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(cond.Reason).To(Equal("CatalogRegistered"))
+
+	// spec.regionDescription is documented mutable, and both edits an operator can
+	// make on an adopted region have to reach the CR: a changed value replaces the
+	// old one...
+	cp.Spec.RegionDescription = "changed"
+	_, err = r.reconcileCatalog(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(c.Get(ctx, key, region)).To(Succeed())
+	g.Expect(region.Spec.Resource.Description).To(HaveValue(Equal("changed")),
+		"an edited description must reach the adopted Region on the next pass")
+
+	// ...and emptying the field must SHED spec.resource.description rather than leave
+	// the previously applied value standing: the apply drops the field, and
+	// Server-Side Apply removes what this field manager alone still owns (apply.go).
+	// K-ORC reads an absent description as the empty string, which is what
+	// "empty keeps the Keystone description empty" means.
+	cp.Spec.RegionDescription = ""
+	_, err = r.reconcileCatalog(ctx, cp)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(c.Get(ctx, key, region)).To(Succeed())
+	g.Expect(region.Spec.Resource.Description).To(BeNil(),
+		"clearing spec.regionDescription must shed the field the previous apply asserted")
+}
+
+// TestReconcileCatalog_RegionDescriptionClearWarns pins the one notice the cluster
+// carries for the destructive default. Adopting the bootstrap region with
+// spec.regionDescription empty makes K-ORC assert an empty description, wiping a
+// description an admin set by hand — and an operator upgrade reaches that state
+// without anyone editing the ControlPlane, so admission never runs. The pass that
+// creates the Region CR on a ControlPlane whose catalog is ALREADY registered must
+// emit a Warning event naming the region; a fresh install, a ControlPlane that
+// carries a description, and every later pass must stay silent.
+func TestReconcileCatalog_RegionDescriptionClearWarns(t *testing.T) {
+	newReconciler := func(cp *c5c3v1alpha1.ControlPlane) (*ControlPlaneReconciler, *record.FakeRecorder) {
+		s := korcTestScheme(t)
+		c := fake.NewClientBuilder().WithScheme(s).
+			WithObjects(cp, availableCatalogService(cp), availableCatalogEndpoint(cp)).Build()
+		rec := record.NewFakeRecorder(10)
+		return &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: rec}, rec
+	}
+	// setCatalogReady stands in for the upgrade: a ControlPlane whose catalog was
+	// registered by a version that had no Region CR carries CatalogReady True while
+	// the Region is still absent. A fresh install cannot reach that state, because
+	// CatalogReady only turns True once the Region itself reports Available.
+	setCatalogReady := func(cp *c5c3v1alpha1.ControlPlane) {
+		conditions.SetCondition(&cp.Status.Conditions, metav1.Condition{
+			Type:               conditionTypeCatalogReady,
+			Status:             metav1.ConditionTrue,
+			ObservedGeneration: cp.Generation,
+			Reason:             "CatalogRegistered",
+			Message:            "registered",
+		})
+	}
+
+	t.Run("empty description warns on the adopting pass", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		setAdminCredentialReady(cp)
+		setCatalogReady(cp)
+		r, rec := newReconciler(cp)
+
+		_, err := r.reconcileCatalog(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(drainEvents(rec)).To(ContainElement(And(
+			ContainSubstring("Warning RegionDescriptionCleared"),
+			ContainSubstring(korcRegion(cp)),
+			ContainSubstring("spec.regionDescription"),
+		)))
+
+		// The Region CR exists from here on, so no later pass precedes K-ORC's first
+		// write and none of them may repeat the warning.
+		setCatalogReady(cp)
+		_, err = r.reconcileCatalog(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(drainEvents(rec)).To(BeEmpty())
+	})
+
+	t.Run("a fresh install is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		ctx := context.Background()
+		cp := korcControlPlane()
+		setAdminCredentialReady(cp)
+		r, rec := newReconciler(cp)
+
+		_, err := r.reconcileCatalog(ctx, cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(drainEvents(rec)).To(BeEmpty(),
+			"the bootstrap row of a fresh install carries no description, so nothing is cleared and nothing is warned about")
+
+		// The gate suppresses the event, never the adoption.
+		region := &orcv1alpha1.Region{}
+		g.Expect(r.Get(ctx, client.ObjectKey{
+			Name: keystoneRegionName(cp), Namespace: childNamespace(cp),
+		}, region)).To(Succeed())
+	})
+
+	t.Run("a described region is silent", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := korcControlPlane()
+		cp.Spec.RegionDescription = "CobaltCore e2e region"
+		setAdminCredentialReady(cp)
+		setCatalogReady(cp)
+		r, rec := newReconciler(cp)
+
+		_, err := r.reconcileCatalog(context.Background(), cp)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(drainEvents(rec)).To(BeEmpty())
+	})
+}
+
+// TestReconcileCatalog_RegionStaleAvailableGenerationDefers asserts the Region is
+// held to the same generation-aware availability gate as the catalog rows: an
+// Available condition left over from an earlier generation (the pass that adopted
+// the region, before the description was applied) must not flip CatalogReady True
+// while K-ORC has yet to push the description.
+func TestReconcileCatalog_RegionStaleAvailableGenerationDefers(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setAdminCredentialReady(cp)
+	region := availableCatalogRegion(cp)
+	region.Generation = 2
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, availableCatalogService(cp), availableCatalogEndpoint(cp), region).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse),
+		"a stale Available condition on the Region must not satisfy CatalogReady")
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
+}
+
+// TestReconcileCatalog_RegionTerminalErrorSurfaced asserts a terminal K-ORC failure
+// on the Region CR surfaces as CatalogReady=False/CatalogFailed naming the Region,
+// rather than an eternal WaitingForCatalog. The 409 Conflict Keystone answers for a
+// create against an existing region is exactly this class.
+func TestReconcileCatalog_RegionTerminalErrorSurfaced(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setAdminCredentialReady(cp)
+	region := &orcv1alpha1.Region{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneRegionName(cp), Namespace: childNamespace(cp)},
+		Status: orcv1alpha1.RegionStatus{
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionProgressing,
+				Status:             metav1.ConditionFalse,
+				Reason:             orcv1alpha1.ConditionReasonInvalidConfiguration,
+				Message:            "Conflict: region RegionOne already exists",
+				ObservedGeneration: 0,
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, availableCatalogService(cp), availableCatalogEndpoint(cp), region).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	res, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(res.RequeueAfter).To(Equal(korcRequeueAfter))
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal(conditionReasonCatalogFailed))
+	g.Expect(cond.Message).To(ContainSubstring("Region"))
+	g.Expect(cond.Message).To(ContainSubstring("Conflict: region RegionOne already exists"))
+}
+
+// TestReconcileCatalog_RegionApplyErrorSurfaced covers the post-startup no-match
+// error on the Region CRD alone: the catalog rows apply fine, the Region does not,
+// and the failure must propagate under its own RegionError reason.
+func TestReconcileCatalog_RegionApplyErrorSurfaced(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setAdminCredentialReady(cp)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, availableCatalogService(cp), availableCatalogEndpoint(cp)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			// apply.EnsureObject applies an unstructured apply configuration, so the
+			// kind is read off the configuration itself; every other kind takes the
+			// real client.
+			Apply: func(ctx context.Context, wc client.WithWatch, ac runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if kinded, ok := ac.(interface{ GetKind() string }); ok && kinded.GetKind() == "Region" {
+					return &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "openstack.k-orc.cloud", Kind: "Region"}}
+				}
+				return wc.Apply(ctx, ac, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred(), "a no-match error must propagate so the manager requeues with backoff")
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("RegionError"))
+	g.Expect(cond.Message).To(ContainSubstring("applying Region"))
+}
+
+// TestReconcileCatalog_RegionGetErrorSurfaced covers the other Region-specific
+// failure: the read that decides whether the region is adopted fails with something
+// other than NotFound. Treating that as "not adopted" would drop the description
+// from a Region that already carries it, so the error is surfaced instead.
+func TestReconcileCatalog_RegionGetErrorSurfaced(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	s := korcTestScheme(t)
+	cp := korcControlPlane()
+	setAdminCredentialReady(cp)
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(cp, availableCatalogService(cp), availableCatalogEndpoint(cp)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, wc client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*orcv1alpha1.Region); ok {
+					return errors.New("region read refused")
+				}
+				return wc.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	_, err := r.reconcileCatalog(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+
+	cond := conditions.GetCondition(cp.Status.Conditions, conditionTypeCatalogReady)
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(cond.Reason).To(Equal("RegionError"))
+	g.Expect(cond.Message).To(ContainSubstring("reading Region"))
+}
+
+// TestReconcileCatalog_ExternalModeProjectsNoRegion is the mode guard: the region
+// of a pre-existing installation belongs to that installation, so the import branch
+// adopts nothing and reports its own reason.
+func TestReconcileCatalog_ExternalModeProjectsNoRegion(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	cp := korcExternalControlPlane()
+	setAdminCredentialReady(cp)
+	cond, c := reconcileCatalogFor(t, cp)
+
+	err := c.Get(context.Background(), types.NamespacedName{
+		Name: keystoneRegionName(cp), Namespace: childNamespace(cp),
+	}, &orcv1alpha1.Region{})
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "External mode must adopt no Region")
+
+	// Freshly created imports carry no status, so the import branch waits on them.
+	g.Expect(cond).NotTo(BeNil())
+	g.Expect(cond.Reason).To(Equal(conditionReasonWaitingForCatalog))
+	g.Expect(cond.Message).NotTo(ContainSubstring("Region"))
 }
 
 // --- helpers ---
@@ -2065,6 +2437,26 @@ func availableCatalogEndpoint(cp *c5c3v1alpha1.ControlPlane) *orcv1alpha1.Endpoi
 	return &orcv1alpha1.Endpoint{
 		ObjectMeta: metav1.ObjectMeta{Name: keystoneEndpointName(cp), Namespace: childNamespace(cp)},
 		Status: orcv1alpha1.EndpointStatus{
+			Conditions: []metav1.Condition{{
+				Type:               orcv1alpha1.ConditionAvailable,
+				Status:             metav1.ConditionTrue,
+				Reason:             orcv1alpha1.ConditionReasonSuccess,
+				Message:            "ready",
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+}
+
+// availableCatalogRegion returns the adopted Region CR reporting Available=True.
+// Its status.id is what tells reconcileCatalog the bootstrap region was adopted
+// and the description may be pushed; the Keystone region API uses the region name
+// as the id.
+func availableCatalogRegion(cp *c5c3v1alpha1.ControlPlane) *orcv1alpha1.Region {
+	return &orcv1alpha1.Region{
+		ObjectMeta: metav1.ObjectMeta{Name: keystoneRegionName(cp), Namespace: childNamespace(cp)},
+		Status: orcv1alpha1.RegionStatus{
+			ID: ptr.To("RegionOne"),
 			Conditions: []metav1.Condition{{
 				Type:               orcv1alpha1.ConditionAvailable,
 				Status:             metav1.ConditionTrue,

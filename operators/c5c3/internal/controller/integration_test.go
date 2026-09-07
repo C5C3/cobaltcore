@@ -746,10 +746,13 @@ func simulateCloudsYamlMaterializedWhenPresent(t testing.TB, ctx context.Context
 }
 
 // simulateCatalogServiceEndpointAvailableWhenPresent waits for the owned K-ORC
-// identity Service and Endpoint, then sets their Available condition True inline.
-// reconcileCatalog now gates CatalogReady on both child CRs reporting Available
-// (registering them is not enough — the catalog entry must actually land in
-// Keystone), and there is no K-ORC controller in envtest to mark them Available.
+// identity Service and Endpoint and for the adopted Region, then sets their
+// Available condition True inline. reconcileCatalog gates CatalogReady on all three
+// child CRs reporting Available (registering them is not enough — the catalog entry
+// must actually land in Keystone), and there is no K-ORC controller in envtest to
+// mark them Available. The Region additionally gets the status.id K-ORC records for
+// an adopted region, which is what lets reconcileCatalog move on and push
+// spec.regionDescription.
 func simulateCatalogServiceEndpointAvailableWhenPresent(t testing.TB, ctx context.Context, c client.Client, cp *c5c3v1alpha1.ControlPlane) {
 	t.Helper()
 	g := NewGomegaWithT(t)
@@ -784,6 +787,20 @@ func simulateCatalogServiceEndpointAvailableWhenPresent(t testing.TB, ctx contex
 		Message:            "simulated available",
 	})
 	g.Expect(c.Status().Update(ctx, ep)).To(Succeed(), "set identity Endpoint Available=True")
+
+	region := &orcv1alpha1.Region{}
+	g.Eventually(func() error {
+		return c.Get(ctx, client.ObjectKey{Namespace: ns, Name: keystoneRegionName(cp)}, region)
+	}, itEventuallyTimeout, itPollInterval).Should(Succeed(), "bootstrap Region should be registered")
+	region.Status.ID = ptr.To(korcRegion(cp))
+	meta.SetStatusCondition(&region.Status.Conditions, metav1.Condition{
+		Type:               orcv1alpha1.ConditionAvailable,
+		Status:             metav1.ConditionTrue,
+		Reason:             orcv1alpha1.ConditionReasonSuccess,
+		ObservedGeneration: region.Generation,
+		Message:            "simulated available",
+	})
+	g.Expect(c.Status().Update(ctx, region)).To(Succeed(), "set bootstrap Region Available=True")
 }
 
 // waitForBuiltinRegistration polls for the KeystoneService child a built-in

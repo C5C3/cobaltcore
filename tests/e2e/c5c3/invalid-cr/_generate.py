@@ -49,6 +49,7 @@ LICENSE_HEADER = """\
 # Canonical ControlPlane scaffold. Any future required field on ControlPlaneSpec
 # must be added below AND verified against every fixture. Placeholders:
 #   {name}                metadata.name
+#   {region}              the spec.region line (indent 2) or ""
 #   {region_description}  the spec.regionDescription line (indent 2) or ""
 #   {global_extra_config} the spec.globalExtraConfig block (indent 2) or ""
 #   {infrastructure}      the whole spec.infrastructure block (indent 2) or ""
@@ -71,7 +72,7 @@ metadata:
   name: {name}
 spec:
   openStackRelease: "2025.2"
-{region_description}{global_extra_config}{infrastructure}  services:
+{region}{region_description}{global_extra_config}{infrastructure}  services:
     keystone:
 {keystone}{horizon}{glance}{placement}{barbican}{neutron}  korc:
     adminCredential:
@@ -190,6 +191,8 @@ class Fixture:
     placement: str = ""
     barbican: str = ""
     neutron: str = ""
+    # The spec.region line (indent 2, trailing newline) or "".
+    region: str = ""
     # The spec.regionDescription line (indent 2, trailing newline) or "".
     region_description: str = ""
     # The spec.globalExtraConfig block (indent 2, trailing newline) or "".
@@ -200,6 +203,7 @@ class Fixture:
     def render(self) -> str:
         body = SCAFFOLD.format(
             name=self.name,
+            region=self.region,
             region_description=self.region_description,
             global_extra_config=self.global_extra_config,
             infrastructure=self.infrastructure,
@@ -1483,6 +1487,19 @@ FIXTURES: tuple[Fixture, ...] = (
         keystone="      mode: Managed\n",
         infrastructure=MANAGED_INFRA,
         region_description='  regionDescription: "' + "x" * 256 + '"\n',
+    ),
+    Fixture(
+        filename="31-region-with-comma.yaml",
+        comment=(
+            "spec.region carrying a comma is rejected (CRD pattern): reconcileCatalog\n"
+            "casts it to K-ORC's OpenStackName on the adopted Region CR, whose own\n"
+            "pattern is ^[^,]+$. Admitting it here would wedge CatalogReady on a field\n"
+            "that is immutable after create."
+        ),
+        name="cp-region-with-comma",
+        keystone="      mode: Managed\n",
+        infrastructure=MANAGED_INFRA,
+        region="  region: eu-de-1,dc2\n",
     ),
     # --- transition wave E: barbican secret-store addressing freeze
     #     (Test: c5c3-invalid-cr-barbican-store-freeze) ---
