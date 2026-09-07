@@ -18,7 +18,9 @@
 # Placement endpoint for the same reason, stores a secret through the projected
 # Barbican endpoint, reads its payload back and compares it byte for byte
 # against the stored literal, and creates, shows and deletes a network through
-# the projected Neutron endpoint.
+# the projected Neutron endpoint. It also reads the RegionOne description back
+# and compares it against the literal the ControlPlane's
+# `spec.regionDescription` sets.
 #
 # the orc-system copy of k-orc-clouds-yaml was removed; the
 # operator now materialises the per-CR k-orc-clouds-yaml Secret ONLY into the
@@ -70,6 +72,10 @@ spec:
               openstack --os-cloud admin catalog list | grep -qi key-manager
               echo "== network service catalogued =="
               openstack --os-cloud admin catalog list | grep -qi network
+              echo "== region description round-trip =="
+              DESC="$(openstack --os-cloud admin region show RegionOne -f value -c description)"
+              test "${DESC}" = "CobaltCore e2e region" || { echo "ERROR: region description '${DESC}' != 'CobaltCore e2e region'"; exit 1; }
+              echo "OK: region description round-trip"
               echo "== openstack --os-cloud admin role assignment list --names --user glance =="
               openstack --os-cloud admin role assignment list --names --user glance
               openstack --os-cloud admin role assignment list --user glance --names -f value -c Role | grep -qx service
