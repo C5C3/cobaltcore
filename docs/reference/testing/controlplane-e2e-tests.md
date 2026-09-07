@@ -119,7 +119,8 @@ each link on the previous one:
 4. **Credential chain** — minted credential → operator Secret → PushSecret →
    OpenBao → operator-created per-CR `k-orc-clouds-yaml` ExternalSecret Ready;
    `AdminCredentialReady=True`.
-5. **Catalog** — owned K-ORC Service and Endpoint; `CatalogReady=True`.
+5. **Catalog** — owned K-ORC Service and Endpoint, and the adopted Region
+   (owner, `status.id`, description, `detach`, Available); `CatalogReady=True`.
 
 5b. **Registrations** — one `KeystoneService` child per built-in service
    (`…-glance`, `…-placement`, `…-barbican`, `…-neutron`), each carrying that
@@ -200,11 +201,14 @@ each link on the previous one:
    placement row and calls `openstack resource class list` through the
    projected placement endpoint. That call reads a copy of clouds.yaml with the
    `region_name` line stripped, because the projected catalog rows carry no
-   region. It closes with the network round trip: `network create
-   cp-verify-net`, a `network show` that has to report `ACTIVE`, and a `network
-   delete`. `cp-verify-net` is a logical network alone, written into the
-   Northbound database by the northd running in the referenced central, so no
-   chassis has to be bound for it.
+   region. It reads the region description back with `openstack --os-cloud
+   admin region show RegionOne`, and the suite pins the Job's `OK: region
+   description round-trip` line, so the value `spec.regionDescription` carries
+   has to have reached Keystone. It closes with the network round trip:
+   `network create cp-verify-net`, a `network show` that has to report
+   `ACTIVE`, and a `network delete`. `cp-verify-net` is a logical network
+   alone, written into the Northbound database by the northd running in the
+   referenced central, so no chassis has to be bound for it.
 
 ### external-keystone
 
@@ -264,7 +268,7 @@ longer revoke the admin credential against a live API. Asserts that
 ControlPlane deletion still **completes** within a window larger than the
 bounded stall deadline (`orcTeardownDeadline`, 7m): the finalizer waits,
 then force-removes the stuck `openstack.k-orc.cloud/*` finalizers. Also
-asserts the projected Keystone, MariaDB, Memcached, and all five K-ORC CRs are
+asserts the projected Keystone, MariaDB, Memcached, and all six K-ORC CRs are
 garbage-collected and an ORC-teardown event (`ORCTeardownComplete`, or the
 Warning `ORCTeardownStalled` on the stalled path) was emitted. Before the
 teardown it checks that the projected `deletion-orch-barbican` `KeystoneService`

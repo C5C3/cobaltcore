@@ -706,7 +706,7 @@ What a placed service takes with it, and what stays behind:
 | --- | --- |
 | The five projected service CRs, each carrying `spec.targetClusterRef` verbatim | The management cluster |
 | The `BarbicanSecretStore` and `GlanceBackend` CRs, which carry no ref and follow their parent's | The management cluster |
-| Every K-ORC CR: the admin `ApplicationCredential`, the catalog `Service` and `Endpoint` rows, and the service accounts' `User`, `Project`, `Domain`, `Role`, and `RoleAssignment` | The management cluster |
+| Every K-ORC CR: the admin `ApplicationCredential`, the catalog `Service` and `Endpoint` rows, the adopted `Region`, and the service accounts' `User`, `Project`, `Domain`, `Role`, and `RoleAssignment` | The management cluster |
 | The admin-credential chain: the minted application-credential Secret, its backup `PushSecret`, and the `clouds.yaml` `ExternalSecret` | The management cluster |
 | The per-generation service-account password Secrets the K-ORC `User` CRs reference | The management cluster |
 | The tenant-store trio of the ControlPlane's own namespace | The management cluster |
