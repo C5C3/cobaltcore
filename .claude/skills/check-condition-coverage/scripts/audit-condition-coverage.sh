@@ -6,13 +6,14 @@
 # audit-condition-coverage.sh — mechanical condition-coverage checks for
 # every CobaltCore operator that wires sub-reconciler instrumentation
 # (discovered via operators/*/internal/controller/instrumentation.go):
-#   K1  every condition type set in reconcile_*.go (literal or resolved
-#       conditionType<X>Ready constant) is registered in
+#   K1  every condition type set in a NON-TEST reconcile_*.go (literal or
+#       resolved conditionType<X>Ready constant) is registered in
 #       subReconcilerConditionTypes; the bare aggregate "Ready" is exempt
 #   K2  every conditionType<X>Ready constant is defined once and used in code
 #   K3  every reconcile_*.go has a paired _test.go
 #   K4  every condition type in the instrumentation map is documented
-#   K5  every condition type referenced in docs is set in code
+#   K5  every condition type referenced in docs is set in code — doc tokens
+#       that are reason constants or Go helper names are classified, not failed
 #   K6  every condition type referenced in the cross-operator page
 #       docs/reference/target-clusters.md is set by some operator
 #
@@ -60,6 +61,28 @@ resolve_const() {
   grep -hE "^[[:space:]]*(const[[:space:]]+)?${name}[[:space:]]*=[[:space:]]*\"[A-Za-z]*Ready\"" "${dir}"/*.go 2>/dev/null \
     | sed -nE "s/.*${name}[[:space:]]*=[[:space:]]*\"([A-Za-z]*Ready)\".*/\1/p" \
     | head -1
+}
+
+# classify_non_condition — decide what a doc token that is NOT a condition
+# type actually is, so K5/K6 can explain it instead of calling it stale. The
+# doc tables carry a Reason column beside the Type column, and prose names Go
+# helpers, so both shapes reach the <X>Ready regex:
+#   reason  — a reason constant (conditionReason<X> / Reason<X>), e.g. the
+#             "ClusterNotReady"/"EndpointNotReady" rows in every Reason column
+#   helper  — a Go function name, e.g. secrets.IsSecretStoreReady
+# Prints the classification and returns 0 on a match, 1 when the token is
+# genuinely unaccounted for (the caller then fails it as stale doc).
+classify_non_condition() {
+  local t="$1"
+  if grep -rqE "(conditionReason|Reason)${t}\b" operators/*/internal/controller/ internal/common/ 2>/dev/null; then
+    echo "reason"
+    return 0
+  fi
+  if grep -rqE "func (\([^)]*\) )?${t}\(" internal/common/ operators/ 2>/dev/null; then
+    echo "helper"
+    return 0
+  fi
+  return 1
 }
 
 for op in "${OPERATORS[@]}"; do
@@ -112,7 +135,19 @@ for op in "${OPERATORS[@]}"; do
   # documents that aggregated conditions carry no map entry).
   # -------------------------------------------------------------------------
   hdr "K1 (${op}): every condition type set in reconcile_*.go is registered"
-  callsite_lits=$(grep -hrE 'Type:[[:space:]]+"[A-Z][A-Za-z]+Ready"' "${CONTROLLER_DIR}"/reconcile_*.go 2>/dev/null \
+  # Production sub-reconciler sources only. A reconcile_*_test.go builds CR
+  # fixtures whose Type: fields name conditions of OTHER kinds — the
+  # KeystoneIdentityBackend child's DomainReady, say — which this CR's
+  # sub-reconciler instrumentation map is not meant to carry.
+  RECONCILE_SRCS=()
+  for f in "${CONTROLLER_DIR}"/reconcile_*.go; do
+    [[ -f "${f}" ]] || continue
+    case "${f}" in
+      *_test.go) continue ;;
+    esac
+    RECONCILE_SRCS+=("${f}")
+  done
+  callsite_lits=$(grep -hE 'Type:[[:space:]]+"[A-Z][A-Za-z]+Ready"' ${RECONCILE_SRCS[@]+"${RECONCILE_SRCS[@]}"} 2>/dev/null \
     | grep -oE '"[A-Z][A-Za-z]+Ready"' | tr -d '"' | sort -u || true)
   for t in ${callsite_lits}; do
     if echo "${resolved_set}" | grep -qx "${t}"; then
@@ -121,7 +156,7 @@ for op in "${OPERATORS[@]}"; do
       fail "callsite literal ${t} is NOT in ${op} instrumentation map — Prometheus condition_type will resolve to UNKNOWN"
     fi
   done
-  callsite_consts=$(grep -hrE 'Type:[[:space:]]+conditionType[A-Z][A-Za-z]+Ready' "${CONTROLLER_DIR}"/reconcile_*.go 2>/dev/null \
+  callsite_consts=$(grep -hE 'Type:[[:space:]]+conditionType[A-Z][A-Za-z]+Ready' ${RECONCILE_SRCS[@]+"${RECONCILE_SRCS[@]}"} 2>/dev/null \
     | grep -oE 'conditionType[A-Z][A-Za-z]+Ready' | sort -u || true)
   for c in ${callsite_consts}; do
     v=$(resolve_const "${CONTROLLER_DIR}" "${c}")
@@ -136,7 +171,7 @@ for op in "${OPERATORS[@]}"; do
     fi
   done
   if [[ -z "${callsite_lits}" && -z "${callsite_consts}" ]]; then
-    info "no condition-type call sites found under ${CONTROLLER_DIR}/reconcile_*.go"
+    info "no condition-type call sites found in ${#RECONCILE_SRCS[@]} non-test ${CONTROLLER_DIR}/reconcile_*.go file(s)"
   fi
 
   # -------------------------------------------------------------------------
@@ -217,6 +252,11 @@ for op in "${OPERATORS[@]}"; do
           info "${t} (doc) looks like a diagram abbreviation of ${full} — confirm by hand"
         elif grep -rqE "\"${t}\"" operators/*/internal/controller/ operators/*/api/ 2>/dev/null; then
           info "${t} (doc) is set by another operator — cross-reference, confirm by hand"
+        elif token_kind=$(classify_non_condition "${t}"); then
+          case "${token_kind}" in
+            reason) info "${t} (doc) is a condition *reason*, not a condition type — it belongs in the Reason column" ;;
+            helper) info "${t} (doc) is a Go helper function name, not a condition type" ;;
+          esac
         else
           fail "${op}: ${t} (doc) is not set anywhere in code — stale documentation?"
         fi
@@ -260,6 +300,11 @@ if [[ -f "${TC_DOC}" ]]; then
   for t in ${tc_types}; do
     if grep -rqE "\"${t}\"|conditionType${t}\b" operators/*/internal/controller/ internal/common/ 2>/dev/null; then
       pass "${t} (target-clusters.md) is set by some operator"
+    elif token_kind=$(classify_non_condition "${t}"); then
+      case "${token_kind}" in
+        reason) info "${t} (target-clusters.md) is a condition *reason*, not a condition type" ;;
+        helper) info "${t} (target-clusters.md) is a Go helper function name, not a condition type" ;;
+      esac
     else
       fail "target-clusters.md references ${t}, which no operator sets — stale cross-cluster doc?"
     fi
