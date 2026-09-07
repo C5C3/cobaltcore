@@ -93,11 +93,38 @@ const pinChassisScriptsConfigMapGolden = `data:
     set -eu
     T="--db=${NB_ADDR} -p /etc/ovn/tls/tls.key -c /etc/ovn/tls/tls.crt -C /etc/ovn/tls/ca.crt --timeout=30"
     args=()
-    mapfile -t lrps < <(ovn-nbctl $T --bare --columns=name find Logical_Router_Port)
-    for lrp in "${lrps[@]}"; do args+=(-- --if-exists lrp-del-gateway-chassis "$lrp" "$CHASSIS"); done
-    mapfile -t grps < <(ovn-nbctl $T --bare --columns=name find HA_Chassis_Group)
-    for grp in "${grps[@]}"; do args+=(-- --if-exists ha-chassis-group-remove-chassis "$grp" "$CHASSIS"); done
+    # collect <ref table> <owner table> <column> appends one removal for every owner
+    # row whose <column> lists a <ref table> row naming this chassis.
+    collect() {
+      local reftable="$1" owner="$2" column="$3" uuid row refs ids rows
+      local -A mine=()
+      ids="$(ovn-nbctl $T --bare --columns=_uuid find "$reftable" chassis_name="$CHASSIS")"
+      # --bare separates records with a blank line, so the empties are dropped here.
+      while read -r uuid; do if [ -n "$uuid" ]; then mine["$uuid"]=1; fi; done <<< "$ids"
+      if [ ${#mine[@]} -eq 0 ]; then return 0; fi
+      # The owner row is named by its _uuid: read does no CSV unquoting, and a name
+      # holding a comma would be split across the two fields. remove takes a UUID.
+      rows="$(ovn-nbctl $T --format=csv --no-headings --columns=_uuid,"$column" list "$owner")"
+      while IFS=, read -r row refs; do
+        for uuid in ${refs//[\"\[\],]/ }; do
+          # --if-exists so a row deleted between the listing and the write costs
+          # only its own removal rather than every removal in the invocation.
+          if [ -n "${mine[$uuid]:-}" ]; then args+=(-- --if-exists remove "$owner" "$row" "$column" "$uuid"); fi
+        done
+      done <<< "$rows"
+    }
+    collect Gateway_Chassis Logical_Router_Port gateway_chassis
+    collect HA_Chassis HA_Chassis_Group ha_chassis
     if [ ${#args[@]} -gt 0 ]; then ovn-nbctl $T "${args[@]}"; fi
+    # The drain is confirmed against the database rather than against the write: an
+    # empty batch and an --if-exists removal that resolved no record both exit 0.
+    for table in Gateway_Chassis HA_Chassis; do
+      left="$(ovn-nbctl $T --bare --columns=_uuid find "$table" chassis_name="$CHASSIS")"
+      if [ -n "${left//[[:space:]]/}" ]; then
+        echo "evacuation incomplete: a $table row still names $CHASSIS" >&2
+        exit 1
+      fi
+    done
   host-prepare.sh: |
     #!/bin/bash
     set -eu
