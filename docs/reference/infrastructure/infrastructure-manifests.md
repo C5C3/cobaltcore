@@ -299,7 +299,16 @@ HelmRelease, and a HelmRelease `dependsOn` can only reference other HelmReleases
 c5c3-operator therefore does **not** `dependsOn` K-ORC even though K-ORC is a **hard
 dependency**: `SetupWithManager` `Owns` the K-ORC kinds, so the manager only starts
 once those CRDs are installed (until then the pod restarts), and converges once they
-appear.
+appear. The crash-looping pod also fails the install Helm waits on, so
+`c5c3-operator` is the one release that widens `spec.install.remediation.retries`
+to `30`: the default budget of `3` can be spent before the `k-orc` Kustomization
+lands, and a spent one stalls the release until the chart, the values or the spec
+change. At the 5m default wait, `30` attempts are ~2.5h of installing. It stays
+bounded on purpose — `-1` would never set `Stalled` on a permanently broken
+install, and each remediation uninstalls the release, so an unbounded budget keeps
+reopening a window in which the templated webhook configurations are gone while
+the CRDs under `crds/` survive. Its `spec.upgrade.remediation.retries` stays at
+`3`, where remediation rolls back to the running operator.
 
 The `rabbitmq-cluster-operator` Kustomization is outside the graph for the same
 reason, and it needs cert-manager: the upstream base carries the two admission

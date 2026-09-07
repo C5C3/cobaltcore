@@ -7,9 +7,9 @@
 # kind cluster from a pinned upstream commit.
 #
 # K-ORC does not publish a Helm chart. At release time upstream ships a single
-# flattened installer manifest as a release asset, but the c5c3-operator now
-# Owns() the RoleAssignment kind, which no released K-ORC ships and which only
-# upstream main's controller reconciles. The Flux source
+# flattened installer manifest as a release asset, but the c5c3-operator Owns()
+# the RoleAssignment and Region kinds, which no released K-ORC ships and which
+# only upstream main's controller reconciles. The Flux source
 # (deploy/flux-system/sources/k-orc.yaml) is therefore pinned to an upstream MAIN
 # COMMIT, and its Kustomization builds ./config/default with an image override
 # instead of applying the release-only ./dist/install.yaml.

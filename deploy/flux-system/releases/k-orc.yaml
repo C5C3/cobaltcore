@@ -9,10 +9,10 @@
 # DECISION: a Flux Kustomization (kustomize.toolkit.fluxcd.io), not a HelmRelease.
 # K-ORC ships no Helm chart (see sources/k-orc.yaml) — only a flattened installer
 # manifest, and only at release time. The source is pinned to an upstream main
-# commit (no released K-ORC ships the RoleAssignment kind the c5c3-operator now
-# Owns()), so it vendors ./config rather than a stale ./dist and this Kustomization
-# runs the kustomize build of ./config/default. That base carries its own
-# kustomization.yaml (namespace: orc-system, namePrefix: orc-): it declares the
+# commit (no released K-ORC ships the RoleAssignment and Region kinds the
+# c5c3-operator Owns()), so it vendors ./config rather than a stale ./dist and this
+# Kustomization runs the kustomize build of ./config/default. That base carries its
+# own kustomization.yaml (namespace: orc-system, namePrefix: orc-): it declares the
 # orc-system Namespace and namespaces every resource into it — the same posture
 # dist/install.yaml had — so no spec.targetNamespace is set (orc-system is also
 # declared in deploy/flux-system/namespaces.yaml, where we co-declare it — because
@@ -73,7 +73,7 @@ spec:
     - name: controller
       newName: quay.io/orc/openstack-resource-controller
       # Documentation + drift anchor; the digest below is what resolves the pull.
-      newTag: commit-8c8b4d9
-      digest: sha256:8be76a5c7cad41a79c8e45da33a45d4cdb161b5a8df3329a594c7aea8e92706c
+      newTag: commit-3f02592
+      digest: sha256:9e015256145f6fb5103b401cd0d59ea29a4b609c99564db26c5d7c392cf047fd
   prune: true
   wait: true
