@@ -72,13 +72,15 @@ The script discovers every instrumented operator and catches the
 mechanically-checkable gaps, printing a per-operator inventory. Exit
 code `1` means at least one `[FAIL]`. Interpret:
 
-- **K1** — every condition type set in `reconcile_*.go` — as a
-  literal `Type: "<Name>Ready"` or a resolved
+- **K1** — every condition type set in a **non-test** `reconcile_*.go` —
+  as a literal `Type: "<Name>Ready"` or a resolved
   `Type: conditionType<X>Ready` constant — appears in that operator's
   `subReconcilerConditionTypes`. A miss means the `condition_type`
   Prometheus label emits as `UNKNOWN` whenever this sub-reconciler
   errors. Constants resolving to the bare aggregate `"Ready"` are
-  exempt.
+  exempt, and so are `_test.go` files: a test fixture sets conditions on
+  *other* kinds (the `KeystoneIdentityBackend` child's `DomainReady`,
+  say), which this CR's sub-reconciler map is not meant to carry.
 - **K2** — every condition-type constant used as `Type: conditionType<X>Ready`
   is defined exactly once and used in at least one sub-reconciler.
   A dead constant means a renamed condition that was not cleaned up.
@@ -94,7 +96,11 @@ code `1` means at least one `[FAIL]`. Interpret:
   condition that was renamed in code but not in prose. Diagram
   abbreviations (e.g. `InfraReady` for `InfrastructureReady` in ASCII
   art) and cross-operator references demote to `[INFO]` — confirm
-  those by hand.
+  those by hand. The `<X>Ready` regex also scoops up two shapes that are
+  not condition types at all, and both demote to `[INFO]` with the
+  reason named: **reason constants** (`ClusterNotReady`,
+  `EndpointNotReady` — every condition table has a Reason column beside
+  the Type column) and **Go helper names** (`secrets.IsSecretStoreReady`).
 - **K6** — every condition type referenced in
   `docs/reference/target-clusters.md` is set by *some* operator. The
   cross-cluster page documents the placement contract across all
