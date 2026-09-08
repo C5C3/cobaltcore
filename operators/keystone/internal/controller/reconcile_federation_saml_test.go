@@ -177,7 +177,7 @@ func TestValidateSAMLRenderInputs_RejectsControlChar(t *testing.T) {
 	g := NewGomegaWithT(t)
 	backend := testProjectableSAMLBackend("corp-saml")
 	backend.Spec.SAML.IdPEntityID = "https://idp.example.com\nMellonEnable auth"
-	g.Expect(validateSAMLRenderInputs(backend)).To(MatchError(errControlCharInValue))
+	g.Expect(validateSAMLRenderInputs(backend)).To(MatchError(errFederationControlChar))
 }
 
 // The SP keypair is create-once: two renders return the same key material, and

@@ -21,6 +21,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/satellite"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
@@ -82,7 +83,7 @@ const (
 // (direct etcd write / disabled webhook). A poisoned option is a per-backend
 // fault, so the caller skips and warns like a missing bind Secret rather than
 // failing the whole pipeline.
-var errControlCharInValue = errors.New("[ldap] option name or value contains a newline or carriage-return character")
+var errControlCharInValue error = &config.ControlCharError{Section: "ldap"}
 
 // maxRenderedDomainConfBytes bounds a single backend's contribution (rendered
 // keystone.<domain>.conf plus any CA-bundle PEM) to the aggregate domains
@@ -140,25 +141,6 @@ func domainsVolumeAndMount(domainsSecretName string) (corev1.Volume, corev1.Volu
 	return volume, mount
 }
 
-// secretNameForVolume returns the name of the Secret a named pod volume of
-// the Deployment references, or "" when no volume carries the name or the
-// matching volume is not Secret-backed (a ConfigMap- or emptyDir-backed
-// volume of the same name must not be read as a Secret pointer). It is the
-// single authoritative pointer both the Keystone-side rollout gate and the
-// per-backend ConfigProjected observation read.
-func secretNameForVolume(deploy *appsv1.Deployment, volumeName string) string {
-	for i := range deploy.Spec.Template.Spec.Volumes {
-		v := &deploy.Spec.Template.Spec.Volumes[i]
-		if v.Name == volumeName {
-			if v.Secret == nil {
-				return ""
-			}
-			return v.Secret.SecretName
-		}
-	}
-	return ""
-}
-
 // projectionRolledOut reports whether the live Keystone Deployment has fully
 // converged onto this pass's identity-backend projection: the domains and
 // federation-proxy-config volumes reference exactly the Secrets this pass
@@ -180,7 +162,7 @@ func (r *KeystoneReconciler) projectionRolledOut(ctx context.Context, children c
 		return false, "", fmt.Errorf("fetching Deployment %s: %w", key, err)
 	}
 
-	if secretNameForVolume(&deploy, domainsVolumeName) != projection.DomainsSecretName {
+	if satellite.SecretNameForVolume(&deploy.Spec.Template.Spec, domainsVolumeName) != projection.DomainsSecretName {
 		return false, "the domains projection has not reached the Deployment yet", nil
 	}
 
@@ -188,7 +170,7 @@ func (r *KeystoneReconciler) projectionRolledOut(ctx context.Context, children c
 	if projection.Federation != nil {
 		federationSecretName = projection.Federation.SecretName
 	}
-	if secretNameForVolume(&deploy, federationProxyConfigVolumeName) != federationSecretName {
+	if satellite.SecretNameForVolume(&deploy.Spec.Template.Spec, federationProxyConfigVolumeName) != federationSecretName {
 		return false, "the federation projection has not reached the Deployment yet", nil
 	}
 
@@ -376,7 +358,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, chil
 					// a rendered value is a per-backend fault: skip, warn, keep
 					// the healthy siblings — the LDAP/OIDC fault-isolation
 					// contract.
-					if secrets.IsMissingSecretOrKey(err) || errors.Is(err, errControlCharInValue) ||
+					if secrets.IsMissingSecretOrKey(err) || config.IsControlCharError(err) ||
 						errors.Is(err, errProviderMetadataUnavailable) {
 						msg := fmt.Sprintf("Skipping identity backend %s: %v", backend.Name, err)
 						logger.Info(msg)
@@ -413,7 +395,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, chil
 				// metadata document, or a control character in a rendered
 				// value is a per-backend fault: skip, warn, keep the healthy
 				// siblings — exactly the LDAP fault-isolation contract.
-				if secrets.IsMissingSecretOrKey(err) || errors.Is(err, errControlCharInValue) ||
+				if secrets.IsMissingSecretOrKey(err) || config.IsControlCharError(err) ||
 					errors.Is(err, errProviderMetadataUnavailable) {
 					msg := fmt.Sprintf("Skipping identity backend %s: %v", backend.Name, err)
 					logger.Info(msg)
@@ -445,7 +427,7 @@ func (r *KeystoneReconciler) reconcileIdentityBackends(ctx context.Context, chil
 			// character (INI-injection guard) is a per-backend
 			// misconfiguration, not a pipeline failure: skip the backend,
 			// warn loudly, and keep projecting the healthy siblings.
-			if secrets.IsMissingSecretOrKey(err) || errors.Is(err, errControlCharInValue) {
+			if secrets.IsMissingSecretOrKey(err) || config.IsControlCharError(err) {
 				msg := fmt.Sprintf("Skipping identity backend %s: %v", backend.Name, err)
 				logger.Info(msg)
 				r.Recorder.Event(keystone, corev1.EventTypeWarning, "IdentityBackendSkipped", msg)

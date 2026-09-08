@@ -140,7 +140,7 @@ func validateSAMLRenderInputs(backend *keystonev1alpha1.KeystoneIdentityBackend)
 	}
 	for _, v := range values {
 		if strings.ContainsAny(v, "\n\r\"") {
-			return fmt.Errorf("saml render input %q: %w", v, errControlCharInValue)
+			return fmt.Errorf("saml render input %q: %w", v, errFederationControlChar)
 		}
 	}
 	return nil

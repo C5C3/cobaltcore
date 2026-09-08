@@ -160,17 +160,24 @@ func identityBackendSecretNameExtractor(obj client.Object) []string {
 	return names
 }
 
-// identityBackendKeystoneRefExtractor is the controller-runtime IndexerFunc
-// registered under IdentityBackendKeystoneRefIndexKey: it maps a backend to
-// its spec.keystoneRef.name so an attached-backends list is an O(1) indexed
-// lookup. Exported to tests so fake clients can register the identical index.
-func identityBackendKeystoneRefExtractor(obj client.Object) []string {
-	b, ok := obj.(*keystonev1alpha1.KeystoneIdentityBackend)
-	if !ok || b.Spec.KeystoneRef.Name == "" {
-		return nil
+// identityBackendParentName returns the name of the Keystone a
+// KeystoneIdentityBackend attaches to (spec.keystoneRef.name), or "" for an
+// object of another type. An unattached backend carries no reference and so
+// returns "" as well.
+func identityBackendParentName(o client.Object) string {
+	b, ok := o.(*keystonev1alpha1.KeystoneIdentityBackend)
+	if !ok {
+		return ""
 	}
-	return []string{b.Spec.KeystoneRef.Name}
+	return b.Spec.KeystoneRef.Name
 }
+
+// identityBackendKeystoneRefExtractor is the IndexerFunc for
+// IdentityBackendKeystoneRefIndexKey: it maps a backend to its
+// spec.keystoneRef.name so an attached-backends list is an O(1) indexed
+// lookup. Production registers it through watch.RegisterParentRefIndex; this
+// var exists so the fake clients in tests build the identical extractor.
+var identityBackendKeystoneRefExtractor = watch.ParentRefIndexer(identityBackendParentName)
 
 // registerIdentityBackendIndexes registers the two KeystoneIdentityBackend
 // field indexers. It lives beside registerSecretNameIndex so index
@@ -178,9 +185,9 @@ func identityBackendKeystoneRefExtractor(obj client.Object) []string {
 // before KeystoneIdentityBackendReconciler.SetupWithManager in main.go (and
 // in the envtest helper), so both controllers can rely on the indexes.
 func registerIdentityBackendIndexes(ctx context.Context, indexer client.FieldIndexer) error {
-	if err := indexer.IndexField(ctx, &keystonev1alpha1.KeystoneIdentityBackend{}, IdentityBackendKeystoneRefIndexKey,
-		identityBackendKeystoneRefExtractor); err != nil {
-		return fmt.Errorf("registering field indexer %q: %w", IdentityBackendKeystoneRefIndexKey, err)
+	if err := watch.RegisterParentRefIndex(ctx, indexer, &keystonev1alpha1.KeystoneIdentityBackend{},
+		IdentityBackendKeystoneRefIndexKey, identityBackendParentName); err != nil {
+		return err
 	}
 	if err := indexer.IndexField(ctx, &keystonev1alpha1.KeystoneIdentityBackend{}, IdentityBackendSecretNameIndexKey,
 		identityBackendSecretNameExtractor); err != nil {

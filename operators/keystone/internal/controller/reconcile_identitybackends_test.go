@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	commonconditions "github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/satellite"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
 )
@@ -423,9 +424,9 @@ func TestReconcileIdentityBackends_IgnoresBackendsOfOtherKeystones(t *testing.T)
 	g.Expect(cond.Reason).To(Equal(conditionReasonIdentityBackendsNotRequired))
 }
 
-// secretNameForVolume is the single authoritative volume-to-Secret pointer:
-// absent volumes and non-Secret-backed volumes of the searched name must both
-// read as "no pointer".
+// satellite.SecretNameForVolume is the single authoritative volume-to-Secret
+// pointer: absent volumes and non-Secret-backed volumes of the searched name
+// must both read as "no pointer".
 func TestSecretNameForVolume(t *testing.T) {
 	g := NewGomegaWithT(t)
 	deploy := &appsv1.Deployment{Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
@@ -438,9 +439,9 @@ func TestSecretNameForVolume(t *testing.T) {
 			}},
 		},
 	}}}}
-	g.Expect(secretNameForVolume(deploy, domainsVolumeName)).To(Equal("test-keystone-domains-abc"))
-	g.Expect(secretNameForVolume(deploy, "absent")).To(BeEmpty())
-	g.Expect(secretNameForVolume(deploy, "config")).To(BeEmpty(),
+	g.Expect(satellite.SecretNameForVolume(&deploy.Spec.Template.Spec, domainsVolumeName)).To(Equal("test-keystone-domains-abc"))
+	g.Expect(satellite.SecretNameForVolume(&deploy.Spec.Template.Spec, "absent")).To(BeEmpty())
+	g.Expect(satellite.SecretNameForVolume(&deploy.Spec.Template.Spec, "config")).To(BeEmpty(),
 		"a non-Secret volume of the searched name must not be read as a Secret pointer")
 }
 

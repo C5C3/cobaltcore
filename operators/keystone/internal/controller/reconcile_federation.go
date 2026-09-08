@@ -328,6 +328,15 @@ func appendUniquePorts(base []int32, ports ...int32) []int32 {
 	return base
 }
 
+// errFederationControlChar is returned by the OIDC and SAML render-input
+// guards. It is a distinct sentinel from errControlCharInValue because those
+// values never reach the [ldap] section that one names: they render into the
+// Apache federation configuration and the federation-side keystone.conf
+// sections ([auth], [openid], [federation]). Both are *config.ControlCharError,
+// so config.IsControlCharError still matches either and the skip-and-warn
+// branches are unchanged.
+var errFederationControlChar error = &config.ControlCharError{Section: "federation"}
+
 // validateOIDCRenderInputs re-validates every spec value the render embeds
 // into the Apache configuration for newline/carriage-return injection. The
 // webhook rejects these up front, but the renderer is the only gate that
@@ -354,7 +363,7 @@ func validateOIDCRenderInputs(backend *keystonev1alpha1.KeystoneIdentityBackend)
 		// backstop matches the webhook's OIDC checkNoCtrl so a CR that bypassed
 		// admission cannot smuggle a quote into a value rendered unquoted elsewhere.
 		if strings.ContainsAny(v, "\n\r\"") {
-			return fmt.Errorf("oidc render input %q: %w", v, errControlCharInValue)
+			return fmt.Errorf("oidc render input %q: %w", v, errFederationControlChar)
 		}
 	}
 	return nil
