@@ -6,9 +6,7 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -19,6 +17,7 @@ import (
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/satellite"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
@@ -99,30 +98,26 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 		return ctrl.Result{}, backendsProjection{}, fmt.Errorf("listing GlanceBackends for %s: %w", glance.Name, err)
 	}
 
-	// Sort by name so the rendered Secret content — and therefore its
-	// content-hashed name and enabled_backends order — is deterministic across
-	// passes.
-	sort.Slice(backends.Items, func(i, j int) bool {
-		return backends.Items[i].Name < backends.Items[j].Name
+	items := make([]*glancev1alpha1.GlanceBackend, 0, len(backends.Items))
+	for i := range backends.Items {
+		items = append(items, &backends.Items[i])
+	}
+	// Drop the deleting backends, sort by name so the rendered Secret content —
+	// and therefore its content-hashed name and enabled_backends order — is
+	// deterministic across passes, and pick the credential-ready default
+	// candidates.
+	c := satellite.Collect(satellite.CollectParams[glancev1alpha1.GlanceBackend, *glancev1alpha1.GlanceBackend]{
+		Items:     items,
+		Gate:      credentialsReady,
+		IsDefault: func(b *glancev1alpha1.GlanceBackend) bool { return b.Spec.IsDefault },
 	})
 
-	// First pass: collect the egress hosts of every attached backend and the
-	// credential-ready default candidates. Both must be known before deciding
-	// projection validity.
+	// The egress hosts of every attached backend, not only the credential-ready
+	// ones, so the networkpolicy step tracks every attached store.
 	var hosts []string
-	var defaultCandidates []string
-	for i := range backends.Items {
-		backend := &backends.Items[i]
-		// A deleting backend is de-projected immediately: its store section is
-		// dropped and its host removed from the egress set on this pass.
-		if backend.DeletionTimestamp != nil {
-			continue
-		}
+	for _, backend := range c.Attached {
 		if backend.Spec.S3 != nil && backend.Spec.S3.Host != "" {
 			hosts = append(hosts, backend.Spec.S3.Host)
-		}
-		if backend.Spec.IsDefault && credentialsReady(backend) {
-			defaultCandidates = append(defaultCandidates, backend.Name)
 		}
 	}
 
@@ -131,31 +126,31 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 	// re-rendered, and last-good is retained by the downstream config step (which
 	// keeps whatever the live Deployment mounts). hosts is still surfaced so the
 	// networkpolicy step tracks every attached store.
-	if len(defaultCandidates) != 1 {
+	if !c.Valid {
+		names := make([]string, 0, len(c.DefaultCandidates))
+		for _, backend := range c.DefaultCandidates {
+			names = append(names, backend.Name)
+		}
 		conditions.SetCondition(&glance.Status.Conditions, metav1.Condition{
 			Type:               conditionTypeBackendsReady,
 			Status:             metav1.ConditionFalse,
 			ObservedGeneration: glance.Generation,
 			Reason:             conditionReasonNoDefaultBackend,
-			Message:            noDefaultBackendMessage(defaultCandidates),
+			Message:            noDefaultBackendMessage(names),
 		})
 		return ctrl.Result{}, backendsProjection{valid: false, hosts: hosts}, nil
 	}
-	defaultBackend := defaultCandidates[0]
+	defaultBackend := c.DefaultCandidates[0].Name
 
-	// Second pass: render the store section of every credential-ready backend,
-	// isolating per-backend faults. A backend that is not yet credential-ready,
-	// whose credentials Secret is missing/unreadable, or whose credential values
-	// carry a control character is added to the pending set (and warned, for a
-	// fault) rather than failing the step.
+	// Render the store section of every credential-ready backend, isolating
+	// per-backend faults. A backend that is not yet credential-ready, whose
+	// credentials Secret is missing/unreadable, or whose credential values carry
+	// a control character is added to the pending set (and warned, for a fault)
+	// rather than failing the step.
 	sections := map[string]map[string]string{}
 	var renderedNames []string
 	var pending []string
-	for i := range backends.Items {
-		backend := &backends.Items[i]
-		if backend.DeletionTimestamp != nil {
-			continue
-		}
+	for _, backend := range c.Attached {
 		if !credentialsReady(backend) {
 			pending = append(pending, fmt.Sprintf("%s (credentials not ready)", backend.Name))
 			continue
@@ -168,7 +163,7 @@ func (r *GlanceReconciler) reconcileBackends(ctx context.Context, children clien
 			// loudly, and keep projecting the healthy siblings. A transient
 			// (non-NotFound) client failure is infrastructure, not a per-backend
 			// fault, so it surfaces as an error and the workqueue backs off.
-			if secrets.IsMissingSecretOrKey(err) || errors.Is(err, errControlCharInValue) {
+			if secrets.IsMissingSecretOrKey(err) || config.IsControlCharError(err) {
 				msg := fmt.Sprintf("Skipping backend %s: %v", backend.Name, err)
 				logger.Info(msg)
 				r.Recorder.Event(glance, corev1.EventTypeWarning, "GlanceBackendSkipped", msg)
@@ -241,17 +236,6 @@ func credentialsReady(backend *glancev1alpha1.GlanceBackend) bool {
 	return cond != nil && cond.Status == metav1.ConditionTrue
 }
 
-// errControlCharInValue is returned by renderStoreSection when an assembled
-// [<name>] option name or value carries a newline or carriage-return.
-// config.RenderINI writes both verbatim as `key = value`, so such a character
-// injects arbitrary INI lines. The webhook rejects CR-set option keys and
-// values up front, but the renderer revalidates as the last line of defense: it
-// is the only gate that sees the Secret-sourced access/secret keys (which the
-// webhook never reads) and the only gate that still runs when a CR bypassed
-// admission. A poisoned option is a per-backend fault, so the caller skips and
-// warns rather than failing the whole step.
-var errControlCharInValue = errors.New("[glance_store] option name or value contains a newline or carriage-return character")
-
 // renderStoreSection renders one credential-ready backend's [<name>] store
 // section. It reads the S3 access/secret keys from the credentials Secret (the
 // contract data keys), sets the operator-owned s3_store_* options, then merges
@@ -313,10 +297,8 @@ func (r *GlanceReconciler) renderStoreSection(ctx context.Context, children clie
 	// [<name>] options. The webhook rejects CR-set keys/values, but the S3
 	// access/secret keys come from a Secret it never reads, and a CRD-bypass CR
 	// reaches here unvalidated. Fail the render (the caller skips and warns).
-	for k, v := range section {
-		if strings.ContainsAny(k, "\n\r") || strings.ContainsAny(v, "\n\r") {
-			return nil, errControlCharInValue
-		}
+	if err := config.CheckNoControlChars("glance_store", section); err != nil {
+		return nil, err
 	}
 	return section, nil
 }

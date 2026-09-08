@@ -7,8 +7,6 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
-	"regexp"
-	"sort"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -19,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/c5c3/cobaltcore/internal/common/validation"
 	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
 )
 
@@ -120,14 +119,6 @@ var s3ExtraOptionsDenylist = map[string]string{
 	"store_description":                "the operator (store section wiring)",
 }
 
-// s3ExtraOptionKeyPattern is the allowlist every spec.extraOptions key must
-// match. glance_store option names are snake_case, so letters, digits, and
-// underscores are the full legitimate charset. Anything else (an embedded
-// newline, a denylist-evading trailing space) could inject an INI line or slip
-// past the exact-match denylist, so it is rejected before either exact-match
-// check runs.
-var s3ExtraOptionKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
-
 // validate runs all validation rules against the GlanceBackend spec,
 // accumulating every violation into a single field.ErrorList so users see all
 // problems at once. ctx is required for the sibling-backend List behind the
@@ -194,67 +185,14 @@ func reservedStoreName(lower string) bool {
 	return reserved
 }
 
-// hasControlChars reports whether s contains a newline or carriage-return.
-// RenderINI writes every value verbatim as `key = value`, so either character
-// lets a value inject an additional store-section line, defeating the
-// extraOptions denylist. Every value-side input into the projection is rejected
-// for these characters.
-func hasControlChars(s string) bool {
-	return strings.ContainsAny(s, "\n\r")
-}
-
 // validateExtraOptions rejects spec.extraOptions keys the projection owns: the
 // options rendered from typed fields, the operator-owned store_description,
 // empty keys, keys whose shape could inject INI lines or evade the denylist, and
 // values carrying control characters.
 func (w *GlanceBackendWebhook) validateExtraOptions(optsPath *field.Path, b *GlanceBackend) field.ErrorList {
-	var errs field.ErrorList
-	if len(b.Spec.ExtraOptions) == 0 {
-		return nil
-	}
-
-	// Sort keys so the aggregated error list is deterministic.
-	keys := make([]string, 0, len(b.Spec.ExtraOptions))
-	for k := range b.Spec.ExtraOptions {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, k := range keys {
-		if k == "" {
-			errs = append(errs, field.Invalid(optsPath, k, "option name must not be empty"))
-			continue
-		}
-		// Enforce the key allowlist before the denylist, which matches exact
-		// strings and so is blind to a newline in the key (an INI-injection
-		// vector through RenderINI's verbatim `key = value` write) or a
-		// denylist-evading variant such as a trailing space.
-		if !s3ExtraOptionKeyPattern.MatchString(k) {
-			errs = append(errs, field.Invalid(
-				optsPath.Key(k), k,
-				"option name must match ^[A-Za-z0-9_]+$ (letters, digits, and underscore)",
-			))
-			continue
-		}
-		if owner, denied := s3ExtraOptionsDenylist[k]; denied {
-			errs = append(errs, field.Invalid(
-				optsPath.Key(k),
-				b.Spec.ExtraOptions[k],
-				fmt.Sprintf("option %q is owned by %s and must not be set via extraOptions", k, owner),
-			))
-			continue
-		}
-		// INI-injection guard: a value with an embedded newline injects arbitrary
-		// store-section lines regardless of how innocuous the key is.
-		if hasControlChars(b.Spec.ExtraOptions[k]) {
-			errs = append(errs, field.Invalid(
-				optsPath.Key(k),
-				b.Spec.ExtraOptions[k],
-				"value must not contain newline or carriage-return characters",
-			))
-		}
-	}
-	return errs
+	return validation.ExtraOptions(optsPath, b.Spec.ExtraOptions, validation.ExtraOptionsRules{
+		Denylist: s3ExtraOptionsDenylist,
+	})
 }
 
 // validateSiblingDefault enforces the single-default invariant: at most one
@@ -270,35 +208,26 @@ func (w *GlanceBackendWebhook) validateSiblingDefault(ctx context.Context, specP
 	}
 
 	isDefaultPath := specPath.Child("isDefault")
-	var siblings GlanceBackendList
-	if err := w.Client.List(ctx, &siblings, client.InNamespace(b.Namespace)); err != nil {
+	siblings, err := validation.AttachedSiblings(ctx, w.Client, b, &GlanceBackendList{},
+		func(other *GlanceBackend) bool {
+			return other.Spec.GlanceRef.Name == b.Spec.GlanceRef.Name
+		})
+	if err != nil {
 		return field.ErrorList{field.InternalError(isDefaultPath,
 			fmt.Errorf("listing GlanceBackends for the single-default check: %w", err))}
 	}
 
 	var errs field.ErrorList
-	for i := range siblings.Items {
-		other := &siblings.Items[i]
-		if other.Name == b.Name {
-			// Self on UPDATE.
+	for _, other := range siblings {
+		if !other.Spec.IsDefault {
 			continue
 		}
-		if other.DeletionTimestamp != nil {
-			// A Terminating sibling is on its way out; blocking a replacement
-			// default on it would deadlock recreate-during-teardown.
-			continue
-		}
-		if other.Spec.GlanceRef.Name != b.Spec.GlanceRef.Name {
-			continue
-		}
-		if other.Spec.IsDefault {
-			errs = append(errs, field.Invalid(
-				isDefaultPath,
-				b.Spec.IsDefault,
-				fmt.Sprintf("GlanceBackend %q attached to the same Glance %q is already marked isDefault; exactly one default store is allowed",
-					other.Name, b.Spec.GlanceRef.Name),
-			))
-		}
+		errs = append(errs, field.Invalid(
+			isDefaultPath,
+			b.Spec.IsDefault,
+			fmt.Sprintf("GlanceBackend %q attached to the same Glance %q is already marked isDefault; exactly one default store is allowed",
+				other.Name, b.Spec.GlanceRef.Name),
+		))
 	}
 	return errs
 }

@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/satellite"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
 
@@ -112,7 +113,7 @@ func TestReconcileBackends_SingleReadyDefaultProjects(t *testing.T) {
 	g.Expect(proj.secretName).NotTo(BeEmpty())
 
 	conf := renderedBackendsConf(t, r, proj.secretName)
-	g.Expect(backendSectionPresent([]byte(conf), "store")).To(BeTrue(),
+	g.Expect(satellite.SectionPresent([]byte(conf), "[store]")).To(BeTrue(),
 		"the store section header must be a whole line [store]")
 	g.Expect(conf).To(ContainSubstring("s3_store_host = https://s3.example.com"))
 	g.Expect(conf).To(ContainSubstring("s3_store_bucket = images"))
@@ -218,8 +219,8 @@ func TestReconcileBackends_ControlCharCredentialSkipsBackend(t *testing.T) {
 	g.Expect(proj.enabledBackends).To(Equal("store:s3"))
 
 	conf := renderedBackendsConf(t, r, proj.secretName)
-	g.Expect(backendSectionPresent([]byte(conf), "store")).To(BeTrue())
-	g.Expect(backendSectionPresent([]byte(conf), "bad")).To(BeFalse(),
+	g.Expect(satellite.SectionPresent([]byte(conf), "[store]")).To(BeTrue())
+	g.Expect(satellite.SectionPresent([]byte(conf), "[bad]")).To(BeFalse(),
 		"the skipped backend's section must not be rendered")
 
 	events := collectEvents(r.Recorder.(*record.FakeRecorder))
