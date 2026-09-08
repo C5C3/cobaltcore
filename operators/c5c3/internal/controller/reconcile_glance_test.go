@@ -614,6 +614,43 @@ func TestReconcileGlance_UnsetPreservesForeignChild(t *testing.T) {
 	}, &glancev1alpha1.Glance{})).To(Succeed(), "a Glance child we do not own must never be deleted")
 }
 
+// TestDeleteOrphanedGlance_NamesTheOrphanCleanupPhase pins the phase the shared
+// prune cannot name for itself. pruneProjectedChildren wraps its failures the
+// same way from both call sites, so without the orphan path naming itself an
+// operator reading the condition cannot tell a single removed backends entry
+// (reconcileGlanceBackends) from services.glance being unset entirely — the
+// teardown of every store.
+func TestDeleteOrphanedGlance_NamesTheOrphanCleanupPhase(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := glanceControlPlane()
+	cp.Spec.Services.Glance = nil
+
+	backend := &glancev1alpha1.GlanceBackend{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      glanceBackendName(cp, "primary"),
+			Namespace: cp.GlanceNamespace(),
+			Labels:    controlPlaneChildLabels(cp),
+		},
+	}
+	s := glanceTestScheme(t)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, backend).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				if _, ok := obj.(*glancev1alpha1.GlanceBackend); ok {
+					return errors.New("boom")
+				}
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s}
+
+	err := r.deleteOrphanedGlance(context.Background(), cp)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(HavePrefix("orphan cleanup: "),
+		"the orphan sweep must name its own phase, not the reconcile-time prune's")
+	g.Expect(err.Error()).To(ContainSubstring("pruning undeclared GlanceBackend"))
+}
+
 func TestReconcileGlance_GatedOnKeystoneReady(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cp := glanceControlPlane()

@@ -942,31 +942,17 @@ func (r *ControlPlaneReconciler) deleteServiceChildrenIn(
 	}
 
 	// Also sweep the projected GlanceBackend children the ControlPlane placed in this
-	// namespace. They carry no external state, so deleting them alongside the Glance
-	// child is safe. Only c5c3-owned children carrying the glance child's name prefix
-	// are touched — a hand-created GlanceBackend that merely shares the namespace is
-	// never deleted. Each still-present owned backend is reported as remaining, the
-	// same way the service children are, so the sweep waits for it to disappear.
+	// namespace, on sweepProjectedChildren's ownership-and-prefix terms: a
+	// hand-created GlanceBackend that merely shares the namespace is never deleted.
+	// Each still-present owned backend is reported as remaining, the same way the
+	// service children are, so the sweep waits for it to disappear. An absent
+	// GlanceBackend CRD reads as nothing to sweep.
 	if cp.GlanceNamespace() == namespace {
-		var backends glancev1alpha1.GlanceBackendList
-		if err := r.List(ctx, &backends, client.InNamespace(namespace)); err != nil {
-			return nil, fmt.Errorf("listing GlanceBackends in %q for cross-namespace teardown: %w", namespace, err)
+		swept, err := r.sweepProjectedChildren(ctx, cp, glanceBackendChildren(cp, namespace, nil))
+		if err != nil {
+			return nil, err
 		}
-		prefix := glanceBackendNamePrefix(cp)
-		for i := range backends.Items {
-			b := &backends.Items[i]
-			if !isControlPlaneChild(b, cp) || !strings.HasPrefix(b.Name, prefix) {
-				continue
-			}
-			if b.GetDeletionTimestamp().IsZero() {
-				if err := client.IgnoreNotFound(
-					r.Delete(ctx, b, client.PropagationPolicy(metav1.DeletePropagationBackground)),
-				); err != nil {
-					return nil, fmt.Errorf("deleting GlanceBackend %s/%s: %w", namespace, b.Name, err)
-				}
-			}
-			remaining = append(remaining, fmt.Sprintf("%s/%s", namespace, b.Name))
-		}
+		remaining = append(remaining, swept...)
 	}
 
 	// The Barbican namespace carries two more sets. First the projected

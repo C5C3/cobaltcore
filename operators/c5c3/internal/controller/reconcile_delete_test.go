@@ -31,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -2357,6 +2358,44 @@ func TestDeleteServiceChildrenIn_SweepsOwnedGlanceBackends(t *testing.T) {
 	g.Expect(c.Get(context.Background(), client.ObjectKeyFromObject(foreign), &glancev1alpha1.GlanceBackend{})).
 		To(Succeed(), "a hand-created backend we do not own must never be swept")
 	g.Expect(remaining).NotTo(ContainElement("images/" + glanceBackendName(cp, "byo")))
+}
+
+// TestDeleteServiceChildrenIn_ToleratesAnAbsentGlanceBackendCRD covers the
+// uninstall order nobody controls: the glance-operator and its CRD can be removed
+// before the ControlPlane that projected the backends. A List against a kind the
+// API server no longer serves reads as nothing to sweep, so the teardown still
+// finishes instead of wedging on it.
+func TestDeleteServiceChildrenIn_ToleratesAnAbsentGlanceBackendCRD(t *testing.T) {
+	g := NewGomegaWithT(t)
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingControlPlane(time.Minute)
+	cp.Spec.Services = c5c3v1alpha1.ServicesSpec{
+		Glance: &c5c3v1alpha1.ServiceGlanceSpec{
+			Namespace: &c5c3v1alpha1.ServiceNamespaceSpec{
+				Name: "images", Lifecycle: c5c3v1alpha1.ServiceNamespaceLifecycleManaged,
+			},
+		},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*glancev1alpha1.GlanceBackendList); ok {
+					return &meta.NoKindMatchError{
+						GroupKind: schema.GroupKind{Group: "glance.openstack.c5c3.io", Kind: "GlanceBackend"},
+					}
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	// No Glance CR fixture either, so the wait set's Glance entry is NotFound and
+	// tolerated the same way.
+	remaining, err := r.deleteServiceChildrenIn(context.Background(), cp, "images")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(remaining).To(BeEmpty())
 }
 
 // TestTeardownDedicatedNamespaces_NoAssignments verifies the default costs

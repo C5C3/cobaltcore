@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	esgenv1alpha1 "github.com/external-secrets/external-secrets/apis/generators/v1alpha1"
@@ -97,6 +96,18 @@ func glanceEndpointURL(cp *c5c3v1alpha1.ControlPlane) string {
 // glanceName(cp)+"-" prefix and never touches a hand-created one.
 func glanceBackendName(cp *c5c3v1alpha1.ControlPlane, entryName string) string {
 	return glanceBackendNamePrefix(cp) + entryName
+}
+
+// glanceBackendChildren names the projected GlanceBackend children of cp in
+// namespace for the shared prune and sweep; keep lists the names never touched.
+func glanceBackendChildren(cp *c5c3v1alpha1.ControlPlane, namespace string, keep map[string]struct{}) projectedChildren {
+	return projectedChildren{
+		List:      &glancev1alpha1.GlanceBackendList{},
+		Kind:      "GlanceBackend",
+		Namespace: namespace,
+		Prefix:    glanceBackendNamePrefix(cp),
+		Keep:      keep,
+	}
 }
 
 // reconcileGlance projects spec.services.glance into an owned Glance CR (and its
@@ -439,20 +450,12 @@ func (r *ControlPlaneReconciler) deleteOrphanedGlance(ctx context.Context, cp *c
 
 	// Every projected GlanceBackend: owned by this ControlPlane AND carrying the
 	// glance child's name prefix, so a hand-created GlanceBackend attached to the
-	// child is never touched.
-	var backends glancev1alpha1.GlanceBackendList
-	if err := r.List(ctx, &backends, client.InNamespace(glanceNS)); err != nil {
-		return fmt.Errorf("listing GlanceBackends for orphan cleanup: %w", err)
-	}
-	prefix := glanceBackendNamePrefix(cp)
-	for i := range backends.Items {
-		b := &backends.Items[i]
-		if !isControlPlaneChild(b, cp) || !strings.HasPrefix(b.Name, prefix) {
-			continue
-		}
-		if err := client.IgnoreNotFound(r.Delete(ctx, b, client.PropagationPolicy(metav1.DeletePropagationBackground))); err != nil {
-			return fmt.Errorf("deleting orphaned GlanceBackend %s/%s: %w", b.Namespace, b.Name, err)
-		}
+	// child is never touched. The prune names only itself, so the phase is wrapped
+	// on: a failure here tears down every store because services.glance was unset,
+	// which reads very differently from the same wrapper raised by
+	// reconcileGlanceBackends dropping a single removed entry.
+	if err := r.pruneProjectedChildren(ctx, cp, glanceBackendChildren(cp, glanceNS, nil)); err != nil {
+		return fmt.Errorf("orphan cleanup: %w", err)
 	}
 
 	// The DB-credential ExternalSecret.
@@ -549,22 +552,5 @@ func (r *ControlPlaneReconciler) reconcileGlanceBackends(ctx context.Context, cp
 		declared[backend.Name] = struct{}{}
 	}
 
-	var list glancev1alpha1.GlanceBackendList
-	if err := r.List(ctx, &list, client.InNamespace(glanceNS)); err != nil {
-		return fmt.Errorf("listing GlanceBackends for prune: %w", err)
-	}
-	prefix := glanceBackendNamePrefix(cp)
-	for i := range list.Items {
-		b := &list.Items[i]
-		if _, kept := declared[b.Name]; kept {
-			continue
-		}
-		if !isControlPlaneChild(b, cp) || !strings.HasPrefix(b.Name, prefix) {
-			continue
-		}
-		if err := client.IgnoreNotFound(r.Delete(ctx, b, client.PropagationPolicy(metav1.DeletePropagationBackground))); err != nil {
-			return fmt.Errorf("pruning undeclared GlanceBackend %q: %w", b.Name, err)
-		}
-	}
-	return nil
+	return r.pruneProjectedChildren(ctx, cp, glanceBackendChildren(cp, glanceNS, declared))
 }
