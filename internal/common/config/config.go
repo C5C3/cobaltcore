@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -106,6 +107,44 @@ func LiftSections(sections map[string]map[string]string) map[string]map[string][
 		out[section] = lifted
 	}
 	return out
+}
+
+// ControlCharError reports a rendered INI option name or value that carries a
+// newline or carriage return. RenderINI writes keys and values verbatim as
+// "key = value", so either character injects further INI lines into the
+// rendered section. Section is the INI section the offending option belongs to
+// and is the only detail the error carries.
+type ControlCharError struct{ Section string }
+
+// Error returns "[<Section>] option name or value contains a newline or
+// carriage-return character".
+func (e *ControlCharError) Error() string {
+	return "[" + e.Section + "] option name or value contains a newline or carriage-return character"
+}
+
+// IsControlCharError reports whether err wraps a *ControlCharError. A caller
+// that added context with fmt.Errorf still recognizes the fault and can skip
+// the offending object rather than fail its whole step.
+func IsControlCharError(err error) bool {
+	var target *ControlCharError
+	return stderrors.As(err, &target)
+}
+
+// CheckNoControlChars returns a *ControlCharError for section when any key or
+// value of options contains a newline or carriage return, and nil otherwise. A
+// nil or empty map passes.
+//
+// Renderers run it as the last line of defense behind the validating webhook.
+// The webhook rejects CR-set option names and values up front, but it never
+// reads the Secret-sourced values a renderer merges in, and a CR written past
+// admission reaches the renderer unvalidated.
+func CheckNoControlChars(section string, options map[string]string) error {
+	for k, v := range options {
+		if strings.ContainsAny(k, "\n\r") || strings.ContainsAny(v, "\n\r") {
+			return &ControlCharError{Section: section}
+		}
+	}
+	return nil
 }
 
 // MergeDefaults merges user-provided config with operator defaults.

@@ -6,6 +6,8 @@ package config
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -212,6 +214,81 @@ func TestLiftSections(t *testing.T) {
 	// caller's merged single-valued map untouched.
 	got["DEFAULT"]["debug"] = []string{"false"}
 	g.Expect(in["DEFAULT"]["debug"]).To(Equal("true"))
+}
+
+// TestCheckNoControlChars pins the guard renderers run behind the validating
+// webhook: RenderINI writes an option name and value verbatim, so a newline or
+// carriage return in either injects further INI lines.
+func TestCheckNoControlChars(t *testing.T) {
+	tests := []struct {
+		name    string
+		options map[string]string
+		wantErr bool
+	}{
+		{
+			name:    "nil options",
+			options: nil,
+		},
+		{
+			name:    "empty options",
+			options: map[string]string{},
+		},
+		{
+			name:    "clean options",
+			options: map[string]string{"url": "https://vault.example.com:8200", "use_ssl": "true"},
+		},
+		{
+			name:    "newline in key",
+			options: map[string]string{"url\ninjected": "value"},
+			wantErr: true,
+		},
+		{
+			name:    "carriage return in value",
+			options: map[string]string{"url": "value\rinjected = other"},
+			wantErr: true,
+		},
+		{
+			name:    "carriage return in key",
+			options: map[string]string{"url\rinjected": "value"},
+			wantErr: true,
+		},
+		{
+			name:    "newline in value",
+			options: map[string]string{"url": "value\ninjected = other"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := NewGomegaWithT(t)
+			err := CheckNoControlChars("s", tt.options)
+			if !tt.wantErr {
+				g.Expect(err).NotTo(HaveOccurred())
+				return
+			}
+
+			g.Expect(err).To(MatchError("[s] option name or value contains a newline or carriage-return character"))
+			g.Expect(IsControlCharError(err)).To(BeTrue())
+
+			var target *ControlCharError
+			g.Expect(errors.As(err, &target)).To(BeTrue())
+			g.Expect(target.Section).To(Equal("s"))
+		})
+	}
+}
+
+// TestIsControlCharError covers the wrap: a caller that added context with
+// fmt.Errorf must still be recognized, an unrelated error must not.
+func TestIsControlCharError(t *testing.T) {
+	g := NewGomegaWithT(t)
+
+	err := &ControlCharError{Section: "s"}
+	g.Expect(IsControlCharError(err)).To(BeTrue())
+	g.Expect(IsControlCharError(fmt.Errorf("rendering the store section: %w", err))).To(BeTrue())
+
+	g.Expect(IsControlCharError(nil)).To(BeFalse())
+	g.Expect(IsControlCharError(errors.New("other"))).To(BeFalse())
 }
 
 func TestMergeDefaults(t *testing.T) {
