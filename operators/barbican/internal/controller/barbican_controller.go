@@ -124,9 +124,9 @@ func registerBarbicanIndexes(ctx context.Context, indexer client.FieldIndexer) e
 // on the indexes. The returned error is wrapped with the index key so the
 // registration site is identifiable in manager-startup failure logs.
 func registerBarbicanSecretStoreIndexes(ctx context.Context, indexer client.FieldIndexer) error {
-	if err := indexer.IndexField(ctx, &barbicanv1alpha1.BarbicanSecretStore{}, BarbicanSecretStoreBarbicanRefIndexKey,
-		barbicanSecretStoreBarbicanRefExtractor); err != nil {
-		return fmt.Errorf("registering field indexer %q: %w", BarbicanSecretStoreBarbicanRefIndexKey, err)
+	if err := watch.RegisterParentRefIndex(ctx, indexer, &barbicanv1alpha1.BarbicanSecretStore{},
+		BarbicanSecretStoreBarbicanRefIndexKey, barbicanSecretStoreParentName); err != nil {
+		return err
 	}
 	if err := indexer.IndexField(ctx, &barbicanv1alpha1.BarbicanSecretStore{}, BarbicanSecretStoreInstanceRefIndexKey,
 		barbicanSecretStoreInstanceRefExtractor); err != nil {

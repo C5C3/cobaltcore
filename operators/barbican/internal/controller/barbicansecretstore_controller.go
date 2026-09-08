@@ -14,7 +14,6 @@ import (
 	"time"
 
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
-	appsv1 "k8s.io/api/apps/v1"
 	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -29,7 +28,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcruntime "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
@@ -37,6 +35,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/satellite"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
@@ -214,15 +213,23 @@ const BarbicanSecretStoreBarbicanRefIndexKey = "spec.barbicanRef.name"
 // #nosec G101 -- field-indexer key (a JSONPath-like field selector), not a credential.
 const BarbicanSecretStoreInstanceRefIndexKey = "spec.openBao.instanceRef.name"
 
-// barbicanSecretStoreBarbicanRefExtractor is the IndexerFunc registered under
-// BarbicanSecretStoreBarbicanRefIndexKey.
-func barbicanSecretStoreBarbicanRefExtractor(obj client.Object) []string {
-	store, ok := obj.(*barbicanv1alpha1.BarbicanSecretStore)
-	if !ok || store.Spec.BarbicanRef.Name == "" {
-		return nil
+// barbicanSecretStoreParentName returns the name of the Barbican a
+// BarbicanSecretStore attaches to (spec.barbicanRef.name), or "" for an object
+// of another type. An unattached store carries no reference and so returns ""
+// as well.
+func barbicanSecretStoreParentName(o client.Object) string {
+	store, ok := o.(*barbicanv1alpha1.BarbicanSecretStore)
+	if !ok {
+		return ""
 	}
-	return []string{store.Spec.BarbicanRef.Name}
+	return store.Spec.BarbicanRef.Name
 }
+
+// barbicanSecretStoreBarbicanRefExtractor is the IndexerFunc for
+// BarbicanSecretStoreBarbicanRefIndexKey. Production registers it through
+// watch.RegisterParentRefIndex; this var exists so the fake clients in tests
+// build the identical extractor.
+var barbicanSecretStoreBarbicanRefExtractor = watch.ParentRefIndexer(barbicanSecretStoreParentName)
 
 // barbicanSecretStoreInstanceRefExtractor is the IndexerFunc registered under
 // BarbicanSecretStoreInstanceRefIndexKey. A brownfield store indexes under
@@ -412,21 +419,22 @@ func (r *BarbicanSecretStoreReconciler) resolveChildren(
 ) (client.Client, string, ctrl.Result, error) {
 	var parent barbicanv1alpha1.Barbican
 	parentKey := client.ObjectKey{Namespace: store.Namespace, Name: store.Spec.BarbicanRef.Name}
-	if err := r.Get(ctx, parentKey, &parent); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, "", ctrl.Result{}, fmt.Errorf("fetching parent Barbican %s: %w", parentKey, err)
-		}
-		r.setCondition(store, conditionTypeCredentialsReady, metav1.ConditionFalse,
-			conditionReasonWaitingForParent,
-			fmt.Sprintf("parent Barbican %s does not exist; the cluster this store's credentials belong on is unknown", parentKey))
-		return nil, "", ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
-	}
-
-	children, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, parent.Spec.TargetClusterRef)
-	if err != nil {
-		r.setCondition(store, conditionTypeCredentialsReady, metav1.ConditionFalse,
-			commonmulticluster.TargetClusterUnavailable, err.Error())
-		return nil, "", ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
+	children, result, err := satellite.ResolveParentChildren(ctx, satellite.ResolveParams{
+		Client:                  r.Client,
+		Resolver:                r.Resolver,
+		Parent:                  &parent,
+		ParentKey:               parentKey,
+		ParentKind:              "Barbican",
+		TargetClusterRef:        func() *commonv1.TargetClusterRefSpec { return parent.Spec.TargetClusterRef },
+		Conditions:              &store.Status.Conditions,
+		Generation:              store.Generation,
+		GateConditionType:       conditionTypeCredentialsReady,
+		WaitingForParentReason:  conditionReasonWaitingForParent,
+		WaitingForParentMessage: fmt.Sprintf("parent Barbican %s does not exist; the cluster this store's credentials belong on is unknown", parentKey),
+		RequeueAfter:            commonreconcile.RequeueSecretPolling,
+	})
+	if children == nil {
+		return nil, "", result, err
 	}
 
 	var childrenCluster string
@@ -1038,49 +1046,14 @@ func (r *BarbicanSecretStoreReconciler) isConfigProjected(ctx context.Context, c
 		return false, fmt.Errorf("fetching parent Barbican %s: %w", barbicanKey, err)
 	}
 
-	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Namespace: barbican.Namespace, Name: subResourceName(&barbican)}
-	if err := children.Get(ctx, deployKey, &deploy); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("fetching Deployment %s: %w", deployKey, err)
-	}
-
-	rendered, err := r.renderedConfig(ctx, children, &deploy)
-	if err != nil {
-		return false, err
-	}
-	return sectionPresent(rendered, storeSectionHeader(store.Name)), nil
-}
-
-// renderedConfig returns the barbican.conf the Deployment mounts through its
-// config volume. The carrier is a Secret: the rendered file carries the vault
-// plugin's approle_role_id, and barbican reads exactly one config artifact, so
-// the whole document is credential-bearing. A config volume backed by anything
-// else, an absent volume, or an absent Secret yields no bytes, which reads as
-// "not projected yet".
-func (r *BarbicanSecretStoreReconciler) renderedConfig(ctx context.Context, children client.Client, deploy *appsv1.Deployment) ([]byte, error) {
-	var volume *corev1.Volume
-	for i := range deploy.Spec.Template.Spec.Volumes {
-		if deploy.Spec.Template.Spec.Volumes[i].Name == configVolumeName {
-			volume = &deploy.Spec.Template.Spec.Volumes[i]
-			break
-		}
-	}
-	if volume == nil || volume.Secret == nil {
-		return nil, nil
-	}
-
-	var secret corev1.Secret
-	key := client.ObjectKey{Namespace: deploy.Namespace, Name: volume.Secret.SecretName}
-	if err := children.Get(ctx, key, &secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("fetching config Secret %s: %w", key, err)
-	}
-	return secret.Data[barbicanConfDataKey], nil
+	return satellite.SectionProjected(ctx, satellite.ObserveParams{
+		Children:      children,
+		DeploymentKey: deployKey,
+		VolumeName:    configVolumeName,
+		DataKey:       barbicanConfDataKey,
+		SectionHeader: storeSectionHeader(store.Name),
+	})
 }
 
 // subResourceName returns the canonical name for Barbican operator-managed
@@ -1095,23 +1068,6 @@ func subResourceName(barbican *barbicanv1alpha1.Barbican) string {
 // configuration from.
 func storeSectionHeader(storeName string) string {
 	return "[" + storeSectionPrefix + storeName + "]"
-}
-
-// sectionPresent reports whether the rendered config carries header as a whole
-// line: the literal token bounded by the start of data or a newline on the left
-// and a newline (LF or CR) or the end of data on the right. The boundary check
-// guards against substring collisions — a section [secretstore:name2] must not
-// satisfy a lookup for name, and a header appearing inside an option value must
-// not either.
-func sectionPresent(rendered []byte, header string) bool {
-	for _, line := range strings.Split(string(rendered), "\n") {
-		// Cut at the first CR so a CRLF-terminated line and a bare CR both end
-		// the token, matching the newline forms the renderer can emit.
-		if token, _, _ := strings.Cut(line, "\r"); token == header {
-			return true
-		}
-	}
-	return false
 }
 
 // fail records a False sub-condition, emits the matching Warning event, and
@@ -1356,43 +1312,29 @@ func instanceURL(instanceName, namespace string) string {
 
 // barbicanToSecretStoresMapper returns a MapFunc that fans a Barbican event out
 // to every BarbicanSecretStore attached to it, resolved via the
-// BarbicanSecretStoreBarbicanRefIndexKey field indexer. On a List error the
-// mapper logs and returns nil per the handler.MapFunc contract.
+// BarbicanSecretStoreBarbicanRefIndexKey field indexer. It binds the shared
+// watch.ParentToSatellitesMapper to the BarbicanSecretStore list type; the
+// log-and-continue contract lives there.
 func barbicanToSecretStoresMapper(c client.Reader) handler.MapFunc {
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		return listStoreRequests(ctx, c, obj.GetNamespace(),
-			client.MatchingFields{BarbicanSecretStoreBarbicanRefIndexKey: obj.GetName()},
-			"listing BarbicanSecretStores for Barbican watch")
-	}
+	return watch.ParentToSatellitesMapper(c,
+		func() client.ObjectList { return &barbicanv1alpha1.BarbicanSecretStoreList{} },
+		BarbicanSecretStoreBarbicanRefIndexKey,
+		"listing BarbicanSecretStores for Barbican watch",
+	)
 }
 
 // openBaoClusterToSecretStoresMapper returns a MapFunc that fans an
 // OpenBaoCluster event out to every managed BarbicanSecretStore provisioning
 // against it, resolved via the BarbicanSecretStoreInstanceRefIndexKey field
 // indexer. An instance turning Available is what unblocks a store waiting on it.
+// It binds the shared watch.ParentToSatellitesMapper to the BarbicanSecretStore
+// list type.
 func openBaoClusterToSecretStoresMapper(c client.Reader) handler.MapFunc {
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		return listStoreRequests(ctx, c, obj.GetNamespace(),
-			client.MatchingFields{BarbicanSecretStoreInstanceRefIndexKey: obj.GetName()},
-			"listing BarbicanSecretStores for OpenBaoCluster watch")
-	}
-}
-
-// listStoreRequests resolves one indexed lookup into reconcile requests, shared
-// by both watch mappers.
-func listStoreRequests(ctx context.Context, c client.Reader, namespace string, match client.MatchingFields, errMsg string) []reconcile.Request {
-	var stores barbicanv1alpha1.BarbicanSecretStoreList
-	if err := c.List(ctx, &stores, client.InNamespace(namespace), match); err != nil {
-		log.FromContext(ctx).Error(err, errMsg)
-		return nil
-	}
-	requests := make([]reconcile.Request, 0, len(stores.Items))
-	for i := range stores.Items {
-		requests = append(requests, reconcile.Request{
-			NamespacedName: client.ObjectKeyFromObject(&stores.Items[i]),
-		})
-	}
-	return requests
+	return watch.ParentToSatellitesMapper(c,
+		func() client.ObjectList { return &barbicanv1alpha1.BarbicanSecretStoreList{} },
+		BarbicanSecretStoreInstanceRefIndexKey,
+		"listing BarbicanSecretStores for OpenBaoCluster watch",
+	)
 }
 
 // storeTargetCluster is the lookup this controller's remote legs gate their

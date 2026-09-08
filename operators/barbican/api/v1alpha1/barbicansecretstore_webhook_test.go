@@ -436,6 +436,33 @@ func TestBarbicanSecretStoreValidate_SiblingListErrorSurfaced(t *testing.T) {
 
 	_, err := w.ValidateCreate(context.Background(), validBarbicanSecretStore())
 	g.Expect(err).To(gomega.HaveOccurred())
-	g.Expect(err.Error()).To(gomega.ContainSubstring("listing BarbicanSecretStores for the single-default check"))
-	g.Expect(err.Error()).To(gomega.ContainSubstring("listing BarbicanSecretStores for the OpenBao-uniqueness check"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("listing BarbicanSecretStores for the sibling checks"))
+	g.Expect(err.Error()).To(gomega.ContainSubstring("boom"))
+}
+
+// Both sibling rules read the same set of stores, and w.Client is the uncached
+// API reader, so admitting a store that triggers both must still cost exactly
+// one live LIST against the apiserver.
+func TestBarbicanSecretStoreValidate_SiblingChecksShareOneList(t *testing.T) {
+	g := gomega.NewWithT(t)
+
+	var lists int
+	c := fake.NewClientBuilder().WithScheme(barbicanScheme(t)).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				lists++
+				return cl.List(ctx, list, opts...)
+			},
+		}).Build()
+	w := &BarbicanSecretStoreWebhook{Client: c}
+
+	// isDefault and type OpenBao: the single-default and OpenBao-uniqueness
+	// rules both apply.
+	obj := validBarbicanSecretStore()
+	g.Expect(obj.Spec.IsDefault).To(gomega.BeTrue())
+	g.Expect(obj.Spec.Type).To(gomega.Equal(BarbicanSecretStoreTypeOpenBao))
+
+	_, err := w.ValidateCreate(context.Background(), obj)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Expect(lists).To(gomega.Equal(1))
 }
