@@ -23,9 +23,10 @@
 #
 # Runtime presence gate: Deployment/nfs-server in `openstack` is created by
 # the opt-in overlay alone, so its absence means WITH_NFS was not set. The
-# script then exits 0 with a SKIP line. Three of the four e2e-infra legs run
-# without WITH_NFS and take that path; the fourth deploys the stack and runs
-# this suite.
+# script then exits 0 with a SKIP line. The two full-directory e2e-infra
+# runs (the first run and the unchanged-parameter re-run) take that path;
+# the additive re-run sets WITH_NFS=true and picks this suite up in its
+# scoped set.
 #
 # Why the whole check is ONE `script` operation: chainsaw has no step-level
 # skip, so declarative asserts would run past the gate and time out on a
