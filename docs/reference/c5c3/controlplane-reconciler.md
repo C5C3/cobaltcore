@@ -771,6 +771,73 @@ endpoint must additionally use `https`, because placement promotes it to the
 URLs is where this ends: making them routable between clusters is the
 deployment's job, a gateway or a load balancer per target cluster.
 
+### Projected satellites and the shared bus
+
+Two shapes recur across services: a satellite child projected per spec entry, and
+the ControlPlane-wide message bus delivered into a service's namespace. Each is
+implemented once, and a service opts in by naming itself.
+
+`projectedChildren` names one projected satellite kind of one service: an empty
+typed list, the kind name every wrapped error carries, the namespace the children
+live in, the name prefix every projected child carries, and a `Keep` set of names
+never deleted and never reported (nil keeps nothing). `ownedProjectedChildren`
+lists the kind in that namespace on the management client and returns, in list
+order, the objects this ControlPlane owns (`isControlPlaneChild`) whose name
+carries the prefix and is not in `Keep`.
+
+`pruneProjectedChildren` is the reconcile-time arm. It deletes those objects with
+background propagation and ignores `NotFound`, so a child the projection no longer
+declares is removed on the same pass. `sweepProjectedChildren` is the teardown
+arm: a child already Terminating is reported without a second delete, and every
+owned child is reported as `namespace/name` for `teardownDedicatedNamespaces` to
+wait on. An absent satellite CRD (`meta.IsNoMatchError` on the List) is nothing to
+sweep. That is the reading `deleteORCResources` applies to an absent K-ORC stack,
+and it lets a ControlPlane whose service operator was uninstalled first finish
+deleting.
+
+Each service supplies a constructor: `glanceBackendChildren` for the
+`GlanceBackend` kind under the `{controlplane.Name}-glance-` prefix (see
+[reconcileGlance](#reconcileglance)), `barbicanSecretStoreChildren` for the
+`BarbicanSecretStore` kind under `{controlplane.Name}-barbican-` (see
+[reconcileBarbican](#reconcilebarbican)).
+
+| Site | Helper | `Keep` |
+| --- | --- | --- |
+| `reconcileGlanceBackends` | `pruneProjectedChildren` | the backend names the pass declared |
+| `deleteOrphanedGlance` | `pruneProjectedChildren` | nil |
+| `reconcileBarbicanSecretStore` | `pruneProjectedChildren` | the store the projection names |
+| `deleteServiceChildrenIn`, Glance namespace | `sweepProjectedChildren` | nil |
+| `deleteServiceChildrenIn`, Barbican namespace | `sweepProjectedChildren` | `barbicanSecretStoreName(cp)` |
+
+The Barbican teardown keeps the projected store because
+`crossNamespaceServiceChildren` already holds it in the wait set, so the sweep
+reports it once.
+
+`serviceMessagingTarget` names a bus consumer by four fields: `Service` (the
+display name in the `<Service>MessagingError` reason and in the wrapped texts),
+`ChildName` (what the two Secrets are named after), `Namespace` (where they are
+written, on the client `childrenClientFor` resolves for it), and `ConditionType`
+(the ControlPlane condition every arm reports on). `reconcileServiceMessaging`
+resolves `spec.infrastructure.messaging` in the ControlPlane's own namespace on
+the management cluster (`messaging.ResolveTransportURL`) and writes the
+transport-URL Secret, plus the CA mirror on a TLS bus. `serviceMessagingSpec`
+renders the child's brownfield `spec.messaging`, `messagingCAMirrorReleasable` is
+the reap gate for the mirror, `pruneServiceMessagingCA` performs the reap, and
+`serviceMessagingSecrets` returns the two Secret stubs both teardown paths delete.
+Neutron is the first target: `neutronMessagingTarget(cp)` names `Neutron`, the
+`{controlplane.Name}-neutron` child, `cp.NeutronNamespace()` and `NeutronReady`,
+so the delivery lands as `{controlplane.Name}-neutron-messaging` and
+`{controlplane.Name}-neutron-messaging-ca` (see
+[reconcileNeutron](#reconcileneutron)).
+
+Admission carries the same two shapes. `projectedChildNameBound` bounds a child
+name composed as `{controlplane.Name}` + infix + entry name against the
+apiserver's 253-byte `metadata.name` cap, and `validateGlanceBackends` calls it
+with the `-glance-` infix and the `backend` entry noun the remediation tells the
+operator to shorten. `validateMessagingConsumers` requires
+`spec.infrastructure.messaging` once per declared service whose child CRD
+requires `spec.messaging`; Neutron is the one such service.
+
 ### reconcileNamespaces
 
 | Aspect | Value |
@@ -1584,9 +1651,12 @@ reusing the ControlPlane's own specs so Glance points at the same backing servic
 - **Backends:** each `services.glance.backends` entry projects one `GlanceBackend`
   child (the CP-side S3 `endpoint` maps to the child's `spec.s3.host`; an unset
   `bucketURLFormat` serializes away so the child's own `path` default applies), and
-  previously-projected children whose entry was removed are **pruned** — matched by
-  the c5c3 ownership and the `{controlplane.Name}-glance-` name prefix. A prune
-  **de-registers a store whose id existing image location rows still reference**:
+  previously-projected children whose entry was removed are **pruned** by
+  `pruneProjectedChildren` on `glanceBackendChildren` with the declared names in
+  `Keep`, matched by the c5c3 ownership and the `{controlplane.Name}-glance-` name
+  prefix (see
+  [Projected satellites and the shared bus](#projected-satellites-and-the-shared-bus)).
+  A prune **de-registers a store whose id existing image location rows still reference**:
   the backend's name is its store id, so dropping the entry removes the
   `[<name>]` section from `backends.conf` and the `<name>:s3` entry from
   `enabled_backends`, and Glance no longer resolves that store. Images stored
@@ -1923,9 +1993,12 @@ between. The AppRole credentials the barbican operator minted for it carry its
 owner reference, so they are collected with it rather than left pointing at the
 retired mount.
 
-Every write routes through `ensureUnownedOrOwned`, and the prune sweep deletes
-only c5c3-owned stores carrying the Barbican child's name prefix, so a
-hand-created store attached to the same Barbican is never pruned or overwritten.
+Every write routes through `ensureUnownedOrOwned`, and the prune runs
+`pruneProjectedChildren` on `barbicanSecretStoreChildren` with the projected store
+in `Keep`, so it deletes only c5c3-owned stores carrying the Barbican child's name
+prefix and a hand-created store attached to the same Barbican is never pruned or
+overwritten (see
+[Projected satellites and the shared bus](#projected-satellites-and-the-shared-bus)).
 
 The key-manager catalog entry, a `key-manager`-type K-ORC `Service` with an
 internal and a public `Endpoint`, is registered by
@@ -2019,7 +2092,7 @@ waits for the ovn-operator.
 
 | Aspect | Value |
 | --- | --- |
-| File | `reconcile_neutron.go`, `reconcile_neutron_messaging.go`, `reconcile_neutron_dbcredentials.go` |
+| File | `reconcile_neutron.go`, `reconcile_service_messaging.go`, `reconcile_neutron_dbcredentials.go` |
 | Condition | `NeutronReady` |
 | Gate | `KeystoneReady == True` (Neutron validates every token against the Keystone child), `OVNReady == True` (the ML2/OVN mechanism driver writes every network into the referenced central's Northbound database) **and** the `AccountReady` of the `KeystoneService` registration it projects (see [Built-in service registrations](#built-in-service-registrations)) |
 | Projects / Owns | one `Neutron` child named `{controlplane.Name}-neutron` (`neutronNameSuffix`) in `cp.NeutronNamespace()`; the bus delivery beside it, a `{controlplane.Name}-neutron-messaging` Secret (key `transport_url`) and, only while the shared bus declares `tls`, a `{controlplane.Name}-neutron-messaging-ca` Secret (key `ca.crt`), both written on the client that namespace resolves to and claimed by a controller owner reference at home or by the ownership labels in a service namespace or on a target cluster; and, on a managed database only, the per-ControlPlane DB-credential objects in the same namespace: in **Dynamic** mode (the managed-shared default) a ServiceAccount `neutron-db-creds`, an mTLS client Certificate `{controlplane.Name}-neutron-db-openbao-client`, a `VaultDynamicSecret` generator reading `database/mariadb/creds/neutron-{neutron-namespace}` (auth role `neutron-db`), and a generator-backed `ExternalSecret` `{controlplane.Name}-neutron-db-credentials`; in the **Static** opt-out a KV-backed `ExternalSecret` of the same name reading `openstack/neutron/{neutron-namespace}/{controlplane.Name}/db` (properties `username`, `password`). Only when `spec.services.neutron` is set |
@@ -2062,25 +2135,27 @@ the same backing services:
   dedicated neutron database. A brownfield database keeps the user-supplied
   `secretRef` and `credentialsMode`.
 - **Cache:** a DeepCopy of the **effective** cache (`effectiveNeutronCache`).
-- **Messaging:** a **brownfield** `secretRef` naming the
+- **Messaging:** what `serviceMessagingSpec` renders for the Neutron target
+  (see [Projected satellites and the shared bus](#projected-satellites-and-the-shared-bus)):
+  a **brownfield** `secretRef` naming the
   `{controlplane.Name}-neutron-messaging` Secret the pass wrote beside the child,
-  under the key `transport_url`. `messaging.tls.caBundleSecretRef` is set only
-  while `spec.infrastructure.messaging.tls` is declared, and names the
-  `{controlplane.Name}-neutron-messaging-ca` mirror under `ca.crt`. Both resolve
-  in the Neutron's own namespace on the Neutron's own cluster, which is where the
-  neutron operator looks for them. Dropping the `tls` block reverts both halves in
-  order: the projection removes the child's pointer first, and only once the child
-  reports having converged on that spec — Ready, with a
-  `status.observedGeneration` that has caught up with the generation the apply
-  produced — does `pruneNeutronMessagingCA` reap the mirror. Both steps of the
-  order matter, because the pointer and the volume are removed on different
-  passes: the prune deliberately does not live on the messaging leg, which runs
-  ahead of every gate that can halt the pass — a service-account rotation, a DB
-  credential mid-rotation, a transient API error — and the neutron operator
-  re-renders the Deployment that mounts the mirror only after the pointer is gone
-  from the CR. Reaping ahead of either step leaves a live pod template naming a
-  volume source that no longer exists, wedging every restarting pod on
-  `CreateContainerConfigError`.
+  under the key `transport_url`, plus a `tls.caBundleSecretRef` naming the
+  `{controlplane.Name}-neutron-messaging-ca` mirror under `ca.crt`, set only while
+  `spec.infrastructure.messaging.tls` is declared. Both resolve in the Neutron's
+  own namespace on the Neutron's own cluster, which is where the neutron operator
+  looks for them. Dropping the `tls` block reverts both halves in order: the
+  projection removes the child's pointer first, and the mirror goes once the pass
+  clears the child's readiness return and `messagingCAMirrorReleasable` opens the
+  gate (the bus declares no `tls`, the applied child names no TLS block, and
+  `status.observedGeneration` has caught up with the generation the apply
+  produced). `pruneServiceMessagingCA` performs the reap. Both steps of the order
+  matter, because the pointer and the volume are removed on different passes: the
+  reap does not sit on the messaging leg, which runs ahead of every gate that can
+  halt the pass (a service-account rotation, a DB credential mid-rotation, a
+  transient API error), and the neutron operator re-renders the Deployment that
+  mounts the mirror only after the pointer is gone from the CR. Reaping ahead of
+  either step leaves a live pod template naming a volume source that no longer
+  exists, wedging every restarting pod on `CreateContainerConfigError`.
 - **OVN:** `spec.ovn.centralRef` carries the referenced central's name and its
   namespace **resolved here** rather than passed through: an empty ref namespace
   means the ControlPlane's own namespace, which is not the namespace the child
@@ -3318,8 +3393,10 @@ namespace, and through `projectedRegistrationKeys` for the registration.
   `{controlplane.Name}-neutron-db-openbao-client` `Certificate`, and the
   `neutron-db-creds` `ServiceAccount`.
 - The bus delivery: the `{controlplane.Name}-neutron-messaging` Secret and the
-  `{controlplane.Name}-neutron-messaging-ca` mirror. Nothing else writes them, so
-  an unmanaged service leaves no broker credential behind in the namespace.
+  `{controlplane.Name}-neutron-messaging-ca` mirror. Both paths take the two stubs
+  from `serviceMessagingSecrets(neutronMessagingTarget(cp))`. Nothing else writes
+  them, so an unmanaged service leaves no broker credential behind in the
+  namespace.
 - The `Neutron` child and the `{controlplane.Name}-neutron` `KeystoneService`
   registration, whose finalizer removes the network catalog rows, the service
   user, and its project.
@@ -3548,6 +3625,8 @@ cross-namespace teardown assertions.
 | `reconcile_adminpassword_test.go` | Managed ExternalSecret projection (name/store/data/owner-ref), brownfield no-op `Ready=True`, not-ready requeue + condition contract, distinct per-CP remote key/secret name |
 | `reconcile_keystone_test.go` | Keystone projection, infra gate, image/rotation/policy projection, condition contract, `ObservedGeneration` |
 | `reconcile_korc_test.go` | AC mint, restricted↔unrestricted inversion, hash annotation/re-mint, missing-CRD safety, admin-credential push, catalog, condition contract |
+| `reconcile_projected_children_test.go` | Prune and sweep of projected satellite children: ownership, name prefix, the `Keep` set, an absent CRD, the wrapped errors |
+| `reconcile_service_messaging_test.go` | Bus delivery on the Neutron target, a second target under its own names, `serviceMessagingSpec`, the CA-mirror reap gate, the teardown stubs |
 | `reconcile_credentialrotation_test.go` | Nudge model, one-per-namespace resolution, bootstrap, deferred scheduled fields, target enum |
 | `credential_invariant_test.go` | Security invariants (restricted mint, app-credential Secret not on any workload) |
 | `instrumentation_test.go` | Wiring smoke test (records through the instrumenter), condition_type drift guard |
@@ -3608,7 +3687,9 @@ operators/c5c3/
     │   │                                        ovnCentralToControlPlaneMapper
     │   ├── reconcile_neutron.go                reconcileNeutron projection (Neutron child, orphan
     │   │                                        teardown)
-    │   ├── reconcile_neutron_messaging.go      Shared-bus delivery into the Neutron namespace
+    │   ├── reconcile_projected_children.go     Shared prune/sweep of a service's projected
+    │   │                                        satellite children (ownership + name prefix)
+    │   ├── reconcile_service_messaging.go      Shared-bus delivery on a service target
     │   │                                        (transport-URL Secret + CA mirror)
     │   ├── reconcile_neutron_dbcredentials.go  Neutron DB-credential names, OpenBao paths, mode
     │   ├── reconcile_korc.go                   reconcileKORC (AC mint/re-mint, drift detection)
@@ -3651,7 +3732,8 @@ operators/c5c3/
     │   ├── reconcile_barbican_dbcredentials_test.go Barbican DB-credential tests
     │   ├── reconcile_ovn_test.go               OVNCentral mirroring tests
     │   ├── reconcile_neutron_test.go           Neutron projection tests
-    │   ├── reconcile_neutron_messaging_test.go Bus-delivery tests
+    │   ├── reconcile_projected_children_test.go Projected-children prune/sweep tests
+    │   ├── reconcile_service_messaging_test.go Bus-delivery tests
     │   ├── reconcile_neutron_dbcredentials_test.go Neutron DB-credential tests
     │   ├── reconcile_korc_test.go              K-ORC mint/re-mint tests
     │   ├── reconcile_admincredential_test.go   AdminCredential tests
