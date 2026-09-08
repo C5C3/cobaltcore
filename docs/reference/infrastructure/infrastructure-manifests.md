@@ -1934,6 +1934,103 @@ explicit, the opt-in flag has a single documented name (`WITH_DIZZY`), and the
 kind overlay is self-contained under `deploy/kind/dizzy/` so the production
 kustomization root ships none of it.
 
+### NFS storage stack (kind-only opt-in)
+
+**File:** `deploy/kind/nfs/kustomization.yaml`
+
+The NFS storage stack, an in-cluster NFSv4 server plus the
+[csi-driver-nfs](https://github.com/kubernetes-csi/csi-driver-nfs) mounter,
+ships as a separate **opt-in** kind overlay for the Cinder e2e suites of
+[#979](https://github.com/c5c3/cobaltcore/issues/979). The default
+`make deploy-infra` flow does **not** install it. Production omits it for two
+reasons: users bring their own NFS server (a `CinderBackend` takes a `server`
+and a `path` per backend), and the mounter is a prerequisite of the target
+cluster. Shipping `csi-driver-nfs` from `deploy/flux-system/releases/` would
+put a privileged `hostNetwork` DaemonSet into every production deployment for
+a service no production cluster runs yet.
+
+One more reason keeps it opt-in on kind. The server image
+`itsthenetwork/nfs-server-alpine:12` is amd64-only (a single-architecture
+manifest, last pushed 2019-05-08) and drives the host kernel's `rpc.nfsd`. An
+always-on manifest would put a privileged pod into the default Quick Start
+that CrashLoops on every arm64 laptop and every host without a loadable
+`nfsd`.
+
+The overlay is self-contained: `source.yaml`, `release.yaml` and
+`nfs-server.yaml` are all local to `deploy/kind/nfs/`. It ships **no**
+`Namespace`. The HelmRelease targets the pre-existing `kube-system`, because
+the chart defaults to `priorityClassName: system-cluster-critical`, which
+resolves in no other Namespace. The server lands in the pre-existing
+`openstack`, which `deploy/flux-system/namespaces.yaml` reserves for
+components that exist only to run the operators standalone. `shared-services`
+is not used: it is the trust zone holding `openbao-init-keys`, with Garage as
+its one accepted co-tenant.
+
+| Property | Value |
+| --- | --- |
+| Target namespaces | `kube-system` for the chart, `openstack` for the server (both pre-existing; no inline Namespace) |
+| Chart | `csi-driver-nfs` |
+| Chart version | `4.13.4`, an exact pin tracked by a Renovate `customManager` (majors disabled, no automerge). Unlike the chaos-mesh, metrics-server and dizzy overlays this one carries no `>=x <y` range: a range would let Flux adopt a new chart on its next reconcile with no repo diff, and this release installs a privileged `hostNetwork` DaemonSet whose relied-on chart defaults it does not override |
+| Source | `csi-driver-nfs` HelmRepository (`https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts`). That is the only place upstream publishes the chart; every index entry carries an absolute tarball URL back under `master/charts/`, so pinning the repository URL to a tag would freeze the index without making the downloaded chart more immutable. The version pin therefore controls which version Flux installs, not which bytes: Flux `spec.verify` is OCI-only and nothing records a checksum, so a rewrite of the pinned tarball upstream is adopted on the next reconcile. Accepted for a kind-only overlay; a content pin means mirroring the chart into a registry this project controls and referencing it by digest |
+| Server image | `docker.io/itsthenetwork/nfs-server-alpine:12`, digest-pinned, tracked by a Renovate `customManager` |
+| Dependencies | none |
+
+**Export layout.** The server exports `/exports` with `fsid=0`, which makes it
+the NFSv4 pseudo-root. The init container `prepare-exports` creates
+`/exports/volumes` and `/exports/backups` as `42424:42424` with mode `0770`. A
+client therefore mounts the two shares as:
+
+```text
+nfs-server.openstack.svc.cluster.local:/volumes
+nfs-server.openstack.svc.cluster.local:/backups
+```
+
+A path of `:/exports/volumes` resolves to `/exports/exports/volumes` on the
+server and fails. Those two share strings are what the `CinderBackend` and
+`CinderBackupBackend` of #979 carry. The server speaks NFSv4 only
+(`rpc.nfsd --no-udp --no-nfs-version 2 --no-nfs-version 3`), so `2049/TCP` is
+the whole client surface and the Service exposes neither 111 nor a mountd
+port.
+
+**Value overrides:**
+
+| Helm value | Override | Purpose |
+| --- | --- | --- |
+| `controller.enableSnapshotter` | `false` | The chart defaults it to `true` while `externalSnapshotter.enabled` defaults to `false`, so the `csi-snapshotter` sidecar would be deployed against `snapshot.storage.k8s.io` CRDs nothing in this stack installs. The Cinder NFS backend has snapshots off |
+| `storageClass.create` | `false` | Already the chart default, set here with the reason: the cinder-operator binds static PersistentVolume and PersistentVolumeClaim pairs, and an unwanted class in a kind cluster competes for `is-default-class` |
+
+Everything else stays at the chart default: `driver.name: nfs.csi.k8s.io`,
+`attachRequired: false`, `fsGroupPolicy: File` and
+`kubeletDir: /var/lib/kubelet`.
+
+When `WITH_NFS=true`, `hack/deploy-infra.sh` does three things. It loads
+`nfsd`, `nfs` and `nfsv4` on the host before the cluster is created,
+best-effort through the same loader as `WITH_OVN_KERNEL_MODULES` (Linux only,
+root or passwordless sudo, otherwise a warning). It applies `deploy/kind/nfs`
+in Step 3 and waits for the `nfs-server` Deployment to roll out; a failed
+rollout is an error that stops the run and names the `nfsd` module, because a
+CrashLooping server on a host without `nfsd` must not end in a green summary.
+It appends `csi-driver-nfs` to the Phase 3 HelmRelease wait list. All three
+actions are gated strictly on the flag; the default run is unchanged.
+
+**Opt-in usage:**
+
+```bash
+WITH_NFS=true make deploy-infra
+```
+
+The `nfs-health` suite in
+[E2E Deployment](e2e-deployment.md#chainsaw-e2e-test) is the check that both
+shares mount under `restricted` PodSecurity.
+
+**Posture summary.** Same shape as the entries above: the production omission
+is explicit, the opt-in flag has a single documented name (`WITH_NFS`), and
+the kind overlay is self-contained under `deploy/kind/nfs/`. The CI-only
+posture is recorded in the header of `nfs-server.yaml`: a privileged server,
+`sec=sys` with `no_root_squash` and a wildcard client list, an amd64-only
+image, and `ghcr.io/nfs-ganesha/nfs-ganesha` as the recorded fallback if a
+runner kernel lacks `nfsd`.
+
 ### Glance large-upload listener
 
 **Files:** `deploy/kind/base/openstack-gateway.yaml`,
