@@ -37,6 +37,7 @@ All packages share these conventions:
 | `deployment` | `github.com/c5c3/cobaltcore/internal/common/deployment` |
 | `job` | `github.com/c5c3/cobaltcore/internal/common/job` |
 | `policy` | `github.com/c5c3/cobaltcore/internal/common/policy` |
+| `satellite` | `github.com/c5c3/cobaltcore/internal/common/satellite` |
 | `secrets` | `github.com/c5c3/cobaltcore/internal/common/secrets` |
 | `tls` | `github.com/c5c3/cobaltcore/internal/common/tls` |
 
@@ -493,6 +494,156 @@ rules, err := policy.LoadPolicyFromConfigMap(ctx, client,
 )
 // rules == map[string]string{"identity:get_user": "role:admin", ...}
 ```
+
+---
+
+## Package: `satellite`
+
+Holds the mechanics shared by the satellite-CRD controllers and by the parent
+reconcilers that aggregate them. A satellite CR is a namespaced configuration CR
+attached to a parent service CR by name, and it observes its own effect through
+the Deployment the parent runs. `GlanceBackend` consumes every helper,
+`BarbicanSecretStore` consumes resolve, observe and collect, and
+`KeystoneIdentityBackend` consumes the volume lookup alone.
+
+The condition vocabulary, the messages, the events and the requeue intervals
+stay in the operator. Each helper either hands a decision back for the operator
+to stamp, or takes the condition texts as parameters.
+
+### ResolveParentChildren
+
+```go
+func ResolveParentChildren(
+    ctx context.Context,
+    p ResolveParams,
+) (children client.Client, result ctrl.Result, err error)
+```
+
+Returns the client a satellite's observations belong on, after reading its
+parent and resolving the cluster that parent targets.
+
+**Behavior:**
+
+- `ResolveParams.Client` reads the parent on the management cluster into
+  `Parent` at `ParentKey`; `ParentKind` names the kind in the error text.
+  `TargetClusterRef` then reads the ref off `Parent`, and `Resolver` looks the
+  cluster up. A nil resolver keeps everything local. Conditions land in the
+  satellite's own `Conditions` slice at `Generation`.
+- A non-`NotFound` Get on the parent returns a nil client and
+  `fetching parent <kind> <key>: <cause>`.
+- A parent that does not exist sets `GateConditionType` to `False` with
+  `WaitingForParentReason` and `WaitingForParentMessage`, and requeues after
+  `RequeueAfter`. There is no fallback to the local client: the parent's
+  `targetClusterRef` is what decides which cluster the satellite's credentials
+  and observations belong on, so a local guess would read the wrong cluster for
+  the whole window between a GitOps apply landing the satellite and the same
+  apply landing its parent.
+- The projection demotion is opt-in. With `ProjectionConditionType` set, a
+  missing parent also flips that condition to `False` under
+  `ProjectionDemotionReason` and `ProjectionDemotionMessage`, but only where it
+  currently stands `True`. An empty type demotes nothing, and an absent or
+  already `False` condition is left untouched, so a satellite that has not
+  converged yet keeps the condition absent.
+- A target cluster that does not resolve sets `GateConditionType` to `False`
+  under the shared `multicluster.TargetClusterUnavailable` reason with the
+  resolver's error text, and requeues after `RequeueAfter`.
+- On success the children client is non-nil and the result is the zero
+  `ctrl.Result`. A nil children client means the caller returns `result` and
+  `err` as they are.
+
+### SecretNameForVolume
+
+```go
+func SecretNameForVolume(spec *corev1.PodSpec, volumeName string) string
+```
+
+Pure function. Returns the name of the Secret a pod-spec volume mounts.
+
+**Behavior:**
+
+- Returns `""` for a nil `spec` and for a volume name absent from
+  `spec.Volumes`.
+- The scan stops at the first name match. A ConfigMap- or emptyDir-backed volume
+  of the searched name yields `""` and the walk does not continue to the next
+  volume that happens to carry a Secret.
+
+### SectionPresent
+
+```go
+func SectionPresent(rendered []byte, header string) bool
+```
+
+Pure function. Reports whether `rendered` carries `header` as a whole line.
+
+**Behavior:**
+
+- The token is bounded on the left by the start of the data or a newline, and on
+  the right by a newline (LF or CR) or the end of the data.
+- The boundary check rules out substring collisions: a section `[name2]` does
+  not satisfy a lookup for `[name]`, and a header appearing inside an option
+  value does not either.
+- The scan resumes past a hit the boundary check rejected, so a later whole-line
+  occurrence still matches.
+
+### SectionProjected
+
+```go
+func SectionProjected(
+    ctx context.Context,
+    p ObserveParams,
+) (bool, error)
+```
+
+Reports whether a satellite's section reached the config file the parent's
+Deployment mounts.
+
+**Behavior:**
+
+- `ObserveParams.Children` reads the Deployment at `DeploymentKey`, then the
+  Secret that the pod volume named `VolumeName` mounts, in the Deployment's
+  namespace. `SectionHeader` (for example `[store]`) is looked up in that
+  Secret's `DataKey`.
+- A `NotFound` anywhere on the chain is `(false, nil)`: a missing Deployment, a
+  missing or non-Secret volume, a missing Secret and an absent data key all read
+  as an authoritative "not projected yet".
+- A non-`NotFound` Get failure is wrapped as `fetching Deployment <key>: <cause>`
+  or `fetching projection Secret <key>: <cause>`.
+- Consumers keep their own parent re-read ahead of this call, and their
+  `observeConfigProjected` wrappers own the condition reasons, the messages and
+  the requeue intervals.
+
+### Collect
+
+```go
+func Collect[T any, PT interface {
+    *T
+    client.Object
+}](p CollectParams[T, PT]) Collection[T, PT]
+```
+
+Turns a parent's list of attached satellites into one pass's view of them.
+
+**Behavior:**
+
+- `CollectParams.Items` is the caller's indexed List result, in any order. A
+  List type holding values, as `GlanceBackendList.Items` does, becomes a pointer
+  slice by appending `&list.Items[i]` over the index.
+- `Gate` decides which items may be projected; `GlanceBackend` passes
+  `CredentialsReady == True`. A nil gate passes everything. `IsDefault` marks
+  the parent's default, and a nil function means the parent has no default rule.
+- `Collection.Attached` holds the items carrying no deletion timestamp, sorted
+  by name. `Gated` is the subset that passes the gate and `DefaultCandidates`
+  the gated items `IsDefault` marks, both in that same order.
+- `Collection.Valid` reports whether the default rule holds: no rule at all, or
+  one gated candidate. It is a decision, and the parent stamps its own condition
+  type with its own reason and message from it.
+- A deleting satellite drops out here, so the pass de-projects it without
+  waiting for the object to go.
+- Sorting by name is what keeps the rendered config, and with it its content
+  hash, stable across passes.
+- The function returns no error and never touches the API. Everything it needs
+  is on the objects the caller listed, and the pointers it hands back alias
+  them.
 
 ---
 
