@@ -672,17 +672,21 @@ validates health of all operators, CRs, and ExternalSecrets.
 | 5 | `chainsaw test` | Runs E2E tests from `tests/e2e/infrastructure/` |
 | 6 | `make deploy-infra` (re-run) | Unchanged-parameter re-run (no `SKIP_KIND_CREATE`) — exercises the script's existing-cluster detection |
 | 7 | `chainsaw test --report-name chainsaw-report-rerun` | Re-runs the full infrastructure suite to prove the healthy stack is left unchanged |
-| 8 | `make deploy-infra` with `WITH_METRICS_SERVER=true` | Additive re-run — the script's Phase-3 wait gates the new metrics-server HelmRelease on Ready |
-| 9 | `chainsaw test --report-name chainsaw-report-additive` | Scoped run over infra-stack-health, garage-health, flux-web-health, no-prometheus-when-disabled, and openbao-instance; the metrics-server absence suite is deliberately excluded |
-| 10 | `hack/ci-dump-diagnostics.sh` (on failure) | Dumps HelmReleases, pods, events, Flux logs |
-| 11 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
+| 8 | `make deploy-infra` with `WITH_METRICS_SERVER=true` and `WITH_NFS=true` | Additive re-run — the script's Phase-3 wait gates the new metrics-server and `csi-driver-nfs` HelmReleases on Ready, and its Step-3 rollout wait gates `Deployment/nfs-server` |
+| 9 | `kubectl get deployment nfs-server -n openstack` + `kubectl get helmrelease csi-driver-nfs -n kube-system` | Asserts the additive `WITH_NFS` opt-in landed. nfs-health *skips* when the server is absent, so without this step dropping `WITH_NFS: "true"` from step 8 would leave the job green with the NFS stack untested |
+| 10 | `chainsaw test --report-name chainsaw-report-additive` | Scoped run over infra-stack-health, garage-health, flux-web-health, no-prometheus-when-disabled, openbao-instance, and nfs-health; the metrics-server and NFS absence suites are deliberately excluded |
+| 11 | `hack/ci-dump-diagnostics.sh` (on failure) | Dumps HelmReleases, pods, events, Flux logs |
+| 12 | Upload JUnit report | Uploads test results as artifact (14-day retention) |
 
-Timeout: 45 minutes.
+Timeout: 50 minutes.
 
-The two re-run legs (steps 6–9) lock the `make deploy-infra` idempotency
+The two re-run legs (steps 6–10) lock the `make deploy-infra` idempotency
 contract: the unchanged-parameter re-run must converge against the provisioned
-cluster, and the additive `WITH_METRICS_SERVER=true` re-run must install only
-the newly enabled component while leaving the base stack untouched.
+cluster, and the additive re-run must install only the newly enabled
+components while leaving the base stack untouched. Both opt-ins ride that one
+additive run: `make deploy-infra` is convergent, so a separate `WITH_NFS` leg
+would repeat the whole base install for one `kubectl apply -k deploy/kind/nfs`
+and one extra name on the HelmRelease wait list.
 
 ### build-e2e-images
 

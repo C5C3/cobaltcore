@@ -287,6 +287,7 @@ The deployment script supports configurable timeouts via environment variables:
 | `CONTROLPLANE_OPERATORS` | `flux` | How the ControlPlane operator stack is provided (only when `WITH_CONTROLPLANE=true`). `flux` deploys the published c5c3-operator chart + K-ORC Flux source, un-suspends the keystone-, horizon-, glance-, and placement-operator releases, and pins the self-built operators' `:latest` images to their current digests via `hack/refresh-operator-image-digests.sh` (per-operator image-digest ConfigMaps consumed via `valuesFrom`; re-run with `make refresh-operator-digests` after a merge); `external` suspends the Flux stack and expects the operators to be deployed out of band (as the `e2e-controlplane` CI job does with local dev images + `hack/ci-deploy-korc.sh`) |
 | `CONTROLPLANE_NAME` | `controlplane` | Name of the ControlPlane CR under `WITH_CONTROLPLANE=true`; the per-CR OpenBao admin-password bootstrap path derives from it, so it must match the applied CR (the `e2e-controlplane` job sets `controlplane-keystone`) |
 | `WITH_OVN_KERNEL_MODULES` | `false` | When `true`, `modprobe` `openvswitch` and `geneve` on the host before the cluster is created, so the OVN chassis suites find the datapath and tunnel modules in the kernel the kind nodes share. Linux only, and it needs root or passwordless sudo: without either the script logs a warning and continues |
+| `WITH_NFS` | `false` | When `true`, `modprobe` `nfsd`, `nfs` and `nfsv4` on the host before the cluster is created, apply the `deploy/kind/nfs` overlay (the NFS server in `openstack`, the `csi-driver-nfs` mounter in `kube-system`) in Step 3, wait for the `nfs-server` rollout, and append `csi-driver-nfs` to the Phase 3 HelmRelease wait. A rollout failure stops the run with an error naming the `nfsd` module. The module load is Linux only and needs root or passwordless sudo: without either the script logs a warning and continues. The overlay is described in [Infrastructure Manifests](infrastructure-manifests.md#nfs-storage-stack-kind-only-opt-in) |
 | `WITH_REGISTRY_CACHE` | `false` | Local-dev only. When `true`, bring up one distribution-registry (`registry:2`) pull-through proxy per upstream registry (`docker.io`, `ghcr.io`, `registry.k8s.io`, `quay.io`, plus the vanity fronts `oci.external-secrets.io` and `docker-registry3.mariadb.com`) on the `kind` Docker network and wire every node's containerd at them via a `certs.d/<host>/hosts.toml` mirror, so unmodified image refs are served from a persistent local cache that survives `kind delete`. The proxy streams and caches inline (fast even on a cold pull). The containerd mirror patch is injected only into the deploy-time kind config, never the checked-in `hack/kind-config.yaml`, so CI is unaffected. Requires `yq`. See the [Extended Quick Start](../../quick-start-extended.md) |
 | `PURGE_REGISTRY_CACHE` | `false` | Consumed by `make teardown-infra`. When `true`, also remove the registry pull-through cache containers and their volumes (identified by the `cobaltcore.registry-cache=true` label). The default leaves them running so the warm cache is reused on the next deploy |
 
@@ -314,16 +315,17 @@ of the `changes` job matches. It depends only on `changes` — not on the `lint`
 7. Run Chainsaw E2E tests against `tests/e2e/infrastructure/`
 8. Re-run `make deploy-infra` with unchanged parameters (no `SKIP_KIND_CREATE`, exercises the script's existing-cluster detection)
 9. Re-run the full infrastructure suite (report `chainsaw-report-rerun`) to prove the healthy stack is left unchanged
-10. Re-run `make deploy-infra` with `WITH_METRICS_SERVER=true` (additive leg — the script's Phase-3 wait gates the new metrics-server HelmRelease on Ready)
-11. Run a scoped Chainsaw suite (report `chainsaw-report-additive`) over infra-stack-health, garage-health, flux-web-health, no-prometheus-when-disabled, and openbao-instance, skipping the metrics-server absence suite it would now rightly fail
-12. Dump diagnostic info on failure (`kubectl get`, `flux logs` for troubleshooting)
-13. Upload JUnit report as workflow artifact (SHA-pinned `actions/upload-artifact`, `if: always()`)
+10. Re-run `make deploy-infra` with `WITH_METRICS_SERVER=true` and `WITH_NFS=true` (additive leg — the script's Phase 3 wait gates the new metrics-server and `csi-driver-nfs` HelmReleases on Ready, and its Step 3 rollout wait gates `Deployment/nfs-server`). Both opt-ins ride one convergence run: `make deploy-infra` re-applies every overlay and re-walks all eight steps, so a second additive leg would repeat the base install for one `kubectl apply -k deploy/kind/nfs`
+11. Assert the additive `WITH_NFS` opt-in landed (`kubectl get deployment nfs-server -n openstack` and `kubectl get helmrelease csi-driver-nfs -n kube-system`). nfs-health skips when the server is absent, so this is what turns a dropped `WITH_NFS: "true"` in step 10 into a red leg instead of a green one over an untested stack
+12. Run a scoped Chainsaw suite (report `chainsaw-report-additive`) over infra-stack-health, garage-health, flux-web-health, no-prometheus-when-disabled, openbao-instance, and nfs-health, skipping the metrics-server and NFS absence suites it would now rightly fail
+13. Dump diagnostic info on failure (`kubectl get`, `flux logs` for troubleshooting)
+14. Upload JUnit report as workflow artifact (SHA-pinned `actions/upload-artifact`, `if: always()`)
 
 **Configuration:**
 
 | Setting | Value |
 | --- | --- |
-| `timeout-minutes` | 45 |
+| `timeout-minutes` | 50 |
 | `permissions` | `contents: read` (inherited from workflow-level) |
 | `concurrency` | Cancel-in-progress on PRs (inherited from workflow-level) |
 | Action pinning | All `uses:` references are SHA-pinned with version comments |
@@ -362,6 +364,38 @@ Covers the Garage object store (the S3 backend for the Glance e2e suites):
 | 2 | Credential ExternalSecrets SecretSynced: `garage-admin-token` and `garage-s3-credentials` beside the CRs, plus the retained `garage-s3-credentials` copy the Glance consumers read | `shared-services`, `openstack` | `ExternalSecret` (x3) |
 | 3 | GarageCluster `Running`; GarageBucket / GarageKey `Ready` | `shared-services` | `GarageCluster`, `GarageBucket`, `GarageKey` |
 | 4 | S3 put + list with the imported key over path-style HTTP; the probe pod stays in `openstack` and reaches Garage through `garage.shared-services.svc.cluster.local` | `openstack` | `script` (throwaway `aws-cli` pod) |
+
+**File:** `tests/e2e/infrastructure/nfs-health/chainsaw-test.yaml`
+
+Covers the kind-only NFS stack behind `WITH_NFS`. It skips with a `SKIP:` line
+when `Deployment/nfs-server` is absent, so the default legs pass, and it runs
+as one `script` step because chainsaw has no step-level skip:
+
+| # | Assertion | Namespace | Resource |
+| --- | --- | --- | --- |
+| 1 | Presence gate on `Deployment/nfs-server` (`--ignore-not-found`, so only a genuine absence skips and a failed lookup fails), then leftover `Namespace/nfs-health-probe` and the two `nfs-health-*` PersistentVolumes deleted up front | `openstack`, (cluster-scoped) | `Deployment`, `Namespace`, `PersistentVolume` |
+| 2 | `nfs-server` rolled out and its EndpointSlices carry at least one address | `openstack` | `Deployment`, `EndpointSlice` |
+| 3 | `HelmRelease/csi-driver-nfs` Ready, `DaemonSet/csi-nfs-node` with `numberReady >= 1`, `CSIDriver/nfs.csi.k8s.io` present | `kube-system`, (cluster-scoped) | `HelmRelease`, `DaemonSet`, `CSIDriver` |
+| 4 | Two static PV/PVC pairs (`nfs.csi.k8s.io`, `nfsvers=4.1,soft,timeo=30,retrans=2`) bound at the os-brick mount points `/var/lib/cinder/mnt/<md5(share)>` and `/var/lib/cinder/backup_mount/<md5(share)>`, the md5 taken over the share string with no trailing newline | `nfs-health-probe` | `PersistentVolume`, `PersistentVolumeClaim` |
+| 5 | A `restricted`-admitted probe pod (UID 42424, no `fsGroup`) finds both mounts in `/proc/mounts`, writes and reads back `nfs-health.probe` under each, and `stat` reports `42424 42424 660` twice; the pod phase must be `Succeeded` and the log capture non-empty | `nfs-health-probe` | `Pod` (throwaway, the pinned server image) |
+| 6 | `finally` deletes the Pod, then the Namespace, then both PersistentVolumes (`--ignore-not-found --wait=false`), on the passing path too | `nfs-health-probe`, (cluster-scoped) | `Pod`, `Namespace`, `PersistentVolume` |
+
+**File:** `tests/e2e/infrastructure/no-nfs-when-disabled/chainsaw-test.yaml`
+
+Pins the default posture: a cluster deployed without `WITH_NFS` carries none of
+the four resources. It mirrors `no-metrics-server-when-disabled`, and the
+additive `WITH_NFS=true` CI leg excludes it because this suite would then
+rightly fail. Every lookup runs through one helper that separates a genuine
+absence (`--ignore-not-found`, or a missing CRD on a bare kind cluster) from a
+failed lookup, so a transient API error stops the suite instead of passing as
+absence:
+
+| # | Assertion | Namespace | Resource |
+| --- | --- | --- | --- |
+| 1 | No `HelmRepository/csi-driver-nfs` | `flux-system` | `HelmRepository` |
+| 2 | No `HelmRelease` named `csi-driver-nfs` in any namespace, from a `--field-selector` list | (all) | `HelmRelease` |
+| 3 | No `Deployment/nfs-server` | `openstack` | `Deployment` |
+| 4 | No `CSIDriver/nfs.csi.k8s.io` | (cluster-scoped) | `CSIDriver` |
 
 **File:** `tests/e2e/infrastructure/openbao-instance/chainsaw-test.yaml`
 
