@@ -1,0 +1,102 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# csi-driver-nfs HelmRelease, the mounter for the Cinder NFS backend and the
+# Cinder backup share. It turns the two exports of nfs-server.yaml into
+# volumes a pod can use. The node plugin image carries its own `mount.nfs`,
+# so nothing has to be installed into the kindest/node image. The driver's
+# CSIDriver object sets `attachRequired: false`, so the static
+# PersistentVolume and PersistentVolumeClaim pairs the cinder-operator
+# creates per backend are mounted by the node plugin alone, with no
+# attach/detach controller in the path.
+#
+# Deployed to kube-system: the chart defaults to
+# `priorityClassName: system-cluster-critical`, which resolves in no other
+# Namespace.
+#
+# Kind-only. Production clusters bring their own CSI mounter, and shipping a
+# privileged hostNetwork DaemonSet from deploy/flux-system/releases/ into
+# every production deployment is rejected.
+#
+# The chart version is PINNED, unlike the `>=x <y` ranges of
+# deploy/kind/chaos-mesh/release.yaml, deploy/kind/metrics-server/release.yaml
+# and deploy/kind/dizzy/release-*.yaml. A range would let Flux adopt a new
+# chart on its next reconcile with no repo diff, and what it installs here is
+# a privileged hostNetwork DaemonSet whose chart defaults the stack relies on
+# (listed below) are not overridden and would flip unnoticed. Renovate tracks
+# the pin (customManager on `version:` in this file, packageRules
+# "csi-driver-nfs chart", major disabled, no automerge), so an upgrade is a
+# reviewed diff.
+#
+# The HelmRepository still points at the upstream `master` chart directory
+# (source.yaml), because that is the only place upstream publishes: every
+# index entry, including the ones for older minors, carries an absolute
+# tarball URL back under `master/charts/`, so pinning the repository URL to a
+# tag would freeze the index without making the downloaded chart any more
+# immutable.
+#
+# The pin controls WHICH VERSION Flux installs, not WHICH BYTES it installs.
+# Flux HelmRepository `spec.verify` is OCI-only and nothing here records a
+# checksum or a signature, so a rewrite of the 4.13.4 tarball on the upstream
+# branch is adopted on the next reconcile (interval 1h) with no repo diff and
+# no PR — and what it would install is the privileged hostNetwork DaemonSet
+# below. That residual risk is accepted for a kind-only CI overlay; a real
+# content pin means mirroring the chart into a registry this project controls
+# and referencing it by digest, or vendoring the rendered manifests here the
+# way the overlay already vendors nfs-server.yaml.
+#
+# What stays at chart default, and is relied on:
+#   - `driver.name: nfs.csi.k8s.io`, the provisioner string the static
+#     PersistentVolumes reference.
+#   - `attachRequired: false` on the CSIDriver.
+#   - `fsGroupPolicy: File` (chart `feature.enableFSGroupPolicy: true`), so
+#     the kubelet applies a pod's fsGroup to the mounted share.
+#   - `kubeletDir: /var/lib/kubelet`, which is kind's kubelet root.
+#   - The `csi-nfs-node` DaemonSet with `hostNetwork: true`,
+#     `dnsPolicy: ClusterFirstWithHostNet` and one privileged container
+#     (`nfs`) that mounts /var/lib/kubelet/pods with bidirectional mount
+#     propagation.
+#   - The `csi-nfs-controller` Deployment (csi-provisioner, csi-resizer,
+#     liveness-probe, nfs).
+# Combined CPU requests across both workloads are 70m: 30m for the three node
+# containers and 40m for the four controller containers. Chart 4.13.4 asks
+# for 80m at its defaults, the extra 10m being the csi-snapshotter sidecar
+# the values below switch off.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: csi-driver-nfs
+  namespace: kube-system
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: csi-driver-nfs
+      # Pinned, not a range. Renovate bumps it; see the header.
+      version: "4.13.4"
+      sourceRef:
+        kind: HelmRepository
+        name: csi-driver-nfs
+        namespace: flux-system
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    controller:
+      # The chart defaults enableSnapshotter to true while
+      # externalSnapshotter.enabled defaults to false, so the csi-snapshotter
+      # sidecar would run against snapshot.storage.k8s.io CRDs that nothing
+      # in this stack installs. The Cinder NFS backend has snapshots off
+      # anyway (#979 D3).
+      enableSnapshotter: false
+    storageClass:
+      # Already the chart default, set here with the reason: the
+      # cinder-operator binds static PersistentVolume and
+      # PersistentVolumeClaim pairs, so no dynamic class is wanted, and an
+      # unwanted class in a kind cluster competes for is-default-class.
+      create: false
