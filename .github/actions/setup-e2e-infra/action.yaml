@@ -28,6 +28,13 @@
 # resolves to an empty string and hack/deploy-infra.sh's
 # `${WITH_OVN_KERNEL_MODULES:-false}` default leaves the host kernel alone.
 #
+# WITH_NFS is threaded the same way so the `e2e-infra` job's additive re-run
+# leg can opt in to the kind NFS server plus csi-driver-nfs, and to the
+# best-effort host-side `nfsd`, `nfs` and `nfsv4` module load. When the
+# calling job leaves WITH_NFS unset, `${{ env.WITH_NFS }}` resolves to an
+# empty string and hack/deploy-infra.sh's `${WITH_NFS:-false}` default keeps
+# the stack out of the install.
+#
 # WITH_CONTROLPLANE, CONTROLPLANE_OPERATORS, CONTROLPLANE_NAME, and
 # WITH_CONTROLPLANE_CR are threaded the same way so the e2e-controlplane job can
 # provision the shared infra for the c5c3 ControlPlane chain and provide the
@@ -74,6 +81,8 @@ runs:
         WITH_PROMETHEUS: ${{ env.WITH_PROMETHEUS }}
         # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
         WITH_OVN_KERNEL_MODULES: ${{ env.WITH_OVN_KERNEL_MODULES }}
+        # opt-in flag — empty when caller does not set it; deploy-infra.sh defaults to false.
+        WITH_NFS: ${{ env.WITH_NFS }}
         # ControlPlane opt-in flags — empty when caller does not set them;
         # deploy-infra.sh defaults keep the ControlPlane stack out of the install.
         WITH_CONTROLPLANE: ${{ env.WITH_CONTROLPLANE }}

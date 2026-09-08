@@ -149,6 +149,15 @@ WITH_METRICS_SERVER="${WITH_METRICS_SERVER:-false}"
 # kind Quick Start stays minimal; set WITH_DIZZY=true to install.
 WITH_DIZZY="${WITH_DIZZY:-false}"
 
+# Gates the opt-in NFS kind overlay (deploy/kind/nfs): the NFS server in
+# `openstack` plus the csi-driver-nfs mounter in `kube-system`. It also gates
+# the host-side load of the modules that stack needs, `nfsd` for the
+# in-cluster server and `nfs` plus `nfsv4` for the csi-driver-nfs node plugin.
+# Defaults to false so the kind Quick Start stays minimal and needs no sudo;
+# set WITH_NFS=true to install it. The server image is amd64 only and runs
+# privileged, so the stack stays opt-in.
+WITH_NFS="${WITH_NFS:-false}"
+
 # Gates the opt-in transparent registry pull-through cache (#564). When true,
 # deploy-infra brings up one small distribution-registry (registry:2/3) proxy
 # per upstream registry on the `kind` Docker network (start_registry_cache),
@@ -1397,6 +1406,21 @@ load_ovn_kernel_modules() {
 }
 
 # ---------------------------------------------------------------------------
+# load_nfs_kernel_modules — Ensure the NFS server and client prerequisites on the host.
+#
+# The in-cluster NFS server drives the host kernel's nfsd instead of a
+# userspace server, so nfsd has to be loadable on the node. The csi-driver-nfs
+# node plugin mounts the exports through the host kernel's NFS client, which
+# needs nfs and nfsv4.
+#
+# Best-effort, like every caller of load_host_kernel_modules. The Step 3
+# rollout wait on the server is the hard gate.
+# ---------------------------------------------------------------------------
+load_nfs_kernel_modules() {
+  load_host_kernel_modules "NFS server and client (kernel nfsd for the in-cluster server, nfs and nfsv4 for the csi-driver-nfs node plugin)" nfsd nfs nfsv4
+}
+
+# ---------------------------------------------------------------------------
 # enable_operator_servicemonitor RELEASE NAMESPACE [TIMEOUT] — Toggle the given
 # operator chart's `monitoring.serviceMonitor.enabled` value to true so the
 # kube-prometheus-stack Prometheus instance can scrape the operator metrics
@@ -2189,6 +2213,7 @@ main() {
   log "Prometheus stack    : ${WITH_PROMETHEUS} (set WITH_PROMETHEUS=true to install)"
   log "metrics-server      : ${WITH_METRICS_SERVER} (set WITH_METRICS_SERVER=true to install)"
   log "dizzy stack         : ${WITH_DIZZY} (VictoriaMetrics + Grafana for dizzy load/chaos runs; set WITH_DIZZY=true to install)"
+  log "NFS storage stack   : ${WITH_NFS} (set WITH_NFS=true for the kind NFS server + csi-driver-nfs, and to modprobe nfsd/nfs/nfsv4 on the host)"
   log "Registry cache      : ${WITH_REGISTRY_CACHE} (set WITH_REGISTRY_CACHE=true for a local pull-through cache; local-dev only)"
   log "ControlPlane stack  : ${WITH_CONTROLPLANE} (set WITH_CONTROLPLANE=true to provision infra via the c5c3 ControlPlane)"
   log "Infrastructure only : ${INFRA_ONLY} (set INFRA_ONLY=true for a target cluster that runs no CobaltCore operator)"
@@ -2218,6 +2243,14 @@ main() {
     load_ovn_kernel_modules
   else
     log "Skipping OVN kernel modules (WITH_OVN_KERNEL_MODULES=false)."
+  fi
+
+  # Load the NFS server and client modules the same way, gated on WITH_NFS so
+  # the default Quick Start needs neither sudo nor modprobe access.
+  if [[ "${WITH_NFS}" == "true" ]]; then
+    load_nfs_kernel_modules
+  else
+    log "Skipping NFS kernel modules (WITH_NFS=false)."
   fi
 
   # Step 1: Create kind cluster
@@ -2383,6 +2416,27 @@ main() {
       log "           the cluster with WITH_DIZZY=true (e.g."
       log "           \`make teardown-infra && WITH_DIZZY=true make deploy-infra\`)."
     fi
+  fi
+
+  # Opt-in NFS overlay: the in-cluster NFS server plus the csi-driver-nfs
+  # mounter. Layered on top of the base so the default Quick Start stays
+  # minimal; enable with WITH_NFS=true. The overlay is self-contained (no
+  # `../../` parent-dir references), so kubectl's embedded kustomize renders
+  # it under the default LoadRestrictionsRootOnly security check (no
+  # `--load-restrictor` flag required, kubernetes/kubectl#948), same contract
+  # as the chaos-mesh, prometheus, metrics-server and dizzy overlays.
+  #
+  # The rollout wait is a hard gate. The module load above only warns when the
+  # host has no nfsd, so asking for WITH_NFS=true and getting a CrashLooping
+  # server is an error, not a warning.
+  if [[ "${WITH_NFS}" == "true" ]]; then
+    kubectl apply -k "${REPO_ROOT}/deploy/kind/nfs"
+    log "NFS kind overlay applied (WITH_NFS=true)."
+    if ! kubectl rollout status deployment/nfs-server -n openstack --timeout="${POD_TIMEOUT}s"; then
+      log "ERROR: the NFS server did not roll out. The host kernel needs the nfsd module; deploy-infra loads it best-effort and only warns when it cannot."
+      exit 1
+    fi
+    log "NFS server rolled out."
   fi
 
   # the c5c3 ControlPlane stack (c5c3-operator + image and the K-ORC
@@ -2557,6 +2611,12 @@ main() {
   # resolves each release's namespace dynamically, so the names suffice.
   if [[ "${WITH_DIZZY}" == "true" ]]; then
     helm_releases+=(dizzy-victoria-metrics dizzy-grafana)
+  fi
+  # csi-driver-nfs is appended last so the relative ordering of the base
+  # releases is preserved. wait_for_helmreleases resolves the release's
+  # namespace (kube-system) dynamically, so the bare name suffices.
+  if [[ "${WITH_NFS}" == "true" ]]; then
+    helm_releases+=(csi-driver-nfs)
   fi
   wait_for_helmreleases "${release_wait_timeout}" "${helm_releases[@]}"
 
