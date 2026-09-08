@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 
 	openbaov1alpha1 "github.com/dc-tec/openbao-operator/api/v1alpha1"
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
@@ -112,6 +111,26 @@ func barbicanName(cp *c5c3v1alpha1.ControlPlane) string {
 // BarbicanSecretStore projected for this ControlPlane's Barbican service.
 func barbicanSecretStoreName(cp *c5c3v1alpha1.ControlPlane) string {
 	return barbicanName(cp) + barbicanSecretStoreNameSuffix
+}
+
+// barbicanSecretStoreNamePrefix is the name prefix every projected
+// BarbicanSecretStore carries; the prune and teardown sweeps match on it, so it
+// must stay in lockstep with barbicanSecretStoreName.
+func barbicanSecretStoreNamePrefix(cp *c5c3v1alpha1.ControlPlane) string {
+	return barbicanName(cp) + "-"
+}
+
+// barbicanSecretStoreChildren names the projected BarbicanSecretStore children
+// of cp in namespace for the shared prune and sweep; keep lists the names never
+// touched.
+func barbicanSecretStoreChildren(cp *c5c3v1alpha1.ControlPlane, namespace string, keep map[string]struct{}) projectedChildren {
+	return projectedChildren{
+		List:      &barbicanv1alpha1.BarbicanSecretStoreList{},
+		Kind:      "BarbicanSecretStore",
+		Namespace: namespace,
+		Prefix:    barbicanSecretStoreNamePrefix(cp),
+		Keep:      keep,
+	}
 }
 
 // barbicanDeletionAllowed reports whether cp opts in to deleting its projected
@@ -627,23 +646,9 @@ func (r *ControlPlaneReconciler) reconcileBarbicanSecretStore(
 		return false, fmt.Errorf("projecting BarbicanSecretStore %q: %w", desired.Name, err)
 	}
 
-	var list barbicanv1alpha1.BarbicanSecretStoreList
-	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
-		return false, fmt.Errorf("listing BarbicanSecretStores for prune: %w", err)
-	}
-	prefix := barbicanName(cp) + "-"
-	for i := range list.Items {
-		store := &list.Items[i]
-		if store.Name == desired.Name {
-			continue
-		}
-		if !isControlPlaneChild(store, cp) || !strings.HasPrefix(store.Name, prefix) {
-			continue
-		}
-		if err := client.IgnoreNotFound(
-			r.Delete(ctx, store, client.PropagationPolicy(metav1.DeletePropagationBackground))); err != nil {
-			return false, fmt.Errorf("pruning undeclared BarbicanSecretStore %q: %w", store.Name, err)
-		}
+	if err := r.pruneProjectedChildren(ctx, cp,
+		barbicanSecretStoreChildren(cp, namespace, map[string]struct{}{desired.Name: {}})); err != nil {
+		return false, err
 	}
 	return false, nil
 }

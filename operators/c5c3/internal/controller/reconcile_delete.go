@@ -956,39 +956,19 @@ func (r *ControlPlaneReconciler) deleteServiceChildrenIn(
 	}
 
 	// The Barbican namespace carries two more sets. First the projected
-	// BarbicanSecretStores, swept on the GlanceBackend terms: only c5c3-owned stores
-	// carrying the Barbican child's name prefix, so a hand-created store attached to
-	// the same Barbican is never deleted. The store the projection names today is
-	// already in the wait set above; this catches one the reconcile-time prune never
-	// removed, because a spec edit landing moments before the delete leaves a store
-	// nobody names. An absent CRD (meta.IsNoMatchError) reads as nothing to sweep,
-	// the same way deleteORCResources reads an absent K-ORC stack.
+	// BarbicanSecretStores, swept by sweepProjectedChildren on the GlanceBackend
+	// terms: only c5c3-owned stores carrying the Barbican child's name prefix, so a
+	// hand-created store attached to the same Barbican is never deleted. The store
+	// the projection names today is already in the wait set above; this catches one
+	// the reconcile-time prune never removed, because a spec edit landing moments
+	// before the delete leaves a store nobody names.
 	if cp.BarbicanNamespace() == namespace {
-		var stores barbicanv1alpha1.BarbicanSecretStoreList
-		switch err := r.List(ctx, &stores, client.InNamespace(namespace)); {
-		case err == nil:
-			prefix := barbicanName(cp) + "-"
-			for i := range stores.Items {
-				store := &stores.Items[i]
-				if store.Name == barbicanSecretStoreName(cp) {
-					continue
-				}
-				if !isControlPlaneChild(store, cp) || !strings.HasPrefix(store.Name, prefix) {
-					continue
-				}
-				if store.GetDeletionTimestamp().IsZero() {
-					if derr := client.IgnoreNotFound(
-						r.Delete(ctx, store, client.PropagationPolicy(metav1.DeletePropagationBackground)),
-					); derr != nil {
-						return nil, fmt.Errorf("deleting BarbicanSecretStore %s/%s: %w", namespace, store.Name, derr)
-					}
-				}
-				remaining = append(remaining, fmt.Sprintf("%s/%s", namespace, store.Name))
-			}
-		case meta.IsNoMatchError(err):
-		default:
-			return nil, fmt.Errorf("listing BarbicanSecretStores in %q for cross-namespace teardown: %w", namespace, err)
+		swept, err := r.sweepProjectedChildren(ctx, cp,
+			barbicanSecretStoreChildren(cp, namespace, map[string]struct{}{barbicanSecretStoreName(cp): {}}))
+		if err != nil {
+			return nil, err
 		}
+		remaining = append(remaining, swept...)
 
 		// Then the rest of the dedicated OpenBao ensemble.
 		if err := r.deleteBarbicanEnsembleIn(ctx, cp, namespace); err != nil {
