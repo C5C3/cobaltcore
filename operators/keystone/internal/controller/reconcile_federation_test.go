@@ -253,7 +253,7 @@ func TestValidateOIDCRenderInputs_RejectsDoubleQuoteAllowsSpace(t *testing.T) {
 	// smuggle a quote into a value rendered unquoted elsewhere.
 	bad := testProjectableOIDCBackend("corp-oidc")
 	bad.Spec.OIDC.ClientID = `keystone" OIDCFoo bar`
-	g.Expect(validateOIDCRenderInputs(bad)).To(MatchError(errControlCharInValue))
+	g.Expect(validateOIDCRenderInputs(bad)).To(MatchError(errFederationControlChar))
 
 	// A space alone is allowed through the backstop — the renderer quotes it.
 	spaced := testProjectableOIDCBackend("corp-oidc")

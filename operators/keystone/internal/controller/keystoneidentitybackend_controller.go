@@ -27,6 +27,7 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/satellite"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
 	keystonev1alpha1 "github.com/c5c3/cobaltcore/operators/keystone/api/v1alpha1"
@@ -412,7 +413,7 @@ func (r *KeystoneIdentityBackendReconciler) inspectConfigProjection(ctx context.
 		dataKey = samlIdPMetadataKeyName(backend.Name)
 	}
 
-	secretName := secretNameForVolume(&deploy, volumeName)
+	secretName := satellite.SecretNameForVolume(&deploy.Spec.Template.Spec, volumeName)
 	if secretName == "" {
 		return configNotProjected, nil
 	}

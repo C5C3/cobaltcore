@@ -8,7 +8,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/validation"
 	commonwebhook "github.com/c5c3/cobaltcore/internal/common/webhook"
 )
 
@@ -283,16 +284,6 @@ func (w *KeystoneIdentityBackendWebhook) validate(ctx context.Context, b *Keysto
 	return nil
 }
 
-// hasControlChars reports whether s contains a newline or carriage-return.
-// RenderINI writes every value verbatim as `key = value`, so either character
-// lets a value inject additional INI lines — and thereby arbitrary
-// [ldap]/[identity] options — defeating the readOnly forcing and the
-// extraOptions denylist. Every value-side input into the projection is rejected
-// for these characters.
-func hasControlChars(s string) bool {
-	return strings.ContainsAny(s, "\n\r")
-}
-
 // validateLDAP checks the LDAP block: URL scheme (defense-in-depth alongside
 // the Pattern marker), control characters in every rendered value (INI
 // injection guard), and the fixed-data-key contract on the bind Secret
@@ -314,7 +305,7 @@ func (w *KeystoneIdentityBackendWebhook) validateLDAP(ldapPath *field.Path, l *L
 	// fields have no pattern), so the webhook is the primary gate; the renderer
 	// revalidates as the last line of defense.
 	checkNoCtrl := func(path *field.Path, value string) {
-		if hasControlChars(value) {
+		if validation.HasControlChars(value) {
 			errs = append(errs, field.Invalid(path, value,
 				"value must not contain newline or carriage-return characters"))
 		}
@@ -360,89 +351,31 @@ func (w *KeystoneIdentityBackendWebhook) validateLDAP(ldapPath *field.Path, l *L
 	return errs
 }
 
-// extraOptionKeyPattern is the allowlist every spec.extraOptions key must
-// match. keystone/oslo.config [ldap] option names are snake_case, so letters,
-// digits, and underscores are the full legitimate charset. See
-// validateExtraOptions for the two key-side attacks this closes that the
-// value-only guards miss.
-var extraOptionKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
-
 // validateExtraOptions rejects extraOptions keys the projection owns: options
 // rendered from typed fields, the driver/domain-config wiring, empty keys,
 // keys whose shape could inject INI lines or evade the denylist, and — when
 // readOnly is true (nil counts as true, the documented default) — the
 // write-enabling user_allow_*/group_allow_* options.
+//
+// The empty-key, charset and denylist checks run in validation.ExtraOptions,
+// which also documents why the charset check precedes the exact-match ones.
+// The denylist and the forced-option rule below match exact strings, so both
+// are blind to a newline in the key (an arbitrary [ldap] line injected through
+// RenderINI's verbatim `key = value` write) and to a denylist-evading variant
+// such as "user_allow_create ", which oslo.config strips back to a duplicate
+// overriding the false value readOnly forces.
 func (w *KeystoneIdentityBackendWebhook) validateExtraOptions(optsPath *field.Path, b *KeystoneIdentityBackend) field.ErrorList {
-	var errs field.ErrorList
-	if len(b.Spec.ExtraOptions) == 0 {
-		return nil
-	}
-
 	readOnly := b.Spec.LDAP == nil || b.Spec.LDAP.ReadOnly == nil || *b.Spec.LDAP.ReadOnly
-
-	// Sort keys so the aggregated error list is deterministic.
-	keys := make([]string, 0, len(b.Spec.ExtraOptions))
-	for k := range b.Spec.ExtraOptions {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, k := range keys {
-		if k == "" {
-			errs = append(errs, field.Invalid(optsPath, k, "option name must not be empty"))
-			continue
-		}
-		// Enforce the key allowlist before the denylist and forced-option
-		// checks, both of which match exact strings and so are blind to two
-		// key-side attacks:
-		//   - a newline in the key injects an arbitrary [ldap] line through
-		//     RenderINI's verbatim `key = value` write — the exact INI
-		//     injection the readOnly forcing and the denylist exist to prevent,
-		//     just moved from the value to the key;
-		//   - a denylist-evading variant such as a trailing space
-		//     ("user_allow_create ") is not string-equal to the denylisted or
-		//     forced option, so it slips past both exact-match checks, yet
-		//     oslo.config strips it to a duplicate that overrides the forced
-		//     false value.
-		if !extraOptionKeyPattern.MatchString(k) {
-			errs = append(errs, field.Invalid(
-				optsPath.Key(k), k,
-				"option name must match ^[A-Za-z0-9_]+$ (letters, digits, and underscore)",
-			))
-			continue
-		}
-		if owner, denied := ldapExtraOptionsDenylist[k]; denied {
-			errs = append(errs, field.Invalid(
-				optsPath.Key(k),
-				b.Spec.ExtraOptions[k],
-				fmt.Sprintf("option %q is owned by %s and must not be set via extraOptions", k, owner),
-			))
-			continue
-		}
-		if readOnly {
-			for _, forced := range ReadOnlyForcedOptions {
-				if k == forced {
-					errs = append(errs, field.Invalid(
-						optsPath.Key(k),
-						b.Spec.ExtraOptions[k],
-						fmt.Sprintf("option %q conflicts with readOnly: true (the default), which forces it to false", k),
-					))
-					break
-				}
+	return validation.ExtraOptions(optsPath, b.Spec.ExtraOptions, validation.ExtraOptionsRules{
+		Denylist: ldapExtraOptionsDenylist,
+		PerKey: func(k, v string) *field.Error {
+			if readOnly && slices.Contains(ReadOnlyForcedOptions, k) {
+				return field.Invalid(optsPath.Key(k), v,
+					fmt.Sprintf("option %q conflicts with readOnly: true (the default), which forces it to false", k))
 			}
-		}
-		// INI-injection guard: a value with an embedded newline injects
-		// arbitrary [ldap] lines (e.g. re-enabling the write options readOnly
-		// forces off) regardless of how innocuous the key is.
-		if hasControlChars(b.Spec.ExtraOptions[k]) {
-			errs = append(errs, field.Invalid(
-				optsPath.Key(k),
-				b.Spec.ExtraOptions[k],
-				"value must not contain newline or carriage-return characters",
-			))
-		}
-	}
-	return errs
+			return nil
+		},
+	})
 }
 
 // validateOIDC checks the OIDC block: URL schemes (defense-in-depth alongside
@@ -478,7 +411,7 @@ func (w *KeystoneIdentityBackendWebhook) validateOIDC(oidcPath *field.Path, o *O
 	// The Pattern markers are start-anchored only, so the webhook is the
 	// primary gate; the renderer revalidates as the last line of defense.
 	checkNoCtrl := func(path *field.Path, value string) {
-		if hasControlChars(value) || strings.ContainsAny(value, `"`) {
+		if validation.HasControlChars(value) || strings.ContainsAny(value, `"`) {
 			errs = append(errs, field.Invalid(path, value,
 				"value must not contain newline, carriage-return, or double-quote characters"))
 		}
@@ -582,7 +515,7 @@ func (w *KeystoneIdentityBackendWebhook) validateSAML(samlPath *field.Path, s *S
 	// or keystone.conf must not carry newline/carriage-return/double-quote. The
 	// renderer revalidates as the last line of defense.
 	checkNoCtrl := func(path *field.Path, value string) {
-		if hasControlChars(value) || strings.ContainsAny(value, `"`) {
+		if validation.HasControlChars(value) || strings.ContainsAny(value, `"`) {
 			errs = append(errs, field.Invalid(path, value,
 				"value must not contain newline, carriage-return, or double-quote characters"))
 		}
@@ -760,27 +693,17 @@ func (w *KeystoneIdentityBackendWebhook) validateSiblingBackends(ctx context.Con
 	}
 
 	namePath := specPath.Child("domain", "name")
-	var siblings KeystoneIdentityBackendList
-	if err := w.Client.List(ctx, &siblings, client.InNamespace(b.Namespace)); err != nil {
+	siblings, err := validation.AttachedSiblings(ctx, w.Client, b, &KeystoneIdentityBackendList{},
+		func(other *KeystoneIdentityBackend) bool {
+			return other.Spec.KeystoneRef.Name == b.Spec.KeystoneRef.Name
+		})
+	if err != nil {
 		return field.ErrorList{field.InternalError(namePath,
 			fmt.Errorf("listing KeystoneIdentityBackends for the cross-backend checks: %w", err))}
 	}
 
 	var errs field.ErrorList
-	for i := range siblings.Items {
-		other := &siblings.Items[i]
-		if other.Name == b.Name {
-			// Self on UPDATE.
-			continue
-		}
-		if other.DeletionTimestamp != nil {
-			// A Terminating sibling is on its way out; blocking a
-			// replacement on it would deadlock recreate-during-teardown.
-			continue
-		}
-		if other.Spec.KeystoneRef.Name != b.Spec.KeystoneRef.Name {
-			continue
-		}
+	for _, other := range siblings {
 		if strings.EqualFold(other.Spec.Domain.Name, b.Spec.Domain.Name) {
 			errs = append(errs, field.Invalid(
 				namePath,

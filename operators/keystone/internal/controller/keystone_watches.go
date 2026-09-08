@@ -83,23 +83,11 @@ func storeToKeystoneMapper(c client.Reader, watchedKind commonv1.SecretStoreRefK
 
 // identityBackendToKeystoneMapper returns a MapFunc that maps a
 // KeystoneIdentityBackend event to a reconcile request for the Keystone it
-// attaches to (spec.keystoneRef). Registered WITHOUT a generation predicate:
-// backend status flips (DomainReady turning True) are exactly what wakes the
-// keystone-side identitybackends sub-reconciler to project the domain config,
-// and the DeletionTimestamp flip is what triggers de-projection.
+// attaches to (spec.keystoneRef). It binds the shared
+// watch.SatelliteToParentMapper to the KeystoneIdentityBackend type; the
+// no-generation-predicate registration rationale lives there.
 func identityBackendToKeystoneMapper() handler.MapFunc {
-	return func(_ context.Context, obj client.Object) []reconcile.Request {
-		backend, ok := obj.(*keystonev1alpha1.KeystoneIdentityBackend)
-		if !ok || backend.Spec.KeystoneRef.Name == "" {
-			return nil
-		}
-		return []reconcile.Request{{
-			NamespacedName: types.NamespacedName{
-				Namespace: backend.Namespace,
-				Name:      backend.Spec.KeystoneRef.Name,
-			},
-		}}
-	}
+	return watch.SatelliteToParentMapper(identityBackendParentName)
 }
 
 // secretToKeystoneWithBackendsMapper extends secretToKeystoneMapper with the
@@ -107,75 +95,31 @@ func identityBackendToKeystoneMapper() handler.MapFunc {
 // (bind credentials or TLS CA bundle, resolved via the
 // IdentityBackendSecretNameIndexKey field indexer) enqueues the backend's
 // Keystone so the content-hashed domains Secret is re-rendered on bind/CA
-// rotation. The base Keystone legs (name index + owner-ref) are unchanged;
-// results are unioned by NamespacedName so a Secret matching both legs yields
-// exactly one request. On a backend List error the mapper logs and returns
-// the base results, matching the sibling mappers' log-and-continue contract.
+// rotation. It binds the shared watch.SecretToParentsViaSatellitesMapper to
+// the Keystone and KeystoneIdentityBackend types; the request union and the
+// log-and-continue contract live there.
 func secretToKeystoneWithBackendsMapper(c client.Reader) handler.MapFunc {
-	base := secretToKeystoneMapper(c)
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		requests := base(ctx, obj)
-
-		var backends keystonev1alpha1.KeystoneIdentityBackendList
-		if err := c.List(
-			ctx, &backends,
-			client.InNamespace(obj.GetNamespace()),
-			client.MatchingFields{IdentityBackendSecretNameIndexKey: obj.GetName()},
-		); err != nil {
-			log.FromContext(ctx).Error(err, "listing KeystoneIdentityBackends for Secret watch")
-			return requests
-		}
-		if len(backends.Items) == 0 {
-			return requests
-		}
-
-		seen := make(map[types.NamespacedName]struct{}, len(requests))
-		for _, req := range requests {
-			seen[req.NamespacedName] = struct{}{}
-		}
-		for i := range backends.Items {
-			b := &backends.Items[i]
-			if b.Spec.KeystoneRef.Name == "" {
-				continue
-			}
-			key := types.NamespacedName{Namespace: b.Namespace, Name: b.Spec.KeystoneRef.Name}
-			if _, dup := seen[key]; dup {
-				continue
-			}
-			seen[key] = struct{}{}
-			requests = append(requests, reconcile.Request{NamespacedName: key})
-		}
-		return requests
-	}
+	return watch.SecretToParentsViaSatellitesMapper(
+		secretToKeystoneMapper(c), c,
+		func() client.ObjectList { return &keystonev1alpha1.KeystoneIdentityBackendList{} },
+		IdentityBackendSecretNameIndexKey,
+		"listing KeystoneIdentityBackends for Secret watch",
+		identityBackendParentName,
+	)
 }
 
 // keystoneToIdentityBackendsMapper returns a MapFunc that fans a Keystone
 // event out to every KeystoneIdentityBackend attached to it, resolved via the
-// IdentityBackendKeystoneRefIndexKey field indexer. Registered WITHOUT a
-// generation predicate: Keystone status flips (KeystoneAPIReady flipping
-// True, the projection landing) are exactly the transitions the backend
-// controller's DomainReady / ConfigProjected gates wait on. On a List error
-// the mapper logs and returns nil per the handler.MapFunc contract, matching
-// the sibling mappers in this file.
+// IdentityBackendKeystoneRefIndexKey field indexer. It binds the shared
+// watch.ParentToSatellitesMapper to the KeystoneIdentityBackend list type; the
+// no-generation-predicate registration rationale and the log-and-continue
+// contract live there.
 func keystoneToIdentityBackendsMapper(c client.Reader) handler.MapFunc {
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		var backends keystonev1alpha1.KeystoneIdentityBackendList
-		if err := c.List(
-			ctx, &backends,
-			client.InNamespace(obj.GetNamespace()),
-			client.MatchingFields{IdentityBackendKeystoneRefIndexKey: obj.GetName()},
-		); err != nil {
-			log.FromContext(ctx).Error(err, "listing KeystoneIdentityBackends for Keystone watch")
-			return nil
-		}
-		requests := make([]reconcile.Request, 0, len(backends.Items))
-		for i := range backends.Items {
-			requests = append(requests, reconcile.Request{
-				NamespacedName: client.ObjectKeyFromObject(&backends.Items[i]),
-			})
-		}
-		return requests
-	}
+	return watch.ParentToSatellitesMapper(c,
+		func() client.ObjectList { return &keystonev1alpha1.KeystoneIdentityBackendList{} },
+		IdentityBackendKeystoneRefIndexKey,
+		"listing KeystoneIdentityBackends for Keystone watch",
+	)
 }
 
 // pushSecretToKeystoneMapper returns a MapFunc that maps PushSecret events to
