@@ -7,8 +7,6 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
-	"regexp"
-	"sort"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -165,14 +163,6 @@ func DeniedOpenBaoExtraOption(key string) bool {
 	return denied
 }
 
-// openBaoExtraOptionKeyPattern is the allowlist every spec.extraOptions key must
-// match. Vault plugin option names are snake_case, so letters, digits,
-// and underscores are the full legitimate charset. Anything else (an embedded
-// newline, a denylist-evading trailing space) could inject an INI line or slip
-// past the exact-match denylist, so it is rejected before either exact-match
-// check runs.
-var openBaoExtraOptionKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
-
 // validate runs all validation rules against the BarbicanSecretStore spec,
 // accumulating every violation into a single field.ErrorList so users see all
 // problems at once. ctx is required for the sibling List behind the single-default
@@ -186,8 +176,7 @@ func (w *BarbicanSecretStoreWebhook) validate(ctx context.Context, b *BarbicanSe
 	allErrs = append(allErrs, validateStoreUnion(specPath, b)...)
 	allErrs = append(allErrs, validateStoreName(b)...)
 	allErrs = append(allErrs, validateStoreExtraOptions(specPath.Child("extraOptions"), b)...)
-	allErrs = append(allErrs, w.validateSiblingDefault(ctx, specPath, b)...)
-	allErrs = append(allErrs, w.validateSiblingOpenBaoUniqueness(ctx, specPath, b)...)
+	allErrs = append(allErrs, w.validateSiblings(ctx, specPath, b)...)
 
 	if len(allErrs) > 0 {
 		return apierrors.NewInvalid(
@@ -296,85 +285,59 @@ func validateStoreNameLength(name string) field.ErrorList {
 // options the operator renders from the typed spec, and values carrying control
 // characters.
 func validateStoreExtraOptions(optsPath *field.Path, b *BarbicanSecretStore) field.ErrorList {
-	if len(b.Spec.ExtraOptions) == 0 {
+	return validation.ExtraOptions(optsPath, b.Spec.ExtraOptions, validation.ExtraOptionsRules{
+		Denylist: openBaoExtraOptionsDenylist,
+	})
+}
+
+// validateSiblings runs both cross-CR rules over ONE namespace-scoped List of
+// the stores attached to the same Barbican. w.Client is the uncached API reader,
+// so each List is a live request the admission call blocks on: the rules share
+// the result rather than each fetching the same bytes.
+//
+// The List is skipped when no lookup client is injected (e.g. direct unit
+// invocation without a reader — mirrors the PriorityClass validator's behavior)
+// and when neither rule can fire against a sibling.
+func (w *BarbicanSecretStoreWebhook) validateSiblings(ctx context.Context, specPath *field.Path, b *BarbicanSecretStore) field.ErrorList {
+	if w.Client == nil || (!b.Spec.IsDefault && b.Spec.Type != BarbicanSecretStoreTypeOpenBao) {
 		return nil
 	}
-	options := b.Spec.ExtraOptions
 
-	// Sort keys so the aggregated error list is deterministic.
-	keys := make([]string, 0, len(options))
-	for k := range options {
-		keys = append(keys, k)
+	siblings, err := validation.AttachedSiblings(ctx, w.Client, b, &BarbicanSecretStoreList{},
+		func(other *BarbicanSecretStore) bool {
+			return other.Spec.BarbicanRef.Name == b.Spec.BarbicanRef.Name
+		})
+	if err != nil {
+		return field.ErrorList{field.InternalError(specPath,
+			fmt.Errorf("listing BarbicanSecretStores for the sibling checks: %w", err))}
 	}
-	sort.Strings(keys)
 
-	var errs field.ErrorList
-	for _, k := range keys {
-		if k == "" {
-			errs = append(errs, field.Invalid(optsPath, k, "option name must not be empty"))
-			continue
-		}
-		// Enforce the key allowlist before the denylist, which matches exact strings
-		// and so is blind to a newline in the key (an INI-injection vector through
-		// the renderer's verbatim `key = value` write) or a denylist-evading variant
-		// such as a trailing space.
-		if !openBaoExtraOptionKeyPattern.MatchString(k) {
-			errs = append(errs, field.Invalid(
-				optsPath.Key(k), k,
-				"option name must match ^[A-Za-z0-9_]+$ (letters, digits, and underscore)",
-			))
-			continue
-		}
-		if owner, denied := openBaoExtraOptionsDenylist[k]; denied {
-			errs = append(errs, field.Invalid(
-				optsPath.Key(k),
-				options[k],
-				fmt.Sprintf("option %q is owned by %s and must not be set via extraOptions", k, owner),
-			))
-			continue
-		}
-		// INI-injection guard: a value with an embedded newline injects arbitrary
-		// plugin-section lines regardless of how innocuous the key is.
-		if validation.HasControlChars(options[k]) {
-			errs = append(errs, field.Invalid(
-				optsPath.Key(k),
-				options[k],
-				"value must not contain newline or carriage-return characters",
-			))
-		}
-	}
-	return errs
+	errs := validateSiblingDefault(specPath, b, siblings)
+	return append(errs, validateSiblingOpenBaoUniqueness(specPath, b, siblings)...)
 }
 
 // validateSiblingDefault enforces the single-default invariant: at most one
 // BarbicanSecretStore attached to a given Barbican may be marked isDefault. When
-// the CR under validation is a default, it lists its namespace siblings (uncached
-// reader), filters to the same spec.barbicanRef.name, skips self and Terminating
-// siblings, and rejects if another default already exists.
-func (w *BarbicanSecretStoreWebhook) validateSiblingDefault(ctx context.Context, specPath *field.Path, b *BarbicanSecretStore) field.ErrorList {
-	// Skip when no lookup client is injected (e.g. direct unit invocation without a
-	// reader) — mirrors the PriorityClass validator's behavior.
-	if w.Client == nil || !b.Spec.IsDefault {
+// the CR under validation is a default, it rejects if another default already
+// exists among siblings (which validateSiblings has already filtered to the same
+// spec.barbicanRef.name, minus self and Terminating stores).
+func validateSiblingDefault(specPath *field.Path, b *BarbicanSecretStore, siblings []*BarbicanSecretStore) field.ErrorList {
+	if !b.Spec.IsDefault {
 		return nil
 	}
 
 	isDefaultPath := specPath.Child("isDefault")
-	siblings, err := w.attachedSiblings(ctx, b)
-	if err != nil {
-		return field.ErrorList{field.InternalError(isDefaultPath,
-			fmt.Errorf("listing BarbicanSecretStores for the single-default check: %w", err))}
-	}
-
 	var errs field.ErrorList
 	for _, other := range siblings {
-		if other.Spec.IsDefault {
-			errs = append(errs, field.Invalid(
-				isDefaultPath,
-				b.Spec.IsDefault,
-				fmt.Sprintf("BarbicanSecretStore %q attached to the same Barbican %q is already marked isDefault; exactly one default store is allowed",
-					other.Name, b.Spec.BarbicanRef.Name),
-			))
+		if !other.Spec.IsDefault {
+			continue
 		}
+		errs = append(errs, field.Invalid(
+			isDefaultPath,
+			b.Spec.IsDefault,
+			fmt.Sprintf("BarbicanSecretStore %q attached to the same Barbican %q is already marked isDefault; exactly one default store is allowed",
+				other.Name, b.Spec.BarbicanRef.Name),
+		))
 	}
 	return errs
 }
@@ -388,56 +351,23 @@ func (w *BarbicanSecretStoreWebhook) validateSiblingDefault(ctx context.Context,
 // server: both [secretstore:<name>] sections would resolve to the same plugin
 // configuration, and whichever store rendered last would decide where the other
 // one's secrets are written.
-func (w *BarbicanSecretStoreWebhook) validateSiblingOpenBaoUniqueness(ctx context.Context, specPath *field.Path, b *BarbicanSecretStore) field.ErrorList {
-	if w.Client == nil || b.Spec.Type != BarbicanSecretStoreTypeOpenBao {
+func validateSiblingOpenBaoUniqueness(specPath *field.Path, b *BarbicanSecretStore, siblings []*BarbicanSecretStore) field.ErrorList {
+	if b.Spec.Type != BarbicanSecretStoreTypeOpenBao {
 		return nil
 	}
 
 	typePath := specPath.Child("type")
-	siblings, err := w.attachedSiblings(ctx, b)
-	if err != nil {
-		return field.ErrorList{field.InternalError(typePath,
-			fmt.Errorf("listing BarbicanSecretStores for the OpenBao-uniqueness check: %w", err))}
-	}
-
 	var errs field.ErrorList
 	for _, other := range siblings {
-		if other.Spec.Type == BarbicanSecretStoreTypeOpenBao {
-			errs = append(errs, field.Invalid(
-				typePath,
-				b.Spec.Type,
-				fmt.Sprintf("BarbicanSecretStore %q attached to the same Barbican %q is already of type OpenBao; the vault plugin's [vault_plugin] options are process-global, so both stores would share one server, one credential, and one mount",
-					other.Name, b.Spec.BarbicanRef.Name),
-			))
+		if other.Spec.Type != BarbicanSecretStoreTypeOpenBao {
+			continue
 		}
+		errs = append(errs, field.Invalid(
+			typePath,
+			b.Spec.Type,
+			fmt.Sprintf("BarbicanSecretStore %q attached to the same Barbican %q is already of type OpenBao; the vault plugin's [vault_plugin] options are process-global, so both stores would share one server, one credential, and one mount",
+				other.Name, b.Spec.BarbicanRef.Name),
+		))
 	}
 	return errs
-}
-
-// attachedSiblings lists the live stores attached to the same Barbican as b. It
-// is the List-and-filter skeleton both sibling rules run: each keeps its own
-// entry predicate, path and message, and neither repeats the namespace-scoped
-// List or the attachedSibling filter.
-func (w *BarbicanSecretStoreWebhook) attachedSiblings(ctx context.Context, b *BarbicanSecretStore) ([]*BarbicanSecretStore, error) {
-	var siblings BarbicanSecretStoreList
-	if err := w.Client.List(ctx, &siblings, client.InNamespace(b.Namespace)); err != nil {
-		return nil, err
-	}
-	var attached []*BarbicanSecretStore
-	for i := range siblings.Items {
-		if other := &siblings.Items[i]; attachedSibling(other, b) {
-			attached = append(attached, other)
-		}
-	}
-	return attached, nil
-}
-
-// attachedSibling reports whether other is a live store the sibling rules have to
-// consider for b: attached to the same Barbican, not b itself (which appears in
-// the List on UPDATE), and not Terminating — blocking a replacement on a store on
-// its way out would deadlock recreate-during-teardown.
-func attachedSibling(other, b *BarbicanSecretStore) bool {
-	return other.Name != b.Name &&
-		other.DeletionTimestamp == nil &&
-		other.Spec.BarbicanRef.Name == b.Spec.BarbicanRef.Name
 }

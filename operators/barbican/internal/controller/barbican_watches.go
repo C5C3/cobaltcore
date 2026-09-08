@@ -10,13 +10,8 @@
 package controller
 
 import (
-	"context"
-
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -45,68 +40,27 @@ func secretToBarbicanMapper(c client.Reader) handler.MapFunc {
 // credentials or CA bundle Secret of a brownfield store, resolved via the
 // BarbicanSecretStoreSecretNameIndexKey field indexer) enqueues the store's
 // parent Barbican (spec.barbicanRef.name) so the rendered secret-store config is
-// re-projected on credential rotation. The base Barbican legs (name index +
-// owner-ref) are unchanged; results are unioned by NamespacedName so a Secret
-// matching both legs yields exactly one request. On a store List error the
-// mapper logs and returns the base results, matching the sibling mappers'
-// log-and-continue contract.
+// re-projected on credential rotation. It binds the shared
+// watch.SecretToParentsViaSatellitesMapper to the Barbican and
+// BarbicanSecretStore types; the request union and the log-and-continue
+// contract live there.
 func secretToBarbicanWithStoresMapper(c client.Reader) handler.MapFunc {
-	base := secretToBarbicanMapper(c)
-	return func(ctx context.Context, obj client.Object) []reconcile.Request {
-		requests := base(ctx, obj)
-
-		var stores barbicanv1alpha1.BarbicanSecretStoreList
-		if err := c.List(
-			ctx, &stores,
-			client.InNamespace(obj.GetNamespace()),
-			client.MatchingFields{BarbicanSecretStoreSecretNameIndexKey: obj.GetName()},
-		); err != nil {
-			log.FromContext(ctx).Error(err, "listing BarbicanSecretStores for Secret watch")
-			return requests
-		}
-		if len(stores.Items) == 0 {
-			return requests
-		}
-
-		seen := make(map[types.NamespacedName]struct{}, len(requests))
-		for _, req := range requests {
-			seen[req.NamespacedName] = struct{}{}
-		}
-		for i := range stores.Items {
-			store := &stores.Items[i]
-			if store.Spec.BarbicanRef.Name == "" {
-				continue
-			}
-			key := types.NamespacedName{Namespace: store.Namespace, Name: store.Spec.BarbicanRef.Name}
-			if _, dup := seen[key]; dup {
-				continue
-			}
-			seen[key] = struct{}{}
-			requests = append(requests, reconcile.Request{NamespacedName: key})
-		}
-		return requests
-	}
+	return watch.SecretToParentsViaSatellitesMapper(
+		secretToBarbicanMapper(c), c,
+		func() client.ObjectList { return &barbicanv1alpha1.BarbicanSecretStoreList{} },
+		BarbicanSecretStoreSecretNameIndexKey,
+		"listing BarbicanSecretStores for Secret watch",
+		barbicanSecretStoreParentName,
+	)
 }
 
 // barbicanSecretStoreToBarbicanMapper returns a MapFunc that maps a
 // BarbicanSecretStore event to a reconcile request for the Barbican it attaches
-// to (spec.barbicanRef). Registered WITHOUT a generation predicate on the
-// parent's watch: store status flips (CredentialsReady turning True) are exactly
-// what wakes the barbican-side sub-reconciler to project the secret-store
-// sections, and the DeletionTimestamp flip is what triggers de-projection.
+// to (spec.barbicanRef). It binds the shared watch.SatelliteToParentMapper to
+// the BarbicanSecretStore type; the no-generation-predicate registration
+// rationale lives there.
 func barbicanSecretStoreToBarbicanMapper() handler.MapFunc {
-	return func(_ context.Context, obj client.Object) []reconcile.Request {
-		store, ok := obj.(*barbicanv1alpha1.BarbicanSecretStore)
-		if !ok || store.Spec.BarbicanRef.Name == "" {
-			return nil
-		}
-		return []reconcile.Request{{
-			NamespacedName: types.NamespacedName{
-				Namespace: store.Namespace,
-				Name:      store.Spec.BarbicanRef.Name,
-			},
-		}}
-	}
+	return watch.SatelliteToParentMapper(barbicanSecretStoreParentName)
 }
 
 // mariaDBToBarbicanMapper returns a MapFunc that maps MariaDB cluster events to

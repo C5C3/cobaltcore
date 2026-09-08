@@ -6,9 +6,7 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -18,6 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/config"
+	"github.com/c5c3/cobaltcore/internal/common/satellite"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	barbicanv1alpha1 "github.com/c5c3/cobaltcore/operators/barbican/api/v1alpha1"
 )
@@ -129,15 +129,20 @@ func (r *BarbicanReconciler) reconcileSecretStores(ctx context.Context, children
 		return ctrl.Result{}, secretStoreProjection{}, fmt.Errorf("listing BarbicanSecretStores for %s: %w", barbican.Name, err)
 	}
 
-	// Sort by name so the rendered sections — and therefore the config Secret's
-	// content hash and the stores_lookup_suffix order — are deterministic across
-	// passes.
-	sort.Slice(stores.Items, func(i, j int) bool {
-		return stores.Items[i].Name < stores.Items[j].Name
+	items := make([]*barbicanv1alpha1.BarbicanSecretStore, 0, len(stores.Items))
+	for i := range stores.Items {
+		items = append(items, &stores.Items[i])
+	}
+	// Drop the deleting stores, sort by name so the rendered sections — and
+	// therefore the config Secret's content hash and the stores_lookup_suffix
+	// order — are deterministic across passes, and pick the credential-ready
+	// default candidates.
+	c := satellite.Collect(satellite.CollectParams[barbicanv1alpha1.BarbicanSecretStore, *barbicanv1alpha1.BarbicanSecretStore]{
+		Items:     items,
+		Gate:      storeCredentialsReady,
+		IsDefault: func(s *barbicanv1alpha1.BarbicanSecretStore) bool { return s.Spec.IsDefault },
 	})
 
-	// First pass: collect the credential-ready candidates and their egress hosts.
-	//
 	// The hosts come from the credential-ready stores ONLY. It is the operator —
 	// not the API pods — that authenticates a store against its server, and the
 	// operator's egress is governed by its own policy, so gating on readiness
@@ -153,40 +158,24 @@ func (r *BarbicanReconciler) reconcileSecretStores(ctx context.Context, children
 	// still points at a store this pass may no longer see as credential-ready.
 	// Every invalid-projection return below therefore widens the set through
 	// retainedEgressHosts.
-	var (
-		hosts             []string
-		ready             []*barbicanv1alpha1.BarbicanSecretStore
-		defaultCandidates []*barbicanv1alpha1.BarbicanSecretStore
-	)
-	for i := range stores.Items {
-		store := &stores.Items[i]
-		// A deleting store is de-projected immediately: its section is dropped and
-		// its host removed from the egress set on this pass.
-		if store.DeletionTimestamp != nil {
-			continue
-		}
-		if !storeCredentialsReady(store) {
-			continue
-		}
+	var hosts []string
+	for _, store := range c.Gated {
 		if host := storeServerURL(store, barbican.Namespace); host != "" {
 			hosts = append(hosts, host)
 		}
-		ready = append(ready, store)
-		if store.Spec.IsDefault {
-			defaultCandidates = append(defaultCandidates, store)
-		}
 	}
+	ready := c.Gated
 
 	// Exactly-one-default rule. Zero or more than one credential-ready default is
 	// an invalid projection: SecretStoresReady=False / NoDefaultSecretStore,
 	// nothing is re-rendered, and last-good is retained by the downstream config
 	// step. hosts is still surfaced so the networkpolicy step tracks every
 	// attached store.
-	if len(defaultCandidates) != 1 {
-		r.markSecretStoresWaiting(barbican, conditionReasonNoDefaultSecretStore, noDefaultSecretStoreMessage(defaultCandidates))
+	if !c.Valid {
+		r.markSecretStoresWaiting(barbican, conditionReasonNoDefaultSecretStore, noDefaultSecretStoreMessage(c.DefaultCandidates))
 		return ctrl.Result{}, secretStoreProjection{hosts: retainedEgressHosts(barbican, hosts)}, nil
 	}
-	defaultStore := defaultCandidates[0]
+	defaultStore := c.DefaultCandidates[0]
 
 	// The [vault_plugin] section is process-global: every OpenBao store on the
 	// same Barbican shares one server URL, one AppRole and one mount. A second
@@ -210,7 +199,7 @@ func (r *BarbicanReconciler) reconcileSecretStores(ctx context.Context, children
 		// last-good and wait for the store watch rather than failing the reconcile.
 		// A transient (non-NotFound) client failure is infrastructure and surfaces
 		// as an error.
-		if secrets.IsMissingSecretOrKey(err) || errors.Is(err, errControlCharInValue) {
+		if secrets.IsMissingSecretOrKey(err) || config.IsControlCharError(err) {
 			msg := fmt.Sprintf("Skipping secret store %s: %v", defaultStore.Name, err)
 			log.FromContext(ctx).Info(msg)
 			r.Recorder.Event(barbican, corev1.EventTypeWarning, "BarbicanSecretStoreSkipped", msg)
@@ -473,20 +462,11 @@ func (r *BarbicanReconciler) renderVaultPlugin(
 	// [vault_plugin] options. The webhook rejects CR-set keys and values, but the
 	// role ID comes from a Secret it never reads, and a CRD-bypass CR reaches here
 	// unvalidated.
-	for k, v := range section {
-		if strings.ContainsAny(k, "\n\r") || strings.ContainsAny(v, "\n\r") {
-			return secretStoreProjection{}, nil, errControlCharInValue
-		}
+	if err := config.CheckNoControlChars("vault_plugin", section); err != nil {
+		return secretStoreProjection{}, nil, err
 	}
 	return projection, section, nil
 }
-
-// errControlCharInValue is returned by renderVaultPlugin when an assembled
-// [vault_plugin] option name or value carries a newline or carriage-return.
-// config.RenderINI writes both verbatim as `key = value`, so such a character
-// injects arbitrary INI lines. A poisoned option keeps the projection invalid,
-// so the caller retains last-good rather than rendering the injection.
-var errControlCharInValue = errors.New("[vault_plugin] option name or value contains a newline or carriage-return character")
 
 // storeCredentialsReady reports whether a store's CredentialsReady condition is
 // present and True — the D-gate the projection uses. It deliberately does NOT
