@@ -119,17 +119,20 @@ spec:
           echo "OK: no HelmRepository 'csi-driver-nfs' in 'flux-system'"
 
           # ── Assertion 2: no csi-driver-nfs HelmRelease anywhere ──
-          # `kubectl get -A -o name` returns 0 even when the list is empty; we
-          # count lines rather than relying on exit codes.
-          hr_count=$(kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
-            --field-selector=metadata.name=csi-driver-nfs \
-            -o name 2>/dev/null | wc -l | tr -d '[:space:]')
-          if [ "${hr_count}" != "0" ]; then
-            echo "FAIL: HelmRelease 'csi-driver-nfs' exists (count=${hr_count}) on a default cluster."
+          # A list query needs --all-namespaces and a field selector; an empty
+          # list exits 0 with no output, which is the absence. A cluster
+          # without the HelmRelease CRD (no Flux, for example a bare kind
+          # cluster used to run this suite by hand) makes `kubectl get` exit 1,
+          # which is also an absence — the helper's CRD branch covers it, while
+          # a lookup that failed for any other reason still stops the suite
+          # instead of passing as absence.
+          lookup helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+            --field-selector=metadata.name=csi-driver-nfs
+          if [ -n "${FOUND}" ]; then
+            echo "FAIL: HelmRelease 'csi-driver-nfs' exists on a default cluster:"
+            printf '%s\n' "${FOUND}"
             echo "      Source of regression: deploy/kind/nfs/release.yaml was applied"
             echo "      without WITH_NFS=true."
-            kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
-              --field-selector=metadata.name=csi-driver-nfs -o wide 2>&1 || true
             exit 1
           fi
           echo "OK: no HelmRelease 'csi-driver-nfs' exists"
