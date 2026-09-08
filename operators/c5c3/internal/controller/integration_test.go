@@ -1350,7 +1350,7 @@ func TestIntegration_FullReconcile_ManagedToReady(t *testing.T) {
 
 	// The broker's default user. The RabbitMQ Cluster Operator materialises it and
 	// points the cluster's status at the Secret; no such operator runs in envtest,
-	// so the four keys reconcileNeutronMessaging assembles the transport URL from
+	// so the four keys reconcileServiceMessaging assembles the transport URL from
 	// are seeded here, under the name simulateRabbitmqClusterReadyWhenPresent
 	// publishes in status.defaultUser.secretReference.
 	g.Expect(c.Create(ctx, &corev1.Secret{

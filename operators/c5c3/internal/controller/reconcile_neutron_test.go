@@ -1203,14 +1203,14 @@ func TestReconcileNeutron_ProjectsTLSMirrorWhenSharedBusHasTLS(t *testing.T) {
 	nn := getProjectedNeutron(t, r.Client, cp)
 	g.Expect(nn.Spec.Messaging.TLS).NotTo(BeNil())
 	g.Expect(nn.Spec.Messaging.TLS.CABundleSecretRef).To(Equal(commonv1.SecretRefSpec{
-		Name: "cp-neutron-messaging-ca", Key: neutronMessagingCAKey,
+		Name: "cp-neutron-messaging-ca", Key: serviceMessagingCAKey,
 	}))
 
 	mirror := &corev1.Secret{}
 	g.Expect(r.Get(ctx, types.NamespacedName{
 		Name: neutronMessagingCASecretName(cp), Namespace: cp.NeutronNamespace(),
 	}, mirror)).To(Succeed())
-	g.Expect(mirror.Data).To(HaveKeyWithValue(neutronMessagingCAKey, bundle))
+	g.Expect(mirror.Data).To(HaveKeyWithValue(serviceMessagingCAKey, bundle))
 
 	// Drop the tls block: the child must revert instead of pinning the last value,
 	// and the mirror comes down behind it. The child is converged first because the

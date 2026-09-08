@@ -1315,13 +1315,8 @@ func (r *ControlPlaneReconciler) sweepExternalNamespaceResidue(
 			&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
 				Name: neutronDBCredentialServiceAccountName, Namespace: namespace,
 			}},
-			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-				Name: neutronMessagingSecretName(cp), Namespace: namespace,
-			}},
-			&corev1.Secret{ObjectMeta: metav1.ObjectMeta{
-				Name: neutronMessagingCASecretName(cp), Namespace: namespace,
-			}},
 		)
+		objs = append(objs, serviceMessagingSecrets(neutronMessagingTarget(cp))...)
 	}
 	// The tenant store LAST: everything above authenticated through it.
 	objs = append(
