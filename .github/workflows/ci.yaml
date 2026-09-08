@@ -885,7 +885,7 @@ jobs:
     needs: [changes]
     if: github.event_name == 'pull_request' && needs.changes.outputs.e2e-infra == 'true'
     runs-on: self-hosted
-    timeout-minutes: 45
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -923,22 +923,48 @@ jobs:
       - name: Re-run Chainsaw E2E tests after unchanged re-run
         run: |
           chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-rerun tests/e2e/infrastructure/
-      # Additive opt-in leg (#650) -- the script's own Phase-3 wait gates the
-      # newly enabled metrics-server HelmRelease on Ready, so exit 0 proves
-      # the additive install landed without disturbing the base stack.
-      - name: Re-run deploy-infra with WITH_METRICS_SERVER=true
+      # Additive opt-in leg (#650, #978) -- both opt-ins are set on ONE
+      # convergence run. `make deploy-infra` is convergent: a second run
+      # re-applies every overlay and re-walks all eight steps, so a separate
+      # WITH_NFS re-run would repeat the whole base install for the sake of
+      # one `kubectl apply -k deploy/kind/nfs` and one extra name on the
+      # HelmRelease wait list. The gates that prove each opt-in landed live
+      # inside this one invocation: the script's Phase-3 wait covers the
+      # metrics-server and csi-driver-nfs HelmReleases, and its Step-3
+      # `kubectl rollout status deployment/nfs-server` covers the server (the
+      # best-effort nfsd/nfs/nfsv4 modprobe runs under the same passwordless
+      # sudo the OVN legs rely on). Either failing fails the step. The
+      # additive-convergence property is unchanged: the base stack was
+      # installed by the first run and re-converged by the second, so this
+      # third one still layers opt-ins onto an existing cluster.
+      - name: Re-run deploy-infra with WITH_METRICS_SERVER=true and WITH_NFS=true
         run: make deploy-infra
         env:
           CLUSTER_NAME: ${{ env.KIND_CLUSTER }}
           WITH_METRICS_SERVER: "true"
+          WITH_NFS: "true"
+      # nfs-health SKIPs (exit 0) when Deployment/nfs-server is absent, because
+      # it also runs on the two legs that never set WITH_NFS. This leg is the
+      # only one that installs the stack, so dropping `WITH_NFS: "true"` above
+      # -- a merge resolution, a revert, a copy of the step into a new job --
+      # would leave the whole workflow green with the NFS stack shipped
+      # untested and no failing signal anywhere: deploy-infra skips the
+      # overlay, wait_for_helmreleases never gets csi-driver-nfs appended, the
+      # suite prints SKIP, and `no-nfs-when-disabled` is not in the scoped set
+      # below to contradict it. These two gets are the assertion that the
+      # opt-in landed; each fails the leg on its own.
+      - name: Assert the additive WITH_NFS opt-in landed
+        run: |
+          kubectl get deployment nfs-server -n openstack -o name
+          kubectl get helmrelease csi-driver-nfs -n kube-system -o name
       # The full suite is NOT re-run here because
-      # `no-metrics-server-when-disabled` asserts the absence of
-      # metrics-server, which the additive leg just (correctly) installed --
-      # the scoped set proves the base stack is untouched and Prometheus is
-      # still absent.
+      # `no-metrics-server-when-disabled` and `no-nfs-when-disabled` assert
+      # the absence of what this leg just (correctly) installed -- the scoped
+      # set proves the base stack is untouched, Prometheus is still absent,
+      # and both NFS exports mount through csi-driver-nfs.
       - name: Run scoped Chainsaw E2E tests after additive re-run
         run: |
-          chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-additive tests/e2e/infrastructure/infra-stack-health tests/e2e/infrastructure/garage-health tests/e2e/infrastructure/flux-web-health tests/e2e/infrastructure/no-prometheus-when-disabled tests/e2e/infrastructure/openbao-instance
+          chainsaw test --config tests/e2e/chainsaw-config.yaml --report-name chainsaw-report-additive tests/e2e/infrastructure/infra-stack-health tests/e2e/infrastructure/garage-health tests/e2e/infrastructure/flux-web-health tests/e2e/infrastructure/no-prometheus-when-disabled tests/e2e/infrastructure/openbao-instance tests/e2e/infrastructure/nfs-health
       # Use shared diagnostic dump script.  `always()` (matching every other
       # e2e job) also covers the timeout-cancellation path -- `failure()`
       # alone is skipped when timeout-minutes expires, discarding the cluster
