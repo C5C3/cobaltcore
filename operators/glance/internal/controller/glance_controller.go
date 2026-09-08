@@ -110,17 +110,23 @@ const GlanceBackendGlanceRefIndexKey = "spec.glanceRef.name"
 // #nosec G101 -- field-indexer key (a JSONPath-like field selector), not a credential.
 const GlanceBackendSecretNameIndexKey = "spec.secretRefs.name"
 
-// glanceBackendGlanceRefExtractor is the controller-runtime IndexerFunc
-// registered under GlanceBackendGlanceRefIndexKey: it maps a backend to its
-// spec.glanceRef.name so an attached-backends list is an O(1) indexed lookup.
-// Exported to tests so fake clients can register the identical index.
-func glanceBackendGlanceRefExtractor(obj client.Object) []string {
-	b, ok := obj.(*glancev1alpha1.GlanceBackend)
-	if !ok || b.Spec.GlanceRef.Name == "" {
-		return nil
+// glanceBackendParentName returns the name of the Glance a GlanceBackend
+// attaches to (spec.glanceRef.name), or "" for an object of another type. An
+// unattached backend carries no reference and so returns "" as well.
+func glanceBackendParentName(o client.Object) string {
+	b, ok := o.(*glancev1alpha1.GlanceBackend)
+	if !ok {
+		return ""
 	}
-	return []string{b.Spec.GlanceRef.Name}
+	return b.Spec.GlanceRef.Name
 }
+
+// glanceBackendGlanceRefExtractor is the IndexerFunc for
+// GlanceBackendGlanceRefIndexKey: it maps a backend to its spec.glanceRef.name
+// so an attached-backends list is an O(1) indexed lookup. Production registers
+// it through watch.RegisterParentRefIndex; this var exists so the fake clients
+// in tests build the identical extractor.
+var glanceBackendGlanceRefExtractor = watch.ParentRefIndexer(glanceBackendParentName)
 
 // glanceBackendSecretNameExtractor returns the S3 credentials Secret name a
 // GlanceBackend references (nil for a wrong-type object or a nil S3 block).
@@ -141,9 +147,9 @@ func glanceBackendSecretNameExtractor(obj client.Object) []string {
 // can rely on the indexes. The returned error is wrapped with the index key so
 // the registration site is identifiable in manager-startup failure logs.
 func registerGlanceBackendIndexes(ctx context.Context, indexer client.FieldIndexer) error {
-	if err := indexer.IndexField(ctx, &glancev1alpha1.GlanceBackend{}, GlanceBackendGlanceRefIndexKey,
-		glanceBackendGlanceRefExtractor); err != nil {
-		return fmt.Errorf("registering field indexer %q: %w", GlanceBackendGlanceRefIndexKey, err)
+	if err := watch.RegisterParentRefIndex(ctx, indexer, &glancev1alpha1.GlanceBackend{},
+		GlanceBackendGlanceRefIndexKey, glanceBackendParentName); err != nil {
+		return err
 	}
 	if err := indexer.IndexField(ctx, &glancev1alpha1.GlanceBackend{}, GlanceBackendSecretNameIndexKey,
 		glanceBackendSecretNameExtractor); err != nil {

@@ -777,7 +777,7 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 			))
 			continue
 		}
-		if hasControlChars(section) {
+		if validation.HasControlChars(section) {
 			allErrs = append(allErrs, field.Invalid(
 				specPath.Child("extraConfig"),
 				section,
@@ -794,7 +794,7 @@ func (w *GlanceWebhook) validate(ctx context.Context, g *Glance, extra field.Err
 				))
 				continue
 			}
-			if hasControlChars(key) || hasControlChars(value) {
+			if validation.HasControlChars(key) || validation.HasControlChars(value) {
 				allErrs = append(allErrs, field.Invalid(
 					specPath.Child("extraConfig").Key(section).Key(key),
 					key,
@@ -968,7 +968,8 @@ func validateImportFilteringSchemes(fldPath *field.Path, schemes []string) field
 // additional config lines, smuggling a whole [section] past the extraConfig
 // ownership and catalog gates, which inspect map structure only and never look
 // inside a value. Same reasoning, same guard as GlanceBackend's extraOptions
-// values (hasControlChars) and the ControlPlane's extraConfig INI-shape check.
+// values (validation.HasControlChars) and the ControlPlane's extraConfig
+// INI-shape check.
 func validateImportFilteringHosts(fldPath *field.Path, hosts []string) field.ErrorList {
 	var errs field.ErrorList
 	if len(hosts) > maxImportFilteringItems {
@@ -978,7 +979,7 @@ func validateImportFilteringHosts(fldPath *field.Path, hosts []string) field.Err
 		switch {
 		case host == "":
 			errs = append(errs, field.Invalid(fldPath.Index(i), host, "host must not be empty"))
-		case hasControlChars(host):
+		case validation.HasControlChars(host):
 			errs = append(errs, field.Invalid(fldPath.Index(i), host,
 				"host must not contain newline or carriage-return characters: the rendered "+
 					"[import_filtering_opts] value is written verbatim, so a newline injects arbitrary config lines"))
@@ -1089,7 +1090,7 @@ func validateImportInjectMetadata(fldPath *field.Path, m *ImportInjectMetadataSp
 		switch {
 		case role == "":
 			errs = append(errs, field.Invalid(rolesPath.Index(i), role, "role must not be empty"))
-		case hasControlChars(role):
+		case validation.HasControlChars(role):
 			errs = append(errs, field.Invalid(rolesPath.Index(i), truncateForError(role),
 				"role must not contain newline or carriage-return characters: the rendered "+
 					"[inject_metadata_properties] value is written verbatim, so a newline injects arbitrary config lines"))
@@ -1140,7 +1141,7 @@ func validateImportInjectProperty(propsPath *field.Path, key, value string) fiel
 	case key == "":
 		errs = append(errs, field.Invalid(propsPath, key, "property name must not be empty"))
 		return errs
-	case hasControlChars(key):
+	case validation.HasControlChars(key):
 		errs = append(errs, field.Invalid(keyPath, truncateForError(key),
 			"property name must not contain newline or carriage-return characters: the rendered "+
 				"[inject_metadata_properties] inject value is written verbatim, so a newline injects arbitrary config lines"))
@@ -1162,7 +1163,7 @@ func validateImportInjectProperty(propsPath *field.Path, key, value string) fiel
 	}
 
 	switch {
-	case hasControlChars(value):
+	case validation.HasControlChars(value):
 		errs = append(errs, field.Invalid(keyPath, truncateForError(value),
 			"property value must not contain newline or carriage-return characters: the rendered "+
 				"[inject_metadata_properties] inject value is written verbatim, so a newline injects arbitrary config lines"))

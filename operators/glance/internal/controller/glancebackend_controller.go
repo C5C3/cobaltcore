@@ -7,10 +7,7 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -25,7 +22,9 @@ import (
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
 	commonreconcile "github.com/c5c3/cobaltcore/internal/common/reconcile"
+	"github.com/c5c3/cobaltcore/internal/common/satellite"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
+	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 	"github.com/c5c3/cobaltcore/internal/common/watch"
 	glancev1alpha1 "github.com/c5c3/cobaltcore/operators/glance/api/v1alpha1"
 )
@@ -67,6 +66,14 @@ const backendsConfDataKey = "backends.conf"
 var glanceBackendSubConditionTypes = []string{
 	conditionTypeCredentialsReady,
 	conditionTypeConfigProjected,
+}
+
+// glanceBackendSkeleton carries the GlanceBackend condition vocabulary and its
+// status-conditions accessor, so the shared controller-skeleton glue (Ready
+// aggregation, the write-only-on-change status persist) runs from one place.
+var glanceBackendSkeleton = commonreconcile.Skeleton[*glancev1alpha1.GlanceBackend, glancev1alpha1.GlanceBackendStatus]{
+	SubConditionTypes: glanceBackendSubConditionTypes,
+	Conditions:        func(b *glancev1alpha1.GlanceBackend) *[]metav1.Condition { return &b.Status.Conditions },
 }
 
 // GlanceBackendReconciler owns the GlanceBackend CR lifecycle: S3 credential
@@ -186,26 +193,23 @@ func (r *GlanceBackendReconciler) resolveChildren(
 ) (client.Client, ctrl.Result, error) {
 	var parent glancev1alpha1.Glance
 	parentKey := client.ObjectKey{Namespace: backend.Namespace, Name: backend.Spec.GlanceRef.Name}
-	if err := r.Get(ctx, parentKey, &parent); err != nil {
-		if !apierrors.IsNotFound(err) {
-			return nil, ctrl.Result{}, fmt.Errorf("fetching parent Glance %s: %w", parentKey, err)
-		}
-		r.setCredentialsReady(backend, metav1.ConditionFalse, conditionReasonWaitingForParent,
-			fmt.Sprintf("parent Glance %s does not exist; the cluster this backend's credentials belong on is unknown", parentKey))
-		if projected := conditions.GetCondition(backend.Status.Conditions, conditionTypeConfigProjected); projected != nil && projected.Status == metav1.ConditionTrue {
-			r.setConfigProjected(backend, metav1.ConditionFalse, conditionReasonWaitingForProjection,
-				fmt.Sprintf("parent Glance %s does not exist; nothing mounts this backend's rendered store section", parentKey))
-		}
-		return nil, ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
-	}
-
-	children, err := commonmulticluster.ResolveChildrenClient(ctx, r.Resolver, r.Client, parent.Spec.TargetClusterRef)
-	if err != nil {
-		r.setCredentialsReady(backend, metav1.ConditionFalse,
-			commonmulticluster.TargetClusterUnavailable, err.Error())
-		return nil, ctrl.Result{RequeueAfter: commonreconcile.RequeueSecretPolling}, nil
-	}
-	return children, ctrl.Result{}, nil
+	return satellite.ResolveParentChildren(ctx, satellite.ResolveParams{
+		Client:                    r.Client,
+		Resolver:                  r.Resolver,
+		Parent:                    &parent,
+		ParentKey:                 parentKey,
+		ParentKind:                "Glance",
+		TargetClusterRef:          func() *commonv1.TargetClusterRefSpec { return parent.Spec.TargetClusterRef },
+		Conditions:                &backend.Status.Conditions,
+		Generation:                backend.Generation,
+		GateConditionType:         conditionTypeCredentialsReady,
+		WaitingForParentReason:    conditionReasonWaitingForParent,
+		WaitingForParentMessage:   fmt.Sprintf("parent Glance %s does not exist; the cluster this backend's credentials belong on is unknown", parentKey),
+		ProjectionConditionType:   conditionTypeConfigProjected,
+		ProjectionDemotionReason:  conditionReasonWaitingForProjection,
+		ProjectionDemotionMessage: fmt.Sprintf("parent Glance %s does not exist; nothing mounts this backend's rendered store section", parentKey),
+		RequeueAfter:              commonreconcile.RequeueSecretPolling,
+	})
 }
 
 // gateCredentials verifies the S3 credentials Secret exists and carries the
@@ -292,36 +296,14 @@ func (r *GlanceBackendReconciler) isConfigProjected(ctx context.Context, childre
 		return false, fmt.Errorf("fetching parent Glance %s: %w", glanceKey, err)
 	}
 
-	var deploy appsv1.Deployment
 	deployKey := client.ObjectKey{Namespace: glance.Namespace, Name: subResourceName(&glance)}
-	if err := children.Get(ctx, deployKey, &deploy); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("fetching Deployment %s: %w", deployKey, err)
-	}
-
-	var secretName string
-	for i := range deploy.Spec.Template.Spec.Volumes {
-		v := &deploy.Spec.Template.Spec.Volumes[i]
-		if v.Name == backendsVolumeName && v.Secret != nil {
-			secretName = v.Secret.SecretName
-			break
-		}
-	}
-	if secretName == "" {
-		return false, nil
-	}
-
-	var secret corev1.Secret
-	secretKey := client.ObjectKey{Namespace: glance.Namespace, Name: secretName}
-	if err := children.Get(ctx, secretKey, &secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("fetching projection Secret %s: %w", secretKey, err)
-	}
-	return backendSectionPresent(secret.Data[backendsConfDataKey], backend.Name), nil
+	return satellite.SectionProjected(ctx, satellite.ObserveParams{
+		Children:      children,
+		DeploymentKey: deployKey,
+		VolumeName:    backendsVolumeName,
+		DataKey:       backendsConfDataKey,
+		SectionHeader: "[" + backend.Name + "]",
+	})
 }
 
 // subResourceName returns the canonical name for Glance operator-managed
@@ -331,31 +313,6 @@ func (r *GlanceBackendReconciler) isConfigProjected(ctx context.Context, childre
 // (next commit) reuses this exact helper.
 func subResourceName(glance *glancev1alpha1.Glance) string {
 	return glance.Name
-}
-
-// backendSectionPresent reports whether the rendered backends.conf carries the
-// store-section header for the named backend as a whole line: the literal token
-// "[name]" bounded by the start of data or a newline on the left and a newline
-// (LF or CR) or the end of data on the right. The boundary check guards against
-// substring collisions — a section [name2] must not satisfy a lookup for name,
-// and a "[name]" appearing inside an option value must not either.
-func backendSectionPresent(rendered []byte, name string) bool {
-	header := "[" + name + "]"
-	data := string(rendered)
-	for start := 0; ; {
-		idx := strings.Index(data[start:], header)
-		if idx < 0 {
-			return false
-		}
-		idx += start
-		leftOK := idx == 0 || data[idx-1] == '\n'
-		right := idx + len(header)
-		rightOK := right == len(data) || data[right] == '\n' || data[right] == '\r'
-		if leftOK && rightOK {
-			return true
-		}
-		start = idx + len(header)
-	}
 }
 
 // setCredentialsReady upserts the CredentialsReady condition.
@@ -385,8 +342,7 @@ func (r *GlanceBackendReconciler) setConfigProjected(backend *glancev1alpha1.Gla
 // re-derived from the sub-condition set on every persist, and ObservedGeneration
 // is stamped.
 func (r *GlanceBackendReconciler) updateStatus(ctx context.Context, backend *glancev1alpha1.GlanceBackend, statusBefore *glancev1alpha1.GlanceBackendStatus, result ctrl.Result, reconcileErr error) (ctrl.Result, error) {
-	return commonreconcile.UpdateStatus(ctx, r.Client, backend, statusBefore, &backend.Status, func() {
-		commonreconcile.SetAggregateReady(&backend.Status.Conditions, backend.Generation, glanceBackendSubConditionTypes)
+	return glanceBackendSkeleton.UpdateStatus(ctx, r.Client, backend, statusBefore, &backend.Status, func() {
 		backend.Status.ObservedGeneration = backend.Generation
 	}, result, reconcileErr)
 }

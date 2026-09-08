@@ -583,28 +583,3 @@ func TestBackendReconcile_DeletionTimestampIsNoOp(t *testing.T) {
 	updated := getBackend(t, r.Client, "store")
 	g.Expect(updated.Status.Conditions).To(BeEmpty(), "a deleting backend writes no status")
 }
-
-func TestBackendSectionPresent(t *testing.T) {
-	cases := []struct {
-		name    string
-		conf    string
-		section string
-		want    bool
-	}{
-		{name: "exact match on its own line", conf: "[store]\nk = v\n", section: "store", want: true},
-		{name: "match at start of data", conf: "[store]", section: "store", want: true},
-		{name: "match at end without trailing newline", conf: "[a]\nk = v\n[store]", section: "store", want: true},
-		{name: "match with CRLF line ending", conf: "[store]\r\nk = v\r\n", section: "store", want: true},
-		{name: "prefix collision is not a match", conf: "[store2]\nk = v\n", section: "store", want: false},
-		{name: "suffix collision is not a match", conf: "[xstore]\nk = v\n", section: "store", want: false},
-		{name: "header inside a value line is not a match", conf: "note = see [store]\n", section: "store", want: false},
-		{name: "absent section", conf: "[other]\nk = v\n", section: "store", want: false},
-		{name: "empty data", conf: "", section: "store", want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			g := NewGomegaWithT(t)
-			g.Expect(backendSectionPresent([]byte(tc.conf), tc.section)).To(Equal(tc.want))
-		})
-	}
-}
