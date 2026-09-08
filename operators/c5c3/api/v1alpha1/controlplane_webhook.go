@@ -426,15 +426,34 @@ func validateServiceRegistrations(cp *ControlPlane) field.ErrorList {
 	return allErrs
 }
 
-// glanceBackendChildNameOverhead is the fixed part of a projected GlanceBackend
-// child CR name, "{cp}-glance-{name}", i.e. everything except the ControlPlane
-// name and the backend entry name. It mirrors identityImportChildNameOverhead
-// one level up: nothing bounds the ControlPlane name below 253, so a backend
-// name admitted here must leave room for the composed child name to stay within
-// the apiserver's metadata.name cap. Without the guard the reconciler wedges
-// projecting a GlanceBackend CR the apiserver rejects, on an Invalid the
-// ControlPlane admission already accepted.
-const glanceBackendChildNameOverhead = len("-glance-")
+// glanceBackendChildNameInfix is the infix of a projected GlanceBackend child CR
+// name, "{cp}-glance-{name}", i.e. the part between the ControlPlane name and
+// the backend entry name. It mirrors identityImportChildNameOverhead one level
+// up: nothing bounds the ControlPlane name below 253, so a backend name admitted
+// here must leave room for the composed child name to stay within the
+// apiserver's metadata.name cap. projectedChildNameBound is the check that
+// spends it. Without the guard the reconciler wedges projecting a GlanceBackend
+// CR the apiserver rejects, on an Invalid the ControlPlane admission already
+// accepted.
+const glanceBackendChildNameInfix = "-glance-"
+
+// projectedChildNameBound bounds the name of a satellite child projected per
+// spec entry, cpName + infix + entryName, to the apiserver's metadata.name cap.
+// It returns nil when the composed name fits, and otherwise the field.Invalid
+// the caller appends for that entry. entryNoun is the caller's own word for the
+// spec entry ("backend" for a Glance store), so the remediation names the field
+// the rejection is raised on rather than another kind's vocabulary.
+func projectedChildNameBound(namePath *field.Path, kind, entryNoun, cpName, infix, entryName string) *field.Error {
+	n := len(cpName) + len(infix) + len(entryName)
+	if n <= maxObjectNameBytes {
+		return nil
+	}
+	return field.Invalid(namePath, entryName, fmt.Sprintf(
+		"the child %s CR name would be %d bytes; shorten the ControlPlane name or the "+
+			"%s name so the total stays within the %d-byte Kubernetes object-name limit",
+		kind, n, entryNoun, maxObjectNameBytes,
+	))
+}
 
 // glanceChildNameOverhead is the fixed part of the projected Glance child CR
 // name, "{cp}-glance". Unlike its siblings the budget it eats into is not the
@@ -878,12 +897,9 @@ func validateGlanceBackends(cp *ControlPlane, backendsPath *field.Path) field.Er
 		}
 
 		if entry.Name != "" {
-			if n := len(cp.Name) + glanceBackendChildNameOverhead + len(entry.Name); n > maxObjectNameBytes {
-				allErrs = append(allErrs, field.Invalid(entryPath.Child("name"), entry.Name, fmt.Sprintf(
-					"the child GlanceBackend CR name would be %d bytes; shorten the ControlPlane name or the "+
-						"backend name so the total stays within the %d-byte Kubernetes object-name limit",
-					n, maxObjectNameBytes,
-				)))
+			if err := projectedChildNameBound(entryPath.Child("name"), "GlanceBackend", "backend",
+				cp.Name, glanceBackendChildNameInfix, entry.Name); err != nil {
+				allErrs = append(allErrs, err)
 			}
 		}
 	}
@@ -1241,8 +1257,11 @@ func warnDevelopmentBarbicanSecretStore(cp *ControlPlane) admission.Warnings {
 // schema admission (the gateway hostname shape, the image tag/digest XOR, and
 // the name of the OVNCentral reference) and adds the rules the CRD schema cannot
 // express: the public endpoint's origin shape and its agreement with the gateway
-// (validateNeutronPublicEndpoint) and the shared message bus the projected child
-// cannot come up without.
+// (validateNeutronPublicEndpoint).
+//
+// The shared message bus the projected child cannot come up without is checked
+// by validateMessagingConsumers, which the caller runs directly after this
+// validator.
 //
 // The projected-child-name bound lives in validateNeutronChildName and the
 // OVNCentral reach check in ValidateNeutronOVNCentralNamespace, neither of which
@@ -1292,20 +1311,30 @@ func validateNeutron(cp *ControlPlane) field.ErrorList {
 			"must be set: it names the OVNCentral the projected Neutron programs"))
 	}
 
-	// The bus is not optional for this service. The Neutron CRD requires
-	// spec.messaging, and the ControlPlane derives the child's transport URL from
-	// spec.infrastructure.messaging, so a ControlPlane declaring the network
-	// service without one would project a child its own admission rejects on every
-	// pass. A nil infrastructure block is reported by validateKeystoneMode already
-	// (it is required outside External mode, and External mode forbids
-	// services.neutron outright), so this arm stays silent there rather than
-	// naming the same missing block twice.
-	if cp.Spec.Infrastructure != nil && cp.Spec.Infrastructure.Messaging == nil {
+	return allErrs
+}
+
+// validateMessagingConsumers requires spec.infrastructure.messaging once per
+// declared bus-consuming service. The bus is not optional for such a service:
+// its child CRD requires spec.messaging, and the ControlPlane derives the
+// child's transport URL from spec.infrastructure.messaging, so a ControlPlane
+// declaring the service without one would project a child its own admission
+// rejects on every pass. Neutron is the one such service.
+//
+// A nil infrastructure block is reported by validateKeystoneMode already (it is
+// required outside External mode, and External mode forbids the service blocks
+// this validator names outright), so this validator stays silent there rather
+// than naming the same missing block twice.
+func validateMessagingConsumers(cp *ControlPlane) field.ErrorList {
+	if cp.Spec.Infrastructure == nil || cp.Spec.Infrastructure.Messaging != nil {
+		return nil
+	}
+	var allErrs field.ErrorList
+	if cp.Spec.Services.Neutron != nil {
 		allErrs = append(allErrs, field.Required(field.NewPath("spec", "infrastructure", "messaging"),
 			"is required when services.neutron is set: the Neutron CRD requires spec.messaging, and the "+
 				"ControlPlane derives the child's transport URL from the shared bus"))
 	}
-
 	return allErrs
 }
 
@@ -2156,6 +2185,7 @@ func (w *ControlPlaneWebhook) validate(cp *ControlPlane) field.ErrorList {
 	allErrs = append(allErrs, validatePlacement(cp)...)
 	allErrs = append(allErrs, validateBarbican(cp)...)
 	allErrs = append(allErrs, validateNeutron(cp)...)
+	allErrs = append(allErrs, validateMessagingConsumers(cp)...)
 	allErrs = append(allErrs, validateKeystoneMode(cp)...)
 	allErrs = append(allErrs, validateServiceRegistrations(cp)...)
 	allErrs = append(allErrs, validateDedicatedBackingServices(cp)...)

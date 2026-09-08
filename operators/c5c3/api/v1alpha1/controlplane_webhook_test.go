@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -3700,6 +3701,54 @@ func TestValidateCreate_RejectsOverlongGlanceBackendChildName(t *testing.T) {
 	_, err := w.ValidateCreate(context.Background(), cp)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("child GlanceBackend CR name would be"))
+}
+
+// TestProjectedChildNameBound pins the shared per-entry child-name bound: the
+// composed cpName + infix + entryName must stay within the apiserver's 253-byte
+// metadata.name cap, and the rejection names the child kind, the composed length
+// and the cap.
+func TestProjectedChildNameBound(t *testing.T) {
+	namePath := field.NewPath("spec", "services", "glance", "backends").Index(0).Child("name")
+
+	t.Run("at the limit", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		// len("cp") + len("-glance-") + 243 == 253.
+		g.Expect(projectedChildNameBound(namePath, "GlanceBackend", "backend", "cp", "-glance-",
+			strings.Repeat("a", 243))).To(BeNil())
+	})
+
+	t.Run("one byte over", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		entryName := strings.Repeat("a", 244)
+
+		err := projectedChildNameBound(namePath, "GlanceBackend", "backend", "cp", "-glance-", entryName)
+		g.Expect(err).NotTo(BeNil())
+		g.Expect(err.Type).To(Equal(field.ErrorTypeInvalid))
+		g.Expect(err.Field).To(Equal(namePath.String()))
+		g.Expect(err.BadValue).To(Equal(entryName))
+		g.Expect(err.Detail).To(Equal("the child GlanceBackend CR name would be 254 bytes; shorten the " +
+			"ControlPlane name or the backend name so the total stays within the 253-byte Kubernetes " +
+			"object-name limit"))
+	})
+
+	t.Run("the ControlPlane name alone can overflow", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		// An empty entry name still spends the ControlPlane name and the infix.
+		g.Expect(projectedChildNameBound(namePath, "GlanceBackend", "backend", strings.Repeat("c", 246),
+			"-glance-", "")).NotTo(BeNil())
+		g.Expect(projectedChildNameBound(namePath, "GlanceBackend", "backend", strings.Repeat("c", 245),
+			"-glance-", "")).To(BeNil())
+	})
+
+	t.Run("the remediation names the caller's own entry", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		// The next projected kind passes its own noun, so the operator is told to
+		// shorten the field the rejection is raised on — not Glance's "backend".
+		err := projectedChildNameBound(namePath, "OtherChild", "store", "cp", "-other-",
+			strings.Repeat("a", 253))
+		g.Expect(err).NotTo(BeNil())
+		g.Expect(err.Detail).To(ContainSubstring("shorten the ControlPlane name or the store name"))
+	})
 }
 
 // The projected Glance child is bounded far below the 253-byte object-name cap:
@@ -7468,6 +7517,63 @@ func TestValidateCreate_RejectsNeutronWithoutMessaging(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("spec.infrastructure.messaging"))
 	g.Expect(err.Error()).To(ContainSubstring("is required when services.neutron is set"))
+}
+
+// TestValidateMessagingConsumers pins the shared bus arm: it requires
+// spec.infrastructure.messaging once per declared bus-consuming service, and
+// stays silent when no such service is declared, when the whole infrastructure
+// block is missing (validateKeystoneMode reports that one), and when the bus is
+// there.
+func TestValidateMessagingConsumers(t *testing.T) {
+	t.Run("declared consumer without a bus", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := neutronControlPlane()
+		cp.Spec.Infrastructure.Messaging = nil
+
+		errs := validateMessagingConsumers(cp)
+		g.Expect(errs).To(HaveLen(1))
+		g.Expect(errs[0].Field).To(Equal("spec.infrastructure.messaging"))
+		g.Expect(errs[0].Type).To(Equal(field.ErrorTypeRequired))
+		g.Expect(errs[0].Detail).To(Equal("is required when services.neutron is set: the Neutron CRD " +
+			"requires spec.messaging, and the ControlPlane derives the child's transport URL from the " +
+			"shared bus"))
+	})
+
+	t.Run("no consumer declared", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := neutronControlPlane()
+		cp.Spec.Services.Neutron = nil
+		cp.Spec.Infrastructure.Messaging = nil
+
+		g.Expect(validateMessagingConsumers(cp)).To(BeNil())
+	})
+
+	t.Run("no infrastructure block", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+		cp := neutronControlPlane()
+		cp.Spec.Infrastructure = nil
+
+		g.Expect(validateMessagingConsumers(cp)).To(BeNil())
+	})
+
+	t.Run("bus declared", func(t *testing.T) {
+		g := NewGomegaWithT(t)
+
+		g.Expect(validateMessagingConsumers(neutronControlPlane())).To(BeNil())
+	})
+}
+
+// TestValidateNeutron_LeavesTheBusToMessagingConsumers pins where the bus rule
+// lives: validateNeutron leaves spec.infrastructure.messaging to
+// validateMessagingConsumers, which the caller runs directly after it.
+func TestValidateNeutron_LeavesTheBusToMessagingConsumers(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cp := neutronControlPlane()
+	cp.Spec.Infrastructure.Messaging = nil
+
+	for _, err := range validateNeutron(cp) {
+		g.Expect(err.Field).NotTo(Equal("spec.infrastructure.messaging"))
+	}
 }
 
 // TestValidateCreate_RejectsNeutronOVNCentralRefNameEmpty pins the
