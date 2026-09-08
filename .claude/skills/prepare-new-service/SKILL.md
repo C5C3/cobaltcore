@@ -100,9 +100,10 @@ applies and which decisions need a Phase-0 spike:
   writes in the consumer's own namespace through the consumer's own client, so
   a consumer on another cluster or in another namespace than the bus is handed
   a brownfield `secretRef` by whoever projects it. On the ControlPlane side that
-  projector is `reconcileNeutronMessaging` (`reconcile_neutron_messaging.go`):
-  it resolves `spec.infrastructure.messaging`
-  read-only through `messaging.ResolveTransportURL`, writes
+  projector is `reconcileServiceMessaging` (`reconcile_service_messaging.go`),
+  called on `neutronMessagingTarget(cp)`: it resolves
+  `spec.infrastructure.messaging` read-only through
+  `messaging.ResolveTransportURL`, writes
   `{cp}-neutron-messaging` (and `{cp}-neutron-messaging-ca` when the bus declares
   `tls`) into the Neutron's own namespace on the Neutron's own cluster, and hands
   the child a brownfield `secretRef` naming it. The validating webhook requires
