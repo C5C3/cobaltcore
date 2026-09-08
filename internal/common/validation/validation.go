@@ -21,12 +21,15 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/robfig/cron/v3"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -268,4 +271,125 @@ func PriorityClassExists(ctx context.Context, c client.Reader, fldPath *field.Pa
 		)}
 	}
 	return nil
+}
+
+// AttachedSiblings lists list in self's namespace through reader and returns
+// the objects that are neither self nor Terminating and for which sameParent
+// reports true. It is the List-and-filter skeleton the cross-CR uniqueness
+// rules share: each caller keeps its own predicate, field path and message, and
+// none repeats the namespace-scoped List or this filter.
+//
+// T is the satellite type list holds, inferred from sameParent, so callers read
+// their own spec fields off the returned siblings without re-asserting.
+//
+// A nil reader yields no siblings, so a programmatically constructed webhook
+// without a client stays permissive rather than failing closed on a lookup it
+// cannot perform. The List error is returned unwrapped, leaving the caller to
+// wrap it with the text naming its own rule.
+func AttachedSiblings[T client.Object](
+	ctx context.Context,
+	reader client.Reader,
+	self client.Object,
+	list client.ObjectList,
+	sameParent func(other T) bool,
+) ([]T, error) {
+	if reader == nil {
+		return nil, nil
+	}
+	if err := reader.List(ctx, list, client.InNamespace(self.GetNamespace())); err != nil {
+		return nil, err
+	}
+	items, err := apimeta.ExtractList(list)
+	if err != nil {
+		return nil, err
+	}
+
+	var attached []T
+	for _, item := range items {
+		// The !ok arm covers a list whose element type is not T, which only a
+		// caller pairing the wrong list with sameParent can produce.
+		other, ok := item.(T)
+		// self appears in the List on UPDATE. A Terminating sibling is on its
+		// way out, and blocking a replacement on it would deadlock
+		// recreate-during-teardown.
+		if !ok || other.GetName() == self.GetName() || other.GetDeletionTimestamp() != nil {
+			continue
+		}
+		if sameParent(other) {
+			attached = append(attached, other)
+		}
+	}
+	return attached, nil
+}
+
+// DefaultExtraOptionKeyPattern is the charset an extraOptions key must match.
+// oslo.config option names are snake_case, so letters, digits and underscores
+// are the whole legitimate charset.
+var DefaultExtraOptionKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
+
+// ExtraOptionsRules carries the per-consumer half of the ExtraOptions
+// validator: the options the projection owns and an optional extra rule. The
+// key charset is not a knob — every consumer enforces
+// DefaultExtraOptionKeyPattern, which is what the rejection message names.
+type ExtraOptionsRules struct {
+	// Denylist maps an option name the projection owns to the spec field or
+	// component owning it, which the rejection message names.
+	Denylist map[string]string
+	// PerKey is an optional rule over the keys that survive the denylist. Its
+	// error is appended, and the value is still checked for control
+	// characters afterwards.
+	PerKey func(key, value string) *field.Error
+}
+
+// ExtraOptions rejects the entries in opts a projection cannot accept: an empty
+// key, a key outside the charset, a key the projection owns, and a value
+// carrying a control character. Keys are validated in sorted order so the
+// aggregated error list is deterministic.
+//
+// The charset check runs before the denylist because the denylist matches exact
+// strings and is therefore blind to two key-side attacks: a newline in the key
+// injects an arbitrary line through the renderer's verbatim `key = value`
+// write, and a variant such as a trailing space is not string-equal to the
+// denylisted option, yet oslo.config strips it back to one.
+func ExtraOptions(path *field.Path, opts map[string]string, rules ExtraOptionsRules) field.ErrorList {
+	if len(opts) == 0 {
+		return nil
+	}
+
+	var errs field.ErrorList
+	for _, k := range slices.Sorted(maps.Keys(opts)) {
+		v := opts[k]
+		if k == "" {
+			errs = append(errs, field.Invalid(path, k, "option name must not be empty"))
+			continue
+		}
+		if !DefaultExtraOptionKeyPattern.MatchString(k) {
+			errs = append(errs, field.Invalid(
+				path.Key(k), k,
+				"option name must match ^[A-Za-z0-9_]+$ (letters, digits, and underscore)",
+			))
+			continue
+		}
+		if owner, denied := rules.Denylist[k]; denied {
+			errs = append(errs, field.Invalid(
+				path.Key(k), v,
+				fmt.Sprintf("option %q is owned by %s and must not be set via extraOptions", k, owner),
+			))
+			continue
+		}
+		if rules.PerKey != nil {
+			if err := rules.PerKey(k, v); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		// INI-injection guard: a value with an embedded newline injects
+		// arbitrary section lines however innocuous the key is.
+		if HasControlChars(v) {
+			errs = append(errs, field.Invalid(
+				path.Key(k), v,
+				"value must not contain newline or carriage-return characters",
+			))
+		}
+	}
+	return errs
 }
