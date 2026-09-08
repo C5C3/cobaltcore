@@ -404,6 +404,31 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
+        "/deploy/kind/nfs/nfs-server\\.yaml$/",
+        "/tests/e2e/infrastructure/nfs-health/chainsaw-test\\.yaml$/"
+      ],
+      "matchStrings": [
+        "image: (?<depName>docker\\.io/itsthenetwork/nfs-server-alpine):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/deploy/kind/nfs/release\\.yaml$/"
+      ],
+      "matchStrings": [
+        "\\n      version: \"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "csi-driver-nfs",
+      "datasourceTemplate": "helm",
+      "registryUrlTemplate": "https://raw.githubusercontent.com/kubernetes-csi/csi-driver-nfs/master/charts",
+      "versioningTemplate": "helm"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
         "/tests/unit/renovate/.*_test\\.sh$/"
       ],
       "matchStrings": [
@@ -778,6 +803,44 @@
       "automerge": true,
       "minimumReleaseAge": "3 days",
       "groupName": "aws-cli e2e fixture"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "deploy/kind/nfs/nfs-server.yaml",
+        "tests/e2e/infrastructure/nfs-health/chainsaw-test.yaml"
+      ],
+      "matchPackageNames": ["docker.io/itsthenetwork/nfs-server-alpine"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": [
+        "deploy/kind/nfs/nfs-server.yaml",
+        "tests/e2e/infrastructure/nfs-health/chainsaw-test.yaml"
+      ],
+      "matchPackageNames": ["docker.io/itsthenetwork/nfs-server-alpine"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "nfs-server e2e fixture"
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/kind/nfs/release.yaml"],
+      "matchPackageNames": ["csi-driver-nfs"],
+      "matchUpdateTypes": ["major"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["deploy/kind/nfs/release.yaml"],
+      "matchPackageNames": ["csi-driver-nfs"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "groupName": "csi-driver-nfs chart"
     },
     {
       "matchDatasources": ["docker", "go"],
