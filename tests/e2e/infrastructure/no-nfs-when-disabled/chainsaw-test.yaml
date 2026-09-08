@@ -1,0 +1,177 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test pinning the default-state non-regression invariant for the
+# NFS kind opt-in: when WITH_NFS is unset (or set to anything other than the
+# literal string "true"), `make deploy-infra` MUST NOT install the
+# csi-driver-nfs HelmRepository, the csi-driver-nfs HelmRelease, the NFS server
+# Deployment, or the nfs.csi.k8s.io CSIDriver.
+#
+# Why this test exists
+#   The only producers of those four resources are the manifests under
+#   deploy/kind/nfs/, applied by the single `kubectl apply -k deploy/kind/nfs`
+#   that sits inside the WITH_NFS=true gate of hack/deploy-infra.sh. The shell
+#   unit tests (tests/unit/hack/deploy_infra_nfs_flag_test.sh,
+#   tests/unit/deploy/nfs_overlay_test.sh) exercise that gate and the overlay
+#   render at the source level. Neither asserts "a default cluster has no NFS
+#   footprint", so a regression that moves the apply outside the gate, or a
+#   kustomize edit that pulls the overlay into deploy/kind/base, would slip
+#   through. This suite closes that gap against the running cluster, mirroring
+#   the sibling no-metrics-server-when-disabled and no-prometheus-when-disabled
+#   suites.
+#
+# Lane wiring:
+#   The default e2e-infra legs run `make deploy-infra` without WITH_NFS, so the
+#   absence assertions hold there. The additive re-run sets WITH_NFS=true and
+#   runs a scoped set that leaves this suite out, because on that cluster all
+#   four resources exist and it would rightly fail.
+#
+# Scope gating: none. The invariant also holds on production overlays
+# (deploy/flux-system/kustomization.yaml lists none of the deploy/kind/nfs/
+# resources), so the test is environment-agnostic like its two siblings.
+#
+# Why a single script and not declarative `error` blocks: asserting "no
+# HelmRelease named csi-driver-nfs in any namespace" requires a
+# list-and-filter, which is more naturally expressed in shell. One script also
+# keeps the catch-block dump aligned with the assertion sequence.
+#
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: no-nfs-when-disabled
+spec:
+  # Four kubectl gets plus a diagnostic dump on failure. Realistic worst case
+  # is sub-second; budget 2m for cluster slowness margin.
+  timeouts:
+    assert: 2m
+    exec: 2m
+  steps:
+  - try:
+    - script:
+        timeout: 2m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`. Pin bash
+        # to match the rest of the infra e2e scripts.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Lookup helper ────────────────────────────────────────────────
+          # kubectl exits 1 both for "the object does not exist" and for "the
+          # lookup never reached an answer" (an apiserver restarting under
+          # kind, an expired kubeconfig context, an RBAC denial, a DNS blip
+          # against the control-plane container). A bare
+          # `if kubectl get ... >/dev/null 2>&1` reads every one of those as
+          # absence, so a regression that installs the privileged NFS stack on
+          # a default cluster would go unreported behind a transient error.
+          # This helper keeps the two apart: --ignore-not-found turns a genuine
+          # NotFound into exit 0 with empty output, a missing CRD is also an
+          # absence, and every other failure stops the suite with the kubectl
+          # error rather than passing.
+          #
+          # stderr goes to its own file, never into FOUND: kubectl writes to
+          # stderr on commands that exit 0 — the aggregated-discovery line
+          # `couldn't get resource list for metrics.k8s.io/v1beta1: ...` is the
+          # common one, and the additive leg installs the metrics-server
+          # APIService that produces it. Folded into FOUND, that warning reads
+          # as "the resource exists" and fails the suite on a clean cluster.
+          #
+          # Only `doesn't have a resource type` counts as the missing-CRD
+          # absence. Matching the aggregated-discovery tail `the server could
+          # not find the requested resource` as well would fail open: every
+          # kubectl get in this suite exits 1 with that message once one
+          # APIService is unreachable, so all four assertions would report OK
+          # having observed nothing — including the two that guard the built-in
+          # `deployment` and `csidriver` types, which have no CRD to miss.
+          #
+          # Sets FOUND to the matching resource names, empty when absent.
+          FOUND=""
+          lookup() {
+            local rc=0 err msg
+            err="$(mktemp)"
+            FOUND="$(kubectl get "$@" --ignore-not-found -o name 2>"${err}")" || rc=$?
+            msg="$(cat "${err}")"
+            rm -f "${err}"
+            if [ "${rc}" -ne 0 ]; then
+              case "${msg}" in
+                *"doesn't have a resource type"*)
+                  FOUND=""
+                  return 0
+                  ;;
+              esac
+              echo "FAIL: kubectl get $* failed: ${msg}"
+              exit 1
+            fi
+          }
+
+          # ── Assertion 1: no csi-driver-nfs HelmRepository in flux-system ──
+          # The only producer is deploy/kind/nfs/source.yaml.
+          lookup helmrepository.source.toolkit.fluxcd.io csi-driver-nfs \
+            -n flux-system
+          if [ -n "${FOUND}" ]; then
+            echo "FAIL: HelmRepository 'csi-driver-nfs' exists in 'flux-system' on a default cluster."
+            echo "      Source of regression: hack/deploy-infra.sh ran the NFS overlay"
+            echo "      apply outside the WITH_NFS gate, or the overlay was pulled into"
+            echo "      deploy/kind/base."
+            exit 1
+          fi
+          echo "OK: no HelmRepository 'csi-driver-nfs' in 'flux-system'"
+
+          # ── Assertion 2: no csi-driver-nfs HelmRelease anywhere ──
+          # `kubectl get -A -o name` returns 0 even when the list is empty; we
+          # count lines rather than relying on exit codes.
+          hr_count=$(kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+            --field-selector=metadata.name=csi-driver-nfs \
+            -o name 2>/dev/null | wc -l | tr -d '[:space:]')
+          if [ "${hr_count}" != "0" ]; then
+            echo "FAIL: HelmRelease 'csi-driver-nfs' exists (count=${hr_count}) on a default cluster."
+            echo "      Source of regression: deploy/kind/nfs/release.yaml was applied"
+            echo "      without WITH_NFS=true."
+            kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+              --field-selector=metadata.name=csi-driver-nfs -o wide 2>&1 || true
+            exit 1
+          fi
+          echo "OK: no HelmRelease 'csi-driver-nfs' exists"
+
+          # ── Assertion 3: no nfs-server Deployment in openstack ──
+          # The only producer is deploy/kind/nfs/nfs-server.yaml.
+          lookup deployment nfs-server -n openstack
+          if [ -n "${FOUND}" ]; then
+            echo "FAIL: Deployment 'nfs-server' exists in 'openstack' on a default cluster."
+            echo "      Source of regression: the NFS overlay was applied without"
+            echo "      WITH_NFS=true. The server runs privileged, so it must never"
+            echo "      reach a cluster that did not ask for it."
+            exit 1
+          fi
+          echo "OK: no Deployment 'nfs-server' in 'openstack'"
+
+          # ── Assertion 4: no nfs.csi.k8s.io CSIDriver ──
+          # Cluster-scoped, installed by the csi-driver-nfs chart alone.
+          lookup csidriver nfs.csi.k8s.io
+          if [ -n "${FOUND}" ]; then
+            echo "FAIL: CSIDriver 'nfs.csi.k8s.io' exists on a default cluster."
+            echo "      Source of regression: the csi-driver-nfs HelmRelease was"
+            echo "      reconciled without WITH_NFS=true, or its chart was pulled into"
+            echo "      deploy/flux-system/."
+            exit 1
+          fi
+          echo "OK: no CSIDriver 'nfs.csi.k8s.io'"
+
+          echo "PASS: default kind deploy footprint matches the WITH_NFS=false contract."
+    catch:
+    # On failure, dump the cluster's NFS footprint for triage. Each block is
+    # independently scoped so a missing resource does not short-circuit the
+    # rest of the dump.
+    - script:
+        content: |
+          echo "=== HelmRepositories named csi-driver-nfs (flux-system) ==="
+          kubectl get helmrepository.source.toolkit.fluxcd.io -n flux-system \
+            --field-selector=metadata.name=csi-driver-nfs -o wide 2>&1 || true
+          echo "=== HelmReleases named csi-driver-nfs (any namespace) ==="
+          kubectl get helmrelease.helm.toolkit.fluxcd.io --all-namespaces \
+            --field-selector=metadata.name=csi-driver-nfs -o wide 2>&1 || true
+          echo "=== Deployments named nfs-server (openstack) ==="
+          kubectl get deployment nfs-server -n openstack -o wide 2>&1 || true
+          echo "=== CSIDriver nfs.csi.k8s.io ==="
+          kubectl get csidriver nfs.csi.k8s.io -o wide 2>&1 || true

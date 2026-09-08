@@ -1,0 +1,436 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the kind-only NFS stack (deploy/kind/nfs/), installed
+# by `WITH_NFS=true make deploy-infra`.
+#
+# What it proves (the cluster-side half of #979 D3): both exports of the
+# in-cluster NFS server mount through csi-driver-nfs into a Pod that runs
+# under `restricted` PodSecurity, at the two paths os-brick computes, as UID
+# 42424, and a file written there lands as `42424 42424 660`. The two shares
+# and their mount points are:
+#   nfs-server.openstack.svc.cluster.local:/volumes
+#     at /var/lib/cinder/mnt/<md5(share)>
+#   nfs-server.openstack.svc.cluster.local:/backups
+#     at /var/lib/cinder/backup_mount/<md5(share)>
+# #979 D3 has Kubernetes mount each share at that path so os-brick's
+# RemoteFsClient.mount finds it in /proc/mounts and returns before it would
+# call `mount -t nfs`, which the unprivileged cinder-volume and cinder-backup
+# containers cannot do. The probe container reads /proc/mounts the same way,
+# so a share that lands anywhere else fails here rather than at the first
+# volume create.
+#
+# Runtime presence gate: Deployment/nfs-server in `openstack` is created by
+# the opt-in overlay alone, so its absence means WITH_NFS was not set. The
+# script then exits 0 with a SKIP line. Three of the four e2e-infra legs run
+# without WITH_NFS and take that path; the fourth deploys the stack and runs
+# this suite.
+#
+# Why the whole check is ONE `script` operation: chainsaw has no step-level
+# skip, so declarative asserts would run past the gate and time out on a
+# cluster that has no NFS stack. `kubectl wait` and `kubectl rollout status`
+# give the same retry semantics inside the script, and the `catch` below still
+# dumps post-mortem state.
+#
+# Why `spec.namespace: ""`: chainsaw's per-test namespace carries no
+# PodSecurity labels, and the probe has to be admitted by a `restricted`
+# namespace for the result to mean anything. The suite therefore opts out of
+# the plumbing and creates its own labelled `nfs-health-probe` namespace
+# (`enforce: restricted` plus `enforce-version: latest`, so a cluster upgrade
+# cannot silently move the baseline).
+#
+# Why `printf '%s'` and not `echo` for the digest: os-brick hashes the share
+# string alone, `hashlib.md5(share.encode('utf-8')).hexdigest()`, with no
+# trailing newline. `echo` appends one, which yields a different digest and a
+# mount point os-brick would never look at. `md5 -q` is the fallback for a
+# macOS host running the suite against a remote cluster.
+#
+# Why the probe pod sets no `fsGroup`: the driver runs with
+# `fsGroupPolicy: File`, so the kubelet would chgrp the mounted share to that
+# group and the ownership assertion would prove its own side effect instead of
+# the 42424:42424 exports the server's init container pre-creates.
+#
+# Why `soft,timeo=30,retrans=2` on both PersistentVolumes: a wedged server
+# then fails the mount and the suite reports it. A hard mount (the default)
+# blocks in the kernel, which leaves the probe pod unkillable and its
+# namespace stuck in Terminating.
+#
+# Why `finally` and not only `catch`: the Namespace, the two
+# PersistentVolumes, the two PersistentVolumeClaims and the Pod are created by
+# `kubectl apply` inside the script, so chainsaw does not track them and its
+# own cleanup never sees them. They have to be reaped on the passing path too.
+# The order is Pod, then Namespace, then the two cluster-scoped
+# PersistentVolumes: a bound PersistentVolume stays Terminating until its
+# claim is gone, and the claims die with the namespace.
+#
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: nfs-health
+spec:
+  # No chainsaw-managed namespace; the suite owns a PodSecurity-labelled one.
+  namespace: ""
+  # Budget: 180s rollout + 180s HelmRelease wait + 150s pod poll, plus the
+  # cold image pull of the csi-driver-nfs chart on the first WITH_NFS run.
+  # 10m leaves margin above that worst case so chainsaw reports the failing
+  # resource rather than killing the script mid-run.
+  timeouts:
+    assert: 10m
+    exec: 10m
+  steps:
+  - try:
+    - script:
+        # Matches spec.timeouts.exec; kept explicit so the bound is visible at
+        # the call site.
+        timeout: 10m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`. Pin bash
+        # like the rest of the infra e2e scripts.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          # ── Presence gate ────────────────────────────────────────────────
+          # deploy/kind/nfs/nfs-server.yaml is the only producer of this
+          # Deployment, and it is applied inside the WITH_NFS=true gate of
+          # hack/deploy-infra.sh.
+          #
+          # `kubectl get ... >/dev/null 2>&1` must NOT stand in for this gate:
+          # kubectl exits 1 both for NotFound and for a lookup that never
+          # reached an answer (an apiserver restarting under kind, an expired
+          # kubeconfig context, an RBAC denial, a DNS blip against the
+          # control-plane container). Reading any of those as "WITH_NFS was not
+          # set" would exit 0, and the one CI leg that exists to prove the
+          # mounts, the export ownership and the os-brick paths would report
+          # success having checked none of them. --ignore-not-found turns the
+          # genuine absence into exit 0 with empty output, so the two cases stay
+          # apart.
+          #
+          # stderr goes to its own file rather than into ${probe}: kubectl
+          # writes to stderr on commands that exit 0 — the aggregated-discovery
+          # line `couldn't get resource list for metrics.k8s.io/v1beta1: ...`
+          # is the common one. Folded into ${probe} that warning makes the gate
+          # read "the server is present" on a cluster without NFS, and the
+          # suite then fails at the rollout wait instead of skipping.
+          PROBE_ERR="$(mktemp)"
+          if ! probe="$(kubectl get deployment nfs-server -n openstack \
+              --ignore-not-found -o name 2>"${PROBE_ERR}")"; then
+            echo "FAIL: kubectl get deployment/nfs-server in openstack failed: $(cat "${PROBE_ERR}")"
+            rm -f "${PROBE_ERR}"
+            exit 1
+          fi
+          rm -f "${PROBE_ERR}"
+          if [ -z "${probe}" ]; then
+            echo "SKIP: Deployment nfs-server absent in openstack — WITH_NFS was not set."
+            exit 0
+          fi
+          echo "OK: Deployment/nfs-server present in openstack"
+
+          # ── Leftovers from an interrupted run ────────────────────────────
+          # A stale PersistentVolume cannot bind (its claimRef points at a
+          # claim that no longer exists) and blocks the new one from binding
+          # its share. The namespace delete keeps kubectl's default
+          # --wait=true so the re-create below cannot race a Terminating
+          # namespace.
+          kubectl delete namespace nfs-health-probe --ignore-not-found
+          kubectl delete pv nfs-health-volumes nfs-health-backups --ignore-not-found
+          echo "OK: no leftovers from a previous run"
+
+          # ── Server ───────────────────────────────────────────────────────
+          if ! kubectl rollout status deployment/nfs-server -n openstack --timeout=180s; then
+            echo "FAIL: Deployment/nfs-server did not roll out within 180s."
+            exit 1
+          fi
+          echo "OK: Deployment/nfs-server is rolled out"
+
+          # A Service with no EndpointSlice address answers nothing on 2049,
+          # and the mount below would fail with a timeout that names no cause.
+          ADDRS="$(kubectl get endpointslices -n openstack \
+            -l kubernetes.io/service-name=nfs-server \
+            -o jsonpath='{.items[*].endpoints[*].addresses[*]}')"
+          if [ -z "${ADDRS}" ]; then
+            echo "FAIL: Service nfs-server in openstack has no EndpointSlice address (the selector matches no ready pod)."
+            exit 1
+          fi
+          echo "OK: Service/nfs-server has EndpointSlice addresses: ${ADDRS}"
+
+          # ── Mounter ──────────────────────────────────────────────────────
+          if ! kubectl wait helmrelease/csi-driver-nfs -n kube-system \
+              --for=condition=Ready --timeout=180s; then
+            echo "FAIL: HelmRelease csi-driver-nfs in kube-system did not reach Ready within 180s."
+            exit 1
+          fi
+          echo "OK: HelmRelease/csi-driver-nfs is Ready"
+
+          # The node plugin does the mounting, so at least one ready pod is
+          # required before any PersistentVolume can be used.
+          READY="$(kubectl get daemonset csi-nfs-node -n kube-system \
+            -o jsonpath='{.status.numberReady}')"
+          if ! printf '%s' "${READY:-}" | grep -Eq '^[0-9]+$' || [ "${READY}" -lt 1 ]; then
+            echo "FAIL: DaemonSet csi-nfs-node in kube-system reports numberReady='${READY:-<none>}', expected at least 1."
+            exit 1
+          fi
+          echo "OK: DaemonSet/csi-nfs-node has ${READY} ready pod(s)"
+
+          # The static PersistentVolumes below name this driver.
+          if ! kubectl get csidriver nfs.csi.k8s.io >/dev/null 2>&1; then
+            echo "FAIL: CSIDriver nfs.csi.k8s.io does not exist, so no PersistentVolume can name it."
+            exit 1
+          fi
+          echo "OK: CSIDriver/nfs.csi.k8s.io exists"
+
+          # ── The os-brick mount points ────────────────────────────────────
+          # printf '%s' and not echo: the digest is taken over the share
+          # string alone. A trailing newline changes it and yields a mount
+          # point os-brick would never look at. md5sum is the Linux runner,
+          # md5 -q a macOS host.
+          SHARE_VOL="nfs-server.openstack.svc.cluster.local:/volumes"
+          SHARE_BAK="nfs-server.openstack.svc.cluster.local:/backups"
+          digest_of() {
+            if command -v md5sum >/dev/null 2>&1; then
+              printf '%s' "$1" | md5sum | cut -d' ' -f1
+            else
+              printf '%s' "$1" | md5 -q
+            fi
+          }
+          MD5_VOL="$(digest_of "${SHARE_VOL}")"
+          MD5_BAK="$(digest_of "${SHARE_BAK}")"
+          MNT_VOL="/var/lib/cinder/mnt/${MD5_VOL}"
+          MNT_BAK="/var/lib/cinder/backup_mount/${MD5_BAK}"
+          echo "OK: volumes share mounts at ${MNT_VOL}"
+          echo "OK: backups share mounts at ${MNT_BAK}"
+
+          # ── Probe ────────────────────────────────────────────────────────
+          # The heredoc terminator is unquoted so ${MNT_VOL} and ${MNT_BAK}
+          # expand here. Every \$ below belongs to the pod's own shell.
+          kubectl apply -f - <<EOF
+          ---
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: nfs-health-probe
+            labels:
+              pod-security.kubernetes.io/enforce: restricted
+              pod-security.kubernetes.io/enforce-version: latest
+          ---
+          apiVersion: v1
+          kind: PersistentVolume
+          metadata:
+            name: nfs-health-volumes
+          spec:
+            capacity:
+              storage: 1Gi
+            accessModes:
+              - ReadWriteMany
+            persistentVolumeReclaimPolicy: Retain
+            storageClassName: ""
+            mountOptions:
+              - nfsvers=4.1
+              - soft
+              - timeo=30
+              - retrans=2
+            claimRef:
+              namespace: nfs-health-probe
+              name: nfs-health-volumes
+            csi:
+              driver: nfs.csi.k8s.io
+              volumeHandle: nfs-health-volumes
+              volumeAttributes:
+                server: nfs-server.openstack.svc.cluster.local
+                share: /volumes
+          ---
+          apiVersion: v1
+          kind: PersistentVolume
+          metadata:
+            name: nfs-health-backups
+          spec:
+            capacity:
+              storage: 1Gi
+            accessModes:
+              - ReadWriteMany
+            persistentVolumeReclaimPolicy: Retain
+            storageClassName: ""
+            mountOptions:
+              - nfsvers=4.1
+              - soft
+              - timeo=30
+              - retrans=2
+            claimRef:
+              namespace: nfs-health-probe
+              name: nfs-health-backups
+            csi:
+              driver: nfs.csi.k8s.io
+              volumeHandle: nfs-health-backups
+              volumeAttributes:
+                server: nfs-server.openstack.svc.cluster.local
+                share: /backups
+          ---
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: nfs-health-volumes
+            namespace: nfs-health-probe
+          spec:
+            accessModes:
+              - ReadWriteMany
+            storageClassName: ""
+            volumeName: nfs-health-volumes
+            resources:
+              requests:
+                storage: 1Gi
+          ---
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: nfs-health-backups
+            namespace: nfs-health-probe
+          spec:
+            accessModes:
+              - ReadWriteMany
+            storageClassName: ""
+            volumeName: nfs-health-backups
+            resources:
+              requests:
+                storage: 1Gi
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: nfs-probe
+            namespace: nfs-health-probe
+          spec:
+            restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 42424
+              runAsGroup: 42424
+              seccompProfile:
+                type: RuntimeDefault
+            containers:
+              - name: probe
+                # The pinned reference deploy/kind/nfs/nfs-server.yaml already
+                # uses, so this suite adds no second image and the node has it
+                # cached from the server rollout. Alpine, so busybox provides
+                # sh, grep, stat and umask.
+                image: docker.io/itsthenetwork/nfs-server-alpine:12@sha256:7fa99ae65c23c5af87dd4300e543a86b119ed15ba61422444207efc7abd0ba20
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities:
+                    drop:
+                      - ALL
+                resources:
+                  requests:
+                    cpu: 10m
+                    memory: 32Mi
+                  limits:
+                    memory: 64Mi
+                command:
+                  - sh
+                  - -c
+                  - |
+                    set -eu
+                    for m in ${MNT_VOL} ${MNT_BAK}; do
+                      if ! grep -q " \$m " /proc/mounts; then
+                        echo "FAIL: \$m is not in /proc/mounts"
+                        exit 1
+                      fi
+                      echo "OK: \$m is mounted"
+                    done
+                    umask 0007
+                    for m in ${MNT_VOL} ${MNT_BAK}; do
+                      printf 'probe' > "\$m/nfs-health.probe"
+                      if [ "\$(cat "\$m/nfs-health.probe")" != "probe" ]; then
+                        echo "FAIL: read-back mismatch under \$m"
+                        exit 1
+                      fi
+                      stat -c '%u %g %a' "\$m/nfs-health.probe"
+                    done
+                volumeMounts:
+                  - name: volumes
+                    mountPath: ${MNT_VOL}
+                  - name: backups
+                    mountPath: ${MNT_BAK}
+            volumes:
+              - name: volumes
+                persistentVolumeClaim:
+                  claimName: nfs-health-volumes
+              - name: backups
+                persistentVolumeClaim:
+                  claimName: nfs-health-backups
+          EOF
+          echo "OK: probe namespace, volumes, claims and pod applied"
+
+          # 30 polls x 5s = 150s, enough for the two mounts plus a scheduling
+          # delay.
+          PHASE=""
+          for i in $(seq 1 30); do
+            PHASE="$(kubectl get pod nfs-probe -n nfs-health-probe \
+              -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+            case "${PHASE}" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+
+          # kubectl logs replays from container start, unlike `kubectl run -i`,
+          # which can hand back a truncated stream. Read after the terminal
+          # phase and before the finally block deletes the pod.
+          OUT="$(kubectl logs nfs-probe -n nfs-health-probe 2>&1 || true)"
+          printf '%s\n' "${OUT}"
+
+          if [ "${PHASE}" != "Succeeded" ]; then
+            echo "FAIL: pod nfs-probe reached phase '${PHASE:-<none>}' instead of Succeeded"
+            exit 1
+          fi
+          if [ -z "${OUT}" ]; then
+            echo "FAIL: kubectl logs returned an empty capture for pod nfs-probe although it reached Succeeded."
+            exit 1
+          fi
+          COUNT="$(printf '%s\n' "${OUT}" | grep -c '^42424 42424 660$' || true)"
+          if [ "${COUNT}" != "2" ]; then
+            echo "FAIL: ${COUNT} of the two probe files report '42424 42424 660'."
+            echo "      Both must be owned by 42424:42424 with mode 660: the"
+            echo "      ownership the server's init container pre-creates the"
+            echo "      exports with, under the probe's umask 0007."
+            exit 1
+          fi
+
+          echo "PASS: both NFS exports mount through csi-driver-nfs at the os-brick md5 paths as 42424:42424 mode 660."
+    catch:
+    # kube-system is outside the reach of hack/ci-dump-diagnostics.sh, so this
+    # is the only place the node plugin's logs surface on a failed run. Every
+    # command is best-effort so a missing resource does not cut the dump short.
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          echo "=== Pod nfs-probe (nfs-health-probe) ==="
+          kubectl describe pod nfs-probe -n nfs-health-probe 2>&1 || true
+          echo "=== PersistentVolumes nfs-health-volumes, nfs-health-backups ==="
+          kubectl get pv nfs-health-volumes nfs-health-backups -o wide 2>&1 || true
+          echo "=== PersistentVolumeClaims (nfs-health-probe) ==="
+          kubectl describe pvc -n nfs-health-probe 2>&1 || true
+          echo "=== Events (nfs-health-probe) ==="
+          kubectl get events -n nfs-health-probe --sort-by=.lastTimestamp 2>&1 || true
+          echo "=== EndpointSlices of Service nfs-server (openstack) ==="
+          kubectl get endpointslices -n openstack \
+            -l kubernetes.io/service-name=nfs-server -o wide 2>&1 || true
+          echo "=== csi-nfs-node logs (kube-system, container nfs) ==="
+          kubectl logs -n kube-system -l app=csi-nfs-node -c nfs --tail=100 2>&1 || true
+          echo "=== nfs-server logs (openstack) ==="
+          kubectl logs deployment/nfs-server -n openstack --tail=50 2>&1 || true
+    finally:
+    # Pod, then Namespace (which takes the two claims with it), then the two
+    # cluster-scoped PersistentVolumes, which stay Terminating while a claim
+    # still binds them. --wait=false because the assertion result is already
+    # decided, and best-effort because a cleanup failure must not mask it. On
+    # the SKIP path all three are no-ops.
+    - script:
+        timeout: 2m
+        shell: bash
+        content: |
+          kubectl delete pod nfs-probe -n nfs-health-probe \
+            --ignore-not-found --wait=false 2>&1 || true
+          kubectl delete namespace nfs-health-probe \
+            --ignore-not-found --wait=false 2>&1 || true
+          kubectl delete pv nfs-health-volumes nfs-health-backups \
+            --ignore-not-found --wait=false 2>&1 || true
