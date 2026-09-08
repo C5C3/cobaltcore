@@ -1,0 +1,167 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# NFS server for the CI/e2e stack, an in-cluster NFSv4 export that the Cinder
+# suites of #979 mount through csi-driver-nfs (release.yaml).
+#
+# IMAGE docker.io/itsthenetwork/nfs-server-alpine:12 (source:
+# github.com/sjiveson/nfs-server-alpine). Its entrypoint /usr/bin/nfsd.sh
+# exits 1 with "The SHARED_DIRECTORY environment variable is unset or null,
+# exiting..." when SHARED_DIRECTORY is absent. It renders /etc/exports from
+# the template
+#   {{SHARED_DIRECTORY}} {{PERMITTED}}({{READ_ONLY}},fsid=0,{{SYNC}},no_subtree_check,no_auth_nlm,insecure,no_root_squash)
+# with the defaults PERMITTED=*, READ_ONLY=rw and SYNC=async, then starts
+# `rpc.nfsd --no-udp --no-nfs-version 2 --no-nfs-version 3`. It also starts
+# rpcbind (the entrypoint keeps it for an IPv6 socket bug), but no client
+# needs port 111 or a mountd port.
+#
+# CONSEQUENCE 1. The server speaks NFSv4 only, so 2049/TCP is the whole
+# client surface. The Service below exposes neither 111 nor a mountd port.
+#
+# CONSEQUENCE 2. fsid=0 makes /exports the NFSv4 pseudo-root, so a client
+# mounts the two shares as
+#   nfs-server.openstack.svc.cluster.local:/volumes
+#   nfs-server.openstack.svc.cluster.local:/backups
+# A path of :/exports/volumes resolves to /exports/exports/volumes on the
+# server and fails. Those two share strings are what the CinderBackend and
+# CinderBackupBackend of #979 carry.
+#
+# CI-ONLY posture:
+#   - The server container runs privileged, because the image drives the host
+#     kernel's rpc.nfsd rather than a userspace server.
+#   - Plain sec=sys, with no_root_squash and a wildcard PERMITTED. Every pod
+#     that reaches 2049 has full read/write access to both shares as root.
+#   - The image is amd64 only (single-architecture manifest, last pushed
+#     2019-05-08, no upstream release since). If a runner kernel turns out to
+#     lack nfsd, ghcr.io/nfs-ganesha/nfs-ganesha is the recorded fallback.
+#   - The overlay is opt-in behind WITH_NFS, so an arm64 laptop or a host
+#     without a loadable nfsd never meets any of this by accident.
+#
+# The init container pre-creates both export directories as 42424:42424 with
+# mode 0770, the restricted `openstack` user the Cinder pods run as, so the
+# NFS backup driver skips its `chgrp -R` and `chmod -R g+w` root branches
+# (#979 D3). It reuses the server image, so the overlay pins one image.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nfs-server-exports
+  namespace: openstack
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # kind's local-path class, the same one the Garage and MariaDB kind patches
+  # in deploy/kind/infrastructure/kustomization.yaml use.
+  storageClassName: standard
+  resources:
+    requests:
+      # local-path enforces no capacity, so this number bounds nothing. It is
+      # the smallest value that reads as intentional.
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nfs-server
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nfs-server
+spec:
+  replicas: 1
+  strategy:
+    # An RWO claim admits one writer, so the old pod has to release the
+    # volume before the new one starts.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nfs-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nfs-server
+    spec:
+      # The server runs rpc.nfsd and nothing else; it never calls the
+      # Kubernetes API, so it has no use for a token. Without this the kubelet
+      # projects one for the `openstack` default ServiceAccount into both
+      # containers.
+      #
+      # This raises the cost of that step; it does not bound the reachable
+      # credentials. The container below runs privileged, so anyone
+      # who reaches code execution in it (the export is open to every pod in
+      # the cluster — PERMITTED=*, no_root_squash, sec=sys, a 2019 image that
+      # receives no patches) has CAP_SYS_ADMIN and reads every token the
+      # kubelet has projected on the node out of /var/lib/kubelet/pods anyway.
+      # What contains that is the stack being kind-only and opt-in behind
+      # WITH_NFS, never the flag below. Restricting who may dial 2049 needs a
+      # NetworkPolicy in `openstack`, which this overlay does not ship.
+      automountServiceAccountToken: false
+      initContainers:
+        - name: prepare-exports
+          image: docker.io/itsthenetwork/nfs-server-alpine:12@sha256:7fa99ae65c23c5af87dd4300e543a86b119ed15ba61422444207efc7abd0ba20
+          command:
+            - sh
+            - -c
+            - mkdir -p /exports/volumes /exports/backups && chown 42424:42424 /exports/volumes /exports/backups && chmod 0770 /exports/volumes /exports/backups
+          volumeMounts:
+            - name: exports
+              mountPath: /exports
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+      containers:
+        - name: nfs-server
+          image: docker.io/itsthenetwork/nfs-server-alpine:12@sha256:7fa99ae65c23c5af87dd4300e543a86b119ed15ba61422444207efc7abd0ba20
+          env:
+            # The entrypoint exits 1 without this variable.
+            - name: SHARED_DIRECTORY
+              value: /exports
+          securityContext:
+            privileged: true
+          ports:
+            - name: nfs
+              containerPort: 2049
+              protocol: TCP
+          readinessProbe:
+            tcpSocket:
+              port: 2049
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 2049
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: exports
+              mountPath: /exports
+      volumes:
+        - name: exports
+          persistentVolumeClaim:
+            claimName: nfs-server-exports
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nfs-server
+  namespace: openstack
+  labels:
+    app.kubernetes.io/name: nfs-server
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: nfs-server
+  ports:
+    - name: nfs
+      port: 2049
+      targetPort: 2049
+      protocol: TCP

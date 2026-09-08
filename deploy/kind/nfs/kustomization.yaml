@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Opt-in kind overlay for NFS, applied only when the operator explicitly
+# requests it (WITH_NFS=true make deploy-infra).
+#
+# Bundles everything needed to render a working NFS setup on a kind cluster:
+#   1. The csi-driver-nfs HelmRepository source (upstream chart directory).
+#   2. The csi-driver-nfs HelmRelease, the mounter that turns an NFS share
+#      into a PersistentVolume.
+#   3. The NFS server workload (PersistentVolumeClaim, Deployment, Service)
+#      that exports the two shares the Cinder e2e suites of #979 mount.
+#
+# There is NO inline namespace.yaml, because both halves land in Namespaces
+# that already exist:
+#   - The chart installs into `kube-system`. It defaults to
+#     `priorityClassName: system-cluster-critical`, which resolves in no
+#     other Namespace (the same constraint the metrics-server overlay
+#     documents).
+#   - The server lands in `openstack`, which deploy/flux-system/namespaces.yaml
+#     reserves for components that exist only to run the operators standalone.
+#     `shared-services` is not used: its header declares that namespace a
+#     trust zone holding the OpenBao unseal material, with Garage as its one
+#     accepted co-tenant.
+#
+# All resource references are local to this overlay (no parent-directory
+# paths at all, not even to a sibling overlay). It therefore renders under
+# kustomize's default `LoadRestrictionsRootOnly` security check, which means
+# `kubectl apply -k deploy/kind/nfs` works without `--load-restrictor`.
+# kubectl's embedded kustomize does NOT expose `--load-restrictor`
+# (kubernetes/kubectl#948), so keeping the overlay self-contained is the only
+# way to ship `kubectl apply -k` as the production caller in
+# hack/deploy-infra.sh, the same constraint that shapes the chaos-mesh,
+# prometheus, metrics-server and dizzy overlays.
+#
+# Production overlays (deploy/flux-system/kustomization.yaml) list none of the
+# resources in this directory. Production clusters bring their own NFS server,
+# and the mounter is a prerequisite of the target cluster rather than
+# something this repository installs.
+#
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # HelmRepository (flux-system) + HelmRelease (kube-system) are local to
+  # this overlay; production overlays do not include them.
+  - source.yaml
+  - release.yaml
+  # The NFS server itself (PVC + Deployment + Service in `openstack`).
+  - nfs-server.yaml
