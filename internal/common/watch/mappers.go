@@ -240,3 +240,165 @@ func ClusterRefMapper(c client.Reader, newList func() client.ObjectList, cluster
 		return requests
 	}
 }
+
+// ParentRefIndexer returns the client.IndexerFunc for a satellite CR's
+// parent-reference index. A satellite is a namespaced configuration CR that
+// attaches to a parent service CR by name (a GlanceBackend naming its Glance
+// in spec.glanceRef.name); parentName extracts that name. An empty name, from
+// an object of another type or from a satellite that carries no reference,
+// indexes nothing, so an unattached satellite resolves for no parent.
+func ParentRefIndexer(parentName func(client.Object) string) client.IndexerFunc {
+	return func(obj client.Object) []string {
+		name := parentName(obj)
+		if name == "" {
+			return nil
+		}
+		return []string{name}
+	}
+}
+
+// RegisterParentRefIndex registers ParentRefIndexer(parentName) for the
+// satellite type obj under indexKey. SetupWithManager calls this once against
+// mgr.GetFieldIndexer(), so both the parent-side sub-reconciler (listing the
+// satellites attached to one parent) and ParentToSatellitesMapper resolve
+// through an O(1) reverse lookup instead of an unfiltered namespace-scoped
+// List. The returned error is wrapped with the index key so the registration
+// site is identifiable in manager-startup failure logs.
+func RegisterParentRefIndex(
+	ctx context.Context,
+	indexer client.FieldIndexer,
+	obj client.Object,
+	indexKey string,
+	parentName func(client.Object) string,
+) error {
+	if err := indexer.IndexField(ctx, obj, indexKey, ParentRefIndexer(parentName)); err != nil {
+		return fmt.Errorf("registering field indexer %q: %w", indexKey, err)
+	}
+	return nil
+}
+
+// SatelliteToParentMapper returns a MapFunc that maps a satellite event to one
+// reconcile request for the parent it attaches to, in the satellite's own
+// namespace. parentName extracts the parent reference; an object of another
+// type or a satellite with an empty reference enqueues nothing.
+//
+// Register it WITHOUT a generation predicate on the parent's watch: a
+// satellite's status flip is what wakes the parent-side sub-reconciler, and
+// the DeletionTimestamp flip is what triggers de-projection.
+func SatelliteToParentMapper(parentName func(client.Object) string) handler.MapFunc {
+	return func(_ context.Context, obj client.Object) []reconcile.Request {
+		name := parentName(obj)
+		if name == "" {
+			return nil
+		}
+		return []reconcile.Request{{
+			NamespacedName: types.NamespacedName{
+				Namespace: obj.GetNamespace(),
+				Name:      name,
+			},
+		}}
+	}
+}
+
+// ParentToSatellitesMapper returns a MapFunc that fans a parent event out to
+// every satellite attached to it, resolved via the indexKey field indexer in
+// the parent's namespace. newList supplies the satellite list type and
+// listErrMsg names the List in the error log. On a List or extract error the
+// mapper logs via log.FromContext and returns nil per the handler.MapFunc
+// contract. A parent without satellites yields an empty request slice.
+//
+// Register it WITHOUT a generation predicate: the parent's status flips (its
+// config landing in the Deployment) are the transitions a satellite's
+// projection gate waits on.
+func ParentToSatellitesMapper(c client.Reader, newList func() client.ObjectList, indexKey, listErrMsg string) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		list := newList()
+		if err := c.List(
+			ctx, list,
+			client.InNamespace(obj.GetNamespace()),
+			client.MatchingFields{indexKey: obj.GetName()},
+		); err != nil {
+			log.FromContext(ctx).Error(err, listErrMsg)
+			return nil
+		}
+		items, err := apimeta.ExtractList(list)
+		if err != nil {
+			log.FromContext(ctx).Error(err, listErrMsg)
+			return nil
+		}
+
+		requests := make([]reconcile.Request, 0, len(items))
+		for _, item := range items {
+			o, ok := item.(client.Object)
+			if !ok {
+				continue
+			}
+			requests = append(requests, reconcile.Request{
+				NamespacedName: client.ObjectKeyFromObject(o),
+			})
+		}
+		return requests
+	}
+}
+
+// SecretToParentsViaSatellitesMapper returns a MapFunc that extends base with
+// the satellite leg: a Secret referenced by a satellite (resolved via the
+// secretIndexKey field indexer in the Secret's namespace) enqueues that
+// satellite's parent, so a credential rotation re-renders the config the
+// parent projects for the satellite. base carries the parent's own legs (name
+// index, owner refs) and its requests come first; the two sets are unioned by
+// NamespacedName, so a Secret matching both yields exactly one request per
+// parent. A satellite with an empty parent reference is skipped. On a List or
+// extract error the mapper logs under listErrMsg and returns base's requests
+// unchanged, matching the log-and-continue contract of SecretToOwnersMapper.
+func SecretToParentsViaSatellitesMapper(
+	base handler.MapFunc,
+	c client.Reader,
+	newList func() client.ObjectList,
+	secretIndexKey, listErrMsg string,
+	parentName func(client.Object) string,
+) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		requests := base(ctx, obj)
+
+		list := newList()
+		if err := c.List(
+			ctx, list,
+			client.InNamespace(obj.GetNamespace()),
+			client.MatchingFields{secretIndexKey: obj.GetName()},
+		); err != nil {
+			log.FromContext(ctx).Error(err, listErrMsg)
+			return requests
+		}
+		items, err := apimeta.ExtractList(list)
+		if err != nil {
+			log.FromContext(ctx).Error(err, listErrMsg)
+			return requests
+		}
+		if len(items) == 0 {
+			return requests
+		}
+
+		seen := make(map[types.NamespacedName]struct{}, len(requests))
+		for _, req := range requests {
+			seen[req.NamespacedName] = struct{}{}
+		}
+		for _, item := range items {
+			o, ok := item.(client.Object)
+			if !ok {
+				continue
+			}
+			name := parentName(o)
+			if name == "" {
+				continue
+			}
+			key := types.NamespacedName{Namespace: o.GetNamespace(), Name: name}
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			requests = append(requests, reconcile.Request{NamespacedName: key})
+		}
+		return requests
+	}
+}

@@ -6,6 +6,7 @@ package watch
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/onsi/gomega"
@@ -15,6 +16,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -305,4 +307,244 @@ func TestSecretToOwnersMapper_AllNamespaces(t *testing.T) {
 	g.Expect(widened).To(gomega.ConsistOf(
 		reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "cr-a"}},
 	))
+}
+
+// The satellite tests reuse corev1.ConfigMap as the stand-in satellite CR: the
+// "parent" annotation models its parent reference, the "secret-ref" annotation
+// (shared with the Secret-mapper tests above) the Secret it consumes.
+const testParentIndexKey = "spec.parentRef.name"
+
+// parentOfConfigMap extracts a satellite's parent reference, mirroring the
+// per-operator accessor shape: a wrong-type object has no parent.
+func parentOfConfigMap(o client.Object) string {
+	cm, ok := o.(*corev1.ConfigMap)
+	if !ok {
+		return ""
+	}
+	return cm.Annotations["parent"]
+}
+
+func cmSatellite(name, namespace, parent, secretRef string) *corev1.ConfigMap {
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Annotations: map[string]string{}},
+	}
+	if parent != "" {
+		cm.Annotations["parent"] = parent
+	}
+	if secretRef != "" {
+		cm.Annotations["secret-ref"] = secretRef
+	}
+	return cm
+}
+
+// satelliteClient builds a fake client with both satellite indexes registered,
+// the parent-ref index through the helper under test.
+func satelliteClient(objs ...client.Object) client.WithWatch {
+	return fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
+		WithObjects(objs...).
+		WithIndex(&corev1.ConfigMap{}, testParentIndexKey, ParentRefIndexer(parentOfConfigMap)).
+		WithIndex(&corev1.ConfigMap{}, testIndexKey, indexByRefAnnotation).
+		Build()
+}
+
+// failingIndexer rejects every registration so the error wrapping is testable.
+type failingIndexer struct{}
+
+func (failingIndexer) IndexField(context.Context, client.Object, string, client.IndexerFunc) error {
+	return errors.New("boom")
+}
+
+// recordingIndexer accepts the registration and keeps what it was given.
+type recordingIndexer struct {
+	key     string
+	extract client.IndexerFunc
+}
+
+func (r *recordingIndexer) IndexField(_ context.Context, _ client.Object, field string, extract client.IndexerFunc) error {
+	r.key = field
+	r.extract = extract
+	return nil
+}
+
+func TestParentRefIndexer(t *testing.T) {
+	tests := []struct {
+		name string
+		obj  client.Object
+		want []string
+	}{
+		{"attached satellite indexes its parent name", cmSatellite("backend", "ns1", "glance", ""), []string{"glance"}},
+		{"unattached satellite indexes nothing", cmSatellite("backend", "ns1", "", ""), nil},
+		{"object of another type indexes nothing", testSecret("db-secret", "ns1"), nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(ParentRefIndexer(parentOfConfigMap)(tt.obj)).To(gomega.Equal(tt.want))
+		})
+	}
+}
+
+func TestRegisterParentRefIndex_WrapsError(t *testing.T) {
+	t.Run("a rejected registration is wrapped with the index key", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+
+		err := RegisterParentRefIndex(context.Background(), failingIndexer{},
+			&corev1.ConfigMap{}, testParentIndexKey, parentOfConfigMap)
+
+		g.Expect(err).To(gomega.MatchError(`registering field indexer "spec.parentRef.name": boom`))
+	})
+
+	t.Run("an accepted registration passes the parent-ref indexer through", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		indexer := &recordingIndexer{}
+
+		err := RegisterParentRefIndex(context.Background(), indexer,
+			&corev1.ConfigMap{}, testParentIndexKey, parentOfConfigMap)
+
+		g.Expect(err).To(gomega.Succeed())
+		g.Expect(indexer.key).To(gomega.Equal(testParentIndexKey))
+		g.Expect(indexer.extract).NotTo(gomega.BeNil())
+		g.Expect(indexer.extract(cmSatellite("backend", "ns1", "glance", ""))).To(gomega.Equal([]string{"glance"}))
+	})
+}
+
+func TestSatelliteToParentMapper(t *testing.T) {
+	tests := []struct {
+		name string
+		obj  client.Object
+		want []reconcile.Request
+	}{
+		{
+			name: "an attached satellite enqueues its parent in its own namespace",
+			obj:  cmSatellite("backend", "ns1", "glance", ""),
+			want: []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "glance"}}},
+		},
+		{
+			name: "an unattached satellite enqueues nothing",
+			obj:  cmSatellite("backend", "ns1", "", ""),
+			want: nil,
+		},
+		{
+			name: "an object of another type enqueues nothing",
+			obj:  testSecret("db-secret", "ns1"),
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := gomega.NewWithT(t)
+			g.Expect(SatelliteToParentMapper(parentOfConfigMap)(context.Background(), tt.obj)).To(gomega.Equal(tt.want))
+		})
+	}
+}
+
+func TestParentToSatellitesMapper(t *testing.T) {
+	const listErrMsg = "listing satellites for parent watch"
+	parent := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "glance", Namespace: "ns1"}}
+
+	t.Run("every attached satellite in the parent's namespace is enqueued", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		c := satelliteClient(
+			cmSatellite("backend-a", "ns1", "glance", ""), // matches
+			cmSatellite("backend-b", "ns1", "other", ""),  // another parent
+			cmSatellite("backend-c", "ns1", "", ""),       // unattached
+			cmSatellite("backend-d", "ns2", "glance", ""), // another namespace
+		)
+
+		mapper := ParentToSatellitesMapper(c,
+			func() client.ObjectList { return &corev1.ConfigMapList{} }, testParentIndexKey, listErrMsg)
+
+		g.Expect(mapper(context.Background(), parent)).To(gomega.ConsistOf(
+			reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "backend-a"}},
+		))
+	})
+
+	// An empty non-nil slice keeps the mapper's contract distinguishable from
+	// the error arm below, which returns nil.
+	t.Run("a parent without satellites yields an empty non-nil slice", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		c := satelliteClient(cmSatellite("backend-a", "ns1", "other", ""))
+
+		mapper := ParentToSatellitesMapper(c,
+			func() client.ObjectList { return &corev1.ConfigMapList{} }, testParentIndexKey, listErrMsg)
+
+		requests := mapper(context.Background(), parent)
+		g.Expect(requests).To(gomega.BeEmpty())
+		g.Expect(requests).NotTo(gomega.BeNil())
+	})
+
+	t.Run("a List error enqueues nothing", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
+			WithIndex(&corev1.ConfigMap{}, testParentIndexKey, ParentRefIndexer(parentOfConfigMap)).
+			WithInterceptorFuncs(interceptor.Funcs{
+				List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+					return errors.New("boom")
+				},
+			}).Build()
+
+		mapper := ParentToSatellitesMapper(c,
+			func() client.ObjectList { return &corev1.ConfigMapList{} }, testParentIndexKey, listErrMsg)
+
+		g.Expect(mapper(context.Background(), parent)).To(gomega.BeNil())
+	})
+}
+
+func TestSecretToParentsViaSatellitesMapper(t *testing.T) {
+	const listErrMsg = "listing satellites for Secret watch"
+	secret := testSecret("db-secret", "ns1")
+	baseRequest := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "glance"}}
+	base := func(context.Context, client.Object) []reconcile.Request {
+		return []reconcile.Request{baseRequest}
+	}
+	newList := func() client.ObjectList { return &corev1.ConfigMapList{} }
+
+	// The base leg already enqueues "glance"; the satellite attached to it must
+	// not enqueue it a second time, while the satellite of another parent adds
+	// exactly one request.
+	t.Run("the union with the base requests carries no duplicate parent", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		c := satelliteClient(
+			cmSatellite("backend-a", "ns1", "glance", "db-secret"),
+			cmSatellite("backend-b", "ns1", "other-glance", "db-secret"),
+			cmSatellite("backend-c", "ns1", "third-glance", "other-secret"), // another Secret
+		)
+
+		requests := SecretToParentsViaSatellitesMapper(base, c, newList, testIndexKey, listErrMsg, parentOfConfigMap)(
+			context.Background(), secret)
+
+		g.Expect(requests).To(gomega.ConsistOf(
+			baseRequest,
+			reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "ns1", Name: "other-glance"}},
+		))
+		g.Expect(requests).To(gomega.HaveLen(2))
+	})
+
+	t.Run("a satellite without a parent reference is skipped", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		c := satelliteClient(cmSatellite("backend-a", "ns1", "", "db-secret"))
+
+		requests := SecretToParentsViaSatellitesMapper(base, c, newList, testIndexKey, listErrMsg, parentOfConfigMap)(
+			context.Background(), secret)
+
+		g.Expect(requests).To(gomega.ConsistOf(baseRequest))
+	})
+
+	t.Run("a List error returns the base requests unchanged", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		c := fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
+			WithIndex(&corev1.ConfigMap{}, testIndexKey, indexByRefAnnotation).
+			WithInterceptorFuncs(interceptor.Funcs{
+				List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+					return errors.New("boom")
+				},
+			}).Build()
+
+		requests := SecretToParentsViaSatellitesMapper(base, c, newList, testIndexKey, listErrMsg, parentOfConfigMap)(
+			context.Background(), secret)
+
+		g.Expect(requests).To(gomega.ConsistOf(baseRequest))
+	})
 }
