@@ -6,15 +6,20 @@ package validation
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
 )
@@ -298,4 +303,222 @@ func TestTargetClusterRefImmutable(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The sibling validators are generic over client.Object, so the tests use a
+// ConfigMap as the stand-in CR: annotation "parent" is the parent reference the
+// sameParent predicate compares, and annotation "default" set to "true" is the
+// default flag isDefault reads.
+const (
+	parentAnnotation  = "parent"
+	defaultAnnotation = "default"
+)
+
+var errBoom = errors.New("boom")
+
+func siblingCM(namespace, name, parent string, isDefault bool) *corev1.ConfigMap {
+	annotations := map[string]string{parentAnnotation: parent}
+	if isDefault {
+		annotations[defaultAnnotation] = "true"
+	}
+	return &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
+		Namespace:   namespace,
+		Name:        name,
+		Annotations: annotations,
+	}}
+}
+
+// terminating marks cm as deleting. The fake client refuses an object that
+// carries a deletionTimestamp without a finalizer, so cm gets one.
+func terminating(cm *corev1.ConfigMap) *corev1.ConfigMap {
+	deleted := metav1.NewTime(time.Now())
+	cm.DeletionTimestamp = &deleted
+	cm.Finalizers = []string{"test"}
+	return cm
+}
+
+func sameParentAs(self client.Object) func(client.Object) bool {
+	return func(other client.Object) bool {
+		return other.GetAnnotations()[parentAnnotation] == self.GetAnnotations()[parentAnnotation]
+	}
+}
+
+// siblingFixture seeds a client with self, the one live same-parent sibling the
+// filter keeps, and the three it drops: a Terminating one, one attached to
+// another parent, and one in another namespace.
+func siblingFixture(self *corev1.ConfigMap, extra ...client.Object) client.Client {
+	objs := []client.Object{
+		self,
+		siblingCM("ops", "live-sibling", "glance", false),
+		terminating(siblingCM("ops", "terminating-sibling", "glance", false)),
+		siblingCM("ops", "other-parent", "glance-2", false),
+		siblingCM("elsewhere", "other-namespace", "glance", false),
+	}
+	return fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
+		WithObjects(append(objs, extra...)...).Build()
+}
+
+// listErrorClient fails every List with errBoom, so the tests can assert that
+// the validators hand the error back untouched.
+func listErrorClient() client.Client {
+	return fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+				return errBoom
+			},
+		}).Build()
+}
+
+// itemlessList is a client.ObjectList without an Items field, which is what
+// apimeta.ExtractList rejects. No real CR list looks like this; it exists to
+// reach the extract-error path behind a List that succeeds.
+type itemlessList struct {
+	metav1.TypeMeta
+	metav1.ListMeta
+}
+
+func (l *itemlessList) DeepCopyObject() runtime.Object { return &itemlessList{} }
+
+// emptyListClient succeeds every List without touching the list object, so the
+// caller sees whatever list type it passed in.
+func emptyListClient() client.Client {
+	return fake.NewClientBuilder().WithScheme(clientgoscheme.Scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(context.Context, client.WithWatch, client.ObjectList, ...client.ListOption) error {
+				return nil
+			},
+		}).Build()
+}
+
+func objectNames(objs []client.Object) []string {
+	names := make([]string, 0, len(objs))
+	for _, o := range objs {
+		names = append(names, o.GetName())
+	}
+	return names
+}
+
+func TestAttachedSiblings(t *testing.T) {
+	ctx := context.Background()
+	self := siblingCM("ops", "self", "glance", false)
+
+	t.Run("nil reader skips the lookup", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		siblings, err := AttachedSiblings(ctx, nil, self, &corev1.ConfigMapList{}, sameParentAs(self))
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(siblings).To(gomega.BeNil())
+	})
+
+	t.Run("keeps only the live same-parent sibling", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		siblings, err := AttachedSiblings(ctx, siblingFixture(self), self, &corev1.ConfigMapList{}, sameParentAs(self))
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(objectNames(siblings)).To(gomega.Equal([]string{"live-sibling"}))
+	})
+
+	t.Run("list error is returned unwrapped", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		siblings, err := AttachedSiblings(ctx, listErrorClient(), self, &corev1.ConfigMapList{}, sameParentAs(self))
+		g.Expect(siblings).To(gomega.BeNil())
+		g.Expect(err).To(gomega.MatchError("boom"))
+		g.Expect(err).To(gomega.Equal(errBoom))
+		g.Expect(errors.Is(err, errBoom)).To(gomega.BeTrue())
+	})
+
+	t.Run("a typed predicate returns typed siblings", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		siblings, err := AttachedSiblings(ctx, siblingFixture(self), self, &corev1.ConfigMapList{},
+			func(other *corev1.ConfigMap) bool {
+				return other.Annotations[parentAnnotation] == self.Annotations[parentAnnotation]
+			})
+		g.Expect(err).ToNot(gomega.HaveOccurred())
+		g.Expect(siblings).To(gomega.HaveLen(1))
+		g.Expect(siblings[0].Name).To(gomega.Equal("live-sibling"))
+	})
+
+	t.Run("extract error is returned unwrapped", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		siblings, err := AttachedSiblings(ctx, emptyListClient(), self, &itemlessList{}, sameParentAs(self))
+		g.Expect(siblings).To(gomega.BeNil())
+		g.Expect(err).To(gomega.MatchError(gomega.ContainSubstring("Items field")))
+	})
+}
+
+func TestExtraOptions(t *testing.T) {
+	const patternDetail = "option name must match ^[A-Za-z0-9_]+$ (letters, digits, and underscore)"
+	const controlCharsDetail = "value must not contain newline or carriage-return characters"
+	denylist := map[string]string{"denied": "spec.owner"}
+
+	t.Run("nil and empty options are accepted", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		g.Expect(ExtraOptions(testPath, nil, ExtraOptionsRules{})).To(gomega.BeNil())
+		g.Expect(ExtraOptions(testPath, map[string]string{}, ExtraOptionsRules{Denylist: denylist})).To(gomega.BeNil())
+	})
+
+	t.Run("every rejection fires once, in sorted key order", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := ExtraOptions(testPath, map[string]string{
+			"":        "x",
+			"bad key": "x",
+			"denied":  "x",
+			"ok":      "a\nb",
+		}, ExtraOptionsRules{Denylist: denylist})
+		g.Expect(errs).To(gomega.HaveLen(4))
+
+		// The empty key has no path key to hang off, so it is reported on the
+		// extraOptions path itself.
+		g.Expect(errs[0].Field).To(gomega.Equal(testPath.String()))
+		g.Expect(errs[0].BadValue).To(gomega.Equal(""))
+		g.Expect(errs[0].Detail).To(gomega.Equal("option name must not be empty"))
+
+		g.Expect(errs[1].Field).To(gomega.Equal(testPath.Key("bad key").String()))
+		g.Expect(errs[1].BadValue).To(gomega.Equal("bad key"))
+		g.Expect(errs[1].Detail).To(gomega.Equal(patternDetail))
+
+		g.Expect(errs[2].Field).To(gomega.Equal(testPath.Key("denied").String()))
+		g.Expect(errs[2].BadValue).To(gomega.Equal("x"))
+		g.Expect(errs[2].Detail).To(gomega.Equal(`option "denied" is owned by spec.owner and must not be set via extraOptions`))
+
+		g.Expect(errs[3].Field).To(gomega.Equal(testPath.Key("ok").String()))
+		g.Expect(errs[3].BadValue).To(gomega.Equal("a\nb"))
+		g.Expect(errs[3].Detail).To(gomega.Equal(controlCharsDetail))
+	})
+
+	t.Run("PerKey runs before the control-character check on the same key", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := ExtraOptions(testPath, map[string]string{"ok": "a\nb"}, ExtraOptionsRules{
+			PerKey: func(key, value string) *field.Error {
+				return field.Invalid(testPath.Key(key), value, "per-key rule")
+			},
+		})
+		g.Expect(errs).To(gomega.HaveLen(2))
+		g.Expect(errs[0].Detail).To(gomega.Equal("per-key rule"))
+		g.Expect(errs[1].Detail).To(gomega.Equal(controlCharsDetail))
+	})
+
+	t.Run("a denylisted key never reaches PerKey", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		var seen []string
+		errs := ExtraOptions(testPath, map[string]string{"denied": "x"}, ExtraOptionsRules{
+			Denylist: denylist,
+			PerKey: func(key, _ string) *field.Error {
+				seen = append(seen, key)
+				return nil
+			},
+		})
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(seen).To(gomega.BeEmpty())
+	})
+
+	// The charset is not per-consumer: every caller gets
+	// DefaultExtraOptionKeyPattern, which is the pattern the message names.
+	t.Run("the default charset is enforced and is what the message names", func(t *testing.T) {
+		g := gomega.NewWithT(t)
+		errs := ExtraOptions(testPath, map[string]string{"with-dash": "x"}, ExtraOptionsRules{})
+		g.Expect(errs).To(gomega.HaveLen(1))
+		g.Expect(errs[0].Detail).To(gomega.Equal(patternDetail))
+		g.Expect(patternDetail).To(gomega.ContainSubstring(DefaultExtraOptionKeyPattern.String()))
+		g.Expect(DefaultExtraOptionKeyPattern.MatchString("with-dash")).To(gomega.BeFalse())
+		g.Expect(DefaultExtraOptionKeyPattern.MatchString("s3_store_host")).To(gomega.BeTrue())
+	})
 }
