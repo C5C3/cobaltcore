@@ -61,6 +61,39 @@ func neutronName(cp *c5c3v1alpha1.ControlPlane) string {
 	return cp.Name + neutronNameSuffix
 }
 
+// neutronMessagingTarget names the network service as a consumer of the shared
+// bus: the Secrets are named after the Neutron child, written in its namespace,
+// and every condition lands on NeutronReady.
+func neutronMessagingTarget(cp *c5c3v1alpha1.ControlPlane) serviceMessagingTarget {
+	return serviceMessagingTarget{
+		Service:       "Neutron",
+		ChildName:     neutronName(cp),
+		Namespace:     cp.NeutronNamespace(),
+		ConditionType: conditionTypeNeutronReady,
+	}
+}
+
+// neutronMessagingSecretName returns the name of the brownfield transport-URL
+// Secret the ControlPlane writes beside the Neutron child
+// ("<cp>-neutron-messaging").
+//
+// The name is the ControlPlane's own on purpose. In that same namespace the
+// neutron operator claims messaging.TransportURLSecretName(neutronName(cp))
+// ("<cp>-neutron-transport-url") for the Secret it derives from
+// spec.messaging.secretRef, so writing the bus under that name would leave two
+// controllers rewriting one object on every pass.
+func neutronMessagingSecretName(cp *c5c3v1alpha1.ControlPlane) string {
+	return serviceMessagingSecretName(neutronMessagingTarget(cp))
+}
+
+// neutronMessagingCASecretName returns the name of the CA mirror that carries
+// the broker's CA bundle into the Neutron namespace
+// ("<cp>-neutron-messaging-ca"), under the same name-of-our-own rule as
+// neutronMessagingSecretName.
+func neutronMessagingCASecretName(cp *c5c3v1alpha1.ControlPlane) string {
+	return serviceMessagingCASecretName(neutronMessagingTarget(cp))
+}
+
 // neutronDeletionAllowed reports whether cp opts in to deleting its projected
 // Neutron child when spec.services.neutron is unset, via a truthy
 // neutronDeletionAllowedAnnotation. A missing, malformed, or non-truthy value
@@ -191,7 +224,7 @@ func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v
 	// the network service runs in. The transport URL's digest is not projected: the
 	// neutron operator rolls its pods off the Secret it derives itself, so a second
 	// digest on the child would only add a redundant rollout trigger.
-	if msgRes, halt, err := r.reconcileNeutronMessaging(ctx, cp); halt {
+	if msgRes, halt, err := r.reconcileServiceMessaging(ctx, cp, neutronMessagingTarget(cp)); halt {
 		return msgRes, err
 	}
 
@@ -346,24 +379,11 @@ func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v
 	}
 
 	// The shared bus reaches the child as a BROWNFIELD secretRef naming the Secret
-	// reconcileNeutronMessaging wrote beside it: the neutron operator resolves
+	// reconcileServiceMessaging wrote beside it: the neutron operator resolves
 	// spec.messaging in the Neutron's own namespace on the Neutron's own cluster,
 	// which is where that delivery lands. The CA mirror follows the same rule, and
 	// only when the bus declares TLS at all.
-	nn.Spec.Messaging = commonv1.MessagingSpec{
-		SecretRef: &commonv1.SecretRefSpec{
-			Name: neutronMessagingSecretName(cp),
-			Key:  commonv1.DefaultTransportURLSecretKey,
-		},
-	}
-	if cp.Spec.Infrastructure.Messaging.TLS != nil {
-		nn.Spec.Messaging.TLS = &commonv1.MessagingTLSSpec{
-			CABundleSecretRef: commonv1.SecretRefSpec{
-				Name: neutronMessagingCASecretName(cp),
-				Key:  neutronMessagingCAKey,
-			},
-		}
-	}
+	nn.Spec.Messaging = serviceMessagingSpec(cp, neutronMessagingTarget(cp))
 
 	// The OVN control plane the ML2/OVN mechanism driver programs, with the
 	// namespace RESOLVED here rather than passed through: an empty ref namespace
@@ -427,10 +447,9 @@ func (r *ControlPlaneReconciler) reconcileNeutron(ctx context.Context, cp *c5c3v
 	// ControlPlane again, so the reap is one watch away.
 	//
 	// It runs here and NOT on the messaging leg, which runs ahead of every gate that
-	// can halt this pass with the pointer still live. See pruneNeutronMessagingCA.
-	if cp.Spec.Infrastructure.Messaging.TLS == nil && nn.Spec.Messaging.TLS == nil &&
-		nn.Status.ObservedGeneration >= nn.Generation {
-		if pruneRes, halt, perr := r.pruneNeutronMessagingCA(ctx, cp); halt {
+	// can halt this pass with the pointer still live. See pruneServiceMessagingCA.
+	if messagingCAMirrorReleasable(cp, nn.Spec.Messaging, nn.Status.ObservedGeneration, nn.Generation) {
+		if pruneRes, halt, perr := r.pruneServiceMessagingCA(ctx, cp, neutronMessagingTarget(cp)); halt {
 			return pruneRes, perr
 		}
 	}
@@ -488,16 +507,11 @@ func (r *ControlPlaneReconciler) deleteOrphanedNeutron(ctx context.Context, cp *
 		&corev1.ServiceAccount{
 			ObjectMeta: metav1.ObjectMeta{Name: neutronDBCredentialServiceAccountName, Namespace: neutronNS},
 		},
-		// The bus delivery: the brownfield transport-URL Secret and the CA mirror
-		// beside it. Nothing else writes them, so an unmanaged service leaves no
-		// broker credential behind in the namespace.
-		&corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: neutronMessagingSecretName(cp), Namespace: neutronNS},
-		},
-		&corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: neutronMessagingCASecretName(cp), Namespace: neutronNS},
-		},
 	}
+	// The bus delivery: the brownfield transport-URL Secret and the CA mirror
+	// beside it. Nothing else writes them, so an unmanaged service leaves no
+	// broker credential behind in the namespace.
+	children = append(children, serviceMessagingSecrets(neutronMessagingTarget(cp))...)
 	for _, child := range children {
 		if err := commonreconcile.DeleteOrphanedChildFunc(ctx, r.Client, child, func(live client.Object) bool {
 			return isControlPlaneChild(live, cp)
