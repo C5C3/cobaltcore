@@ -2900,6 +2900,64 @@ func TestDeleteServiceChildrenIn_BarbicanEnsembleToleratesAlreadyGoneObjects(t *
 	expectSwept(t, c, sealSecret, binding)
 }
 
+// TestDeleteServiceChildrenIn_ReportsTheProjectedBarbicanStoreOnce pins what the
+// sweep's Keep entry buys. The store the projection names is already in the wait
+// set crossNamespaceServiceChildren builds, so keeping it out of the sweep is what
+// stops a second entry for the same object from reaching remaining. An owned,
+// prefixed store nobody declares any more, one the reconcile-time prune never
+// removed, is still swept.
+func TestDeleteServiceChildrenIn_ReportsTheProjectedBarbicanStoreOnce(t *testing.T) {
+	g := NewGomegaWithT(t)
+	ctx := context.Background()
+	s := namespaceTeardownScheme(t)
+
+	cp := deletingBarbicanControlPlane(time.Minute, c5c3v1alpha1.ServiceNamespaceLifecycleManaged)
+	ns := barbicanTeardownNamespace
+
+	// The barbican-operator's finalizer holds the projected store, so the wait set's
+	// Delete leaves it Terminating and the sweep's List still sees it. That is the
+	// pass in which a missing Keep entry reports the same object a second time.
+	projected := &barbicanv1alpha1.BarbicanSecretStore{ObjectMeta: metav1.ObjectMeta{
+		Name: barbicanSecretStoreName(cp), Namespace: ns, Labels: controlPlaneChildLabels(cp),
+		Finalizers: []string{"barbican.openstack.c5c3.io/secretstore"},
+	}}
+	undeclared := &barbicanv1alpha1.BarbicanSecretStore{ObjectMeta: metav1.ObjectMeta{
+		Name: barbicanSecretStoreNamePrefix(cp) + "old", Namespace: ns, Labels: controlPlaneChildLabels(cp),
+	}}
+	foreign := &barbicanv1alpha1.BarbicanSecretStore{ObjectMeta: metav1.ObjectMeta{
+		Name: barbicanSecretStoreNamePrefix(cp) + "byo", Namespace: ns,
+	}}
+
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(cp, projected, undeclared, foreign).Build()
+	r := &ControlPlaneReconciler{Client: c, Scheme: s, Recorder: record.NewFakeRecorder(10)}
+
+	remaining, err := r.deleteServiceChildrenIn(ctx, cp, ns)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	reported := func(name string) int {
+		n := 0
+		for _, entry := range remaining {
+			if entry == ns+"/"+name {
+				n++
+			}
+		}
+		return n
+	}
+	g.Expect(reported(barbicanSecretStoreName(cp))).To(Equal(1),
+		"the wait set reports the projected store, and the sweep must not report it again")
+	g.Expect(reported(undeclared.Name)).To(Equal(1),
+		"the undeclared store the prune missed gates the namespace deletion")
+	g.Expect(remaining).NotTo(ContainElement(ns + "/" + foreign.Name))
+
+	expectSwept(t, c, undeclared)
+	expectPresent(t, c, foreign)
+
+	live := &barbicanv1alpha1.BarbicanSecretStore{}
+	g.Expect(c.Get(ctx, client.ObjectKeyFromObject(projected), live)).To(Succeed())
+	g.Expect(live.DeletionTimestamp.IsZero()).To(BeFalse(),
+		"the wait set must have deleted the projected store the sweep then skips")
+}
+
 // TestBarbicanTeardown_LeavesForeignEnsembleObjectsAlone is the blast-radius guard
 // on the two objects the sweep could destroy for somebody else. The OpenBaoTenant
 // admitting the namespace may predate this ControlPlane (in the kind stack the
