@@ -10,6 +10,15 @@
 // fan-out that enqueues the CRs whose effective store ref matches a changed
 // ClusterSecretStore or namespaced SecretStore (StoreRefFanOut).
 //
+// Satellite CRs (a namespaced configuration CR attached to a parent service CR
+// by name, such as a GlanceBackend on its Glance) have their own set: the
+// parent-reference index (ParentRefIndexer) with its registration helper
+// (RegisterParentRefIndex), and the three mappers reading it. They map a
+// satellite event to its parent (SatelliteToParentMapper), a parent event to
+// every satellite attached to it (ParentToSatellitesMapper), and a Secret
+// event to the parents of the satellites consuming that Secret
+// (SecretToParentsViaSatellitesMapper).
+//
 // Operator-specific mappers with a single consumer (e.g. keystone's MariaDB
 // clusterRef mapper and its PushSecret name mapper/predicate) deliberately
 // stay in their operator — the rule of two is not met for them.
