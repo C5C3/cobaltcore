@@ -80,3 +80,20 @@ neutron:
     # (neutron/agent/linux/ip_lib.py).
     - haproxy
     - iproute2
+cinder:
+  pip_extras: []
+  pip_packages: []
+  apt_packages:
+    # uWSGI is compiled in venv-builder against the shared libpython; without
+    # this, uwsgi fails to load (python-base ships no libpython3.12.so.1.0).
+    - libpython3.12t64
+    # The NFS driver's do_setup probes for mount.nfs through the root helper
+    # (cinder/volume/drivers/nfs.py, do_setup) and raises NfsException when
+    # the probe's argv[0] is missing; the pod never mounts (D3), the probe's
+    # non-zero exit is tolerated. The root helper is `sudo cinder-rootwrap`
+    # with no sudoers entry (D3); sudo comes from python-base.
+    - nfs-common
+    # qemu-img: create-from-image, clone and extend go through
+    # cinder/image/image_utils.py (fetch_to_raw, resize_image, convert_image)
+    # and the LUKS qcow2 pre-create in cinder/volume/drivers/remotefs.py.
+    - qemu-utils
