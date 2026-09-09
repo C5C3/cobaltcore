@@ -2,13 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Package keystoneauth renders the [keystone_authtoken] section of an
-// OpenStack service's oslo.config INI file, together with the password the
-// service-account authenticates with. Every OpenStack service other than
-// Keystone validates incoming API tokens through this section; the operator
-// renders the non-secret options into the service's shared ConfigMap and
-// injects the password separately through oslo.config's OS_<GROUP>__<OPTION>
-// env override so the secret never lands in the ConfigMap.
+// Package keystoneauth renders the [keystone_authtoken] and [service_user]
+// sections of an OpenStack service's oslo.config INI file, together with the
+// passwords the service account authenticates with. Every OpenStack service
+// other than Keystone validates incoming API tokens through
+// [keystone_authtoken]; services that call other services on a user's behalf
+// additionally send their own token from [service_user]. The operator renders
+// the non-secret options into the service's shared ConfigMap and injects the
+// passwords separately through oslo.config's OS_<GROUP>__<OPTION> env override
+// so the secrets never land in the ConfigMap.
 package keystoneauth
 
 import (
@@ -88,6 +90,63 @@ func Section(p SectionParams) map[string]string {
 func PasswordEnvVar(secretName, key string) corev1.EnvVar {
 	return corev1.EnvVar{
 		Name: PasswordEnvVarName,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: secretName,
+				},
+				Key: key,
+			},
+		},
+	}
+}
+
+// ServiceUserPasswordEnvVarName is the oslo.config env override key for
+// [service_user].password. Like PasswordEnvVarName it wins over the ConfigMap
+// value at runtime, so the service reads its own service-account password from
+// a Secret via ServiceUserPasswordEnvVar rather than from the rendered
+// ConfigMap.
+const ServiceUserPasswordEnvVarName = "OS_SERVICE_USER__PASSWORD" //nolint:gosec // G101 false positive: env var name, not a credential.
+
+// ServiceUserSection returns the key/value map for the [service_user] INI
+// section. The section makes the service send a token of its own alongside the
+// token of the user whose request it is serving, which the receiving service
+// needs to accept a long-running request whose user token has since expired
+// (Cinder calling Glance or Barbican, for example). send_service_user_token is
+// fixed to "true" and auth_type to "password"; the credentials are taken from
+// p and are the same service account [keystone_authtoken] uses. region_name is
+// emitted only when p.RegionName is non-empty, so an unset field falls back to
+// oslo.config's compiled-in default rather than an empty override.
+//
+// The map never contains a password key: the password arrives exclusively
+// through the ServiceUserPasswordEnvVar env override, keeping the secret out of
+// the rendered ConfigMap. Unlike Section, the map carries neither
+// www_authenticate_uri nor memcached_servers: both belong to the token
+// middleware, not to the outgoing service token.
+func ServiceUserSection(p SectionParams) map[string]string {
+	section := map[string]string{
+		"send_service_user_token": "true",
+		"auth_type":               "password",
+		"auth_url":                p.AuthURL,
+		"username":                p.Username,
+		"project_name":            p.ProjectName,
+		"user_domain_name":        p.UserDomainName,
+		"project_domain_name":     p.ProjectDomainName,
+	}
+	if p.RegionName != "" {
+		section["region_name"] = p.RegionName
+	}
+	return section
+}
+
+// ServiceUserPasswordEnvVar returns the EnvVar that overrides
+// [service_user].password by sourcing the value from key within the named
+// Secret. Every pod-spec builder that renders a [service_user] section uses this
+// helper so the override key and the Secret wiring stay in one place and the
+// password is never written to the ConfigMap.
+func ServiceUserPasswordEnvVar(secretName, key string) corev1.EnvVar {
+	return corev1.EnvVar{
+		Name: ServiceUserPasswordEnvVarName,
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{
