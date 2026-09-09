@@ -212,7 +212,7 @@ func (r *CinderReconciler) reconcileBackends(ctx context.Context, children clien
 			name:         backend.Name,
 			server:       nfs.Server,
 			path:         nfs.Path,
-			mountOptions: effectiveMountOptions(nfs.MountOptions),
+			mountOptions: nfs.MountOptions,
 			secretName:   secretName,
 		})
 		hosts = append(hosts, fmt.Sprintf("tcp://%s:%d", nfs.Server, nfsEgressPort))
@@ -288,18 +288,6 @@ func credentialsReady(conds []metav1.Condition) bool {
 	return cond != nil && cond.Status == metav1.ConditionTrue
 }
 
-// effectiveMountOptions returns the mount option string an export is mounted
-// with, falling back to DefaultNFSMountOptions when the CR leaves it empty (a CR
-// that bypassed the CRD default). An empty value would render an empty
-// nfs_mount_options, which mounts the export with the kernel defaults: a hard
-// mount that blocks the service on an unreachable server.
-func effectiveMountOptions(mountOptions string) string {
-	if mountOptions != "" {
-		return mountOptions
-	}
-	return cinderv1alpha1.DefaultNFSMountOptions
-}
-
 // renderBackendSection renders one backend's [<name>] section: the NFS driver
 // wiring, the optional image-volume cache bounds, and the backend's extraOptions
 // merged WITHOUT overriding an operator key (operator keys win on collision —
@@ -316,9 +304,9 @@ func renderBackendSection(cinder *cinderv1alpha1.Cinder, backend *cinderv1alpha1
 		// Cinder's name rather than the backend's: cinder appends "@<backend>"
 		// itself, so the rendered value is the half the operator owns.
 		"backend_host":                cinder.Name,
-		"nfs_shares_config":           "/etc/cinder/backends.conf.d/" + backend.Name + ".shares",
+		"nfs_shares_config":           cinderBackendsConfigDir + "/" + backend.Name + ".shares",
 		"nfs_mount_point_base":        nfsMountPointBase,
-		"nfs_mount_options":           effectiveMountOptions(nfs.MountOptions),
+		"nfs_mount_options":           nfs.MountOptions,
 		"nas_secure_file_operations":  "true",
 		"nas_secure_file_permissions": "true",
 		"nfs_snapshot_support":        "false",

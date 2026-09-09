@@ -166,6 +166,26 @@ func TestReconcileBackupBackend_CustomKnobsAndExtraOptionsRendered(t *testing.T)
 	g.Expect(conf).NotTo(ContainSubstring("attacker.example.com"))
 }
 
+// TestReconcileBackupBackend_EmptyMountOptionsRendersVerbatim covers the backup
+// backend that spells the option string out as empty: the same submitter choice
+// the volume backends allow, rendered verbatim so the projected mount and the
+// driver's backup_mount_options agree on it.
+func TestReconcileBackupBackend_EmptyMountOptionsRendersVerbatim(t *testing.T) {
+	g := NewGomegaWithT(t)
+	cinder := validCinder()
+	backupBackend := credentialReadyBackupBackend("nfs-backup")
+	backupBackend.Spec.NFS.MountOptions = ""
+	r := newCinderTestReconciler(cinder, backupBackend)
+
+	_, projection, err := r.reconcileBackupBackend(context.Background(), r.Client, cinder)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(projection).NotTo(BeNil())
+	g.Expect(projection.mountOptions).To(BeEmpty())
+	conf := string(projectedSecret(t, r, projection.secretName).Data[backupConfDataKey])
+	g.Expect(conf).To(ContainSubstring("backup_mount_options = \n"))
+}
+
 // TestReconcileBackupBackend_ControlCharSkipsProjection covers the value that
 // would inject further options into the rendered [DEFAULT] section: nothing is
 // rendered, the fault is warned about, and the condition names the wait.

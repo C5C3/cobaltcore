@@ -7,12 +7,15 @@
 package controller
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/healthcheck"
 	commonmulticluster "github.com/c5c3/cobaltcore/internal/common/multicluster"
+	cinderv1alpha1 "github.com/c5c3/cobaltcore/operators/cinder/api/v1alpha1"
 )
 
 // CinderReconciler reconciles a Cinder object: it drives the sub-reconciler
@@ -46,4 +49,24 @@ type CinderReconciler struct {
 	// with. Nil means always-local: every CR keeps its children on the management
 	// cluster, which is what single-cluster tests and deployments want.
 	Resolver commonmulticluster.ClusterResolver
+}
+
+// conditionReasonConfigError is the SecretsReady=False reason set when
+// reconcileConfig fails. Config artefacts (the rendered cinder.conf ConfigMap)
+// gate the same downstream graph as the upstream credential Secrets, so failures
+// reuse SecretsReady rather than a dedicated condition — matching
+// reconcileDBConnectionSecret's Config→SecretsReady mapping.
+const conditionReasonConfigError = "ConfigError"
+
+// markConfigFailed flips SecretsReady to False so a reconcileConfig failure
+// cannot leave the aggregate Ready condition stale-True at the new
+// ObservedGeneration. It mirrors the sibling operators' markConfigFailed helper.
+func markConfigFailed(cinder *cinderv1alpha1.Cinder, err error) {
+	conditions.SetCondition(&cinder.Status.Conditions, metav1.Condition{
+		Type:               "SecretsReady",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: cinder.Generation,
+		Reason:             conditionReasonConfigError,
+		Message:            err.Error(),
+	})
 }
