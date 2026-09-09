@@ -18,7 +18,7 @@ FAIL=0
 # python-base is checked separately: it is where the user is created. ovn and
 # backup-shifter create the user themselves because they do not derive from
 # python-base, so each has its own function below.
-SERVICES="keystone horizon glance placement barbican neutron"
+SERVICES="keystone horizon glance placement barbican neutron cinder"
 
 # shellcheck source=tests/lib/assertions.sh
 source "$SCRIPT_DIR/../lib/assertions.sh"

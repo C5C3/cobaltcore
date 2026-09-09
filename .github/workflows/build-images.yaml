@@ -148,6 +148,10 @@ jobs:
               - 'patches/neutron/**'
               - 'operators/neutron/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_neutron.sh'
+            svc_cinder:
+              - 'images/cinder/**'
+              - 'patches/cinder/**'
+              - 'tests/container-images/verify_cinder.sh'
             # ---------------------------------------------------------------
             # Everything every service image is built from: the two base
             # images, the release pins, the build scripts, the constraint
@@ -204,13 +208,14 @@ jobs:
         id: result
         env:
           EVENT_NAME: ${{ github.event_name }}
-          ALL_SERVICES: keystone horizon glance placement barbican neutron
+          ALL_SERVICES: keystone horizon glance placement barbican neutron cinder
           FILTER_svc_keystone: ${{ steps.filter.outputs.svc_keystone }}
           FILTER_svc_horizon: ${{ steps.filter.outputs.svc_horizon }}
           FILTER_svc_glance: ${{ steps.filter.outputs.svc_glance }}
           FILTER_svc_placement: ${{ steps.filter.outputs.svc_placement }}
           FILTER_svc_barbican: ${{ steps.filter.outputs.svc_barbican }}
           FILTER_svc_neutron: ${{ steps.filter.outputs.svc_neutron }}
+          FILTER_svc_cinder: ${{ steps.filter.outputs.svc_cinder }}
           FILTER_base: ${{ steps.filter.outputs.base }}
           FILTER_tempest: ${{ steps.filter.outputs.tempest }}
           FILTER_ovn: ${{ steps.filter.outputs.ovn }}
@@ -235,6 +240,7 @@ jobs:
           - images/placement/Dockerfile
           - images/barbican/Dockerfile
           - images/neutron/Dockerfile
+          - images/cinder/Dockerfile
           - images/tempest/Dockerfile
           - images/keystone-federation-proxy/Dockerfile
           - images/ovn/Dockerfile
