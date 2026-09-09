@@ -1,0 +1,115 @@
+#!/var/lib/openstack/bin/python
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Readiness probe of the cinder-scheduler, cinder-volume and cinder-backup
+# processes (#979 D2), run as an exec probe.
+#
+# None of the three serves an HTTP port, so readiness here is "a process of
+# this container holds a socket that is established to the message broker
+# port", the semantics of kolla's healthcheck_port. The probe reads the
+# connection tables /proc/net/tcp and /proc/net/tcp6 and therefore needs no
+# capability and no writable filesystem. The broker port comes from
+# CINDER_AMQP_PORT and defaults to 5672.
+#
+# /proc/net/tcp* is scoped to the network namespace, and every container of a
+# pod shares one. The connection state alone would therefore also report ready
+# for a pod-mate's connection: co-locate cinder-volume with cinder-backup and
+# one healthy connection answers for both. Each row is matched against the
+# socket inodes held by the processes in /proc that share this process' mount
+# namespace, so the answer is about this container's own socket. The mount
+# namespace is what a container keeps to itself no matter what the pod spec
+# says: shareProcessNamespace: true lists the pod-mates' processes in /proc,
+# and the probe walks past them because their /proc/<pid>/ns/mnt is another
+# one. The isolation is therefore enforced here rather than owed by the
+# cinder-operator (#987).
+#
+# What the probe cannot see: a broker that dies or is partitioned away without
+# a FIN or an RST leaves the socket ESTABLISHED until the TCP keepalive
+# expires, long after oslo.messaging's heartbeat has given up on it. Like
+# kolla's healthcheck_port this probe answers "the connection exists", not
+# "the broker answers".
+#
+# A table that does not exist is skipped: a kernel without IPv6 has no
+# /proc/net/tcp6, and with neither table present the answer is "not ready",
+# never a traceback. A CINDER_AMQP_PORT that is not a port number is a
+# one-line message, not a traceback either.
+
+import os
+import sys
+
+# Connection state 01 (TCP_ESTABLISHED) in the /proc/net/tcp* st column.
+ESTABLISHED = "01"
+
+TABLES = ("/proc/net/tcp", "/proc/net/tcp6")
+
+try:
+    PORT = int(os.environ.get("CINDER_AMQP_PORT", "5672"))
+except ValueError:
+    # The value stays out of the message. Kubelet copies an exec probe's
+    # output verbatim into the Unhealthy event, and the key this
+    # misconfiguration is confused with is the transport URL, which carries
+    # the broker password.
+    sys.exit("CINDER_AMQP_PORT is not a port number")
+if not 1 <= PORT <= 65535:
+    # int() also accepts numbers no port can take: 0 from an unset int32
+    # field, a negative value, one above 65535. No connection table row can
+    # ever match those, so every cinder pod would stay NotReady for the life
+    # of the deployment with the message a broker outage prints.
+    sys.exit("CINDER_AMQP_PORT is not a port number")
+
+
+def own_socket_inodes() -> set:
+    """Report the socket inodes the processes of this container hold."""
+    inodes = set()
+    own_mnt = os.readlink("/proc/self/ns/mnt")
+    for pid in (entry for entry in os.listdir("/proc") if entry.isdigit()):
+        try:
+            if os.readlink(f"/proc/{pid}/ns/mnt") != own_mnt:
+                # A pod-mate's process, listed here only under
+                # shareProcessNamespace: true. Its sockets are not ours.
+                continue
+            fds = os.listdir(f"/proc/{pid}/fd")
+        except OSError:
+            # The process exited, or it belongs to another user and its
+            # namespace links and descriptors stay closed to us.
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(f"/proc/{pid}/fd/{fd}")
+            except OSError:
+                # The descriptor was closed since the listing. The remaining
+                # descriptors of this process still count: cinder-volume
+                # closes descriptors constantly, and giving up on the process
+                # here would drop the broker socket along with them.
+                continue
+            if target.startswith("socket:["):
+                inodes.add(target[len("socket:["):-1])
+    return inodes
+
+
+def connected(row: str, inodes: set) -> bool:
+    """Report whether a /proc/net/tcp* row is our connection to the broker."""
+    fields = row.split()
+    if len(fields) < 10:
+        return False
+    rem_address, st, inode = fields[2], fields[3], fields[9]
+    return (st == ESTABLISHED and inode in inodes
+            and int(rem_address.rsplit(":", 1)[1], 16) == PORT)
+
+
+own_inodes = own_socket_inodes()
+for table in TABLES:
+    try:
+        with open(table) as handle:
+            # The first line is the column header.
+            rows = handle.read().splitlines()[1:]
+    except FileNotFoundError:
+        continue
+    if any(connected(row, own_inodes) for row in rows):
+        print(f"established to broker port {PORT}")
+        sys.exit(0)
+
+print(f"no established connection to broker port {PORT}")
+sys.exit(1)
