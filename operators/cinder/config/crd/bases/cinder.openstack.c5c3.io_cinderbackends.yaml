@@ -1,0 +1,286 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: cinderbackends.cinder.openstack.c5c3.io
+spec:
+  group: cinder.openstack.c5c3.io
+  names:
+    kind: CinderBackend
+    listKind: CinderBackendList
+    plural: cinderbackends
+    singular: cinderbackend
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .spec.cinderRef.name
+      name: Cinder
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          CinderBackend is the Schema for the cinderbackends API. One CR attaches to a
+          Cinder CR via spec.cinderRef and describes one volume backend (Phase 1: NFS).
+          The Cinder-side sub-reconciler projects a dedicated cinder-volume Deployment
+          for each attached backend, so the backends a Cinder serves are added and
+          removed without editing the Cinder CR.
+
+          Detaching a backend is not a plain delete. A cinder-volume owns the volumes it
+          created under its host identity, and a host no service backs leaves those
+          volumes unreachable, so the controller holds the finalizer
+          cinder.openstack.c5c3.io/service-remove on this CR: on deletion it runs a
+          "cinder-manage service remove" Job for the backend's host and releases the
+          finalizer only once that Job succeeds.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CinderBackendSpec defines the desired state of CinderBackend.
+
+              The cinderRef transition rule (evaluated only on UPDATE) makes the attachment
+              immutable: re-pointing a backend at a different Cinder would strand the
+              volumes the old deployment created under a host identity nothing serves
+              anymore. The type rule freezes the driver for the same reason: the volumes
+              already on the backend were created by the driver that is being replaced.
+              Delete and recreate instead, which runs the service-remove Job. The type/nfs
+              union rule enforces "exactly one backend block matching spec.type" at the
+              schema layer so it holds even when the validating webhook is down.
+            properties:
+              cinderRef:
+                description: |-
+                  CinderRef names the Cinder CR in the same namespace this backend attaches
+                  to. The referenced CR does not have to exist at admission time (GitOps
+                  ordering: the backend may be applied before the Cinder CR); a dangling
+                  reference surfaces as Ready=False.
+                properties:
+                  name:
+                    description: Name is the referenced Cinder CR's name.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              extraOptions:
+                additionalProperties:
+                  type: string
+                description: |-
+                  ExtraOptions provides free-form [<name>] backend-section options not
+                  covered by the typed fields, keyed by bare option name. The validating
+                  webhook rejects options already owned by the typed fields (a denylist) so
+                  the escape hatch cannot silently contradict the typed spec.
+
+                  MaxProperties and the per-entry key/value length bound the aggregate
+                  rendered config at admission so this free-form map cannot bloat the backend
+                  section past reasonable size.
+                maxProperties: 32
+                type: object
+                x-kubernetes-validations:
+                - message: each extraOptions key must be <=256 characters and each
+                    value <=1024 characters
+                  rule: self.all(k, size(k) <= 256 && size(self[k]) <= 1024)
+              imageVolumeCache:
+                description: |-
+                  ImageVolumeCache turns on the per-backend image-volume cache: the first
+                  volume created from a given image is kept and later requests for the same
+                  image clone it on the backend instead of pulling the image through Glance
+                  again. It needs spec.internalTenant on the referenced Cinder, since the
+                  cached volumes are owned by the deployment rather than by the requesting
+                  tenant.
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled turns the cache on for this backend. It is an explicit field
+                      rather than the presence of the block so the bounds can be configured in a
+                      CR that keeps the cache off.
+                    type: boolean
+                  maxCount:
+                    description: |-
+                      MaxCount caps the number of cached image volumes on this backend. When
+                      unset the cache is not bounded by count.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  maxSizeGB:
+                    description: |-
+                      MaxSizeGB caps the total size, in GiB, of the cached image volumes on this
+                      backend. When unset the cache is not bounded by size.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                required:
+                - enabled
+                type: object
+              nfs:
+                description: |-
+                  NFS configures the NFS volume driver. Required exactly when type is NFS
+                  (union rule above).
+                properties:
+                  mountOptions:
+                    default: nfsvers=4.1,soft,timeo=30,retrans=2
+                    description: |-
+                      MountOptions is the comma-separated option string the export is mounted
+                      with. The default pins NFSv4.1 and a soft mount (see
+                      DefaultNFSMountOptions); override it only where the server demands
+                      different semantics, and keep the mount soft, because a hard mount blocks
+                      the cinder-volume process on an unreachable server rather than failing the
+                      request. The pattern excludes a newline and a carriage return: the value is
+                      rendered verbatim as nfs_mount_options, where the reconcile-time guard would
+                      drop the whole backend out of the projection rather than reject the edit.
+                    pattern: ^[^\n\r]*$
+                    type: string
+                  path:
+                    description: |-
+                      Path is the absolute export path on the server. The pattern admits only
+                      printable ASCII because the operator writes "server:path" verbatim into the
+                      nfs_shares_config file the cinder-volume pod mounts, and the driver reads
+                      that file back a line at a time, stripping it and cutting it at the first
+                      space to separate the export from its per-share options: a space or a tab
+                      in the path would leave cinder addressing a shorter export than the one
+                      validated, mounted and given an egress rule, at a mount point derived from
+                      that shorter value. A newline would add a second export line outright. The
+                      allowlist is what covers the whitespace an \s-based pattern would not: RE2
+                      resolves \s to the five ASCII characters, while the python side strips the
+                      full Unicode set, so a pasted U+00A0 would divide the two.
+                    pattern: ^/[!-~]*$
+                    type: string
+                  server:
+                    description: |-
+                      Server is the NFS server the export lives on, as a hostname or an IP
+                      address. It reaches the mount command verbatim, which is why the pattern
+                      admits only the characters a hostname or an IPv4 address carries.
+                    minLength: 1
+                    pattern: ^[A-Za-z0-9.-]+$
+                    type: string
+                required:
+                - path
+                - server
+                type: object
+              type:
+                description: Type selects the volume driver. Phase 1 supports NFS
+                  only.
+                enum:
+                - NFS
+                type: string
+            required:
+            - cinderRef
+            - type
+            type: object
+            x-kubernetes-validations:
+            - message: cinderRef is immutable
+              rule: self.cinderRef.name == oldSelf.cinderRef.name
+            - message: type is immutable
+              rule: self.type == oldSelf.type
+            - message: exactly one backend block matching spec.type must be set (type
+                NFS requires spec.nfs)
+              rule: (self.type == 'NFS') == has(self.nfs)
+          status:
+            description: |-
+              CinderBackendStatus defines the observed state of CinderBackend. The dedicated
+              CinderBackend controller is the single writer of this status; the Cinder-side
+              sub-reconciler only reads it and writes an aggregated condition onto the
+              Cinder CR instead.
+            properties:
+              conditions:
+                description: |-
+                  Conditions represent the latest available observations of the backend
+                  state. Each condition carries an ObservedGeneration so consumers can tell a
+                  stale condition from one reflecting the current spec; use the conditions
+                  helper (internal/common/conditions) to upsert them.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the .metadata.generation the controller last
+                  reconciled, so a stale status is distinguishable from a current one.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
