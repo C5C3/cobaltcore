@@ -70,6 +70,10 @@ flag_management:
       paths:
         - operators/neutron/
       carryforward: true
+    - name: unit-cinder
+      paths:
+        - operators/cinder/
+      carryforward: true
     - name: integration-common
       paths:
         - internal/common/
@@ -105,6 +109,10 @@ flag_management:
     - name: integration-neutron
       paths:
         - operators/neutron/
+      carryforward: true
+    - name: integration-cinder
+      paths:
+        - operators/cinder/
       carryforward: true
 
 # Component-level thresholds: each component is tracked independently on the

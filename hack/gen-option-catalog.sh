@@ -36,7 +36,7 @@ Usage: hack/gen-option-catalog.sh [--check] <service> <release> [image-ref]
 
   --check       diff the generated catalog against the committed file instead
                 of writing it; non-zero exit on any difference.
-  service       keystone, glance, placement, barbican, or neutron.
+  service       keystone, glance, placement, barbican, neutron, or cinder.
   release       release directory name (e.g. 2025.2).
   image-ref     service image to extract from
                 (default: ghcr.io/c5c3/<service>:<release>).
@@ -123,6 +123,14 @@ case "${SERVICE}" in
     # catalog per rendered file or to add a provenance field, because the
     # catalog shape becomes an API at that point.
     GEN_CONFIG_PATHS="etc/oslo-config-generator/neutron.conf etc/oslo-config-generator/ml2_conf.ini etc/oslo-config-generator/neutron_ovn_metadata_agent.ini"
+    MIN_SECTIONS=10
+    ;;
+  cinder)
+    # cinder ships a single generator config listing the cinder,
+    # castellan.config, keystonemiddleware.auth_token, os_brick, osprofiler and
+    # oslo.* namespaces; the file is identical at 27.0.0 and 28.0.0. 10 is the
+    # same loose floor keystone, glance, barbican and neutron use.
+    GEN_CONFIG_PATHS="tools/config/cinder-config-generator.conf"
     MIN_SECTIONS=10
     ;;
   *)
