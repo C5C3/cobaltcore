@@ -254,8 +254,9 @@ func credentialReadyBackend(name string) *cinderv1alpha1.CinderBackend {
 }
 
 // testCinderBackupBackend returns a minimal NFS CinderBackupBackend attached to
-// the shared Cinder fixture. It leaves fileSize and compression unset so the
-// fixture exercises the operator's fallback to the CRD defaults.
+// the shared Cinder fixture, carrying the compression and mount options
+// admission materializes. It leaves fileSize unset so the fixture exercises the
+// operator's fallback for a CR that bypassed the CRD default.
 func testCinderBackupBackend(name string) *cinderv1alpha1.CinderBackupBackend {
 	return &cinderv1alpha1.CinderBackupBackend{
 		ObjectMeta: metav1.ObjectMeta{
@@ -265,8 +266,9 @@ func testCinderBackupBackend(name string) *cinderv1alpha1.CinderBackupBackend {
 			Generation: 1,
 		},
 		Spec: cinderv1alpha1.CinderBackupBackendSpec{
-			CinderRef: cinderv1alpha1.CinderRefSpec{Name: testCinderName},
-			Type:      cinderv1alpha1.CinderBackupBackendTypeNFS,
+			CinderRef:   cinderv1alpha1.CinderRefSpec{Name: testCinderName},
+			Type:        cinderv1alpha1.CinderBackupBackendTypeNFS,
+			Compression: cinderv1alpha1.DefaultBackupCompression,
 			NFS: &cinderv1alpha1.NFSBackupBackendSpec{
 				Server:       name + ".nfs.example.com",
 				Path:         "/exports/" + name,

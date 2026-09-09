@@ -108,10 +108,13 @@ func TestReconcileBackends_SingleReadyBackendProjects(t *testing.T) {
 	g.Expect(cond.Message).To(Equal("All 1 attached backends are projected: nfs1"))
 }
 
-// TestReconcileBackends_EmptyMountOptionsFallsBack covers the CR that bypassed
-// the CRD default: an empty option string would mount the export hard, which
-// blocks the cinder-volume process on an unreachable server.
-func TestReconcileBackends_EmptyMountOptionsFallsBack(t *testing.T) {
+// TestReconcileBackends_EmptyMountOptionsRendersVerbatim covers the backend that
+// spells the option string out as empty. The CRD default fills the field for
+// every manifest that omits it, so an empty value is the submitter's own choice:
+// mount the export with the kernel defaults. It is rendered verbatim, and the
+// projection carries the same empty string, so the CSI mount the workload step
+// builds and the driver's own nfs_mount_options agree on it.
+func TestReconcileBackends_EmptyMountOptionsRendersVerbatim(t *testing.T) {
 	g := NewGomegaWithT(t)
 	cinder := validCinder()
 	backend := credentialReadyBackend("nfs1")
@@ -122,9 +125,9 @@ func TestReconcileBackends_EmptyMountOptionsFallsBack(t *testing.T) {
 
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(projections).To(HaveLen(1))
-	g.Expect(projections[0].mountOptions).To(Equal(cinderv1alpha1.DefaultNFSMountOptions))
+	g.Expect(projections[0].mountOptions).To(BeEmpty())
 	conf := string(projectedSecret(t, r, projections[0].secretName).Data[backendConfDataKey])
-	g.Expect(conf).To(ContainSubstring("nfs_mount_options = " + cinderv1alpha1.DefaultNFSMountOptions))
+	g.Expect(conf).To(ContainSubstring("nfs_mount_options = \n"))
 }
 
 func TestReconcileBackends_ImageVolumeCacheRendered(t *testing.T) {

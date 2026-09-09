@@ -225,7 +225,7 @@ func (r *CinderReconciler) projectBackupBackend(ctx context.Context, children cl
 		name:         backupBackend.Name,
 		server:       nfs.Server,
 		path:         nfs.Path,
-		mountOptions: effectiveMountOptions(nfs.MountOptions),
+		mountOptions: nfs.MountOptions,
 		secretName:   secretName,
 	}, nil
 }
@@ -280,9 +280,9 @@ func renderBackupSection(cinder *cinderv1alpha1.Cinder, backupBackend *cinderv1a
 		"backup_driver":                "cinder.backup.drivers.nfs.NFSBackupDriver",
 		"backup_share":                 nfs.Server + ":" + nfs.Path,
 		"backup_mount_point_base":      backupMountPointBase,
-		"backup_mount_options":         effectiveMountOptions(nfs.MountOptions),
+		"backup_mount_options":         nfs.MountOptions,
 		"backup_file_size":             fmt.Sprintf("%d", effectiveBackupFileSize(backupBackend.Spec.FileSize)),
-		"backup_compression_algorithm": effectiveBackupCompression(backupBackend.Spec.Compression),
+		"backup_compression_algorithm": backupBackend.Spec.Compression,
 		// The backup service owns its target through its host identity, so a
 		// backup is never handed to another host.
 		"backup_use_same_host": "false",
@@ -305,14 +305,4 @@ func effectiveBackupFileSize(fileSize *int64) int64 {
 		return *fileSize
 	}
 	return cinderv1alpha1.DefaultBackupFileSize
-}
-
-// effectiveBackupCompression returns the compression algorithm each chunk is
-// written with, falling back to DefaultBackupCompression when the CR leaves it
-// empty (a CR that bypassed the CRD default).
-func effectiveBackupCompression(compression string) string {
-	if compression != "" {
-		return compression
-	}
-	return cinderv1alpha1.DefaultBackupCompression
 }
