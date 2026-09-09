@@ -5,18 +5,23 @@
 package controller
 
 import (
+	"testing"
+
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
+	"github.com/c5c3/cobaltcore/internal/common/config"
 	"github.com/c5c3/cobaltcore/internal/common/messaging"
 	"github.com/c5c3/cobaltcore/internal/common/secrets"
 	commonv1 "github.com/c5c3/cobaltcore/internal/common/types"
@@ -49,13 +54,30 @@ func testScheme() *runtime.Scheme {
 	return s
 }
 
-// cinderFakeClientBuilder returns a fake client builder with the package scheme
-// and the status subresource the Cinder reconciler writes.
+// cinderFakeClientBuilder returns a fake client builder with the package scheme,
+// the status subresources the three reconcilers write, and the field index the
+// cinder-side projections select their attached satellites on (SetupWithManager
+// registers the same key).
 func cinderFakeClientBuilder(objs ...client.Object) *fake.ClientBuilder {
 	return fake.NewClientBuilder().
 		WithScheme(testScheme()).
 		WithObjects(objs...).
-		WithStatusSubresource(&cinderv1alpha1.Cinder{})
+		WithStatusSubresource(&cinderv1alpha1.Cinder{}, &cinderv1alpha1.CinderBackend{},
+			&cinderv1alpha1.CinderBackupBackend{}).
+		WithIndex(&cinderv1alpha1.CinderBackend{}, CinderBackendCinderRefIndexKey, cinderRefIndexValues).
+		WithIndex(&cinderv1alpha1.CinderBackupBackend{}, CinderBackupBackendCinderRefIndexKey, cinderRefIndexValues)
+}
+
+// cinderRefIndexValues indexes a satellite CR by spec.cinderRef.name. It stands
+// in for the field-indexer registration SetupWithManager performs.
+func cinderRefIndexValues(o client.Object) []string {
+	switch cr := o.(type) {
+	case *cinderv1alpha1.CinderBackend:
+		return []string{cr.Spec.CinderRef.Name}
+	case *cinderv1alpha1.CinderBackupBackend:
+		return []string{cr.Spec.CinderRef.Name}
+	}
+	return nil
 }
 
 // newCinderTestReconciler builds a CinderReconciler over a fake client
@@ -199,4 +221,108 @@ func rabbitmqDefaultUserSecret(port string, omit ...string) *corev1.Secret {
 // cinderCondition returns one of the Cinder CR's conditions, or nil.
 func cinderCondition(cinder *cinderv1alpha1.Cinder, conditionType string) *metav1.Condition {
 	return conditions.GetCondition(cinder.Status.Conditions, conditionType)
+}
+
+// testCinderBackend returns a minimal NFS CinderBackend attached to the shared
+// Cinder fixture, with the mount options admission materializes.
+func testCinderBackend(name string) *cinderv1alpha1.CinderBackend {
+	return &cinderv1alpha1.CinderBackend{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       name,
+			Namespace:  testNamespace,
+			UID:        types.UID("backend-uid-" + name),
+			Generation: 1,
+		},
+		Spec: cinderv1alpha1.CinderBackendSpec{
+			CinderRef: cinderv1alpha1.CinderRefSpec{Name: testCinderName},
+			Type:      cinderv1alpha1.CinderBackendTypeNFS,
+			NFS: &cinderv1alpha1.NFSBackendSpec{
+				Server:       name + ".nfs.example.com",
+				Path:         "/exports/" + name,
+				MountOptions: cinderv1alpha1.DefaultNFSMountOptions,
+			},
+		},
+	}
+}
+
+// credentialReadyBackend builds a CinderBackend whose CredentialsReady condition
+// is already True — the gate the cinder-side projection reads.
+func credentialReadyBackend(name string) *cinderv1alpha1.CinderBackend {
+	backend := testCinderBackend(name)
+	backend.Status.Conditions = readyCredentials()
+	return backend
+}
+
+// testCinderBackupBackend returns a minimal NFS CinderBackupBackend attached to
+// the shared Cinder fixture. It leaves fileSize and compression unset so the
+// fixture exercises the operator's fallback to the CRD defaults.
+func testCinderBackupBackend(name string) *cinderv1alpha1.CinderBackupBackend {
+	return &cinderv1alpha1.CinderBackupBackend{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       name,
+			Namespace:  testNamespace,
+			UID:        types.UID("backup-backend-uid-" + name),
+			Generation: 1,
+		},
+		Spec: cinderv1alpha1.CinderBackupBackendSpec{
+			CinderRef: cinderv1alpha1.CinderRefSpec{Name: testCinderName},
+			Type:      cinderv1alpha1.CinderBackupBackendTypeNFS,
+			NFS: &cinderv1alpha1.NFSBackupBackendSpec{
+				Server:       name + ".nfs.example.com",
+				Path:         "/exports/" + name,
+				MountOptions: cinderv1alpha1.DefaultNFSMountOptions,
+			},
+		},
+	}
+}
+
+// credentialReadyBackupBackend builds a CinderBackupBackend whose
+// CredentialsReady condition is already True.
+func credentialReadyBackupBackend(name string) *cinderv1alpha1.CinderBackupBackend {
+	backupBackend := testCinderBackupBackend(name)
+	backupBackend.Status.Conditions = readyCredentials()
+	return backupBackend
+}
+
+// readyCredentials is the satellite status the cinder-side projections gate on.
+func readyCredentials() []metav1.Condition {
+	return []metav1.Condition{{
+		Type:               conditionTypeCredentialsReady,
+		Status:             metav1.ConditionTrue,
+		Reason:             "CredentialsAvailable",
+		LastTransitionTime: metav1.Now(),
+	}}
+}
+
+// staleProjectionSecret returns a historical projection Secret of a satellite
+// that is no longer projected: hash-suffixed under baseName, carrying the
+// config-base label, and controlled by the Cinder — the three properties the
+// prune helper filters on.
+func staleProjectionSecret(t *testing.T, cinder *cinderv1alpha1.Cinder, baseName string) *corev1.Secret {
+	t.Helper()
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      baseName + "-0123456789",
+			Namespace: testNamespace,
+			Labels:    map[string]string{config.ConfigBaseLabelKey: baseName},
+		},
+		Data: map[string][]byte{"stale": []byte("previous projection")},
+	}
+	if err := controllerutil.SetControllerReference(cinder, secret, testScheme()); err != nil {
+		t.Fatalf("setting the owner reference on %s: %v", secret.Name, err)
+	}
+	return secret
+}
+
+// collectEvents drains the FakeRecorder channel non-blocking.
+func collectEvents(rec *record.FakeRecorder) []string {
+	var out []string
+	for {
+		select {
+		case e := <-rec.Events:
+			out = append(out, e)
+		default:
+			return out
+		}
+	}
 }
