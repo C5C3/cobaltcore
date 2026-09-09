@@ -1,0 +1,60 @@
+SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+SPDX-License-Identifier: Apache-2.0
+
+Run the NFS driver's qemu-img info as the service user
+
+NfsDriver._qemu_img_info is the driver's one forced-root call. It
+passes run_as_root=True to _qemu_img_info_base in
+cinder/volume/drivers/remotefs.py, which bypasses that method's
+"run_as_root = run_as_root or self._execute_as_root" line. Every
+other file operation of the driver follows nas_secure_file_operations
+through that line (_execute_as_root is True by constructor default).
+
+Upstream forced root in commit dbc9c7ca59 (2017) so that the driver
+could still read files a Nova instance had attached and the cinder
+user could not open. Under the restricted posture of #979 decision
+D3 there is no root to fall back to: sudo has no sudoers entry for
+the service user, and every file is owned by that user anyway.
+Without this change every operation that inspects an image format
+fails (spike #985, evidence part 1, section (a.4)).
+
+The flip is necessary but not sufficient. With run_as_root=False the
+"or" resolves to self._execute_as_root, which RemoteFSDriver.__init__
+leaves True; only NfsDriver.set_nas_security_options clears it, and
+only when nas_secure_file_operations resolves to true. That option
+defaults to auto, which resolves to true only for a new install able
+to write .cinderSecureEnvIndicator onto the share and to false for
+every existing one. The cinder-operator (#987) therefore has to set
+nas_secure_file_operations = true explicitly rather than rely on the
+default; without it this call still runs through `sudo
+cinder-rootwrap`, which has no sudoers entry, and every
+create-from-image, clone and extend fails.
+tests/container-images/verify_cinder.sh asserts both halves against
+the built image: the call resolves to run_as_root=False once
+_execute_as_root is False, and to run_as_root=True on the constructor
+default.
+
+test_copy_volume_from_snapshot in
+cinder/tests/unit/volume/drivers/test_nfs.py keeps expecting
+run_as_root=True on image_utils.qemu_img_info and stays green: the
+test driver never calls set_nas_security_options, so
+_execute_as_root keeps its constructor default True and the or
+yields True. The patch therefore carries no test hunk.
+
+Applies to cinder 27.0.0 (2025.2).
+
+Upstream status: not yet proposed.
+
+diff --git a/cinder/volume/drivers/nfs.py b/cinder/volume/drivers/nfs.py
+index e07f57c..e5454a5 100644
+--- a/cinder/volume/drivers/nfs.py
++++ b/cinder/volume/drivers/nfs.py
+@@ -587,7 +587,7 @@ class NfsDriver(remotefs.RemoteFSSnapDriverDistributed):
+             volume_name,
+             self.configuration.nfs_mount_point_base,
+             force_share=True,
+-            run_as_root=True)
++            run_as_root=False)
+ 
+     def _check_snapshot_support(self, setup_checking=False):
+         """Ensure snapshot support is enabled in config."""
