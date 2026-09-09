@@ -7,7 +7,11 @@ FROM python-base
 # Install uv (fast Python package manager, pinned via Renovate)
 COPY --from=ghcr.io/astral-sh/uv:0.12.5@sha256:e85be844203885286c60ffad8a858d48afb6c5a5c237ca0e67f12e74b8f174b1 /uv /bin/
 
-# Build dependencies
+# Build dependencies. qemu-utils is not one of them: this container also runs
+# the service unit tests (hack/ci-run-unit-tests.sh), and cinder's
+# TestFormatInspectors build their fixture images with `qemu-img create`.
+# Without the binary the image-safety checks behind OSSA-2022-006 fail with
+# exit status 127 instead of running.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends \
@@ -20,6 +24,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libssl-dev \
     python3-dev \
     python3-venv \
+    qemu-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Prepare virtual environment

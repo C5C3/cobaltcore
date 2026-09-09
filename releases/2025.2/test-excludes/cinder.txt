@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# stestr exclude-list for Cinder 2025.2
+#
+# One regex pattern per line. Lines starting with # are comments.
+# Blank lines are ignored. Patterns are matched against test IDs.
+#
+# First run of the cinder 27.0.0 suite in the venv-builder container, with
+# setuptools<81 in the test venv and no exclude list: 17882 tests, 13
+# failures. All 13 were TestFormatInspectors tests that build their fixture
+# images with `qemu-img create` through subprocess.check_output in _create_img
+# and died with exit status 127, because the container shipped no qemu-utils.
+# Six of them are the safety checks that stand between a tenant-uploaded image
+# and the volume host (the qcow2 external-data-file and backing-file rejection,
+# QED, and the four VMDK descriptor bounds), and this unit-test leg is the only
+# gate in the pipeline that runs them. images/venv-builder/Dockerfile therefore
+# installs qemu-utils and nothing is excluded for this release.
+
+# Record a future environment failure here as one escaped regex with a
+# comment above it stating the reason.
