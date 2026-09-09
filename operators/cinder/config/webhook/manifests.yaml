@@ -1,0 +1,132 @@
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: mutating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-cinder-openstack-c5c3-io-v1alpha1-cinder
+  failurePolicy: Fail
+  name: mcinder.kb.io
+  rules:
+  - apiGroups:
+    - cinder.openstack.c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - cinders
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-cinder-openstack-c5c3-io-v1alpha1-cinderbackend
+  failurePolicy: Fail
+  name: mcinderbackend.kb.io
+  rules:
+  - apiGroups:
+    - cinder.openstack.c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - cinderbackends
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /mutate-cinder-openstack-c5c3-io-v1alpha1-cinderbackupbackend
+  failurePolicy: Fail
+  name: mcinderbackupbackend.kb.io
+  rules:
+  - apiGroups:
+    - cinder.openstack.c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - cinderbackupbackends
+  sideEffects: None
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-cinder-openstack-c5c3-io-v1alpha1-cinder
+  failurePolicy: Fail
+  name: vcinder.kb.io
+  rules:
+  - apiGroups:
+    - cinder.openstack.c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - cinders
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-cinder-openstack-c5c3-io-v1alpha1-cinderbackend
+  failurePolicy: Fail
+  name: vcinderbackend.kb.io
+  rules:
+  - apiGroups:
+    - cinder.openstack.c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - cinderbackends
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-cinder-openstack-c5c3-io-v1alpha1-cinderbackupbackend
+  failurePolicy: Fail
+  name: vcinderbackupbackend.kb.io
+  rules:
+  - apiGroups:
+    - cinder.openstack.c5c3.io
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - cinderbackupbackends
+  sideEffects: None
