@@ -24,13 +24,15 @@ ubuntu:noble
 │   │   ├── glance       Stage 1 (build): install Glance + glance_store[s3]
 │   │   ├── placement    Stage 1 (build): install Placement, write WSGI entry
 │   │   ├── barbican     Stage 1 (build): install Barbican into virtualenv
-│   │   └── neutron      Stage 1 (build): install Neutron into virtualenv
+│   │   ├── neutron      Stage 1 (build): install Neutron into virtualenv
+│   │   └── cinder       Stage 1 (build): install Cinder into virtualenv
 │   ├── keystone         Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── horizon          Stage 2 (runtime): copy virtualenv + static assets
 │   ├── glance           Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── placement        Stage 2 (runtime): copy virtualenv, add runtime apt packages
 │   ├── barbican         Stage 2 (runtime): copy virtualenv, add runtime apt packages
-│   └── neutron          Stage 2 (runtime): copy virtualenv, add runtime apt packages
+│   ├── neutron          Stage 2 (runtime): copy virtualenv, add runtime apt packages
+│   └── cinder           Stage 2 (runtime): copy virtualenv, add runtime apt packages
 ```
 
 The `venv-builder` image is used only as a build stage — it never runs in production.
@@ -118,6 +120,7 @@ for multi-stage service builds.
 | `libssl-dev` | cryptography/pyOpenSSL compilation |
 | `python3-dev` | Python headers for C extensions |
 | `python3-venv` | `venv` module for virtualenv creation |
+| `qemu-utils` | `qemu-img`, which cinder's `TestFormatInspectors` shell out to when they build their fixture images. Not a build dependency: this container also runs the service unit tests |
 
 **Pre-installed common packages:**
 
@@ -531,6 +534,192 @@ carry. So it pairs `importlib.util.find_spec` for the module path with an
 `ast.parse` of the module source, and rejects a module whose only module-level
 binding of `application` is the `None` sentinel. Pointed at a barbican image,
 the script fails in each of its first nine tests.
+
+### cinder
+
+**Location:** `images/cinder/Dockerfile`
+
+The Cinder service image uses the same two-stage build as Keystone. It ships
+no WSGI entry script. `cinder/wsgi/api.py` is byte-identical at 27.0.0
+(2025.2) and 28.0.0 (2026.1), and both tags bind a module-level `application`
+inside a `threading.Lock()` block. The cinder-operator launches uWSGI with
+`--module cinder.wsgi.api:application` and `--pyargv "--config-dir <dir>"`,
+because `initialize_application()` reads `CONF(sys.argv[1:])`. The PBR
+`wsgi_scripts` entry `cinder-wsgi` exists at 27.0.0 only and nothing calls it.
+
+**Stage 1 (`build`)** extends `venv-builder`:
+
+- Declares `ARG PIP_EXTRAS` and `ARG PIP_PACKAGES` (both empty for cinder
+  today; the wiring mirrors the other service images so `extra-packages.yaml`
+  stays the single edit point)
+- Mounts `upper-constraints.txt` and the Cinder source tree via named build
+  contexts (`--build-context cinder=...` /
+  `--build-context upper-constraints=...`)
+- Installs Cinder into the virtualenv using `uv pip install --constraint`.
+  The `--prefix` install generates the nine console scripts declared in
+  `setup.cfg` (27.0.0) and `pyproject.toml` (28.0.0): `cinder-api`,
+  `cinder-backup`, `cinder-manage`, `cinder-rootwrap`, `cinder-rtstool`,
+  `cinder-scheduler`, `cinder-status`, `cinder-volume` and
+  `cinder-volume-usage-audit`
+
+**Stage 2 (runtime)** extends `python-base`:
+
+- Declares `ARG EXTRA_APT_PACKAGES`, which carries three packages: the shared
+  libpython the venv-builder-compiled uwsgi links against, plus the
+  `mount.nfs` and `qemu-img` binaries the volume drivers reach for. The `sudo`
+  of the root helper comes from `python-base`
+- Copies `/var/lib/openstack` from the build stage using `COPY --from=build --link`
+- Creates the five state directories under `/var/lib/cinder`, empty and owned
+  by UID/GID 42424
+- Copies `cinder-amqp-ready` to `/var/lib/openstack/bin/cinder-amqp-ready`
+  with mode 0755
+- Sets `USER openstack` for non-root execution
+
+The image stays config-free. The package data files `api-paste.ini`,
+`resource_filters.json`, `rootwrap.conf` and `rootwrap.d/volume.filters` land
+under `/var/lib/openstack/etc/cinder/` at both tags, declared in `setup.cfg`
+at 27.0.0 and in `pyproject.toml` at 28.0.0. Nothing in the Dockerfile copies
+`etc/cinder/` by hand, and the contract script asserts the four files. The
+cinder-operator points `api_paste_config`, `resource_query_filters_file` and
+`rootwrap_config` at those absolute paths.
+
+**Runtime packages:**
+
+| Package | Purpose |
+| --- | --- |
+| `libpython3.12t64` | Shared `libpython3.12.so.1.0` for the venv-builder-compiled uwsgi |
+| `nfs-common` | `mount.nfs`, which `NfsDriver.do_setup` probes for through the root helper (`cinder/volume/drivers/nfs.py`) and raises `NfsException` without. Under the restricted posture the pod never mounts and the probe's non-zero exit is tolerated, but the binary has to exist |
+| `qemu-utils` | `qemu-img`, which create-from-image, clone and extend shell out to (`fetch_to_raw`, `resize_image`, `convert_image` in `cinder/image/image_utils.py`), along with the LUKS qcow2 pre-create in `cinder/volume/drivers/remotefs.py` |
+| `sudo` | The root helper is `sudo cinder-rootwrap` and the image carries no sudoers entry. `sudo` comes from `python-base`, not from `extra-packages.yaml` |
+
+**Source patch:**
+`patches/cinder/2025.2/0001-nfs-run-qemu-img-info-as-the-service-user.patch`
+and its 2026.1 twin flip the one `run_as_root=True` in
+`NfsDriver._qemu_img_info` to `run_as_root=False`. `_qemu_img_info_base` in
+`cinder/volume/drivers/remotefs.py` then follows `nas_secure_file_operations`
+for that call, like every other file operation of the driver. Upstream forced
+root in commit `dbc9c7ca59` (2017) for files a Nova instance had attached;
+under the restricted posture of decision D3 of issue #979 there is no root to
+fall back to, and every file is owned by the service user.
+
+The flip is necessary but not sufficient, and the cinder-operator of issue
+#987 owes the other half. `_qemu_img_info_base` resolves
+`run_as_root or self._execute_as_root`, and `_execute_as_root` starts out
+`True`: only `NfsDriver.set_nas_security_options` clears it, and only when
+`nas_secure_file_operations` resolves to `true`. The option defaults to
+`auto`, which resolves to `true` only for a new install that can write
+`.cinderSecureEnvIndicator` onto the share, and to `false` for every existing
+one. The operator therefore has to write `nas_secure_file_operations = true`
+explicitly; without it `qemu-img info` still goes through
+`sudo cinder-rootwrap`, which has no sudoers entry, and every
+create-from-image, clone and extend fails. Both build paths
+apply every `patches/<service>/<release>/*.patch` before installing:
+`.github/actions/checkout-service-source/action.yaml` for the build and
+unit-test jobs, `hack/ci-build-service-image.sh` for the e2e image build. A
+local build runs `git -C src/cinder apply patches/cinder/<release>/*.patch`
+between Step 2 and Step 3 of the
+[local build instructions](#local-build-instructions). Cinder's
+`test_copy_volume_from_snapshot` keeps expecting `run_as_root=True` and stays
+green, because its test driver never calls `set_nas_security_options` and
+`_execute_as_root` keeps its default `True`, so the patch carries no test
+hunk. Upstream status: not yet proposed.
+
+**Readiness probe:** `images/cinder/cinder-amqp-ready` is the exec readiness
+probe of the cinder-scheduler, cinder-volume and cinder-backup processes
+(decision D2 of issue #979). None of the three serves an HTTP port, so
+readiness here is "a process of this container holds a socket established to
+the message broker port", the semantics of kolla's `healthcheck_port`. The
+script reads `/proc/net/tcp` and `/proc/net/tcp6` and skips a table that does
+not exist. It exits 0 and prints `established to broker port <n>` when a row
+in state `01` has a remote port equal to `CINDER_AMQP_PORT` (default `5672`)
+**and** an inode one of the container's own processes holds; otherwise it
+exits 1 and prints `no established connection to broker port <n>`. The inode
+match is what keeps the answer local: `/proc/net/tcp*` is scoped to the
+network namespace every container of a pod shares, so the row alone would let
+one healthy connection report ready for every co-located cinder process.
+A process counts as the container's own when it shares the probe's mount
+namespace, which a container keeps to itself whatever the pod spec says:
+`shareProcessNamespace: true` lists the mates' processes in `/proc`, and the
+probe walks past them. The probe cannot see a broker that died without a
+`FIN` or an `RST` — that socket stays `ESTABLISHED` until the TCP
+keepalive expires, long after oslo.messaging's heartbeat gave up on it — so
+like `healthcheck_port` it answers "the connection exists", not "the broker
+answers". A `CINDER_AMQP_PORT` that is not a port number — not a number at
+all, or a number outside `1`–`65535`, such as the `0` an unset field renders
+as — exits with a one-line message naming the variable but not its value, and
+not with a traceback: kubelet copies an exec probe's output verbatim into the
+`Unhealthy` event, and the key this misconfiguration is confused with carries
+the broker password. Refusing the out-of-range value is what keeps it from
+reading as a broker outage, the message a port no row can match would print
+for the life of the deployment. It needs no capability and no writable
+filesystem. The cinder-operator of issue #987 wires it as
+`readinessProbe.exec.command: ["/var/lib/openstack/bin/cinder-amqp-ready"]`.
+
+**State directories:** `/var/lib/cinder` is `[DEFAULT] state_path`. `mnt` and
+`backup_mount` are the two os-brick mount bases (`nfs_mount_point_base`,
+`backup_mount_point_base`), `conversion` is `image_conversion_dir`, `tmp` is
+`[oslo_concurrency] lock_path`, and `coordination` is the tooz `file://`
+directory (decisions D2 and D12 of issue #979). The cinder-operator mounts an
+`emptyDir` over `/var/lib/cinder` under `readOnlyRootFilesystem`. The five
+directories in the image are what a plain `docker run` gets.
+
+**Final image properties:**
+
+- Runs as `openstack` user (UID 42424, GID 42424)
+- Contains no build tools (`gcc`, `python3-dev`, `build-essential`, `uv` are absent)
+- Virtualenv at `/var/lib/openstack` with all Cinder dependencies
+- The nine console scripts and `cinder-amqp-ready` available via `PATH`
+- No WSGI entry script; the API is launched via the
+  `cinder.wsgi.api:application` module path
+- `sudo` present with no sudoers entry
+
+**Unit tests:** cinder ships a `.stestr.conf`, so `hack/ci-run-unit-tests.sh`
+runs its suite under stestr. That script installs `setuptools<81` into the
+test venv alongside stestr: cinder 27.0.0 imports `os_win` at module level
+(`cinder/volume/drivers/windows/smbfs.py`), os-win 5.9.0 imports
+`pkg_resources` (`os_win/_utils.py`), and setuptools 81 removed
+`pkg_resources`. stestr imports every test module during discovery before it
+applies `--exclude-list`, so without the pin the 2025.2 suite does not
+discover at all. 28.0.0 dropped the Windows drivers. Both releases carry an
+exclude file. Both record the 13 `TestFormatInspectors` failures of the first
+run — they build their fixture images with `qemu-img create` and died with
+exit status 127 — and neither excludes them: six of the 13 are the safety
+checks between a tenant-uploaded image and the volume host, and this leg is
+the only gate in the pipeline that runs them, so `images/venv-builder/Dockerfile`
+installs `qemu-utils` instead. `releases/2025.2/test-excludes/cinder.txt`
+therefore excludes nothing; the first run of the 27.0.0 suite counted 17,882
+tests. `releases/2026.1/test-excludes/cinder.txt` excludes one test,
+`test_put_container_disabled`, which passes upstream only because tox runs
+unprivileged and `os.makedirs` raises `PermissionError`, whereas the container
+runs it as root; the first run of the 28.0.0 suite counted 18,076 tests.
+
+**Image contract check:** `tests/container-images/verify_cinder.sh` is the
+hard gate. Its 14 tests cover `cinder-manage --version` and
+`cinder-status --help`, the importability of `cinder` and of `cinder.wsgi.wsgi`
+together with the driver and backend libraries (`os_brick`, castellan's
+Barbican key manager, `boto3`, `tooz`, `taskflow`, `oslo_privsep`), the four
+package data files, and `--help` on `cinder-scheduler`, `cinder-volume`,
+`cinder-backup` and `cinder-api`. `mount.nfs` being present and executable,
+`qemu-img --version`, `sudo --version` and a refused `sudo -n true` prove the
+apt wiring. The probe test covers its presence and executability, the exit 1
+that names port 5672 in a bare container, that it honours
+`CINDER_AMQP_PORT=1`, that a `CINDER_AMQP_PORT` carrying a URL is refused
+without a traceback, the exit 0 against a connection the container itself
+holds, and the exit 1 against the same connection seen from a second
+container joined to its network namespace. The patch test asserts the value
+`_qemu_img_info_base` resolves rather than the source text: `run_as_root` has
+to come out `False` once `_execute_as_root` is `False`, and `True` on the
+constructor default, which is the configuration dependency the operator has
+to satisfy. The remaining tests check non-root execution, the absence of build
+tools, that uwsgi runs, and the five state directories, empty and owned by
+42424 along with their parent. The WSGI check inspects `cinder.wsgi.api` instead of
+importing it: an import runs `initialize_application()` at module level and
+dies with `oslo_service.wsgi.ConfigNotFound` in a bare image. So it pairs
+`importlib.util.find_spec` with an `ast.parse` of the module source, and
+rejects a module whose only module-level binding of `application` is the
+`None` sentinel. Pointed at a neutron image, the script fails tests 1 to 10
+and 14, and passes only the three shared checks (non-root, no build tools,
+uwsgi).
 
 ## Release-independent images
 
@@ -1007,7 +1196,8 @@ The `# DEVIATION` comment appears in `images/python-base/Dockerfile` (where the
 user is created) and in every service Dockerfile that uses it instead of a
 per-service user (`images/keystone/Dockerfile`, `images/horizon/Dockerfile`,
 `images/glance/Dockerfile`, `images/placement/Dockerfile`,
-`images/barbican/Dockerfile`, `images/neutron/Dockerfile`).
+`images/barbican/Dockerfile`, `images/neutron/Dockerfile`,
+`images/cinder/Dockerfile`).
 
 `images/ovn/Dockerfile` and `images/backup-shifter/Dockerfile` carry the comment
 for the other half of the same decision. Neither derives from `python-base`, so
