@@ -112,9 +112,17 @@ PYEOF
       TEST_REQ_ARG="-r test-requirements.txt"
     fi
     if [ -f .stestr.conf ]; then
+      # The runtime venv needs pkg_resources too, not only the build envs
+      # above: cinder 27.0.0 imports os_win at module level (in
+      # cinder/volume/drivers/windows/smbfs.py) and os-win 5.9.0 imports
+      # pkg_resources (in os_win/_utils.py), which setuptools 81 removed.
+      # stestr imports every test module during discovery, before it
+      # applies --exclude-list, so no exclude pattern can help. cinder
+      # 28.0.0 dropped the Windows drivers; the pin is harmless for the
+      # other services.
       uv pip install --prefix /var/lib/openstack \
         --constraint /workspace/upper-constraints.txt \
-        $TEST_REQ_ARG "${INSTALL_SPEC}" stestr testtools
+        $TEST_REQ_ARG "${INSTALL_SPEC}" stestr testtools "setuptools<81"
       stestr init
       set +e
       stestr run $EXCLUDE_LIST_ARG; TEST_EXIT=$?
