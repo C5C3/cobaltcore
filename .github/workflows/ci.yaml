@@ -332,8 +332,10 @@ jobs:
         id: result
         env:
           ALL_OPERATORS: keystone c5c3 horizon glance placement barbican ovn neutron
-          # The operators that ship an OpenStack service image: the union of the
-          # keys in releases/*/source-refs.yaml. Pinned to that union by
+          # The operators that ship an OpenStack service image: the keys in
+          # releases/*/source-refs.yaml that name an operator in ALL_OPERATORS
+          # above. A service image can land a phase before its operator, so a
+          # key without an operator waits here. Pinned by
           # tests/unit/ci/change_classes_wiring_test.sh.
           SERVICE_OPERATORS: keystone horizon glance placement barbican neutron
           # The operator whose e2e leg stands in for the pipeline when the shared

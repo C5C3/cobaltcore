@@ -55,6 +55,25 @@ wired_filters() {
   grep -oE '^          FILTER_[a-z0-9_]+:' "$CI_YAML" | sed 's/^ *FILTER_//;s/:$//'
 }
 
+# Echo the operator names the resolve step env var <name> carries in <file>,
+# one per line, sorted and deduplicated.
+resolve_env_operators() {
+  local name="$1" file="$2"
+  grep -oE "^          ${name}: .*$" "$file" | sed "s/^ *${name}: //" |
+    tr ' ' '\n' | sort -u
+}
+
+# Echo the operators that ship an OpenStack service image, one per line: the
+# keys of releases/*/source-refs.yaml that <file> also names in ALL_OPERATORS.
+# Needs yq.
+service_image_operators() {
+  local file="$1" f
+  comm -12 <(resolve_env_operators ALL_OPERATORS "$file") \
+    <(for f in "$PROJECT_ROOT"/releases/*/source-refs.yaml; do
+      yq -r 'keys | .[]' "$f"
+    done | sort -u)
+}
+
 # Echo the body of the top-level ci.yaml job <name>.
 job_block() {
   awk -v key="  $1:" '
@@ -128,7 +147,7 @@ test_every_filter_steers_something() {
 }
 
 test_service_operators_match_the_release_configs() {
-  echo "Test: SERVICE_OPERATORS is the union of the release source-refs keys"
+  echo "Test: SERVICE_OPERATORS names every operator that ships a service image"
 
   if ! command -v yq >/dev/null 2>&1; then
     echo "  SKIP: yq not installed"
@@ -139,15 +158,53 @@ test_service_operators_match_the_release_configs() {
   # The resolver derives changed-services and the per-service e2e legs from this
   # list. An operator that ships a service image but is missing here never gets
   # its image rebuilt for a pull request that changes it.
-  local from_yaml from_ci f
-  from_yaml=$(for f in "$PROJECT_ROOT"/releases/*/source-refs.yaml; do
-    yq -r 'keys | .[]' "$f"
-  done | sort -u | tr '\n' ' ' | sed 's/ *$//')
-  from_ci=$(grep -oE '^          SERVICE_OPERATORS: .*$' "$CI_YAML" |
-    sed 's/^ *SERVICE_OPERATORS: //' | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//')
+  #
+  # The expectation is the source-refs keys that ALL_OPERATORS also names, not
+  # every key: issue #979 onboards a service in phases (image, operator, CI), so
+  # its image lands a phase before its operator. Until the operator is in
+  # ALL_OPERATORS there is no e2e leg the resolver could derive from the key,
+  # and the key joins this expectation with the commit that adds the operator.
+  local from_yaml from_ci
+  from_yaml=$(service_image_operators "$CI_YAML" | tr '\n' ' ' | sed 's/ *$//')
+  from_ci=$(resolve_env_operators SERVICE_OPERATORS "$CI_YAML" |
+    tr '\n' ' ' | sed 's/ *$//')
 
-  assert_eq "SERVICE_OPERATORS matches releases/*/source-refs.yaml" \
+  assert_eq "SERVICE_OPERATORS matches the source-refs keys that name an operator" \
     "$from_yaml" "$from_ci"
+}
+
+test_service_operators_catch_a_missing_operator() {
+  echo "Test: an operator that ships a service image cannot fall out of the list"
+
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  # Guard the guard, on a fixture written for this check: glance holds a
+  # source-refs key and is named as an operator, so leaving it out of
+  # SERVICE_OPERATORS has to come out as a mismatch. ovn is an operator with
+  # no source-refs key and stays out of the expectation.
+  local fixture expected from_fixture
+  fixture=$(mktemp)
+  cat >"$fixture" <<'YAML'
+          ALL_OPERATORS: keystone glance ovn
+          SERVICE_OPERATORS: keystone
+YAML
+
+  expected=$(service_image_operators "$fixture" | tr '\n' ' ' | sed 's/ *$//')
+  from_fixture=$(resolve_env_operators SERVICE_OPERATORS "$fixture" |
+    tr '\n' ' ' | sed 's/ *$//')
+  rm -f "$fixture"
+
+  assert_eq "an operator that ships no service image is not expected" \
+    "glance keystone" "$expected"
+  # The guard compares exactly these two strings, so what proves it catches
+  # the omission is that they differ here. A second pipeline computed in this
+  # function would keep passing after the guard's own comparison changed.
+  assert_eq "the fixture's SERVICE_OPERATORS does not match the expectation" \
+    "differs" "$([ "$expected" = "$from_fixture" ] && echo same || echo differs)"
 }
 
 test_every_job_gates_on_its_own_flag() {
@@ -280,6 +337,7 @@ test_no_job_reads_an_unexported_output() {
 test_every_filter_is_wired_both_ways
 test_every_filter_steers_something
 test_service_operators_match_the_release_configs
+test_service_operators_catch_a_missing_operator
 test_every_job_gates_on_its_own_flag
 test_label_handling_lives_in_the_resolver
 test_always_on_gates_skip_a_noop_run
