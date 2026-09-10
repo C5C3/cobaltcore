@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The volume backend the cinder-isolation CR loses during the sampling window.
+#
+# Deleting it is what produces the second maintenance pod the suite needs: the
+# parent stops the backend's cinder-volume and then runs
+# cinder-isolation-isolation-nfs-b-service-remove against its own database. That
+# Job pod carries the component `service-remove`, and the point of the suite is
+# that it never becomes a backend of the API Service.
+#
+# It shares the /volumes export with its sibling, as the backend-detach suite's
+# pair does, so the export outlives the detach and nothing about the sampling
+# depends on a directory disappearing.
+#
+# The name carries the suite's own prefix for the same reason its sibling does:
+# the namespace is shared and spec.cinderRef is immutable.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: isolation-nfs-b
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-isolation
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

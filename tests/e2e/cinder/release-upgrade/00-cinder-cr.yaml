@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the release-upgrade E2E test, installed at 2025.2.
+#
+# Same Keystone-free wiring as the basic-deployment fixture, on the schema
+# cinder_upgrade. The suite patches spec.openStackRelease and spec.image.tag to
+# 2026.1 in 03-patch-upgrade.yaml, which is what puts the CR through the
+# expand-migrate-contract machine instead of the steady-state db-sync every
+# other cinder suite exercises.
+#
+# One API replica: the suite reads the rollout off updatedReplicas == replicas,
+# which is meaningful at one replica and only slower at two.
+#
+# The volume and backup blocks are absent, so the schema default of three
+# replicas never applies to them: naming either block would mean spelling out
+# replicas: 1 beside it, which is what the operator renders for the absent
+# block anyway.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-upgrade
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_upgrade
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-upgrade-messaging

@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the maintenance-endpoint-isolation E2E test (2025.2 release).
+#
+# Same Keystone-free wiring as the basic-deployment fixture, on the schema
+# cinder_isolation.
+#
+# Two API replicas, because the bound the suite samples is "no more addresses
+# in the API Service's EndpointSlices than the API Deployment has replicas". At
+# one replica any extra address is also a doubling, which an off-by-one in the
+# sampler could imitate; at two the bound and the full count are distinct
+# numbers.
+#
+# The volume and backup blocks are absent, so the schema default of three
+# replicas never applies to them: naming either block would mean spelling out
+# replicas: 1 beside it, which is what the operator renders for the absent
+# block anyway.
+#
+# spec.dbPurge is left at its defaults. The suite triggers the purge by hand
+# rather than waiting for the 00:01 schedule, so nothing here has to be
+# rewritten to make a run observable.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-isolation
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 2
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_isolation
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-isolation-messaging

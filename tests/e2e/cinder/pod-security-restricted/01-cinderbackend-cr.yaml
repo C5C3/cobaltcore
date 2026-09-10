@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The one NFS volume backend the cinder-pss CR serves.
+#
+# It lives in the labelled namespace beside its parent: spec.cinderRef is a
+# same-namespace reference, and the volume Deployment it produces is the pod
+# the restricted profile has to admit.
+#
+# The name carries the suite's own prefix because the cinder suites share the
+# openstack namespace for their MariaDB fixtures and spec.cinderRef is
+# immutable: a backend named after its driver alone would be one object several
+# suites re-point at each other's Cinder.
+#
+# The export is the kind-only NFS server (deploy/kind/nfs/nfs-server.yaml),
+# whose /volumes directory is pre-created 42424:42424 with mode 0770, so the
+# cinder-volume pod writes into it under its own uid, which is what lets the
+# pod run with runAsNonRoot and an unprivileged uid under the restricted
+# profile.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: pss-nfs1
+  namespace: cinder-pss
+spec:
+  cinderRef:
+    name: cinder-pss
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes
