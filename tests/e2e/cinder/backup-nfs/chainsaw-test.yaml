@@ -1,0 +1,846 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the Cinder backup service on an NFS target (2025.2).
+# One Cinder with a volume backend and a CinderBackupBackend attached, driven
+# through a full backup round trip:
+#   - the two backup conditions report the projection and the running service,
+#     and the cinder-backup Deployment is the single-writer shape with both
+#     kinds of export mounted: its own target under backup_mount, and the
+#     volume backend's export at the path the volume service holds it at,
+#     because a backup reads the source volume itself
+#   - the rendered [DEFAULT] section carries the driver, the share, the chunk
+#     size, the compression algorithm and the host identity the backups are
+#     recorded against
+#   - a volume gets a byte marker written into its file, is backed up, and the
+#     chunks land on the target export as 42424:42424 mode 660 in a directory
+#     named after the backup
+#   - the backup is restored into a second, existing volume, which comes back
+#     at its full 1 GiB with the marker at offset zero
+#   - detaching the CinderBackupBackend removes the backup Deployment and
+#     leaves both backup conditions True under their not-configured reasons,
+#     because backups are opt-in and a Cinder without them still serves volumes
+#
+# Step order is not free here. The backup and both volumes are deleted through
+# the API before the CinderBackupBackend is detached: deleting a backup is work
+# the cinder-backup service does, and the detach is what takes that service
+# away. Reversed, the backup would outlive the only process able to remove it.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-backup-nfs
+spec:
+  namespace: openstack
+  timeouts:
+    # The schema migration, the API cold start and two NFS mounts precede the
+    # first assertion. That does not fit the 120s the shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite: the RPC topics are named after the deployment, so two
+  # suites on one vhost would share the scheduler and volume-service queues.
+  # See ../broker-vhost.sh. The step cleanup runs at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-backup cinder-backup-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    - apply:
+        file: 02-cinderbackupbackend-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-backup || true
+  # ── Step 2: Assert the backup conditions and the volume service ────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-backup
+            namespace: openstack
+          status:
+            volumeServices:
+            - backend: backup-nfs1
+              host: cinder-backup@backup-nfs1
+            # The single attached, credential-ready backup backend is rendered
+            # into a Secret of its own.
+            (conditions[?type == 'BackupBackendReady']):
+            - status: "True"
+              reason: BackupBackendProjected
+            # And the Deployment that mounts it is available.
+            (conditions[?type == 'BackupServiceReady']):
+            - status: "True"
+              reason: BackupServiceReady
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackupBackend
+          metadata:
+            name: backup-nfsbk
+            namespace: openstack
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &backup-dump
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-backup
+        namespace: openstack
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        namespace: openstack
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackupBackend
+        namespace: openstack
+    - script:
+        content: |
+          for d in cinder-backup cinder-backup-scheduler cinder-backup-volume-backup-nfs1 cinder-backup-backup; do
+            echo "=== Deployment $d ==="
+            kubectl describe deploy "$d" -n $NAMESPACE 2>&1 | tail -40 || true
+          done
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-backup -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Probe pods ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null | grep cinder-backup-probe-); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --tail=80 2>&1 || true
+          done
+          echo "=== Backup target ==="
+          kubectl exec -n $NAMESPACE deploy/cinder-backup-backup -- ls -lR /var/lib/cinder/backup_mount/266724f97f37cb5273c6525010245e68 2>&1 | tail -40 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 3: Assert the cinder-backup Deployment ────────────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-backup-backup
+            namespace: openstack
+          spec:
+            # The backup service owns its target through a host identity, so a
+            # second process under it would have the same state open twice.
+            # That is also why the surge pod of a rolling update is excluded.
+            replicas: 1
+            strategy:
+              type: Recreate
+            template:
+              spec:
+                containers:
+                - name: backup
+                  # Readiness alone, as on the scheduler and the volume
+                  # services: restarting for a broker outage would abort the
+                  # backup in flight without reaching the broker any sooner.
+                  readinessProbe:
+                    exec:
+                      command:
+                      - /var/lib/openstack/bin/cinder-amqp-ready
+                  resources:
+                    limits:
+                      # A backup holds one chunk in memory at a time and
+                      # compresses it, which is the widest working set of the
+                      # four Cinder processes.
+                      memory: 2Gi
+                # The target export, under the backup driver's own mount base.
+                (volumes[?name == 'backup-share'].csi.volumeAttributes.share | [0]): /backups
+                (containers[0].volumeMounts[?name == 'backup-share'].mountPath | [0]): /var/lib/cinder/backup_mount/266724f97f37cb5273c6525010245e68
+                # The source side: the volume backend's export, at the path
+                # cinder resolved every volume on it to.
+                (volumes[?name == 'share-backup-nfs1'].csi.volumeAttributes.share | [0]): /volumes
+                (containers[0].volumeMounts[?name == 'share-backup-nfs1'].mountPath | [0]): /var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          status:
+            availableReplicas: 1
+    catch: *backup-dump
+  # ── Step 4: Assert the rendered backup section ─────────────────────────
+  # The Secret is content-hashed, so it is resolved through the Deployment's
+  # backup volume rather than guessed by name.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          S=$(kubectl get deploy cinder-backup-backup -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="backup")].secret.secretName}')
+          test -n "$S"
+          # The base name carries the backup backend's name, so a replacement
+          # renders under its own base and the old one's history is swept
+          # rather than rewritten.
+          case "$S" in
+          cinder-backup-backup-backup-nfsbk-*) ;;
+          *) echo "FAIL: the backup volume names Secret $S"; exit 1 ;;
+          esac
+          kubectl get secret "$S" -n openstack -o 'jsonpath={.data.backup\.conf}' \
+            | base64 -d > /tmp/cinder-backup-backup.conf
+          cat /tmp/cinder-backup-backup.conf
+          # The driver wiring and the target export.
+          grep -Fxq 'backup_driver = cinder.backup.drivers.nfs.NFSBackupDriver' /tmp/cinder-backup-backup.conf
+          grep -Fxq 'backup_share = nfs-server.openstack.svc.cluster.local:/backups' /tmp/cinder-backup-backup.conf
+          grep -Fxq 'backup_mount_point_base = /var/lib/cinder/backup_mount' /tmp/cinder-backup-backup.conf
+          # The two schema defaults this CR left out.
+          grep -Fxq 'backup_file_size = 52428800' /tmp/cinder-backup-backup.conf
+          grep -Fxq 'backup_compression_algorithm = zlib' /tmp/cinder-backup-backup.conf
+          # The host identity the backups are recorded against. It is derived
+          # from the Cinder rather than from the backup backend, so replacing
+          # the backend keeps the existing backups restorable, and a backup is
+          # never handed to another host.
+          grep -Fxq 'host = cinder-backup-backup' /tmp/cinder-backup-backup.conf
+          grep -Fxq 'backup_use_same_host = false' /tmp/cinder-backup-backup.conf
+          echo "OK: $S carries the NFS backup driver against /backups"
+    catch: *backup-dump
+  # ── Step 5: Create the source volume and mark its file ─────────────────
+  # The probe is started detached and read back with `kubectl logs`:
+  # `kubectl run -i` only streams from the moment the attach lands, so a probe
+  # that finishes first would lose its sentinel. The token is the noauth
+  # pipeline's "<user>:<project>" pair rather than a Keystone token.
+  #
+  # Chainsaw hands no values between steps, so each probe re-derives what it
+  # works on by name, and the file work runs in the same script step that read
+  # the id out of the probe's log.
+  - try:
+    - script:
+        timeout: 10m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          # Only connection-level failures are retried: kube-proxy's endpoint
+          # programming can trail the CR's Ready flip by a second or two, so a
+          # single-shot request races it. Every HTTP status the API answers
+          # with is a verdict, so it fails hard with the code.
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          # The volume state machine, polled every 5s until the wanted status.
+          # An error state is terminal, so waiting out the deadline on one
+          # would only delay the verdict.
+          def wait_volume(volume_id, want, seconds, size=None):
+              deadline = time.time() + seconds
+              volume = {}
+              while time.time() < deadline:
+                  volume = json.loads(
+                      call("GET", "/v3/volumes/" + volume_id).read())["volume"]
+                  status = volume.get("status")
+                  if status in ("error", "error_restoring"):
+                      fail("volume %s entered %s" % (volume_id, status))
+                  if status == want and (size is None
+                                         or volume.get("size") == size):
+                      return volume
+                  print("volume %s is %s at size %s"
+                        % (volume_id, status, volume.get("size")))
+                  time.sleep(5)
+              fail("volume %s never reached %s within %ds: %s"
+                   % (volume_id, want, seconds, volume))
+
+
+          # The backup service reaches the registry over the message bus and
+          # not over HTTP, so this is what says the bus carries it. It
+          # registers under the host identity the operator derived from the
+          # Cinder, not under its pod name.
+          want = ("cinder-backup", "cinder-backup-backup")
+          listing = []
+          for _ in range(30):
+              listing = json.loads(
+                  call("GET", "/v3/os-services").read()).get("services", [])
+              up = {(s.get("binary"), s.get("host")) for s in listing
+                    if s.get("state") == "up"}
+              if want in up:
+                  break
+              print("waiting for the service registry: %s" % listing)
+              time.sleep(2)
+          else:
+              fail("%s never reported state up: %s" % (want, listing))
+          print("the backup service reports state up")
+
+          # The registry above is written by each service for itself, and says
+          # nothing about the scheduler being able to place a volume. The
+          # scheduler learns a backend from the capability report the volume
+          # service publishes over the bus, and that report is a fanout rather
+          # than a record: a scheduler that binds its queue just after the
+          # publish holds no backend at all until the next periodic report, one
+          # periodic_interval (60s) later. A create issued in that window is
+          # answered with NoValidBackend and the volume goes straight to error,
+          # which is what the scheduler logged on CI run 34680614021
+          # ("Filtering removed all hosts ... AvailabilityZoneFilter:
+          # (start: 0, end: 0)", so the filters ran against an empty set). So
+          # ask the scheduler what it holds, which is the only view that
+          # answers the question this step depends on.
+          pools = []
+          for _ in range(60):
+              pools = json.loads(
+                  call("GET", "/v3/scheduler-stats/get_pools").read()
+              ).get("pools", [])
+              if any("@backup-nfs1" in p.get("name", "") for p in pools):
+                  break
+              print("waiting for the scheduler to hold the backend: %s" % pools)
+              time.sleep(2)
+          else:
+              fail("the scheduler never held the backup-nfs1 backend: %s"
+                   % pools)
+          print("the scheduler holds the backup-nfs1 backend")
+
+          created = json.loads(
+              call("POST", "/v3/volumes",
+                   {"volume": {"name": "bk-src", "size": 1}}).read())["volume"]
+          print("VOLUME-A: " + created["id"])
+          wait_volume(created["id"], "available", 180, size=1)
+          print("BACKUP-SRC-OK")
+          PY
+          )"
+
+          POD=cinder-backup-probe-source
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          # The image ships its python in a venv on PATH; the absolute path is
+          # the one tests/container-images/verify_cinder.sh pins.
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-backup.openstack.svc.cluster.local:8776
+
+          # 84 x 5s = 7m, inside the step timeout, so a stuck probe is reported
+          # with its logs rather than killed by chainsaw.
+          phase=""
+          for _ in $(seq 1 84); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'BACKUP-SRC-OK'
+
+          AID="$(printf '%s\n' "${OUT}" | sed -n 's/^VOLUME-A: //p' | head -1)"
+          test -n "${AID}"
+
+          # A byte marker at offset zero of the raw volume file. The backend
+          # renders nfs_qcow2_volumes = false, so offset zero is volume data
+          # rather than an image header, and conv=notrunc keeps the file at its
+          # provisioned size. This is what the restore has to bring back.
+          MNT=/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          kubectl exec -n "$NAMESPACE" deploy/cinder-backup-volume-backup-nfs1 -- \
+            sh -c "printf 'SUITE988-MARKER' | dd of=${MNT}/volume-${AID} conv=notrunc"
+          MARK="$(kubectl exec -n "$NAMESPACE" deploy/cinder-backup-volume-backup-nfs1 -- \
+            head -c 15 "${MNT}/volume-${AID}")"
+          [ "${MARK}" = "SUITE988-MARKER" ]
+          echo "OK: volume ${AID} carries the marker"
+    catch: *backup-dump
+  # ── Step 6: Back the volume up and read the chunks off the target ──────
+  - try:
+    - script:
+        timeout: 12m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          # Chainsaw hands no values between steps, so the volume the previous
+          # step marked is found again by its name.
+          def volume_id(name):
+              listing = json.loads(call("GET", "/v3/volumes").read())["volumes"]
+              found = [v["id"] for v in listing if v.get("name") == name]
+              if len(found) != 1:
+                  fail("want one volume named %s, found %s" % (name, found))
+              return found[0]
+
+
+          # The backup state machine. fail_reason carries what the service hit,
+          # so it travels with the verdict.
+          def wait_backup(backup_id, want, seconds):
+              deadline = time.time() + seconds
+              backup = {}
+              while time.time() < deadline:
+                  backup = json.loads(
+                      call("GET", "/v3/backups/" + backup_id).read())["backup"]
+                  status = backup.get("status")
+                  if status == "error":
+                      fail("backup %s entered error: %s"
+                           % (backup_id, backup.get("fail_reason")))
+                  if status == want:
+                      return backup
+                  print("backup %s is %s" % (backup_id, status))
+                  time.sleep(5)
+              fail("backup %s never reached %s within %ds: %s"
+                   % (backup_id, want, seconds, backup))
+
+
+          src = volume_id("bk-src")
+          print("VOLUME-A: " + src)
+          created = json.loads(
+              call("POST", "/v3/backups",
+                   {"backup": {"volume_id": src, "name": "bk"}}).read())["backup"]
+          print("BACKUP-ID: " + created["id"])
+          backup = wait_backup(created["id"], "available", 180)
+          # The chunk count the driver wrote. A backup that reached available
+          # with none of them would mean nothing left the volume.
+          if backup.get("object_count", 0) < 1:
+              fail("backup %s reports object_count %s, want at least one"
+                   % (created["id"], backup.get("object_count")))
+          print("BACKUP-OK")
+          PY
+          )"
+
+          POD=cinder-backup-probe-backup
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-backup.openstack.svc.cluster.local:8776
+
+          # 108 x 5s = 9m, inside the step timeout, so a stuck probe is
+          # reported with its logs rather than killed by chainsaw.
+          phase=""
+          for _ in $(seq 1 108); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'BACKUP-OK'
+
+          BID="$(printf '%s\n' "${OUT}" | sed -n 's/^BACKUP-ID: //p' | head -1)"
+          test -n "${BID}"
+
+          # The posix driver nests each backup's container two levels deep and
+          # names the leaf after the backup, so the directory is searched for
+          # rather than assembled from the id here.
+          BK_MNT=/var/lib/cinder/backup_mount/266724f97f37cb5273c6525010245e68
+          DIR="$(kubectl exec -n "$NAMESPACE" deploy/cinder-backup-backup -- \
+            find "${BK_MNT}" -type d -name "${BID}" | head -1)"
+          test -n "${DIR}"
+          echo "backup container: ${DIR}"
+          kubectl exec -n "$NAMESPACE" deploy/cinder-backup-backup -- ls -l "${DIR}"
+
+          # Every chunk belongs to the service user at mode 660: the export was
+          # pre-created 42424:42424 0770, so the driver never took the root
+          # branch that would widen it.
+          MODES="$(kubectl exec -n "$NAMESPACE" deploy/cinder-backup-backup -- \
+            find "${DIR}" -type f -exec stat -c '%u %g %a' '{}' '+' | sort -u)"
+          test -n "${MODES}"
+          echo "chunk ownership: ${MODES}"
+          [ "${MODES}" = "42424 42424 660" ]
+          echo "OK: backup ${BID} sits on the target export as the service user"
+    catch: *backup-dump
+  # ── Step 7: Restore into a second volume and read it back ──────────────
+  - try:
+    - script:
+        timeout: 14m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          def wait_volume(volume_id, want, seconds, size=None):
+              deadline = time.time() + seconds
+              volume = {}
+              while time.time() < deadline:
+                  volume = json.loads(
+                      call("GET", "/v3/volumes/" + volume_id).read())["volume"]
+                  status = volume.get("status")
+                  if status in ("error", "error_restoring"):
+                      fail("volume %s entered %s" % (volume_id, status))
+                  if status == want and (size is None
+                                         or volume.get("size") == size):
+                      return volume
+                  print("volume %s is %s at size %s"
+                        % (volume_id, status, volume.get("size")))
+                  time.sleep(5)
+              fail("volume %s never reached %s within %ds: %s"
+                   % (volume_id, want, seconds, volume))
+
+
+          def wait_backup(backup_id, want, seconds):
+              deadline = time.time() + seconds
+              backup = {}
+              while time.time() < deadline:
+                  backup = json.loads(
+                      call("GET", "/v3/backups/" + backup_id).read())["backup"]
+                  status = backup.get("status")
+                  if status == "error":
+                      fail("backup %s entered error: %s"
+                           % (backup_id, backup.get("fail_reason")))
+                  if status == want:
+                      return backup
+                  print("backup %s is %s" % (backup_id, status))
+                  time.sleep(5)
+              fail("backup %s never reached %s within %ds: %s"
+                   % (backup_id, want, seconds, backup))
+
+
+          def backup_id(name):
+              listing = json.loads(call("GET", "/v3/backups").read())["backups"]
+              found = [b["id"] for b in listing if b.get("name") == name]
+              if len(found) != 1:
+                  fail("want one backup named %s, found %s" % (name, found))
+              return found[0]
+
+
+          bid = backup_id("bk")
+          print("BACKUP-ID: " + bid)
+          target = json.loads(
+              call("POST", "/v3/volumes",
+                   {"volume": {"name": "bk-dst", "size": 1}}).read())["volume"]
+          print("RESTORED-ID: " + target["id"])
+          wait_volume(target["id"], "available", 180, size=1)
+
+          call("POST", "/v3/backups/%s/restore" % bid,
+               {"restore": {"volume_id": target["id"]}})
+          # The backup flips to "restoring" inside the request and back to
+          # "available" when the transfer is done, so it is waited on first:
+          # the volume still reads its pre-restore status for a moment, and a
+          # status-only wait on the volume could return on that.
+          wait_backup(bid, "available", 300)
+          wait_volume(target["id"], "available", 120, size=1)
+          print("RESTORE-OK")
+          PY
+          )"
+
+          POD=cinder-backup-probe-restore
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-backup.openstack.svc.cluster.local:8776
+
+          # 132 x 5s = 11m, inside the step timeout, so a stuck probe is
+          # reported with its logs rather than killed by chainsaw.
+          phase=""
+          for _ in $(seq 1 132); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'RESTORE-OK'
+
+          RID="$(printf '%s\n' "${OUT}" | sed -n 's/^RESTORED-ID: //p' | head -1)"
+          test -n "${RID}"
+
+          # The restore wrote the whole volume back, not just the chunks that
+          # held data: the file is still the full 1 GiB the volume was
+          # provisioned at.
+          MNT=/var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          INFO="$(kubectl exec -n "$NAMESPACE" deploy/cinder-backup-volume-backup-nfs1 -- \
+            qemu-img info --output=json "${MNT}/volume-${RID}")"
+          printf '%s\n' "${INFO}"
+          printf '%s\n' "${INFO}" | grep -Eq '"virtual-size":[[:space:]]*1073741824'
+
+          # And the bytes are the source's: the marker written before the
+          # backup is at offset zero of a volume that never held it.
+          MARK="$(kubectl exec -n "$NAMESPACE" deploy/cinder-backup-volume-backup-nfs1 -- \
+            head -c 15 "${MNT}/volume-${RID}")"
+          [ "${MARK}" = "SUITE988-MARKER" ]
+          echo "OK: volume ${RID} came back at full size carrying the marker"
+    catch: *backup-dump
+  # ── Step 8: Delete the backup and both volumes ─────────────────────────
+  # This runs before the CinderBackupBackend is detached: deleting a backup is
+  # work the cinder-backup service does, and the detach is what takes that
+  # service away.
+  - try:
+    - script:
+        timeout: 12m
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          def one_id(path, key, name):
+              listing = json.loads(call("GET", path).read())[key]
+              found = [item["id"] for item in listing
+                       if item.get("name") == name]
+              if len(found) != 1:
+                  fail("want one %s named %s, found %s" % (key, name, found))
+              return found[0]
+
+
+          # A deleted object leaves the database rather than changing status,
+          # so this waits for the 404 the show call answers with.
+          def wait_gone(path, seconds):
+              deadline = time.time() + seconds
+              while time.time() < deadline:
+                  try:
+                      send("GET", path).read()
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          return
+                      fail("GET %s -> HTTP %d" % (path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      print("retry GET %s: %s" % (path, exc))
+                  print("%s is still there" % path)
+                  time.sleep(5)
+              fail("%s was still there after %ds" % (path, seconds))
+
+
+          bid = one_id("/v3/backups", "backups", "bk")
+          print("BACKUP-ID: " + bid)
+          call("DELETE", "/v3/backups/" + bid)
+          wait_gone("/v3/backups/" + bid, 300)
+
+          for name in ("bk-src", "bk-dst"):
+              vid = one_id("/v3/volumes", "volumes", name)
+              print("VOLUME-ID: " + vid)
+              call("DELETE", "/v3/volumes/" + vid)
+              wait_gone("/v3/volumes/" + vid, 120)
+          print("CLEANUP-OK")
+          PY
+          )"
+
+          POD=cinder-backup-probe-cleanup
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-backup.openstack.svc.cluster.local:8776
+
+          # 108 x 5s = 9m, inside the step timeout, so a stuck probe is
+          # reported with its logs rather than killed by chainsaw.
+          phase=""
+          for _ in $(seq 1 108); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'CLEANUP-OK'
+          echo "OK: the backup and both volumes are gone"
+    catch: *backup-dump
+  # ── Step 9: Detach the backup backend ──────────────────────────────────
+  # A plain delete, with no finalizer: the backup service registers under
+  # "<cinder>-backup" and re-registers under that identity whenever it starts,
+  # so there is no per-target service row to unregister.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackupBackend
+          name: backup-nfsbk
+          namespace: openstack
+    # A backup service without a target writes nowhere, so the parent deletes
+    # the Deployment rather than leaving it running.
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-backup-backup
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-backup
+            namespace: openstack
+          status:
+            # Both backup conditions report the absence as True: backups are
+            # opt-in, and the API, the scheduler and the volume service run
+            # either way.
+            (conditions[?type == 'BackupBackendReady']):
+            - status: "True"
+              reason: NoBackupBackend
+            (conditions[?type == 'BackupServiceReady']):
+            - status: "True"
+              reason: BackupNotConfigured
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *backup-dump

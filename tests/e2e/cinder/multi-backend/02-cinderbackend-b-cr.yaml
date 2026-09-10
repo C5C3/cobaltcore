@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The second of the two NFS backends the cinder-multi CR serves.
+#
+# /volumes-b is not one of the two exports the NFS server's init container
+# pre-creates, so step 1 of the suite creates it 42424:42424 mode 0770 and the
+# step cleanup removes it again. fsid=0 makes /exports the NFSv4 pseudo-root,
+# so the directory is reachable as the share string below.
+#
+# The volume the probe places through a volume type lands here, which is what
+# separates a backend that was merely projected from one the scheduler can
+# actually route to.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: multi-nfs-b
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-multi
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes-b
