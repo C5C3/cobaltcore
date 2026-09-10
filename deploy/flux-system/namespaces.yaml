@@ -117,6 +117,14 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  # cinder-system hosts the cinder-operator controller; the Cinder,
+  # CinderBackend and CinderBackupBackend CRs and their payload live in the
+  # tenant Namespace they are created in.
+  name: cinder-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: c5c3-system
 ---
 apiVersion: v1
