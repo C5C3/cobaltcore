@@ -1997,21 +1997,43 @@ port.
 | Helm value | Override | Purpose |
 | --- | --- | --- |
 | `controller.enableSnapshotter` | `false` | The chart defaults it to `true` while `externalSnapshotter.enabled` defaults to `false`, so the `csi-snapshotter` sidecar would be deployed against `snapshot.storage.k8s.io` CRDs nothing in this stack installs. The Cinder NFS backend has snapshots off |
-| `storageClass.create` | `false` | Already the chart default, set here with the reason: the cinder-operator binds static PersistentVolume and PersistentVolumeClaim pairs, and an unwanted class in a kind cluster competes for `is-default-class` |
+| `storageClass.create` | `false` | Already the chart default, set here with the reason: the cinder-operator mounts inline volumes, so no dynamic class is wanted, and an unwanted class in a kind cluster competes for `is-default-class` |
+| `feature.enableInlineVolume` | `true` | The cinder-operator mounts every backend and backup share as an inline `csi:` volume, and the driver serves such a volume only when its CSIDriver lists the `Ephemeral` lifecycle mode. The chart adds that mode behind this flag. `CSIDriver.spec.volumeLifecycleModes` is immutable, so a kind cluster created before this value was set carries a `CSIDriver` the chart cannot patch; `hack/deploy-infra.sh` deletes that object before it applies the overlay and the chart recreates it (see below). A fresh cluster needs nothing |
 
 Everything else stays at the chart default: `driver.name: nfs.csi.k8s.io`,
 `attachRequired: false`, `fsGroupPolicy: File` and
 `kubeletDir: /var/lib/kubelet`.
 
-When `WITH_NFS=true`, `hack/deploy-infra.sh` does three things. It loads
+When `WITH_NFS=true`, `hack/deploy-infra.sh` does four things. It loads
 `nfsd`, `nfs` and `nfsv4` on the host before the cluster is created,
 best-effort through the same loader as `WITH_OVN_KERNEL_MODULES` (Linux only,
-root or passwordless sudo, otherwise a warning). It applies `deploy/kind/nfs`
-in Step 3 and waits for the `nfs-server` Deployment to roll out; a failed
-rollout is an error that stops the run and names the `nfsd` module, because a
-CrashLooping server on a host without `nfsd` must not end in a green summary.
-It appends `csi-driver-nfs` to the Phase 3 HelmRelease wait list. All three
-actions are gated strictly on the flag; the default run is unchanged.
+root or passwordless sudo, otherwise a warning). On a cluster whose
+`CSIDriver/nfs.csi.k8s.io` lists no `Ephemeral` lifecycle mode it deletes that
+object, because the field is immutable and the chart's patch would otherwise
+be rejected for the lifetime of the cluster: a reused cluster (a second run,
+or a runner keeping a warm one with `SKIP_KIND_CREATE=true`) would fail the
+`csi-driver-nfs` wait below with the cause buried in the HelmRelease status.
+Only a `NotFound` counts as "no such object" there; any other failed read (an
+API server still settling, a denied cluster-scoped read) aborts the run rather
+than skipping the check. A delete is followed by a forced `csi-driver-nfs`
+reconcile with the release's failure counts reset and a hard wait for the
+object to reappear, because the re-applied overlay can be identical to what
+the cluster already carries and helm-controller retries neither an unchanged
+release nor an upgrade whose remediation retries are spent: a cluster left
+with no NFS CSI driver at all is worse than the one the delete started from.
+A `NotFound` on a cluster that already carries the `csi-driver-nfs`
+HelmRelease enters that same recreate path, because it is not a fresh cluster
+but one an earlier run left driverless when it died between the delete and the
+forced reconcile. The wait is on the recreated object's
+`spec.volumeLifecycleModes`, not only on its existence: a remediation rollback
+racing the delete puts the pre-`Ephemeral` object back, which an
+existence-only check would accept.
+It applies `deploy/kind/nfs` in Step 3 and waits for the `nfs-server`
+Deployment to roll out; a failed rollout is an error that stops the run and
+names the `nfsd` module, because a CrashLooping server on a host without
+`nfsd` must not end in a green summary. It appends `csi-driver-nfs` to the
+Phase 3 HelmRelease wait list. All four actions are gated strictly on the
+flag; the default run is unchanged.
 
 **Opt-in usage:**
 
@@ -2029,7 +2051,13 @@ the kind overlay is self-contained under `deploy/kind/nfs/`. The CI-only
 posture is recorded in the header of `nfs-server.yaml`: a privileged server,
 `sec=sys` with `no_root_squash` and a wildcard client list, an amd64-only
 image, and `ghcr.io/nfs-ganesha/nfs-ganesha` as the recorded fallback if a
-runner kernel lacks `nfsd`.
+runner kernel lacks `nfsd`. The `Ephemeral` lifecycle mode widens that posture
+by one step, which is another reason it stays kind-only: reaching the export
+no longer needs a cluster-scoped `PersistentVolume`, so anyone who can create
+a Pod in a namespace that is not PodSecurity `restricted` mounts both shares
+as root from the pod spec alone. This cluster has no untrusted tenant; a
+non-kind deployment brings its own CSI mounter against an export that
+squashes root.
 
 ### Glance large-upload listener
 
