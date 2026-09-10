@@ -1,0 +1,31 @@
+# Deployment unit tests for the cinder-operator chart.
+# The shared Deployment skeleton is pinned by the operator-library testbed
+# suite; this suite pins the chart's image default and what the chart adds.
+suite: Deployment
+templates:
+  - templates/deployment.yaml
+tests:
+  - it: should set container image from Chart.AppVersion when tag is empty
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/c5c3/cinder-operator:0.1.0"
+
+  - it: should append image digest when image.digest is set
+    set:
+      image:
+        digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/c5c3/cinder-operator:0.1.0@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+  - it: should combine explicit tag with digest
+    set:
+      image:
+        tag: latest
+        digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: "ghcr.io/c5c3/cinder-operator:latest@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

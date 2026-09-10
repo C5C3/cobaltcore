@@ -1,0 +1,16 @@
+# Values schema validation unit tests for the cinder-operator chart.
+# The shared schema is pinned by the operator-library testbed suite; this suite
+# proves the chart ships an enforced schema and covers what the chart adds.
+suite: Values Schema Validation
+templates:
+  - templates/deployment.yaml
+tests:
+  # ---------------------------------------------------------------------------
+  # additionalProperties: false
+  # ---------------------------------------------------------------------------
+  - it: should reject unknown top-level property
+    set:
+      unknownField: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "additional properties.*not allowed"

@@ -1,0 +1,109 @@
+# Role unit tests for namespace-scoped mode.
+#
+# The Role renders the same generated rule set as the ClusterRole (see
+# clusterrole_test.yaml), so this suite pins the rendering and guards plus a
+# wiring check, not the individual rules.
+suite: Role
+templates:
+  - templates/role.yaml
+tests:
+  - it: should render Role when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 1
+      - equal:
+          path: kind
+          value: Role
+      - equal:
+          path: metadata.name
+          value: RELEASE-NAME-cinder-operator
+      - isSubset:
+          path: metadata.labels
+          content:
+            app.kubernetes.io/name: cinder-operator
+            app.kubernetes.io/instance: RELEASE-NAME
+
+  - it: should fail when rbac.namespaceScoped is true and webhook.enabled is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: webhook/enabled
+
+  - it: should not render Role when rbac.namespaceScoped is false
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: should grant reconcile verbs (no create/delete) on cinders
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - cinder.openstack.c5c3.io
+            resources:
+              - cinders
+            verbs:
+              - get
+              - list
+              - patch
+              - update
+              - watch
+
+  - it: should grant get/list/update/watch on the backend kinds
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - cinder.openstack.c5c3.io
+            resources:
+              - cinderbackends
+              - cinderbackupbackends
+            verbs:
+              - get
+              - list
+              - update
+              - watch
+
+  - it: should grant full CRUD on leases for leader election
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - coordination.k8s.io
+            resources:
+              - leases
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
