@@ -114,7 +114,7 @@ test_every_filter_steers_something() {
   # Two classes cannot move an output on their own, and are checked below
   # instead: publish_legacy is read on push events only, and the per-service
   # Tempest filters narrow a matrix that tempest_src has to switch on first.
-  local exempt=" publish_legacy tempest_keystone tempest_glance tempest_barbican tempest_neutron "
+  local exempt=" publish_legacy tempest_keystone tempest_glance tempest_barbican tempest_neutron tempest_cinder "
 
   local name inert=""
   for name in $(declared_filters); do
