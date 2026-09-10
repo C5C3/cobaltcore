@@ -5,8 +5,8 @@
 
 # setup-database-tenant.sh — Provision the per-tenant MariaDB database-engine
 # connection and role for one MANAGED ControlPlane's per-service DB users
-# (Keystone always; Glance, Placement, Barbican, and Neutron when they share the
-# managed database).
+# (Keystone always; Glance, Placement, Barbican, Neutron, and Cinder when they
+# share the managed database).
 #
 # MODE: this is a managed-database onboarding step. An External-mode ControlPlane
 # (spec.services.keystone.mode: External) has NO managed database — the c5c3
@@ -30,13 +30,13 @@
 #
 # It ALWAYS provisions the Keystone pair. It also provisions a Glance pair when
 # the ControlPlane declares spec.services.glance on the SHARED managed database,
-# and Placement, Barbican and Neutron pairs under the same condition for
-# spec.services.placement, spec.services.barbican and spec.services.neutron; a
-# service that declares a dedicated database
+# and Placement, Barbican, Neutron and Cinder pairs under the same condition for
+# spec.services.placement, spec.services.barbican, spec.services.neutron and
+# spec.services.cinder; a service that declares a dedicated database
 # (spec.services.<service>.dedicatedBackingServices.database) is Static-only and
 # is skipped here. Each service's pair is keyed and root-resolved independently
-# in ITS OWN service namespace, so the Glance, Placement, Barbican, and Neutron
-# engine plumbing is keystone-independent.
+# in ITS OWN service namespace, so the Glance, Placement, Barbican, Neutron, and
+# Cinder engine plumbing is keystone-independent.
 #
 # The role is keyed on the KEYSTONE SERVICE NAMESPACE alone — the namespace the
 # MariaDB lives in and the generator's ServiceAccount authenticates from. That is
@@ -244,7 +244,7 @@ main() {
   keystone_db="$(get_controlplane_field '{.spec.infrastructure.database.database}' 'keystone')"
   provision_service_tenant keystone "${keystone_ns}" "${keystone_mariadb}" "${keystone_db}"
 
-  # --- Glance, Placement, Barbican, Neutron (shared managed database only) ---
+  # --- Glance, Placement, Barbican, Neutron, Cinder (shared managed DB only) ---
   # Each of these services gets its OWN keystone-independent engine pair when the
   # ControlPlane declares spec.services.<service>. A service that declares a
   # dedicated database (spec.services.<service>.dedicatedBackingServices.database)
@@ -275,8 +275,16 @@ main() {
   # schema is the fixed 'neutron' one. This leg is the engine half of the neutron
   # onboarding; the auth half is in setup-auth.sh, where the neutron-db role binds
   # the neutron-db-dynamic policy that grants exactly this creds path.
+  #
+  # MUST STAY IN SYNC (cinder): the cinder-<namespace> role name below is the
+  # derivation
+  # operators/c5c3/internal/controller/reconcile_cinder_dbcredentials.go asserts
+  # once issue #989 adds that generator to the c5c3 operator, and the schema is
+  # the fixed 'cinder' one. This leg is the engine half of the cinder onboarding;
+  # the auth half (a cinder-db role bound to a cinder-db-dynamic policy in
+  # setup-auth.sh) lands with that generator in #989.
   local svc svc_ns svc_mariadb
-  for svc in glance placement barbican neutron; do
+  for svc in glance placement barbican neutron cinder; do
     if [[ -z "$(get_controlplane_field "{.spec.services.${svc}}" '')" ]]; then
       log "ControlPlane declares no spec.services.${svc} — skipping the ${svc} database-engine tenant."
       continue

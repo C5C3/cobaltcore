@@ -75,29 +75,31 @@ STUB
 # make_kubectl_full <dir> <glance_declared> <glance_ns> <glance_dedicated_db> \
 #                         <placement_declared> <placement_ns> <placement_dedicated_db> \
 #                         <barbican_declared> <barbican_ns> <barbican_dedicated_db> \
-#                         <neutron_declared> <neutron_ns> <neutron_dedicated_db>
+#                         <neutron_declared> <neutron_ns> <neutron_dedicated_db> \
+#                         <cinder_declared> <cinder_ns> <cinder_dedicated_db>
 # A kubectl stub that answers EVERY lookup setup-database-tenant.sh makes so the
-# keystone, glance, placement, barbican AND neutron legs all run to completion —
-# the bao writes reach OpenBao via `kubectl exec ... openbao-0`, which the stub
-# swallows.
+# keystone, glance, placement, barbican, neutron AND cinder legs all run to
+# completion — the bao writes reach OpenBao via `kubectl exec ... openbao-0`,
+# which the stub swallows.
 #
 # <glance_declared> / <placement_declared> / <barbican_declared> /
-# <neutron_declared> are the presence gate the script reads first: a non-empty
-# value makes `{.spec.services.<svc>}` resolve to a non-empty object, an empty one
-# makes it resolve to nothing so the service is UNDECLARED. That distinction has
-# to be modelled separately from the namespace, because an empty <svc>_ns means
-# "declared but not placed in a namespace of its own" — the service still gets an
-# engine role, keyed on the ControlPlane namespace.
+# <neutron_declared> / <cinder_declared> are the presence gate the script reads
+# first: a non-empty value makes `{.spec.services.<svc>}` resolve to a non-empty
+# object, an empty one makes it resolve to nothing so the service is UNDECLARED.
+# That distinction has to be modelled separately from the namespace, because an
+# empty <svc>_ns means "declared but not placed in a namespace of its own" — the
+# service still gets an engine role, keyed on the ControlPlane namespace.
 #
 # <glance_dedicated_db> / <placement_dedicated_db> / <barbican_dedicated_db> /
-# <neutron_dedicated_db> declare a dedicated database for that service when
-# non-empty (Static-only, so no engine role). Keystone stays
+# <neutron_dedicated_db> / <cinder_dedicated_db> declare a dedicated database for
+# that service when non-empty (Static-only, so no engine role). Keystone stays
 # namespace-unassigned, so its role is keyed on the ControlPlane namespace.
 make_kubectl_full() {
   local dir="$1" glance_declared="$2" glance_ns="$3" glance_dedicated_db="$4"
   local placement_declared="$5" placement_ns="$6" placement_dedicated_db="$7"
   local barbican_declared="$8" barbican_ns="$9" barbican_dedicated_db="${10}"
   local neutron_declared="${11}" neutron_ns="${12}" neutron_dedicated_db="${13}"
+  local cinder_declared="${14}" cinder_ns="${15}" cinder_dedicated_db="${16}"
   mkdir -p "$dir"
   cat >"$dir/kubectl" <<STUB
 #!/bin/bash
@@ -173,6 +175,22 @@ if [[ "\$*" == *"jsonpath={.spec.services.neutron}"* ]]; then
   # An undeclared Neutron prints nothing, which the script's -z gate reads.
   if [[ -n "${neutron_declared}" ]]; then
     printf 'map[namespace:map[name:%s]]' "${neutron_ns}"
+  fi
+  exit 0
+fi
+if [[ "\$*" == *"jsonpath={.spec.services.cinder.dedicatedBackingServices.database}"* ]]; then
+  printf '%s' "${cinder_dedicated_db}"
+  exit 0
+fi
+if [[ "\$*" == *"jsonpath={.spec.services.cinder.namespace.name}"* ]]; then
+  printf '%s' "${cinder_ns}"
+  exit 0
+fi
+if [[ "\$*" == *"jsonpath={.spec.services.cinder}"* ]]; then
+  # A non-empty object marks Cinder as declared; its exact shape is irrelevant.
+  # An undeclared Cinder prints nothing, which the script's -z gate reads.
+  if [[ -n "${cinder_declared}" ]]; then
+    printf 'map[namespace:map[name:%s]]' "${cinder_ns}"
   fi
   exit 0
 fi
@@ -273,7 +291,7 @@ test_db_tenant_provisions_glance_on_the_glance_namespace() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Glance declared, placed in its own "images" namespace, no dedicated database.
-  make_kubectl_full "$tmp" "yes" "images" "" "yes" "" "" "yes" "" "" "" "" ""
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "" "" "yes" "" "" "" "" "" "" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -299,7 +317,7 @@ test_db_tenant_defaults_glance_to_the_controlplane_namespace() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Glance declared but not placed in a namespace of its own: role follows the CP.
-  make_kubectl_full "$tmp" "yes" "" "" "yes" "" "" "yes" "" "" "" "" ""
+  make_kubectl_full "$tmp" "yes" "" "" "yes" "" "" "yes" "" "" "" "" "" "" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -321,7 +339,7 @@ test_db_tenant_skips_glance_with_a_dedicated_database() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Glance declared WITH a dedicated database — Static-only, so no engine role.
-  make_kubectl_full "$tmp" "yes" "images" "glance-db" "yes" "" "" "yes" "" "" "" "" ""
+  make_kubectl_full "$tmp" "yes" "images" "glance-db" "yes" "" "" "yes" "" "" "" "" "" "" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -345,7 +363,7 @@ test_db_tenant_provisions_placement_on_the_placement_namespace() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Placement declared, placed in its own "compute" namespace, no dedicated database.
-  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "" "" "" "" ""
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "" "" "" "" "" "" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -371,7 +389,7 @@ test_db_tenant_defaults_placement_to_the_controlplane_namespace() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Placement declared but not placed in a namespace of its own: role follows the CP.
-  make_kubectl_full "$tmp" "yes" "images" "" "yes" "" "" "yes" "" "" "" "" ""
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "" "" "yes" "" "" "" "" "" "" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -393,7 +411,7 @@ test_db_tenant_skips_placement_with_a_dedicated_database() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Placement declared WITH a dedicated database — Static-only, so no engine role.
-  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "placement-db" "yes" "" "" "" "" ""
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "placement-db" "yes" "" "" "" "" "" "" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -417,7 +435,7 @@ test_db_tenant_provisions_barbican_on_the_barbican_namespace() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Barbican declared, placed in its own "secrets" namespace, no dedicated database.
-  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "secrets" "" "" "" ""
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "secrets" "" "" "" "" "" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -443,7 +461,7 @@ test_db_tenant_defaults_barbican_to_the_controlplane_namespace() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Barbican declared but not placed in a namespace of its own: role follows the CP.
-  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "" "" "" "" ""
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "" "" "" "" "" "" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -465,7 +483,7 @@ test_db_tenant_skips_barbican_with_a_dedicated_database() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Barbican declared WITH a dedicated database — Static-only, so no engine role.
-  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "secrets" "barbican-db" "" "" ""
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "secrets" "barbican-db" "" "" "" "" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -489,7 +507,7 @@ test_db_tenant_provisions_neutron_on_the_neutron_namespace() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Neutron declared, placed in its own "networking" namespace, no dedicated database.
-  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "secrets" "" "yes" "networking" ""
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "secrets" "" "yes" "networking" "" "" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -519,7 +537,7 @@ test_db_tenant_skips_neutron_with_a_dedicated_database() {
   trap 'rm -rf "$tmp"' RETURN
 
   # Neutron declared WITH a dedicated database — Static-only, so no engine role.
-  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "secrets" "" "yes" "networking" "neutron-db"
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "secrets" "" "yes" "networking" "neutron-db" "" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -535,6 +553,62 @@ test_db_tenant_skips_neutron_with_a_dedicated_database() {
 }
 
 # ---------------------------------------------------------------------------
+# Test: the cinder engine pair follows the Cinder service namespace
+# ---------------------------------------------------------------------------
+test_db_tenant_provisions_cinder_on_the_cinder_namespace() {
+  echo "Test: setup-database-tenant.sh keys the cinder engine pair on the Cinder namespace"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # Cinder declared, placed in its own "storage" namespace, no dedicated database.
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "secrets" "" "yes" "networking" "" "yes" "storage" ""
+
+  local output
+  output="$(run_db_tenant "$tmp" "openstack" "cp")"
+
+  assert_contains "the cinder engine role is keyed on the Cinder service namespace" \
+    "$output" "database/mariadb/roles/cinder-storage"
+  assert_contains "the cinder connection config is keyed on the same namespace" \
+    "$output" "database/mariadb/config/cinder-storage"
+  assert_contains "the cinder role issues users on the fixed 'cinder' schema" \
+    "$output" "Database  : cinder"
+  assert_contains "the cinder MariaDB is read from the Cinder service namespace" \
+    "$output" "openstack-db.storage.svc:3306"
+  assert_contains "keystone is still provisioned on the ControlPlane namespace" \
+    "$output" "database/mariadb/roles/keystone-openstack"
+  assert_not_contains "the cinder role must not be keyed on the ControlPlane namespace" \
+    "$output" "roles/cinder-openstack"
+}
+
+# ---------------------------------------------------------------------------
+# Test: a dedicated cinder database skips the cinder engine leg
+# ---------------------------------------------------------------------------
+test_db_tenant_skips_cinder_with_a_dedicated_database() {
+  echo "Test: setup-database-tenant.sh skips the cinder leg for a dedicated cinder database"
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  # Cinder declared WITH a dedicated database — Static-only, so no engine role.
+  make_kubectl_full "$tmp" "yes" "images" "" "yes" "compute" "" "yes" "secrets" "" "yes" "networking" "" "yes" "storage" "cinder-db"
+
+  local output
+  output="$(run_db_tenant "$tmp" "openstack" "cp")"
+
+  assert_contains "the dedicated-database cinder leg is skipped, loudly" \
+    "$output" "ControlPlane declares a dedicated cinder database"
+  assert_contains "the skip names the cinder database-engine tenant" \
+    "$output" "skipping the cinder database-engine tenant"
+  assert_not_contains "no cinder engine role is written for a dedicated database" \
+    "$output" "database/mariadb/roles/cinder-"
+  assert_contains "keystone is still provisioned" \
+    "$output" "database/mariadb/roles/keystone-openstack"
+}
+
+# ---------------------------------------------------------------------------
 # Test: a Keystone-only ControlPlane runs no optional service leg
 # ---------------------------------------------------------------------------
 # The presence gate is what keeps the loop from provisioning an engine tenant for
@@ -542,14 +616,14 @@ test_db_tenant_skips_neutron_with_a_dedicated_database() {
 # connection for a schema nothing will ever connect to, against a MariaDB that
 # need not even exist in that namespace.
 test_db_tenant_skips_undeclared_services() {
-  echo "Test: setup-database-tenant.sh skips glance, placement, barbican and neutron when none is declared"
+  echo "Test: setup-database-tenant.sh skips glance, placement, barbican, neutron and cinder when none is declared"
 
   local tmp
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
 
   # No optional service declared: every presence lookup resolves empty.
-  make_kubectl_full "$tmp" "" "" "" "" "" "" "" "" "" "" "" ""
+  make_kubectl_full "$tmp" "" "" "" "" "" "" "" "" "" "" "" "" "" "" ""
 
   local output
   output="$(run_db_tenant "$tmp" "openstack" "cp")"
@@ -562,6 +636,8 @@ test_db_tenant_skips_undeclared_services() {
     "$output" "ControlPlane declares no spec.services.barbican"
   assert_contains "the undeclared neutron leg is skipped, loudly" \
     "$output" "ControlPlane declares no spec.services.neutron"
+  assert_contains "the undeclared cinder leg is skipped, loudly" \
+    "$output" "ControlPlane declares no spec.services.cinder"
   assert_not_contains "no glance engine role is written for an undeclared service" \
     "$output" "database/mariadb/roles/glance-"
   assert_not_contains "no placement engine role is written for an undeclared service" \
@@ -570,6 +646,8 @@ test_db_tenant_skips_undeclared_services() {
     "$output" "database/mariadb/roles/barbican-"
   assert_not_contains "no neutron engine role is written for an undeclared service" \
     "$output" "database/mariadb/roles/neutron-"
+  assert_not_contains "no cinder engine role is written for an undeclared service" \
+    "$output" "database/mariadb/roles/cinder-"
   assert_contains "keystone is still provisioned" \
     "$output" "database/mariadb/roles/keystone-openstack"
 }
@@ -635,6 +713,8 @@ test_db_tenant_defaults_barbican_to_the_controlplane_namespace
 test_db_tenant_skips_barbican_with_a_dedicated_database
 test_db_tenant_provisions_neutron_on_the_neutron_namespace
 test_db_tenant_skips_neutron_with_a_dedicated_database
+test_db_tenant_provisions_cinder_on_the_cinder_namespace
+test_db_tenant_skips_cinder_with_a_dedicated_database
 test_db_tenant_skips_undeclared_services
 test_seeder_rejects_a_malformed_identity
 
