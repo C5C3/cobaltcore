@@ -11,9 +11,12 @@ import (
 	"runtime"
 	"testing"
 
+	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	commonenvtest "github.com/c5c3/cobaltcore/internal/common/testutil/envtest"
 )
@@ -81,6 +84,58 @@ func SetupCinderEnvTestNoWebhook(
 
 	crdDir, _ := cinderPaths()
 	return commonenvtest.SetupEnvTestWithCRDs(t, commonenvtest.BuildScheme(addToScheme), []string{crdDir})
+}
+
+// SetupCinderEnvTestWithController starts an envtest API server with the three
+// Cinder CRDs, webhook configurations, fake CRDs for external operators
+// (MariaDB, ESO, Gateway API, ...), and a controller-runtime Manager hosting the
+// caller-registered webhooks and reconcilers. It returns a direct (non-caching)
+// client, a context, and its cancel function. The environment is torn down
+// automatically via t.Cleanup().
+//
+// Parameters:
+//   - addToScheme registers the Cinder API types with the runtime scheme.
+//   - registerWebhooks sets up all three webhook handlers with the manager.
+//   - registerController wires the CinderReconciler, the CinderBackendReconciler
+//     and the CinderBackupBackendReconciler onto the manager (all three run in
+//     one manager, further reconcilers rather than further binaries).
+func SetupCinderEnvTestWithController(
+	t testing.TB,
+	addToScheme func(*k8sruntime.Scheme) error,
+	registerWebhooks func(ctrl.Manager) error,
+	registerController func(ctrl.Manager) error,
+) (client.Client, context.Context, context.CancelFunc) {
+	t.Helper()
+
+	crdDir, webhookDir := cinderPaths()
+
+	// Combine the Cinder CRD dir with the common fake CRD dirs (ESO, gateway-api,
+	// mariadb, ...) so the reconcilers' external kinds resolve.
+	crdDirs := append([]string{crdDir}, commonenvtest.CommonFakeCRDDirs()...)
+
+	return commonenvtest.StartManagedEnvTest(t, commonenvtest.ManagedEnvTestConfig{
+		Name:               "Cinder",
+		Scheme:             buildControllerScheme(addToScheme),
+		CRDDirectoryPaths:  crdDirs,
+		WebhookDir:         webhookDir,
+		RegisterWebhooks:   registerWebhooks,
+		RegisterController: registerController,
+	})
+}
+
+// buildControllerScheme creates a runtime.Scheme that includes all types the
+// three reconcilers need: the Cinder API types, core Kubernetes types, ESO (the
+// credential gate and the store watches), Gateway API (HTTPRoute), and MariaDB
+// (database provisioning and the cluster watch). It is created fresh per test.
+func buildControllerScheme(addToScheme func(*k8sruntime.Scheme) error) *k8sruntime.Scheme {
+	return commonenvtest.BuildScheme(
+		// External operator types the reconcilers register.
+		esov1.AddToScheme,
+		gatewayv1.Install,
+		mariadbv1alpha1.AddToScheme,
+		// Cinder types.
+		addToScheme,
+	)
 }
 
 // cinderPaths returns absolute paths to the Cinder CRD and webhook configuration
