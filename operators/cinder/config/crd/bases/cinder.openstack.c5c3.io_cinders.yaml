@@ -2307,7 +2307,7 @@ spec:
                   secretRef:
                     description: |-
                       SecretRef references the Secret holding the service user's password. The
-                      key is webhook-defaulted to "password" in a later commit.
+                      key is webhook-defaulted to "password".
                     properties:
                       key:
                         type: string
