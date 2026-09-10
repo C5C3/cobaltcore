@@ -1,0 +1,56 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cinder-operator
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - cinder.openstack.c5c3.io
+  resources:
+  - cinderbackends
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - cinder.openstack.c5c3.io
+  resources:
+  - cinderbackends/status
+  - cinderbackupbackends/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - cinder.openstack.c5c3.io
+  resources:
+  - cinderbackupbackends
+  - cinders
+  verbs:
+  - get
+  - list
+  - watch
