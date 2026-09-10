@@ -1,0 +1,171 @@
+# ClusterRole unit tests.
+#
+# The rules come from templates/_rbac-rules.tpl, generated from the operator's
+# +kubebuilder:rbac markers (make sync-helm-rbac); the rule shape follows
+# controller-gen (resources with identical verbs merged, verbs sorted). This
+# suite pins the rendering, the wiring of the generated rules into the
+# ClusterRole, and the grants whose restriction is deliberate; it does not
+# re-assert every generated rule.
+suite: ClusterRole
+templates:
+  - templates/clusterrole.yaml
+tests:
+  # The operator reconciles Cinder CRs but never creates or deletes them.
+  - it: should grant reconcile verbs (no create/delete) on cinders
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - cinder.openstack.c5c3.io
+            resources:
+              - cinders
+            verbs:
+              - get
+              - list
+              - patch
+              - update
+              - watch
+
+  # update, not full CRUD: the satellite kinds are written by their owners; the
+  # operator only sets the detach finalizer on them.
+  - it: should grant get/list/update/watch on the backend kinds
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - cinder.openstack.c5c3.io
+            resources:
+              - cinderbackends
+              - cinderbackupbackends
+            verbs:
+              - get
+              - list
+              - update
+              - watch
+
+  - it: should restrict events to create and patch only
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ''
+            resources:
+              - events
+            verbs:
+              - create
+              - patch
+
+  - it: should restrict pods to get and list
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - ''
+            resources:
+              - pods
+            verbs:
+              - get
+              - list
+
+  - it: should grant read-only on mariadb cluster CRs
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - k8s.mariadb.com
+            resources:
+              - mariadbs
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant read-only on rabbitmq cluster CRs
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - rabbitmq.com
+            resources:
+              - rabbitmqclusters
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant read-only on externalsecrets
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - external-secrets.io
+            resources:
+              - clustersecretstores
+              - externalsecrets
+              - secretstores
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant read-only on httproutes/status
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - gateway.networking.k8s.io
+            resources:
+              - httproutes/status
+            verbs:
+              - get
+
+  - it: should grant read-only on priorityclasses for webhook validation
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - scheduling.k8s.io
+            resources:
+              - priorityclasses
+            verbs:
+              - get
+              - list
+              - watch
+
+  - it: should grant full CRUD on leases for leader election
+    asserts:
+      - contains:
+          path: rules
+          content:
+            apiGroups:
+              - coordination.k8s.io
+            resources:
+              - leases
+            verbs:
+              - get
+              - list
+              - watch
+              - create
+              - update
+              - patch
+              - delete
+
+  # ClusterRole must not render in namespace-scoped mode.
+  - it: should not render ClusterRole when rbac.namespaceScoped is true
+    set:
+      rbac:
+        namespaceScoped: true
+      webhook:
+        enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

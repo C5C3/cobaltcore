@@ -1,0 +1,19 @@
+{{- include "operator-library.webhookConfiguration" (dict
+      "root" .
+      "mutatingWebhookName" "mcinder.kb.io"
+      "validatingWebhookName" "vcinder.kb.io"
+      "mutatePath" "/mutate-cinder-openstack-c5c3-io-v1alpha1-cinder"
+      "validatePath" "/validate-cinder-openstack-c5c3-io-v1alpha1-cinder"
+      "apiGroup" "cinder.openstack.c5c3.io"
+      "resource" "cinders"
+      "additionalWebhooks" (list (dict
+        "mutatingWebhookName" "mcinderbackend.kb.io"
+        "validatingWebhookName" "vcinderbackend.kb.io"
+        "mutatePath" "/mutate-cinder-openstack-c5c3-io-v1alpha1-cinderbackend"
+        "validatePath" "/validate-cinder-openstack-c5c3-io-v1alpha1-cinderbackend"
+        "resource" "cinderbackends") (dict
+        "mutatingWebhookName" "mcinderbackupbackend.kb.io"
+        "validatingWebhookName" "vcinderbackupbackend.kb.io"
+        "mutatePath" "/mutate-cinder-openstack-c5c3-io-v1alpha1-cinderbackupbackend"
+        "validatePath" "/validate-cinder-openstack-c5c3-io-v1alpha1-cinderbackupbackend"
+        "resource" "cinderbackupbackends"))) }}
