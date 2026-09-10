@@ -164,7 +164,7 @@ test_a_keystone_only_change_produces_no_ovn_leg() {
   # The positive case above proves the filter reaches the matrix; this one
   # proves it still gates. A filter wired to a constant would satisfy the
   # positive assertion and put every operator on every pull request.
-  local all_operators="keystone c5c3 horizon glance placement barbican ovn neutron"
+  local all_operators="keystone c5c3 horizon glance placement barbican ovn neutron cinder"
   local matrix
   matrix=$(resolve_output e2e-operators refs/heads/main "$all_operators" \
     FILTER_keystone=true)

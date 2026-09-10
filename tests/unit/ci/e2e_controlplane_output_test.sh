@@ -29,7 +29,7 @@ CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 # The real list from the ci.yaml resolve step env block. The resolve script
 # reads FILTER_${op} only for operators named here, so a shorter list would
 # make the FILTER_c5c3 scenario below assert nothing.
-ALL_OPERATORS_FIXTURE="keystone c5c3 horizon glance placement barbican ovn neutron"
+ALL_OPERATORS_FIXTURE="keystone c5c3 horizon glance placement barbican ovn neutron cinder"
 
 PASS=0
 FAIL=0

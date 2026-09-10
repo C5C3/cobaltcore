@@ -22,7 +22,7 @@
 # The service operators (the union of the keys in releases/*/source-refs.yaml) and
 # the canary operator the ci.yaml resolve step passes. Kept here so a test that
 # does not care about either still satisfies the resolve script's guards.
-CI_RESOLVE_DEFAULT_SERVICE_OPERATORS="keystone horizon glance placement barbican neutron"
+CI_RESOLVE_DEFAULT_SERVICE_OPERATORS="keystone horizon glance placement barbican neutron cinder"
 CI_RESOLVE_DEFAULT_CANARY_OPERATOR="keystone"
 
 # resolve_output <output-key> <ref> <all-operators> [ENV=value ...]

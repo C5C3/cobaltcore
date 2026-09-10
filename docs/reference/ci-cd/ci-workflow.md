@@ -415,7 +415,7 @@ Timeout: 8 minutes.
 ### test
 
 Runs unit tests with a matrix strategy resolved per pull request out of
-`[common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron]`.
+`[common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron, cinder]`.
 Each matrix leg tests a single target — either `internal/common` or one operator — producing
 a single coverage profile uploaded to Codecov under a dedicated flag.
 
@@ -456,7 +456,7 @@ coverage data is not lost.
 ### test-integration
 
 Runs envtest-based integration tests with a matrix strategy resolved per pull
-request out of `[common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron]`
+request out of `[common, keystone, c5c3, horizon, glance, placement, barbican, ovn, neutron, cinder]`
 and coverage uploaded to Codecov. Requires `setup-envtest` to
 download kubebuilder assets (kube-apiserver, etcd) for the test API server.
 

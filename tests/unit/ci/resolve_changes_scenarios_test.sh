@@ -26,7 +26,7 @@ CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
 
 # The real lists from the ci.yaml resolve step. A shorter ALL_OPERATORS would
 # make the per-operator scenarios assert nothing.
-ALL_OPS="keystone c5c3 horizon glance placement barbican ovn neutron"
+ALL_OPS="keystone c5c3 horizon glance placement barbican ovn neutron cinder"
 
 PASS=0
 FAIL=0
@@ -113,9 +113,9 @@ test_shared_go_change() {
   # prometheus and tempest stay off: they are the most expensive jobs in the
   # pipeline and ci:full is how you ask for them.
   scenario "a shared Go change" refs/heads/main FILTER_go_common=true
-  expect test-targets '{"target":["common","keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron"]}'
-  expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron"]}'
-  expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron"]'
+  expect test-targets '{"target":["common","keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]}'
+  expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]}'
+  expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]'
   expect changed-services '[]'
   expect e2e-operator-upgrade true
   expect e2e-infra false
@@ -145,9 +145,9 @@ test_service_image_change() {
 
 test_base_image_change_covers_every_service() {
   scenario "a base image change" refs/heads/main FILTER_images_base=true
-  expect changed-services '["keystone","horizon","glance","placement","barbican","neutron"]'
+  expect changed-services '["keystone","horizon","glance","placement","barbican","neutron","cinder"]'
   expect changed-tempest true
-  expect e2e-operators '{"operator":["keystone","horizon","glance","placement","barbican","neutron"]}'
+  expect e2e-operators '{"operator":["keystone","horizon","glance","placement","barbican","neutron","cinder"]}'
   expect changed-operators '[]'
 }
 
@@ -210,7 +210,7 @@ test_workflow_plumbing_runs_the_canary_and_actionlint() {
 test_makefile_change() {
   scenario "a Makefile change" refs/heads/main FILTER_makefile=true FILTER_helm=true
   expect go true
-  expect test-targets '{"target":["common","keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron"]}'
+  expect test-targets '{"target":["common","keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]}'
   expect helm true
   expect e2e-infra true
   expect e2e-operators '{"operator":["keystone"]}'
@@ -261,10 +261,10 @@ test_ci_full_runs_everything() {
     e2e-operator-upgrade actionlint changed-tempest changed-proxy build-e2e-images \
     has-e2e-operators
   expect noop false
-  expect test-targets '{"target":["common","keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron"]}'
-  expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron"]}'
-  expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron"]'
-  expect changed-services '["keystone","horizon","glance","placement","barbican","neutron"]'
+  expect test-targets '{"target":["common","keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]}'
+  expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]}'
+  expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]'
+  expect changed-services '["keystone","horizon","glance","placement","barbican","neutron","cinder"]'
   expect tempest-services '["keystone","glance","barbican","neutron"]'
 }
 
@@ -361,9 +361,9 @@ test_tag_push_forces_everything() {
   expect_all true $EXPENSIVE go docs helm target-cluster-chart e2e-infra \
     e2e-operator-upgrade has-e2e-operators
   expect noop false
-  expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron"]}'
-  expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron"]'
-  expect changed-services '["keystone","horizon","glance","placement","barbican","neutron"]'
+  expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]}'
+  expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]'
+  expect changed-services '["keystone","horizon","glance","placement","barbican","neutron","cinder"]'
   expect tempest-services '["keystone","glance","barbican","neutron"]'
 }
 
@@ -381,11 +381,11 @@ test_push_keeps_the_publish_matrix() {
 
   scenario "a push touching a shared publish path" refs/heads/main \
     EVENT_NAME=push FILTER_publish_legacy=true
-  expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron"]}'
+  expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]}'
 
   scenario "a push touching shared Go" refs/heads/main \
     EVENT_NAME=push FILTER_go_common=true
-  expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron"]}'
+  expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]}'
 
   scenario "a docs-only push" refs/heads/main EVENT_NAME=push FILTER_docs=true
   expect has-e2e-operators false
