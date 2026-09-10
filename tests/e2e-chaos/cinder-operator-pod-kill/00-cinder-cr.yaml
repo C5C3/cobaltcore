@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the operator pod-kill chaos test.
+#
+# Managed mode throughout: the schema cinder_chaos_op on the openstack-db
+# MariaDB cluster, the openstack-memcached cache and the ESO-synced cinder-db
+# credentials (deploy/kind/infrastructure). The transport URL comes from the
+# Secret ../../e2e/cinder/broker-vhost.sh writes for this suite's own vhost on
+# the kind-only shared-rabbitmq broker.
+#
+# The name and the schema carry the suite's own prefix: every suite of this
+# tree runs in the shared openstack namespace, and spec.cinderRef on a
+# CinderBackend is immutable, so a shared name would tie two suites to one CR.
+#
+# No keystoneEndpoint and no serviceUser: the two are set together or not at
+# all (the pairing CEL rule on CinderSpec), and leaving both out renders
+# auth_strategy = noauth, which is how the storage path is exercised on a
+# cluster that runs no identity service. The network chaos leg brings up no
+# Keystone for cinder.
+#
+# One API replica, so the scale patch of 03-patch-scale.yaml has a rollout to
+# make after the kill. The volume and backup blocks are absent, so the schema
+# default of three replicas never applies to them.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-chaos-op
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_chaos_op
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-chaos-op-messaging
