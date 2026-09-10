@@ -75,7 +75,7 @@ test_neutron_filter_is_wired() {
 test_neutron_change_produces_an_e2e_leg() {
   echo "Test: an operators/neutron change puts neutron in the e2e-operators matrix"
 
-  local all_operators="keystone c5c3 horizon glance placement barbican ovn neutron"
+  local all_operators="keystone c5c3 horizon glance placement barbican ovn neutron cinder"
   local matrix
   matrix=$(resolve_output e2e-operators refs/heads/main "$all_operators" FILTER_neutron=true)
 
@@ -220,7 +220,7 @@ test_go_matrices_list_neutron() {
   assert_eq "both the test and the test-integration matrix read test-targets" \
     "2" "$matrix_count"
 
-  local all_operators="keystone c5c3 horizon glance placement barbican ovn neutron"
+  local all_operators="keystone c5c3 horizon glance placement barbican ovn neutron cinder"
   assert_contains "a neutron change puts neutron in the test matrix" \
     "$(resolve_output test-targets refs/heads/main "$all_operators" FILTER_neutron=true)" \
     '"neutron"'
@@ -254,7 +254,7 @@ test_a_keystone_only_change_produces_no_neutron_leg() {
   # The positive case above proves the filter reaches the matrix; this one
   # proves it still gates. A filter wired to a constant would satisfy the
   # positive assertion and put every operator on every pull request.
-  local all_operators="keystone c5c3 horizon glance placement barbican ovn neutron"
+  local all_operators="keystone c5c3 horizon glance placement barbican ovn neutron cinder"
   local matrix
   matrix=$(resolve_output e2e-operators refs/heads/main "$all_operators" \
     FILTER_keystone=true)

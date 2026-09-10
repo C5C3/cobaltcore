@@ -28,7 +28,7 @@ FAIL=0
 SKIP=0
 
 # The real list from the ci.yaml resolve step env block.
-ALL_OPS="keystone c5c3 horizon glance placement barbican ovn neutron"
+ALL_OPS="keystone c5c3 horizon glance placement barbican ovn neutron cinder"
 
 # shellcheck source=tests/lib/assertions.sh
 source "$PROJECT_ROOT/tests/lib/assertions.sh"
@@ -131,7 +131,7 @@ test_every_filter_steers_something() {
     "$baseline" "$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_publish_legacy=true)"
   assert_contains "publish_legacy fills the publish matrix on a push" \
     "$(resolve_outputs refs/heads/main "$ALL_OPS" EVENT_NAME=push FILTER_publish_legacy=true)" \
-    'e2e-operators={"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron"]}'
+    'e2e-operators={"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]}'
 
   # A tests/tempest/<svc>-*/ edit matches tempest_src as well, so the pair is
   # what CI ever sees; what the per-service filter has to do is narrow.
