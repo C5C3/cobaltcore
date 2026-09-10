@@ -333,7 +333,7 @@ type CinderAPISpec struct {
 // capabilities off the bus and hold no state between requests. Every scheduler
 // pod renders the same [DEFAULT] host, "<cinder>-scheduler", so the service
 // registry carries one scheduler entry however many replicas run. The
-// defaulting webhook applies that one (a later commit on this branch).
+// defaulting webhook applies that one when the block is absent.
 type CinderSchedulerSpec struct {
 	// Deployment groups the pod-level knobs for the scheduler Deployment.
 	// +optional
@@ -363,10 +363,10 @@ type CinderVolumeSpec struct {
 // the same one-replica and Recreate constraints CinderVolumeSpec documents, for
 // the same reason: the backup service owns its target through a host identity.
 //
-// The defaulting webhook raises the memory limit to 2Gi for this block (a later
-// commit on this branch). A backup reads a volume in chunks and compresses each
-// chunk in memory, so the shared 512Mi limit the other Deployments run under
-// puts the process at risk of being killed mid-backup.
+// The defaulting webhook raises the memory limit to 2Gi for this block when it
+// carries no resources of its own. A backup reads a volume in chunks and
+// compresses each chunk in memory, so the shared 512Mi limit the other
+// Deployments run under puts the process at risk of being killed mid-backup.
 type CinderBackupSpec struct {
 	// Deployment groups the pod-level knobs for the backup Deployment.
 	// +optional
@@ -377,8 +377,8 @@ type CinderBackupSpec struct {
 // tokens and call other services, and references the Secret holding its password.
 // The name and domain fields are optional; the defaulting webhook materializes
 // them (username cinder, projectName service, userDomainName and
-// projectDomainName Default) in a later commit, so a minimal CR need only supply
-// the password Secret reference.
+// projectDomainName Default), so a minimal CR need only supply the password
+// Secret reference.
 type ServiceUserSpec struct {
 	// Username is the Keystone username Cinder authenticates as
 	// ([keystone_authtoken] username). Webhook-defaulted to "cinder".
@@ -401,7 +401,7 @@ type ServiceUserSpec struct {
 	ProjectDomainName string `json:"projectDomainName,omitempty"`
 
 	// SecretRef references the Secret holding the service user's password. The
-	// key is webhook-defaulted to "password" in a later commit.
+	// key is webhook-defaulted to "password".
 	SecretRef commonv1.SecretRefSpec `json:"secretRef"`
 }
 
