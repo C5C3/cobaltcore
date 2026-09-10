@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The one NFS volume backend the cinder-tempest-2026-1 CR serves. It gets its
+# own cinder-volume Deployment, and its name is the cinder.conf backend section
+# the suite addresses through [volume] backend_names in tempest.conf.
+#
+# The export is the /volumes directory the kind NFS server pre-creates
+# (deploy/kind/nfs/nfs-server.yaml). This leg is alone on its cluster, so the
+# name needs no suite prefix the way the tests/e2e/cinder/ fixtures do.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: nfs1
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-tempest-2026-1
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

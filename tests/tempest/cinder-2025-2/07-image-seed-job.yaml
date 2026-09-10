@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Seeds the image the volume suites boot from. tempest.api.volume reads
+# CONF.compute.image_ref (tempest/api/volume/base.py) for every
+# create-volume-from-image case, and tempest.conf pins that to the fixed UUID
+# this Job creates, so the config needs no per-run substitution.
+#
+# The payload is 16 MiB of zeros in raw format: the volume tests care that the
+# image downloads into a 1 GiB volume, not what it contains, and a small file
+# keeps the transfer off the critical path of a leg that shares its node with
+# the broker, the NFS server and four Cinder workloads.
+#
+# It runs after the Glance CR is Ready, authenticates as the bootstrap admin
+# (keystone-admin Secret) and is guarded by an `image show` on the same UUID, so
+# a Job retry converges rather than erroring on the duplicate ID.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cinder-tempest-image-seed
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-cinder-tempest-2025-2.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              SEED_ID="c1d3f000-0988-4000-8000-000000000001"
+              if openstack image show "${SEED_ID}" >/dev/null 2>&1; then
+                echo "OK: seed image ${SEED_ID} already present"
+                exit 0
+              fi
+
+              dd if=/dev/zero of=/tmp/seed.img bs=1M count=16
+              # --public so the dynamic-credential projects the suites run in
+              # can boot volumes from it; the image is owned by admin.
+              openstack image create --id "${SEED_ID}" \
+                --disk-format raw --container-format bare \
+                --public --file /tmp/seed.img seed
+
+              echo "OK: seed image registered"
+              openstack image show "${SEED_ID}" --format value -c id -c status

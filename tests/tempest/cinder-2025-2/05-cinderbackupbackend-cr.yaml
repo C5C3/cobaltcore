@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The backup target of the cinder-tempest-2025-2 CR, which is what
+# [volume-feature-enabled] backup = true in tempest.conf needs: the backup
+# suites create, restore and delete backups through the cinder-backup
+# Deployment this CR projects.
+#
+# The export is the /backups directory the kind NFS server pre-creates
+# 42424:42424 mode 0770 (deploy/kind/nfs/nfs-server.yaml), so the backup driver
+# skips the root branches it would otherwise take to widen the permissions.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackupBackend
+metadata:
+  name: nfsbk
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-tempest-2025-2
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /backups

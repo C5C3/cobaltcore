@@ -14,3 +14,7 @@ keystone-tempest-plugin: "0.21.0"
 # satisfies (testtools===2.8.5); 2025.2 constrains testtools to 2.7.2 and stays
 # on 3.0.0.
 neutron-tempest-plugin: "3.2.0"
+# cinder-tempest-plugin is branchless like the plugins above, and it needs only
+# pbr, oslo.config, oslo.serialization and tempest>=40.0.0, so nothing in a
+# release's upper-constraints.txt narrows it: both releases pin the same version.
+cinder-tempest-plugin: "1.22.0"

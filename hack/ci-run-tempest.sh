@@ -39,7 +39,9 @@
 #                   svc/${GLANCE_K8S_NAME} 9292:9292, waits for its /healthcheck,
 #                   and add-hosts its cluster-local DNS names to 127.0.0.1 so the
 #                   catalog's image endpoint resolves to the forwarded port. Used
-#                   by the glance leg (tempest.api.image against a real Glance).
+#                   by the glance leg (tempest.api.image against a real Glance)
+#                   and by the cinder leg, whose volume tests create volumes
+#                   from an image and upload volumes back to one.
 #   BARBICAN_K8S_NAME — K8s Service name of a Barbican API to port-forward on
 #                   9311 (default: empty). The barbican counterpart of
 #                   GLANCE_K8S_NAME: same forward, /healthcheck poll and
@@ -54,11 +56,19 @@
 #                   version document and no /healthcheck, so that is what the
 #                   poll asks for. Used by the neutron leg (tempest.api.network
 #                   and neutron_tempest_plugin.api against a real Neutron).
+#   CINDER_K8S_NAME — K8s Service name of a Cinder API to port-forward on
+#                   8776 (default: empty). The cinder counterpart of
+#                   GLANCE_K8S_NAME: same forward, /healthcheck poll and
+#                   add-host treatment, so the catalog's block-storage endpoint
+#                   resolves to the forwarded port. Used by the cinder leg
+#                   (tempest.api.volume and cinder_tempest_plugin.api.volume
+#                   against a real Cinder). That leg also sets GLANCE_K8S_NAME,
+#                   for the Glance its volume tests create images from.
 #   TEMPEST_CONCURRENCY — stestr worker count (default: 4). Must not exceed the
 #                   request capacity (replicas × uwsgi.processes) of ANY target
-#                   it drives — the Keystone target, and on the glance, barbican
-#                   and neutron legs their service target too. Every port-forward
-#                   pins to a single pod, so capacity is raised via
+#                   it drives — the Keystone target, and on the glance, barbican,
+#                   neutron and cinder legs their service target too. Every
+#                   port-forward pins to a single pod, so capacity is raised via
 #                   uwsgi.processes in the target CR, not via replicas.
 #
 # The include list is scope-split into a core (tempest.*) and a plugin
@@ -98,14 +108,17 @@ CATALOG_SVC="${SERVICE_K8S_NAME}.${NAMESPACE}.svc.cluster.local"
 # "<display name>:<env var>:<port>:<readiness path>". Each var is empty in the
 # keystone-only scenario, which skips that leg's forward, poll and add-host.
 # Neutron serves no /healthcheck; its root path returns the version document
-# unauthenticated, so that is its readiness signal.
+# unauthenticated, so that is its readiness signal. The cinder leg fills two
+# rows: its own API and the Glance its volume tests create images from.
 GLANCE_K8S_NAME="${GLANCE_K8S_NAME:-}"
 BARBICAN_K8S_NAME="${BARBICAN_K8S_NAME:-}"
 NEUTRON_K8S_NAME="${NEUTRON_K8S_NAME:-}"
+CINDER_K8S_NAME="${CINDER_K8S_NAME:-}"
 OPTIONAL_TARGETS=(
   "Glance:GLANCE_K8S_NAME:9292:/healthcheck"
   "Barbican:BARBICAN_K8S_NAME:9311:/healthcheck"
   "Neutron:NEUTRON_K8S_NAME:9696:/"
+  "Cinder:CINDER_K8S_NAME:8776:/healthcheck"
 )
 
 # ---------------------------------------------------------------------------
@@ -263,10 +276,10 @@ fi
 WORKSPACE_ROOT="${GITHUB_WORKSPACE:-$(git rev-parse --show-toplevel)}"
 
 # Point the catalog's service DNS names at the forwarded ports inside the
-# container. The keystone names are always present; the glance, barbican and
-# neutron names are added only when the matching target is configured so their
-# image, key-manager and network endpoints resolve to the forwarded 9292, 9311
-# and 9696.
+# container. The keystone names are always present; the glance, barbican,
+# neutron and cinder names are added only when the matching target is configured
+# so their image, key-manager, network and block-storage endpoints resolve to
+# the forwarded 9292, 9311, 9696 and 8776.
 ADD_HOST_ARGS=(
   --add-host "${CATALOG_SVC}:127.0.0.1"
   --add-host "${SERVICE_K8S_NAME}.${NAMESPACE}.svc:127.0.0.1"

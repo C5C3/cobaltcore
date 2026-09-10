@@ -246,7 +246,7 @@ test_tempest_config_narrows_to_its_service() {
 test_shared_tempest_change_covers_every_service() {
   scenario "a tempest runner change" refs/heads/main FILTER_tempest_src=true
   expect tempest true
-  expect tempest-services '["keystone","glance","barbican","neutron"]'
+  expect tempest-services '["keystone","glance","barbican","neutron","cinder"]'
 }
 
 # ---------------------------------------------------------------------------
@@ -265,7 +265,7 @@ test_ci_full_runs_everything() {
   expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]}'
   expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]'
   expect changed-services '["keystone","horizon","glance","placement","barbican","neutron","cinder"]'
-  expect tempest-services '["keystone","glance","barbican","neutron"]'
+  expect tempest-services '["keystone","glance","barbican","neutron","cinder"]'
 }
 
 test_ci_tempest_follows_the_touched_service() {
@@ -364,7 +364,7 @@ test_tag_push_forces_everything() {
   expect e2e-operators '{"operator":["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]}'
   expect changed-operators '["keystone","c5c3","horizon","glance","placement","barbican","ovn","neutron","cinder"]'
   expect changed-services '["keystone","horizon","glance","placement","barbican","neutron","cinder"]'
-  expect tempest-services '["keystone","glance","barbican","neutron"]'
+  expect tempest-services '["keystone","glance","barbican","neutron","cinder"]'
 }
 
 test_push_keeps_the_publish_matrix() {

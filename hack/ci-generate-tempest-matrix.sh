@@ -6,13 +6,14 @@
 # hack/ci-generate-tempest-matrix.sh — Generate Tempest release matrix from releases/ directories.
 #
 # Scans releases/*/ directories and, for each release, emits one matrix entry
-# per Tempest-covered service (keystone, glance, barbican, neutron). Each service
-# requires a matching Tempest config directory at tests/tempest/<service>-<slug>/
-# (e.g. keystone-2025-2, glance-2025-2, barbican-2025-2 and neutron-2025-2 for
-# release 2025.2); a missing directory for any service is a hard failure.
+# per Tempest-covered service (keystone, glance, barbican, neutron, cinder). Each
+# service requires a matching Tempest config directory at
+# tests/tempest/<service>-<slug>/ (e.g. keystone-2025-2, glance-2025-2,
+# barbican-2025-2, neutron-2025-2 and cinder-2025-2 for release 2025.2); a
+# missing directory for any service is a hard failure.
 #
 # Each emitted entry carries:
-#   service          — service under test (keystone|glance|barbican|neutron)
+#   service          — service under test (keystone|glance|barbican|neutron|cinder)
 #   release          — OpenStack release (e.g. 2025.2)
 #   config-dir       — tests/tempest/<service>-<slug>
 #   cr-name          — Keystone CR the CI job waits on and port-forwards
@@ -28,6 +29,12 @@
 #                      Service name for the neutron port-forward
 #   ovn-cr-name      — OVNCentral CR the CI job waits on before the Neutron;
 #                      Neutron renders no ml2_conf.ini until it is Ready
+# and, for the cinder service only, additionally:
+#   cinder-cr-name   — Cinder CR the CI job waits on; doubles as the K8s Service
+#                      name for the cinder port-forward
+#   glance-cr-name   — Glance CR of the cinder leg's own image service, waited on
+#                      before the Cinder and port-forwarded like the glance leg's
+#   tempest-concurrency — stestr worker count for the leg (2)
 #
 # For keystone the cr-name/service-k8s-name are keystone-tempest-<slug>; the
 # glance leg runs against its own keystone-glance-tempest-<slug> identity CR and
@@ -35,7 +42,10 @@
 # keystone-barbican-tempest-<slug> identity CR and the barbican-tempest-<slug>
 # key-manager CR, the neutron leg against its own keystone-neutron-tempest-<slug>
 # identity CR, the neutron-tempest-<slug> network CR and the
-# ovn-neutron-tempest-<slug> control plane behind it.
+# ovn-neutron-tempest-<slug> control plane behind it, and the cinder leg against
+# its own keystone-cinder-tempest-<slug> identity CR, the cinder-tempest-<slug>
+# volume CR and the glance-cinder-tempest-<slug> image CR the volume tests create
+# from.
 #
 # Required env vars:
 #   GITHUB_OUTPUT — GitHub Actions output file (set automatically by Actions)
@@ -71,7 +81,7 @@ dirs=("${REPO_ROOT}"/releases/*/)
 entries=()
 
 # Services this generator knows how to emit, in matrix order.
-ALL_TEMPEST_SERVICES=(keystone glance barbican neutron)
+ALL_TEMPEST_SERVICES=(keystone glance barbican neutron cinder)
 
 # Resolve the selection once, and reject an unknown name before any output line
 # is written.
@@ -136,6 +146,19 @@ for d in "${dirs[@]}"; do
       # CrashLoopBackOff, and every tempest.api.network class lost its admin
       # token request to a closed connection. The keystone and glance legs, with
       # no OVN or Neutron on the node, are fine at four.
+      extra_keys+=",\"tempest-concurrency\":\"2\""
+    fi
+    if [[ "${service}" == "cinder" ]]; then
+      # The cinder leg carries a Glance of its own: the volume suites create
+      # volumes from an image and upload volumes back to one, so the leg deploys
+      # an image service next to the Cinder and waits on it. The name is emitted
+      # here for the same reason ovn-cr-name is, and
+      # tests/unit/ci/cinder_e2e_matrix_test.sh holds it against the fixture.
+      extra_keys+=",\"glance-cr-name\":\"glance-cinder-tempest-${slug}\""
+      # Two stestr workers rather than the script's default of four. This leg's
+      # node carries the shared broker, the NFS server and four Cinder workloads
+      # (api, scheduler, volume, backup) plus a Glance and the Keystone stack
+      # every leg has, on the four vCPUs the tempest container shares with it.
       extra_keys+=",\"tempest-concurrency\":\"2\""
     fi
     entries+=("{\"service\":\"${service}\",\"release\":\"${release}\",\"config-dir\":\"${config_dir}\",\"cr-name\":\"${cr_name}\",\"service-k8s-name\":\"${cr_name}\"${extra_keys}}")
