@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	esov1 "github.com/external-secrets/external-secrets/apis/externalsecrets/v1"
+	mariadbv1alpha1 "github.com/mariadb-operator/mariadb-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -46,14 +47,16 @@ const openBaoClusterStoreName = secrets.OpenBaoClusterStoreName
 
 // testScheme registers the types the fake client resolves in this package's
 // tests: core (Secret), the Cinder API, the external-secrets v1 group the
-// credential gate reads to attribute a missing Secret, and the Gateway API the
-// route step projects.
+// credential gate reads to attribute a missing Secret, the Gateway API the route
+// step projects, and the MariaDB group the database step provisions and the
+// deletion path finalizes.
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
 	_ = cinderv1alpha1.AddToScheme(s)
 	_ = esov1.SchemeBuilder.AddToScheme(s)
 	_ = gatewayv1.Install(s)
+	_ = mariadbv1alpha1.AddToScheme(s)
 	return s
 }
 

@@ -1,0 +1,375 @@
+{
+  "uid": "cinder-operator",
+  "title": "Cinder Operator",
+  "tags": ["cinder", "operator", "c5c3"],
+  "schemaVersion": 38,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "timezone": "",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Reconcile duration p50/p95/p99 per sub_reconciler",
+      "description": "p50/p95/p99 wall-clock duration of Cinder sub-reconciler invocations, derived from cinder_operator_reconcile_duration_seconds_bucket. p50 tracks the steady-state hot path; p99 surfaces the tail a speedup roadmap must watch.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, sub_reconciler) (rate(cinder_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{sub_reconciler}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, sub_reconciler) (rate(cinder_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{sub_reconciler}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le, sub_reconciler) (rate(cinder_operator_reconcile_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{sub_reconciler}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Reconcile error rate per condition_type",
+      "description": "Rate of cinder_operator_reconcile_errors_total grouped by condition_type. A condition_type of UNKNOWN means a pipeline step runs without an entry in the operator's sub-reconciler mapping.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (condition_type) (rate(cinder_operator_reconcile_errors_total[5m]))",
+          "legendFormat": "{{condition_type}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "db_sync duration p95 and failure rate",
+      "description": "Target A: p95 of cinder_operator_db_sync_duration_seconds_bucket per Cinder CR. Target B: failure rate of cinder_operator_db_sync_total{result=\"failed\"}. A schema migration that keeps failing holds DatabaseReady False and blocks the whole workload chain behind it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^failures .*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ops"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, namespace, cinder) (rate(cinder_operator_db_sync_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{namespace}}/{{cinder}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (namespace, cinder) (rate(cinder_operator_db_sync_total{result=\"failed\"}[5m]))",
+          "legendFormat": "failures {{namespace}}/{{cinder}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "db_purge runs per result",
+      "description": "Rate of cinder_operator_db_purge_total split by terminal result, plus the p95 of cinder_operator_db_purge_duration_seconds_bucket. The purge runs on a schedule, so a result series that stops moving is as much a signal as one that fails.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^p95 .*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (namespace, cinder, result) (rate(cinder_operator_db_purge_total[1h]))",
+          "legendFormat": "{{result}} {{namespace}}/{{cinder}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, namespace, cinder) (rate(cinder_operator_db_purge_duration_seconds_bucket[1h])))",
+          "legendFormat": "p95 {{namespace}}/{{cinder}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "service_remove duration p95 and failure rate",
+      "description": "Target A: p95 of cinder_operator_service_remove_duration_seconds_bucket. Target B: failure rate of cinder_operator_service_remove_total{result=\"failed\"}. The job unregisters the host of a detaching backend, and a failing one is what keeps that backend's finalizer held.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^failures .*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ops"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, namespace, cinder) (rate(cinder_operator_service_remove_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{namespace}}/{{cinder}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (namespace, cinder) (rate(cinder_operator_service_remove_total{result=\"failed\"}[5m]))",
+          "legendFormat": "failures {{namespace}}/{{cinder}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "End-to-end reconcile duration (controller-runtime)",
+      "description": "p50/p95/p99 of controller_runtime_reconcile_time_seconds_bucket for the cinder controller. Unlike cinder_operator_reconcile_duration_seconds (which samples only the sub-reconcilers), this built-in histogram covers the whole Reconcile call — orchestration, status update, and watch handling — so it is the SLO signal for end-to-end reconcile latency.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"cinder\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"cinder\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(controller_runtime_reconcile_time_seconds_bucket{controller=\"cinder\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    }
+  ]
+}
