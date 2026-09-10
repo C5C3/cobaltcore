@@ -17,6 +17,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	crcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -265,8 +266,16 @@ func (r *CinderBackupBackendReconciler) updateStatus(ctx context.Context,
 // CinderReconciler.SetupWithManager (the single registration site), so this
 // controller registers none.
 func (r *CinderBackupBackendReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return r.setupWithOptions(mgr, bootstrap.ControllerOptions(r.MaxConcurrentReconciles))
+}
+
+// setupWithOptions carries the production watch wiring SetupWithManager applies.
+// The controller options are a parameter so an envtest integration suite can
+// register this exact chain with SkipNameValidation set, rather than a hand-built
+// copy of it that drifts the moment a leg is added here.
+func (r *CinderBackupBackendReconciler) setupWithOptions(mgr ctrl.Manager, opts crcontroller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		WithOptions(bootstrap.ControllerOptions(r.MaxConcurrentReconciles)).
+		WithOptions(opts).
 		// Filter the CR's own status-only updates so Status().Update does not
 		// re-wake the controller (see watch.CRUpdatePredicate).
 		For(&cinderv1alpha1.CinderBackupBackend{}, builder.WithPredicates(watch.CRUpdatePredicate())).
