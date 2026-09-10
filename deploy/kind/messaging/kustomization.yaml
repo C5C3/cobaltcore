@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Opt-in kind overlay for the message bus, applied only when the operator
+# explicitly requests it (WITH_MESSAGING=true make deploy-infra).
+#
+# It carries one resource: the `shared-rabbitmq` RabbitmqCluster the
+# standalone Cinder e2e suites connect to. The RabbitMQ Cluster Operator that
+# reconciles it is not part of this overlay. It reaches every cluster through
+# the Flux Kustomization in
+# deploy/flux-system/releases/rabbitmq-cluster-operator.yaml; only the broker
+# instance is opt-in.
+#
+# There is NO inline namespace.yaml: the broker lands in `openstack`, which
+# deploy/flux-system/namespaces.yaml reserves for components that exist only
+# to run the operators standalone.
+#
+# All resource references are local to this overlay (no parent-directory
+# paths). It therefore renders under kustomize's default
+# `LoadRestrictionsRootOnly` security check, which means
+# `kubectl apply -k deploy/kind/messaging` works without `--load-restrictor`.
+# kubectl's embedded kustomize does NOT expose that flag
+# (kubernetes/kubectl#948), the same constraint that shapes the chaos-mesh,
+# prometheus, metrics-server, dizzy and nfs overlays.
+#
+# Production overlays (deploy/flux-system/kustomization.yaml) list none of
+# this. A production ControlPlane declares spec.infrastructure.messaging and
+# the c5c3 operator projects a RabbitmqCluster for it.
+#
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # The broker itself (a RabbitmqCluster in `openstack`), local to this
+  # overlay; production overlays do not include it.
+  - shared-rabbitmq.yaml
