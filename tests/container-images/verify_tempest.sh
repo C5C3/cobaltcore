@@ -125,7 +125,16 @@ test_neutron_tempest_plugin_importable() {
   assert_eq "import neutron_tempest_plugin exits 0" "0" "$exit_code"
 }
 
-# --- Test 10: python-barbicanclient is importable ---
+# --- Test 10: cinder-tempest-plugin is importable ---
+test_cinder_tempest_plugin_importable() {
+  echo "Test: cinder-tempest-plugin is importable"
+  local exit_code=0
+  docker run --rm "$IMAGE" python3 -c 'import cinder_tempest_plugin' > /dev/null 2>&1 || exit_code=$?
+
+  assert_eq "import cinder_tempest_plugin exits 0" "0" "$exit_code"
+}
+
+# --- Test 11: python-barbicanclient is importable ---
 test_barbicanclient_importable() {
   echo "Test: python-barbicanclient is importable"
   local exit_code=0
@@ -157,6 +166,8 @@ echo ""
 test_neutron_tempest_plugin_importable
 echo ""
 test_barbicanclient_importable
+echo ""
+test_cinder_tempest_plugin_importable
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

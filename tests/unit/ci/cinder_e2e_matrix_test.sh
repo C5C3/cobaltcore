@@ -34,11 +34,17 @@
 # changed-services, so an edit under images/cinder/ or patches/cinder/ is
 # built and tested instead of pulled from main. tests_e2e_cinder is what
 # schedules the leg for an edit that touches only the suites. tempest_cinder
-# is declared and handed to the resolver but narrows nothing yet:
-# hack/ci-resolve-changes.sh keeps cinder out of TEMPEST_ALL_SERVICES until
-# the tests/tempest/cinder-* directories exist, and
-# tests/unit/ci/change_classes_wiring_test.sh exempts it from the steering
-# check for that reason.
+# narrows the tempest matrix to the cinder legs for an edit under
+# tests/tempest/cinder-*/, which it can do now that cinder is one of
+# hack/ci-resolve-changes.sh's TEMPEST_ALL_SERVICES.
+#
+# The two tempest legs are the last piece, and they are silent in the same way
+# the e2e leg is: the images the run tagged, the two operator deploys, the
+# catalog Job that registers the block-storage and image services, the Glance
+# the volume tests create their volumes from, the three CRs, the seed image the
+# suite boots from, and the two K8S_NAME variables that gate the port-forwards.
+# Any one of them missing leaves the leg burning its wait on a resource that
+# never comes up, or every volume test failing to reach an API.
 #
 # The last signal sits in .github/workflows/build-images.yaml: the option
 # catalog check re-derives operators/cinder/api/v1alpha1/catalogs/<release>.json
@@ -430,6 +436,252 @@ test_build_images_verifies_the_cinder_catalog() {
     "$filter" "operators/cinder/api/v1alpha1/catalogs/**"
 }
 
+test_cinder_tempest_filter_is_wired() {
+  echo "Test: an edit to the cinder tempest configs runs the cinder legs alone"
+
+  # tempest_src switches the tempest job on and the per-service filter narrows
+  # the matrix; an edit under tests/tempest/cinder-*/ matches both. Without the
+  # narrowing the two cinder legs would only ever run as part of the full
+  # five-service matrix, and an edit to their config would spend a runner on
+  # keystone, glance, barbican and neutron as well.
+  assert_file_contains "the paths filter exists" "$CI_YAML" \
+    "^ *tempest_cinder:$"
+  assert_file_contains "the filter is passed to the resolve step" "$CI_YAML" \
+    "FILTER_tempest_cinder: \${{ steps.filter.outputs.tempest_cinder }}"
+  # tempest-services is consumed inside the changes job rather than exported:
+  # it is what the matrix generator step narrows its output by.
+  assert_file_contains "the resolver's selection reaches the generator" \
+    "$CI_YAML" \
+    "TEMPEST_SERVICES: \${{ join(fromJson(steps.result.outputs.tempest-services), ' ') }}"
+
+  local block
+  block=$(filter_block tempest_cinder)
+  assert_contains "both release directories are covered" "$block" \
+    "tests/tempest/cinder-*/**"
+
+  assert_contains "the pair narrows the matrix to cinder" \
+    "$(resolve_outputs refs/heads/main "$ALL_OPS" \
+      FILTER_tempest_src=true FILTER_tempest_cinder=true)" \
+    'tempest-services=["cinder"]'
+
+  # And cinder is in the unnarrowed set: a change to the runner or the tempest
+  # image has to reach the cinder legs too.
+  assert_contains "a shared tempest change runs the cinder legs" \
+    "$(resolve_outputs refs/heads/main "$ALL_OPS" FILTER_tempest_src=true)" \
+    '"cinder"'
+}
+
+test_tempest_cinder_leg_is_wired() {
+  echo "Test: the tempest cinder leg brings up the stack its suites need"
+
+  # The four image refs are what the run tag makes available: an entry missing
+  # here leaves the leg pulling the published tag instead of this PR's build.
+  local load glance_load
+  load=$(job_step tempest "Load E2E images")
+  assert_contains "the leg pulls the cinder-operator image" "$load" \
+    "matrix.service == 'cinder' && format('{0}/cinder-operator:dev', env.IMAGE_PREFIX)"
+  assert_contains "the leg pulls the cinder service image" "$load" \
+    "matrix.service == 'cinder' && format('{0}/cinder:{1}', env.IMAGE_PREFIX, matrix.release)"
+
+  glance_load=$(job_step tempest "Load Glance E2E images")
+  assert_contains "the glance pull covers the cinder leg" "$glance_load" \
+    "if: matrix.service == 'glance' || matrix.service == 'cinder'"
+
+  # The catalog Job and the image-seed Job run in-cluster, so the tempest image
+  # has to be on the node, and so do the four workload images.
+  local kind_load
+  kind_load=$(job_step tempest "Load cinder images into kind")
+  assert_not_empty "the images reach the node" "$kind_load"
+  assert_contains "the load runs on the cinder leg alone" "$kind_load" \
+    "if: matrix.service == 'cinder'"
+  local image
+  for image in cinder-operator:dev "cinder:\${{ matrix.release }}" \
+    glance-operator:dev "glance:\${{ matrix.release }}" \
+    "tempest:\${{ matrix.release }}"; do
+    assert_contains "the node gets $image" "$kind_load" \
+      "kind load docker-image \${{ env.IMAGE_PREFIX }}/$image"
+  done
+
+  # Both operators: the Cinder CRs need the cinder-operator, and the Glance the
+  # volume tests create images from needs the glance-operator.
+  local cinder_deploy glance_deploy
+  cinder_deploy=$(job_step tempest "Deploy cinder operator")
+  assert_not_empty "the cinder-operator is deployed" "$cinder_deploy"
+  assert_contains "the cinder deploy runs on the cinder leg alone" \
+    "$cinder_deploy" "if: matrix.service == 'cinder'"
+  assert_contains "it deploys the cinder operator" "$cinder_deploy" \
+    "OPERATOR: cinder"
+  assert_contains "it lands in its own Namespace" "$cinder_deploy" \
+    "NAMESPACE: cinder-system"
+
+  glance_deploy=$(job_step tempest "Deploy glance operator")
+  assert_contains "the glance deploy covers the cinder leg" "$glance_deploy" \
+    "if: matrix.service == 'glance' || matrix.service == 'cinder'"
+
+  # deploy-infra.sh installs neither the NFS stack nor the broker by default,
+  # and setup-e2e-infra reads both flags from env, so the values have to sit in
+  # this step's own env block: without them the CinderBackend finds no export
+  # and the Cinder waits out its 600s on an unreachable transport.
+  local setup
+  setup=$(job_step tempest "Setup E2E infrastructure")
+  assert_contains "the cinder leg opts into the NFS stack" "$setup" \
+    "WITH_NFS: \${{ matrix.service == 'cinder' && 'true' || '' }}"
+  assert_contains "and into the shared broker" "$setup" \
+    "WITH_MESSAGING: \${{ matrix.service == 'cinder' && 'true' || '' }}"
+
+  local catalog glance_cr cinder_cr seed
+  catalog=$(job_step tempest "Bootstrap block-storage catalog")
+  assert_contains "the catalog Job is applied" "$catalog" \
+    "01-catalog-setup-job.yaml"
+  assert_contains "the leg waits for it to complete" "$catalog" \
+    "job/cinder-tempest-catalog-setup"
+
+  glance_cr=$(job_step tempest "Deploy Glance CR for the cinder leg")
+  assert_contains "the Glance CR is applied" "$glance_cr" "02-glance-cr.yaml"
+  assert_contains "its default store is applied" "$glance_cr" \
+    "03-glancebackend-cr.yaml"
+  assert_contains "the leg waits on the Glance the matrix names" "$glance_cr" \
+    "kubectl wait glance/\${{ matrix.glance-cr-name }}"
+
+  cinder_cr=$(job_step tempest "Deploy Cinder CR for Tempest")
+  assert_contains "the volume backend is applied" "$cinder_cr" \
+    "04-cinderbackend-cr.yaml"
+  assert_contains "the backup target is applied" "$cinder_cr" \
+    "05-cinderbackupbackend-cr.yaml"
+  assert_contains "the Cinder CR is applied" "$cinder_cr" "06-cinder-cr.yaml"
+  assert_contains "the leg waits on the CR the matrix names" "$cinder_cr" \
+    "kubectl wait cinder/\${{ matrix.cinder-cr-name }}"
+  assert_contains "the db-sync and the four Deployments fit inside the wait" \
+    "$cinder_cr" "--timeout=600s"
+
+  seed=$(job_step tempest "Seed the image the volume tests boot from")
+  assert_contains "the seed Job is applied" "$seed" "07-image-seed-job.yaml"
+  assert_contains "the leg waits for it to complete" "$seed" \
+    "job/cinder-tempest-image-seed"
+
+  # Both port-forwards: CINDER_K8S_NAME gates the 8776 one, without which every
+  # volume test fails to reach the API, and GLANCE_K8S_NAME the 9292 one the
+  # create-from-image cases need.
+  local run_step
+  run_step=$(job_step tempest "Run Tempest API tests")
+  assert_contains "the runner learns the Cinder Service name" "$run_step" \
+    "CINDER_K8S_NAME: \${{ matrix.cinder-cr-name }}"
+  assert_contains "and the Glance Service name" "$run_step" \
+    "GLANCE_K8S_NAME: \${{ matrix.glance-cr-name }}"
+
+  # The generator's narrowed worker count only reaches stestr through this
+  # env line. Dropped, matrix.tempest-concurrency resolves to "" and
+  # ci-run-tempest.sh falls back to its default of four workers against a node
+  # that already carries the broker, the NFS server, four Cinder workloads and
+  # a Glance — the starvation the neutron leg recorded before it narrowed.
+  assert_contains "the runner gets the narrowed worker count" "$run_step" \
+    "TEMPEST_CONCURRENCY: \${{ matrix.tempest-concurrency }}"
+
+  # The order is the dependency chain: the catalog entry has to exist before
+  # the Glance and the Cinder reconcile against it, the Glance before the seed
+  # image is uploaded to it, and the seed image before the suite starts.
+  local job catalog_at glance_at cinder_at seed_at run_at
+  job=$(job_block tempest)
+  step_line() {
+    printf '%s\n' "$job" | grep -nF "name: $1" | head -1 | cut -d: -f1
+  }
+  catalog_at=$(step_line "Bootstrap block-storage catalog")
+  glance_at=$(step_line "Deploy Glance CR for the cinder leg")
+  cinder_at=$(step_line "Deploy Cinder CR for Tempest")
+  seed_at=$(step_line "Seed the image the volume tests boot from")
+  run_at=$(step_line "Run Tempest API tests")
+  assert_eq "catalog, then Glance, then Cinder, then seed, then run" "yes" \
+    "$([ -n "$catalog_at" ] && [ -n "$glance_at" ] && [ -n "$cinder_at" ] &&
+       [ -n "$seed_at" ] && [ -n "$run_at" ] &&
+       [ "$catalog_at" -lt "$glance_at" ] && [ "$glance_at" -lt "$cinder_at" ] &&
+       [ "$cinder_at" -lt "$seed_at" ] && [ "$seed_at" -lt "$run_at" ] &&
+       echo yes || echo no)"
+}
+
+# Each CR name the tempest cinder leg waits on is generated, and each names a
+# static fixture in the same config directory. Every assertion above pins one of
+# those literals against another copy of itself, so a renamed metadata.name in
+# any fixture leaves them green while the leg burns its wait on a resource that
+# does not exist. This test reads the names out of the fixtures and requires the
+# generator to agree with them.
+test_matrix_cr_names_match_the_cinder_fixtures() {
+  echo "Test: the matrix names the CRs the cinder tempest fixtures create"
+
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "  SKIP: jq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+  if ! command -v yq >/dev/null 2>&1; then
+    echo "  SKIP: yq not installed"
+    SKIP=$((SKIP + 1))
+    return
+  fi
+
+  local out matrix legs
+  out=$(mktemp)
+  # The generator writes the matrix to GITHUB_OUTPUT and prints nothing else,
+  # so its ::error:: line for a missing config directory reaches this output.
+  GITHUB_OUTPUT="$out" bash "$PROJECT_ROOT/hack/ci-generate-tempest-matrix.sh"
+  matrix=$(sed -n 's/^tempest-releases=//p' "$out")
+  rm -f "$out"
+
+  legs=$(printf '%s' "$matrix" | jq -r '.include[]
+    | select(.service == "cinder")
+    | [."config-dir", ."cinder-cr-name", ."glance-cr-name", ."cr-name",
+       ."tempest-concurrency"] | @tsv')
+  assert_not_empty "the generator emits at least one cinder leg" "$legs"
+
+  local config_dir cinder_emitted glance_emitted keystone_emitted concurrency fixture_name
+  while IFS=$'\t' read -r config_dir cinder_emitted glance_emitted keystone_emitted concurrency; do
+    [ -n "$config_dir" ] || continue
+    fixture_name=$(yq -r '.metadata.name' \
+      "$PROJECT_ROOT/$config_dir/06-cinder-cr.yaml")
+    assert_eq "$config_dir waits on the Cinder its fixture creates" \
+      "$fixture_name" "$cinder_emitted"
+    assert_eq "$config_dir attaches its volume backend to that Cinder" \
+      "$fixture_name" \
+      "$(yq -r '.spec.cinderRef.name' \
+        "$PROJECT_ROOT/$config_dir/04-cinderbackend-cr.yaml")"
+    assert_eq "$config_dir attaches its backup target to that Cinder" \
+      "$fixture_name" \
+      "$(yq -r '.spec.cinderRef.name' \
+        "$PROJECT_ROOT/$config_dir/05-cinderbackupbackend-cr.yaml")"
+    assert_eq "$config_dir waits on the Glance its fixture creates" \
+      "$(yq -r '.metadata.name' "$PROJECT_ROOT/$config_dir/02-glance-cr.yaml")" \
+      "$glance_emitted"
+    assert_eq "$config_dir waits on the Keystone its fixture creates" \
+      "$(yq -r '.metadata.name' "$PROJECT_ROOT/$config_dir/00-keystone-cr.yaml")" \
+      "$keystone_emitted"
+    # The key the run step reads. Nothing else holds this value, and its
+    # absence is silent: the leg would run at ci-run-tempest.sh's default of
+    # four workers and fail on node starvation rather than on the change under
+    # test.
+    assert_eq "$config_dir runs at two stestr workers" "2" "$concurrency"
+  done <<< "$legs"
+}
+
+# Two release directories carry the seed image the volume suites boot from, and
+# each carries it twice: 07-image-seed-job.yaml registers the UUID and
+# tempest.conf points compute.image_ref at it. Nothing holds the two together.
+# The seed Job ends in an `image show` on its own SEED_ID, so it succeeds and
+# CI's `kubectl wait --for=condition=complete` goes green while every
+# create-volume-from-image case 404s on an image nobody registered.
+test_cinder_fixtures_agree_on_the_seed_image() {
+  echo "Test: each cinder tempest fixture seeds the image its tempest.conf boots from"
+
+  local config_dir seed_id image_ref
+  for config_dir in "$PROJECT_ROOT"/tests/tempest/cinder-*/; do
+    seed_id=$(sed -n 's/^ *SEED_ID="\(.*\)"/\1/p' \
+      "$config_dir/07-image-seed-job.yaml" | head -1)
+    image_ref=$(sed -n 's/^image_ref = //p' "$config_dir/tempest.conf" | head -1)
+
+    assert_not_empty "$(basename "$config_dir") declares a SEED_ID" "$seed_id"
+    assert_eq "$(basename "$config_dir") seeds the image its tempest.conf boots from" \
+      "$seed_id" "$image_ref"
+  done
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -447,6 +699,10 @@ test_go_matrices_list_cinder
 test_cleanup_matrices_cover_the_cinder_images
 test_a_keystone_only_change_produces_no_cinder_leg
 test_build_images_verifies_the_cinder_catalog
+test_cinder_tempest_filter_is_wired
+test_tempest_cinder_leg_is_wired
+test_matrix_cr_names_match_the_cinder_fixtures
+test_cinder_fixtures_agree_on_the_seed_image
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

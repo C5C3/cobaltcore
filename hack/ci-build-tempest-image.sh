@@ -5,9 +5,9 @@
 
 # hack/ci-build-tempest-image.sh — Build the Tempest test container image.
 #
-# Resolves the Tempest, Barbican, Keystone and Neutron plugin version refs from
-# the release config, then builds the Tempest Docker image with pinned
-# versions.
+# Resolves the Tempest, Barbican, Keystone, Neutron and Cinder plugin version
+# refs from the release config, then builds the Tempest Docker image with
+# pinned versions.
 #
 # Required env vars:
 #   (none — all have sensible defaults)
@@ -37,8 +37,9 @@ TEMPEST_VERSION=$("${REPO_ROOT}/hack/resolve-test-ref.sh" "releases/${RELEASE}/t
 BTP_VERSION=$("${REPO_ROOT}/hack/resolve-test-ref.sh" "releases/${RELEASE}/test-refs.yaml" barbican-tempest-plugin)
 KTP_VERSION=$("${REPO_ROOT}/hack/resolve-test-ref.sh" "releases/${RELEASE}/test-refs.yaml" keystone-tempest-plugin)
 NTP_VERSION=$("${REPO_ROOT}/hack/resolve-test-ref.sh" "releases/${RELEASE}/test-refs.yaml" neutron-tempest-plugin)
+CTP_VERSION=$("${REPO_ROOT}/hack/resolve-test-ref.sh" "releases/${RELEASE}/test-refs.yaml" cinder-tempest-plugin)
 
-echo "Building Tempest image (tempest=${TEMPEST_VERSION}, barbican-tempest-plugin=${BTP_VERSION}, keystone-tempest-plugin=${KTP_VERSION}, neutron-tempest-plugin=${NTP_VERSION})"
+echo "Building Tempest image (tempest=${TEMPEST_VERSION}, barbican-tempest-plugin=${BTP_VERSION}, keystone-tempest-plugin=${KTP_VERSION}, neutron-tempest-plugin=${NTP_VERSION}, cinder-tempest-plugin=${CTP_VERSION})"
 
 # ---------------------------------------------------------------------------
 # 2. Build Tempest image
@@ -56,5 +57,6 @@ docker build \
   --build-arg "BARBICAN_TEMPEST_PLUGIN_VERSION=${BTP_VERSION}" \
   --build-arg "KEYSTONE_TEMPEST_PLUGIN_VERSION=${KTP_VERSION}" \
   --build-arg "NEUTRON_TEMPEST_PLUGIN_VERSION=${NTP_VERSION}" \
+  --build-arg "CINDER_TEMPEST_PLUGIN_VERSION=${CTP_VERSION}" \
   --build-context "upper-constraints=${REPO_ROOT}/releases/${RELEASE}/" \
   "${REPO_ROOT}/images/tempest/"

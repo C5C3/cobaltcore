@@ -1,0 +1,101 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Registers the Cinder block-storage service and the Glance image service, each
+# with its public/internal endpoints, in the keystone-cinder-tempest-2025-2
+# catalog. keystone-manage bootstrap only creates the identity service, so both
+# must be added out-of-band.
+#
+# The image service belongs here because the volume suites create volumes from
+# an image and upload volumes back to one: Cinder resolves Glance from this
+# catalog (the Cinder CR sets no glanceEndpoint), and Tempest's image client
+# looks it up the same way.
+#
+# No role is created here. The volume suites run on dynamic credentials that
+# carry the admin, member and reader roles keystone-manage bootstrap already
+# seeds, and Cinder's default policies grant project-member CRUD on volumes,
+# backups and volume types.
+#
+# It authenticates as the bootstrap admin (keystone-admin Secret) and is written
+# idempotently so a Job retry converges rather than duplicating or erroring.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cinder-tempest-catalog-setup
+  namespace: openstack
+spec:
+  backoffLimit: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: setup
+          image: ghcr.io/c5c3/tempest:2025.2
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OS_AUTH_URL
+              value: http://keystone-cinder-tempest-2025-2.openstack.svc.cluster.local:5000/v3
+            - name: OS_IDENTITY_API_VERSION
+              value: "3"
+            - name: OS_USERNAME
+              value: admin
+            - name: OS_USER_DOMAIN_NAME
+              value: Default
+            - name: OS_PROJECT_NAME
+              value: admin
+            - name: OS_PROJECT_DOMAIN_NAME
+              value: Default
+            - name: OS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keystone-admin
+                  key: password
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              # Each step is idempotent so a Job retry re-converges instead of
+              # failing on AlreadyExists.
+              #
+              # Service create is guarded by a name-list grep (mirroring the
+              # external-keystone fixture): `openstack service show` of a missing
+              # resource can exit 0 on this image, so a show-guard would skip the
+              # create; listing + an exact-match grep is unambiguous.
+              if ! openstack service list --format value -c Name | grep -qx cinder; then
+                openstack service create --name cinder \
+                  --description "OpenStack Block Storage" block-storage
+              fi
+
+              if ! openstack service list --format value -c Name | grep -qx glance; then
+                openstack service create --name glance \
+                  --description "OpenStack Image Service" image
+              fi
+
+              # Endpoints are guarded by listing the service's existing endpoints
+              # for the interface and matching the exact URL (fixed string, so the
+              # dotted FQDN is not treated as a regex). `endpoint create` takes the
+              # service by name, which is what the guard lists by.
+              create_endpoint() {
+                service="$1"
+                interface="$2"
+                url="$3"
+                if ! openstack endpoint list --service "${service}" --interface "${interface}" \
+                     --format value -c URL | grep -qxF "${url}"; then
+                  openstack endpoint create --region RegionOne "${service}" "${interface}" "${url}"
+                fi
+              }
+
+              # The block-storage URL carries no project template: the Cinder v3
+              # API serves the project-less form, and Tempest's volume client
+              # builds its own paths from the catalog entry.
+              CINDER_URL="http://cinder-tempest-2025-2.openstack.svc:8776/v3"
+              create_endpoint cinder public "${CINDER_URL}"
+              create_endpoint cinder internal "${CINDER_URL}"
+
+              GLANCE_URL="http://glance-cinder-tempest-2025-2.openstack.svc:9292"
+              create_endpoint glance public "${GLANCE_URL}"
+              create_endpoint glance internal "${GLANCE_URL}"
+
+              echo "OK: cinder and glance services and endpoints registered"
+              openstack endpoint list --format value -c "Service Name" -c Interface -c URL

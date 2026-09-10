@@ -1,0 +1,75 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Dedicated Cinder CR for the Cinder Tempest leg (2026.1 release).
+# Uses a separate database (cinder_tempest_2026_1) to avoid stale state from
+# prior Chainsaw E2E tests that reuse the same kind cluster. It authenticates
+# against the dedicated keystone-cinder-tempest-2026-1 identity service with the
+# real admin credentials so the tempest.api.volume and
+# cinder_tempest_plugin.api.volume suites exercise the production auth path
+# end-to-end. The database credentials come from the ESO-synced cinder-db Secret
+# and the service-user password from the pre-seeded keystone-admin Secret. The
+# volume backend and the backup target come from the two sibling fixtures.
+#
+# glanceEndpoint is left out on purpose: this Cinder has a keystoneEndpoint, so
+# it resolves the image service from the catalog the setup Job registered, which
+# is the path a real deployment takes.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-tempest-2026-1
+  namespace: openstack
+spec:
+  openStackRelease: "2026.1"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2026.1"
+  api:
+    deployment:
+      replicas: 2
+      # Mirror tests/tempest/neutron-2026-1/04-neutron-cr.yaml: with resources
+      # unset the webhook fills in the shared defaults (500m CPU, 512Mi memory,
+      # internal/common/types/workload.go), which puts the four uWSGI workers
+      # below into half a core and one 512Mi cgroup. The port-forward pins every
+      # stestr worker to a single pod, so that pod's budget has to cover the
+      # whole suite and the second replica takes no traffic.
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+        limits:
+          cpu: "2"
+          memory: 1536Mi
+    # cinder-api serves its API from uWSGI, so this pod's request capacity is
+    # replicas x processes. The webhook default (2) is at the stestr worker count
+    # ci-run-tempest.sh runs on this leg (TEMPEST_CONCURRENCY 2) with nothing
+    # left for the token and image calls that travel the same pod, and the
+    # port-forward pins every worker to a single pod, so raise the process count
+    # to 4.
+    uwsgi:
+      processes: 4
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_tempest_2026_1
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  # The kind-only broker deploy-infra.sh installs under WITH_MESSAGING. Managed
+  # mode lands on the default vhost, which is fine here: this leg is the only
+  # Cinder on its cluster, so no other deployment consumes its RPC topics.
+  messaging:
+    clusterRef:
+      name: shared-rabbitmq
+  keystoneEndpoint: http://keystone-cinder-tempest-2026-1.openstack.svc.cluster.local:5000/v3
+  serviceUser:
+    username: admin
+    projectName: admin
+    userDomainName: Default
+    projectDomainName: Default
+    secretRef:
+      name: keystone-admin
+      key: password
