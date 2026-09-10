@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the backend-detach E2E test (2025.2 release).
+#
+# Same Keystone-free wiring as the basic-deployment fixture, on the schema
+# cinder_detach. Two CinderBackends attach to it and one of them is deleted
+# mid-test, so the service registry this CR's database holds is what the detach
+# flow has to clean up.
+#
+# One API replica: the probe reaches the Service, and this suite already holds
+# four pods on the single kind node.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-detach
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_detach
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-detach-messaging

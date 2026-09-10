@@ -1,0 +1,339 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a Cinder serving two NFS backends (2025.2).
+# One Cinder, two CinderBackends on two different exports, which is where the
+# per-backend projection stops being a formality:
+#   - the operator renders one cinder-volume Deployment per backend, and each
+#     pod mounts its own export and no other
+#   - each pod's volume.conf.d overlay names its own backend alone, so the two
+#     processes drive one backend each rather than both driving both
+#   - status.volumeServices carries both host identities, and both report state
+#     up in the service registry over the message bus
+#   - a volume created through a volume type whose volume_backend_name selects
+#     the second backend lands on the second export and nowhere else
+#
+# The second export, /volumes-b, is created by step 1 and removed by its
+# cleanup: the kind NFS server pre-creates /volumes and /backups only. fsid=0
+# makes /exports the NFSv4 pseudo-root, so /exports/volumes-b is reachable as
+# nfs-server.openstack.svc.cluster.local:/volumes-b.
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-multi-backend
+spec:
+  namespace: openstack
+  timeouts:
+    # The schema migration, the API cold start and two NFS mounts precede the
+    # first assertion. That does not fit the 120s the shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Create the second export and the vhost, then apply the CRs ─
+  # One vhost per suite: the RPC topics are named after the deployment, so two
+  # suites on one vhost would share the scheduler and volume-service queues.
+  # See ../broker-vhost.sh. The step cleanup runs at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -euo pipefail
+          # 42424:42424 mode 0770 is the posture the init container gives the
+          # two pre-created exports, and the one the NFS backup and volume
+          # drivers need to stay out of their root branches. mkdir -p and the
+          # two mode calls converge, so a retried step is a no-op.
+          kubectl exec -n openstack deploy/nfs-server -- sh -c 'mkdir -p /exports/volumes-b && chown 42424:42424 /exports/volumes-b && chmod 0770 /exports/volumes-b'
+          ../broker-vhost.sh create cinder-multi cinder-multi-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-a-cr.yaml
+    - apply:
+        file: 02-cinderbackend-b-cr.yaml
+    cleanup:
+    # Both commands touch shared kind infrastructure and run after the suite
+    # has reached its verdict, so neither is allowed to turn a passing run into
+    # a failing one. What each of them leaves behind is in the log.
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-multi || true
+          kubectl exec -n openstack deploy/nfs-server -- rm -rf /exports/volumes-b || true
+  # ── Step 2: Assert Ready and one Deployment per backend ────────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-multi
+            namespace: openstack
+          status:
+            # Both host identities, in the order the projection sorted the
+            # backends into. Each is what the volumes of that backend are keyed
+            # by, so the pair is what makes the two backends addressable.
+            volumeServices:
+            - backend: multi-nfs-a
+              host: cinder-multi@multi-nfs-a
+            - backend: multi-nfs-b
+              host: cinder-multi@multi-nfs-b
+            (conditions[?type == 'BackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-multi-volume-multi-nfs-a
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                # One export per pod. A second share volume here would mean
+                # the pod holds a mount for a backend it does not drive. That
+                # is the backup service's shape, not a volume service's.
+                (length(volumes[?starts_with(name, 'share-')]) == `1`): true
+                (volumes[?name == 'share-multi-nfs-a'].csi.volumeAttributes.share | [0]): /volumes
+                (containers[0].volumeMounts[?name == 'share-multi-nfs-a'].mountPath | [0]): /var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          status:
+            availableReplicas: 1
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-multi-volume-multi-nfs-b
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                (length(volumes[?starts_with(name, 'share-')]) == `1`): true
+                (volumes[?name == 'share-multi-nfs-b'].csi.volumeAttributes.share | [0]): /volumes-b
+                (containers[0].volumeMounts[?name == 'share-multi-nfs-b'].mountPath | [0]): /var/lib/cinder/mnt/e0c7531cb098b3f9cdce2c2a14ed80fd
+          status:
+            availableReplicas: 1
+    catch: &multi-dump
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-multi
+        namespace: openstack
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        namespace: openstack
+    - script:
+        content: |
+          for d in cinder-multi cinder-multi-scheduler cinder-multi-volume-multi-nfs-a cinder-multi-volume-multi-nfs-b; do
+            echo "=== Deployment $d ==="
+            kubectl describe deploy "$d" -n $NAMESPACE 2>&1 | tail -40 || true
+          done
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-multi -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Probe pods ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null | grep cinder-multi-probe-); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --tail=80 2>&1 || true
+          done
+          echo "=== Exports ==="
+          kubectl exec -n $NAMESPACE deploy/nfs-server -- ls -l /exports 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 3: Assert each pod's overlay names its own backend alone ──────
+  # enabled_backends is what turns a mounted export into a driven one. It
+  # travels in the per-backend overlay rather than in cinder.conf, so this is
+  # where a projection that handed both backends to both processes would show.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          for backend in multi-nfs-a multi-nfs-b; do
+            overlay="$(kubectl exec -n "$NAMESPACE" "deploy/cinder-multi-volume-${backend}" -- \
+              cat /etc/cinder/volume.conf.d/volume.conf)"
+            echo "=== ${backend} overlay ==="
+            printf '%s\n' "${overlay}"
+            printf '%s\n' "${overlay}" | grep -Fxq "enabled_backends = ${backend}"
+            # One line and no more: a second would name a backend this process
+            # holds no mount for.
+            count="$(printf '%s\n' "${overlay}" | grep -c 'enabled_backends' || true)"
+            [ "${count}" = "1" ]
+          done
+          echo "OK: each volume service drives one backend"
+    catch: *multi-dump
+  # ── Step 4: Place a volume on the second backend through a volume type ─
+  # The probe is started detached and read back with `kubectl logs`:
+  # `kubectl run -i` only streams from the moment the attach lands, so a probe
+  # that finishes first would lose its sentinel. The token is the noauth
+  # pipeline's "<user>:<project>" pair rather than a Keystone token.
+  - try:
+    - script:
+        timeout: 10m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def send(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE + path, data=data,
+                                           headers=HEADERS, method=method)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          # Only connection-level failures are retried: kube-proxy's endpoint
+          # programming can trail the CR's Ready flip by a second or two, so a
+          # single-shot request races it. Every HTTP status the API answers
+          # with is a verdict, so it fails hard with the code.
+          def call(method, path, body=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return send(method, path, body)
+                  except urllib.error.HTTPError as exc:
+                      fail("%s %s -> HTTP %d" % (method, path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry %s %s: %s" % (method, path, exc))
+                      time.sleep(2)
+              fail("%s %s never answered: %r" % (method, path, last))
+
+
+          # The volume state machine, polled every 5s until the wanted status.
+          # An error state is terminal, so waiting out the deadline on one
+          # would only delay the verdict.
+          def wait_volume(volume_id, want, seconds, size=None):
+              deadline = time.time() + seconds
+              volume = {}
+              while time.time() < deadline:
+                  volume = json.loads(
+                      call("GET", "/v3/volumes/" + volume_id).read())["volume"]
+                  status = volume.get("status")
+                  if status in ("error", "error_restoring"):
+                      fail("volume %s entered %s" % (volume_id, status))
+                  if status == want and (size is None
+                                         or volume.get("size") == size):
+                      return volume
+                  print("volume %s is %s at size %s"
+                        % (volume_id, status, volume.get("size")))
+                  time.sleep(5)
+              fail("volume %s never reached %s within %ds: %s"
+                   % (volume_id, want, seconds, volume))
+
+
+          # Both volume services reach the registry over the message bus and
+          # not over HTTP, so this is what says the two vhost topics carry.
+          want = {("cinder-volume", "cinder-multi@multi-nfs-a"),
+                  ("cinder-volume", "cinder-multi@multi-nfs-b")}
+          listing = []
+          for _ in range(30):
+              listing = json.loads(
+                  call("GET", "/v3/os-services").read()).get("services", [])
+              up = {(s.get("binary"), s.get("host")) for s in listing
+                    if s.get("state") == "up"}
+              if want <= up:
+                  break
+              print("waiting for the service registry: %s" % listing)
+              time.sleep(2)
+          else:
+              fail("%s never both reported state up: %s"
+                   % (sorted(want), listing))
+          print("both cinder-volume hosts report state up")
+
+          # volume_backend_name is the key the CapabilitiesFilter matches a
+          # request against, and the operator renders it as the backend's own
+          # name into that backend's section.
+          call("POST", "/v3/types",
+               {"volume_type": {"name": "to-b",
+                                "extra_specs": {
+                                    "volume_backend_name": "multi-nfs-b"}}})
+          created = json.loads(
+              call("POST", "/v3/volumes",
+                   {"volume": {"name": "to-b-vol", "size": 1,
+                               "volume_type": "to-b"}}).read())["volume"]
+          print("VOLUME-ID: " + created["id"])
+          placed = wait_volume(created["id"], "available", 180, size=1)
+          if placed.get("volume_type") != "to-b":
+              fail("volume %s carries type %r, want to-b"
+                   % (created["id"], placed.get("volume_type")))
+          print("MULTI-OK")
+          PY
+          )"
+
+          POD=cinder-multi-probe-place
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          # The image ships its python in a venv on PATH; the absolute path is
+          # the one tests/container-images/verify_cinder.sh pins.
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-multi.openstack.svc.cluster.local:8776
+
+          # 84 x 5s = 7m, inside the step timeout, so a stuck probe is reported
+          # with its logs rather than killed by chainsaw.
+          phase=""
+          for _ in $(seq 1 84); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'MULTI-OK'
+
+          VID="$(printf '%s\n' "${OUT}" | sed -n 's/^VOLUME-ID: //p' | head -1)"
+          test -n "${VID}"
+
+          # The file is on the second export and on no other. Each pod holds
+          # one mount, so the two listings are the two exports.
+          kubectl exec -n "$NAMESPACE" deploy/cinder-multi-volume-multi-nfs-b -- \
+            stat -c '%u %g %a %s' "/var/lib/cinder/mnt/e0c7531cb098b3f9cdce2c2a14ed80fd/volume-${VID}"
+          # /volumes carries the volumes of every other cinder suite too, so
+          # the listing is matched on this one file name rather than expected
+          # to be empty.
+          LISTING="$(kubectl exec -n "$NAMESPACE" deploy/cinder-multi-volume-multi-nfs-a -- \
+            ls -1 /var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f)"
+          if printf '%s\n' "${LISTING}" | grep -qx "volume-${VID}"; then
+            echo "FAIL: volume-${VID} is on the multi-nfs-a export as well"
+            printf '%s\n' "${LISTING}"
+            exit 1
+          fi
+          echo "OK: volume ${VID} sits on multi-nfs-b alone"
+    catch: *multi-dump

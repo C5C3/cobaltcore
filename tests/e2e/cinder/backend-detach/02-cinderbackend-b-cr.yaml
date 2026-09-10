@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The backend the test deletes once both volume services are up.
+#
+# Deleting it is what starts the detach flow: the controller holds the CR with
+# the finalizer cinder.openstack.c5c3.io/service-remove, and the cinder-side
+# step stops the volume Deployment, runs the service-remove Job against the
+# parent's database, sweeps the projected Secrets and only then releases it.
+#
+# It shares the /volumes export with its sibling, so the export outlives the
+# detach and nothing about the assertions depends on a directory disappearing.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: detach-nfs-b
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-detach
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes

@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# The backend that stays attached for the whole test.
+#
+# The name carries the suite's own prefix because every suite of this tree runs
+# in the shared openstack namespace and spec.cinderRef is immutable: two suites
+# applying a CinderBackend of the same name would be one object fighting over
+# which Cinder it attaches to.
+#
+# It shares the /volumes export with its sibling: the detach flow is about the
+# service registry and the projected children, not about the export, and one
+# export keeps the suite to what it is testing.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: CinderBackend
+metadata:
+  name: detach-nfs-a
+  namespace: openstack
+spec:
+  cinderRef:
+    name: cinder-detach
+  type: NFS
+  nfs:
+    server: nfs-server.openstack.svc.cluster.local
+    path: /volumes
