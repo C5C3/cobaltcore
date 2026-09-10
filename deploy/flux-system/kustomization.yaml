@@ -63,6 +63,7 @@ resources:
   - releases/barbican-operator.yaml
   - releases/ovn-operator.yaml
   - releases/neutron-operator.yaml
+  - releases/cinder-operator.yaml
   - releases/k-orc.yaml
   - releases/c5c3-operator.yaml
   # Garage object store operator (S3 backend for the CI/e2e stack).

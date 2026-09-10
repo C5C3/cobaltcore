@@ -44,6 +44,7 @@ deploy/
     │   ├── placement-operator.yaml       Placement Operator (from c5c3-charts)
     │   ├── ovn-operator.yaml             OVN Operator (from c5c3-charts)
     │   ├── neutron-operator.yaml         Neutron Operator (from c5c3-charts)
+    │   ├── cinder-operator.yaml          Cinder Operator (from c5c3-charts)
     │   ├── k-orc.yaml                    K-ORC OpenStack Resource Controller
     │   ├── rabbitmq-cluster-operator.yaml RabbitMQ Cluster Operator (Flux Kustomization over config/installation)
     │   ├── c5c3-operator.yaml            c5c3-operator ControlPlane orchestrator (from c5c3-charts)
@@ -86,6 +87,7 @@ created.
 | `barbican-system` | Barbican Operator controller (Barbican/BarbicanSecretStore CRs and the operator-managed payload live in `openstack`) |
 | `ovn-system` | OVN Operator controller (OVNCentral/OVNChassis CRs and the operator-managed payload live in the tenant namespace they are created in) |
 | `neutron-system` | Neutron Operator controller (Neutron/NeutronMetadataAgent CRs and the operator-managed payload live in the tenant namespace they are created in) |
+| `cinder-system` | Cinder Operator controller (Cinder/CinderBackend/CinderBackupBackend CRs and the operator-managed payload live in the tenant namespace they are created in) |
 | `openstack` | Infrastructure instance CRs that exist to run the operators standalone (MariaDB cluster, Memcached cluster; on kind also the OpenBao proving instance and the shared Gateway) |
 | `shared-services` | Infrastructure consumed by more than one control plane: the OpenBao HA Raft cluster and the Garage object store |
 | `openbao-operator-system` | openbao-operator controller. It stays out of `shared-services` so the shared OpenBao cluster and the operator that manages per-service instances keep separate lifecycles |
@@ -291,6 +293,7 @@ mariadb-operator-crds     (no dependencies)
 ├── barbican-operator     dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator, openbao-operator
 ├── ovn-operator          dependsOn: cert-manager
 ├── neutron-operator      dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator, ovn-operator
+├── cinder-operator       dependsOn: cert-manager, mariadb-operator, memcached-operator, external-secrets, keystone-operator
 └── c5c3-operator         dependsOn: keystone-operator, external-secrets, mariadb-operator, memcached-operator
 ```
 
@@ -318,9 +321,9 @@ Kustomizations and cert-manager is a HelmRelease. On a cold cluster the
 Issuer/Certificate apply fails while cert-manager's CRDs are still missing, the
 Kustomization reports NotReady, and one of the following `retryInterval` passes
 (2m) succeeds once cert-manager is up. The NotReady window is that convergence.
-That is also why `neutron-operator` carries no edge to it: the Neutron agents
-talk over the shared message bus, but a HelmRelease cannot depend on a
-Kustomization.
+That is also why `neutron-operator` and `cinder-operator` carry no edge to it:
+the Neutron agents and the Cinder services talk over the shared message bus, but
+a HelmRelease cannot depend on a Kustomization.
 
 The `c5c3-operator` HelmRelease sits at the top of this graph: it
 `dependsOn` the four operators whose CRs it projects (keystone-operator,

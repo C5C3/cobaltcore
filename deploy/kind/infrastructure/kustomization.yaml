@@ -38,6 +38,9 @@ resources:
   # TLS for the eighth Gateway listener (`https-neutron`) the Neutron
   # networking API is exposed through (deploy/kind/base/openstack-gateway.yaml).
   - neutron-nip-io-tls-certificate.yaml
+  # TLS for the ninth Gateway listener (`https-cinder`) the Cinder
+  # block-storage API is exposed through (deploy/kind/base/openstack-gateway.yaml).
+  - cinder-nip-io-tls-certificate.yaml
   # kind-only: standalone Keystone CRs (Quick Start, keystone e2e/tempest/
   # chaos suites) reference the Secret "keystone-db"; ControlPlane-based
   # deployments use the operator-projected per-ControlPlane ExternalSecret
@@ -73,6 +76,12 @@ resources:
   # names (keystone-admin/keystone-db/mariadb-root-password), so it survives that
   # filter on the ControlPlane path.
   - neutron-db-externalsecret.yaml
+  # kind-only: standalone Cinder CRs (the cinder e2e suites) reference the
+  # Secret "cinder-db" through the Cinder CR's database.secretRef, mirroring
+  # the neutron-db shim above. It is NOT one of the WITH_CONTROLPLANE shim-drop
+  # names (keystone-admin/keystone-db/mariadb-root-password), so it survives that
+  # filter on the ControlPlane path.
+  - cinder-db-externalsecret.yaml
   - keystone-admin-externalsecret.yaml
   - mariadb-root-password-externalsecret.yaml
   # horizon-secret-key is the Django SECRET_KEY shim for standalone Horizon
