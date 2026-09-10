@@ -1,0 +1,472 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for the finalizer-driven cleanup on Cinder CR deletion, and
+# for what the two satellite kinds do when the parent they name is gone.
+#
+# A Cinder with one volume backend and one backup backend comes up, then:
+#   - the cleanup finalizer and every owned child are asserted present: the
+#     four Deployments, the Service, the PDB, the two derived Secrets, the two
+#     content-hashed projection Secrets, the db-sync Job, the db-purge CronJob
+#     and the content-hashed config ConfigMap
+#   - the Cinder is deleted and all of them are asserted gone, together with the
+#     MariaDB Database/User/Grant CRs the operator created in managed mode
+#   - both satellites survive: they are user-owned, so nothing reaps them, and
+#     with the parent gone they report CredentialsReady=False/WaitingForParent,
+#     a demoted ConfigProjected and the aggregate Ready=False/NotAllReady
+#   - deleting the surviving CinderBackend releases its service-remove
+#     finalizer unconditionally and records a ServiceRemoveSkipped event: the
+#     service registry lives in the database that went with the parent, so no
+#     Job can ever run and holding the backend would wedge it in Terminating
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-deletion-cleanup
+spec:
+  namespace: openstack
+  timeouts:
+    # The schema migration, the API cold start and two NFS mounts precede the
+    # first assertion. That does not fit the 120s the shared config allows.
+    assert: 5m
+    # The absence checks take the shared config's error timeout rather than the
+    # assert one above: 30s. The MariaDB Database, User and Grant CRs are what
+    # need more: the finalizer only issues their Delete, the mariadb-operator
+    # drops the schema and the user before it releases them, and
+    # tests/e2e/chainsaw-config.yaml records those deletions serializing past
+    # 60s under parallel suites.
+    error: 3m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite: the RPC topics are named after the deployment, so two
+  # suites on one vhost would share the scheduler and volume-service queues.
+  # See ../broker-vhost.sh. The step cleanup runs at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-cleanup cinder-cleanup-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    - apply:
+        file: 02-cinderbackupbackend-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-cleanup || true
+  # ── Step 2: Wait for Ready=True and assert the cleanup finalizer ────────
+  # The finalizer is added on the first reconcile so deletion can issue the
+  # MariaDB CR Deletes before the Cinder leaves etcd.
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-cleanup
+            namespace: openstack
+            # Nil-safe: on the first poll after apply the controller may not
+            # have added the finalizer yet (`finalizers` is nil). The `|| `[]``
+            # fallback lets the assert retry rather than raising a
+            # non-retryable JMESPath type error.
+            (contains(finalizers || `[]`, 'cinder.openstack.c5c3.io/finalizer')): true
+          status:
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    # Both satellites converge before the delete, which is what gives step 7 its
+    # meaning: a condition that flipped False can only be read as a demotion if
+    # it was True first.
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackend
+          metadata:
+            name: cleanup-nfs1
+            namespace: openstack
+          status:
+            (conditions[?type == 'ConfigProjected']):
+            - status: "True"
+              reason: ConfigProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackupBackend
+          metadata:
+            name: cleanup-nfsbk
+            namespace: openstack
+          status:
+            (conditions[?type == 'ConfigProjected']):
+            - status: "True"
+              reason: ConfigProjected
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: &cleanup-dump
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-cleanup
+        namespace: openstack
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        namespace: openstack
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackupBackend
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Cinder children ==="
+          kubectl get deploy,svc,pdb,cronjob,job,cm,secret -n $NAMESPACE -l app.kubernetes.io/instance=cinder-cleanup -o wide 2>&1 || true
+          for d in cinder-cleanup cinder-cleanup-scheduler cinder-cleanup-volume-cleanup-nfs1 cinder-cleanup-backup; do
+            echo "=== Deployment $d ==="
+            kubectl describe deploy "$d" -n $NAMESPACE 2>&1 | tail -40 || true
+          done
+          echo "=== MariaDB CRs ==="
+          kubectl get database,user,grant -n $NAMESPACE 2>&1 | grep cinder-cleanup || true
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-cleanup -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 3: Assert every owned child exists before the deletion ─────────
+  # Asserting them here is what gives step 5 its meaning: an absence assertion
+  # on a resource that never existed passes for the wrong reason.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-cleanup
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-cleanup-scheduler
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-cleanup-volume-cleanup-nfs1
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-cleanup-backup
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: cinder-cleanup
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: cinder-cleanup
+            namespace: openstack
+    # The two derived Secrets: the assembled DSN and the transport URL copied
+    # out of the broker Secret this suite's vhost carries.
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: cinder-cleanup-db-connection
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: cinder-cleanup-transport-url
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-cleanup-db-sync
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: cinder-cleanup-db-purge
+            namespace: openstack
+    # The config ConfigMap and the two projection Secrets carry a content-hash
+    # suffix, so they are matched by prefix rather than by name.
+    - script:
+        content: |
+          set -eu
+          kubectl get cm -n openstack -o name | grep '^configmap/cinder-cleanup-config-'
+          kubectl get secret -n openstack -o name | grep '^secret/cinder-cleanup-backend-cleanup-nfs1-'
+          kubectl get secret -n openstack -o name | grep '^secret/cinder-cleanup-backup-cleanup-nfsbk-'
+    catch: *cleanup-dump
+  # ── Step 4: Delete the Cinder CR ───────────────────────────────────────
+  # Bounded timeout to keep deletion responsive; fails the test if the
+  # finalizer blocks removal for longer than this.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          name: cinder-cleanup
+          namespace: openstack
+  # ── Step 5: Assert the owned children and the MariaDB CRs are gone ──────
+  - try:
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-cleanup-scheduler
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-cleanup-volume-cleanup-nfs1
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-cleanup-backup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: cinder-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: cinder-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: cinder-cleanup-db-connection
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: cinder-cleanup-transport-url
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-cleanup-db-sync
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: cinder-cleanup-db-purge
+            namespace: openstack
+    # MariaDB CRs created by reconcileDatabase in managed mode (clusterRef). All
+    # three carry the CR's own name. Owner references are set on them, but the
+    # cleanup finalizer also issues an explicit Delete so the schema teardown is
+    # triggered before the owner-ref chain disappears.
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Database
+          metadata:
+            name: cinder-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: User
+          metadata:
+            name: cinder-cleanup
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: k8s.mariadb.com/v1alpha1
+          kind: Grant
+          metadata:
+            name: cinder-cleanup
+            namespace: openstack
+    catch: *cleanup-dump
+  # ── Step 6: Assert the content-hashed objects are gone ─────────────────
+  # These carry a content-hash suffix so they cannot use a static error
+  # assertion. A script step polls until nothing with their prefixes is left.
+  - try:
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+
+          # The garbage collector reaps the owned objects a moment after the CR
+          # leaves etcd, so this is polled rather than sampled once. 60 x 2s =
+          # 2m, inside the step timeout.
+          for _ in $(seq 1 60); do
+            LEFT="$(kubectl get cm,secret -n openstack -o name 2>/dev/null \
+              | grep -E '^(configmap/cinder-cleanup-config-|secret/cinder-cleanup-backend-|secret/cinder-cleanup-backup-)' || true)"
+            [ -z "${LEFT}" ] && break
+            sleep 2
+          done
+          if [ -n "${LEFT}" ]; then
+            echo "FAIL: content-hashed objects of cinder-cleanup remain:"
+            printf '%s\n' "${LEFT}"
+            exit 1
+          fi
+          echo "OK: no cinder-cleanup config ConfigMap or projection Secret remains"
+    catch: *cleanup-dump
+  # ── Step 7: Assert both satellites survive the parent ──────────────────
+  # Neither satellite is owned by the Cinder: users create them, so nothing
+  # reaps them when their parent goes. With the parent gone the controller can
+  # no longer tell which cluster the workload belongs on, so the credential gate
+  # flips to WaitingForParent and the standing projection claim is demoted.
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackend
+          metadata:
+            name: cleanup-nfs1
+            namespace: openstack
+          status:
+            (conditions[?type == 'CredentialsReady']):
+            - status: "False"
+              reason: WaitingForParent
+            (conditions[?type == 'ConfigProjected']):
+            - status: "False"
+              reason: WaitingForProjection
+            (conditions[?type == 'Ready']):
+            - status: "False"
+              reason: NotAllReady
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackupBackend
+          metadata:
+            name: cleanup-nfsbk
+            namespace: openstack
+          status:
+            (conditions[?type == 'CredentialsReady']):
+            - status: "False"
+              reason: WaitingForParent
+            (conditions[?type == 'ConfigProjected']):
+            - status: "False"
+              reason: WaitingForProjection
+            (conditions[?type == 'Ready']):
+            - status: "False"
+              reason: NotAllReady
+    catch: *cleanup-dump
+  # ── Step 8: Delete both satellites and assert the skipped unregistration ─
+  # The CinderBackend holds the service-remove finalizer, which the parent's
+  # volume step normally releases after a Job unregisters the host identity.
+  # No such Job can run here: the registry lived in the database that went with
+  # the parent. So the backend controller releases the finalizer itself and
+  # records why, which is the only trace the skipped unregistration leaves.
+  - try:
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackend
+          name: cleanup-nfs1
+          namespace: openstack
+    - delete:
+        timeout: 2m
+        ref:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackupBackend
+          name: cleanup-nfsbk
+          namespace: openstack
+    - error:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackend
+          metadata:
+            name: cleanup-nfs1
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: CinderBackupBackend
+          metadata:
+            name: cleanup-nfsbk
+            namespace: openstack
+    - script:
+        shell: bash
+        timeout: 3m
+        content: |
+          set -euo pipefail
+
+          # The event is recorded on the backend that is being deleted. An
+          # Event outlives its involved object and still lists by
+          # involvedObject.name, so the field selector finds it after the
+          # backend has left etcd. The recorder writes asynchronously, so this
+          # is polled: 24 x 5s = 2m, inside the step timeout.
+          FOUND=0
+          for _ in $(seq 1 24); do
+            if kubectl get events -n "$NAMESPACE" \
+                --field-selector reason=ServiceRemoveSkipped,involvedObject.name=cleanup-nfs1 \
+                -o name 2>/dev/null | grep -q .; then
+              FOUND=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "${FOUND}" -ne 1 ]; then
+            echo "FAIL: no ServiceRemoveSkipped event was recorded on cleanup-nfs1"
+            kubectl get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 | tail -30 || true
+            exit 1
+          fi
+          echo "OK: a ServiceRemoveSkipped event is on cleanup-nfs1"
+    catch: *cleanup-dump

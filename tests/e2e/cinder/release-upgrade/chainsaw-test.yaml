@@ -1,0 +1,556 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a cross-release Cinder upgrade from 2025.2 to 2026.1.
+#
+# Every other cinder suite installs a release into a fresh, empty schema and so
+# only ever runs cinderDBSyncCommand; none of them enters the four-phase machine
+# of operators/cinder/internal/controller/reconcile_database.go. This suite is
+# the one that does, against a schema the 2025.2 db-sync already populated.
+# Verifies:
+#   (1) A fresh deployment at 2025.2 reaches Ready=True/AllReady with
+#       installedRelease=2025.2 and no phase Job in sight
+#   (2) Patching spec.openStackRelease and spec.image.tag to 2026.1 walks
+#       status.upgradePhase through an ordered subsequence of
+#       Expanding -> Migrating -> RollingUpdate -> Contracting that contains
+#       RollingUpdate, then clears the phase and promotes installedRelease
+#   (3) The three phase Jobs each succeed on the :2026.1 image, and the migrate
+#       Job's pod carries the cinder-status verdict in its termination message
+#   (4) All three Deployments flip to :2026.1 with a fully converged rollout
+#   (5) The steady-state db-sync Job re-runs on :2026.1
+#   (6) The API on the new release answers, and every process in its service
+#       registry reports state up
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-release-upgrade
+spec:
+  namespace: openstack
+  timeouts:
+    # The 2025.2 schema migration, the API cold start and the NFS mount precede
+    # the pre-upgrade assertion, and the upgrade then runs three more Jobs and a
+    # three-Deployment rollout. That fits neither the 120s the shared config
+    # allows nor the 5m the single-release suites use.
+    assert: 10m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite: the RPC topics are named after the deployment, so two
+  # suites on one vhost would share the scheduler and volume-service queues.
+  # See ../broker-vhost.sh. The step cleanup runs at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-upgrade cinder-upgrade-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-upgrade || true
+  # ── Step 2: Assert the pre-upgrade steady state on :2025.2 ─────────────
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2025.2"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: cinder-api
+                  image: ghcr.io/c5c3/cinder:2025.2
+          status:
+            (availableReplicas > `0`): true
+    # No phase Job exists before the release moves. Asserting their absence here
+    # is what makes their presence in step 5 evidence of the upgrade rather than
+    # of the steady-state flow.
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-upgrade-db-expand
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-upgrade-db-migrate
+            namespace: openstack
+    - error:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-upgrade-db-contract
+            namespace: openstack
+    catch: &upgrade-dump
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-upgrade
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Deployments ==="
+          kubectl get deploy -n $NAMESPACE -l app.kubernetes.io/instance=cinder-upgrade -o wide 2>&1 || true
+          for d in cinder-upgrade cinder-upgrade-scheduler cinder-upgrade-volume-upgrade-nfs1; do
+            echo "=== Deployment $d ==="
+            kubectl describe deploy "$d" -n $NAMESPACE 2>&1 | tail -40 || true
+          done
+          echo "=== Jobs ==="
+          kubectl get jobs -n $NAMESPACE -l app.kubernetes.io/instance=cinder-upgrade -o wide 2>&1 || true
+          for j in cinder-upgrade-db-sync cinder-upgrade-db-expand cinder-upgrade-db-migrate cinder-upgrade-db-contract; do
+            echo "--- Job $j ---"
+            kubectl describe job "$j" -n $NAMESPACE 2>&1 | tail -30 || true
+            kubectl logs -n $NAMESPACE "job/$j" --all-containers --tail=80 2>&1 || true
+          done
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-upgrade -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Probe pods ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -o name 2>/dev/null | grep cinder-upgrade-probe-); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --tail=80 2>&1 || true
+          done
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 3: Patch release + image tag to trigger the upgrade ───────────
+  - try:
+    - patch:
+        file: 03-patch-upgrade.yaml
+  # ── Step 4: Follow status.upgradePhase to the settled end state ────────
+  # The phase is a transient field, so it is sampled rather than asserted: the
+  # loop records each distinct value in the order it saw it and stops when the
+  # release has been promoted and the phase is empty again. A sample interval
+  # can miss a short phase, which is why the recorded sequence is checked as an
+  # ordered SUBSEQUENCE of the canonical four rather than as an exact match.
+  # RollingUpdate is required, because it is the phase that makes the contract
+  # step safe: the data migrations it runs backfill rows the new schema needs,
+  # and they may only run once every pod serves the target release.
+  - try:
+    - script:
+        timeout: 10m
+        # Chainsaw defaults to `sh`, which lacks the function-local `local`
+        # this uses.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          NS=openstack
+          CR=cinder-upgrade
+          CANON="Expanding Migrating RollingUpdate Contracting"
+
+          # phase_rank maps a phase onto its position in the canonical order,
+          # and 0 onto anything the flow never sets.
+          phase_rank() {
+            case "$1" in
+            Expanding) printf '1' ;;
+            Migrating) printf '2' ;;
+            RollingUpdate) printf '3' ;;
+            Contracting) printf '4' ;;
+            *) printf '0' ;;
+            esac
+          }
+
+          # check_phases fails unless every recorded phase is a known one and
+          # the ranks increase strictly, which is what "ordered subsequence of
+          # four distinct values" means, and unless RollingUpdate is among them.
+          check_phases() {
+            local observed="$1" prev=0 rank phase
+            for phase in $observed; do
+              rank="$(phase_rank "$phase")"
+              if [ "$rank" -eq 0 ]; then
+                echo "FAIL: unknown upgrade phase '$phase' in observed sequence [$observed]; want a subsequence of [$CANON]"
+                return 1
+              fi
+              if [ "$rank" -le "$prev" ]; then
+                echo "FAIL: upgrade phase '$phase' is out of order in observed sequence [$observed]; want a subsequence of [$CANON]"
+                return 1
+              fi
+              prev="$rank"
+            done
+            case " $observed " in
+            *" RollingUpdate "*) ;;
+            *)
+              echo "FAIL: observed sequence [$observed] never entered RollingUpdate; want a subsequence of [$CANON] containing it"
+              return 1
+              ;;
+            esac
+            echo "OK: observed upgrade phases [$observed] are an ordered subsequence of [$CANON]"
+          }
+
+          # Both fields come off one read, so a sample can never pair a phase
+          # with a release the CR did not carry at the same moment. The bound is
+          # a wall-clock deadline rather than a round count: each round issues a
+          # kubectl call of unbounded duration, so a fixed count of rounds
+          # cannot keep the loop inside the step budget, and an overrun produces
+          # the opaque chainsaw timeout this loop exists to replace.
+          SEEN=""
+          LAST=""
+          SETTLED=0
+          DEADLINE=$(( $(date +%s) + 540 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            OUT="$(kubectl get cinder "$CR" -n "$NS" \
+              -o 'jsonpath={.status.upgradePhase}|{.status.installedRelease}' 2>/dev/null || true)"
+            PHASE="${OUT%%|*}"
+            RELEASE="${OUT##*|}"
+            if [ -n "$PHASE" ] && [ "$PHASE" != "$LAST" ]; then
+              SEEN="${SEEN}${SEEN:+ }${PHASE}"
+              LAST="$PHASE"
+              echo "upgradePhase=$PHASE installedRelease=$RELEASE"
+            fi
+            if [ -z "$PHASE" ] && [ "$RELEASE" = "2026.1" ]; then
+              SETTLED=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$SETTLED" -ne 1 ]; then
+            echo "FAIL: the upgrade did not settle within 9m (observed phases [$SEEN])"
+            kubectl get cinder "$CR" -n "$NS" -o yaml 2>&1 | tail -60 || true
+            exit 1
+          fi
+          echo "OK: installedRelease is 2026.1 and status.upgradePhase is empty"
+
+          check_phases "$SEEN"
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-upgrade
+            namespace: openstack
+          status:
+            installedRelease: "2026.1"
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch: *upgrade-dump
+  # ── Step 5: Assert the three phase Jobs ran on the new release ─────────
+  # The operator leaves the phase Jobs in place, and each runs spec.image: the
+  # contract is that the image moves with spec.openStackRelease, so the new
+  # release's migration tree owns the schema deltas. A Job left on :2025.2 would
+  # mean the flow migrated with the old tree and promoted installedRelease
+  # anyway.
+  - try:
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-upgrade-db-expand
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: db-expand
+                  image: ghcr.io/c5c3/cinder:2026.1
+          status:
+            succeeded: 1
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-upgrade-db-migrate
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: db-migrate
+                  image: ghcr.io/c5c3/cinder:2026.1
+          status:
+            succeeded: 1
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: cinder-upgrade-db-contract
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: db-contract
+                  image: ghcr.io/c5c3/cinder:2026.1
+          status:
+            succeeded: 1
+    # The migrate phase runs `cinder-status upgrade check`, whose exit code is a
+    # severity the Job swallows so a warning cannot wedge the upgrade. The code
+    # survives in the pod's termination message, which is the only place the
+    # operator reads it back from, so a Job that stopped writing it would leave
+    # the operator reporting the check as unavailable forever.
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          set -euo pipefail
+          NS=openstack
+          JOB=cinder-upgrade-db-migrate
+
+          POD="$(kubectl get pod -n "$NS" \
+            -l "batch.kubernetes.io/job-name=$JOB" \
+            -o 'jsonpath={.items[0].metadata.name}' 2>/dev/null || true)"
+          if [ -z "$POD" ]; then
+            echo "FAIL: the $JOB Job has no pod to read a termination message off"
+            kubectl get pods -n "$NS" -l "batch.kubernetes.io/job-name=$JOB" -o wide 2>&1 || true
+            exit 1
+          fi
+
+          # The current termination state, falling back to the previous one when
+          # the container was restarted: the same two places the operator's
+          # upgradeCheckMessage looks.
+          MSG="$(kubectl get pod "$POD" -n "$NS" \
+            -o 'jsonpath={.status.containerStatuses[0].state.terminated.message}' 2>/dev/null || true)"
+          if [ -z "$MSG" ]; then
+            MSG="$(kubectl get pod "$POD" -n "$NS" \
+              -o 'jsonpath={.status.containerStatuses[0].lastState.terminated.message}' 2>/dev/null || true)"
+          fi
+
+          if ! printf '%s' "$MSG" | grep -Eq '^cinder-status upgrade check exit [0-9]+$'; then
+            echo "FAIL: pod $POD termination message is ${MSG:-<empty>}, want 'cinder-status upgrade check exit <n>'"
+            kubectl describe pod "$POD" -n "$NS" 2>&1 | tail -40 || true
+            exit 1
+          fi
+          echo "OK: pod $POD reports '$MSG'"
+    catch: *upgrade-dump
+  # ── Step 6: Assert all three Deployments rolled onto :2026.1 ───────────
+  # updatedReplicas == replicas is what separates a rollout that finished from
+  # one that merely started: the Deployment carries the new pod template from
+  # the moment it is patched, while the old pods keep serving until the new ones
+  # are available.
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-upgrade
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: cinder-api
+                  image: ghcr.io/c5c3/cinder:2026.1
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-upgrade-scheduler
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: scheduler
+                  image: ghcr.io/c5c3/cinder:2026.1
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-upgrade-volume-upgrade-nfs1
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: volume-upgrade-nfs1
+                  image: ghcr.io/c5c3/cinder:2026.1
+          status:
+            (availableReplicas > `0`): true
+            (updatedReplicas == replicas): true
+    - script:
+        timeout: 5m
+        shell: bash
+        content: |
+          set -euo pipefail
+          NS=openstack
+          JOB=cinder-upgrade-db-sync
+          echo "=== Verifying the steady-state db-sync Job re-ran on :2026.1 ==="
+          # RunJob deletes and re-creates a completed Job in place when its
+          # pod-spec-hash changes, so the same-named db-sync Job is replaced on
+          # the :2026.1 image after the contract phase promotes installedRelease.
+          # Poll to ride out the brief delete/re-create window right after the
+          # upgrade settles, then assert the current Job carries :2026.1 and
+          # succeeded. The bound is a wall-clock deadline rather than a round
+          # count: each round issues two kubectl calls of unbounded duration, so
+          # a fixed count of rounds cannot keep the loop inside the 5m step
+          # budget. 240s leaves the report below a minute.
+          IMG=""
+          SUCC=""
+          DEADLINE=$(( $(date +%s) + 240 ))
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            IMG="$(kubectl get job "$JOB" -n "$NS" \
+              -o 'jsonpath={.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+            SUCC="$(kubectl get job "$JOB" -n "$NS" \
+              -o 'jsonpath={.status.succeeded}' 2>/dev/null || true)"
+            case "$IMG" in
+            *:2026.1)
+              if [ "$SUCC" = "1" ]; then
+                echo "OK: $JOB at $IMG succeeded=$SUCC"
+                exit 0
+              fi
+              ;;
+            esac
+            sleep 5
+          done
+          echo "FAIL: $JOB did not reach :2026.1 succeeded=1 (image=${IMG:-<none>} succeeded=${SUCC:-<none>})"
+          exit 1
+    catch: *upgrade-dump
+  # ── Step 7: Assert the upgraded API answers and its registry is healthy ─
+  # The conditions and the images are the operator's view. This is cinder's: the
+  # service registry rows live in the schema the three phase Jobs just migrated,
+  # and a process that cannot read them back reports itself down.
+  - try:
+    - script:
+        timeout: 8m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          # Only connection-level failures are retried: kube-proxy's endpoint
+          # programming can trail the rollout by a second or two, so a
+          # single-shot request races it. Every HTTP status the API answers
+          # with is a verdict, so it fails hard with the code, except the one
+          # the caller expects: urllib raises every status outside 2xx as an
+          # HTTPError, which carries the body.
+          def get(path, expect=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      req = urllib.request.Request(BASE + path,
+                                                   headers=HEADERS)
+                      return urllib.request.urlopen(req, timeout=30)
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == expect:
+                          return exc
+                      fail("GET %s -> HTTP %d" % (path, exc.code))
+                  except (urllib.error.URLError, OSError) as exc:
+                      last = exc
+                      print("retry GET %s: %s" % (path, exc))
+                      time.sleep(2)
+              fail("GET %s never answered: %r" % (path, last))
+
+
+          # The version document is served without a token and without touching
+          # the database, so a v3.0 marked CURRENT means the upgraded WSGI app
+          # is serving at all. Cinder answers it with 300 Multiple Choices.
+          doc = json.loads(get("/", expect=300).read())
+          current = [v for v in doc.get("versions", []) if v.get("id") == "v3.0"]
+          if not current or current[0].get("status") != "CURRENT":
+              fail("GET / does not list v3.0 CURRENT: %s" % doc)
+          print("version document lists v3.0 CURRENT")
+
+          # Every process the deployment runs has to be back in the registry
+          # reporting up. A service reports itself every report interval, so a
+          # process that restarted during the rollout is briefly down and this
+          # is polled rather than sampled once.
+          listing = []
+          for _ in range(30):
+              listing = json.loads(
+                  get("/v3/os-services").read()).get("services", [])
+              down = [s for s in listing if s.get("state") != "up"]
+              if listing and not down:
+                  break
+              print("waiting for the service registry: %s" % listing)
+              time.sleep(2)
+          else:
+              fail("not every service reports state up: %s" % listing)
+          print("all %d registered services report state up" % len(listing))
+
+          print("UPGRADE-OK")
+          PY
+          )"
+
+          POD=cinder-upgrade-probe-services
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          # The probe runs the release the deployment was upgraded to, so a
+          # client library the new image ships is what talks to the new API.
+          # The image ships its python in a venv on PATH; the absolute path is
+          # the one tests/container-images/verify_cinder.sh pins.
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2026.1 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-upgrade.openstack.svc.cluster.local:8776
+
+          # 60 x 5s = 5m, inside the step timeout, so a stuck probe is reported
+          # with its logs rather than killed by chainsaw.
+          phase=""
+          for _ in $(seq 1 60); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'UPGRADE-OK'
+          echo "OK: the upgraded API serves and its service registry is healthy"
+    catch: *upgrade-dump
