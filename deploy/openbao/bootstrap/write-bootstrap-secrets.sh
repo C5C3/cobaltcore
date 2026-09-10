@@ -308,7 +308,7 @@ main() {
     "username=keystone" \
     "password=${GENERATED_PASSWORD}"
 
-  # The four optional services seed the same shape as the Keystone standalone
+  # The five optional services seed the same shape as the Keystone standalone
   # credential above, one path per service, and differ only in the service
   # segment: openstack/<svc>/{namespace}/standalone/db. Each is read by the
   # kind-only <svc>-db ExternalSecret
@@ -322,7 +322,7 @@ main() {
   # only varying token is the service name is a place for the sixth to be
   # subtly wrong.
   local svc
-  for svc in glance placement barbican neutron; do
+  for svc in glance placement barbican neutron cinder; do
     write_secret_if_missing "kv-v2/openstack/${svc}/openstack/standalone/db" \
       "username=${svc}" \
       "password=${GENERATED_PASSWORD}"
