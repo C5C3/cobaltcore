@@ -1,0 +1,663 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Chainsaw E2E test for a happy-path Cinder deployment (2025.2 release).
+# Validates the full reconciliation cycle of a Keystone-free (noauth) Cinder
+# with one NFS backend attached:
+#   - all thirteen sub-conditions progress to True with their expected reasons,
+#     the aggregate Ready=True with reason AllReady, and status.volumeServices
+#     names the host identity the backend's volume service runs under
+#   - the API Deployment runs uWSGI against the module the image ships
+#     (--module cinder.wsgi.api:application) and hands the config directory to
+#     the application through --pyargv, with the database URL and the transport
+#     URL arriving as oslo.config env overrides sourced from Secrets and no
+#     service-user password anywhere, because this CR authenticates nobody
+#   - the scheduler takes its readiness off the message bus rather than off HTTP
+#   - the volume Deployment is the single-writer shape the NFS drivers require,
+#     with the export mounted through an inline CSI volume at the md5 path
+#     os-brick's remotefs driver resolves every volume to
+#   - the owned children exist: the Service on 8776, the PodDisruptionBudget
+#     that excludes Job pods, and the db-purge CronJob; the backup Deployment
+#     does not, because no CinderBackupBackend is attached
+#   - the rendered cinder.conf runs the noauth pipeline, carries the privsep
+#     helper contexts and lists no backend, and the rendered backend Secret
+#     carries the driver wiring, the export line and the enabled_backends
+#     overlay of the one attached backend
+#   - the Cinder API answers over HTTP: the version document, the healthcheck,
+#     the microversioned resource filters, the service registry with both
+#     processes up, and an empty volume list
+#
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: cinder-basic-deployment
+spec:
+  namespace: openstack
+  timeouts:
+    # The schema migration, the API cold start and the NFS mount of the volume
+    # service all precede the first assertion. That does not fit the 120s the
+    # shared config allows.
+    assert: 5m
+  steps:
+  # ── Step 1: Give the suite its vhost, then apply the CRs ───────────────
+  # One vhost per suite: the RPC topics are named after the deployment, so two
+  # suites on one vhost would share the scheduler and volume-service queues.
+  # See ../broker-vhost.sh. The step cleanup runs at the end of the test.
+  - try:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh create cinder-basic cinder-basic-messaging openstack
+    - apply:
+        file: 00-cinder-cr.yaml
+    - apply:
+        file: 01-cinderbackend-cr.yaml
+    cleanup:
+    - script:
+        shell: bash
+        timeout: 2m
+        content: |
+          ../broker-vhost.sh delete cinder-basic || true
+  # ── Step 2: Assert every sub-condition, Ready and the volume services ───
+  - try:
+    - assert:
+        resource:
+          apiVersion: cinder.openstack.c5c3.io/v1alpha1
+          kind: Cinder
+          metadata:
+            name: cinder-basic
+            namespace: openstack
+          status:
+            # The host identity the backend's cinder-volume registers under.
+            # The volumes it owns are keyed by this string, so it has to be the
+            # one the operator rendered rather than a pod name.
+            volumeServices:
+            - backend: basic-nfs1
+              host: cinder-basic@basic-nfs1
+            (conditions[?type == 'SecretsReady']):
+            - status: "True"
+              reason: SecretsAvailable
+            (conditions[?type == 'BackendsReady']):
+            - status: "True"
+              reason: AllBackendsProjected
+            # No CinderBackupBackend is attached, which is a posture rather than
+            # a fault: the API, the scheduler and the volume service run either
+            # way, so both backup conditions report the absence as True.
+            (conditions[?type == 'BackupBackendReady']):
+            - status: "True"
+              reason: NoBackupBackend
+            (conditions[?type == 'DatabaseReady']):
+            - status: "True"
+              reason: DatabaseSynced
+            (conditions[?type == 'SchedulerReady']):
+            - status: "True"
+              reason: SchedulerReady
+            (conditions[?type == 'VolumeServicesReady']):
+            - status: "True"
+              reason: AllVolumeServicesReady
+            (conditions[?type == 'BackupServiceReady']):
+            - status: "True"
+              reason: BackupNotConfigured
+            (conditions[?type == 'DeploymentReady']):
+            - status: "True"
+              reason: DeploymentReady
+            (conditions[?type == 'CinderAPIReady']):
+            - status: "True"
+              reason: APIHealthy
+            (conditions[?type == 'HPAReady']):
+            - status: "True"
+              reason: HPANotRequired
+            (conditions[?type == 'NetworkPolicyReady']):
+            - status: "True"
+              reason: NetworkPolicyNotRequired
+            (conditions[?type == 'HTTPRouteReady']):
+            - status: "True"
+              reason: HTTPRouteNotRequired
+            (conditions[?type == 'DBPurgeReady']):
+            - status: "True"
+              reason: DBPurgeScheduled
+            (conditions[?type == 'Ready']):
+            - status: "True"
+              reason: AllReady
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-basic
+        namespace: openstack
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        name: basic-nfs1
+        namespace: openstack
+    - script:
+        content: |
+          for d in cinder-basic cinder-basic-scheduler cinder-basic-volume-basic-nfs1 cinder-basic-backup; do
+            echo "=== Deployment $d ==="
+            kubectl describe deploy "$d" -n $NAMESPACE 2>&1 | tail -40 || true
+          done
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 3: Assert the three Deployments, the Service, PDB and CronJob ──
+  - try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-basic
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: cinder-api
+                # The cinder image ships no WSGI entry script, so the
+                # application is imported as a module. A --wsgi-file launch
+                # would mean the image layout changed under the operator.
+                (contains(join(' ', containers[0].command), '--module cinder.wsgi.api:application')): true
+                # A uWSGI-imported application has no argv of its own, so the
+                # config directory travels in the one uWSGI passes on.
+                (contains(join(' ', containers[0].command), '--pyargv --config-dir /etc/cinder/cinder.conf.d')): true
+                # One process per API pod: the scheduler, the volume service and
+                # the backup service are separate Deployments. A second
+                # container would mean something injected itself into every
+                # Cinder API pod.
+                (length(containers) == `1`): true
+                # Both credentials travel as oslo.config env overrides sourced
+                # from Secrets, so neither enters the rendered ConfigMap.
+                (containers[0].env[?name == 'OS_DATABASE__CONNECTION'].valueFrom.secretKeyRef.name | [0]): cinder-basic-db-connection
+                (containers[0].env[?name == 'OS_DATABASE__CONNECTION'].valueFrom.secretKeyRef.key | [0]): connection
+                (containers[0].env[?name == 'OS_DEFAULT__TRANSPORT_URL'].valueFrom.secretKeyRef.name | [0]): cinder-basic-transport-url
+                (containers[0].env[?name == 'OS_DEFAULT__TRANSPORT_URL'].valueFrom.secretKeyRef.key | [0]): transport_url
+                # This CR names no service user, so there is no password to
+                # project. The env var appearing here would mean the operator
+                # wired a Keystone identity into a deployment that renders
+                # auth_strategy = noauth.
+                (length(containers[0].env[?name == 'OS_KEYSTONE_AUTHTOKEN__PASSWORD']) == `0`): true
+          status:
+            availableReplicas: 2
+    # The scheduler serves no HTTP, so its readiness is the message-bus check
+    # the image ships: the process is useful once it can consume the RPC topic
+    # the API publishes volume requests on. It carries no liveness probe, since
+    # a broker outage would otherwise restart a process that is merely waiting.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-basic-scheduler
+            namespace: openstack
+          spec:
+            template:
+              spec:
+                containers:
+                - name: scheduler
+                  readinessProbe:
+                    exec:
+                      command:
+                      - /var/lib/openstack/bin/cinder-amqp-ready
+                (contains(keys(containers[0]), 'livenessProbe')): false
+                (containers[0].env[?name == 'CINDER_AMQP_PORT'].value | [0]): "5672"
+                # The scheduler's own overlay: it carries the host identity that
+                # keeps the scheduler out of the API's service-registry entry.
+                (containers[0].volumeMounts[?mountPath == '/etc/cinder/scheduler.conf.d'].name | [0]): scheduler-config
+          status:
+            availableReplicas: 1
+    # The single-writer shape: a cinder-volume owns its backend through a host
+    # identity rather than through a lock, so a second process under the same
+    # identity (a second replica, or the surge pod of a rolling update) would
+    # have the same volume state open twice.
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-basic-volume-basic-nfs1
+            namespace: openstack
+          spec:
+            replicas: 1
+            strategy:
+              type: Recreate
+            template:
+              spec:
+                containers:
+                - name: volume-basic-nfs1
+                  securityContext:
+                    runAsUser: 42424
+                securityContext:
+                  # The export holds a fleet's volumes, so the default policy's
+                  # recursive chown on every pod start is an unbounded operation
+                  # over the network.
+                  fsGroupChangePolicy: OnRootMismatch
+                # The export arrives as an inline CSI volume rather than a
+                # PersistentVolumeClaim: it is a shared filesystem the pod only
+                # needs while it runs, so there is nothing to bind and nothing
+                # to reclaim when the backend detaches.
+                (volumes[?name == 'share-basic-nfs1'].csi.driver | [0]): nfs.csi.k8s.io
+                (volumes[?name == 'share-basic-nfs1'].csi.volumeAttributes.server | [0]): nfs-server.openstack.svc.cluster.local
+                (volumes[?name == 'share-basic-nfs1'].csi.volumeAttributes.share | [0]): /volumes
+                (volumes[?name == 'share-basic-nfs1'].csi.volumeAttributes.mountOptions | [0]): nfsvers=4.1,soft,timeo=30,retrans=2
+                # The mount point is the hex md5 of "server:path", which is how
+                # os-brick's remotefs driver derives it. A mount anywhere else
+                # leaves every volume the backend holds unreachable.
+                (containers[0].volumeMounts[?name == 'share-basic-nfs1'].mountPath | [0]): /var/lib/cinder/mnt/6f3cb55ed3b423dbb7791aaf3783754f
+          status:
+            availableReplicas: 1
+    # No CinderBackupBackend is attached, so the backup service is not projected
+    # at all. A Deployment here would mean the operator started running a
+    # cinder-backup with no target to write to.
+    - error:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: cinder-basic-backup
+            namespace: openstack
+    - assert:
+        resource:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: cinder-basic
+            namespace: openstack
+          spec:
+            ports:
+            - port: 8776
+    - assert:
+        resource:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: cinder-basic
+            namespace: openstack
+            labels:
+              app.kubernetes.io/name: cinder
+              app.kubernetes.io/instance: cinder-basic
+              app.kubernetes.io/managed-by: cinder-operator
+          spec:
+            # Two API replicas, so the shared builder renders minAvailable
+            # rather than the single-replica maxUnavailable that exists to
+            # avoid a drain deadlock.
+            minAvailable: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: cinder
+                app.kubernetes.io/instance: cinder-basic
+                # The component key keeps the scheduler and the volume service
+                # out of the budget. Without it a drain could take every API
+                # replica at once while the budget still counted them.
+                app.kubernetes.io/component: api
+              # The db-purge and service-remove pods carry no readiness probe,
+              # so they count as healthy from their first moment. Without this
+              # exclusion they inflate currentHealthy and let a drain evict the
+              # API pods the budget protects.
+              matchExpressions:
+              - key: batch.kubernetes.io/job-name
+                operator: DoesNotExist
+    # Cinder only ever soft-deletes, so the purge is what keeps the row backlog
+    # bounded. It runs on every Cinder, with the webhook's defaults.
+    - assert:
+        resource:
+          apiVersion: batch/v1
+          kind: CronJob
+          metadata:
+            name: cinder-basic-db-purge
+            namespace: openstack
+          spec:
+            schedule: 1 0 * * *
+            jobTemplate:
+              spec:
+                template:
+                  spec:
+                    (contains(join(' ', containers[0].command), 'cinder-manage')): true
+                    (contains(join(' ', containers[0].command), 'db purge 30')): true
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-basic
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Cinder children ==="
+          kubectl get deploy,svc,pdb,cronjob,cm,secret -n $NAMESPACE -l app.kubernetes.io/instance=cinder-basic -o wide 2>&1 || true
+          for d in cinder-basic cinder-basic-scheduler cinder-basic-volume-basic-nfs1 cinder-basic-backup; do
+            echo "=== Deployment $d ==="
+            kubectl describe deploy "$d" -n $NAMESPACE 2>&1 | tail -40 || true
+          done
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 4: Assert the rendered cinder.conf ────────────────────────────
+  # The ConfigMap is content-hashed, so it is resolved through the Deployment's
+  # config volume rather than guessed by name.
+  - try:
+    - script:
+        content: |
+          set -eu
+          kubectl get cm -n openstack -o name | grep cinder-basic-config-
+    - script:
+        content: |
+          set -eu
+          CM=$(kubectl get deploy cinder-basic -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}')
+          test -n "$CM"
+          kubectl get cm "$CM" -n openstack -o 'jsonpath={.data.cinder\.conf}' \
+            > /tmp/cinder-basic.conf
+          # The pipeline this CR runs: no token is validated, and the project
+          # comes from the request URL. A [keystone_authtoken] section here
+          # would mean the noauth deployment grew an identity it cannot use.
+          grep -Fxq 'auth_strategy = noauth' /tmp/cinder-basic.conf
+          if grep -q '^\[keystone_authtoken\]' /tmp/cinder-basic.conf; then
+            echo "ERROR: cinder.conf carries a [keystone_authtoken] section"
+            exit 1
+          fi
+          # The host identity the API reports itself under, and the two files
+          # the image ships that the WSGI pipeline and the filter API read.
+          grep -Fxq 'host = cinder-basic' /tmp/cinder-basic.conf
+          grep -Fxq 'api_paste_config = /var/lib/openstack/etc/cinder/api-paste.ini' /tmp/cinder-basic.conf
+          grep -Fxq 'resource_query_filters_file = /var/lib/openstack/etc/cinder/resource_filters.json' /tmp/cinder-basic.conf
+          grep -Fxq 'driver = noop' /tmp/cinder-basic.conf
+          # enabled_backends belongs to the volume services alone: it travels in
+          # the per-backend overlay, so the API and the scheduler never claim to
+          # drive a backend they do not run.
+          if grep -q '^enabled_backends' /tmp/cinder-basic.conf; then
+            echo "ERROR: cinder.conf lists enabled_backends"
+            exit 1
+          fi
+          echo "OK: $CM renders the noauth pipeline and lists no backend"
+    # The privsep context the os-brick helper runs under. Both privsep sections
+    # carry the same two options, so the section is cut out before the two lines
+    # are matched.
+    - script:
+        content: |
+          set -eu
+          awk '/^\[privsep_osbrick\]$/{f=1;next} /^\[/{f=0} f' /tmp/cinder-basic.conf \
+            > /tmp/cinder-basic-privsep.conf
+          test -s /tmp/cinder-basic-privsep.conf
+          grep -Fxq 'helper_command = privsep-helper --config-dir /etc/cinder/cinder.conf.d' \
+            /tmp/cinder-basic-privsep.conf
+          # An empty capabilities list: the helper is started with none of the
+          # Linux capabilities privsep can hand it.
+          grep -Eq '^capabilities = *$' /tmp/cinder-basic-privsep.conf
+          echo "OK: [privsep_osbrick] starts the helper against the mounted config"
+    catch:
+    - script:
+        content: |
+          echo "=== Config ConfigMaps ==="
+          kubectl get cm -n $NAMESPACE -o name 2>&1 | grep cinder-basic-config- || true
+          echo "=== Rendered config ==="
+          CM=$(kubectl get deploy cinder-basic -n $NAMESPACE -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="config")].configMap.name}' 2>/dev/null || true)
+          kubectl get cm "$CM" -n $NAMESPACE -o yaml 2>&1 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack
+  # ── Step 5: Assert the rendered backend Secret ─────────────────────────
+  # The Secret is content-hashed too, so it is resolved through the volume
+  # Deployment's backend volume.
+  - try:
+    - script:
+        shell: bash
+        content: |
+          set -euo pipefail
+          S=$(kubectl get deploy cinder-basic-volume-basic-nfs1 -n openstack \
+            -o 'jsonpath={.spec.template.spec.volumes[?(@.name=="backend")].secret.secretName}')
+          test -n "$S"
+          kubectl get secret "$S" -n openstack -o 'jsonpath={.data.backend\.conf}' \
+            | base64 -d > /tmp/cinder-basic-backend.conf
+          # The driver wiring of the one attached backend. backend_host is the
+          # Cinder's name rather than the backend's: cinder appends "@<backend>"
+          # itself, so the rendered half is the one the operator owns.
+          grep -Fxq '[basic-nfs1]' /tmp/cinder-basic-backend.conf
+          grep -Fxq 'volume_driver = cinder.volume.drivers.nfs.NfsDriver' /tmp/cinder-basic-backend.conf
+          grep -Fxq 'backend_host = cinder-basic' /tmp/cinder-basic-backend.conf
+          grep -Fxq 'nfs_shares_config = /etc/cinder/backends.conf.d/basic-nfs1.shares' /tmp/cinder-basic-backend.conf
+          # The driver writes volume files as the pod's own uid and takes no
+          # snapshots on an export it does not own the semantics of.
+          grep -Fxq 'nas_secure_file_operations = true' /tmp/cinder-basic-backend.conf
+          grep -Fxq 'nfs_snapshot_support = false' /tmp/cinder-basic-backend.conf
+          # The shares file the driver reads a line at a time. It is compared in
+          # full rather than grepped: a second line would name an export the
+          # operator never mounted and never derived an egress rule for.
+          kubectl get secret "$S" -n openstack -o 'jsonpath={.data.shares}' \
+            | base64 -d > /tmp/cinder-basic.shares
+          printf '%s\n' 'nfs-server.openstack.svc.cluster.local:/volumes' > /tmp/cinder-basic.shares.want
+          diff -u /tmp/cinder-basic.shares.want /tmp/cinder-basic.shares
+          # The overlay only the volume service mounts. It is what makes this
+          # pod the one process that drives the backend.
+          kubectl get secret "$S" -n openstack -o 'jsonpath={.data.volume\.conf}' \
+            | base64 -d > /tmp/cinder-basic-volume.conf
+          printf '%s\n' '[DEFAULT]' 'enabled_backends = basic-nfs1' > /tmp/cinder-basic-volume.conf.want
+          diff -u /tmp/cinder-basic-volume.conf.want /tmp/cinder-basic-volume.conf
+          echo "OK: $S carries the driver wiring, the export and the overlay"
+    catch:
+    - script:
+        content: |
+          echo "=== Backend Secrets ==="
+          kubectl get secret -n $NAMESPACE -o name 2>&1 | grep cinder-basic-backend- || true
+          echo "=== Volume Deployment ==="
+          kubectl get deploy cinder-basic-volume-basic-nfs1 -n $NAMESPACE -o yaml 2>&1 || true
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: CinderBackend
+        name: basic-nfs1
+        namespace: openstack
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+  # ── Step 6: Assert the Cinder API answers over HTTP ────────────────────
+  # The probe runs in a pod of its own, off the same image, so the request
+  # crosses kube-proxy like any other client's. It is started detached and read
+  # back with `kubectl logs`: `kubectl run -i` only streams from the moment the
+  # attach lands, so a probe that finishes first would lose its sentinel.
+  #
+  # The token is the noauth pipeline's "<user>:<project>" pair rather than a
+  # Keystone token, which is what this deployment validates: nothing.
+  - try:
+    - script:
+        timeout: 6m
+        # Chainsaw defaults to `sh`, which rejects `set -o pipefail`.
+        shell: bash
+        content: |
+          set -euo pipefail
+
+          PROBE_SRC="$(cat <<'PY'
+          import json
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = sys.argv[1]
+          SCHEDULER_HOST = sys.argv[2]
+          VOLUME_HOST = sys.argv[3]
+          HEADERS = {"X-Auth-Token": "admin:admin",
+                     "Content-Type": "application/json"}
+
+
+          def fail(msg):
+              print("FAIL: " + msg)
+              sys.exit(1)
+
+
+          def call(path, microversion=""):
+              headers = dict(HEADERS)
+              if microversion:
+                  headers["OpenStack-API-Version"] = microversion
+              req = urllib.request.Request(BASE + path, headers=headers)
+              return urllib.request.urlopen(req, timeout=30)
+
+
+          # Only connection-level failures are retried: kube-proxy's endpoint
+          # programming can trail the CR's Ready flip by a second or two, so a
+          # single-shot request races it. Every HTTP status the API answers with
+          # is a verdict, so it fails hard with the code, except the one the
+          # caller expects: urllib raises every status outside 2xx as an
+          # HTTPError, which carries the body.
+          def get(path, microversion="", expect=None):
+              last = None
+              for _ in range(15):
+                  try:
+                      return call(path, microversion)
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == expect:
+                          return exc
+                      fail("GET %s -> HTTP %d" % (path, exc.code))
+                  except (urllib.error.URLError, ConnectionError, OSError) as exc:
+                      last = exc
+                      print("retry GET %s: %s" % (path, exc))
+                      time.sleep(2)
+              fail("GET %s never answered after retries: %r" % (path, last))
+
+
+          # The version document is served without a token and without touching
+          # the database, so a v3.0 marked CURRENT means the WSGI app is up.
+          # Cinder answers it with 300 Multiple Choices.
+          doc = json.loads(get("/", expect=300).read())
+          current = [v for v in doc.get("versions", []) if v.get("id") == "v3.0"]
+          if not current:
+              fail("GET / lists no v3.0 version: %s" % doc)
+          if current[0].get("status") != "CURRENT":
+              fail("v3.0 is %r, want CURRENT" % current[0].get("status"))
+          print("version document lists v3.0 CURRENT")
+
+          # The same endpoint both kubelet probes and the operator health check
+          # read. It sits above the auth pipeline, so it answers whatever the
+          # identity configuration is.
+          resp = get("/healthcheck")
+          body = resp.read().decode().strip()
+          if resp.status != 200 or body != "OK":
+              fail("GET /healthcheck -> %d %r, want 200 'OK'"
+                   % (resp.status, body))
+          print("healthcheck answers 200 OK")
+
+          # The filter catalog the image ships, reachable only above
+          # microversion 3.33. It is read from resource_query_filters_file, so
+          # this is the assertion that the path in cinder.conf resolves.
+          catalog = json.loads(get("/v3/resource_filters", "volume 3.33").read())
+          volume = [f for f in catalog.get("resource_filters", [])
+                    if f.get("resource") == "volume"]
+          if not volume:
+              fail("resource_filters carries no volume entry: %s" % catalog)
+          if "name" not in volume[0].get("filters", []):
+              fail("the volume filters carry no 'name': %s" % volume[0])
+          print("resource_filters lets a volume be filtered by name")
+
+          # The service registry. Both processes reach it over the message bus
+          # and not over HTTP, so this is what says the bus works end to end.
+          # The entries appear on each process's first report rather than on its
+          # readiness, so the listing is polled.
+          want = {("cinder-scheduler", SCHEDULER_HOST),
+                  ("cinder-volume", VOLUME_HOST)}
+          listing = []
+          for _ in range(15):
+              listing = json.loads(get("/v3/os-services").read()).get("services", [])
+              up = {(s.get("binary"), s.get("host")) for s in listing
+                    if s.get("state") == "up"}
+              if want <= up:
+                  break
+              print("waiting for the service registry: %s" % listing)
+              time.sleep(2)
+          else:
+              fail("%s never both reported state up: %s"
+                   % (sorted(want), listing))
+          print("the scheduler and the volume service both report state up")
+
+          # A database read through the noauth pipeline: the deployment is
+          # fresh, so the answer is an empty list rather than an error.
+          volumes = json.loads(get("/v3/volumes").read())
+          if volumes != {"volumes": []}:
+              fail("GET /v3/volumes -> %s, want an empty list" % volumes)
+          print("the volume list is empty")
+
+          # The project-scoped routes take a hex project id, so a word in that
+          # position matches no route at all. A 200 here would mean the API
+          # accepted "admin" as a project and served its volumes.
+          try:
+              call("/v3/admin/volumes")
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404:
+                  fail("GET /v3/admin/volumes -> HTTP %d, want 404" % exc.code)
+          else:
+              fail("GET /v3/admin/volumes answered, want 404")
+          print("GET /v3/admin/volumes is not a route")
+
+          print("BASIC-PROBE-OK")
+          PY
+          )"
+
+          POD=cinder-basic-probe-http
+          cleanup() {
+            kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          kubectl delete pod "$POD" -n "$NAMESPACE" --ignore-not-found >/dev/null
+
+          # The image ships its python in a venv on PATH; the absolute path is
+          # the one tests/container-images/verify_cinder.sh pins.
+          kubectl run "$POD" -n "$NAMESPACE" --image=ghcr.io/c5c3/cinder:2025.2 \
+            --restart=Never --command -- /var/lib/openstack/bin/python -c "$PROBE_SRC" \
+            http://cinder-basic.openstack.svc.cluster.local:8776 \
+            cinder-basic-scheduler cinder-basic@basic-nfs1
+
+          # 60 x 5s = 5m, inside the step timeout, so a stuck probe is reported
+          # with its logs rather than killed by chainsaw.
+          phase=""
+          for _ in $(seq 1 60); do
+            phase="$(kubectl get pod "$POD" -n "$NAMESPACE" \
+              -o 'jsonpath={.status.phase}' 2>/dev/null || true)"
+            case "$phase" in Succeeded|Failed) break ;; esac
+            sleep 5
+          done
+          OUT="$(kubectl logs "$POD" -n "$NAMESPACE" 2>&1 || true)"
+          echo "${OUT}"
+          [ "$phase" = "Succeeded" ]
+          echo "${OUT}" | grep -q 'BASIC-PROBE-OK'
+          echo "OK: the Cinder API answered every probe"
+    catch:
+    - get:
+        apiVersion: cinder.openstack.c5c3.io/v1alpha1
+        kind: Cinder
+        name: cinder-basic
+        namespace: openstack
+    - script:
+        content: |
+          echo "=== Service and Endpoints ==="
+          kubectl get svc,endpoints -n $NAMESPACE -l app.kubernetes.io/instance=cinder-basic 2>&1 || true
+          echo "=== Cinder pod logs ==="
+          for pod in $(kubectl get pods -n $NAMESPACE -l app.kubernetes.io/instance=cinder-basic -o name 2>/dev/null); do
+            echo "--- $pod ---"
+            kubectl logs -n $NAMESPACE "$pod" --all-containers --tail=60 2>&1 || true
+          done
+          echo "=== Probe pod ==="
+          kubectl describe pod cinder-basic-probe-http -n $NAMESPACE 2>&1 | tail -40 || true
+    - podLogs:
+        namespace: cinder-system
+        selector: app.kubernetes.io/name=cinder-operator
+        tail: 200
+    - events:
+        namespace: openstack

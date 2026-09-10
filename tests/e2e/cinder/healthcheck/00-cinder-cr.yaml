@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: Copyright 2026 SAP SE or an SAP affiliate company
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Cinder CR for the healthcheck E2E test.
+#
+# Same Keystone-free wiring as the basic-deployment fixture, on the schema
+# cinder_health. No spec.gateway: the suite asserts status.endpoint carries the
+# cluster-local Service URL, which is the only address the operator writes
+# there without one.
+#
+# One API replica. The probe under test reaches the Service, so a second pod
+# would only lengthen the bring-up.
+apiVersion: cinder.openstack.c5c3.io/v1alpha1
+kind: Cinder
+metadata:
+  name: cinder-health
+  namespace: openstack
+spec:
+  openStackRelease: "2025.2"
+  image:
+    repository: ghcr.io/c5c3/cinder
+    tag: "2025.2"
+  api:
+    deployment:
+      replicas: 1
+  database:
+    clusterRef:
+      name: openstack-db
+    database: cinder_health
+    secretRef:
+      name: cinder-db
+  cache:
+    clusterRef:
+      name: openstack-memcached
+  messaging:
+    secretRef:
+      name: cinder-health-messaging
