@@ -221,6 +221,19 @@ export default defineConfig({
             ],
           },
           {
+            text: 'Cinder',
+            link: '/reference/cinder/',
+            collapsed: true,
+            items: [
+              { text: 'Overview', link: '/reference/cinder/' },
+              { text: 'CRD', link: '/reference/cinder/cinder-crd' },
+              { text: 'Backend CRD', link: '/reference/cinder/cinder-backend-crd' },
+              { text: 'Backup Backend CRD', link: '/reference/cinder/cinder-backup-backend-crd' },
+              { text: 'Controller Events', link: '/reference/cinder/cinder-events' },
+              { text: 'Reconciler Architecture', link: '/reference/cinder/cinder-reconciler' },
+            ],
+          },
+          {
             text: 'c5c3 (ControlPlane)',
             collapsed: true,
             items: [
