@@ -219,6 +219,176 @@ test_rollout_guard_follows_the_apply() {
 }
 
 # ---------------------------------------------------------------------------
+# Test 8b: a pre-Ephemeral CSIDriver is dropped before the overlay is applied
+#
+# `CSIDriver.spec.volumeLifecycleModes` is immutable, so the object a cluster
+# created before `feature.enableInlineVolume` carries cannot be patched to the
+# two-mode list the chart now renders. On every reused cluster (a second
+# WITH_NFS=true run, or a runner keeping a warm cluster with
+# SKIP_KIND_CREATE=true) the helm-controller would burn its remediation
+# retries on a rejected patch and the csi-driver-nfs wait further down would
+# time out. Drop-then-apply is what keeps the upgrade from being attempted at
+# all, so the ORDER is the contract: a drop after the apply is too late.
+#
+# The guard has to read the live modes, not delete unconditionally: a cluster
+# whose driver already lists Ephemeral must keep it, or every run would
+# deregister the driver the mounted suites depend on.
+# ---------------------------------------------------------------------------
+test_immutable_csidriver_is_dropped_before_the_apply() {
+  echo "Test: a CSIDriver without the Ephemeral mode is deleted before the apply"
+
+  assert_file_contains "the modes of the live CSIDriver are read" \
+    "$DEPLOY_INFRA_SH" 'jsonpath={.spec.volumeLifecycleModes}'
+
+  assert_file_contains_literal "the drop is guarded on the Ephemeral mode" \
+    "$DEPLOY_INFRA_SH" 'if [[ "${nfs_lifecycle_modes}" != *Ephemeral* ]]; then'
+
+  # The probe keeps kubectl's error instead of discarding it, so only a
+  # definite NotFound takes the skip branch. A connection refused while the
+  # API server settles, an RBAC denial on the cluster-scoped read or a TLS
+  # handshake timeout must abort — skipping the guard there walks into the
+  # rejected upgrade it exists to prevent, with nothing in the log saying so.
+  assert_file_contains_literal "the probe keeps kubectl's error text" \
+    "$DEPLOY_INFRA_SH" "-o 'jsonpath={.spec.volumeLifecycleModes}' 2>&1)\" || nfs_probe_rc=\$?"
+
+  assert_file_contains_literal "only a NotFound is read as absence" \
+    "$DEPLOY_INFRA_SH" 'elif ! grep -qi "not found" <<<"${nfs_lifecycle_modes}"; then'
+
+  assert_file_contains "an unreadable CSIDriver aborts the run" \
+    "$DEPLOY_INFRA_SH" 'ERROR: cannot read CSIDriver/nfs.csi.k8s.io'
+
+  # The read and the delete are two calls. A helm-controller remediation
+  # rollback dropping the object in between must not abort a run that is
+  # mid-Step-3 over an object that reached the wanted state on its own.
+  assert_file_contains_literal "the drop tolerates losing the race" \
+    "$DEPLOY_INFRA_SH" 'kubectl delete csidriver nfs.csi.k8s.io --ignore-not-found'
+
+  local delete_line apply_line gate_line
+  delete_line="$(grep -n 'kubectl delete csidriver nfs.csi.k8s.io' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/kind/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+
+  assert_not_empty "the CSIDriver delete is found" "$delete_line"
+  assert_not_empty "the NFS overlay apply is found" "$apply_line"
+  assert_gte "the delete precedes the overlay apply" \
+    "$((${apply_line:-0}))" "$((${delete_line:-0} + 1))"
+
+  # Inside the WITH_NFS gate, so a default Quick Start touches no CSIDriver.
+  gate_line="$(grep -n '"${WITH_NFS}" == "true"' "$DEPLOY_INFRA_SH" | awk -F: -v target="${delete_line:-0}" '$1 < target { last = $1 } END { print last }')"
+  assert_not_empty "WITH_NFS gate precedes the CSIDriver delete" "$gate_line"
+}
+
+# ---------------------------------------------------------------------------
+# Test 8c: a dropped CSIDriver is forced back before the run walks on
+#
+# Deleting a cluster-scoped object the chart owns only works if the chart
+# actually re-installs it. The overlay apply does not guarantee that: on the
+# cluster that needs the drop most — one that already ran this overlay, had its
+# upgrade rejected on the immutable field and burned all three
+# `upgrade.remediation.retries` — the applied HelmRelease equals the live one,
+# so no generation is bumped, `spec.driftDetection` is unset, and
+# helm-controller does not retry an exhausted upgrade on its interval. The run
+# would leave the cluster with NO NFS CSI driver at all, which Test 8d below is
+# the second half of.
+#
+# Three things are pinned here: the forced reconcile (the annotation triple behind
+# `flux reconcile helmrelease --force --reset`), a hard gate on the object
+# itself, and an assertion on the mode it came back with. wait_for_helmreleases
+# only polls Ready=True on csi-driver-nfs, which says nothing about the deleted
+# object; and `kubectl wait --for=create` says nothing about
+# `spec.volumeLifecycleModes`, the one field the guard is about. All of it runs
+# only when the driver is actually absent, so a fresh cluster is untouched.
+# ---------------------------------------------------------------------------
+test_dropped_csidriver_is_forced_back() {
+  echo "Test: a dropped CSIDriver is forced back before the run continues"
+
+  assert_file_contains_literal "the recreate path runs only when the driver is absent" \
+    "$DEPLOY_INFRA_SH" 'if [[ "${nfs_csidriver_absent}" == "true" ]]; then'
+
+  # forceAt re-runs a release helm considers unchanged, resetAt clears the
+  # burned retries; both only take effect carrying the requestedAt value, so
+  # all three must be written with the same one.
+  local annotation
+  for annotation in requestedAt forceAt resetAt; do
+    assert_file_contains_literal "the reconcile request carries ${annotation}" \
+      "$DEPLOY_INFRA_SH" "\"reconcile.fluxcd.io/${annotation}=\${nfs_reconcile_at}\""
+  done
+
+  local apply_line annotate_line wait_line
+  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/kind/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  annotate_line="$(grep -n 'reconcile.fluxcd.io/forceAt=' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  wait_line="$(grep -n 'kubectl wait --for=create csidriver/nfs.csi.k8s.io' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+
+  assert_not_empty "the forced csi-driver-nfs reconcile is found" "$annotate_line"
+  assert_not_empty "the CSIDriver existence gate is found" "$wait_line"
+  assert_gte "the forced reconcile follows the overlay apply" \
+    "${annotate_line:-0}" "$((${apply_line:-0} + 1))"
+  assert_gte "the existence gate follows the forced reconcile" \
+    "${wait_line:-0}" "$((${annotate_line:-0} + 1))"
+
+  assert_file_contains "a driver the chart never brings back fails the run" \
+    "$DEPLOY_INFRA_SH" 'the cluster now has no NFS CSI driver'
+
+  # `--for=create` is satisfied by any object of that name. The cluster that
+  # reaches this gate is by construction one whose csi-driver-nfs release is
+  # remediating, and the release leaves `upgrade.remediation.strategy` at its
+  # rollback default: a rollback racing the delete re-applies the previous
+  # manifest, whose CSIDriver is the PRE-Ephemeral one, and the forced upgrade
+  # is rejected on the immutable field all over again. Without a mode assertion
+  # the run logs a green line over a driver that cannot serve an inline volume.
+  local modes_line
+  modes_line="$(grep -n "jsonpath={.spec.volumeLifecycleModes}" "$DEPLOY_INFRA_SH" | sed -n 2p | cut -d: -f1)"
+  assert_not_empty "the recreated CSIDriver's modes are read back" "$modes_line"
+  assert_gte "the mode read-back follows the existence gate" \
+    "${modes_line:-0}" "$((${wait_line:-0} + 1))"
+
+  assert_file_contains "a pre-Ephemeral recreate fails the run" \
+    "$DEPLOY_INFRA_SH" 'came back WITHOUT the Ephemeral lifecycle mode'
+
+  assert_file_contains "the success line names the mode that was verified" \
+    "$DEPLOY_INFRA_SH" 'recreated by csi-driver-nfs with the Ephemeral lifecycle mode'
+}
+
+# ---------------------------------------------------------------------------
+# Test 8d: a cluster an aborted run left driverless is healed on the next run
+#
+# The drop and the forced reconcile are two calls with an unguarded
+# `kubectl apply -k` and an arbitrary amount of wall-clock between them. A run
+# that dies in that window (failed apply under `set -e`, cancelled job, a
+# self-hosted runner that went away) leaves the cluster with NO NFS CSI driver.
+# Gating the recreate on a shell variable alone would make every later run read
+# the NotFound as "fresh cluster, nothing to do" and stay a byte-identical
+# no-op over an exhausted HelmRelease that helm-controller never retries — the
+# exact outcome the recreate gate exists to prevent, made permanent.
+#
+# The signal that tells the two NotFound clusters apart is the HelmRelease: a
+# fresh cluster has none yet, a driverless one already carries it.
+# ---------------------------------------------------------------------------
+test_absent_csidriver_is_healed_on_a_later_run() {
+  echo "Test: a NotFound over an installed release re-enters the recreate path"
+
+  assert_file_contains_literal "the NotFound branch probes the HelmRelease" \
+    "$DEPLOY_INFRA_SH" 'elif kubectl get helmrelease csi-driver-nfs -n kube-system &>/dev/null; then'
+
+  # Both branches must feed the same gate, or the healing path stops at a log
+  # line.
+  local flag_sets
+  flag_sets="$(grep -cE '^[[:space:]]+nfs_csidriver_absent=true$' "$DEPLOY_INFRA_SH" || true)"
+  assert_eq "both absence branches set the recreate flag" "2" "$flag_sets"
+
+  assert_file_contains "the healed cluster is named in the log" \
+    "$DEPLOY_INFRA_SH" 'an earlier run dropped it without getting it back'
+
+  # The probe belongs BEFORE the overlay apply: after it, every cluster carries
+  # the HelmRelease and a fresh one would be dragged into the wait too.
+  local probe_line apply_line
+  probe_line="$(grep -n 'kubectl get helmrelease csi-driver-nfs -n kube-system' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  apply_line="$(grep -n 'kubectl apply -k "${REPO_ROOT}/deploy/kind/nfs"' "$DEPLOY_INFRA_SH" | head -1 | cut -d: -f1)"
+  assert_not_empty "the HelmRelease probe is found" "$probe_line"
+  assert_gte "the overlay apply follows the HelmRelease probe" \
+    "${apply_line:-0}" "$((${probe_line:-0} + 1))"
+}
+
+# ---------------------------------------------------------------------------
 # Test 9: csi-driver-nfs is appended dynamically to the helm-release wait list
 # Waiting for it unconditionally would hang every default run, since the
 # HelmRelease only exists once the overlay is applied.
@@ -398,6 +568,9 @@ test_banner_includes_nfs_line
 test_kernel_module_call_is_gated
 test_nfs_kustomize_is_gated
 test_rollout_guard_follows_the_apply
+test_immutable_csidriver_is_dropped_before_the_apply
+test_dropped_csidriver_is_forced_back
+test_absent_csidriver_is_healed_on_a_later_run
 test_nfs_appended_dynamically
 test_entry_point_delegates_to_the_shared_loader
 test_loader_skips_non_linux

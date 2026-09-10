@@ -13,9 +13,9 @@
 #     --load-restrictor flag): the csi-driver-nfs HelmRepository in
 #     flux-system, the csi-driver-nfs HelmRelease in kube-system, and the
 #     PVC + Deployment + Service of the NFS server in openstack.
-#   - The HelmRelease overrides two values and no more, so the chart defaults
-#     the driver relies on (attachRequired, fsGroupPolicy, kubeletDir) stay
-#     untouched.
+#   - The HelmRelease overrides three values and no more, so the chart
+#     defaults the driver relies on (attachRequired, fsGroupPolicy,
+#     kubeletDir) stay untouched.
 #   - The server Deployment keeps the contract the Cinder suites depend on:
 #     one writer on an RWO claim, SHARED_DIRECTORY=/exports, a privileged
 #     container, digest-pinned images, and exports pre-created as
@@ -195,8 +195,8 @@ test_helm_release_contract() {
   echo "Test: the csi-driver-nfs source and release carry the expected contract"
 
   if ! command -v kustomize >/dev/null 2>&1 || ! command -v yq >/dev/null 2>&1; then
-    echo "  SKIP: kustomize or yq not installed (7 checks skipped)"
-    SKIP=$((SKIP + 7))
+    echo "  SKIP: kustomize or yq not installed (8 checks skipped)"
+    SKIP=$((SKIP + 8))
     return
   fi
 
@@ -204,7 +204,7 @@ test_helm_release_contract() {
   if ! rendered="$(render_dir "$KIND_NFS_DIR")"; then
     echo "  FAIL: kustomize build $KIND_NFS_DIR failed:"
     echo "$rendered" | head -20
-    FAIL=$((FAIL + 7))
+    FAIL=$((FAIL + 8))
     return
   fi
 
@@ -240,6 +240,11 @@ test_helm_release_contract() {
     "false" "$(render_value "$rendered" "$release | .spec.values.controller.enableSnapshotter")"
   assert_eq "the release creates no dynamic StorageClass" \
     "false" "$(render_value "$rendered" "$release | .spec.values.storageClass.create")"
+  # The cinder-operator mounts every share as an inline `csi:` volume, which
+  # the driver serves only when its CSIDriver lists the Ephemeral lifecycle
+  # mode. The chart adds that mode behind this flag.
+  assert_eq "the release enables inline CSI volumes" \
+    "true" "$(render_value "$rendered" "$release | .spec.values.feature.enableInlineVolume")"
 
   # Nothing else is overridden, so every chart default the driver relies on
   # (attachRequired, fsGroupPolicy, kubeletDir) stays as shipped. The leaf
@@ -249,8 +254,9 @@ test_helm_release_contract() {
   value_leaves="$(printf '%s\n' "$rendered" | yq -r "$release | .spec.values" 2>/dev/null \
     | yq -r '[.. | select(tag != "!!map") | path | join(".")] | sort | join(",")' 2>/dev/null \
     | head -n1)"
-  assert_eq "the release overrides only the two documented values" \
-    "controller.enableSnapshotter,storageClass.create" "$value_leaves"
+  assert_eq "the release overrides only the three documented values" \
+    "controller.enableSnapshotter,feature.enableInlineVolume,storageClass.create" \
+    "$value_leaves"
 }
 
 # --- Test 5: NFS server Deployment and PVC contract ---

@@ -2430,8 +2430,113 @@ main() {
   # host has no nfsd, so asking for WITH_NFS=true and getting a CrashLooping
   # server is an error, not a warning.
   if [[ "${WITH_NFS}" == "true" ]]; then
+    # `CSIDriver.spec.volumeLifecycleModes` is immutable, so a cluster whose
+    # nfs.csi.k8s.io predates `feature.enableInlineVolume` cannot be upgraded
+    # in place: the API server rejects the chart's patch, the csi-driver-nfs
+    # HelmRelease burns its remediation retries, and Step 4's wait below runs
+    # into its timeout with the cause buried in the HelmRelease status. Every
+    # reused cluster is in that state — a second `WITH_NFS=true make
+    # deploy-infra`, or a self-hosted runner keeping a warm cluster across jobs
+    # (SKIP_KIND_CREATE=true). Drop the object BEFORE the overlay apply, so the
+    # helm-controller never attempts the rejected upgrade, and let the chart
+    # recreate it with both lifecycle modes. The object holds no data and no
+    # workload references it; the chart registers it again, and the block
+    # after the apply below is what makes sure that actually happened.
+    #
+    # Only a definite "not found" counts as absence. Every other kubectl failure
+    # (an API server still settling after `kind create cluster`, an RBAC denial
+    # on the cluster-scoped read, a TLS handshake timeout on a loaded runner)
+    # aborts: an unreadable cluster is not one without a CSIDriver, and silently
+    # reading it as one walks into the rejected upgrade this guard exists to
+    # prevent. Same posture as relocated_object_exists above. A NotFound itself
+    # is two different clusters — the fresh one, which needs nothing, and one an
+    # earlier run left driverless — told apart by the HelmRelease below.
+    local nfs_lifecycle_modes nfs_probe_rc=0 nfs_csidriver_absent=false
+    nfs_lifecycle_modes="$(kubectl get csidriver nfs.csi.k8s.io \
+      -o 'jsonpath={.spec.volumeLifecycleModes}' 2>&1)" || nfs_probe_rc=$?
+    if [[ "${nfs_probe_rc}" -eq 0 ]]; then
+      if [[ "${nfs_lifecycle_modes}" != *Ephemeral* ]]; then
+        log "CSIDriver/nfs.csi.k8s.io predates the Ephemeral lifecycle mode (modes: ${nfs_lifecycle_modes:-<none>}); deleting it so the chart recreates it (the field is immutable)."
+        # --ignore-not-found because the read above and this delete are two
+        # calls: a helm-controller remediation rollback can drop the object in
+        # between, and a bare NotFound would abort the whole run under `set -e`
+        # mid-Step-3 over an object that already reached the wanted state.
+        kubectl delete csidriver nfs.csi.k8s.io --ignore-not-found
+        nfs_csidriver_absent=true
+      fi
+    elif ! grep -qi "not found" <<<"${nfs_lifecycle_modes}"; then
+      log "ERROR: cannot read CSIDriver/nfs.csi.k8s.io to check its lifecycle modes:"
+      log "         ${nfs_lifecycle_modes}"
+      log "       Refusing to continue: an unreadable cluster is not one without the"
+      log "       driver, and skipping the check leaves the csi-driver-nfs upgrade to"
+      log "       fail on the immutable field. Restore access and rerun."
+      exit 1
+    elif kubectl get helmrelease csi-driver-nfs -n kube-system &>/dev/null; then
+      # A definite NotFound on a cluster that ALREADY carries the release: an
+      # earlier run deleted the object above and then died before the forced
+      # reconcile below put it back (a failed apply under `set -e`, a cancelled
+      # job, a runner that went away — all documented on this pool). Nothing
+      # recovers from that on its own: the overlay apply below is byte-identical
+      # to the live HelmRelease so no generation is bumped, `spec.driftDetection`
+      # is unset, and helm-controller does not retry the upgrade it already
+      # exhausted on the immutable field. Without this branch the NotFound would
+      # take the skip path on every later run and the cluster would stay
+      # driverless forever. A fresh cluster has no such HelmRelease yet and is
+      # untouched.
+      log "CSIDriver/nfs.csi.k8s.io is absent while the csi-driver-nfs HelmRelease exists; an earlier run dropped it without getting it back. Forcing the release to recreate it."
+      nfs_csidriver_absent=true
+    fi
     kubectl apply -k "${REPO_ROOT}/deploy/kind/nfs"
     log "NFS kind overlay applied (WITH_NFS=true)."
+    if [[ "${nfs_csidriver_absent}" == "true" ]]; then
+      # The apply above is a no-op on the cluster that needs it most: one that
+      # already ran this overlay, had its upgrade rejected on the immutable
+      # field and burned all three `upgrade.remediation.retries`. Its live
+      # HelmRelease already equals what the overlay renders, so nothing bumps
+      # the generation, `spec.driftDetection` is unset, and helm-controller does
+      # not retry an exhausted upgrade on its interval — the object just dropped
+      # would never come back on its own. Re-run the release with its failure
+      # counts cleared: the annotation triple behind `flux reconcile helmrelease
+      # --force --reset`, where forceAt and resetAt only take effect carrying
+      # the requestedAt value. This is also the path the NotFound branch above
+      # takes for a cluster an aborted earlier run left driverless.
+      local nfs_reconcile_at
+      nfs_reconcile_at="$(date +%s%N)"
+      kubectl annotate helmrelease/csi-driver-nfs -n kube-system --overwrite \
+        "reconcile.fluxcd.io/requestedAt=${nfs_reconcile_at}" \
+        "reconcile.fluxcd.io/forceAt=${nfs_reconcile_at}" \
+        "reconcile.fluxcd.io/resetAt=${nfs_reconcile_at}"
+      # Gate on the object, not on the release: Phase 3's wait_for_helmreleases
+      # only polls Ready=True on csi-driver-nfs, which a release helm considers
+      # already deployed reports without the deleted CSIDriver ever returning. A
+      # cluster with no NFS CSI driver at all is worse than the pre-Ephemeral one
+      # this dropped, so say so here instead of later under the release's name.
+      # The budget is HELMRELEASE_TIMEOUT and not POD_TIMEOUT because what has to
+      # happen is a helm upgrade (or, on a cluster whose release never installed,
+      # the install itself), not a pod start.
+      log "Waiting for csi-driver-nfs to recreate CSIDriver/nfs.csi.k8s.io..."
+      if ! kubectl wait --for=create csidriver/nfs.csi.k8s.io --timeout="${HELMRELEASE_TIMEOUT}s"; then
+        log "ERROR: CSIDriver/nfs.csi.k8s.io is missing and csi-driver-nfs did not recreate it within ${HELMRELEASE_TIMEOUT}s; the cluster now has no NFS CSI driver. Inspect 'kubectl describe helmrelease csi-driver-nfs -n kube-system'."
+        exit 1
+      fi
+      # `--for=create` returns the instant an object of that name exists and
+      # says nothing about `spec.volumeLifecycleModes`, the one field this whole
+      # guard is about. The cluster that gets here is by construction one whose
+      # csi-driver-nfs release is remediating, and its `upgrade.remediation`
+      # strategy is the default rollback: a rollback racing the delete above
+      # re-applies the previous release manifest, whose CSIDriver is the
+      # PRE-Ephemeral one. The forced upgrade then hits the immutable field
+      # again and is rejected, so an existence-only gate logs a green line over
+      # a driver that cannot serve the inline volumes the cinder-operator
+      # mounts, and Step 4 times out under the release's name instead.
+      nfs_lifecycle_modes="$(kubectl get csidriver nfs.csi.k8s.io \
+        -o 'jsonpath={.spec.volumeLifecycleModes}' 2>&1)" || nfs_lifecycle_modes=""
+      if [[ "${nfs_lifecycle_modes}" != *Ephemeral* ]]; then
+        log "ERROR: CSIDriver/nfs.csi.k8s.io came back WITHOUT the Ephemeral lifecycle mode (modes: ${nfs_lifecycle_modes:-<none>}); a csi-driver-nfs rollback recreated the pre-Ephemeral object and the forced upgrade was rejected on the immutable field again. Inspect 'kubectl describe helmrelease csi-driver-nfs -n kube-system'."
+        exit 1
+      fi
+      log "CSIDriver/nfs.csi.k8s.io recreated by csi-driver-nfs with the Ephemeral lifecycle mode."
+    fi
     if ! kubectl rollout status deployment/nfs-server -n openstack --timeout="${POD_TIMEOUT}s"; then
       log "ERROR: the NFS server did not roll out. The host kernel needs the nfsd module; deploy-infra loads it best-effort and only warns when it cannot."
       exit 1
