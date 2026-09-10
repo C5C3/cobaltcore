@@ -481,6 +481,38 @@ test_state_directories() {
   assert_eq "the state tree is owned by 42424 alone" "42424 " "$output"
 }
 
+# --- Test 15: pkg_resources is importable ---
+test_pkg_resources_importable() {
+  echo "Test: pkg_resources and the os_win cinder requires import cleanly"
+  # os-win is a requirement of cinder 27.0.0 and os_win/_utils.py imports
+  # pkg_resources at module level, which setuptools 81 dropped from the wheel.
+  # Left unconstrained, the 2025.2 resolution lands on setuptools 84 and the
+  # import fails, taking `hack/gen-option-catalog.sh --check` with it. The
+  # stage-1 install holds the runtime venv below setuptools 81; this test is
+  # what notices when that constraint goes missing.
+  # cinder 28.0.0 dropped the Windows drivers and os-win with them, so the
+  # 2026.1 image has no os_win to import. The os_win half follows the
+  # requirements the installed cinder declares rather than the tag: it stays
+  # mandatory wherever cinder requires os-win, and a cinder that declares no
+  # requirements at all fails instead of skipping it.
+  # Stderr is echoed on failure so the traceback names the module.
+  local exit_code=0 err=""
+  err=$(docker run --rm "$IMAGE" \
+    /var/lib/openstack/bin/python -c \
+    'import importlib.metadata, re, sys
+import pkg_resources
+declared = {re.split(r"[^A-Za-z0-9._-]", r, maxsplit=1)[0].lower().replace("_", "-")
+            for r in importlib.metadata.requires("cinder") or []}
+if not declared:
+    sys.exit("cinder declares no requirements")
+if "os-win" in declared:
+    import os_win' \
+    2>&1 > /dev/null) || exit_code=$?
+  [ "$exit_code" -eq 0 ] || echo "    $err"
+
+  assert_eq "import of pkg_resources and the required os_win exits 0" "0" "$exit_code"
+}
+
 # --- Run all tests ---
 echo "=== cinder container verification tests ==="
 echo "Image: $IMAGE"
@@ -512,6 +544,8 @@ echo ""
 test_uwsgi_runnable
 echo ""
 test_state_directories
+echo ""
+test_pkg_resources_importable
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 

@@ -18,6 +18,13 @@
 # namespace-scoped RBAC and the job excuses the refusal, while the cinder chart
 # takes the mode and every scenario has to render.
 #
+# The last signal sits in .github/workflows/build-images.yaml: the option
+# catalog check re-derives operators/cinder/api/v1alpha1/catalogs/<release>.json
+# from the image it just built, and it runs only where the step's `if:` names
+# cinder and where the workflow's trigger paths and its svc_cinder filter carry
+# the catalog directory, so a catalog that no longer matches the image reaches
+# main unchecked as soon as one of those four places drops the service.
+#
 # Usage: bash tests/unit/ci/cinder_e2e_matrix_test.sh
 
 set -uo pipefail
@@ -25,6 +32,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 CI_YAML="$PROJECT_ROOT/.github/workflows/ci.yaml"
+BUILD_IMAGES_YAML="$PROJECT_ROOT/.github/workflows/build-images.yaml"
 
 PASS=0
 FAIL=0
@@ -218,6 +226,34 @@ test_a_keystone_only_change_produces_no_cinder_leg() {
   assert_not_contains "and no cinder leg" "$matrix" '"cinder"'
 }
 
+test_build_images_verifies_the_cinder_catalog() {
+  echo "Test: build-images.yaml checks the cinder option catalog"
+
+  # Two `Verify option catalog` steps run the check, one on the pull-request
+  # build and one on the push build, and both list the services by name.
+  local gates
+  gates=$(grep -A1 -F "name: Verify option catalog" "$BUILD_IMAGES_YAML" |
+    grep -F "if:")
+  assert_eq "both catalog gates run for cinder" "2" \
+    "$(printf '%s\n' "$gates" | grep -cF "matrix.service == 'cinder'")"
+
+  # A catalog edited on its own has to start the workflow at all: the two
+  # trigger lists decide that, and the svc_cinder filter decides whether the
+  # cinder image is among the ones the run builds and checks.
+  assert_eq "the push and pull_request triggers list the cinder catalogs" "2" \
+    "$(grep -cF -- "- operators/cinder/api/v1alpha1/catalogs/**" \
+      "$BUILD_IMAGES_YAML")"
+
+  local filter
+  filter=$(awk '
+    $0 == "            svc_cinder:" { in_block = 1; next }
+    in_block && /^            [a-z0-9_]+:$/ { exit }
+    in_block { print }
+  ' "$BUILD_IMAGES_YAML")
+  assert_contains "the svc_cinder filter covers the cinder catalogs" \
+    "$filter" "operators/cinder/api/v1alpha1/catalogs/**"
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -230,6 +266,7 @@ test_helm_validate_renders_the_cinder_chart
 test_go_matrices_list_cinder
 test_cleanup_matrices_cover_the_cinder_images
 test_a_keystone_only_change_produces_no_cinder_leg
+test_build_images_verifies_the_cinder_catalog
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

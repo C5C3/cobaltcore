@@ -20,6 +20,7 @@ name: Build Images
       - operators/keystone/api/v1alpha1/catalogs/**
       - operators/glance/api/v1alpha1/catalogs/**
       - operators/neutron/api/v1alpha1/catalogs/**
+      - operators/cinder/api/v1alpha1/catalogs/**
       - .github/actions/**
       - tests/container-images/**
       - .github/workflows/build-images.yaml
@@ -53,6 +54,7 @@ name: Build Images
       - operators/keystone/api/v1alpha1/catalogs/**
       - operators/glance/api/v1alpha1/catalogs/**
       - operators/neutron/api/v1alpha1/catalogs/**
+      - operators/cinder/api/v1alpha1/catalogs/**
       - .github/actions/build-push-image/**
       - .github/actions/checkout-service-source/**
       - .github/actions/derive-service-tags/**
@@ -151,6 +153,7 @@ jobs:
             svc_cinder:
               - 'images/cinder/**'
               - 'patches/cinder/**'
+              - 'operators/cinder/api/v1alpha1/catalogs/**'
               - 'tests/container-images/verify_cinder.sh'
             # ---------------------------------------------------------------
             # Everything every service image is built from: the two base
@@ -1043,7 +1046,7 @@ jobs:
           verify-image-ref: ${{ steps.tags.outputs.composite }}
 
       - name: Verify option catalog
-        if: github.event_name == 'pull_request' && (matrix.service == 'keystone' || matrix.service == 'glance' || matrix.service == 'neutron')
+        if: github.event_name == 'pull_request' && (matrix.service == 'keystone' || matrix.service == 'glance' || matrix.service == 'neutron' || matrix.service == 'cinder')
         env:
           MATRIX_SERVICE: ${{ matrix.service }}
           MATRIX_RELEASE: ${{ matrix.release }}
@@ -1207,7 +1210,7 @@ jobs:
           bash "tests/container-images/verify_${SERVICE_NAME}.sh" "$IMAGE_REF"
 
       - name: Verify option catalog
-        if: matrix.service == 'keystone' || matrix.service == 'glance' || matrix.service == 'neutron'
+        if: matrix.service == 'keystone' || matrix.service == 'glance' || matrix.service == 'neutron' || matrix.service == 'cinder'
         env:
           MATRIX_SERVICE: ${{ matrix.service }}
           MATRIX_RELEASE: ${{ matrix.release }}
