@@ -230,7 +230,10 @@ func (r *CinderReconciler) reconcileDeployment(ctx context.Context, children cli
 		return ctrl.Result{RequeueAfter: commonreconcile.RequeueNextPass}, nil
 	}
 
-	cinder.Status.Endpoint = internalCinderURL(cinder)
+	// Status.Endpoint derivation is delegated to cinderStatusEndpoint so the
+	// gateway-aware public URL is used when spec.gateway is set, and the
+	// cluster-local URL otherwise.
+	cinder.Status.Endpoint = cinderStatusEndpoint(cinder)
 	conditions.SetCondition(&cinder.Status.Conditions, metav1.Condition{
 		Type:               "DeploymentReady",
 		Status:             metav1.ConditionTrue,

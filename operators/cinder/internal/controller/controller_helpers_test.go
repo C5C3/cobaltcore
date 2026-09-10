@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"github.com/c5c3/cobaltcore/internal/common/conditions"
 	"github.com/c5c3/cobaltcore/internal/common/config"
@@ -44,13 +45,15 @@ const (
 const openBaoClusterStoreName = secrets.OpenBaoClusterStoreName
 
 // testScheme registers the types the fake client resolves in this package's
-// tests: core (Secret), the Cinder API, and the external-secrets v1 group the
-// credential gate reads to attribute a missing Secret.
+// tests: core (Secret), the Cinder API, the external-secrets v1 group the
+// credential gate reads to attribute a missing Secret, and the Gateway API the
+// route step projects.
 func testScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = clientgoscheme.AddToScheme(s)
 	_ = cinderv1alpha1.AddToScheme(s)
 	_ = esov1.SchemeBuilder.AddToScheme(s)
+	_ = gatewayv1.Install(s)
 	return s
 }
 
