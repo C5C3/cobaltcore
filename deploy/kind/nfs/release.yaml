@@ -5,11 +5,11 @@
 # csi-driver-nfs HelmRelease, the mounter for the Cinder NFS backend and the
 # Cinder backup share. It turns the two exports of nfs-server.yaml into
 # volumes a pod can use. The node plugin image carries its own `mount.nfs`,
-# so nothing has to be installed into the kindest/node image. The driver's
-# CSIDriver object sets `attachRequired: false`, so the static
-# PersistentVolume and PersistentVolumeClaim pairs the cinder-operator
-# creates per backend are mounted by the node plugin alone, with no
-# attach/detach controller in the path.
+# so nothing has to be installed into the kindest/node image. The
+# cinder-operator mounts every backend and backup share as an inline `csi:`
+# volume in the pod spec: no PersistentVolume, no PersistentVolumeClaim. The
+# CSIDriver object's `attachRequired: false` keeps the attach/detach
+# controller out of the path, so the node plugin mounts the share alone.
 #
 # Deployed to kube-system: the chart defaults to
 # `priorityClassName: system-cluster-critical`, which resolves in no other
@@ -96,7 +96,35 @@ spec:
       enableSnapshotter: false
     storageClass:
       # Already the chart default, set here with the reason: the
-      # cinder-operator binds static PersistentVolume and
-      # PersistentVolumeClaim pairs, so no dynamic class is wanted, and an
-      # unwanted class in a kind cluster competes for is-default-class.
+      # cinder-operator mounts inline volumes, so no dynamic class is wanted,
+      # and an unwanted class in a kind cluster competes for
+      # is-default-class.
       create: false
+    feature:
+      # The cinder-operator mounts every backend and backup share as an
+      # inline `csi:` volume in the pod spec. The driver serves an inline
+      # volume only when its CSIDriver lists the `Ephemeral` lifecycle mode,
+      # which the chart adds behind this flag (default false).
+      #
+      # `CSIDriver.spec.volumeLifecycleModes` is immutable, so a cluster whose
+      # nfs.csi.k8s.io predates this value cannot be upgraded in place — the
+      # API server rejects the patch and this HelmRelease never goes Ready
+      # again. hack/deploy-infra.sh therefore drops the object before it
+      # applies this overlay whenever the live one lists no `Ephemeral` mode,
+      # and the chart recreates it. A fresh cluster needs nothing.
+      #
+      # TRUST CONSEQUENCE, accepted for this kind-only overlay. The export
+      # behind the driver is wildcard-permitted and `no_root_squash`
+      # (nfs-server.yaml, "CI-ONLY posture"). Reaching it used to require a
+      # cluster-scoped PersistentVolume, which namespaced RBAC does not grant;
+      # with the Ephemeral mode the whole mount is expressed in a pod spec, so
+      # anyone who can create a Pod in any namespace that is not PSA
+      # `restricted` mounts both shares as root — including another suite's
+      # volume and backup files. A namespace label does not stop the mount
+      # either: `csi` is on the PSS restricted allow-list, so the label bounds
+      # the UID and not the volume. The mode is accepted anyway — the operator
+      # needs it and this cluster has no untrusted tenant — but it is a reason
+      # not to lift this overlay into a non-kind deployment: production
+      # clusters bring their own CSI mounter against an export that squashes
+      # root.
+      enableInlineVolume: true
